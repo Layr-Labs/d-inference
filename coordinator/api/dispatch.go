@@ -1173,7 +1173,7 @@ func (d *dispatchState) markSpeculativeLoser(pr *registry.PendingRequest) {
 	if pr == nil {
 		return
 	}
-	pr.UsedBackup = true
+	pr.MarkBackupUsed()
 	d.s.updateInferenceRouteOutcomeForPending(pr, speculativeLoserOutcome(pr))
 }
 
@@ -1181,7 +1181,7 @@ func (d *dispatchState) updateSpeculativeFailure(pr *registry.PendingRequest, ms
 	if pr == nil {
 		return
 	}
-	pr.UsedBackup = true
+	pr.MarkBackupUsed()
 	d.s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, msg))
 }
 
@@ -1189,7 +1189,7 @@ func (d *dispatchState) updateSpeculativeTimeout(pr *registry.PendingRequest, cl
 	if pr == nil {
 		return
 	}
-	pr.UsedBackup = true
+	pr.MarkBackupUsed()
 	d.s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", class, http.StatusGatewayTimeout))
 }
 
@@ -1197,7 +1197,7 @@ func (d *dispatchState) updateSpeculativeClientGone(pr *registry.PendingRequest)
 	if pr == nil {
 		return
 	}
-	pr.UsedBackup = true
+	pr.MarkBackupUsed()
 	d.s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
 }
 
@@ -2414,13 +2414,13 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 	}
 	// Backup dispatched — race primary vs backup.
 	if d.pr != nil {
-		d.pr.UsedBackup = true
+		d.pr.MarkBackupUsed()
 		if ap := d.pr.Profile; ap != nil {
 			ap.BackupLaunched.Store(true)
 		}
 	}
 	if backupPR != nil {
-		backupPR.UsedBackup = true
+		backupPR.MarkBackupUsed()
 	}
 	s.logger.Info("speculative_dispatch",
 		"request_id", d.requestID,
@@ -2436,7 +2436,8 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 		// sub-waits — returns through here, and BackupWon is the winner marker
 		// every backup-win path sets before committing.
 		s.hedgeGov.noteHedgeResolved()
-		s.hedgeGov.recordHedgeOutcome(d.model, backupPR.BackupWon)
+		_, backupWon := backupPR.BackupState()
+		s.hedgeGov.recordHedgeOutcome(d.model, backupWon)
 	}
 	return outcome
 }
@@ -2578,7 +2579,7 @@ func (d *dispatchState) awaitBackupEmptyCompletion(
 	d.s.ddIncr("inference.speculative_win", []string{"model:" + d.model})
 	d.s.registry.RecordWarmPoolSpeculativeWon(d.model)
 	d.markSpeculativeLoser(primaryPR)
-	backupPR.BackupWon = true
+	backupPR.MarkBackupWon()
 	if ap := backupPR.Profile; ap != nil {
 		ap.BackupWon.Store(true)
 		if primaryPR != nil {
@@ -2698,7 +2699,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			s.registry.RecordWarmPoolSpeculativeWon(d.model)
 			if ok {
 				d.markSpeculativeLoser(pr)
-				backupPR.BackupWon = true
+				backupPR.MarkBackupWon()
 				d.provider = backupProvider
 				d.pr = backupPR
 				d.requestID = d.pr.RequestID
@@ -2726,7 +2727,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					// Backup channel closed with no error — treat as committed.
 					s.cancelDispatch(provider, pr, cancelCauseHedgeLoser)
 					d.markSpeculativeLoser(pr)
-					backupPR.BackupWon = true
+					backupPR.MarkBackupWon()
 					d.provider = backupProvider
 					d.pr = backupPR
 					d.requestID = d.pr.RequestID
@@ -2811,7 +2812,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				}
 				s.cancelDispatch(provider, pr, cancelCauseHedgeLoser)
 				d.markSpeculativeLoser(pr)
-				backupPR.BackupWon = true
+				backupPR.MarkBackupWon()
 				d.provider = backupProvider
 				d.pr = backupPR
 				d.requestID = backupPR.RequestID
@@ -2856,7 +2857,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				s.ddIncr("inference.speculative_win", []string{"model:" + d.model})
 				s.registry.RecordWarmPoolSpeculativeWon(d.model)
 				d.markSpeculativeLoser(pr)
-				backupPR.BackupWon = true
+				backupPR.MarkBackupWon()
 				d.provider = backupProvider
 				d.pr = backupPR
 				d.requestID = d.pr.RequestID
@@ -3070,7 +3071,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			}
 			backupDeadline.Stop()
 			if ok {
-				backupPR.BackupWon = true
+				backupPR.MarkBackupWon()
 				d.provider = backupProvider
 				d.pr = backupPR
 				d.requestID = d.pr.RequestID
@@ -3090,7 +3091,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 					d.pr = nil
 					return outcomeRetry
 				default:
-					backupPR.BackupWon = true
+					backupPR.MarkBackupWon()
 					d.provider = backupProvider
 					d.pr = backupPR
 					d.requestID = d.pr.RequestID
@@ -3104,7 +3105,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 		case errMsg2 := <-backupPR.ErrorCh:
 			backupDeadline.Stop()
 			if chunk, ok := drainReadyFirstContent(backupPR, &backupHeld); ok {
-				backupPR.BackupWon = true
+				backupPR.MarkBackupWon()
 				d.provider = backupProvider
 				d.pr = backupPR
 				d.requestID = backupPR.RequestID
@@ -3126,7 +3127,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			return outcomeRetry
 		case <-backupDeadline.C:
 			if chunk, ok := drainReadyFirstContent(backupPR, &backupHeld); ok {
-				backupPR.BackupWon = true
+				backupPR.MarkBackupWon()
 				d.provider = backupProvider
 				d.pr = backupPR
 				d.requestID = d.pr.RequestID
@@ -3141,7 +3142,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			if len(backupHeld) > 0 && d.canExtendPreambleLiveness() {
 				// Backup preamble liveness — promote it and continue
 				// in waitAccepted on leftover first-token budget.
-				backupPR.BackupWon = true
+				backupPR.MarkBackupWon()
 				d.provider = backupProvider
 				d.pr = backupPR
 				d.requestID = d.pr.RequestID

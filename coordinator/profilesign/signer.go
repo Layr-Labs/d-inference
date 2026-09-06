@@ -1,13 +1,14 @@
 // Package profilesign CMS-signs Apple configuration profiles (.mobileconfig) so
 // macOS/iOS show them as signed/trusted at install time instead of "Unsigned".
 //
-// Signing is optional and install-time trust only: it does not affect the
-// SCEP/MDM attestation chain inside the profile, and a missing or broken
-// identity must degrade to serving unsigned (never block enrollment). The trust
-// shown depends solely on the signing cert chaining to a CA already on the
-// device — i.e. a code-signing cert such as an Apple "Developer ID Application"
-// (chains to the Apple Root CA on every Mac); include the issuing intermediate
-// in the bundle so the device can build the full path.
+// Signing is install-time provenance only: it does not affect the SCEP/MDM
+// attestation chain inside the profile. Callers choose whether a missing or
+// broken identity is fatal (hardware-trust deployments) or may explicitly
+// degrade to unsigned (local development/tests). The trust shown depends on the
+// signing cert chaining to a CA already on the device — i.e. a code-signing cert
+// such as an Apple "Developer ID Application" (chains to the Apple Root CA on
+// every Mac); include the issuing intermediate in the bundle so the device can
+// build the full path.
 package profilesign
 
 import (
@@ -28,6 +29,10 @@ import (
 // expiryWarnWindow is how far before NotAfter we start warning at startup that
 // the signing certificate needs rotation.
 const expiryWarnWindow = 30 * 24 * time.Hour
+
+// AllowUnsignedProfilesEnv is the explicit development/test escape hatch for a
+// hardware-trust coordinator. Live deployments must leave it unset or false.
+const AllowUnsignedProfilesEnv = "EIGENINFERENCE_ALLOW_UNSIGNED_PROFILES"
 
 // Signer holds a loaded code-signing identity used to CMS-sign configuration
 // profiles. It is immutable after construction and safe for concurrent use:
@@ -104,6 +109,9 @@ func orderChain(leaf *x509.Certificate, pool []*x509.Certificate) []*x509.Certif
 // attached (as Apple's profile installer requires) and returns the DER bytes.
 // The digest is SHA-256.
 func (s *Signer) Sign(profile []byte) ([]byte, error) {
+	if s.Expired(time.Now()) {
+		return nil, fmt.Errorf("profile signing certificate %q is not currently valid", s.CommonName())
+	}
 	sd, err := pkcs7.NewSignedData(profile)
 	if err != nil {
 		return nil, fmt.Errorf("new signed data: %w", err)
@@ -142,16 +150,18 @@ func (s *Signer) Expired(now time.Time) bool {
 	return now.Before(s.leaf.NotBefore) || now.After(s.leaf.NotAfter)
 }
 
-// LoadFromEnv builds a Signer from the environment, returning nil (no error) when
-// unconfigured or misconfigured so the caller degrades to serving unsigned
-// profiles rather than aborting startup. Bundle source (first match wins):
+// LoadFromEnv builds a Signer from the environment. When required is true,
+// missing, malformed, unreadable, or expired signing material returns an error
+// so startup fails closed. When required is false, those conditions return a nil
+// signer after logging, preserving the explicit local-development/test path.
+// Bundle source (first match wins):
 //
 //	PROFILE_SIGNING_P12_B64       base64 (std or URL-safe) DER PKCS#12 bundle
 //	PROFILE_SIGNING_P12_PATH      path to a DER PKCS#12 bundle
 //	PROFILE_SIGNING_P12_PASSWORD  bundle password (may be empty)
 //
 // The base64 form mirrors MDM_PUSH_P12_B64 for the same KMS pipeline.
-func LoadFromEnv(logger *slog.Logger) *Signer {
+func LoadFromEnv(logger *slog.Logger, required bool) (*Signer, error) {
 	b64 := strings.TrimSpace(os.Getenv("PROFILE_SIGNING_P12_B64"))
 	path := strings.TrimSpace(os.Getenv("PROFILE_SIGNING_P12_PATH"))
 	password := os.Getenv("PROFILE_SIGNING_P12_PASSWORD")
@@ -161,38 +171,55 @@ func LoadFromEnv(logger *slog.Logger) *Signer {
 	case b64 != "":
 		dec, err := decodeBase64Flexible(b64)
 		if err != nil {
+			if required {
+				return nil, fmt.Errorf("PROFILE_SIGNING_P12_B64 is not valid base64: %w", err)
+			}
 			logger.Error("profile signing disabled: PROFILE_SIGNING_P12_B64 is not valid base64", "error", err)
-			return nil
+			return nil, nil
 		}
 		raw = dec
 	case path != "":
 		data, err := os.ReadFile(path)
 		if err != nil {
+			if required {
+				return nil, fmt.Errorf("read PROFILE_SIGNING_P12_PATH %q: %w", path, err)
+			}
 			logger.Error("profile signing disabled: cannot read PROFILE_SIGNING_P12_PATH", "path", path, "error", err)
-			return nil
+			return nil, nil
 		}
 		raw = data
 	default:
-		return nil
+		if required {
+			return nil, fmt.Errorf("profile signing identity is required but PROFILE_SIGNING_P12_B64 and PROFILE_SIGNING_P12_PATH are unset")
+		}
+		return nil, nil
 	}
 
 	signer, err := NewSigner(raw, password)
 	if err != nil {
+		if required {
+			return nil, fmt.Errorf("load required profile signing identity: %w", err)
+		}
 		logger.Error("profile signing disabled: failed to load signing identity", "error", err)
-		return nil
+		return nil, nil
 	}
 
 	// Refuse to sign with an invalid cert. Stamping a CMS signature with an
 	// expired/not-yet-valid certificate is worse than serving unsigned: macOS
 	// shows the profile as signed-but-untrusted and keeps breaking installs until
-	// the process is restarted with a rotated identity. Degrade to unsigned.
+	// the process is restarted with a rotated identity.
 	if signer.Expired(time.Now()) {
+		validityErr := fmt.Errorf("profile signing certificate %q is not currently valid (not_before=%s, not_after=%s)",
+			signer.CommonName(), signer.leaf.NotBefore.Format(time.RFC3339), signer.NotAfter().Format(time.RFC3339))
+		if required {
+			return nil, validityErr
+		}
 		logger.Error("profile signing disabled: signing certificate is expired or not yet valid — serving unsigned instead of an untrusted signature",
 			"signer_cn", signer.CommonName(),
 			"not_before", signer.leaf.NotBefore.Format(time.RFC3339),
 			"not_after", signer.NotAfter().Format(time.RFC3339),
 		)
-		return nil
+		return nil, nil
 	}
 
 	logger.Info("configuration-profile signing enabled",
@@ -207,7 +234,7 @@ func LoadFromEnv(logger *slog.Logger) *Signer {
 			"days_left", int(time.Until(signer.NotAfter()).Hours()/24),
 		)
 	}
-	return signer
+	return signer, nil
 }
 
 // decodeBase64Flexible accepts standard and URL-safe base64, with or without

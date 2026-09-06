@@ -1,8 +1,25 @@
 import Foundation
 import CryptoKit
+import ProviderCoreFoundation
+
+private struct UpdateStagingOwnershipRecord: Codable, Sendable, Equatable {
+    static let currentSchema = 1
+
+    let schema: Int
+    let id: String
+    let processIdentity: ProcessIdentity?
+    let createdAt: Double
+
+    enum CodingKeys: String, CodingKey {
+        case schema
+        case id
+        case processIdentity = "process_identity"
+        case createdAt = "created_at"
+    }
+}
 
 /// Release information returned by the coordinator.
-public struct ReleaseInfo: Sendable {
+public struct ReleaseInfo: Sendable, Equatable {
     public let version: String
     public let platform: String
     public let url: String
@@ -66,6 +83,7 @@ public struct SelfUpdater: Sendable {
     /// `checkForUpdate` uses, from the same injected seam.
     internal let currentVersion: String
     private let urlSession: URLSession
+    private let maximumReleaseArchiveBytes: UInt64
     private let now: @Sendable () -> Double
     /// Test seam threaded into every `UpdateRecoveryStore` this updater
     /// constructs; production always uses the no-op default.
@@ -97,17 +115,40 @@ public struct SelfUpdater: Sendable {
     public static let watchdogRequestTimeoutSeconds: TimeInterval = 30
     /// Whole-transfer bound: generously covers a ~170 MB bundle on a slow
     /// link, but guarantees a stalled download can never wedge a watchdog
-    /// tick (and the update lock it holds) forever.
+    /// tick forever.
     public static let watchdogResourceTimeoutSeconds: TimeInterval = 600
 
     /// Bounded session for the persistent watchdog. The default `.shared`
     /// session has a 7-day resource timeout — a stalled release download
-    /// would block the recovery loop indefinitely while holding the
-    /// cross-process update lock.
+    /// would block the recovery loop indefinitely even though preparation no
+    /// longer owns the cross-process update locks.
     public static func watchdogURLSession() -> URLSession {
+        boundedURLSession(
+            requestTimeout: watchdogRequestTimeoutSeconds,
+            resourceTimeout: watchdogResourceTimeoutSeconds
+        )
+    }
+
+    /// Startup must prefer availability over waiting indefinitely for an
+    /// optional update. A release that cannot finish inside this bound is
+    /// retried by the serving provider's background updater.
+    public static let startupRequestTimeoutSeconds: TimeInterval = 15
+    public static let startupResourceTimeoutSeconds: TimeInterval = 120
+
+    public static func startupURLSession() -> URLSession {
+        boundedURLSession(
+            requestTimeout: startupRequestTimeoutSeconds,
+            resourceTimeout: startupResourceTimeoutSeconds
+        )
+    }
+
+    private static func boundedURLSession(
+        requestTimeout: TimeInterval,
+        resourceTimeout: TimeInterval
+    ) -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = watchdogRequestTimeoutSeconds
-        configuration.timeoutIntervalForResource = watchdogResourceTimeoutSeconds
+        configuration.timeoutIntervalForRequest = requestTimeout
+        configuration.timeoutIntervalForResource = resourceTimeout
         configuration.waitsForConnectivity = false
         return URLSession(configuration: configuration)
     }
@@ -123,6 +164,8 @@ public struct SelfUpdater: Sendable {
         verifyCodeSignatures: Bool,
         currentVersion: String,
         urlSession: URLSession = .shared,
+        maximumReleaseArchiveBytes: UInt64 =
+            ReleaseArchivePolicy.maxCompressedBytes,
         now: @escaping @Sendable () -> Double = {
             Date().timeIntervalSince1970
         },
@@ -141,6 +184,7 @@ public struct SelfUpdater: Sendable {
         self.verifyCodeSignatures = verifyCodeSignatures
         self.currentVersion = currentVersion
         self.urlSession = urlSession
+        self.maximumReleaseArchiveBytes = maximumReleaseArchiveBytes
         self.now = now
         self.recoveryFaultInjector = recoveryFaultInjector
     }
@@ -149,14 +193,11 @@ public struct SelfUpdater: Sendable {
 
     /// Check the coordinator for the latest release.
     public func checkForUpdate(
-        manualOverride: Bool = false,
-        session: UpdateSession? = nil
+        manualOverride: Bool = false
     ) async -> UpdateCheckResult {
         let recoveryState: UpdateRecoveryState
         do {
-            if let session {
-                recoveryState = try session.readState()
-            } else if let store = recoveryStore() {
+            if let store = recoveryStore() {
                 recoveryState = try store.loadState()
             } else {
                 recoveryState = UpdateRecoveryState()
@@ -165,6 +206,56 @@ public struct SelfUpdater: Sendable {
             return .checkFailed(reason: "could not read update recovery state: \(error)")
         }
 
+        return await checkForUpdate(
+            manualOverride: manualOverride,
+            recoveryState: recoveryState
+        )
+    }
+
+    /// Evaluate the network release against one caller-owned recovery
+    /// snapshot. Callers that intend to mutate first capture this snapshot
+    /// under a short update session, release it, and only then await here.
+    /// That ordering is the boundary that keeps network I/O outside the
+    /// installation locks.
+    internal func checkForUpdate(
+        manualOverride: Bool,
+        recoveryState: UpdateRecoveryState
+    ) async -> UpdateCheckResult {
+        let release: ReleaseInfo
+        switch await fetchLatestRelease() {
+        case .release(let fetched):
+            release = fetched
+        case .failed(let reason):
+            let pendingCandidate = recoveryState.candidate.flatMap {
+                $0.release.version != currentVersion ? $0 : nil
+            }
+            // A pending candidate must still restart when the coordinator is
+            // unreachable — only DISCOVERY of a superseding release needs the
+            // network, never the restart/rollback path itself.
+            if let pendingCandidate {
+                return .restartRequired(
+                    current: currentVersion,
+                    installed: pendingCandidate.release.version
+                )
+            }
+            return .checkFailed(reason: reason)
+        }
+        return evaluateRelease(
+            release,
+            recoveryState: recoveryState,
+            manualOverride: manualOverride
+        )
+    }
+
+    /// Re-evaluate already-fetched release metadata without network I/O.
+    /// Final commit callers invoke this only while holding `UpdateSession`,
+    /// after interrupted-transaction recovery and a fresh state read.
+    internal func evaluateRelease(
+        _ release: ReleaseInfo,
+        recoveryState: UpdateRecoveryState,
+        manualOverride: Bool,
+        installRoot: URL? = nil
+    ) -> UpdateCheckResult {
         // Compare against the version installed ON DISK, not this process's
         // version. The persistent watchdog outlives the binary it replaces:
         // after it installs and promotes v2, its own `ProviderCore.version`
@@ -173,9 +264,9 @@ public struct SelfUpdater: Sendable {
         // (a later unrelated crash could then quarantine a good release).
         // SemVer-max also keeps manual reinstalls, which bypass recovery
         // state, from re-candidatizing.
-        let installedVersion = Self.effectiveInstalledVersion(
-            processVersion: currentVersion,
-            recorded: recoveryState.current?.version
+        let installedVersion = resolvedInstalledVersion(
+            recoveryState: recoveryState,
+            installRoot: installRoot
         )
         let pendingCandidate = recoveryState.candidate.flatMap {
             $0.release.version != currentVersion ? $0 : nil
@@ -187,20 +278,6 @@ public struct SelfUpdater: Sendable {
                 current: currentVersion,
                 installed: candidate.release.version
             )
-        }
-
-        let release: ReleaseInfo
-        switch await fetchLatestRelease() {
-        case .release(let fetched):
-            release = fetched
-        case .failed(let reason):
-            // A pending candidate must still restart when the coordinator is
-            // unreachable — only DISCOVERY of a superseding release needs the
-            // network, never the restart/rollback path itself.
-            if let pendingCandidate {
-                return restartPendingCandidate(pendingCandidate)
-            }
-            return .checkFailed(reason: reason)
         }
 
         guard SemanticVersion(release.version) != nil,
@@ -248,6 +325,69 @@ public struct SelfUpdater: Sendable {
         } else {
             return .upToDate(currentVersion: installedVersion)
         }
+    }
+
+    /// Resolve every durable version witness that can change while phase one
+    /// is unlocked. App relocation and the shell installer share the mutation
+    /// lock but intentionally do not write SelfUpdater's recovery generation,
+    /// so a newer authenticated app version must participate in final
+    /// revalidation. A pending SelfUpdater candidate remains authoritative:
+    /// one-shot installers refuse to run while it exists.
+    internal func resolvedInstalledVersion(
+        recoveryState: UpdateRecoveryState,
+        installRoot: URL? = nil
+    ) -> String {
+        var installedVersion = Self.effectiveInstalledVersion(
+            processVersion: currentVersion,
+            recorded: recoveryState.current?.version
+        )
+        guard recoveryState.candidate == nil,
+              let onDisk = installedAppVersion(in: installRoot),
+              isNewer(latest: onDisk, current: installedVersion)
+        else {
+            return installedVersion
+        }
+        installedVersion = onDisk
+        return installedVersion
+    }
+
+    /// Canonical version from the installed app endpoint. Invalid, incomplete,
+    /// unsigned (in shipping mode), or disagreeing plist versions are not
+    /// trusted; recovery state/process version remains the fallback for legacy
+    /// flat installs and synthetic fixtures.
+    private func installedAppVersion(in explicitRoot: URL?) -> String? {
+        guard let root = explicitRoot ?? resolvedInstallRoot() else {
+            return nil
+        }
+        let app = root.appendingPathComponent("Darkbloom.app")
+        if verifyCodeSignatures {
+            guard (try? verifyCodeSignature(
+                file: app,
+                label: "installed Darkbloom.app",
+                deep: true
+            )) != nil else {
+                return nil
+            }
+        }
+        let info = app.appendingPathComponent("Contents/Info.plist")
+        guard let data = try? Data(contentsOf: info),
+              let object = try? PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: nil
+              ),
+              let values = object as? [String: Any],
+              values["CFBundleIdentifier"] as? String
+                == DarkbloomCodeSignature.bundleIdentifier,
+              let short = values["CFBundleShortVersionString"] as? String,
+              let bundle = values["CFBundleVersion"] as? String,
+              let shortVersion = SemanticVersion(short),
+              let bundleVersion = SemanticVersion(bundle),
+              shortVersion == bundleVersion
+        else {
+            return nil
+        }
+        return short
     }
 
     /// The version installed on disk: the SemVer-newer of this process's
@@ -332,24 +472,43 @@ public struct SelfUpdater: Sendable {
         }
 
         do {
-            let (tempFileURL, response) = try await urlSession.download(from: downloadURL)
-
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200
-            else {
-                return .failure(.downloadFailed("HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)"))
+            let (tempFileURL, _) = try await ReleaseArchiveDownloader.download(
+                from: downloadURL,
+                using: urlSession,
+                maximumBytes: maximumReleaseArchiveBytes
+            )
+            var retainDownloadedArchive = false
+            defer {
+                if !retainDownloadedArchive {
+                    try? FileManager.default.removeItem(at: tempFileURL)
+                }
             }
 
-            // Verify SHA-256
-            let fileData = try Data(contentsOf: tempFileURL)
-            let digest = SHA256.hash(data: fileData)
-            let computedHash = digest.map { String(format: "%02x", $0) }.joined()
+            let attributes = try FileManager.default.attributesOfItem(
+                atPath: tempFileURL.path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular,
+                  let compressedSize = attributes[.size] as? NSNumber
+            else {
+                return .failure(.downloadFailed(
+                    "downloaded release archive is not a regular file"))
+            }
+            guard compressedSize.uint64Value
+                    <= maximumReleaseArchiveBytes
+            else {
+                return .failure(.downloadFailed(
+                    "release archive exceeds the "
+                        + "\(maximumReleaseArchiveBytes)-byte "
+                        + "compressed-size limit"))
+            }
 
+            // Stream the digest so even a rejected maximum-size download does
+            // not require a second archive-sized in-memory allocation.
+            let computedHash = try sha256Hex(file: tempFileURL)
             guard computedHash == release.bundleHash.lowercased() else {
-                try? FileManager.default.removeItem(at: tempFileURL)
                 return .failure(.hashMismatch(expected: release.bundleHash, got: computedHash))
             }
 
+            retainDownloadedArchive = true
             return .success(tempFileURL)
         } catch {
             return .failure(.downloadFailed(error.localizedDescription))
@@ -360,8 +519,9 @@ public struct SelfUpdater: Sendable {
 
     /// Directory-name prefixes for staged bundles and commit backups inside
     /// the darkbloom root. Dot-prefixed so they stay out of the visible
-    /// layout; cleaned up on the next staging pass if a crash orphans them.
-    private static let stagingDirPrefix = ".update-staging-"
+    /// layout; provably orphaned entries are cleaned under a later final lease.
+    static let stagingDirPrefix = ".update-staging-"
+    private static let stagingOwnerFileName = ".darkbloom-staging-owner.json"
     private static let artifactVerificationTimeout: TimeInterval = 120
 
     private struct ArtifactVerificationPolicy {
@@ -404,10 +564,66 @@ public struct SelfUpdater: Sendable {
         /// Full extracted-tree digest captured after stage verification and
         /// checked again immediately before commit.
         let stagedTreeHash: String
+        /// Exact modes of the payload that will become live.
+        let artifactModes: UpdateArtifactModes
+        /// Unforgeable-by-accident identity for this process-owned staging
+        /// directory. Cleanup verifies the durable marker before deleting.
+        fileprivate let ownership: UpdateStagingOwnershipRecord
+
+        let installedBinary: URL
+        let installedEnclave: URL
+        let installedMetallib: URL
+
+        func currentArtifactModes() throws -> UpdateArtifactModes {
+            if let app = extractedApp {
+                let paths = try ProviderAppLayout(app: app, expectedVersion: release.version)
+                return try UpdateArtifactModes(
+                    binary: paths.binary, enclave: paths.enclave, metallib: paths.metallib)
+            }
+            return try UpdateArtifactModes(
+                binary: installedBinary, enclave: installedEnclave, metallib: installedMetallib)
+        }
+
+        func validateOwnership() throws {
+            guard UpdateAtomicFilesystem.isDescendant(
+                stagingRoot,
+                of: installDir
+            ),
+                  stagingRoot.lastPathComponent
+                    == "\(SelfUpdater.stagingDirPrefix)\(ownership.id)"
+            else {
+                throw UpdateError.replaceFailed(
+                    "staged bundle ownership path is invalid"
+                )
+            }
+            let marker = stagingRoot.appendingPathComponent(
+                SelfUpdater.stagingOwnerFileName
+            )
+            let recorded: UpdateStagingOwnershipRecord
+            do {
+                recorded = try JSONDecoder().decode(
+                    UpdateStagingOwnershipRecord.self,
+                    from: Data(contentsOf: marker)
+                )
+            } catch {
+                throw UpdateError.replaceFailed(
+                    "staged bundle ownership marker is unreadable: \(error)"
+                )
+            }
+            guard recorded.schema
+                    == UpdateStagingOwnershipRecord.currentSchema,
+                  recorded == ownership
+            else {
+                throw UpdateError.replaceFailed(
+                    "staged bundle ownership changed after staging"
+                )
+            }
+        }
 
         /// Remove the staged contents from disk (failure/abort cleanup).
         public func discard() {
-            try? FileManager.default.removeItem(at: stagingRoot)
+            guard (try? validateOwnership()) != nil else { return }
+            try? UpdateAtomicFilesystem.removeDurably(stagingRoot)
         }
     }
 
@@ -418,20 +634,20 @@ public struct SelfUpdater: Sendable {
     /// flat `bin/` copies. The .app bundle is the canonical signed artifact;
     /// older flat-only tarballs (no .app bundle) are staged for the legacy
     /// direct-file install.
-    public func stageBundle(
+    internal func stageBundle(
         from downloadedFile: URL,
-        release: ReleaseInfo,
-        session: UpdateSession
+        release: ReleaseInfo
     ) -> Result<StagedBundle, UpdateError> {
-        let installDir = session.store.installRoot
-        guard installDir == resolvedInstallRoot() else {
-            return .failure(.replaceFailed("update session belongs to a different install root"))
+        guard let installDir = resolvedInstallRoot() else {
+            return .failure(.replaceFailed(
+                "could not determine current executable path"
+            ))
         }
         return stageBundle(
             from: downloadedFile,
             release: release,
             installDir: installDir,
-            verification: session.store.verifyCodeSignatures
+            verification: verifyCodeSignatures
                 ? .production
                 : .unverifiedTestFixture
         )
@@ -439,27 +655,12 @@ public struct SelfUpdater: Sendable {
 
     /// TEST-ONLY. Stages without signature verification so tests can use
     /// synthetic unsigned binaries. Never call from production — the production
-    /// path is `stageBundle(from:release:session:)`, which derives verification
-    /// from the session's store (always `true` for a production session).
+    /// path derives verification from the updater itself and always verifies;
     internal func stageBundleForTesting(
         from downloadedFile: URL,
         release: ReleaseInfo,
         installDir: URL
     ) -> Result<StagedBundle, UpdateError> {
-        guard let session = try? beginUpdateSession(
-            operation: "test-stage",
-            timeout: 0,
-            installRoot: installDir,
-            verifyCodeSignatures: false
-        ) else {
-            return .failure(.replaceFailed("could not acquire test update lock"))
-        }
-        defer { session.release() }
-        do {
-            try session.recover()
-        } catch {
-            return .failure(.replaceFailed("\(error)"))
-        }
         return stageBundle(
             from: downloadedFile,
             release: release,
@@ -487,20 +688,42 @@ public struct SelfUpdater: Sendable {
         verification: ArtifactVerificationPolicy
     ) -> Result<StagedBundle, UpdateError> {
         let fm = FileManager.default
+        let stagingID = UUID().uuidString.lowercased()
         let stagingRoot = installDir.appendingPathComponent(
-            "\(Self.stagingDirPrefix)\(UUID().uuidString)", isDirectory: true)
+            "\(Self.stagingDirPrefix)\(stagingID)", isDirectory: true)
+        let ownership = UpdateStagingOwnershipRecord(
+            schema: UpdateStagingOwnershipRecord.currentSchema,
+            id: stagingID,
+            processIdentity: ProcessIdentity.current(),
+            createdAt: now()
+        )
 
         do {
+            // The complete tar header graph is approved before /usr/bin/tar
+            // writes a single archive-controlled path into the staging tree.
+            try ReleaseArchivePreflight.validate(downloadedFile)
             try fm.createDirectory(at: installDir, withIntermediateDirectories: true)
-            // Best-effort removal of staging/backup dirs orphaned by a crash
-            // between stage and commit in an earlier process.
-            removeStaleUpdateDirs(in: installDir)
-
             try fm.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
-            try BoundedProcess.run(
-                URL(fileURLWithPath: "/usr/bin/tar"),
-                arguments: ["xzf", downloadedFile.path, "-C", stagingRoot.path],
-                timeout: Self.artifactVerificationTimeout)
+            try UpdateAtomicFilesystem.writeJSON(
+                ownership,
+                to: stagingRoot.appendingPathComponent(
+                    Self.stagingOwnerFileName
+                )
+            )
+            try ReleaseArchiveExtractor.extract(
+                archive: downloadedFile,
+                destination: stagingRoot,
+                timeout: Self.artifactVerificationTimeout
+            )
+            // The archive may legally contain an unknown dotfile at its root.
+            // Re-publish our marker after extraction so archive bytes can
+            // never become staging ownership authority.
+            try UpdateAtomicFilesystem.writeJSON(
+                ownership,
+                to: stagingRoot.appendingPathComponent(
+                    Self.stagingOwnerFileName
+                )
+            )
 
             // Use the flat bin/ copies for hash verification (release hashes
             // are computed from the flat layout).
@@ -516,6 +739,14 @@ public struct SelfUpdater: Sendable {
                 names: ["bin/mlx.metallib", "mlx.metallib"],
                 root: stagingRoot
             )
+            let flatArtifactModes = try UpdateArtifactModes(
+                binary: flatDarkbloom,
+                enclave: flatEnclave,
+                metallib: flatMetallib
+            )
+            if let mismatch = flatArtifactModes.releaseModeMismatch {
+                throw UpdateError.replaceFailed(mismatch)
+            }
 
             if let binaryHash = release.binaryHash {
                 try verifyHash(file: flatDarkbloom, expected: binaryHash, label: "darkbloom")
@@ -566,12 +797,30 @@ public struct SelfUpdater: Sendable {
                     )
                 }
             }
+            let appLayout = try (hasAppBundle
+                ? ProviderAppLayout(app: extractedApp, expectedVersion: release.version)
+                : nil)
+            if let paths = appLayout, paths.helper != nil {
+                // The signed helper owns the running CLI and its colocated
+                // metallib. Flat/outer compatibility copies are not authority.
+                guard let binaryHash = release.binaryHash,
+                      let metallibHash = release.metallibHash
+                else {
+                    throw UpdateError.replaceFailed("nested release requires binary and metallib hashes")
+                }
+                try verifyHash(file: paths.binary, expected: binaryHash, label: "nested darkbloom")
+                try verifyHash(file: paths.metallib, expected: metallibHash, label: "nested mlx.metallib")
+                try verifyHash(
+                    file: extractedApp.appendingPathComponent("Contents/MacOS/mlx.metallib"),
+                    expected: metallibHash, label: "outer mlx.metallib")
+            }
             if let signaturePolicy = verification.codeSignaturePolicy {
-                if hasAppBundle {
-                    let appDarkbloom = extractedApp
-                        .appendingPathComponent("Contents/MacOS/darkbloom")
-                    let appMetallib = extractedApp
-                        .appendingPathComponent("Contents/MacOS/mlx.metallib")
+                if let paths = appLayout {
+                    if signaturePolicy == .darkbloomProduction {
+                        try paths.validateIdentityMetadata(expectedVersion: release.version)
+                    }
+                    let appDarkbloom = paths.binary
+                    let appMetallib = paths.metallib
                     if let binaryHash = release.binaryHash {
                         try verifyHash(
                             file: appDarkbloom,
@@ -591,6 +840,11 @@ public struct SelfUpdater: Sendable {
                         label: "darkbloom",
                         policy: signaturePolicy
                     )
+                    if let helper = paths.helper {
+                        try verifyCodeSignature(
+                            file: helper, label: "DarkbloomProvider.app", deep: true,
+                            policy: signaturePolicy)
+                    }
                     try verifyCodeSignature(
                         file: extractedApp,
                         label: "Darkbloom.app",
@@ -601,6 +855,7 @@ public struct SelfUpdater: Sendable {
                         try verifyRuntimeCapabilities(
                             app: extractedApp,
                             executable: appDarkbloom,
+                            runtimeBundle: paths.runtimeBundle,
                             fileManager: fm,
                             signaturePolicy: signaturePolicy)
                     }
@@ -617,6 +872,16 @@ public struct SelfUpdater: Sendable {
                 }
             }
 
+            let artifactModes: UpdateArtifactModes
+            if let paths = appLayout {
+                artifactModes = try UpdateArtifactModes(
+                    binary: paths.binary, enclave: paths.enclave, metallib: paths.metallib)
+            } else {
+                artifactModes = flatArtifactModes
+            }
+            if let mismatch = artifactModes.releaseModeMismatch {
+                throw UpdateError.replaceFailed(mismatch)
+            }
             let stagedTreeHash = try UpdateAtomicFilesystem.treeHash(
                 root: hasAppBundle
                     ? extractedApp
@@ -630,7 +895,12 @@ public struct SelfUpdater: Sendable {
                 flatMetallib: flatMetallib,
                 installDir: installDir,
                 release: release,
-                stagedTreeHash: stagedTreeHash
+                stagedTreeHash: stagedTreeHash,
+                artifactModes: artifactModes,
+                ownership: ownership,
+                installedBinary: appLayout?.binary ?? flatDarkbloom,
+                installedEnclave: appLayout?.enclave ?? flatEnclave,
+                installedMetallib: appLayout?.metallib ?? flatMetallib
             ))
         } catch let error as UpdateError {
             try? fm.removeItem(at: stagingRoot)
@@ -647,16 +917,41 @@ public struct SelfUpdater: Sendable {
     /// backup live on the same volume as the install), so the window in which
     /// live paths are missing is milliseconds, not a full bundle copy.
     ///
-    /// The staging directory is consumed (moved or removed) regardless of
-    /// outcome; on failure the previous layout is restored from the backup.
-    public func commitStagedBundle(
+    /// A successful commit consumes staging. A failure after journal creation
+    /// preserves it for transaction replay; a pre-journal refusal leaves it
+    /// owned by the preparer for discard/orphan cleanup.
+    internal func commitStagedBundle(
         _ staged: StagedBundle,
-        session: UpdateSession
+        session: UpdateSession,
+        manualOverride: Bool = false
     ) -> Result<Void, UpdateError> {
         guard staged.installDir.standardizedFileURL == session.store.installRoot else {
             return .failure(.replaceFailed("staged bundle belongs to a different install root"))
         }
         do {
+            try session.recover(now: now())
+            let currentState = try session.readState()
+            guard case .updateAvailable(_, let eligibleRelease) =
+                    evaluateRelease(
+                        staged.release,
+                        recoveryState: currentState,
+                        manualOverride: manualOverride,
+                        installRoot: session.store.installRoot
+                    ),
+                  eligibleRelease == staged.release
+            else {
+                return .failure(.replaceFailed(
+                    "staged release is no longer eligible after final state revalidation"
+                ))
+            }
+            try staged.validateOwnership()
+            // Staging is now concurrent and lock-free. Sweep only after the
+            // final session owns both mutation locks, and never delete a
+            // directory whose recorded process identity is still alive.
+            removeStaleUpdateDirs(
+                in: staged.installDir,
+                preserving: staged.stagingRoot
+            )
             let stagedRoot = staged.extractedApp
                 ?? staged.stagingRoot.appendingPathComponent("bin")
             let currentTreeHash = try UpdateAtomicFilesystem.treeHash(root: stagedRoot)
@@ -664,8 +959,17 @@ public struct SelfUpdater: Sendable {
                 return .failure(.replaceFailed(
                     "staged bundle changed after verification; refusing commit"))
             }
+            guard try staged.currentArtifactModes() == staged.artifactModes else {
+                return .failure(.replaceFailed(
+                    "staged payload permissions changed after verification; refusing commit"
+                ))
+            }
             if session.store.verifyCodeSignatures {
                 if let app = staged.extractedApp {
+                    let paths = try ProviderAppLayout(app: app, expectedVersion: staged.release.version)
+                    if let helper = paths.helper {
+                        try verifyCodeSignature(file: helper, label: "DarkbloomProvider.app", deep: true)
+                    }
                     try verifyCodeSignature(
                         file: app,
                         label: "Darkbloom.app",
@@ -673,9 +977,7 @@ public struct SelfUpdater: Sendable {
                     )
                     try FanHelperCapabilityVerifier.verify(
                         app: app,
-                        executable: app.appendingPathComponent(
-                            "Contents/MacOS/darkbloom"
-                        ),
+                        executable: paths.binary,
                         signaturePolicy: .darkbloomProduction
                     )
                 } else {
@@ -763,14 +1065,47 @@ public struct SelfUpdater: Sendable {
             verifyCodeSignatures: verifyCodeSignatures,
             faultInjector: recoveryFaultInjector
         )
+        let installMutationLock: InstallMutationLock
+        do {
+            installMutationLock = try InstallMutationLock.acquirePrimary(
+                in: installRoot,
+                timeout: timeout
+            )
+        } catch let error as InstallMutationLock.LockError {
+            switch error {
+            case .timedOut:
+                throw UpdateError.lockBusy(
+                    reason: error.localizedDescription,
+                    owner: nil
+                )
+            case .unavailable:
+                throw UpdateError.replaceFailed(error.localizedDescription)
+            }
+        }
+
         do {
             let processLock = try UpdateProcessLock.acquire(
                 at: store.lockPath,
                 operation: operation,
                 timeout: timeout
             )
-            return UpdateSession(processLock: processLock, store: store)
+            if let pendingInstall = try InstallMutationLock.pendingOneShotTransaction(
+                in: installRoot
+            ) {
+                processLock.release()
+                installMutationLock.release()
+                throw UpdateError.replaceFailed(
+                    "one-shot installer transaction requires recovery at "
+                        + pendingInstall.path
+                )
+            }
+            return UpdateSession(
+                installMutationLock: installMutationLock,
+                processLock: processLock,
+                store: store
+            )
         } catch let error as UpdateProcessLock.LockError {
+            installMutationLock.release()
             // Only real contention is `lockBusy` — flock is kernel-owned and
             // auto-releases on owner death, so `.busy` always means a LIVE
             // process holds the lease. An unopenable recovery dir or lock
@@ -783,6 +1118,9 @@ public struct SelfUpdater: Sendable {
                 )
             }
             throw UpdateError.replaceFailed(error.description)
+        } catch {
+            installMutationLock.release()
+            throw error
         }
     }
 
@@ -864,28 +1202,27 @@ public struct SelfUpdater: Sendable {
     /// Pure path derivation behind `liveInstallDir` (separated for tests).
     static func installRoot(forExecutablePath executablePath: String) -> URL {
         let execURL = URL(fileURLWithPath: executablePath).resolvingSymlinksInPath()
-        let parentDir = execURL.deletingLastPathComponent()
-        if parentDir.lastPathComponent == "MacOS" {
-            // Inside .app bundle: MacOS -> Contents -> Darkbloom.app -> root
-            return parentDir
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
+        if let app = ManagedProviderInstallLayout.outerAppURL(forExecutableURL: execURL) {
+            return app.deletingLastPathComponent()
         }
+        let parentDir = execURL.deletingLastPathComponent()
         // Flat bin/ layout or unknown: bin -> root
         return parentDir.deletingLastPathComponent()
     }
 
-    /// Minimum age before a staging directory is considered orphaned.
-    /// A LIVE staging dir only exists between stage and commit, a window
-    /// bounded by the drain timeout (minutes) — an hour-old dir can only be
-    /// left over from a crashed cycle.
+    /// Minimum age before an ownership-less legacy staging directory is
+    /// considered orphaned. Current staging directories carry a process
+    /// identity and are removed only when that exact process is no longer
+    /// alive; age alone must never clobber a long-lived rollover-jitter stage.
     private static let staleUpdateDirAge: TimeInterval = 60 * 60
 
-    /// Best-effort cleanup of old staging directories. The process lock
-    /// serializes every stage and commit; the age gate remains defensive
-    /// against directories from binaries that predate the shared lock.
-    private func removeStaleUpdateDirs(in installDir: URL) {
+    /// Best-effort cleanup under the final mutation session. Recovery/rollback
+    /// scratch is lock-owned. Update staging itself is deliberately lock-free,
+    /// so a valid live owner marker always wins over the age heuristic.
+    private func removeStaleUpdateDirs(
+        in installDir: URL,
+        preserving: URL
+    ) {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
             at: installDir,
@@ -896,11 +1233,50 @@ public struct SelfUpdater: Sendable {
         let cutoff = Date().addingTimeInterval(-Self.staleUpdateDirAge)
         for entry in entries {
             let name = entry.lastPathComponent
-            guard name.hasPrefix(Self.stagingDirPrefix)
+            let isUpdateStage = name.hasPrefix(Self.stagingDirPrefix)
+            guard isUpdateStage
                     || name.hasPrefix(".rollback-staging-")
                     || name.hasPrefix(".recovery-restore-")
             else {
                 continue
+            }
+            if entry.standardizedFileURL == preserving.standardizedFileURL {
+                continue
+            }
+            if isUpdateStage {
+                let marker = entry.appendingPathComponent(
+                    Self.stagingOwnerFileName
+                )
+                if UpdateAtomicFilesystem.itemExists(marker) {
+                    guard let data = try? Data(contentsOf: marker),
+                          let owner = try? JSONDecoder().decode(
+                            UpdateStagingOwnershipRecord.self,
+                            from: data
+                          ),
+                          owner.schema
+                            == UpdateStagingOwnershipRecord.currentSchema
+                    else {
+                        // Ambiguous ownership fails closed. The directory is
+                        // inert and can be removed by an operator or after a
+                        // later process can prove ownership.
+                        continue
+                    }
+                    guard let identity = owner.processIdentity else {
+                        // This platform could not record a kernel identity, so
+                        // ownership cannot be disproved safely.
+                        continue
+                    }
+                    if identity.isCurrent()
+                        || daemonProcessAlive(pid: identity.pid)
+                    {
+                        // Exact owner alive, identity temporarily unreadable,
+                        // or PID reused: all are conservative preservation
+                        // cases. A reused PID is collected after it exits.
+                        continue
+                    }
+                    try? fm.removeItem(at: entry)
+                    continue
+                }
             }
             let modified = (try? entry.resourceValues(forKeys: [.contentModificationDateKey]))?
                 .contentModificationDate
@@ -919,26 +1295,46 @@ public struct SelfUpdater: Sendable {
     /// `stageBundle` / `commitStagedBundle` separately so the live swap only
     /// happens after admission is closed and in-flight work has drained.
     public func installBundle(from downloadedFile: URL, release: ReleaseInfo) -> Result<Void, UpdateError> {
+        let staged: StagedBundle
+        switch stageBundle(from: downloadedFile, release: release) {
+        case .failure(let error):
+            return .failure(error)
+        case .success(let value):
+            staged = value
+        }
         do {
             let session = try beginUpdateSession(operation: "manual-install", timeout: 0)
             defer { session.release() }
             try session.recover()
-            return installBundle(from: downloadedFile, release: release, session: session)
+            return commitStagedBundle(staged, session: session)
         } catch let error as UpdateError {
+            staged.discard()
             return .failure(error)
         } catch {
+            staged.discard()
             return .failure(.replaceFailed("\(error)"))
         }
     }
 
-    /// TEST-ONLY. Installs without signature verification. Never call from
-    /// production — production installs go through `update(session:...)` or
-    /// `installBundle(from:release:session:)` with a signed session.
+    /// TEST-ONLY. Installs without signature verification. Shipping install
+    /// paths derive verification policy from their updater instance.
     internal func installBundleForTesting(
         from downloadedFile: URL,
         release: ReleaseInfo,
         installDir: URL
     ) -> Result<Void, UpdateError> {
+        let staged: StagedBundle
+        switch stageBundle(
+            from: downloadedFile,
+            release: release,
+            installDir: installDir,
+            verification: .unverifiedTestFixture
+        ) {
+        case .failure(let error):
+            return .failure(error)
+        case .success(let value):
+            staged = value
+        }
         do {
             let session = try beginUpdateSession(
                 operation: "test-install",
@@ -948,127 +1344,21 @@ public struct SelfUpdater: Sendable {
             )
             defer { session.release() }
             try session.recover()
-            return installBundle(from: downloadedFile, release: release, session: session)
+            return commitStagedBundle(staged, session: session)
         } catch let error as UpdateError {
+            staged.discard()
             return .failure(error)
         } catch {
+            staged.discard()
             return .failure(.replaceFailed("\(error)"))
         }
     }
-
-    private func installBundle(
-        from downloadedFile: URL,
-        release: ReleaseInfo,
-        session: UpdateSession
-    ) -> Result<Void, UpdateError> {
-        switch stageBundle(
-            from: downloadedFile,
-            release: release,
-            installDir: session.store.installRoot,
-            verification: session.store.verifyCodeSignatures
-                ? .production
-                : .unverifiedTestFixture
-        ) {
-        case .failure(let error):
-            return .failure(error)
-        case .success(let staged):
-            return commitStagedBundle(staged, session: session)
-        }
-    }
-
-    // MARK: - Full Update Flow
-
-    /// Check for updates and apply if available.
-    public func update(manualOverride: Bool = false) async -> UpdateResult {
-        let session: UpdateSession
-        do {
-            session = try beginUpdateSession(operation: "update", timeout: 0)
-            try session.recover()
-        } catch UpdateError.lockBusy(let reason, _) {
-            return .busy(reason: reason)
-        } catch {
-            return .replaceFailed(reason: "update recovery failed: \(error)")
-        }
-        defer { session.release() }
-        return await update(session: session, manualOverride: manualOverride)
-    }
-
-    public func update(
-        session: UpdateSession,
-        manualOverride: Bool = false,
-        beforeInstall: @Sendable () -> Bool = { true }
-    ) async -> UpdateResult {
-        let checkResult = await checkForUpdate(
-            manualOverride: manualOverride,
-            session: session
-        )
-
-        switch checkResult {
-        case .upToDate(let version):
-            return .alreadyUpToDate(version: version)
-
-        case .restartRequired(let current, let installed):
-            return .restartRequired(from: current, to: installed)
-
-        case .quarantined(let version, let reason):
-            return .quarantined(version: version, reason: reason)
-
-        case .checkFailed(let reason):
-            return .downloadFailed(reason: "update check failed: \(reason)")
-
-        case .updateAvailable(let current, let release):
-            let downloadResult = await downloadAndVerify(release: release)
-
-            switch downloadResult {
-            case .failure(let error):
-                switch error {
-                case .hashMismatch(let expected, let got):
-                    return .hashMismatch(expected: expected, got: got)
-                case .downloadFailed(let reason):
-                    return .downloadFailed(reason: reason)
-                case .invalidURL(let url):
-                    return .downloadFailed(reason: "invalid download URL: \(url)")
-                case .replaceFailed(let reason):
-                    return .replaceFailed(reason: reason)
-                case .lockBusy(let reason, _):
-                    return .busy(reason: reason)
-                }
-
-            case .success(let tempFile):
-                guard beforeInstall() else {
-                    try? FileManager.default.removeItem(at: tempFile)
-                    return .cancelled(
-                        reason: "provider was intentionally stopped before install")
-                }
-                let replaceResult = installBundle(
-                    from: tempFile,
-                    release: release,
-                    session: session
-                )
-                // Clean up the downloaded tarball regardless of install outcome.
-                try? FileManager.default.removeItem(at: tempFile)
-                switch replaceResult {
-                case .success:
-                    return .updated(from: current, to: release.version)
-                case .failure(let error):
-                    switch error {
-                    case .replaceFailed(let reason),
-                         .lockBusy(let reason, _):
-                        return .replaceFailed(reason: reason)
-                    default:
-                        return .replaceFailed(reason: "\(error)")
-                    }
-                }
-            }
-        }
-    }
-
     // MARK: - Version Comparison
 
     /// Compare semver-style version strings. Returns true if `latest` is newer than `current`.
     ///
-    /// Handles versions like "0.4.0-swift", "0.4.1", etc. The suffix after '-' is
-    /// stripped for comparison (pre-release suffixes are ignored for ordering).
+    /// Both values must be canonical SemVer 2. Prerelease identifiers use the
+    /// specification's exact precedence and build metadata is ignored.
     internal static func isNewer(latest: String, current: String) -> Bool {
         guard let latest = SemanticVersion(latest),
               let current = SemanticVersion(current)
@@ -1093,10 +1383,24 @@ public struct SelfUpdater: Sendable {
         throw UpdateError.replaceFailed("release bundle missing \(names[0])")
     }
 
+    private func sha256Hex(file: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            let data = try handle.read(upToCount: 1024 * 1024) ?? Data()
+            if data.isEmpty {
+                break
+            }
+            hasher.update(data: data)
+        }
+        return hasher.finalize()
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
     private func verifyHash(file: URL, expected: String, label: String) throws {
-        let data = try Data(contentsOf: file)
-        let digest = SHA256.hash(data: data)
-        let got = digest.map { String(format: "%02x", $0) }.joined()
+        let got = try sha256Hex(file: file)
         guard got == expected.lowercased() else {
             throw UpdateError.hashMismatch(expected: expected, got: "\(label): \(got)")
         }
@@ -1105,6 +1409,7 @@ public struct SelfUpdater: Sendable {
     private func verifyRuntimeCapabilities(
         app: URL,
         executable: URL,
+        runtimeBundle: URL,
         fileManager: FileManager,
         signaturePolicy: DarkbloomCodeSignature.Policy
     ) throws {
@@ -1113,7 +1418,7 @@ public struct SelfUpdater: Sendable {
             executable: executable,
             signaturePolicy: signaturePolicy
         )
-        let marker = app.appendingPathComponent(
+        let marker = runtimeBundle.appendingPathComponent(
             PackagedRuntimeSmoke.pagedCapabilityRelativePath)
         let markerPresent = fileManager.fileExists(atPath: marker.path)
         let binary = try Data(contentsOf: executable, options: [.mappedIfSafe])
@@ -1137,7 +1442,7 @@ public struct SelfUpdater: Sendable {
                 "paged runtime capability marker is invalid")
         }
 
-        let resourceRoot = app.appendingPathComponent(
+        let resourceRoot = runtimeBundle.appendingPathComponent(
             "Contents/Resources",
             isDirectory: true)
         let bundles = try fileManager.contentsOfDirectory(

@@ -14,7 +14,7 @@ the operator procedure is [`../operations/model-migration.md`](../operations/mod
 Produced by `darkbloom-publish hash` (`provider-swift/Sources/darkbloom-publish/HashCommand.swift`
 → `ManifestBuilder.build` in `provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift`);
 decoded on the coordinator as `store.ModelManifest` (`coordinator/store/interface.go`)
-and validated by `validateModelManifest` (`coordinator/api/model_registry_handlers.go`).
+and validated by `validateModelManifest` (`coordinator/api/model_manifest_contract.go`).
 
 | Field | Type | Constraint (coordinator) | Notes |
 |---|---|---|---|
@@ -27,6 +27,18 @@ and validated by `validateModelManifest` (`coordinator/api/model_registry_handle
 | `file_count` | integer | equals `len(files)`; `files` non-empty | |
 | `files` | array of `ManifestFile` | paths unique (case-insensitive) | |
 | `created_at` | string (ISO 8601) | not validated | written by the builder |
+
+Schema-v1 manifests have one transport/structure contract on every ingestion
+path (coordinator registration, provider catalog fetch, and direct CDN fetch):
+
+- encoded `manifest.json` is at most 1 MiB (the boundary is inclusive);
+- `file_count` and `files.count` must match and be in `1...16384`;
+- `total_size_bytes` and every `size_bytes` are nonnegative;
+- the checked sum of file sizes must not overflow signed 64-bit and must equal
+  `total_size_bytes`.
+
+Readers stream at most the byte limit plus one sentinel byte, so a missing or
+incorrect `Content-Length` cannot cause an unbounded allocation.
 
 ### `ManifestFile`
 
@@ -50,7 +62,7 @@ and validated by `validateModelManifest` (`coordinator/api/model_registry_handle
 
 `aggregate_sha256` = hex(SHA-256(concat(raw 32-byte digest of each file, files
 sorted by `path` ascending))). Implemented identically in
-`aggregateManifestFileHashes` (`coordinator/api/model_registry_handlers.go`),
+`aggregateManifestFileHashes` (`coordinator/api/model_manifest_contract.go`),
 `ManifestBuilder.build`, and `WeightHasher.hashFilesWithRelativeKey`
 (`provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift`), which the
 provider runs after download. The same value is the catalog `weight_hash`.
@@ -100,11 +112,13 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 Server-side sequence, in order; any failure before step 5 persists nothing:
 
 1. Alias-collision guard: `GetModelAlias(model_id)` found → `409`.
-2. `GET <cdn>/<r2_prefix>/manifest.json` (30 s timeout, 10 MiB limit) →
+2. `GET <cdn>/<r2_prefix>/manifest.json` (30 s timeout, 1 MiB limit) →
    `400 failed to fetch manifest` on any non-2xx.
 3. `validateModelManifest` (table above) → `400`.
 4. `HEAD` every file with 8 workers, comparing `Content-Length` to `size_bytes`
-   (`verifyManifestFiles`) → `400 manifest file verification failed`.
+   (`verifyManifestFiles` in `coordinator/api/model_manifest_fetch.go`) → `400 manifest file verification failed`. If a successful
+   HEAD omits `Content-Length`, files up to 64 MiB are GET-streamed and counted
+   with a fixed bound; larger unknown-length objects are rejected.
 5. `SetModelVersion` writes the entry (`status = "beta"`), version
    (`status = "ready"`, `uploaded_by` = key name), and file rows in one
    transaction.

@@ -8,11 +8,16 @@
 /// provider the user explicitly stopped; `start` re-enables it.
 
 import Foundation
+import ProviderCoreFoundation
 
 public enum LaunchAgent: Sendable {
 
-    public static let label = "io.darkbloom.provider"
-    private static let legacyLabels = ["dev.darkbloom.provider"]
+    /// Labels single-sourced from `DarkbloomServiceLabels` in
+    /// ProviderCoreFoundation — the Darkbloom macOS app resolves the same
+    /// install state when choosing between `restart` and `start --all`, and a
+    /// drifted label would fork that decision silently.
+    public static let label = DarkbloomServiceLabels.providerLaunchAgent
+    private static let legacyLabels = DarkbloomServiceLabels.providerLaunchAgentLegacy
 
     /// Canonical + legacy labels the provider may be registered under (the
     /// watchdog probes all of them).
@@ -22,9 +27,7 @@ public enum LaunchAgent: Sendable {
 
     /// Path to the launchd plist: ~/Library/LaunchAgents/io.darkbloom.provider.plist
     public static func plistPath() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents")
-            .appendingPathComponent("\(label).plist")
+        DarkbloomServiceLabels.launchAgentPlistPath(label: label)
     }
 
     /// Path to the provider log file: ~/.darkbloom/provider.log
@@ -113,8 +116,9 @@ public enum LaunchAgent: Sendable {
         configPath: URL? = nil,
         localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
     ) throws {
-        // Determine the binary path (current executable)
-        let binaryPath = currentExecutablePath()
+        // Persist only the canonical managed app CLI. Deriving this from the
+        // current process could pin launchd to Downloads or App Translocation.
+        let binaryPath = try LaunchctlControl.managedExecutablePath()
 
         // If already loaded, unload first so we pick up plist changes.
         if isLoaded() {
@@ -531,12 +535,6 @@ public enum LaunchAgent: Sendable {
                 throw LaunchAgentError.bootoutFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
             }
         }
-    }
-
-    /// Resolve the current executable path. Falls back to ~/.darkbloom/bin/darkbloom.
-    /// Shared with `WatchdogAgent` via `LaunchctlControl`.
-    private static func currentExecutablePath() -> String {
-        LaunchctlControl.currentExecutablePath()
     }
 
 }

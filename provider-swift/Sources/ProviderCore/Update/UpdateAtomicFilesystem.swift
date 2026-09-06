@@ -7,6 +7,11 @@ import Glibc
 #endif
 
 enum UpdateAtomicFilesystem {
+    enum DurabilitySyncResult: Equatable {
+        case success
+        case failure(Int32)
+    }
+
     static func writeJSON<T: Encodable>(_ value: T, to destination: URL) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -44,9 +49,7 @@ enum UpdateAtomicFilesystem {
                 pointer = pointer.advanced(by: count)
             }
         }
-        guard fsync(descriptor) == 0 else {
-            throw filesystemError("fsync \(temporary.path)")
-        }
+        try syncRegularFile(descriptor, path: temporary.path)
         guard rename(temporary.path, destination.path) == 0 else {
             throw filesystemError("rename \(temporary.path) -> \(destination.path)")
         }
@@ -218,9 +221,8 @@ enum UpdateAtomicFilesystem {
             if values.isRegularFile == true {
                 let descriptor = open(entry.path, O_RDONLY | O_CLOEXEC)
                 guard descriptor >= 0 else { throw filesystemError("open \(entry.path)") }
-                let result = fsync(descriptor)
-                _ = close(descriptor)
-                guard result == 0 else { throw filesystemError("fsync \(entry.path)") }
+                defer { _ = close(descriptor) }
+                try syncRegularFile(descriptor, path: entry.path)
             } else if values.isDirectory == true {
                 directories.append(entry)
             }
@@ -257,20 +259,104 @@ enum UpdateAtomicFilesystem {
         guard descriptor >= 0 else {
             throw filesystemError("open directory \(directory.path)")
         }
-        let result = fsync(descriptor)
-        let code = errno
+        let result = retrying {
+            captureSystemCall {
+                fsync(descriptor)
+            }
+        }
         _ = close(descriptor)
-        guard result == 0 else {
-            errno = code
-            throw filesystemError("fsync directory \(directory.path)")
+        if case .failure(let code) = result {
+            throw filesystemError(
+                "fsync directory \(directory.path)",
+                code: code
+            )
         }
     }
 
+    static func synchronizeRegularFile(
+        fullSync: (() -> DurabilitySyncResult)?,
+        fallbackSync: () -> DurabilitySyncResult,
+        operation: String
+    ) throws {
+        if let fullSync {
+            switch retrying(fullSync) {
+            case .success:
+                return
+            case .failure(let code):
+                // Darwin's F_FULLFSYNC is the durability contract. Falling
+                // back after it fails would turn a power-loss-safe commit into
+                // an ordinary cache flush while reporting success.
+                throw filesystemError(operation, code: code)
+            }
+        }
+
+        if case .failure(let code) = retrying(fallbackSync) {
+            throw filesystemError(operation, code: code)
+        }
+    }
+
+    private static func syncRegularFile(
+        _ descriptor: Int32,
+        path: String
+    ) throws {
+        #if canImport(Darwin)
+        let fullSync: (() -> DurabilitySyncResult)? = {
+            captureFcntlCall {
+                fcntl(descriptor, F_FULLFSYNC)
+            }
+        }
+        #else
+        let fullSync: (() -> DurabilitySyncResult)? = nil
+        #endif
+        try synchronizeRegularFile(
+            fullSync: fullSync,
+            fallbackSync: {
+                captureSystemCall {
+                    fsync(descriptor)
+                }
+            },
+            operation: "fsync regular file \(path)"
+        )
+    }
+
+    private static func retrying(
+        _ operation: () -> DurabilitySyncResult
+    ) -> DurabilitySyncResult {
+        while true {
+            let result = operation()
+            if result == .failure(EINTR) {
+                continue
+            }
+            return result
+        }
+    }
+
+    private static func captureSystemCall(
+        _ operation: () -> Int32
+    ) -> DurabilitySyncResult {
+        operation() == 0 ? .success : .failure(errno)
+    }
+
+    #if canImport(Darwin)
+    private static func captureFcntlCall(
+        _ operation: () -> Int32
+    ) -> DurabilitySyncResult {
+        operation() == -1 ? .failure(errno) : .success
+    }
+    #endif
+
     private static func filesystemError(_ operation: String) -> Error {
+        filesystemError(operation, code: errno)
+    }
+
+    private static func filesystemError(
+        _ operation: String,
+        code: Int32
+    ) -> Error {
         NSError(
             domain: NSPOSIXErrorDomain,
-            code: Int(errno),
-            userInfo: [NSLocalizedDescriptionKey: "\(operation): \(String(cString: strerror(errno)))"]
+            code: Int(code),
+            userInfo: [NSLocalizedDescriptionKey: "\(operation): \(String(cString: strerror(code)))"]
         )
     }
 }

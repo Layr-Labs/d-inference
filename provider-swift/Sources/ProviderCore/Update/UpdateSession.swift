@@ -1,15 +1,23 @@
 import Foundation
+import ProviderCoreFoundation
 
 extension SelfUpdater {
-    /// A cross-process update lease. Holding a session is mandatory for every
-    /// stage, commit, recovery, or rollback mutation.
+    /// A cross-process update lease. Holding a session is mandatory for live
+    /// install mutation, journal recovery, state transition, and rollback.
+    /// Download/extraction/verification staging is intentionally lease-free.
     public final class UpdateSession: @unchecked Sendable {
+        let installMutationLock: InstallMutationLock
         let processLock: UpdateProcessLock
         let store: UpdateRecoveryStore
         private let releaseMutex = NSLock()
         private var released = false
 
-        init(processLock: UpdateProcessLock, store: UpdateRecoveryStore) {
+        init(
+            installMutationLock: InstallMutationLock,
+            processLock: UpdateProcessLock,
+            store: UpdateRecoveryStore
+        ) {
+            self.installMutationLock = installMutationLock
             self.processLock = processLock
             self.store = store
         }
@@ -24,6 +32,7 @@ extension SelfUpdater {
             guard !released else { return }
             released = true
             processLock.release()
+            installMutationLock.release()
         }
 
         func recover(now: Double = Date().timeIntervalSince1970) throws {

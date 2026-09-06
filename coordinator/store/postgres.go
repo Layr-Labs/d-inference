@@ -144,6 +144,62 @@ const legacyCacheAffinityScrubMigration = `DO $$ BEGIN
 	END IF;
 END $$`
 
+const earningsSummaryExcludeBaseRewardJobsMigration = `DO $$ BEGIN
+	-- Serialize concurrent coordinator startups before checking the one-shot
+	-- marker. Block earning writers while the two summary projections are
+	-- rebuilt so no credit can land between an aggregate snapshot and its
+	-- absolute upsert.
+	LOCK TABLE schema_migrations IN SHARE ROW EXCLUSIVE MODE;
+	IF NOT EXISTS (
+		SELECT 1 FROM schema_migrations
+		WHERE id = 'earnings_summary_exclude_base_reward_jobs_v1'
+	) THEN
+		LOCK TABLE provider_earnings IN SHARE MODE;
+		LOCK TABLE earnings_summary IN SHARE ROW EXCLUSIVE MODE;
+
+		INSERT INTO earnings_summary (
+			key, key_type, total_count, total_micro_usd,
+			total_prompt_tokens, total_completion_tokens, updated_at
+		)
+		SELECT account_id, 'account',
+		       COUNT(*) FILTER (WHERE model <> 'base_reward'),
+		       COALESCE(SUM(amount_micro_usd), 0),
+		       COALESCE(SUM(prompt_tokens), 0),
+		       COALESCE(SUM(completion_tokens), 0), NOW()
+		  FROM provider_earnings
+		 WHERE account_id <> ''
+		 GROUP BY account_id
+		ON CONFLICT (key, key_type) DO UPDATE SET
+			total_count = EXCLUDED.total_count,
+			total_micro_usd = EXCLUDED.total_micro_usd,
+			total_prompt_tokens = EXCLUDED.total_prompt_tokens,
+			total_completion_tokens = EXCLUDED.total_completion_tokens,
+			updated_at = NOW();
+
+		INSERT INTO earnings_summary (
+			key, key_type, total_count, total_micro_usd,
+			total_prompt_tokens, total_completion_tokens, updated_at
+		)
+		SELECT provider_key, 'provider',
+		       COUNT(*) FILTER (WHERE model <> 'base_reward'),
+		       COALESCE(SUM(amount_micro_usd), 0),
+		       COALESCE(SUM(prompt_tokens), 0),
+		       COALESCE(SUM(completion_tokens), 0), NOW()
+		  FROM provider_earnings
+		 WHERE provider_key <> ''
+		 GROUP BY provider_key
+		ON CONFLICT (key, key_type) DO UPDATE SET
+			total_count = EXCLUDED.total_count,
+			total_micro_usd = EXCLUDED.total_micro_usd,
+			total_prompt_tokens = EXCLUDED.total_prompt_tokens,
+			total_completion_tokens = EXCLUDED.total_completion_tokens,
+			updated_at = NOW();
+
+		INSERT INTO schema_migrations (id)
+		VALUES ('earnings_summary_exclude_base_reward_jobs_v1');
+	END IF;
+END $$`
+
 // migrate runs the schema creation statements.
 func (s *PostgresStore) migrate(ctx context.Context) error {
 	migrations := []string{
@@ -563,6 +619,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			runtime_hash TEXT NOT NULL DEFAULT '',
 			template_hashes TEXT NOT NULL DEFAULT '',
 			grpc_binary_hash TEXT NOT NULL DEFAULT '',
+			has_app BOOLEAN,
+			has_fan_helper BOOLEAN,
+			has_paged_kernel BOOLEAN,
 			url TEXT NOT NULL DEFAULT '',
 			changelog TEXT NOT NULL DEFAULT '',
 			active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -597,6 +656,18 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			ALTER TABLE releases ADD COLUMN IF NOT EXISTS grpc_binary_hash TEXT NOT NULL DEFAULT '';
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
+		`DO $$ BEGIN
+			ALTER TABLE releases ADD COLUMN IF NOT EXISTS has_app BOOLEAN;
+			EXCEPTION WHEN others THEN NULL;
+			END $$`,
+		`DO $$ BEGIN
+			ALTER TABLE releases ADD COLUMN IF NOT EXISTS has_fan_helper BOOLEAN;
+			EXCEPTION WHEN others THEN NULL;
+			END $$`,
+		`DO $$ BEGIN
+			ALTER TABLE releases ADD COLUMN IF NOT EXISTS has_paged_kernel BOOLEAN;
+			EXCEPTION WHEN others THEN NULL;
+			END $$`,
 		// Drop deprecated image_bridge_hash column. Image generation is no longer
 		// a first-class capability; the hash is meaningless. The DROP is wrapped
 		// in a DO block so it's safe to re-run on databases that already lack it.
@@ -675,7 +746,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// Backfill earnings_summary from existing provider_earnings rows.
 		// The INSERT ... ON CONFLICT DO NOTHING ensures this only runs once per key.
 		`INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		 SELECT account_id, 'account', COUNT(*), COALESCE(SUM(amount_micro_usd), 0),
+		 SELECT account_id, 'account', COUNT(*) FILTER (WHERE model <> 'base_reward'), COALESCE(SUM(amount_micro_usd), 0),
 		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), NOW()
 		 FROM provider_earnings
 		 WHERE account_id != ''
@@ -683,12 +754,17 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		 ON CONFLICT (key, key_type) DO NOTHING`,
 
 		`INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		 SELECT provider_key, 'provider', COUNT(*), COALESCE(SUM(amount_micro_usd), 0),
+		 SELECT provider_key, 'provider', COUNT(*) FILTER (WHERE model <> 'base_reward'), COALESCE(SUM(amount_micro_usd), 0),
 		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), NOW()
 		 FROM provider_earnings
 		 WHERE provider_key != ''
 		 GROUP BY provider_key
 		 ON CONFLICT (key, key_type) DO NOTHING`,
+
+		// Repair summaries created before base rewards were excluded from job
+		// counts. Money still includes base rewards; only inference work counts as
+		// a job. The migration locks earning writers around its absolute rebuild.
+		earningsSummaryExcludeBaseRewardJobsMigration,
 
 		// Provider payouts — wallet-based payout history for unlinked providers
 		`CREATE TABLE IF NOT EXISTS provider_payouts (
@@ -3563,16 +3639,21 @@ func (s *PostgresStore) ListStripeWithdrawalsForStripeAccount(stripeAccountID, s
 // --- Releases ---
 
 func (s *PostgresStore) SetRelease(release *Release) error {
+	if err := validateReleaseIdentity(release); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO releases (version, platform, backend, binary_hash, bundle_hash, metallib_hash, python_hash, runtime_hash, template_hashes, url, changelog, active, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, NOW())
+		`INSERT INTO releases (version, platform, backend, binary_hash, bundle_hash, metallib_hash, python_hash, runtime_hash, template_hashes, has_app, has_fan_helper, has_paged_kernel, url, changelog, active, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, TRUE, NOW())
 		 ON CONFLICT (version, platform) DO UPDATE SET
-		   backend = $3, binary_hash = $4, bundle_hash = $5, metallib_hash = $6, python_hash = $7, runtime_hash = $8, template_hashes = $9, url = $10, changelog = $11, active = TRUE`,
+		   backend = $3, binary_hash = $4, bundle_hash = $5, metallib_hash = $6, python_hash = $7, runtime_hash = $8, template_hashes = $9,
+		   has_app = $10, has_fan_helper = $11, has_paged_kernel = $12, url = $13, changelog = $14, active = TRUE`,
 		release.Version, release.Platform, release.Backend, release.BinaryHash, release.BundleHash,
 		release.MetallibHash, release.PythonHash, release.RuntimeHash, release.TemplateHashes,
+		release.HasApp, release.HasFanHelper, release.HasPagedKernel,
 		release.URL, release.Changelog,
 	)
 	if err != nil {
@@ -3593,7 +3674,7 @@ func (s *PostgresStore) ListReleasesWithError() ([]Release, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT version, platform, COALESCE(backend, ''), binary_hash, bundle_hash, COALESCE(metallib_hash, ''),
 		        COALESCE(python_hash, ''), COALESCE(runtime_hash, ''), COALESCE(template_hashes, ''),
-		        url, changelog, active, created_at
+		        has_app, has_fan_helper, has_paged_kernel, url, changelog, active, created_at
 		 FROM releases ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -3606,6 +3687,7 @@ func (s *PostgresStore) ListReleasesWithError() ([]Release, error) {
 		var r Release
 		if err := rows.Scan(&r.Version, &r.Platform, &r.Backend, &r.BinaryHash, &r.BundleHash, &r.MetallibHash,
 			&r.PythonHash, &r.RuntimeHash, &r.TemplateHashes,
+			&r.HasApp, &r.HasFanHelper, &r.HasPagedKernel,
 			&r.URL, &r.Changelog, &r.Active, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("store: scan release: %w", err)
 		}
@@ -3624,7 +3706,7 @@ func (s *PostgresStore) GetLatestRelease(platform string) *Release {
 	rows, err := s.pool.Query(ctx,
 		`SELECT version, platform, COALESCE(backend, ''), binary_hash, bundle_hash, COALESCE(metallib_hash, ''),
 		        COALESCE(python_hash, ''), COALESCE(runtime_hash, ''), COALESCE(template_hashes, ''),
-		        url, changelog, active, created_at
+		        has_app, has_fan_helper, has_paged_kernel, url, changelog, active, created_at
 		 FROM releases WHERE platform = $1 AND active = TRUE`, platform,
 	)
 	if err != nil {
@@ -3637,12 +3719,18 @@ func (s *PostgresStore) GetLatestRelease(platform string) *Release {
 		var r Release
 		if err := rows.Scan(&r.Version, &r.Platform, &r.Backend, &r.BinaryHash, &r.BundleHash, &r.MetallibHash,
 			&r.PythonHash, &r.RuntimeHash, &r.TemplateHashes,
+			&r.HasApp, &r.HasFanHelper, &r.HasPagedKernel,
 			&r.URL, &r.Changelog, &r.Active, &r.CreatedAt); err != nil {
 			return nil
 		}
-		if latest == nil ||
-			releaseVersionGreater(r.Version, latest.Version) ||
-			(r.Version == latest.Version && r.CreatedAt.After(latest.CreatedAt)) {
+		if latest == nil {
+			copy := r
+			latest = &copy
+			continue
+		}
+		comparison := compareReleaseVersions(r.Version, latest.Version)
+		if comparison > 0 ||
+			(comparison == 0 && r.CreatedAt.After(latest.CreatedAt)) {
 			copy := r
 			latest = &copy
 		}
@@ -3735,6 +3823,87 @@ func (s *PostgresStore) ApproveDeviceCode(deviceCode, accountID string) error {
 	return nil
 }
 
+func (s *PostgresStore) ConsumeDeviceGrant(deviceCode, tokenHash string) (*ProviderToken, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: begin device grant exchange: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var (
+		userCode  string
+		accountID string
+		status    string
+		expired   bool
+	)
+	err = tx.QueryRow(ctx,
+		`SELECT user_code, account_id, status, expires_at <= NOW()
+		   FROM device_codes
+		  WHERE device_code = $1
+		  FOR UPDATE`,
+		deviceCode,
+	).Scan(&userCode, &accountID, &status, &expired)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("store: device grant: %w", ErrNotFound)
+		}
+		return nil, fmt.Errorf("store: lock device grant: %w", err)
+	}
+	if expired {
+		return nil, fmt.Errorf("store: device grant %q: %w", userCode, ErrDeviceCodeExpired)
+	}
+	switch status {
+	case "pending":
+		return nil, fmt.Errorf("store: device grant %q: %w", userCode, ErrDeviceAuthorizationPending)
+	case "approved":
+		// Continue below.
+	default:
+		return nil, fmt.Errorf("store: device grant %q: %w", userCode, ErrDeviceGrantConsumed)
+	}
+	if accountID == "" {
+		return nil, errors.New("store: approved device grant has no account")
+	}
+	if tokenHash == "" {
+		return nil, errors.New("store: provider token hash is required")
+	}
+
+	pt := &ProviderToken{
+		TokenHash: tokenHash,
+		AccountID: accountID,
+		Label:     "device-" + userCode,
+		Active:    true,
+	}
+	err = tx.QueryRow(ctx,
+		`INSERT INTO provider_tokens (token_hash, account_id, label, active)
+		 VALUES ($1, $2, $3, TRUE)
+		 RETURNING created_at`,
+		pt.TokenHash, pt.AccountID, pt.Label,
+	).Scan(&pt.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("store: issue provider token: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE device_codes
+		    SET status = 'consumed'
+		  WHERE device_code = $1 AND status = 'approved'`,
+		deviceCode,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: consume device grant: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return nil, errors.New("store: approved device grant changed while locked")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: commit device grant exchange: %w", err)
+	}
+	return pt, nil
+}
+
 func (s *PostgresStore) DeleteExpiredDeviceCodes() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -3774,26 +3943,34 @@ func (s *PostgresStore) GetProviderToken(token string) (*ProviderToken, error) {
 		 FROM provider_tokens WHERE token_hash = $1 AND active = TRUE`, h,
 	).Scan(&pt.TokenHash, &pt.AccountID, &pt.Label, &pt.Active, &pt.CreatedAt)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("store: provider token: %w", ErrNotFound)
+		}
 		return nil, fmt.Errorf("store: provider token not found: %w", err)
 	}
 	return &pt, nil
 }
 
-func (s *PostgresStore) RevokeProviderToken(token string) error {
+func (s *PostgresStore) RevokeProviderToken(token string) (*ProviderToken, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	h := hashKey(token)
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE provider_tokens SET active = FALSE WHERE token_hash = $1`, h,
-	)
+	var pt ProviderToken
+	err := s.pool.QueryRow(ctx,
+		`UPDATE provider_tokens
+		    SET active = FALSE
+		  WHERE token_hash = $1
+		RETURNING token_hash, account_id, label, active, created_at`,
+		h,
+	).Scan(&pt.TokenHash, &pt.AccountID, &pt.Label, &pt.Active, &pt.CreatedAt)
 	if err != nil {
-		return fmt.Errorf("store: revoke provider token: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("store: provider token: %w", ErrNotFound)
+		}
+		return nil, fmt.Errorf("store: revoke provider token: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return errors.New("provider token not found")
-	}
-	return nil
+	return &pt, nil
 }
 
 // --- Invite Codes ---
@@ -4020,6 +4197,18 @@ func (s *PostgresStore) GetAccountEarnings(accountID string, limit int) ([]Provi
 	return results, nil
 }
 
+func scanEarningsSummary(row pgx.Row) (ProviderEarningsSummary, error) {
+	var summary ProviderEarningsSummary
+	err := row.Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ProviderEarningsSummary{}, ErrNotFound
+	}
+	if err != nil {
+		return ProviderEarningsSummary{}, err
+	}
+	return summary, nil
+}
+
 // GetProviderEarningsSummary returns lifetime aggregates for a provider node.
 // Reads from the materialized earnings_summary table (PK lookup) instead of
 // scanning all provider_earnings rows.
@@ -4027,18 +4216,15 @@ func (s *PostgresStore) GetProviderEarningsSummary(providerKey string) (Provider
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var summary ProviderEarningsSummary
-	err := s.pool.QueryRow(ctx,
+	summary, err := scanEarningsSummary(s.pool.QueryRow(ctx,
 		`SELECT total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens
 		 FROM earnings_summary
 		 WHERE key = $1 AND key_type = 'provider'`,
 		providerKey,
-	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens)
+	))
 	if err != nil {
-		// No rows = no earnings yet, return zeros (not an error).
-		return ProviderEarningsSummary{}, nil
+		return ProviderEarningsSummary{}, fmt.Errorf("store: provider earnings summary %q: %w", providerKey, err)
 	}
-
 	return summary, nil
 }
 
@@ -4049,18 +4235,15 @@ func (s *PostgresStore) GetAccountEarningsSummary(accountID string) (ProviderEar
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var summary ProviderEarningsSummary
-	err := s.pool.QueryRow(ctx,
+	summary, err := scanEarningsSummary(s.pool.QueryRow(ctx,
 		`SELECT total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens
 		 FROM earnings_summary
 		 WHERE key = $1 AND key_type = 'account'`,
 		accountID,
-	).Scan(&summary.Count, &summary.TotalMicroUSD, &summary.PromptTokens, &summary.CompletionTokens)
+	))
 	if err != nil {
-		// No rows = no earnings yet, return zeros (not an error).
-		return ProviderEarningsSummary{}, nil
+		return ProviderEarningsSummary{}, fmt.Errorf("store: account earnings summary %q: %w", accountID, err)
 	}
-
 	return summary, nil
 }
 
@@ -4139,6 +4322,17 @@ func (s *PostgresStore) SettleProviderPayout(id int64) error {
 // all in one round trip. The old implementation used 6 sequential round trips
 // (BEGIN + upsert + SELECT balance + INSERT ledger + INSERT earning + COMMIT).
 func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
+	return s.creditProviderAccount("", earning)
+}
+
+func (s *PostgresStore) CreditProviderAccountIfTokenActive(tokenHash string, earning *ProviderEarning) error {
+	if tokenHash == "" {
+		return ErrProviderTokenInactive
+	}
+	return s.creditProviderAccount(tokenHash, earning)
+}
+
+func (s *PostgresStore) creditProviderAccount(tokenHash string, earning *ProviderEarning) error {
 	if earning == nil {
 		return errors.New("provider earning is required")
 	}
@@ -4155,13 +4349,28 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	// — no balance bump, no ledger row, no summary bump. The outer COALESCE keeps
 	// the query returning exactly one row even on a duplicate.
 	var balanceAfter int64
+	var authorized bool
 	err := s.pool.QueryRow(ctx, `
-		WITH earning AS (
+		WITH token_authorized AS (
+			SELECT account_id
+			  FROM provider_tokens
+			 WHERE token_hash = $11
+			   AND active = TRUE
+			   AND account_id = $1
+			   AND $11 <> ''
+			   FOR UPDATE
+		), authorized AS (
+			SELECT $1::text AS account_id WHERE $11::text = ''
+			UNION ALL
+			SELECT account_id FROM token_authorized
+		), earning AS (
 			INSERT INTO provider_earnings (
 				account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
-			) VALUES ($1, $6, $7, $4, $8, $2, $9, $10, COALESCE($5::timestamptz, NOW()))
+			)
+			SELECT account_id, $6, $7, $4, $8, $2, $9, $10, COALESCE($5::timestamptz, NOW())
+			  FROM authorized
 			ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
-			RETURNING account_id, provider_key, amount_micro_usd, prompt_tokens, completion_tokens
+			RETURNING account_id, provider_key, model, amount_micro_usd, prompt_tokens, completion_tokens
 		), credit AS (
 			INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
 			SELECT account_id, amount_micro_usd, amount_micro_usd, NOW() FROM earning
@@ -4176,25 +4385,28 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 			FROM earning e CROSS JOIN credit c
 		), summary_account AS (
 			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT account_id, 'account', 1, amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
+			SELECT account_id, 'account', CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END,
+			       amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
 			ON CONFLICT (key, key_type) DO UPDATE SET
-			  total_count = earnings_summary.total_count + 1,
+			  total_count = earnings_summary.total_count + EXCLUDED.total_count,
 			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
 			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
 			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
 			  updated_at = NOW()
 		), summary_provider AS (
 			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT provider_key, 'provider', 1, amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
+			SELECT provider_key, 'provider', CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END,
+			       amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
 			WHERE provider_key <> ''
 			ON CONFLICT (key, key_type) DO UPDATE SET
-			  total_count = earnings_summary.total_count + 1,
+			  total_count = earnings_summary.total_count + EXCLUDED.total_count,
 			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
 			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
 			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
 			  updated_at = NOW()
 		)
-		SELECT COALESCE((SELECT balance_micro_usd FROM credit), 0)`,
+		SELECT EXISTS(SELECT 1 FROM authorized),
+		       COALESCE((SELECT balance_micro_usd FROM credit), 0)`,
 		earning.AccountID,                    // $1
 		earning.AmountMicroUSD,               // $2
 		string(LedgerPayout),                 // $3
@@ -4205,9 +4417,13 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 		earning.Model,                        // $8
 		earning.PromptTokens,                 // $9
 		earning.CompletionTokens,             // $10
-	).Scan(&balanceAfter)
+		tokenHash,                            // $11
+	).Scan(&authorized, &balanceAfter)
 	if err != nil {
 		return fmt.Errorf("store: credit provider account: %w", err)
+	}
+	if !authorized {
+		return ErrProviderTokenInactive
 	}
 	return nil
 }
@@ -5568,6 +5784,59 @@ func (s *PostgresStore) TouchProviderSession(ctx context.Context, sessionID, ser
 		return fmt.Errorf("store: touch provider session: %w", err)
 	}
 	return nil
+}
+
+func (s *PostgresStore) ListProviderSessionIdentities(
+	ctx context.Context,
+	accountID string,
+	providerKeys []string,
+) ([]ProviderSessionIdentity, error) {
+	if accountID == "" || len(providerKeys) == 0 {
+		return []ProviderSessionIdentity{}, nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		WITH candidates AS (
+			SELECT session_id, provider_key, serial_number, last_seen, 0 AS source_rank
+			  FROM provider_sessions
+			 WHERE account_id = $1
+			   AND provider_key = ANY($2)
+			   AND provider_key <> ''
+			   AND serial_number <> ''
+			UNION ALL
+			SELECT id, public_key, serial_number, last_seen, 1 AS source_rank
+			  FROM providers
+			 WHERE account_id = $1
+			   AND public_key = ANY($2)
+			   AND public_key <> ''
+			   AND serial_number <> ''
+		)
+		SELECT DISTINCT ON (provider_key) session_id, provider_key, serial_number
+		  FROM candidates
+		 ORDER BY provider_key, source_rank, last_seen DESC`,
+		accountID, providerKeys,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list provider session identities: %w", err)
+	}
+	defer rows.Close()
+
+	identities := make([]ProviderSessionIdentity, 0, len(providerKeys))
+	for rows.Next() {
+		var identity ProviderSessionIdentity
+		if err := rows.Scan(
+			&identity.SessionID,
+			&identity.ProviderKey,
+			&identity.SerialNumber,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan provider session identity: %w", err)
+		}
+		identities = append(identities, identity)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate provider session identities: %w", err)
+	}
+	return identities, nil
 }
 
 // CloseProviderSession marks the session for sessionID as ended. Implemented as

@@ -1,8 +1,9 @@
 /// Shared `/bin/launchctl` plumbing for the provider's launchd agents
 /// (`LaunchAgent`, `WatchdogAgent`) and the watchdog probe: target strings,
-/// process spawn + output capture, and executable-path resolution.
+/// process spawn + output capture, and managed executable-path persistence.
 
 import Foundation
+import ProviderCoreFoundation
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -70,18 +71,26 @@ enum LaunchctlControl {
         run(["print", target(label: label, uid: uid)], captureStdout: true)
     }
 
-    /// Path of the running executable; falls back to the canonical install path.
-    static func currentExecutablePath() -> String {
-        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        var size = UInt32(MAXPATHLEN)
-        if _NSGetExecutablePath(&buffer, &size) == 0 {
-            if let resolved = realpath(buffer, nil) {
-                defer { free(resolved) }
-                return String(cString: resolved)
-            }
-            return String(cString: buffer)
+    /// Persist the validated nested managed CLI, or a valid legacy flat CLI.
+    /// Reject malformed installs before writing or reloading a LaunchAgent.
+    ///
+    /// In particular, do not derive this from `_NSGetExecutablePath` or
+    /// `realpath`: a CLI started from Downloads or App Translocation would
+    /// otherwise survive in a LaunchAgent plist after the source app exits.
+    static func managedExecutablePath(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) throws -> String {
+        guard let executable = ManagedProviderCLIPathValidator().validatedCLIURL(
+            homeDirectory: homeDirectory
+        ) else {
+            throw ManagedExecutableUnavailable()
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom/bin/darkbloom").path
+        return executable.path
+    }
+
+    struct ManagedExecutableUnavailable: LocalizedError {
+        var errorDescription: String? {
+            "The managed Darkbloom CLI is missing or has an unsafe path. Reinstall Darkbloom before starting the provider."
+        }
     }
 }

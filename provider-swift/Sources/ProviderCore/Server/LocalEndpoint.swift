@@ -1,6 +1,6 @@
 import Crypto
-import Darwin
 import Foundation
+import ProviderCoreFoundation
 
 /// Token + discovery-file management for **direct/local mode** — the
 /// `darkbloom start --local` OpenAI-compatible server that a consumer on the
@@ -21,16 +21,12 @@ public enum LocalEndpoint {
 
     // MARK: - Directory
 
-    static func directory() -> URL {
-        if let override = ProcessInfo.processInfo.environment["DARKBLOOM_LOCAL_DIR"], !override.isEmpty {
-            return URL(fileURLWithPath: override, isDirectory: true)
-        }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".darkbloom", isDirectory: true)
-    }
+    /// Paths single-sourced from `LocalEndpointDiscovery` in
+    /// ProviderCoreFoundation — the app decodes the same `local.json`.
+    static func directory() -> URL { LocalEndpointDiscovery.directory() }
 
-    static func tokenPath() -> URL { directory().appendingPathComponent("local_token") }
-    static func infoPath() -> URL { directory().appendingPathComponent("local.json") }
+    static func tokenPath() -> URL { LocalEndpointDiscovery.tokenPath() }
+    static func infoPath() -> URL { LocalEndpointDiscovery.infoPath() }
 
     // MARK: - Token
 
@@ -62,40 +58,10 @@ public enum LocalEndpoint {
 
     // MARK: - Discovery file
 
-    /// Discovery metadata written by the running local server and read by
-    /// clients to locate + authenticate to it.
-    public struct Info: Codable, Sendable, Equatable {
-        public var baseURL: String
-        public var apiKey: String
-        public var host: String
-        public var port: UInt16
-        public var pid: Int32
-        public var version: String
-        public var updatedAt: String
-
-        enum CodingKeys: String, CodingKey {
-            case baseURL = "base_url"
-            case apiKey = "api_key"
-            case host
-            case port
-            case pid
-            case version
-            case updatedAt = "updated_at"
-        }
-
-        public init(host: String, port: UInt16, apiKey: String, version: String, pid: Int32, updatedAt: String) {
-            // For a client URL, an unspecified bind (0.0.0.0) is not dialable;
-            // present loopback so same-machine clients always have a usable URL.
-            let dialHost = (host == "0.0.0.0" || host.isEmpty) ? "127.0.0.1" : host
-            self.baseURL = "http://\(dialHost):\(port)/v1"
-            self.apiKey = apiKey
-            self.host = host
-            self.port = port
-            self.pid = pid
-            self.version = version
-            self.updatedAt = updatedAt
-        }
-    }
+    /// The wire record lives in ProviderCoreFoundation as `LocalEndpointInfo`
+    /// so the Darkbloom macOS app decodes the same contract without linking
+    /// the inference runtime. Kept source-compatible via this alias.
+    public typealias Info = LocalEndpointInfo
 
     /// Write the discovery file (`0600`). Call after the server is listening.
     public static func writeInfo(_ info: Info) throws {
@@ -113,24 +79,12 @@ public enum LocalEndpoint {
         return try? JSONDecoder().decode(Info.self, from: data)
     }
 
-    /// Read the discovery file only if the server process that wrote it is still
-    /// running. Cleanup is best-effort (a Ctrl-C/SIGKILL/crash skips the
-    /// shutdown `defer`), so a stale `local.json` can linger pointing at a dead
-    /// server; the recorded pid is the liveness backstop. Consumers (the
-    /// `darkbloom local` command) use this so they never advertise a dead
-    /// endpoint.
+    /// Read discovery only if its PID + kernel start identity still belongs to
+    /// the exact process that wrote it. Cleanup is best-effort (a
+    /// Ctrl-C/SIGKILL/crash skips the shutdown `defer`), and PIDs can be reused,
+    /// so PID-only legacy records deliberately fail closed.
     public static func readLiveInfo() -> Info? {
-        guard let info = readInfo() else { return nil }
-        return isProcessAlive(info.pid) ? info : nil
-    }
-
-    /// True when a process with `pid` exists and is signalable by this user.
-    static func isProcessAlive(_ pid: Int32) -> Bool {
-        if pid <= 0 { return false }
-        // kill(pid, 0) probes existence without delivering a signal: 0 means
-        // alive; EPERM means alive-but-not-ours (still alive); ESRCH means gone.
-        if kill(pid, 0) == 0 { return true }
-        return errno == EPERM
+        LocalEndpointDiscovery.readLiveInfo()
     }
 
     /// Best-effort removal of the discovery file (on shutdown). The token file

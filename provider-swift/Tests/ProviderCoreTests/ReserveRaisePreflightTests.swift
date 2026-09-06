@@ -24,12 +24,14 @@ struct ReserveRaisePreflightTests {
 
     @Test("refused raise is not advertised, schedules a retry, and advertises once the box has room")
     func refusedRaiseRetriesUntilRoom() async throws {
+        let cache = try PrefetchTestModelCache()
+        defer { try? cache.remove() }
+
         // A budget a slow CI runner cannot exhaust while the box stays tight:
         // every retry while tight is refused again and re-scheduled, so the
         // assertions below hold at any point of that cycle.
         let fixture = try await makeRefusedPrefetch(
-            retryDelays: Array(repeating: .seconds(1), count: 10))
-        defer { try? FileManager.default.removeItem(at: fixture.modelDir) }
+            cache: cache, retryDelays: Array(repeating: .seconds(1), count: 10))
         let loop = fixture.loop
 
         // Room appears (a bigger box stands in for an unload freeing memory):
@@ -50,10 +52,12 @@ struct ReserveRaisePreflightTests {
 
     @Test("refused raise is re-offered by the unload that frees the room, even after the backoff budget")
     func refusedRaiseIsReofferedWhenTheResidentSlotUnloads() async throws {
+        let cache = try PrefetchTestModelCache()
+        defer { try? cache.remove() }
+
         // A backoff far longer than the test: only the capacity-change
         // re-offer can advertise the build inside the timeout below.
-        let fixture = try await makeRefusedPrefetch(retryDelays: [.seconds(600)])
-        defer { try? FileManager.default.removeItem(at: fixture.modelDir) }
+        let fixture = try await makeRefusedPrefetch(cache: cache, retryDelays: [.seconds(600)])
         let loop = fixture.loop
 
         // The resident slot unloads (the idle monitor's job in production):
@@ -74,7 +78,6 @@ struct ReserveRaisePreflightTests {
         let loop: ProviderLoop
         let prefetcher: CountingSuccessPrefetcher
         let newModelID: String
-        let modelDir: URL
     }
 
     /// Box arithmetic, self-checked against the real floors and cap so the
@@ -83,7 +86,9 @@ struct ReserveRaisePreflightTests {
     /// the resident measured slot through the production-shaped load
     /// stretch, reconciles a desired UNMEASURED build, and returns once the
     /// refusal has been observed (build not advertised, one retry pending).
-    private func makeRefusedPrefetch(retryDelays: [Duration]) async throws -> RefusedPrefetchFixture {
+    private func makeRefusedPrefetch(
+        cache: PrefetchTestModelCache, retryDelays: [Duration]
+    ) async throws -> RefusedPrefetchFixture {
         // Production resolves max(env override, floor); the arithmetic below
         // assumes the floors alone, so an operator override in the test
         // environment would fail the resident load loudly but unexplained.
@@ -107,7 +112,7 @@ struct ReserveRaisePreflightTests {
         try #require(budgetUnderResident >= EngineV2KVSizing.minimumServiceableGrantBytes)
         try #require(budgetUnderRaised < EngineV2KVSizing.minimumServiceableGrantBytes)
 
-        let modelDir = try seedSnapshot(modelID: newModelID)
+        try cache.seedSnapshot(modelID: newModelID)
 
         let startup = ModelInfo(
             id: residentModel, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
@@ -130,7 +135,10 @@ struct ReserveRaisePreflightTests {
         let coord = ModelPrefetchCoordinator(
             prefetcher: prefetcher,
             preCheck: { _ in .needsFetch },
-            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+            onVerified: { id in
+                await loop.applyVerifiedPrefetch(
+                    modelId: id, resolveSnapshot: { cache.resolveSnapshot($0) })
+            }
         )
         let send = SendHandle { _ in }
         await loop.installPrefetchCoordinatorForTesting(coord, client: client, send: send)
@@ -153,7 +161,7 @@ struct ReserveRaisePreflightTests {
         #expect(await loop.reserveDeferredPrefetchesForTesting().contains(newModelID))
 
         return RefusedPrefetchFixture(
-            loop: loop, prefetcher: prefetcher, newModelID: newModelID, modelDir: modelDir)
+            loop: loop, prefetcher: prefetcher, newModelID: newModelID)
     }
 
     private func makeHooks(physical: UInt64) -> ProviderLoop.EngineV2SlotHooks {
@@ -161,20 +169,6 @@ struct ReserveRaisePreflightTests {
             eosTokenIds: [2],
             physicalMemoryBytes: physical,
             makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) })
-    }
-
-    /// Seed a minimal valid MLX snapshot (config.json + one .safetensors) in
-    /// the HuggingFace cache so the scanner + WeightHasher can read it.
-    private func seedSnapshot(modelID: String) throws -> URL {
-        let snapshot = ModelDownloader.cacheSnapshotDirectory(for: modelID)
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
-        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
-        let refs = modelDir.appendingPathComponent("refs", isDirectory: true)
-        try FileManager.default.createDirectory(at: refs, withIntermediateDirectories: true)
-        try Data(#"{"model_type":"gpt_oss"}"#.utf8).write(to: snapshot.appendingPathComponent("config.json"))
-        try Data("fake mlx weight bytes".utf8).write(to: snapshot.appendingPathComponent("model.safetensors"))
-        try "local".write(to: refs.appendingPathComponent("main"), atomically: true, encoding: .utf8)
-        return modelDir
     }
 
     private func makeLoop(models: [ModelInfo]) throws -> ProviderLoop {

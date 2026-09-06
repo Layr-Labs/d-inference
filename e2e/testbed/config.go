@@ -173,11 +173,16 @@ func DescribeKVPosture(cfg ProviderConfig) string {
 }
 
 type ProviderConfig struct {
-	TrustLevel                 TrustLevel
-	ModelID                    string
-	ModelIDs                   []string
-	AttestationInterval        time.Duration
+	TrustLevel          TrustLevel
+	ModelID             string
+	ModelIDs            []string
+	AttestationInterval time.Duration
+	// Credential paths must be explicit fixtures. Each empty path is replaced
+	// with an absent file in an isolated directory; it never falls back to the
+	// operator's login. Leaving all three empty keeps the child unauthenticated.
 	AuthTokenPath              string
+	ProviderAccountPath        string
+	ProviderIssuerPath         string
 	EnableEphemeralPrefixCache bool
 	// KVBackend selects the CBv2 KV-cache backend for every engine slot the
 	// provider builds: "" (leave the provider at its own default), "auto",

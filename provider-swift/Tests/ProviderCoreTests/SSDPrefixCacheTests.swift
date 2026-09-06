@@ -154,6 +154,54 @@ private func waitForSemaphore(
     }
 }
 
+/// Holds a fake operation until the test explicitly releases it. Scheduler
+/// starvation may delay the release, but it cannot silently advance the fake
+/// operation as if the tested ordering had occurred.
+private final class BlockingTestGate: @unchecked Sendable {
+    /// Bounds broken test setup/cleanup. Expiry is always a recorded failure,
+    /// never a successful release of the operation under test.
+    private static let failsafeTimeout: DispatchTimeInterval = .seconds(30)
+
+    private let entered = DispatchSemaphore(value: 0)
+    private let releaseSignal = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var released = false
+
+    @discardableResult
+    func block() -> DispatchTimeoutResult {
+        entered.signal()
+        let result = releaseSignal.wait(timeout: .now() + Self.failsafeTimeout)
+        if result == .timedOut {
+            Issue.record("BlockingTestGate failsafe expired before explicit release")
+        }
+        return result
+    }
+
+    /// Returns false only after releasing the gate and fully awaiting the
+    /// caller's teardown. A timed-out setup must not throw past a synchronous
+    /// `defer` while its detached/background operation is still alive.
+    func waitUntilBlocked(
+        cleanupOnFailure: @Sendable () async -> Void
+    ) async -> Bool {
+        let result = await waitForSemaphore(entered, timeout: .now() + Self.failsafeTimeout)
+        guard result == .success else {
+            Issue.record("BlockingTestGate operation never reached the blocking point")
+            release()
+            await cleanupOnFailure()
+            return false
+        }
+        return true
+    }
+
+    func release() {
+        lock.withLock {
+            guard !released else { return }
+            released = true
+            releaseSignal.signal()
+        }
+    }
+}
+
 // MARK: - HMAC name derivation
 
 @Suite("SSD prefix cache: HMAC lookup keys")
@@ -1097,17 +1145,17 @@ struct SSDPrefixCacheLifecycleTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         let original = try #require(advertised)
-        let (entered, enteredContinuation) = AsyncStream.makeStream(
-            of: Void.self, bufferingPolicy: .bufferingNewest(1))
-        let release = DispatchSemaphore(value: 0)
+        let gate = BlockingTestGate()
+        defer { gate.release() }
         let mutation = Task.detached {
             cache.holdDestructiveEpochForTesting {
-                enteredContinuation.yield(())
-                release.wait()
+                gate.block()
             }
         }
-        var enteredIterator = entered.makeAsyncIterator()
-        _ = await enteredIterator.next()
+        guard await gate.waitUntilBlocked(cleanupOnFailure: {
+            _ = await mutation.value
+            await cache.closeAndWait()
+        }) else { return }
 
         let mutationAdvertisement = cache.prefixCacheAdvertisement(
             base: PrefixCacheModelStatus(
@@ -1122,7 +1170,7 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(
             cache.takeNextPrefixCacheV2Sequence(expectedEpoch: original.cacheEpoch) == nil)
 
-        release.signal()
+        gate.release()
         #expect(await mutation.value)
         let current = try #require(cache.prefixCacheV2Capability())
         #expect(current.cacheEpoch != original.cacheEpoch)
@@ -1461,18 +1509,16 @@ struct SSDPrefixCacheReadyReceiptTests {
     func responsePathNotDelayed() async throws {
         let dir = tempDir("ready-nonblocking")
         defer { try? FileManager.default.removeItem(at: dir) }
-        let entered = DispatchSemaphore(value: 0)
-        let release = DispatchSemaphore(value: 0)
+        let gate = BlockingTestGate()
         let cache = makeCache(
             dir: dir,
             kek: SymmetricKey(size: .bits256),
             clock: ClockBox(10_000),
             minEffectiveTokens: fixtureBlockSize,
             maintainWholeRoot: {
-                entered.signal()
-                _ = release.wait(timeout: .now() + 5)
+                gate.block()
             })
-        defer { cache.close(); release.signal() }
+        defer { gate.release(); cache.close() }
         let id = CBv2RequestID(61)
         cache.registerReadyReceipt(requestID: id, callback: { _ in })
         let returned = Task {
@@ -1480,9 +1526,10 @@ struct SSDPrefixCacheReadyReceiptTests {
             return true
         }
         #expect(await returned.value)
-        let enteredResult = await waitForSemaphore(entered, timeout: .now() + 5)
-        #expect(enteredResult == .success)
-        release.signal()
+        guard await gate.waitUntilBlocked(cleanupOnFailure: {
+            await cache.closeAndWait()
+        }) else { return }
+        gate.release()
     }
 }
 
@@ -1637,19 +1684,18 @@ struct SSDReadyWriteBarrierTests {
     func inFlightCloseOutcome() async throws {
         for correlated in [false, true] {
             let dir = tempDir("inflight-close-\(correlated)")
-            let entered = DispatchSemaphore(value: 0)
-            let release = DispatchSemaphore(value: 0)
+            let gate = BlockingTestGate()
             let settled = Counter()
             let readyAttempted = Counter()
             let outcome = OutcomeBox()
             let writer = pipeline(
                 dir: dir,
                 writeBlock: { _, _ in
-                    entered.signal()
-                    _ = release.wait(timeout: .now() + 5)
+                    gate.block()
                     return 1
                 },
                 onBlockSettled: { _ in settled.increment() })
+            defer { gate.release(); writer.close() }
             let onDurable: (@Sendable () -> Bool)?
             if correlated {
                 onDurable = { @Sendable in
@@ -1665,9 +1711,13 @@ struct SSDReadyWriteBarrierTests {
                 totalBytes: 1,
                 onDurable: onDurable,
                 onOutcome: outcome.set)))
-            #expect(await waitForSemaphore(entered, timeout: .now() + 5) == .success)
+            guard await gate.waitUntilBlocked(cleanupOnFailure: {
+                writer.close()
+                await writer.waitUntilDrained()
+                try? FileManager.default.removeItem(at: dir)
+            }) else { return }
             writer.close()
-            release.signal()
+            gate.release()
             await writer.waitUntilDrained()
 
             #expect(settled.count == 1)
@@ -1678,23 +1728,26 @@ struct SSDReadyWriteBarrierTests {
         }
 
         let failedDir = tempDir("inflight-close-write-failure")
-        let failedEntered = DispatchSemaphore(value: 0)
-        let failedRelease = DispatchSemaphore(value: 0)
+        let failedGate = BlockingTestGate()
         let failedOutcome = OutcomeBox()
         let failedWriter = pipeline(
             dir: failedDir,
             writeBlock: { _, _ in
-                failedEntered.signal()
-                _ = failedRelease.wait(timeout: .now() + 5)
+                failedGate.block()
                 throw InjectedWriteError.failed
             })
+        defer { failedGate.release(); failedWriter.close() }
         #expect(failedWriter.submit(.init(
             blocks: [block(0xC3)],
             totalBytes: 1,
             onOutcome: failedOutcome.set)))
-        #expect(await waitForSemaphore(failedEntered, timeout: .now() + 5) == .success)
+        guard await failedGate.waitUntilBlocked(cleanupOnFailure: {
+            failedWriter.close()
+            await failedWriter.waitUntilDrained()
+            try? FileManager.default.removeItem(at: failedDir)
+        }) else { return }
         failedWriter.close()
-        failedRelease.signal()
+        failedGate.release()
         await failedWriter.waitUntilDrained()
         #expect(failedOutcome.outcome == .writeFailed)
         #expect(failedOutcome.count == 1)
@@ -1705,27 +1758,27 @@ struct SSDReadyWriteBarrierTests {
     func queueDrop() async throws {
         let dir = tempDir("ready-queue-drop")
         defer { try? FileManager.default.removeItem(at: dir) }
-        let entered = DispatchSemaphore(value: 0)
-        let release = DispatchSemaphore(value: 0)
+        let gate = BlockingTestGate()
         let settled = Counter()
         let pipeline = pipeline(dir: dir, maxJobs: 1, writeBlock: { block, _ in
             if block.tag16.first == 1 {
-                entered.signal()
-                _ = release.wait(timeout: .now() + 5)
+                gate.block()
             }
             return 1
         }, onBlockSettled: { _ in settled.increment() })
-        defer { release.signal(); pipeline.close() }
+        defer { gate.release(); pipeline.close() }
         #expect(pipeline.submit(.init(blocks: [block(1)], totalBytes: 1)))
-        let enteredResult = await waitForSemaphore(entered, timeout: .now() + 5)
-        #expect(enteredResult == .success)
+        guard await gate.waitUntilBlocked(cleanupOnFailure: {
+            pipeline.close()
+            await pipeline.waitUntilDrained()
+        }) else { return }
         #expect(pipeline.submit(.init(blocks: [block(2)], totalBytes: 1)))
         let dropped = Counter()
         #expect(pipeline.submitWithResult(.init(
             blocks: [block(3)], totalBytes: 1,
             onDurable: { dropped.increment(); return true })) == .queueFull)
         #expect(dropped.count == 0)
-        release.signal()
+        gate.release()
         #expect(await settled.waitForCount(2))
         pipeline.close()
         await pipeline.waitUntilDrained()

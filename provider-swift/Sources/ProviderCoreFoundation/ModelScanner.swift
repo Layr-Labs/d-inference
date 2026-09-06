@@ -265,7 +265,8 @@ public struct ModelScanner: Sendable {
             }
 
             if isWeight, let fileSize = attrs[.size] as? UInt64 {
-                totalSize += fileSize
+                let (next, overflow) = totalSize.addingReportingOverflow(fileSize)
+                totalSize = overflow ? UInt64.max : next
             }
             // Return the standardised absolute URL (existing callers expect
             // absolute paths; the enumerator already yields absolute URLs).

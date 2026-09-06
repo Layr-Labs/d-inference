@@ -282,7 +282,7 @@ func TestModelsList_SelfRouteViewBypassesCacheAndFiltersByKey(t *testing.T) {
 	const owner = "owner-acct"
 	h.seedCatalogModel(t, modelA)
 	h.connectProvider(t, ctx, modelA)
-	setOwnedProvider(h.srv, owner)
+	setOwnedProvider(t, h.srv, owner)
 
 	// Warm the public cache.
 	status, public := h.get(t, ctx, "/v1/models", "test-key")

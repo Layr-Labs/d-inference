@@ -1,9 +1,9 @@
 # Configuration reference
 
-> Last updated: 2026-09-05 · commit `94c7c31eb`
+> Last updated: 2026-09-06 · commit `14f809d65`
 
 Every environment variable read by the coordinator, the provider CLI
-(`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
+(`darkbloom`), native macOS app, console-ui and admin-ui: accepted values, the compiled default,
 the code that reads it, and its effect. Defaults are the fallbacks at the cited
 symbol; a production or dev host may pin a different value in its environment
 file. Secrets are named, never valued. Unless a row says *live*, the variable is
@@ -18,6 +18,7 @@ read once at process start and a restart applies a change.
 | Coordinator, local | Whatever shell exports `go run ./coordinator/cmd/coordinator` inherits. `EIGENINFERENCE_ALLOW_MEMORY_STORE=true` is the only way to start without a database. |
 | Provider CLI, `darkbloom start --foreground` | The invoking shell's environment, minus the 13 variables scrubbed by `provider-swift/Sources/ProviderCore/Security/EnvironmentScrubber.swift`. Every `DARKBLOOM_*` row below applies. |
 | Provider CLI, installed LaunchAgent | `darkbloom start` (daemon mode) writes a launchd plist whose `EnvironmentVariables` are built by `passthroughEnvironment` in `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`: only the allow-list `passthroughEnvKeys` + `inferencePassthroughEnvKeys` is copied from the operator's shell (`DARKBLOOM_PREFIX_CACHE`, `DARKBLOOM_MLX_RESOURCE_DEBUG`, `DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`, `DARKBLOOM_KV_BACKEND_GUARD`, `DARKBLOOM_MLX_CACHE_LIMIT_GB`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`, `DARKBLOOM_PREFILL_DEADLINE_MODE`), plus `MLX_GATHER_QMM_EXPERT_SLICES` only when it is exactly `1`. `PATH` is deliberately dropped. The watchdog plist (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`) additionally forwards `DARKBLOOM_NO_UPDATE_CHECK`. Every other provider variable is inert under launchd. |
+| Provider CLI, `darkbloom start --local` | Reads the selected `provider.toml` with `migrateOnDisk: !local`, so local startup skips automatic configuration migration (`provider-swift/Sources/darkbloom/StartCommand.swift`, `Start.run`). Explicit `--idle-timeout` without `--foreground` still persists the selected policy through `setIdleUnloadMinutes`. The app-owned local command does not pass that option; its `--no-replace` is a per-invocation flag, not a persisted config key or environment variable. See [the CLI start contract](../provider/cli-reference.md#darkbloom-start). |
 | Provider CLI, `provider.toml` | `~/.config/darkbloom/provider.toml` (`ConfigManager` in `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`) is the durable configuration; a variable that overrides a config key says so in its Effect cell (`DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL`). |
 | console-ui | Next.js `.env*` files or the hosting build environment (Vercel-style). Every console-ui variable is `NEXT_PUBLIC_*` or build-tooling: inlined at **build** time, so changing one requires a rebuild. There is no server-only secret; a gitignored `.env.local` in `console-ui/` is the only local file and no `.env.example` exists. |
 | admin-ui | Server-only **runtime** variables read by React Server Components on each request; set them in `.env*` or the host environment. `NODE_ENV` is set by Next. |
@@ -322,10 +323,12 @@ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative value
 |---|---|---|---|---|
 | `DARKBLOOM_NO_UPDATE_CHECK` | any value | unset | `provider-swift/Sources/darkbloom/Darkbloom.swift`; `provider-swift/Sources/darkbloom/StartCommand+Modes.swift`; `provider-swift/Sources/darkbloom/WatchdogCommand.swift`; `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`; forwarded by `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` | Skips the startup version banner, the in-daemon auto-update loop, the start-mode check and the watchdog's update check; `scripts/install.sh` sets it for the runtime smoke test. |
 | `DARKBLOOM_AUTH_TOKEN_PATH` | file path | `~/.darkbloom/auth_token` | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` | Where the device-auth token is stored. |
+| `DARKBLOOM_PROVIDER_ACCOUNT_PATH` | file path | `~/.darkbloom/provider_account` | `provider-swift/Sources/ProviderCore/Auth/ProviderAccountStore.swift` (`accountPath`) | Account bound to the provider token. Test credentials must isolate all three credential paths. |
+| `DARKBLOOM_PROVIDER_ISSUER_PATH` | file path | `~/.darkbloom/provider_issuer` | `provider-swift/Sources/ProviderCore/Auth/ProviderCredentialStore.swift` (`ProviderIssuerStore.issuerPath`) | Recorded HTTP(S) origin that issued the provider token; normal authentication requires it to match the configured coordinator. HTTPS/WSS port 443 and HTTP/WS port 80 match their omitted-port origins; other ports remain distinct. Reads preserve stored issuer bytes for exact credential replacement/deletion. |
 | `DARKBLOOM_LOCAL_DIR` | directory | `~/.darkbloom` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` | Directory for `local_token` and `local.json` (direct mode). |
-| `DARKBLOOM_STATE_FILE` | file path | `~/.darkbloom/daemon-state.json` | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` | Daemon state snapshot read by `status`, `doctor` and the watchdog. |
+| `DARKBLOOM_STATE_FILE` | file path | `~/.darkbloom/daemon-state.json` | `provider-swift/Sources/ProviderCoreFoundation/DaemonStateFile.swift` | Daemon state snapshot read by `status`, `doctor` and the watchdog. |
 | `DARKBLOOM_LOADED_MODELS_FILE` | file path | `~/.darkbloom/loaded-models.json` | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` | Warm-model journal. |
-| `DARKBLOOM_PID_FILE` | file path | `~/.darkbloom/provider.pid` | `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift` | Daemon PID file. |
+| `DARKBLOOM_PID_FILE` | file path | `~/.darkbloom/provider.pid` | `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift` (`defaultPIDFile`, `acquireSingleInstanceLock`) | Provider owner record used with the kernel lock, including the atomic refusal policy for `start --local --no-replace`. |
 | `DARKBLOOM_WATCHDOG_STATE` | file path | `~/.darkbloom/watchdog-state.json` | `provider-swift/Sources/ProviderCore/Service/WatchdogState.swift` | Watchdog arm/disarm state. |
 | `DARKBLOOM_KV_BACKEND_GUARD` | absolute file path | `~/.darkbloom/kv-backend-guard.json` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` | Crash-loop guard record; on the LaunchAgent allow-list so the watchdog and daemon share one file. |
 | `DARKBLOOM_R2_CDN_URL` | URL | `https://models.darkbloom.ai` | `provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift` | Mirror model weights are downloaded from. |
@@ -405,6 +408,20 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 | `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `DYLD_FRAMEWORK_PATH`, `LD_PRELOAD`, `MallocStackLogging`, `MallocStackLoggingNoCompact`, `MallocScribble`, `MallocGuardEdges`, `MallocLogFile`, `MallocErrorAbort`, `NSZombieEnabled`, `OBJC_DEBUG_POOL_ALLOCATION`, `CFNETWORK_DIAGNOSTICS` | — | — | `provider-swift/Sources/ProviderCore/Security/EnvironmentScrubber.swift` | Removed from the daemon's environment at start; reported as the `env_scrubbed` capability. |
 
 `scripts/install.sh` additionally reads `COORD_URL` (substituted by the coordinator when it serves `/install.sh`; required when the script is run from source), `HOME` (install root `$HOME/.darkbloom`), `TMPDIR` (enrollment-profile temp dir only) and the two code-signing requirement constants `DARKBLOOM_DESIGNATED_REQUIREMENT` and `DARKBLOOM_FAN_HELPER_REQUIREMENT`. See [`../provider/installation.md`](../provider/installation.md).
+
+## Native macOS app
+
+The shipping GUI uses the validated real helper CLI in the managed app; the
+path is fixed by `ManagedProviderInstallLayout`, not a runtime setting. Legacy
+regular CLI fallback requires the helper to be absent. See
+[CLI paths](../provider/cli-reference.md#paths-and-identifiers) and
+[app release qualification](../operations/app-release.md).
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `DARKBLOOM_CLI_PATH` | executable path | unset | `provider-swift/Sources/DarkbloomApp/Services/DarkbloomCLILocator.swift` (`SystemDarkbloomCLILocator.locate`) | DEBUG-only CLI override; compiled out of release builds. Without it, validate the real managed CLI with no-follow path checks. |
+| `DARKBLOOM_SKIP_APP_RELOCATION` | `1` | unset | `provider-swift/Sources/DarkbloomApp/Services/AppInstallCoordinator.swift` (`coordinate`) | DEBUG-only relocation bypass for isolated lifecycle harnesses; no shipping bypass. |
+| `DARKBLOOM_ALLOW_APP_DOWNGRADE` | `1` | unset | `provider-swift/Sources/DarkbloomApp/Services/AppInstallCoordinator.swift` (`allowDowngradeEnvironmentKey`) | Explicit signed-app downgrade recovery; signature checks and the pending recovery-state guard still apply. Follow the [one-machine rollback procedure](../operations/app-release.md#direct-app-relocation-and-writable-updates). |
 
 ## console-ui
 

@@ -3,31 +3,34 @@ package store
 import (
 	"fmt"
 	"strings"
+
+	releaseSemver "github.com/eigeninference/d-inference/coordinator/semver"
 )
 
-func releaseVersionGreater(a, b string) bool {
-	if a == "" {
-		return false
+func validateReleaseIdentity(release *Release) error {
+	if release == nil {
+		return fmt.Errorf("release is required")
 	}
-	if b == "" {
-		return true
+	if !releaseSemver.IsValid(release.Version) {
+		return fmt.Errorf("version must be canonical SemVer 2")
 	}
-	aParts := strings.Split(a, ".")
-	bParts := strings.Split(b, ".")
-	for i := 0; i < len(aParts) || i < len(bParts); i++ {
-		var ai, bi int
-		if i < len(aParts) {
-			fmt.Sscanf(aParts[i], "%d", &ai)
-		}
-		if i < len(bParts) {
-			fmt.Sscanf(bParts[i], "%d", &bi)
-		}
-		if ai > bi {
-			return true
-		}
-		if ai < bi {
-			return false
-		}
+	if release.Platform == "" {
+		return fmt.Errorf("platform is required")
 	}
-	return false
+	return nil
+}
+
+func compareReleaseVersions(a, b string) int {
+	aVersion, aError := releaseSemver.Parse(a)
+	bVersion, bError := releaseSemver.Parse(b)
+	switch {
+	case aError == nil && bError != nil:
+		return 1
+	case aError != nil && bError == nil:
+		return -1
+	case aError != nil:
+		return strings.Compare(a, b)
+	default:
+		return aVersion.Compare(bVersion)
+	}
 }

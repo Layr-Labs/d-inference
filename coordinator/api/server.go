@@ -51,9 +51,9 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
+	releaseSemver "github.com/eigeninference/d-inference/coordinator/semver"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
-	"golang.org/x/mod/semver"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -196,6 +196,10 @@ type releaseTrustPolicySnapshot struct {
 
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
+type enrollmentProfileSigner interface {
+	Sign(profile []byte) ([]byte, error)
+}
+
 type Server struct {
 	registry                      *registry.Registry
 	store                         store.Store
@@ -214,8 +218,10 @@ type Server struct {
 	mdmClient                     *mdm.Client     // MicroMDM client for provider security verification
 	mdmScheduler                  *mdmVerificationScheduler
 	mdmSchedulerConfig            MDMSchedulerConfig
-	mdmWebhookSecret              string              // optional shared secret MicroMDM must present on the webhook
-	profileSigner                 *profilesign.Signer // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
+	providerAuthLifecycleMu       sync.Mutex              // serializes provider token registration with revoke+disconnect
+	mdmWebhookSecret              string                  // optional shared secret MicroMDM must present on the webhook
+	profileSigner                 enrollmentProfileSigner // CMS signer for the /v1/enroll .mobileconfig
+	profileSigningRequired        bool                    // fail enrollment unless a valid CMS signature is produced
 	promptArtifacts               *promptcontract.Provisioner
 	promptContract                *promptcontract.Client
 	promptSupervisor              *promptcontract.Supervisor
@@ -1104,10 +1110,16 @@ func (s *Server) emitPanic(ctx context.Context, message, stack string, fields ma
 }
 
 // SetProfileSigner configures the CMS signing identity used to sign the
-// enrollment .mobileconfig served by /v1/enroll. When unset (nil), profiles are
-// served unsigned (the historical behaviour).
+// enrollment .mobileconfig served by /v1/enroll.
 func (s *Server) SetProfileSigner(signer *profilesign.Signer) {
 	s.profileSigner = signer
+}
+
+// SetProfileSigningRequired controls whether /v1/enroll may use the historical
+// unsigned fallback. Hardware-trust deployments set this true; local tests and
+// development may explicitly leave it false.
+func (s *Server) SetProfileSigningRequired(required bool) {
+	s.profileSigningRequired = required
 }
 
 // SetBilling configures the billing service for multi-chain payments and referrals.
@@ -2465,39 +2477,21 @@ func sortedTemplateHashes(accepted map[string]bool) []string {
 	return out
 }
 
-// semverGreater returns true when a has higher SemVer precedence than b,
-// including the numeric/alphanumeric prerelease identifier rules. Invalid
-// non-empty versions sort below valid versions so minimum-version gates fail
-// closed.
+// semverGreater returns true only when both values are canonical SemVer 2 and
+// a has higher precedence than b.
 func semverGreater(a, b string) bool {
-	if a == "" {
-		return false
-	}
-	if b == "" {
-		return true
-	}
-	av := a
-	if !strings.HasPrefix(av, "v") {
-		av = "v" + av
-	}
-	bv := b
-	if !strings.HasPrefix(bv, "v") {
-		bv = "v" + bv
-	}
-	aValid, bValid := semver.IsValid(av), semver.IsValid(bv)
-	switch {
-	case aValid && bValid:
-		return semver.Compare(av, bv) > 0
-	case aValid:
-		return true
-	default:
-		return false
-	}
+	comparison, err := releaseSemver.Compare(a, b)
+	return err == nil && comparison > 0
 }
 
-// semverLess returns true if version a is less than version b.
+// semverLess treats an invalid provider version as below a valid required
+// floor. Release metadata is rejected before reaching this comparison.
 func semverLess(a, b string) bool {
-	return semverGreater(b, a)
+	comparison, err := releaseSemver.Compare(a, b)
+	if err == nil {
+		return comparison < 0
+	}
+	return !releaseSemver.IsValid(a) && releaseSemver.IsValid(b)
 }
 
 // SetRuntimeManifest configures the known-good runtime manifest for provider
@@ -2853,8 +2847,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/releases/latest", s.handleLatestRelease) // public (install.sh)
 
 	// Device authorization flow — providers link to user accounts.
-	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)   // no auth — provider not yet authenticated
-	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken) // no auth — polls with device_code secret
+	s.mux.HandleFunc("POST /v1/device/code", s.handleDeviceCode)           // no auth — provider not yet authenticated
+	s.mux.HandleFunc("POST /v1/device/token", s.handleDeviceToken)         // no auth — polls with device_code secret
+	s.mux.HandleFunc("DELETE /v1/device/token", s.handleDeviceTokenRevoke) // provider token authenticates itself
 	// Device approve issues a long-lived provider→account linking token —
 	// same risk class as /v1/auth/keys, so financial-tier limit applies.
 	// Uses requirePrivyAuth to reject API keys (interactive session only).

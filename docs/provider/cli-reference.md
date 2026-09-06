@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-05 · commit `94c7c31eb`
+> Last updated: 2026-09-06 · commit `14f809d65`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -62,6 +62,7 @@ Declaration order of `Darkbloom.configuration.subcommands` (21):
 | `--idle-timeout <mins>` | `UInt64?` | `backend.idle_timeout_mins` (`60`) | Override the idle unload timeout for this run |
 | `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
 | `--local` | flag | `false` | Coordinator-less OpenAI-compatible server ([direct mode](./direct-mode.md)) |
+| `--no-replace` | flag | `false` | Requires `--local`; refuse an occupied kernel lock or a still-live legacy owner without terminating it (`provider-swift/Sources/darkbloom/StartCommand.swift`, `Start.validate`; `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift`, `acquireSingleInstanceLock`) |
 | `--local-endpoint` | flag | `false` | Local endpoint alongside the coordinator; mutually exclusive with `--local` |
 | `--port <n>` | `UInt16` | `8000` | Local server port |
 | `--bind <addr>` | `String` | `127.0.0.1` | Local server bind address |
@@ -71,6 +72,26 @@ Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
+
+The native app invokes `darkbloom start --local --model <id> --no-replace`
+(`provider-swift/Sources/DarkbloomApp/Services/LocalAPIStartContract.swift`,
+`LocalAPIStartCommand.arguments`). `Start.validate` rejects `--no-replace`
+without `--local`. In `Start.runLocalStandalone`
+(`provider-swift/Sources/darkbloom/StartCommand+Modes.swift`),
+`acquireMediaServingLock(replaceExisting: !noReplace)` runs before token
+creation or endpoint publication. `ProcessLifecycle.acquireSingleInstanceLock`
+checks `replaceExisting` before either takeover path can signal another
+provider; refusal throws `singleInstanceLockBusy` and preserves its owner
+record. The default remains `false` for `noReplace`, so starts without the
+flag retain their existing replacement policy. An older CLI rejects the unknown
+flag; the app does not retry without it.
+
+`start --local` loads its runtime snapshot with `migrateOnDisk: false`,
+skipping automatic provider configuration migration. The app's command passes
+no configuration-writing options. An explicit `--idle-timeout` without
+`--foreground` still writes the policy to configuration; local serving still
+creates/reuses credentials and publishes discovery after acquiring the lock. See
+[configuration sources](../reference/configuration.md#where-values-are-set).
 
 ### `darkbloom stop`
 
@@ -104,6 +125,7 @@ and how to read the line in [attestation → Verify](./attestation.md#verify).
 | `--strict` | flag | `false` | Exit 1 on any WARN as well as FAIL |
 | `--coordinator <url>` | `String?` | config URL | Coordinator for the network checks |
 | `--support` | flag | `false` | Append coordinator URL, token presence, MDM state, PID-file path |
+| `--json` | flag | `false` | One schema-1 JSON report on stdout; no update banner, unchanged failure exit status (`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `Doctor.run`) |
 | `--clear-backend-guard` | flag | `false` | Delete `~/.darkbloom/kv-backend-guard.json`, reset the crash-loop counter in `watchdog-state.json`, exit |
 
 Exit 1 when any detailed check or diagnosis line is FAIL (or WARN with
@@ -123,16 +145,32 @@ Same checks as `doctor`; any WARN or FAIL exits 1.
 | Subcommand | Flag / positional | Type | Default | Effect |
 |---|---|---|---|---|
 | `list` | `--json` | flag | `false` | Raw output |
-| `list` | `--all` | flag | `false` | Include models filtered out by `backend.enabled_models` |
+| `list` | `--all` | flag | `false` | Scan all disk inventory, ignoring enabled-model and available-memory filters (`provider-swift/Sources/darkbloom/ModelsCommand.swift`, `Models.List.listedModels`) |
 | `list` | `--hash <model-id>` | `String?` | `nil` | Compute the aggregate SHA-256 of one model |
 | `catalog` | `--coordinator <url>` | `String?` | config URL | Catalog source |
 | `catalog` | `--json` | flag | `false` | Raw output |
+| `catalog` | `--include-runtime-eligibility` | flag | `false` | With `--json`, emit `models`, per-model `runtime_eligibility`, and empty `download_plans` without planning downloads or hashing model weights. If both inclusion flags are set, download plans are included (`provider-swift/Sources/darkbloom/ModelsCatalogOutput.swift`, `Models.Catalog.makePlanOutput`) |
+| `catalog` | `--include-download-plans` | flag | `false` | With `--json`, emit `models`, resume-aware `download_plans`, and per-model `runtime_eligibility` instead of the plain catalog array (`provider-swift/Sources/darkbloom/ModelsCommand.swift`, `Models.Catalog.run`) |
 | `catalog` | `--type <t>` | `String?` | `nil` | Filter by `model_type` (e.g. `text`) |
 | `download` | `<modelID>` | `String` | — | Catalog id (or S3 name) |
 | `download` | `--coordinator <url>` | `String?` | config URL | Resolve the catalog entry |
 | `download` | `--r2-cdn <url>` | `String?` | `DARKBLOOM_R2_CDN_URL`, else `https://models.darkbloom.ai` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`, `defaultR2CDNURL`) | Mirror base URL |
 | `remove` | `<modelID>` | `String` | — | Model to delete from `~/.cache/huggingface/hub` |
 | `remove` | `--force` | flag | `false` | Skip confirmation |
+
+`runtime_eligibility` is keyed by catalog model ID. Each value has `status`
+(`eligible`, `ineligible`, or `unknown`) and `reason`, computed in the CLI by
+`ModelRuntimeRequirements.evaluate`
+(`provider-swift/Sources/darkbloom/ModelsCatalogOutput.swift`,
+`ModelsCatalogRuntimeEligibility`). The app presents this verdict before RAM
+fit; it does not infer runtime support or duplicate the CLI's capability table.
+An older CLI's missing verdict remains unknown in the app.
+
+`doctor` and model `list` / `catalog` load runtime snapshots with
+`migrateOnDisk: false`: inspection does not create or migrate provider
+configuration. These reads can still inspect hardware, contact the coordinator,
+or hash staged files for download plans. Starting serving, downloading/removing
+models, and `doctor --clear-backend-guard` are separate mutating actions.
 
 ### `darkbloom local`
 
@@ -145,10 +183,14 @@ Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 
 ### `darkbloom login` / `darkbloom logout`
 
-`login` takes `--config` only and runs `performDeviceCodeLogin`
-(`provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift`): `POST
-/v1/device/code`, print URL and code, poll `POST /v1/device/token`, write
-`~/.darkbloom/auth_token`. `logout` takes no flags and deletes that file.
+| Command / option | Behavior | Code |
+|---|---|---|
+| `login [--config <path>]` | Request a device code, open the approval URL, and poll for fresh authorization. Save the token with its account and issuing coordinator. | `provider-swift/Sources/darkbloom/LoginCommand.swift` (`Login`); `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` (`performDeviceCodeLogin`) |
+| `login --json` | Emit `code`, `linked`, or `error` NDJSON events; the calling app opens the approval URL. A complete saved credential for the configured issuer emits `linked` immediately without a new browser flow. Error text never confirms a link. | `provider-swift/Sources/darkbloom/LoginCommand.swift` (`LoginEventNDJSON`) |
+| `login` with incomplete legacy metadata | Run fresh browser authorization without first deleting the old credential. Replace only the unchanged original files after authorization succeeds; a recorded issuer must still match. Normal credential reads continue to reject incomplete metadata. | `provider-swift/Sources/ProviderCore/Auth/ProviderCredentialRecovery.swift` (`ProviderCredentialRecovery`); `provider-swift/Sources/ProviderCore/Auth/ProviderCredentialStore.swift` (`load`) |
+| `login` after interrupted replacement | Require fresh authorization before replacing the interrupted state. Recovery backups block legacy-token import and are never restored as credentials. | `provider-swift/Sources/ProviderCore/Auth/ProviderCredentialRecoveryArtifacts.swift` (`ProviderCredentialRecoveryArtifacts`); `provider-swift/Sources/ProviderCore/Auth/ProviderCredentialRecovery.swift` (`ProviderCredentialRecovery`) |
+| `logout` | Stop provider services, revoke the token at its recorded issuer, then clear local credentials. Revocation failure preserves credentials. | `provider-swift/Sources/darkbloom/LogoutCommand.swift` (`Logout`); `provider-swift/Sources/darkbloom/AccountUnlink.swift` (`unlinkProviderAccount`) |
+| `logout --local-only` | Stop provider services and remove local credentials without sending an unverifiable token to a coordinator. Remote revocation is not established. | `provider-swift/Sources/darkbloom/LogoutCommand.swift` (`Logout`) |
 
 ### `darkbloom benchmark`
 
@@ -207,6 +249,7 @@ Without flags: `log stream --predicate 'subsystem == "dev.darkbloom.provider"' -
 | `--idle-timeout <mins>` | Idle-memory policy, saved to `[backend] idle_timeout_mins` (0 = always ready); skips the memory prompt |
 | `--foreground` | Run in the foreground (used by launchd; normally implicit) |
 | `--local` | Run a local OpenAI server only; do not connect to the coordinator |
+| `--no-replace` | With `--local`, refuse to replace an existing provider; see [the start contract](#darkbloom-start) |
 | `--local-endpoint` | Serve a local OpenAI endpoint alongside the coordinator |
 | `--port <port>` | Port for `--local` / `--local-endpoint` (default 8000) |
 | `--bind <addr>` | Bind address for local modes (default 127.0.0.1) |
@@ -297,8 +340,6 @@ its heartbeat (`idle_unload_mins`) so the dashboard shows an empty slot as
 machine-readably.
 
 ## `darkbloom stop`
-
-### `darkbloom watchdog`, `darkbloom runtime-smoke`
 
 ```bash
 darkbloom stop [--uninstall]
@@ -484,8 +525,14 @@ darkbloom update [--check-only] [--coordinator <url>]
 | `--check-only` | Report whether an update is available without installing |
 | `--coordinator <url>` | Override coordinator URL |
 
-The update path verifies bundle, binary, and `mlx.metallib` hashes before
-replacing the running binary (`provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`).
+The update path verifies the archive, app identity, and signed payload hashes
+before replacing the managed app as one unit
+(`provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift`).
+`ProviderAppLayout` selects real nested payloads, checks inner/outer copy parity,
+and retains support for legacy regular layouts. The outer CLI compatibility
+alias must have the exact published target. See the
+[archive contract and upgrade-reader checks](../operations/app-release.md#tar-expansion-safety-contract)
+for accepted layouts and qualification of older installed readers.
 
 ## `darkbloom autoupdate`
 
@@ -560,6 +607,9 @@ behavior.
 ## `darkbloom login`
 
 Link this machine to a Darkbloom account via RFC 8628 device-code flow.
+For credentials saved by older versions, the same command requests fresh
+authorization while preserving the previous login until replacement succeeds.
+The app exposes this through **Contributions → Reconnect account**.
 
 ```bash
 darkbloom login
@@ -646,6 +696,18 @@ The command runs only when invoked by the provider operator. It collects the
 redaction, and does not include debug-level messages. Automatic report upload is
 disabled.
 
+## `darkbloom runtime-smoke`
+
+Hidden release check implemented by
+`provider-swift/Sources/darkbloom/RuntimeSmokeCommand.swift` (`RuntimeSmoke`).
+It verifies the Gemma runtime configuration/latch and packaged Paged kernels,
+printing `gemma-optimizations-runtime-smoke: ok` and
+`paged-kernel-runtime-smoke: ok` on success. It does not load a model or verify
+persistent Secure Enclave/APNs identity. Use the
+[signed artifact qualifier](../operations/app-release.md#signed-artifact-qualification-no-signing-secrets-required),
+which supplies the required latch inputs, instead of treating an unseeded
+manual invocation as release evidence.
+
 ## `darkbloom watchdog`
 
 Internal command used by the launchd crash-recovery watchdog. Not intended for
@@ -665,12 +727,14 @@ manual use.
 |---|---|---|
 | Install root | `~/.darkbloom/` | `scripts/install.sh` (`INSTALL_DIR`) |
 | App bundle | `~/.darkbloom/Darkbloom.app`; swapped atomically, backup in `.install-backup-*` during the swap | `scripts/install.sh` (`commit_staged_app`) |
-| CLI symlinks | `~/.darkbloom/bin/darkbloom`, `darkbloom-enclave`, `mlx.metallib` → `../Darkbloom.app/Contents/MacOS/*`; `eigeninference-enclave → darkbloom-enclave`; best-effort `/usr/local/bin/darkbloom` | `scripts/install.sh` |
+| Managed CLI | `~/.darkbloom/Darkbloom.app/Contents/Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom`; real executable used by GUI, LaunchAgent, and watchdog; legacy regular outer CLI only when helper absent | `provider-swift/Sources/ProviderCoreFoundation/ManagedProviderInstallLayout.swift` (`cliRelativePath`); `provider-swift/Sources/ProviderCoreFoundation/ManagedProviderCLIPathValidator.swift` |
+| Outer CLI alias | `Darkbloom.app/Contents/MacOS/darkbloom` → exactly `../Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom` | `provider-swift/Sources/ProviderCoreFoundation/ManagedProviderInstallLayout.swift` (`compatibilityCLISymlinkTarget`) |
+| Shell entry points | `~/.darkbloom/bin/{darkbloom,darkbloom-enclave,mlx.metallib}` → outer `../Darkbloom.app/Contents/MacOS/*` (the CLI resolves through the exact alias); `eigeninference-enclave → darkbloom-enclave`; best-effort `/usr/local/bin/darkbloom` | `scripts/install.sh` |
 | Capability markers | `Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/{paged-kernel-v1,fan-helper-v1}` | `scripts/install.sh` (`verify_staged_app`, `verify_fan_helper_capability`) |
 | Config | `~/.config/darkbloom/provider.toml`; a config at a legacy path is copied here on the next run | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`defaultConfigPath`); `provider-swift/Sources/darkbloom/Darkbloom.swift` (`migrateConfigIfNeeded`) |
 | Device token | `~/.darkbloom/auth_token` (`DARKBLOOM_AUTH_TOKEN_PATH`) | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` |
 | Local-mode token / discovery | `~/.darkbloom/local_token`, `~/.darkbloom/local.json` (`DARKBLOOM_LOCAL_DIR`), both `0600` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` |
-| Daemon state | `~/.darkbloom/daemon-state.json` (`DARKBLOOM_STATE_FILE`) | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` |
+| Daemon state | `~/.darkbloom/daemon-state.json` (`DARKBLOOM_STATE_FILE`) | `provider-swift/Sources/ProviderCoreFoundation/DaemonStateFile.swift` |
 | PID file | `~/.darkbloom/provider.pid` (`DARKBLOOM_PID_FILE`) | `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift` |
 | Warm-model journal | `~/.darkbloom/loaded-models.json` (`DARKBLOOM_LOADED_MODELS_FILE`) | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` |
 | Watchdog state | `~/.darkbloom/watchdog-state.json` (`DARKBLOOM_WATCHDOG_STATE`) | `provider-swift/Sources/ProviderCore/Service/WatchdogState.swift` |
@@ -751,7 +815,7 @@ automatic updates with `darkbloom autoupdate disable`.
 | Coordinator reconnect backoff | `ExponentialBackoff(base: 1.0, max: 30.0)` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift` |
 | WebSocket ping interval / pong timeout | `pingInterval = 10.0` s / `pongTimeout = 30.0` s | same |
 | State-file and capacity refresh | every `max(1, heartbeat_interval_secs / 2)` s; the heartbeat default is in the [`provider.toml` table](#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift` |
-| State-file stale threshold | `isStale(maxAge: 90)` s; `doctor` calls the daemon wedged after `max(8 × refresh period, 90)` s | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`; `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift` (`wedgedAfterSeconds`) |
+| State-file stale threshold | `isStale(maxAge: 90)` s; `doctor` calls the daemon wedged after `max(8 × refresh period, 90)` s | `provider-swift/Sources/ProviderCoreFoundation/DaemonState.swift`; `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift` (`wedgedAfterSeconds`) |
 | Idle unload | `idle_timeout_mins` ([`provider.toml` table](#providertoml-keys-read-by-the-cli)); polled every 60 s; unloads the model, the daemon keeps running | `provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift` |
 | Watchdog check interval | `checkIntervalSeconds = 60` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |
 | Crash-loop guard trip | `crashLoopTripThreshold = 3` restarts | `provider-swift/Sources/ProviderCore/Service/WatchdogDecision.swift` |

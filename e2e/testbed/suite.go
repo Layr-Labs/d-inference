@@ -2,8 +2,6 @@ package testbed
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -326,7 +324,7 @@ func (s *Suite) startProviders() error {
 				Logger:        s.Logger.With("provider_index", providerIdx, "models", strings.Join(modelIDs, ",")),
 				ProviderIndex: providerIdx,
 			}
-			authDir, authTokenPath, err := s.prepareProviderAuth(providerIdx)
+			authDir, credentials, err := s.prepareProviderAuth(providerIdx)
 			if err != nil {
 				return fmt.Errorf("prepare provider auth %d: %w", providerIdx, err)
 			}
@@ -335,12 +333,14 @@ func (s *Suite) startProviders() error {
 				ModelIDs:                   modelIDs,
 				TrustLevel:                 TrustNone,
 				MTPDrafterPath:             s.Config.MTPDrafterPath,
-				AuthTokenPath:              authTokenPath,
+				AuthTokenPath:              credentials.token,
+				ProviderAccountPath:        credentials.account,
+				ProviderIssuerPath:         credentials.issuer,
 				EnableEphemeralPrefixCache: s.Config.EnableEphemeralPrefixCache,
 				KVBackend:                  s.Config.KVBackend,
 				MaxConcurrent:              s.Config.MaxConcurrent,
 			}); err != nil {
-				_ = os.RemoveAll(authDir)
+				p.Stop()
 				return fmt.Errorf("start provider %d (%s): %w", providerIdx, strings.Join(modelIDs, ","), err)
 			}
 			s.Providers = append(s.Providers, p)
@@ -348,37 +348,6 @@ func (s *Suite) startProviders() error {
 		}
 	}
 	return nil
-}
-
-func (s *Suite) prepareProviderAuth(providerIdx int) (string, string, error) {
-	rawToken := fmt.Sprintf("testbed-provider-token-%d-%d", providerIdx, time.Now().UnixNano())
-	tokenHash := sha256.Sum256([]byte(rawToken))
-	accountID := fmt.Sprintf("testbed-provider-%d", providerIdx)
-	if err := s.PgStore.CreateProviderToken(&store.ProviderToken{
-		TokenHash: hex.EncodeToString(tokenHash[:]),
-		AccountID: accountID,
-		Label:     fmt.Sprintf("testbed-provider-%d", providerIdx),
-		Active:    true,
-		CreatedAt: time.Now(),
-	}); err != nil {
-		return "", "", err
-	}
-
-	authDir, err := os.MkdirTemp("", fmt.Sprintf("darkbloom-testbed-provider-%d-", providerIdx))
-	if err != nil {
-		return "", "", err
-	}
-	tokenDir := filepath.Join(authDir, ".darkbloom")
-	if err := os.MkdirAll(tokenDir, 0700); err != nil {
-		_ = os.RemoveAll(authDir)
-		return "", "", err
-	}
-	authTokenPath := filepath.Join(tokenDir, "auth_token")
-	if err := os.WriteFile(authTokenPath, []byte(rawToken+"\n"), 0600); err != nil {
-		_ = os.RemoveAll(authDir)
-		return "", "", err
-	}
-	return authDir, authTokenPath, nil
 }
 
 func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
@@ -658,7 +627,7 @@ func (c *Coordinator) Stop() error {
 	return nil
 }
 
-func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg ProviderConfig) error {
+func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg ProviderConfig) (err error) {
 	binaryPath := p.BinaryPath
 	if binaryPath == "" {
 		binaryPath = findProviderBinary()
@@ -668,6 +637,12 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 	}
 	p.BinaryPath = binaryPath
 
+	// Failed launches own the same isolated files as successful ones.
+	defer func() {
+		if err != nil {
+			p.Stop()
+		}
+	}()
 	ctx, p.cancel = context.WithCancel(ctx)
 
 	wsURL := coordinatorURL
@@ -730,18 +705,19 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 		p.Logger.Info("provider config written", "path", configPath)
 	}
 
+	credentialEnv, err := providerCredentialEnvironment(os.Environ(), cfg, p.StateDir)
+	if err != nil {
+		return fmt.Errorf("prepare provider credential paths: %w", err)
+	}
 	cmd := execCommandContext(ctx, p.BinaryPath, args...)
 	cmd.Stdout = &logWriter{logger: p.Logger, prefix: "provider:stdout"}
 	cmd.Stderr = &logWriter{logger: p.Logger, prefix: "provider:stderr"}
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(credentialEnv,
 		"DARKBLOOM_PID_FILE="+filepath.Join(p.StateDir, "provider.pid"),
 		"DARKBLOOM_NO_UPDATE_CHECK=1",
 		"DARKBLOOM_STATE_FILE="+filepath.Join(p.StateDir, "daemon-state.json"),
 		"DARKBLOOM_LOADED_MODELS_FILE="+filepath.Join(p.StateDir, "loaded-models.json"),
 	)
-	if cfg.AuthTokenPath != "" {
-		cmd.Env = append(cmd.Env, "DARKBLOOM_AUTH_TOKEN_PATH="+cfg.AuthTokenPath)
-	}
 	if cfg.EnableEphemeralPrefixCache {
 		cmd.Env = append(
 			cmd.Env,

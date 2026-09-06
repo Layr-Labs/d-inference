@@ -717,6 +717,13 @@ struct ModelPrefetchDownloaderTests {
             sizes: [1_000], alreadyValid: [false], partBytes: [5_000]
         )
         #expect(overlong == 0)
+        // Hostile/direct callers cannot wrap a per-file sum negative and turn
+        // an impossible download into a zero-capacity plan.
+        let overflow = ModelDownloader.remainingBytesToFetch(
+            sizes: [Int64.max, 1],
+            alreadyValid: [false, false]
+        )
+        #expect(overflow == Int64.max)
 
         // End-to-end: pre-stage the large file as valid, leave a tiny file to
         // fetch. The capacity pre-check (now sized to remaining bytes) must NOT
@@ -772,6 +779,331 @@ struct ModelPrefetchDownloaderTests {
         #expect(try Data(contentsOf: cacheDir.appendingPathComponent("small.json")) == smallBytes)
     }
 
+    @Test("download storage plans apply the reserve to remaining bytes, not full model bytes")
+    func storagePlanUsesRemainingBytesAndReserve() {
+        let available = Int64(4 * 1_073_741_824)
+        let reserve = ModelDownloadStoragePlan.appReserveBytes
+
+        let resumed = ModelDownloadStoragePlan(
+            remainingBytes: 1_000_000_000,
+            reserveBytes: reserve,
+            availableBytes: available
+        )
+        #expect(resumed.requiredAvailableBytes == 1_000_000_000 + reserve)
+        #expect(resumed.hasSufficientCapacity)
+
+        let incorrectlyChargedAsFresh = ModelDownloadStoragePlan(
+            remainingBytes: 10_000_000_000,
+            reserveBytes: reserve,
+            availableBytes: available
+        )
+        #expect(!incorrectlyChargedAsFresh.hasSufficientCapacity)
+    }
+
+    @Test("download storage plans distinguish known zero from unknown capacity")
+    func storagePlanPreservesCapacityTruth() {
+        let required = Int64(1_000)
+
+        let zero = ModelDownloadStoragePlan(
+            remainingBytes: required,
+            reserveBytes: 0,
+            availableBytes: 0
+        )
+        #expect(zero.availableBytes == 0)
+        #expect(!zero.hasSufficientCapacity)
+
+        let unknown = ModelDownloadStoragePlan(
+            remainingBytes: required,
+            reserveBytes: 0,
+            availableBytes: nil
+        )
+        #expect(unknown.availableBytes == nil)
+        #expect(!unknown.hasSufficientCapacity)
+
+        let exact = ModelDownloadStoragePlan(
+            remainingBytes: required,
+            reserveBytes: 0,
+            availableBytes: required
+        )
+        #expect(exact.availableBytes == required)
+        #expect(exact.hasSufficientCapacity)
+
+        let negative = ModelDownloadStoragePlan(
+            remainingBytes: 1,
+            reserveBytes: 0,
+            availableBytes: -1
+        )
+        #expect(negative.availableBytes == 0)
+        #expect(!negative.hasSufficientCapacity)
+
+        let unrepresentable = ModelDownloadStoragePlan(
+            remainingBytes: Int64.max,
+            reserveBytes: 1,
+            availableBytes: Int64.max
+        )
+        #expect(unrepresentable.requiredAvailableBytes == Int64.max)
+        #expect(!unrepresentable.hasSufficientCapacity)
+        #expect(!ModelDownloadStoragePlan(
+            remainingBytes: Int64.max,
+            reserveBytes: 1,
+            availableBytes: nil
+        ).hasSufficientCapacity)
+
+        #expect(
+            ModelDownloader.normalizedAvailableCapacity(
+                importantUsage: 0,
+                ordinary: 1_000
+            ) == 0
+        )
+        #expect(
+            ModelDownloader.normalizedAvailableCapacity(
+                importantUsage: nil,
+                ordinary: 1_000
+            ) == 1_000
+        )
+        #expect(
+            ModelDownloader.normalizedAvailableCapacity(
+                importantUsage: nil,
+                ordinary: nil
+            ) == nil
+        )
+    }
+
+    @Test("remaining-byte accounting saturates instead of overflowing")
+    func remainingByteAccountingIsOverflowSafe() {
+        #expect(
+            ModelDownloader.remainingBytesToFetch(
+                sizes: [Int64.max, Int64.max],
+                alreadyValid: [false, false]
+            ) == Int64.max
+        )
+        #expect(
+            ModelDownloader.remainingBytesToFetch(
+                sizes: [Int64.min, 10],
+                alreadyValid: [false, false],
+                partBytes: [Int64.max, 3]
+            ) == 7
+        )
+    }
+
+    @Test("authoritative capacity validation includes reserve and fails closed for app callers")
+    func reserveAwareCapacityValidation() throws {
+        let reserve = ModelDownloadStoragePlan.appReserveBytes
+        let remaining: Int64 = 1_000
+        let exact = remaining + reserve
+
+        try ModelDownloader.validateAvailableCapacity(
+            remainingBytes: remaining,
+            reserveBytes: reserve,
+            availableBytes: exact,
+            unknownCapacityAllowed: false
+        )
+        #expect(throws: ModelCatalogError.self) {
+            try ModelDownloader.validateAvailableCapacity(
+                remainingBytes: remaining,
+                reserveBytes: reserve,
+                availableBytes: exact - 1,
+                unknownCapacityAllowed: false
+            )
+        }
+        #expect(throws: ModelCatalogError.self) {
+            try ModelDownloader.validateAvailableCapacity(
+                remainingBytes: remaining,
+                reserveBytes: reserve,
+                availableBytes: nil,
+                unknownCapacityAllowed: false
+            )
+        }
+        #expect(throws: ModelCatalogError.self) {
+            try ModelDownloader.validateAvailableCapacity(
+                remainingBytes: Int64.max,
+                reserveBytes: 1,
+                availableBytes: Int64.max,
+                unknownCapacityAllowed: false
+            )
+        }
+
+        // Existing non-app callers retain their zero-reserve, unknown-capacity
+        // fallback.
+        try ModelDownloader.validateAvailableCapacity(
+            remainingBytes: remaining,
+            reserveBytes: 0,
+            availableBytes: nil,
+            unknownCapacityAllowed: true
+        )
+    }
+
+    @Test("cache admission lock excludes another downloader until release")
+    func cacheAdmissionLockSerializesDownloaders() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "model-download-lock-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let first = try await ModelDownloadCacheAdmissionLock.acquire(at: root)
+        #expect(try ModelDownloadCacheAdmissionLock.tryAcquire(at: root) == nil)
+
+        first.release()
+        let second = try #require(
+            try ModelDownloadCacheAdmissionLock.tryAcquire(at: root)
+        )
+        second.release()
+    }
+
+    @Test("download and app planning share valid-file and part-byte classification")
+    func sharedManifestDiskInspection() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("download-plan-state-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let complete = Data("already complete".utf8)
+        let partialWhole = Data("partially downloaded shard".utf8)
+        let partialPrefix = partialWhole.prefix(9)
+        let missing = Data("missing".utf8)
+        let destinations = [
+            directory.appendingPathComponent("complete.bin"),
+            directory.appendingPathComponent("partial.bin"),
+            directory.appendingPathComponent("missing.bin"),
+        ]
+        try complete.write(to: destinations[0])
+        try Data(partialPrefix).write(
+            to: destinations[1].appendingPathExtension("part")
+        )
+
+        let files = [
+            ManifestFile(
+                path: "complete.bin",
+                sizeBytes: Int64(complete.count),
+                sha256: sha256Hex(complete),
+                role: "weight"
+            ),
+            ManifestFile(
+                path: "partial.bin",
+                sizeBytes: Int64(partialWhole.count),
+                sha256: sha256Hex(partialWhole),
+                role: "weight"
+            ),
+            ManifestFile(
+                path: "missing.bin",
+                sizeBytes: Int64(missing.count),
+                sha256: sha256Hex(missing),
+                role: "config"
+            ),
+        ]
+
+        let state = ModelDownloader().inspectManifestDownloadState(
+            files: files,
+            destinations: destinations
+        )
+
+        #expect(state.alreadyValid == [true, false, false])
+        #expect(state.partBytes == [0, Int64(partialPrefix.count), 0])
+        #expect(state.remainingBytes ==
+            Int64(partialWhole.count - partialPrefix.count + missing.count))
+    }
+
+    @Test("storage planning reads resumable staging without changing it")
+    func storagePlanReadsStagingWithoutMutation() async throws {
+        PrefetchURLProtocol.reset()
+        let modelID = "test-org/storage-plan-\(UUID().uuidString)"
+        let prefix = "v2/storage-plan/v1"
+        let complete = Data("complete config".utf8)
+        let partialWhole = Data("partially downloaded model shard".utf8)
+        let partialPrefix = Data(partialWhole.prefix(11))
+        let files = [
+            ManifestFile(
+                path: "config.json",
+                sizeBytes: Int64(complete.count),
+                sha256: sha256Hex(complete),
+                role: "config"
+            ),
+            ManifestFile(
+                path: "model.safetensors",
+                sizeBytes: Int64(partialWhole.count),
+                sha256: sha256Hex(partialWhole),
+                role: "weight"
+            ),
+        ]
+        let aggregate = aggregateHash(files: [
+            ("config.json", complete),
+            ("model.safetensors", partialWhole),
+        ])
+        let manifest = ModelManifest(
+            schemaVersion: 1,
+            modelID: modelID,
+            version: "v1",
+            r2Prefix: prefix,
+            aggregateSHA256: aggregate,
+            totalSizeBytes: Int64(complete.count + partialWhole.count),
+            fileCount: files.count,
+            files: files,
+            createdAt: Date(timeIntervalSince1970: 0)
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        PrefetchURLProtocol.files = [
+            "/\(prefix)/manifest.json": try encoder.encode(manifest),
+        ]
+
+        let modelDirectory = ModelDownloader.cacheModelDirectory(for: modelID)
+        let stagingDirectory = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+            .deletingLastPathComponent()
+            .appendingPathComponent(
+                ModelDownloader.localStagingDirName(r2Prefix: prefix),
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: modelDirectory) }
+        try FileManager.default.createDirectory(
+            at: stagingDirectory,
+            withIntermediateDirectories: true
+        )
+        let completeURL = stagingDirectory.appendingPathComponent("config.json")
+        let partialURL = stagingDirectory
+            .appendingPathComponent("model.safetensors")
+            .appendingPathExtension("part")
+        try complete.write(to: completeURL)
+        try partialPrefix.write(to: partialURL)
+
+        let downloader = ModelDownloader(
+            r2CDNURL: "https://cdn.example.test",
+            urlSession: makeSession()
+        )
+        let model = CatalogModel(
+            id: modelID,
+            s3Name: "unused",
+            displayName: "Storage Plan",
+            sizeGb: 99,
+            r2Prefix: prefix,
+            aggregateSHA256: aggregate,
+            totalSizeBytes: 99_000_000_000,
+            fileCount: files.count
+        )
+        let reserve: Int64 = 123
+
+        let plan = try await downloader.storagePlan(
+            for: model,
+            reserveBytes: reserve
+        )
+
+        let expectedRemaining = Int64(partialWhole.count - partialPrefix.count)
+        #expect(plan.remainingBytes == expectedRemaining)
+        #expect(plan.reserveBytes == reserve)
+        #expect(plan.requiredAvailableBytes == expectedRemaining + reserve)
+        #expect(try Data(contentsOf: completeURL) == complete)
+        #expect(try Data(contentsOf: partialURL) == partialPrefix)
+        #expect(!FileManager.default.fileExists(
+            atPath: stagingDirectory
+                .appendingPathComponent("model.safetensors")
+                .path
+        ))
+    }
+
     @Test("foreground download resumes: already-valid staged files are skipped, only missing files fetched")
     func foregroundDownloadResumesFromStaging() async throws {
         // The foreground (serve-time) download path must also resume an interrupted
@@ -818,11 +1150,17 @@ struct ModelPrefetchDownloaderTests {
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
         try bigBytes.write(to: stagingDir.appendingPathComponent("model-00001-of-00001.safetensors"))
 
-        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
+        let reserve: Int64 = 123
+        let exactAvailable = Int64(smallBytes.count) + reserve
+        let downloader = ModelDownloader(
+            r2CDNURL: "https://cdn.example.test",
+            urlSession: makeSession(),
+            availableCapacityProvider: { _ in exactAvailable }
+        )
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "FG", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: aggregate)
 
-        try await downloader.download(model: model)
+        try await downloader.download(model: model, reserveBytes: reserve)
 
         let fetched = PrefetchURLProtocol.fetchedPaths()
         #expect(fetched.contains("/\(prefix)/config.json")) // missing file fetched

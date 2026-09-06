@@ -161,7 +161,7 @@ func (s *Server) handleMySummary(w http.ResponseWriter, r *http.Request) {
 	}
 	accountID := user.AccountID
 
-	summary, err := s.store.GetAccountEarningsSummary(accountID)
+	summary, err := s.accountEarningsSummary(accountID)
 	if err != nil {
 		s.logger.Error("get account earnings summary failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch earnings"))
@@ -645,16 +645,32 @@ func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) 
 
 	ctx := r.Context()
 
-	// The public route accepts only the opaque provider session id. Resolve the
-	// stable hardware identity internally so serials never enter URLs or API
-	// payloads while reconnect rows are still removed together.
-	rec, err := s.store.GetProviderRecord(ctx, providerID)
-	if err != nil || rec == nil {
-		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "machine not found"))
+	// Resolve ownership from the caller's account-scoped fleet. A global serial
+	// lookup can return a newer record after the physical Mac was transferred to
+	// another account, causing the stale owner to inspect or evict that new
+	// owner's live connection.
+	ownedRecords, err := s.store.ListProvidersByAccount(ctx, user.AccountID)
+	if err != nil {
+		s.logger.Error("list providers for delete failed", "account_id", user.AccountID, "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to remove machine"))
 		return
 	}
-	if rec.AccountID != user.AccountID {
-		writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "you do not own this machine"))
+	var rec *store.ProviderRecord
+	for i := range ownedRecords {
+		if ownedRecords[i].ID == providerID {
+			rec = &ownedRecords[i]
+			break
+		}
+	}
+	if rec == nil {
+		// Public identifiers stay opaque; hardware serials are resolved only
+		// inside the caller's account-scoped records.
+		other, lookupErr := s.store.GetProviderRecord(ctx, providerID)
+		if lookupErr == nil && other != nil {
+			writeJSON(w, http.StatusForbidden, errorResponse("forbidden", "you do not own this machine"))
+		} else {
+			writeJSON(w, http.StatusNotFound, errorResponse("not_found", "machine not found"))
+		}
 		return
 	}
 
@@ -664,8 +680,9 @@ func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Refuse if the machine is currently connected — it would re-register and
-	// the card would return.
-	if s.registry.RemoveProviderBySerial(stableIdentity, false) {
+	// the card would return. Account matching is mandatory: a transferred Mac
+	// connected under its new owner does not block deletion of the stale record.
+	if s.registry.HasConnectedProviderForAccountIdentity(user.AccountID, stableIdentity) {
 		writeJSON(w, http.StatusConflict, errorResponse("conflict", "machine is currently online — stop it before removing"))
 		return
 	}
@@ -681,9 +698,9 @@ func (s *Server) handleDeleteMyProvider(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Best-effort: drop any lingering in-memory entry so an evict-race can't
-	// re-persist the record we just removed.
-	s.registry.RemoveProviderBySerial(stableIdentity, true)
+	// Best-effort: drop only a lingering connection still owned by this account,
+	// so a transfer/reconnect race can never disconnect the new owner's session.
+	s.registry.DisconnectProvidersForAccountIdentity(user.AccountID, stableIdentity)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"deleted":      true,

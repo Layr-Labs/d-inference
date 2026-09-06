@@ -84,23 +84,31 @@ private actor ConsumedValues {
 
 @Test
 func pipelineWaitUntilDrainedKeepsConsumerReusable() async {
+    let counter = LiveCounter()
     let consumed = ConsumptionCounter()
-    let pipeline = BoundedSingleConsumerPipeline<Int>(capacity: 4) { _ in
+    let pipeline = BoundedSingleConsumerPipeline<TrackedPayload>(capacity: 4) { _ in
         await consumed.increment()
     }
 
-    for value in 0..<4 {
-        #expect(pipeline.submit(value))
+    for _ in 0..<4 {
+        #expect(pipeline.submit(TrackedPayload(counter)))
     }
+    // An open drain must return without waiting for the long-lived task to exit.
     await pipeline.waitUntilDrained()
     #expect(await consumed.snapshot == 4)
 
-    #expect(pipeline.submit(4))
+    // The same consumer must still accept and finish another full batch.
+    for _ in 0..<4 {
+        #expect(pipeline.submit(TrackedPayload(counter)))
+    }
     await pipeline.waitUntilDrained()
-    #expect(await consumed.snapshot == 5)
+    #expect(await consumed.snapshot == 8)
 
+    // Only the shutdown drain guarantees that the task's payload references
+    // have been released, beyond merely completing the consume callbacks.
     pipeline.shutdown()
     await pipeline.waitUntilDrained()
+    #expect(counter.snapshot.live == 0, "payloads leaked after reusable drains and shutdown")
 }
 
 @Test

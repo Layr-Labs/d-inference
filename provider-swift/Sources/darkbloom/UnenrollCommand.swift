@@ -12,6 +12,8 @@ struct Unenroll: AsyncParsableCommand {
         """
     )
 
+    @OptionGroup var configOptions: ConfigOptions
+
     @Flag(help: "Skip the local-data cleanup confirmation and purge anyway.")
     var force = false
 
@@ -51,6 +53,9 @@ struct Unenroll: AsyncParsableCommand {
         print("Local data cleanup will remove:")
         print("  • Config dir:    ~/.config/darkbloom/  (and legacy ~/.config/eigeninference/)")
         print("  • Auth token:    ~/.darkbloom/auth_token")
+        print("  • Linked account: ~/.darkbloom/provider_account")
+        print("  • Token issuer:  ~/.darkbloom/provider_issuer")
+        print("  • Local API:     ~/.darkbloom/{local_token,local.json}")
         print("  • Legacy keys:   ~/.darkbloom/{wallet_key,enclave_key.data,…}")
         print()
 
@@ -64,7 +69,23 @@ struct Unenroll: AsyncParsableCommand {
         }
 
         if proceed {
-            LocalDataCleanup.purge()
+            let credential: ProviderCredential?
+            let localOnly: Bool
+            do {
+                credential = try ProviderCredentialStore.load()
+                localOnly = false
+            } catch ProviderCredentialStoreError.incompleteCredential {
+                credential = nil
+                localOnly = true
+            }
+            try await unlinkProviderAccount(
+                credential: credential,
+                localOnly: localOnly
+            )
+            if localOnly {
+                print("  ! Legacy coordinator token could not be revoked because its issuer is unknown.")
+            }
+            try LocalDataCleanup.purge(authToken: false)
             print("  ✓ Local data cleaned up.")
         } else {
             print("  Skipped local cleanup.")

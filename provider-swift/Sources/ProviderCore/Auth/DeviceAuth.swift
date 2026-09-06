@@ -4,7 +4,9 @@
 /// 1. Provider POSTs to `/v1/device/code` to get a device_code, user_code, and verification_uri.
 /// 2. User opens the verification_uri in their browser and enters the user_code.
 /// 3. Provider polls `/v1/device/token` until the user approves (or the code expires).
-/// 4. On approval, the coordinator returns an auth token which is saved to `~/.darkbloom/auth_token`.
+/// 4. On approval, the coordinator returns an auth token + account id. They
+///    are persisted with the canonical issuing coordinator before login is
+///    published through `~/.darkbloom/auth_token`.
 
 import Foundation
 
@@ -59,8 +61,37 @@ public enum AuthTokenStore: Sendable {
     }
 
     static func load(canonicalPath: URL, legacyPaths: [URL]) -> String? {
+        // Reading may migrate a retained legacy token. Serialize the entire
+        // canonical recheck/copy with publication, including for custom paths.
+        // A lock failure must never fall back to an unsynchronized migration.
+        try? ProviderCredentialProcessLock.withLock(tokenPath: canonicalPath) {
+            try loadUnlocked(canonicalPath: canonicalPath, legacyPaths: legacyPaths)
+        }
+    }
+
+    /// Only for ProviderCredentialStore callers already holding the credential
+    /// lock for tokenPath(). Taking the public load path here would nest flock.
+    static func loadWhileCredentialLocked() throws -> String? {
+        try loadUnlocked(
+            canonicalPath: tokenPath(),
+            legacyPaths: tokenPathOverride() == nil ? legacyTokenPaths() : []
+        )
+    }
+
+    private static func loadUnlocked(canonicalPath: URL, legacyPaths: [URL]) throws -> String? {
         if let token = readToken(from: canonicalPath) {
             return token
+        }
+
+        // A killed publication can leave fresh metadata without a token.
+        // Never combine that metadata with a retained legacy token. Inspection
+        // failures also fail closed for both public and already-locked readers.
+        do {
+            guard try !ProviderCredentialRecoveryArtifacts.hasTokenBackup(canonicalPath: canonicalPath) else {
+                throw ProviderCredentialStoreError.credentialRecoveryRequired
+            }
+        } catch {
+            throw ProviderCredentialStoreError.credentialRecoveryRequired
         }
 
         for legacyPath in legacyPaths where legacyPath != canonicalPath {
@@ -130,15 +161,61 @@ private struct DeviceCodeResponse: Decodable, Sendable {
 private struct DeviceTokenResponse: Decodable, Sendable {
     let status: String?
     let token: String?
+    /// The coordinator account this machine was linked to (`account_id` on the
+    /// wire). Present on a successful authorization; persisted locally so
+    /// `darkbloom earnings` and the daemon-state identity block can address
+    /// payouts without re-resolving the auth token server-side.
+    let accountID: String?
     let error: TokenError?
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case token
+        case accountID = "account_id"
+        case error
+    }
 
     struct TokenError: Decodable, Sendable {
         let message: String?
     }
 }
 
+/// Live progress of an RFC 8628 device-code login.
+///
+/// Emitted at the seam where the flow runs (`performDeviceCodeLogin`) so UI
+/// wrappers can consume machine-readable state instead of scraping terminal
+/// output. `darkbloom login --json` serializes these as NDJSON on stdout (one
+/// JSON object per line) for the Darkbloom macOS app's onboarding; the decoder
+/// on the app side lives in
+/// `Sources/DarkbloomApp/Services/AccountLinkCLI.swift` and mirrors this enum
+/// case-for-case. Keep both sides in sync when changing the wire shape.
+///
+/// Delivery contract: `.code` fires at most once per attempt; exactly one
+/// terminal event (`.linked` or `.error`) fires before `performDeviceCodeLogin`
+/// returns or throws. The polling loop always terminates — on approval,
+/// coordinator denial, or expiry — so a consumer's event stream never hangs.
+public enum DeviceLoginEvent: Sendable, Equatable {
+    /// A fresh device code was issued by the coordinator. `expiresIn` is in
+    /// seconds; the login attempt gives up (`.error`) once it lapses.
+    case code(userCode: String, verificationURI: String, expiresIn: Int)
+    /// The user approved the code and the auth token was saved.
+    case linked
+    /// The attempt ended without linking (expired, denied, unreachable, or
+    /// malformed response). `message` is the terminal error's description.
+    case error(message: String)
+
+    /// Whether this event ends the attempt's event stream.
+    public var isTerminal: Bool {
+        switch self {
+        case .code: return false
+        case .linked, .error: return true
+        }
+    }
+}
+
 public enum DeviceAuthError: Error, CustomStringConvertible, Sendable {
     case alreadyLoggedIn(tokenPrefix: String)
+    case credentialRecoveryRequired
     case coordinatorUnreachable(String)
     case deviceCodeRequestFailed(String)
     case deviceCodeExpired
@@ -149,6 +226,8 @@ public enum DeviceAuthError: Error, CustomStringConvertible, Sendable {
         switch self {
         case .alreadyLoggedIn(let prefix):
             return "Already logged in (token: \(prefix)...). Run 'darkbloom logout' first to unlink."
+        case .credentialRecoveryRequired:
+            return "The saved login has incomplete account or coordinator binding. Run 'darkbloom login' to authorize a fresh login."
         case .coordinatorUnreachable(let detail):
             return "Failed to reach coordinator: \(detail)"
         case .deviceCodeRequestFailed(let detail):
@@ -169,11 +248,7 @@ public enum DeviceAuthError: Error, CustomStringConvertible, Sendable {
 ///   - `wss://api.darkbloom.dev/ws/provider` -> `https://api.darkbloom.dev`
 ///   - `ws://localhost:8080/ws/provider` -> `http://localhost:8080`
 public func coordinatorHTTPBase(_ wsURL: String) -> String {
-    wsURL
-        .replacingOccurrences(of: "wss://", with: "https://")
-        .replacingOccurrences(of: "ws://", with: "http://")
-        .replacingOccurrences(of: "/ws/provider", with: "")
-        .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    (try? canonicalCoordinatorIssuer(wsURL)) ?? ""
 }
 
 /// Run the device code login flow.
@@ -187,24 +262,94 @@ public func coordinatorHTTPBase(_ wsURL: String) -> String {
 ///     Called once when the device code is received. The caller should print
 ///     these to the terminal. Parameters: (userCode, verificationURI, expiresInSeconds).
 ///   - onPollTick: Optional callback on each poll iteration (e.g., to print a dot).
+///   - openBrowser: Try to open the verification URL in the system browser
+///     (`/usr/bin/open`). UI wrappers pass false — they deeplink the URL
+///     themselves once they receive the `.code` event.
+///   - onEvent: Optional machine-readable progress seam (see
+///     `DeviceLoginEvent`). Emits `.code` once, then exactly one terminal
+///     `.linked`/`.error` before this function returns or throws — a consumer
+///     keying off terminal events never hangs, because the poll loop below is
+///     bounded by the coordinator-provided expiry.
+///   - recoverIncompleteCredential: Opt in only for an explicit login action.
+///     Fresh authorization may replace an unchanged incomplete credential; the
+///     old token is never used to authenticate or infer its missing binding.
+///   - acceptExistingCredential: Machine-readable login may reuse a complete
+///     credential only after its binding to the requested issuer is validated.
+///     The normal success path then emits `.linked`; error prose is never proof.
 /// - Returns: The auth token string on success.
 /// - Throws: `DeviceAuthError` on failure.
 @discardableResult
 public func performDeviceCodeLogin(
     coordinatorURL: String,
     onDisplayCode: @Sendable (String, String, Int) -> Void,
-    onPollTick: (@Sendable () -> Void)? = nil
+    onPollTick: (@Sendable () -> Void)? = nil,
+    openBrowser: Bool = true,
+    onEvent: (@Sendable (DeviceLoginEvent) -> Void)? = nil,
+    recoverIncompleteCredential: Bool = false,
+    acceptExistingCredential: Bool = false
 ) async throws -> String {
-    // Check if already logged in.
-    if let existingToken = AuthTokenStore.load() {
-        let prefix = String(existingToken.prefix(min(20, existingToken.count)))
+    do {
+        try Task.checkCancellation()
+        let token = try await runDeviceCodeLogin(
+            coordinatorURL: coordinatorURL,
+            onDisplayCode: onDisplayCode,
+            onPollTick: onPollTick,
+            openBrowser: openBrowser,
+            onEvent: onEvent,
+            recoverIncompleteCredential: recoverIncompleteCredential,
+            acceptExistingCredential: acceptExistingCredential
+        )
+        onEvent?(.linked)
+        return token
+    } catch {
+        let message = (error as? DeviceAuthError)?.description ?? error.localizedDescription
+        onEvent?(.error(message: message))
+        throw error
+    }
+}
+
+/// The flow body behind `performDeviceCodeLogin`; the public wrapper owns the
+/// terminal `.linked`/`.error` event emission.
+private func runDeviceCodeLogin(
+    coordinatorURL: String,
+    onDisplayCode: @Sendable (String, String, Int) -> Void,
+    onPollTick: (@Sendable () -> Void)?,
+    openBrowser: Bool,
+    onEvent: (@Sendable (DeviceLoginEvent) -> Void)?,
+    recoverIncompleteCredential: Bool,
+    acceptExistingCredential: Bool
+) async throws -> String {
+    let existingCredential: ProviderCredential?
+    let recovery: ProviderCredentialRecovery?
+    do {
+        recovery = recoverIncompleteCredential
+            ? try ProviderCredentialRecovery.prepare(for: coordinatorURL)
+            : nil
+        existingCredential = recovery == nil ? try ProviderCredentialStore.load(for: coordinatorURL) : nil
+    } catch let error as ProviderCredentialStoreError
+        where error == .incompleteCredential || error == .credentialRecoveryRequired {
+        throw DeviceAuthError.credentialRecoveryRequired
+    } catch {
+        throw DeviceAuthError.invalidResponse(error.localizedDescription)
+    }
+    if let existingCredential {
+        if acceptExistingCredential { return existingCredential.token }
+        let prefix = String(
+            existingCredential.token.prefix(
+                min(20, existingCredential.token.count)
+            )
+        )
         throw DeviceAuthError.alreadyLoggedIn(tokenPrefix: prefix)
     }
 
     let baseURL = coordinatorHTTPBase(coordinatorURL)
 
     // Step 1: Request a device code.
-    let codeURL = URL(string: "\(baseURL)/v1/device/code")!
+    guard !baseURL.isEmpty,
+          let codeURL = URL(string: "\(baseURL)/v1/device/code")
+    else {
+        throw DeviceAuthError.invalidResponse("invalid coordinator URL")
+    }
     var codeRequest = URLRequest(url: codeURL)
     codeRequest.httpMethod = "POST"
     codeRequest.timeoutInterval = 10
@@ -232,19 +377,24 @@ public func performDeviceCodeLogin(
         throw DeviceAuthError.invalidResponse("could not decode device code response: \(error)")
     }
 
-    // Display the code to the user.
+    // Display the code to the user; notify the machine-readable seam.
     onDisplayCode(dc.user_code, dc.verification_uri, dc.expires_in)
+    onEvent?(.code(userCode: dc.user_code, verificationURI: dc.verification_uri, expiresIn: dc.expires_in))
 
     // Try to open the browser automatically.
-    let openProcess = Process()
-    openProcess.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    openProcess.arguments = [dc.verification_uri]
-    openProcess.standardOutput = FileHandle.nullDevice
-    openProcess.standardError = FileHandle.nullDevice
-    _ = try? openProcess.run()
+    if openBrowser {
+        let openProcess = Process()
+        openProcess.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        openProcess.arguments = [dc.verification_uri]
+        openProcess.standardOutput = FileHandle.nullDevice
+        openProcess.standardError = FileHandle.nullDevice
+        _ = try? openProcess.run()
+    }
 
     // Step 2: Poll for authorization.
-    let tokenURL = URL(string: "\(baseURL)/v1/device/token")!
+    guard let tokenURL = URL(string: "\(baseURL)/v1/device/token") else {
+        throw DeviceAuthError.invalidResponse("invalid coordinator URL")
+    }
     let pollInterval = max(dc.interval, 1) // At least 1 second
     let deadline = Date().addingTimeInterval(TimeInterval(dc.expires_in))
 
@@ -262,12 +412,32 @@ public func performDeviceCodeLogin(
         tokenRequest.httpBody = body
 
         let tokenData: Data
+        let tokenResponse: URLResponse
         do {
-            (tokenData, _) = try await URLSession.shared.data(for: tokenRequest)
+            (tokenData, tokenResponse) = try await URLSession.shared.data(for: tokenRequest)
         } catch {
             // Network error -- retry on next tick.
             onPollTick?()
             continue
+        }
+
+        guard let tokenHTTPResponse = tokenResponse as? HTTPURLResponse else {
+            throw DeviceAuthError.invalidResponse("device poll returned a non-HTTP response")
+        }
+        guard (200 ..< 300).contains(tokenHTTPResponse.statusCode) else {
+            let detail = (try? JSONDecoder().decode(
+                DeviceTokenResponse.self,
+                from: tokenData
+            ))?.error?.message
+            let fallback = HTTPURLResponse.localizedString(
+                forStatusCode: tokenHTTPResponse.statusCode
+            )
+            let message = detail.flatMap { $0.isEmpty ? nil : $0 } ?? fallback
+            throw DeviceAuthError.authorizationFailed(
+                "coordinator rejected device authorization "
+                    + "(HTTP \(tokenHTTPResponse.statusCode)): "
+                    + message
+            )
         }
 
         let tokenResp: DeviceTokenResponse
@@ -288,7 +458,21 @@ public func performDeviceCodeLogin(
             guard let token = tokenResp.token, !token.isEmpty else {
                 throw DeviceAuthError.invalidResponse("authorized but no token in response")
             }
-            try AuthTokenStore.save(token)
+            guard let accountID = tokenResp.accountID, !accountID.isEmpty else {
+                throw DeviceAuthError.invalidResponse(
+                    "authorized but no account identity in response"
+                )
+            }
+            try Task.checkCancellation()
+            if let recovery {
+                try recovery.publish(token: token, accountID: accountID)
+            } else {
+                try ProviderCredentialStore.save(
+                    token: token,
+                    accountID: accountID,
+                    coordinatorURL: coordinatorURL
+                )
+            }
             return token
 
         default:

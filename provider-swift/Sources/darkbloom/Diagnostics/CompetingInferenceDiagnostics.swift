@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCore
 
 /// Snapshot of non-Darkbloom inference that can steal unified memory / ports.
 /// Injectable for pure unit tests (see `DoctorChecksTests`).
@@ -63,7 +64,8 @@ func competingInferenceCheck(_ snap: LocalContentionSnapshot) -> DoctorCheck {
         return DoctorCheck(
             name: "competing inference",
             status: .pass,
-            detail: "no common local inference competitors detected"
+            detail: "no common local inference competitors detected",
+            section: DiagnosticSection.runtime.wireID
         )
     }
     var parts: [String] = []
@@ -77,6 +79,7 @@ func competingInferenceCheck(_ snap: LocalContentionSnapshot) -> DoctorCheck {
         name: "competing inference",
         status: .warn,
         detail: parts.joined(separator: "; ")
-            + " — can reduce usable RAM / deroute paid work on unified memory"
+            + " — can reduce usable RAM / deroute paid work on unified memory",
+        section: DiagnosticSection.runtime.wireID
     )
 }

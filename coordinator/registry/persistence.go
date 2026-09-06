@@ -42,16 +42,36 @@ func (r *Registry) LoadStoredProviders() map[string]*store.ProviderRecord {
 		rec := records[i]
 		// Index by serial number for matching reconnecting providers
 		if rec.SerialNumber != "" {
-			lookup[rec.SerialNumber] = &rec
+			keepNewestStoredProvider(lookup, rec.SerialNumber, &rec)
 		}
 		// Also index by SE public key
 		if rec.SEPublicKey != "" {
-			lookup["sekey:"+rec.SEPublicKey] = &rec
+			keepNewestStoredProvider(lookup, "sekey:"+rec.SEPublicKey, &rec)
 		}
 	}
 
 	r.logger.Info("loaded stored provider records", "count", len(records))
 	return lookup
+}
+
+// keepNewestStoredProvider makes startup restore independent of backend row
+// order. PostgreSQL returns LastSeen DESC while the memory store iterates a map;
+// blindly assigning selected the oldest row in one backend and a random row in
+// the other. RegisteredAt and ID provide deterministic tie breakers.
+func keepNewestStoredProvider(
+	lookup map[string]*store.ProviderRecord,
+	key string,
+	candidate *store.ProviderRecord,
+) {
+	current := lookup[key]
+	if current == nil ||
+		candidate.LastSeen.After(current.LastSeen) ||
+		(candidate.LastSeen.Equal(current.LastSeen) &&
+			(candidate.RegisteredAt.After(current.RegisteredAt) ||
+				(candidate.RegisteredAt.Equal(current.RegisteredAt) &&
+					candidate.ID > current.ID))) {
+		lookup[key] = candidate
+	}
 }
 
 // RestoreProviderState restores trust level and reputation from a stored record
@@ -129,10 +149,10 @@ func (r *Registry) RestoreProviderState(p *Provider, rec *store.ProviderRecord) 
 		p.Location = &cp
 	}
 
-	// Restore account linkage
-	if rec.AccountID != "" && p.AccountID == "" {
-		p.AccountID = rec.AccountID
-	}
+	// Account linkage is never restored from a serial-matched record. Only the
+	// current connection's provider token may establish ownership; carrying an
+	// old AccountID across logout or device transfer would credit and self-route
+	// work to the previous operator.
 
 	// Restore lifetime counters and the last raw session counters so future
 	// heartbeats can merge cleanly after coordinator or provider restarts. The

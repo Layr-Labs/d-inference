@@ -87,7 +87,11 @@ public final class UpdateProcessLock: @unchecked Sendable {
             throw LockError.openFailed(error.localizedDescription)
         }
 
-        let descriptor = open(path.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        let descriptor = open(
+            path.path,
+            O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+            0o600
+        )
         guard descriptor >= 0 else {
             throw LockError.openFailed(posixMessage())
         }

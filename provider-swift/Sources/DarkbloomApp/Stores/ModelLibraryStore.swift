@@ -1,0 +1,676 @@
+import Foundation
+import Observation
+import ProviderCoreFoundation
+
+enum ModelCatalogState: Equatable, Sendable {
+    case loading
+    case available(lastUpdated: Date)
+    case offline(message: String, showingCachedResults: Bool)
+}
+
+enum ModelLibraryFixture: String, CaseIterable, Sendable {
+    case ready
+    case catalogOffline
+    case tooLarge
+    case resumableDownload
+    case failedVerification
+}
+
+enum ModelLibraryActionResult: Equatable, Sendable {
+    case applied
+    case requiresCompatibilityConfirmation(requiredMemoryGB: Int, availableMemoryGB: Int)
+    case unavailable(String)
+    case invalidState
+    case modelNotFound
+}
+
+@MainActor
+@Observable
+final class ModelLibraryStore {
+    private(set) var catalogState: ModelCatalogState
+    private(set) var models: [ModelSummary]
+    private(set) var selectedModelID: ModelSummary.ID?
+    private(set) var lastActionResult: ModelLibraryActionResult?
+
+    /// Nil in fixture mode; the live store shells out to the `darkbloom` CLI.
+    @ObservationIgnored
+    private let liveCLI: (any ModelCatalogCLIRunning)?
+
+    /// One consumer task per in-flight CLI download (cancel ⇒ pause ⇒ the
+    /// child is terminated; its staged bytes stay on disk for resume).
+    @ObservationIgnored
+    private var downloadTasks: [ModelSummary.ID: Task<Void, Never>] = [:]
+
+    /// Session token per download task so a superseded/cancelled pump never
+    /// clears its replacement from `downloadTasks` on the way out.
+    @ObservationIgnored
+    private var downloadSessions: [ModelSummary.ID: UUID] = [:]
+
+    /// A preflight is intentionally invisible as an active transfer until the
+    /// fresh plan is admitted and the CLI stream exists. This token prevents
+    /// duplicate taps or delayed preflights from spawning a superseded start.
+    @ObservationIgnored
+    private var pendingDownloadStarts: [ModelSummary.ID: UUID] = [:]
+
+    @ObservationIgnored
+    private var refreshTask: Task<Void, Never>?
+
+    @ObservationIgnored
+    private var backgroundTasks: [UUID: Task<Void, Never>] = [:]
+
+    @ObservationIgnored
+    private var started = false
+
+    init(fixture: ModelLibraryFixture = .ready) {
+        let state = ModelLibraryFixtures.make(fixture)
+        catalogState = state.catalogState
+        models = state.models
+        selectedModelID = state.selectedModelID
+        liveCLI = nil
+    }
+
+    /// Live mode: rows are built by `start()`/`refreshCatalog` from
+    /// `models catalog/list --json` plus the daemon's state file; downloads
+    /// are real `models download --json` child processes.
+    init(live cli: any ModelCatalogCLIRunning) {
+        catalogState = .loading
+        models = []
+        selectedModelID = nil
+        liveCLI = cli
+    }
+
+    deinit {
+        downloadTasks.values.forEach { $0.cancel() }
+        backgroundTasks.values.forEach { $0.cancel() }
+        refreshTask?.cancel()
+    }
+
+    var isLive: Bool { liveCLI != nil }
+
+    var selectedModel: ModelSummary? {
+        guard let selectedModelID else { return nil }
+        return models.first { $0.id == selectedModelID }
+    }
+
+    var installedModels: [ModelSummary] {
+        models.filter(\.isInstalled)
+    }
+
+    var activeTransfers: [ModelSummary] {
+        models.filter {
+            switch $0.installation {
+            case .downloading, .paused, .verifying: true
+            case .notInstalled, .installed, .failed: false
+            }
+        }
+    }
+
+    // MARK: - Live refresh
+
+    /// Kick the first live load. Idempotent; a later call after an offline
+    /// failure gives the catalog a fresh shot (e.g. re-entering the screen).
+    func start() async {
+        guard let liveCLI else { return }
+        if started {
+            if case .offline = catalogState { retryCatalog() }
+            return
+        }
+        started = true
+        await refreshCatalog(using: liveCLI, preserveCatalogStateOnError: true)
+    }
+
+    /// Force a live catalog/local-state reread after an external CLI
+    /// transaction (for example, account unlink). Fixture stores are a no-op.
+    func refresh() async {
+        guard let liveCLI else { return }
+        refreshTask?.cancel()
+        refreshTask = nil
+        started = true
+        await refreshCatalog(using: liveCLI, preserveCatalogStateOnError: true)
+    }
+
+    private func refreshCatalog(
+        using cli: any ModelCatalogCLIRunning,
+        preserveCatalogStateOnError: Bool = false
+    ) async {
+        do {
+            let snapshot = try await cli.fetchSnapshot()
+            try Task.checkCancellation()
+            apply(snapshot: snapshot)
+            if let error = snapshot.catalogError {
+                catalogState = .offline(
+                    message: error.localizedDescription,
+                    showingCachedResults: models.contains(where: \.isAvailableFromCatalog)
+                )
+            } else {
+                catalogState = .available(lastUpdated: snapshot.fetchedAt)
+            }
+            lastActionResult = .applied
+        } catch is CancellationError {
+            // A cancelled first load must be retryable when the user returns
+            // from another destination. Keep an existing usable snapshot.
+            if case .loading = catalogState {
+                started = false
+                catalogState = .offline(
+                    message: "Model loading was interrupted. Try again.",
+                    showingCachedResults: !models.isEmpty
+                )
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            if preserveCatalogStateOnError, case .available = catalogState {
+                return
+            }
+            catalogState = .offline(
+                message: error.localizedDescription,
+                showingCachedResults: !models.isEmpty
+            )
+        }
+    }
+
+    private func scheduleRefresh(preserveCatalogStateOnError: Bool = false) {
+        guard let liveCLI, refreshTask == nil else { return }
+        refreshTask = Task { [weak self] in
+            guard let self else { return }
+            await self.refreshCatalog(
+                using: liveCLI,
+                preserveCatalogStateOnError: preserveCatalogStateOnError
+            )
+            self.refreshTask = nil
+        }
+    }
+
+    // MARK: - Selection
+
+    func selectModel(id: ModelSummary.ID?) {
+        guard id == nil || models.contains(where: { $0.id == id }) else {
+            lastActionResult = .modelNotFound
+            return
+        }
+        selectedModelID = id
+        lastActionResult = .applied
+    }
+
+    func retryCatalog() {
+        guard let liveCLI else {
+            catalogState = .available(lastUpdated: ModelLibraryFixtures.timestamp)
+            lastActionResult = .applied
+            return
+        }
+        refreshTask?.cancel()
+        refreshTask = nil
+        catalogState = .loading
+        refreshTask = Task { [weak self] in
+            guard let self else { return }
+            await self.refreshCatalog(using: liveCLI)
+            self.refreshTask = nil
+        }
+    }
+
+    func clearLastActionResult() {
+        lastActionResult = nil
+    }
+
+    // MARK: - Downloads
+
+    @discardableResult
+    func beginDownload(
+        modelID: ModelSummary.ID,
+        allowingIncompatibleModel: Bool = false
+    ) async -> ModelLibraryActionResult {
+        guard let index = index(of: modelID) else {
+            return record(.modelNotFound)
+        }
+
+        guard models[index].isAvailableFromCatalog else {
+            return record(.unavailable("This model is not available in the current catalog."))
+        }
+
+        if case .loading = catalogState {
+            return record(.unavailable("Wait for the catalog to finish loading."))
+        }
+
+        if case .offline = catalogState {
+            return record(.unavailable("Reconnect to refresh the catalog before downloading."))
+        }
+
+        if let reason = models[index].fit.runtimeBlockReason {
+            return record(.unavailable(reason))
+        }
+
+        if case .tooLarge(let required, let available) = models[index].fit,
+           !allowingIncompatibleModel {
+            return record(.requiresCompatibilityConfirmation(
+                requiredMemoryGB: required,
+                availableMemoryGB: available
+            ))
+        }
+
+        switch models[index].installation {
+        case .notInstalled:
+            if isLive {
+                return await admitAndStartLiveDownload(
+                    modelID: modelID,
+                    expectedInstallation: models[index].installation,
+                    resumeCredit: 0
+                )
+            }
+            let progress = ModelTransferProgress(
+                downloadedBytes: 0,
+                totalBytes: models[index].sizeBytes,
+                bytesPerSecond: ModelLibraryFixtures.transferRate
+            )
+            models[index].installation = .downloading(progress)
+            return record(.applied)
+
+        case .failed(let failure):
+            if isLive {
+                let credit = failure.isResumable
+                    ? (failure.resumableProgress?.downloadedBytes ?? 0)
+                    : 0
+                return await admitAndStartLiveDownload(
+                    modelID: modelID,
+                    expectedInstallation: models[index].installation,
+                    resumeCredit: credit
+                )
+            }
+            let progress = failure.isResumable
+                ? failure.resumableProgress ?? emptyProgress(for: models[index])
+                : emptyProgress(for: models[index])
+            models[index].installation = .downloading(progress)
+            return record(.applied)
+
+        case .downloading, .paused, .verifying, .installed:
+            return record(.invalidState)
+        }
+    }
+
+    @discardableResult
+    func pauseDownload(modelID: ModelSummary.ID) -> ModelLibraryActionResult {
+        guard let index = index(of: modelID) else { return record(.modelNotFound) }
+        guard case .downloading(let progress) = models[index].installation else {
+            return record(.invalidState)
+        }
+        // Live pause = terminate the child. Its staged `.part` bytes stay on
+        // disk, so the next `models download` resumes where it stopped. Set
+        // the state BEFORE cancelling so the pump's cancellation path cannot
+        // clobber it.
+        models[index].installation = .paused(progress)
+        if isLive {
+            downloadSessions[modelID] = nil
+            downloadTasks[modelID]?.cancel()
+            downloadTasks[modelID] = nil
+        }
+        return record(.applied)
+    }
+
+    @discardableResult
+    func resumeDownload(modelID: ModelSummary.ID) async -> ModelLibraryActionResult {
+        guard let index = index(of: modelID) else { return record(.modelNotFound) }
+
+        if case .loading = catalogState {
+            return record(.unavailable("Wait for the catalog to finish loading."))
+        }
+        if case .offline = catalogState {
+            return record(.unavailable("Reconnect to refresh the catalog before downloading."))
+        }
+
+        if let reason = models[index].fit.runtimeBlockReason {
+            return record(.unavailable(reason))
+        }
+
+        if isLive {
+            let resumeCredit: Int64
+            switch models[index].installation {
+            case .paused(let paused):
+                resumeCredit = paused.downloadedBytes
+            case .failed(let failure) where failure.isResumable:
+                guard let resumable = failure.resumableProgress else {
+                    return record(.invalidState)
+                }
+                resumeCredit = resumable.downloadedBytes
+            default:
+                return record(.invalidState)
+            }
+            return await admitAndStartLiveDownload(
+                modelID: modelID,
+                expectedInstallation: models[index].installation,
+                resumeCredit: resumeCredit
+            )
+        }
+
+        let progress: ModelTransferProgress
+        switch models[index].installation {
+        case .paused(let pausedProgress):
+            progress = pausedProgress
+        case .failed(let failure) where failure.isResumable:
+            guard let resumableProgress = failure.resumableProgress else {
+                return record(.invalidState)
+            }
+            progress = resumableProgress
+        default:
+            return record(.invalidState)
+        }
+
+        models[index].installation = .downloading(progress)
+        return record(.applied)
+    }
+
+    // MARK: - Simulated transfer ticks (fixture previews only)
+
+    @discardableResult
+    func advanceDownload(modelID: ModelSummary.ID) -> ModelLibraryActionResult {
+        guard !isLive else { return .applied } // live transfers ride the CLI stream
+        guard let index = index(of: modelID) else { return record(.modelNotFound) }
+        guard case .downloading(let current) = models[index].installation else {
+            return record(.invalidState)
+        }
+
+        let increment = max(1, current.totalBytes / 4)
+        let downloaded = min(current.totalBytes, current.downloadedBytes + increment)
+        let remaining = max(0, current.totalBytes - downloaded)
+        let eta = ModelLibraryFixtures.transferRate > 0
+            ? Int(ceil(Double(remaining) / Double(ModelLibraryFixtures.transferRate)))
+            : nil
+        let next = ModelTransferProgress(
+            downloadedBytes: downloaded,
+            totalBytes: current.totalBytes,
+            bytesPerSecond: ModelLibraryFixtures.transferRate,
+            estimatedSecondsRemaining: eta,
+            resumedBytes: current.resumedBytes
+        )
+
+        models[index].installation = downloaded == current.totalBytes
+            ? .verifying(next)
+            : .downloading(next)
+        return record(.applied)
+    }
+
+    @discardableResult
+    func finishVerification(
+        modelID: ModelSummary.ID,
+        succeeds: Bool
+    ) -> ModelLibraryActionResult {
+        guard !isLive else { return .applied } // verification outcome arrives as stream events
+        guard let index = index(of: modelID) else { return record(.modelNotFound) }
+        guard case .verifying = models[index].installation else {
+            return record(.invalidState)
+        }
+
+        if succeeds {
+            models[index].installation = .installed
+        } else {
+            models[index].installation = .failed(ModelTransferFailure(
+                reason: .verificationMismatch,
+                message: "The downloaded weights did not match the catalog hash.",
+                resumableProgress: nil
+            ))
+        }
+        return record(.applied)
+    }
+
+    // MARK: - Removal
+
+    @discardableResult
+    func removeModel(modelID: ModelSummary.ID) -> ModelLibraryActionResult {
+        guard let index = index(of: modelID) else { return record(.modelNotFound) }
+        guard models[index].isInstalled else { return record(.invalidState) }
+        guard models[index].runtime == .cold else {
+            return record(.unavailable("Take this model offline before removing it."))
+        }
+        if let liveCLI {
+            let removedID = models[index].id
+            let taskID = UUID()
+            backgroundTasks[taskID] = Task { [weak self] in
+                guard let self else { return }
+                defer { self.backgroundTasks[taskID] = nil }
+                do {
+                    try await liveCLI.removeModel(modelID: removedID)
+                } catch is CancellationError {
+                    return
+                } catch {
+                    _ = self.record(.unavailable(error.localizedDescription))
+                    return
+                }
+                // Disk truth converges: local-only rows vanish, catalog rows
+                // flip back to notInstalled.
+                await self.refreshCatalog(using: liveCLI, preserveCatalogStateOnError: true)
+            }
+            return record(.applied)
+        }
+        if models[index].origin == .localOnly {
+            let removedID = models[index].id
+            models.remove(at: index)
+            if selectedModelID == removedID { selectedModelID = nil }
+        } else {
+            models[index].installation = .notInstalled
+        }
+        return record(.applied)
+    }
+
+    // MARK: - Live download pump
+
+    private func admitAndStartLiveDownload(
+        modelID: ModelSummary.ID,
+        expectedInstallation: ModelInstallationState,
+        resumeCredit: Int64
+    ) async -> ModelLibraryActionResult {
+        guard let liveCLI else { return record(.invalidState) }
+        guard pendingDownloadStarts[modelID] == nil,
+              !isDownloadActive(modelID: modelID)
+        else {
+            return record(.invalidState)
+        }
+
+        let intent = UUID()
+        pendingDownloadStarts[modelID] = intent
+        defer {
+            if pendingDownloadStarts[modelID] == intent {
+                pendingDownloadStarts[modelID] = nil
+            }
+        }
+
+        do {
+            let preparation = try await liveCLI.prepareDownload(modelID: modelID)
+            guard downloadStartIsCurrent(
+                modelID: modelID,
+                intent: intent,
+                expectedInstallation: expectedInstallation
+            ), let index = index(of: modelID)
+            else {
+                return .invalidState
+            }
+            let stream = try preparation.start()
+            startLiveDownload(
+                at: index,
+                resumeCredit: resumeCredit,
+                stream: stream,
+                cli: liveCLI
+            )
+            return record(.applied)
+        } catch is CancellationError {
+            return .invalidState
+        } catch {
+            return record(.unavailable(error.localizedDescription))
+        }
+    }
+
+    private func downloadStartIsCurrent(
+        modelID: ModelSummary.ID,
+        intent: UUID,
+        expectedInstallation: ModelInstallationState
+    ) -> Bool {
+        guard !Task.isCancelled,
+              pendingDownloadStarts[modelID] == intent,
+              !isDownloadActive(modelID: modelID),
+              case .available = catalogState,
+              let index = index(of: modelID)
+        else {
+            return false
+        }
+        return models[index].installation == expectedInstallation
+            && models[index].fit.runtimeBlockReason == nil
+    }
+
+    private func startLiveDownload(
+        at index: Int,
+        resumeCredit: Int64,
+        stream: AsyncThrowingStream<ModelDownloadStreamEvent, Error>,
+        cli: any ModelCatalogCLIRunning
+    ) {
+        guard !isDownloadActive(modelID: models[index].id) else { return }
+        let model = models[index]
+        models[index].installation = .downloading(ModelTransferProgress(
+            downloadedBytes: 0,
+            totalBytes: model.sizeBytes
+        ))
+        let session = UUID()
+        let modelID = model.id
+        downloadSessions[modelID] = session
+        downloadTasks[modelID]?.cancel()
+        downloadTasks[modelID] = Task { [weak self] in
+            guard let self else { return }
+            await self.pumpDownloadEvents(
+                modelID: modelID,
+                resumeCredit: resumeCredit,
+                stream: stream,
+                cli: cli
+            )
+            // A superseded/cancelled pump must not clear its replacement.
+            if self.downloadSessions[modelID] == session {
+                self.downloadSessions[modelID] = nil
+                self.downloadTasks[modelID] = nil
+            }
+        }
+    }
+
+    private func isDownloadActive(modelID: ModelSummary.ID) -> Bool {
+        downloadSessions[modelID] != nil
+    }
+
+    /// Translate the CLI's NDJSON events into `ModelInstallationState`:
+    /// per-file cumulative bytes are summed into one model-level progress
+    /// bar (denominator = catalog size, which covers files the stream hasn't
+    /// reached); `verifying`/`done` flip phases; a thrown stream (or the
+    /// CLI's terminal error line) becomes a resumable `.failed` whenever any
+    /// bytes are safely staged.
+    private func pumpDownloadEvents(
+        modelID: ModelSummary.ID,
+        resumeCredit: Int64,
+        stream: AsyncThrowingStream<ModelDownloadStreamEvent, Error>,
+        cli: any ModelCatalogCLIRunning
+    ) async {
+        var fileBytes: [String: Int64] = [:]
+        var fileTotals: [String: Int64] = [:]
+        var rateSample: (date: Date, downloaded: Int64)?
+        var rate: Int64 = 0
+
+        func catalogTotalBytes() -> Int64 {
+            index(of: modelID).map { models[$0].sizeBytes } ?? 0
+        }
+
+        func aggregateProgress(now: Date) -> ModelTransferProgress {
+            let downloaded = fileBytes.values.reduce(0, +)
+            let knownTotal = fileTotals.values.reduce(0, +)
+            let total = max(catalogTotalBytes(), knownTotal, downloaded)
+            if let sample = rateSample, now.timeIntervalSince(sample.date) >= 0.5 {
+                let dt = now.timeIntervalSince(sample.date)
+                rate = Int64(max(0, Double(downloaded - sample.downloaded) / dt))
+                rateSample = (now, downloaded)
+            } else if rateSample == nil {
+                rateSample = (now, downloaded)
+            }
+            let remaining = max(0, total - downloaded)
+            let eta = rate > 0 && remaining > 0 ? Int(ceil(Double(remaining) / Double(rate))) : nil
+            return ModelTransferProgress(
+                downloadedBytes: downloaded,
+                totalBytes: total,
+                bytesPerSecond: rate,
+                estimatedSecondsRemaining: eta,
+                // The resumed-prefix credit only counts once the CLI has
+                // actually reported those on-disk bytes back to us.
+                resumedBytes: min(resumeCredit, downloaded)
+            )
+        }
+
+        do {
+            for try await event in stream {
+                try Task.checkCancellation()
+                guard let index = index(of: modelID) else { return }
+                switch event {
+                case .progress(let file, let bytes, let total):
+                    fileBytes[file] = bytes
+                    if let total { fileTotals[file] = total }
+                    models[index].installation = .downloading(aggregateProgress(now: Date()))
+                case .verifying:
+                    if let progress = models[index].installation.progress {
+                        models[index].installation = .verifying(progress)
+                    }
+                case .done:
+                    models[index].installation = .installed
+                case .error(let message):
+                    throw ModelCatalogCLIError.downloadFailed(message)
+                }
+            }
+        } catch is CancellationError {
+            // Pause already wrote the .paused state; leave it alone.
+        } catch {
+            guard let index = index(of: modelID) else { return }
+            let progress = fileBytes.isEmpty
+                ? nil
+                : aggregateProgress(now: Date())
+            models[index].installation = .failed(ModelTransferFailure(
+                reason: Self.classifyTransferFailure(error),
+                message: error.localizedDescription,
+                resumableProgress: progress
+            ))
+        }
+
+        // Converge with disk + daemon truth: a finished download publishes
+        // into `models list --json`; warm state may have shifted too.
+        await refreshCatalog(using: cli, preserveCatalogStateOnError: true)
+    }
+
+    private static func classifyTransferFailure(_ error: Error) -> ModelTransferFailureReason {
+        let text = error.localizedDescription.lowercased()
+        if text.contains("hash") || text.contains("mismatch") || text.contains("aggregate") {
+            return .verificationMismatch
+        }
+        if text.contains("disk") || text.contains("space") {
+            return .insufficientDiskSpace
+        }
+        switch error {
+        case ModelCatalogCLIError.cliNotFound, ModelCatalogCLIError.exited,
+             ModelCatalogCLIError.timedOut, ModelCatalogCLIError.unreadableOutput:
+            return .network
+        default:
+            return .unknown
+        }
+    }
+
+    // MARK: - Snapshot → rows
+
+    private func apply(snapshot: ModelLibrarySnapshot) {
+        models = ModelLibrarySnapshotMapping.rows(snapshot: snapshot, existingModels: models)
+    }
+
+    // MARK: - Internals
+
+    private func index(of modelID: ModelSummary.ID) -> Int? {
+        models.firstIndex { $0.id == modelID }
+    }
+
+    private func emptyProgress(for model: ModelSummary) -> ModelTransferProgress {
+        ModelTransferProgress(
+            downloadedBytes: 0,
+            totalBytes: model.sizeBytes,
+            bytesPerSecond: ModelLibraryFixtures.transferRate
+        )
+    }
+
+    @discardableResult
+    private func record(_ result: ModelLibraryActionResult) -> ModelLibraryActionResult {
+        lastActionResult = result
+        return result
+    }
+}

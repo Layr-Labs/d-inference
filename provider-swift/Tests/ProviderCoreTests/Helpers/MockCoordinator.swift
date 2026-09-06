@@ -74,7 +74,15 @@ public struct MockDeviceCodeFixture: Sendable {
     public var expiresIn: Int
     public var interval: Int
     public var token: String
+    public var accountID: String?
     public var authorizeImmediately: Bool
+    /// When set, `/v1/device/token` answers a terminal error with this message
+    /// (coordinator refusal, e.g. the user declined the link) instead of
+    /// authorizing or staying pending.
+    public var denialMessage: String?
+    /// Exercise the client's HTTP-status handling instead of the legacy
+    /// status-in-a-200-body shape.
+    public var denialUsesUnauthorizedHTTPStatus: Bool
 
     public init(
         deviceCode: String = "mock-device-code",
@@ -83,7 +91,10 @@ public struct MockDeviceCodeFixture: Sendable {
         expiresIn: Int = 300,
         interval: Int = 1,
         token: String = "mock-auth-token",
-        authorizeImmediately: Bool = true
+        accountID: String? = "mock-account-id",
+        authorizeImmediately: Bool = true,
+        denialMessage: String? = nil,
+        denialUsesUnauthorizedHTTPStatus: Bool = false
     ) {
         self.deviceCode = deviceCode
         self.userCode = userCode
@@ -91,7 +102,10 @@ public struct MockDeviceCodeFixture: Sendable {
         self.expiresIn = expiresIn
         self.interval = interval
         self.token = token
+        self.accountID = accountID
         self.authorizeImmediately = authorizeImmediately
+        self.denialMessage = denialMessage
+        self.denialUsesUnauthorizedHTTPStatus = denialUsesUnauthorizedHTTPStatus
     }
 }
 
@@ -134,6 +148,51 @@ public struct MockVersionFixture: Sendable {
     }
 }
 
+/// Deterministic real-HTTP seam for updater concurrency tests. The release
+/// route accepts the URLSession request, signals `waitUntilRequested`, and
+/// withholds its body until `release` is called.
+public actor MockReleaseArtifactGate {
+    private var requested = false
+    private var released = false
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    public init() {}
+
+    public func waitUntilRequested(
+        timeout: Duration = .seconds(10),
+        cleanupOnFailure: @Sendable () async -> Void = {}
+    ) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while !requested, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        guard requested else {
+            release()
+            await cleanupOnFailure()
+            return false
+        }
+        return true
+    }
+
+    public func waitBeforeResponse() async {
+        requested = true
+        if released { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    public func release() {
+        guard !released else { return }
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+}
+
 // MARK: - MockCoordinator
 
 public final class MockCoordinator: @unchecked Sendable {
@@ -166,6 +225,7 @@ public final class MockCoordinator: @unchecked Sendable {
     public let catalog: [CatalogModel]
     public let release: MockReleaseFixture
     public let releaseArtifact: Data?
+    public let releaseArtifactGate: MockReleaseArtifactGate?
     public let version: MockVersionFixture
     public let mobileConfig: Data
     public let deviceCode: MockDeviceCodeFixture
@@ -195,6 +255,7 @@ public final class MockCoordinator: @unchecked Sendable {
         catalog: [CatalogModel] = MockCoordinator.defaultCatalog,
         release: MockReleaseFixture = MockReleaseFixture(),
         releaseArtifact: Data? = nil,
+        releaseArtifactGate: MockReleaseArtifactGate? = nil,
         version: MockVersionFixture = MockVersionFixture(version: "0.5.0"),
         mobileConfig: Data = MockCoordinator.defaultMobileConfig,
         deviceCode: MockDeviceCodeFixture = MockDeviceCodeFixture()
@@ -202,6 +263,7 @@ public final class MockCoordinator: @unchecked Sendable {
         self.catalog = catalog
         self.release = release
         self.releaseArtifact = releaseArtifact
+        self.releaseArtifactGate = releaseArtifactGate
         self.version = version
         self.mobileConfig = mobileConfig
         self.deviceCode = deviceCode
@@ -485,6 +547,9 @@ public final class MockCoordinator: @unchecked Sendable {
                     status: .notFound
                 )
             }
+            if let gate = self?.releaseArtifactGate {
+                await gate.waitBeforeResponse()
+            }
             return Response(
                 status: .ok,
                 headers: [.contentType: "application/gzip"],
@@ -544,10 +609,23 @@ public final class MockCoordinator: @unchecked Sendable {
                     body: ["error": "mock dead"], status: .internalServerError
                 )
             }
+            if let denialMessage = self.deviceCode.denialMessage {
+                let body = DeviceTokenDenied(
+                    status: "error",
+                    error: .init(message: denialMessage)
+                )
+                return MockCoordinator.makeJSONResponse(
+                    body: body,
+                    status: self.deviceCode.denialUsesUnauthorizedHTTPStatus
+                        ? .unauthorized
+                        : .ok
+                )
+            }
             if self.deviceCode.authorizeImmediately {
                 let body = DeviceTokenAuthorized(
                     status: "authorized",
-                    token: self.deviceCode.token
+                    token: self.deviceCode.token,
+                    account_id: self.deviceCode.accountID
                 )
                 return MockCoordinator.makeJSONResponse(body: body)
             } else {
@@ -721,10 +799,20 @@ private struct DeviceCodePayload: Encodable {
 private struct DeviceTokenAuthorized: Encodable {
     let status: String
     let token: String
+    let account_id: String?
 }
 
 private struct DeviceTokenPending: Encodable {
     let status: String
+}
+
+private struct DeviceTokenDenied: Encodable {
+    let status: String
+    let error: DeviceTokenDeniedError
+
+    struct DeviceTokenDeniedError: Encodable {
+        let message: String
+    }
 }
 
 // MARK: - URL helpers

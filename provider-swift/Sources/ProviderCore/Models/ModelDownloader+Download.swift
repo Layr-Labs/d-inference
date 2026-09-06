@@ -34,7 +34,11 @@ extension ModelDownloader {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await urlSession.data(for: request)
+            (data, response) = try await BoundedHTTPBody.read(
+                using: urlSession,
+                request: request,
+                maximumBytes: ModelManifestContract.maximumEncodedBytes,
+                responseName: "manifest.json")
         } catch {
             throw ModelCatalogError.downloadFailed("manifest.json: \(error.localizedDescription)")
         }
@@ -43,7 +47,9 @@ extension ModelDownloader {
         }
 
         do {
-            return try ModelCatalogClient.manifestDecoder.decode(ModelManifest.self, from: data)
+            return try ModelCatalogClient.decodeManifestResponse(
+                data,
+                responseName: "manifest.json")
         } catch {
             throw ModelCatalogError.downloadFailed("manifest.json decode failed: \(error.localizedDescription)")
         }
@@ -51,12 +57,22 @@ extension ModelDownloader {
 
     internal func downloadLegacyModelFromCDN(
         model: CatalogModel,
-        onProgress: (@Sendable (ProgressEvent) -> Void)?
+        onProgress: (@Sendable (ProgressEvent) -> Void)?,
+        onEvent: (@Sendable (DownloadEvent) -> Void)? = nil
     ) async throws {
         let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
 
         let base = "\(r2CDNURL)/\(model.s3Name)"
+
+        /// Live per-chunk events for machine consumers; the legacy path has no
+        /// manifest, so per-file totals are unknown and stay nil.
+        func chunkSink(_ label: String) -> (@Sendable (Int64) -> Void)? {
+            guard let onEvent else { return nil }
+            return { bytes in
+                onEvent(DownloadEvent(phase: .progress, file: label, bytesDownloaded: bytes))
+            }
+        }
 
         // 1. config.json (smoke-test the model exists on the CDN).
         try await downloadFile(
@@ -64,7 +80,8 @@ extension ModelDownloader {
             to: cacheDir.appendingPathComponent("config.json"),
             label: "config.json",
             onProgress: onProgress,
-            required: true
+            required: true,
+            onChunk: chunkSink("config.json")
         )
 
         // 2. tokenizer files. Best-effort.
@@ -74,7 +91,8 @@ extension ModelDownloader {
                 to: cacheDir.appendingPathComponent(name),
                 label: name,
                 onProgress: onProgress,
-                required: false
+                required: false,
+                onChunk: chunkSink(name)
             )
         }
 
@@ -85,7 +103,8 @@ extension ModelDownloader {
                 to: cacheDir.appendingPathComponent("model.safetensors"),
                 label: "model.safetensors",
                 onProgress: onProgress,
-                required: true
+                required: true,
+                onChunk: chunkSink("model.safetensors")
             )
         } else {
             // 4. Sharded model. Pull the index, then each shard listed in
@@ -96,7 +115,8 @@ extension ModelDownloader {
                 to: indexPath,
                 label: "model.safetensors.index.json",
                 onProgress: onProgress,
-                required: true
+                required: true,
+                onChunk: chunkSink("model.safetensors.index.json")
             )
             let shards = try Self.parseShardNames(indexPath: indexPath)
             for shard in shards {
@@ -105,7 +125,8 @@ extension ModelDownloader {
                     to: cacheDir.appendingPathComponent(shard),
                     label: shard,
                     onProgress: onProgress,
-                    required: true
+                    required: true,
+                    onChunk: chunkSink(shard)
                 )
             }
         }
@@ -116,23 +137,11 @@ extension ModelDownloader {
     internal func downloadManifestModel(
         model: CatalogModel,
         manifest: ModelManifest,
-        onProgress: (@Sendable (ProgressEvent) -> Void)?
+        reserveBytes: Int64,
+        onProgress: (@Sendable (ProgressEvent) -> Void)?,
+        onEvent: (@Sendable (DownloadEvent) -> Void)? = nil
     ) async throws {
-        guard manifest.modelID == model.id else {
-            throw ModelCatalogError.downloadFailed("manifest model_id \(manifest.modelID) does not match catalog id \(model.id)")
-        }
-        guard manifest.files.count == manifest.fileCount else {
-            throw ModelCatalogError.downloadFailed("manifest file_count \(manifest.fileCount) does not match files array")
-        }
-        guard !manifest.files.isEmpty else {
-            throw ModelCatalogError.downloadFailed("manifest contains no files")
-        }
-        if let aggregate = model.aggregateSHA256, aggregate != manifest.aggregateSHA256 {
-            throw ModelCatalogError.downloadFailed("catalog aggregate hash does not match manifest")
-        }
-        if let prefix = model.r2Prefix, prefix != manifest.r2Prefix {
-            throw ModelCatalogError.downloadFailed("catalog r2_prefix does not match manifest")
-        }
+        try Self.validateManifestForDownload(manifest, model: model)
 
         let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
@@ -159,17 +168,15 @@ extension ModelDownloader {
 
         // Resume: skip files already staged + valid; only the not-yet-valid files
         // are enqueued below.
-        let alreadyValid = jobs.map { Self.fileMatches($0.destination, size: $0.file.sizeBytes, sha256: $0.file.sha256) }
-        // The foreground per-file downloader now byte-resumes (streams to a stable
-        // `.part` and appends via HTTP `Range`), so credit any bytes already saved
-        // in each `.part`: a near-complete resume of a big shard must not be charged
-        // disk room equal to the whole shard.
-        let partBytes = jobs.map { fileSize($0.destination.appendingPathExtension("part")) }
-        try Self.ensureAvailableCapacity(
+        let diskState = inspectManifestDownloadState(
+            files: jobs.map(\.file),
+            destinations: jobs.map(\.destination)
+        )
+        let alreadyValid = diskState.alreadyValid
+        try ensureAvailableCapacity(
             at: snapshotsDir,
-            requiredBytes: Self.remainingBytesToFetch(
-                sizes: jobs.map(\.file.sizeBytes), alreadyValid: alreadyValid, partBytes: partBytes
-            )
+            remainingBytes: diskState.remainingBytes,
+            reserveBytes: reserveBytes
         )
         let pending = zip(jobs, alreadyValid).filter { !$0.1 }.map(\.0)
 
@@ -178,6 +185,7 @@ extension ModelDownloader {
         // the scanner, so the picker showed "not downloaded"). Don't re-download —
         // verify the aggregate and publish.
         if pending.isEmpty {
+            onEvent?(DownloadEvent(phase: .verifying, file: model.id))
             try finalizeStagedManifest(model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir, cacheDir: cacheDir)
             onProgress?(ProgressEvent(file: model.id, bytesDownloaded: manifest.totalSizeBytes, bytesTotal: manifest.totalSizeBytes))
             return
@@ -188,21 +196,34 @@ extension ModelDownloader {
         // real on-disk progress instead of restarting the bar at 0%.
         let progress = ManifestDownloadProgress()
         for job in pending {
+            let initialBytes = fileSize(job.destination.appendingPathExtension("part"))
             progress.register(
                 label: job.file.path,
                 expectedBytes: job.file.sizeBytes,
-                initialBytes: fileSize(job.destination.appendingPathExtension("part"))
+                initialBytes: initialBytes
             )
+            onEvent?(DownloadEvent(
+                phase: .progress,
+                file: job.file.path,
+                bytesDownloaded: initialBytes,
+                bytesTotal: job.file.sizeBytes
+            ))
         }
 
+        // Machine consumers (the `--json` NDJSON stream) get the events above
+        // instead of the terminal renderer: ANSI frames on stdout would corrupt
+        // the line-delimited JSON they're parsing.
         let renderer = ProgressRenderer()
+        let rendersToTerminal = onEvent == nil
         // Start the render loop as a detached task.
-        let renderTask = Task.detached { [renderer, progress] in
-            while !Task.isCancelled {
-                renderer.render(progress.allProgress)
-                try? await Task.sleep(nanoseconds: 250_000_000)  // 250ms
+        let renderTask: Task<Void, Never>? = rendersToTerminal
+            ? Task.detached { [renderer, progress] in
+                while !Task.isCancelled {
+                    renderer.render(progress.allProgress)
+                    try? await Task.sleep(nanoseconds: 250_000_000)  // 250ms
+                }
             }
-        }
+            : nil
 
         do {
             // 4-way concurrent download; each shard streams to its own `.part` and
@@ -215,8 +236,20 @@ extension ModelDownloader {
                     group.addTask {
                         try await self.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact, onChunk: { bytes in
                             progress.update(label: job.file.path, downloadedBytes: bytes)
+                            onEvent?(DownloadEvent(
+                                phase: .progress,
+                                file: job.file.path,
+                                bytesDownloaded: bytes,
+                                bytesTotal: job.file.sizeBytes
+                            ))
                         })
                         progress.complete(label: job.file.path)
+                        onEvent?(DownloadEvent(
+                            phase: .progress,
+                            file: job.file.path,
+                            bytesDownloaded: job.file.sizeBytes,
+                            bytesTotal: job.file.sizeBytes
+                        ))
                     }
                 }
 
@@ -227,20 +260,36 @@ extension ModelDownloader {
                         group.addTask {
                             try await self.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact, onChunk: { bytes in
                                 progress.update(label: job.file.path, downloadedBytes: bytes)
+                                onEvent?(DownloadEvent(
+                                    phase: .progress,
+                                    file: job.file.path,
+                                    bytesDownloaded: bytes,
+                                    bytesTotal: job.file.sizeBytes
+                                ))
                             })
                             progress.complete(label: job.file.path)
+                            onEvent?(DownloadEvent(
+                                phase: .progress,
+                                file: job.file.path,
+                                bytesDownloaded: job.file.sizeBytes,
+                                bytesTotal: job.file.sizeBytes
+                            ))
                         }
                     }
                 }
             }
 
             // Stop the render loop and print the final summary.
-            renderTask.cancel()
-            renderer.finish(progress.allProgress)
+            renderTask?.cancel()
+            if rendersToTerminal {
+                renderer.finish(progress.allProgress)
+            }
         } catch {
-            renderTask.cancel()
+            renderTask?.cancel()
             // One last render so the user sees where things stopped.
-            renderer.render(progress.allProgress)
+            if rendersToTerminal {
+                renderer.render(progress.allProgress)
+            }
             // Keep staging ONLY if it holds resumable content (a completed file or
             // a `.part` prefix); otherwise remove the empty husk so a first-file
             // failure doesn't leave a stray staging dir behind. (A promoted file is
@@ -255,6 +304,7 @@ extension ModelDownloader {
             throw error
         }
 
+        onEvent?(DownloadEvent(phase: .verifying, file: model.id))
         try finalizeStagedManifest(model: model, manifest: manifest, jobs: jobs, stagingDir: stagingDir, cacheDir: cacheDir)
         onProgress?(ProgressEvent(file: model.id, bytesDownloaded: manifest.totalSizeBytes, bytesTotal: manifest.totalSizeBytes))
     }

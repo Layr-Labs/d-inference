@@ -2572,6 +2572,49 @@ func (s *MemoryStore) ApproveDeviceCode(deviceCode, accountID string) error {
 	return nil
 }
 
+func (s *MemoryStore) ConsumeDeviceGrant(deviceCode, tokenHash string) (*ProviderToken, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	dc, ok := s.deviceCodesByCode[deviceCode]
+	if !ok {
+		return nil, fmt.Errorf("device grant: %w", ErrNotFound)
+	}
+	if time.Now().After(dc.ExpiresAt) {
+		return nil, fmt.Errorf("device grant %q: %w", dc.UserCode, ErrDeviceCodeExpired)
+	}
+	switch dc.Status {
+	case "pending":
+		return nil, fmt.Errorf("device grant %q: %w", dc.UserCode, ErrDeviceAuthorizationPending)
+	case "approved":
+		// Continue below.
+	default:
+		return nil, fmt.Errorf("device grant %q: %w", dc.UserCode, ErrDeviceGrantConsumed)
+	}
+	if dc.AccountID == "" {
+		return nil, errors.New("approved device grant has no account")
+	}
+	if tokenHash == "" {
+		return nil, errors.New("provider token hash is required")
+	}
+	if _, exists := s.providerTokens[tokenHash]; exists {
+		return nil, errors.New("provider token already exists")
+	}
+
+	pt := &ProviderToken{
+		TokenHash: tokenHash,
+		AccountID: dc.AccountID,
+		Label:     "device-" + dc.UserCode,
+		Active:    true,
+		CreatedAt: time.Now(),
+	}
+	s.providerTokens[tokenHash] = pt
+	dc.Status = "consumed"
+
+	copy := *pt
+	return &copy, nil
+}
+
 func (s *MemoryStore) DeleteExpiredDeviceCodes() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2607,26 +2650,27 @@ func (s *MemoryStore) GetProviderToken(token string) (*ProviderToken, error) {
 	h := hashKey(token)
 	pt, ok := s.providerTokens[h]
 	if !ok {
-		return nil, errors.New("provider token not found")
+		return nil, fmt.Errorf("provider token: %w", ErrNotFound)
 	}
 	if !pt.Active {
-		return nil, errors.New("provider token is revoked")
+		return nil, fmt.Errorf("provider token revoked: %w", ErrNotFound)
 	}
 	copy := *pt
 	return &copy, nil
 }
 
-func (s *MemoryStore) RevokeProviderToken(token string) error {
+func (s *MemoryStore) RevokeProviderToken(token string) (*ProviderToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	h := hashKey(token)
 	pt, ok := s.providerTokens[h]
 	if !ok {
-		return errors.New("provider token not found")
+		return nil, fmt.Errorf("provider token: %w", ErrNotFound)
 	}
 	pt.Active = false
-	return nil
+	cp := *pt
+	return &cp, nil
 }
 
 // --- Invite Codes ---
@@ -2795,10 +2839,12 @@ func (s *MemoryStore) GetProviderEarningsSummary(providerKey string) (ProviderEa
 	defer s.mu.RUnlock()
 
 	var summary ProviderEarningsSummary
+	found := false
 	for _, earning := range s.providerEarnings {
 		if earning.ProviderKey != providerKey {
 			continue
 		}
+		found = true
 		summary.TotalMicroUSD += earning.AmountMicroUSD
 		// base_reward rows add money but are not inference jobs.
 		if earning.Model != "base_reward" {
@@ -2806,6 +2852,9 @@ func (s *MemoryStore) GetProviderEarningsSummary(providerKey string) (ProviderEa
 			summary.PromptTokens += int64(earning.PromptTokens)
 			summary.CompletionTokens += int64(earning.CompletionTokens)
 		}
+	}
+	if !found {
+		return ProviderEarningsSummary{}, fmt.Errorf("provider earnings summary %q: %w", providerKey, ErrNotFound)
 	}
 
 	return summary, nil
@@ -2817,10 +2866,12 @@ func (s *MemoryStore) GetAccountEarningsSummary(accountID string) (ProviderEarni
 	defer s.mu.RUnlock()
 
 	var summary ProviderEarningsSummary
+	found := false
 	for _, earning := range s.providerEarnings {
 		if earning.AccountID != accountID {
 			continue
 		}
+		found = true
 		summary.TotalMicroUSD += earning.AmountMicroUSD
 		// base_reward rows add money but are not inference jobs.
 		if earning.Model != "base_reward" {
@@ -2828,6 +2879,9 @@ func (s *MemoryStore) GetAccountEarningsSummary(accountID string) (ProviderEarni
 			summary.PromptTokens += int64(earning.PromptTokens)
 			summary.CompletionTokens += int64(earning.CompletionTokens)
 		}
+	}
+	if !found {
+		return ProviderEarningsSummary{}, fmt.Errorf("account earnings summary %q: %w", accountID, ErrNotFound)
 	}
 
 	return summary, nil
@@ -2884,6 +2938,19 @@ func (s *MemoryStore) SettleProviderPayout(id int64) error {
 // CreditProviderAccount atomically credits a linked provider account and records
 // the corresponding per-node earning.
 func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
+	return s.creditProviderAccount("", earning)
+}
+
+// CreditProviderAccountIfTokenActive gates the credit on the provider token
+// binding under the same mutex as revocation and the balance mutation.
+func (s *MemoryStore) CreditProviderAccountIfTokenActive(tokenHash string, earning *ProviderEarning) error {
+	if tokenHash == "" {
+		return ErrProviderTokenInactive
+	}
+	return s.creditProviderAccount(tokenHash, earning)
+}
+
+func (s *MemoryStore) creditProviderAccount(tokenHash string, earning *ProviderEarning) error {
 	if earning == nil {
 		return errors.New("provider earning is required")
 	}
@@ -2893,6 +2960,13 @@ func (s *MemoryStore) CreditProviderAccount(earning *ProviderEarning) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if tokenHash != "" {
+		token, ok := s.providerTokens[tokenHash]
+		if !ok || !token.Active || token.AccountID != earning.AccountID {
+			return ErrProviderTokenInactive
+		}
+	}
 
 	// Idempotency guard mirroring the postgres ON CONFLICT (job_id) DO NOTHING:
 	// a retried settlement with the same non-empty job_id must not double-credit
@@ -2951,11 +3025,11 @@ func releaseKey(version, platform string) string {
 }
 
 func (s *MemoryStore) SetRelease(release *Release) error {
+	if err := validateReleaseIdentity(release); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if release.Version == "" || release.Platform == "" {
-		return errors.New("version and platform are required")
-	}
 	r := *release
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = time.Now()
@@ -2990,9 +3064,13 @@ func (s *MemoryStore) GetLatestRelease(platform string) *Release {
 		if r.Platform != platform || !r.Active {
 			continue
 		}
-		if latest == nil ||
-			releaseVersionGreater(r.Version, latest.Version) ||
-			(r.Version == latest.Version && r.CreatedAt.After(latest.CreatedAt)) {
+		if latest == nil {
+			latest = r
+			continue
+		}
+		comparison := compareReleaseVersions(r.Version, latest.Version)
+		if comparison > 0 ||
+			(comparison == 0 && r.CreatedAt.After(latest.CreatedAt)) {
 			latest = r
 		}
 	}
@@ -3874,6 +3952,72 @@ func (s *MemoryStore) TouchProviderSession(_ context.Context, sessionID, serial,
 		}
 	}
 	return nil
+}
+
+func (s *MemoryStore) ListProviderSessionIdentities(
+	_ context.Context,
+	accountID string,
+	providerKeys []string,
+) ([]ProviderSessionIdentity, error) {
+	if accountID == "" || len(providerKeys) == 0 {
+		return []ProviderSessionIdentity{}, nil
+	}
+
+	wanted := make(map[string]struct{}, len(providerKeys))
+	for _, key := range providerKeys {
+		if key != "" {
+			wanted[key] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return []ProviderSessionIdentity{}, nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	byKey := make(map[string]ProviderSessionIdentity, len(wanted))
+	for i := range s.providerSessions {
+		session := &s.providerSessions[i]
+		if session.AccountID != accountID || session.SerialNumber == "" {
+			continue
+		}
+		if _, ok := wanted[session.ProviderKey]; !ok {
+			continue
+		}
+		byKey[session.ProviderKey] = ProviderSessionIdentity{
+			SessionID:    session.SessionID,
+			ProviderKey:  session.ProviderKey,
+			SerialNumber: session.SerialNumber,
+		}
+	}
+	for _, record := range s.providerRecords {
+		if record.AccountID != accountID || record.SerialNumber == "" {
+			continue
+		}
+		if _, ok := wanted[record.PublicKey]; !ok {
+			continue
+		}
+		if _, exists := byKey[record.PublicKey]; exists {
+			continue
+		}
+		byKey[record.PublicKey] = ProviderSessionIdentity{
+			SessionID:    record.ID,
+			ProviderKey:  record.PublicKey,
+			SerialNumber: record.SerialNumber,
+		}
+	}
+
+	keys := make([]string, 0, len(byKey))
+	for key := range byKey {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	identities := make([]ProviderSessionIdentity, 0, len(keys))
+	for _, key := range keys {
+		identities = append(identities, byKey[key])
+	}
+	return identities, nil
 }
 
 // CloseProviderSession marks the session for sessionID as ended. Upsert

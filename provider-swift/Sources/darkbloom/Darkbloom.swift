@@ -21,6 +21,14 @@ struct Darkbloom: AsyncParsableCommand {
         LoggingSystem.bootstrap(StreamLogHandler.standardError)
     }()
 
+    private static let debugSubcommands: [ParsableCommand.Type] = {
+        #if DEBUG
+        [RuntimeLockProbe.self]
+        #else
+        []
+        #endif
+    }()
+
     static let configuration = CommandConfiguration(
         commandName: "darkbloom",
         abstract: "Swift-native provider CLI for Darkbloom.",
@@ -33,6 +41,8 @@ struct Darkbloom: AsyncParsableCommand {
             Status.self,
             Doctor.self,
             Models.self,
+            Config.self,
+            Earnings.self,
             Local.self,
             Login.self,
             Logout.self,
@@ -49,7 +59,7 @@ struct Darkbloom: AsyncParsableCommand {
             Fan.self,
             Watchdog.self,
             RuntimeSmoke.self,
-        ]
+        ] + debugSubcommands
     )
 
     mutating func run() async throws {
@@ -80,7 +90,7 @@ public func runUpdateBannerIfEnabled() async {
     // wrapper is uninitialized outside ArgumentParser's decoding lifecycle
     // and accessing it causes a fatal error. Pass nil to use defaults.
     let coordinatorURL: String
-    if let snapshot = try? loadRuntimeSnapshot(configPath: nil) {
+    if let snapshot = try? loadRuntimeSnapshot(configPath: nil, migrateOnDisk: false) {
         coordinatorURL = snapshot.config.coordinator.url
     } else {
         coordinatorURL = "https://api.darkbloom.dev"
@@ -106,9 +116,9 @@ struct RuntimeSnapshot {
     let models: [ModelInfo]
 }
 
-func loadRuntimeSnapshot(configOptions: ConfigOptions) throws -> RuntimeSnapshot {
+func loadRuntimeSnapshot(configOptions: ConfigOptions, migrateOnDisk: Bool = true) throws -> RuntimeSnapshot {
     Darkbloom.ensureLogging()
-    return try loadRuntimeSnapshot(configPath: configOptions.config)
+    return try loadRuntimeSnapshot(configPath: configOptions.config, migrateOnDisk: migrateOnDisk)
 }
 
 func loadRuntimeSnapshot(

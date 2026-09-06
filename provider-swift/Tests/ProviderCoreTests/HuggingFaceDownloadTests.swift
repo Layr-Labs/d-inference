@@ -190,7 +190,7 @@ struct HuggingFaceDownloadTests {
         if prefetch {
             try await downloader().prefetch(model: model, manifest: manifest)
         } else {
-            try await downloader().downloadManifestModel(model: model, manifest: manifest, onProgress: nil)
+            try await downloader().downloadManifestModel(model: model, manifest: manifest, reserveBytes: 0, onProgress: nil)
         }
         let snapshot = ModelDownloader.cacheSnapshotDirectory(for: id)
         #expect(try Data(contentsOf: snapshot.appendingPathComponent(file.path)) == bytes)

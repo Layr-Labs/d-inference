@@ -1,0 +1,247 @@
+import Foundation
+import ProviderCoreFoundation
+
+struct OnboardingModelChoice: Identifiable, Equatable, Sendable {
+    let id: String
+    let displayName: String
+    let summary: String
+    let sizeBytes: Int64
+    let minimumMemoryGB: Int
+    let isInstalled: Bool
+    let runtimeEligibility: CLIModelRuntimeEligibility
+
+    init(
+        id: String, displayName: String, summary: String, sizeBytes: Int64,
+        minimumMemoryGB: Int, isInstalled: Bool,
+        runtimeEligibility: CLIModelRuntimeEligibility = .unreported
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.summary = summary
+        self.sizeBytes = sizeBytes
+        self.minimumMemoryGB = minimumMemoryGB
+        self.isInstalled = isInstalled
+        self.runtimeEligibility = runtimeEligibility
+    }
+}
+
+struct OnboardingPreparationPlan: Equatable, Sendable {
+    let choices: [OnboardingModelChoice]
+    let recommendedModelID: String
+    let fetchedAt: Date
+}
+
+enum OnboardingPreparationServiceError: Error, Equatable, LocalizedError, Sendable {
+    case noCompatibleModel
+    case runtimeUnavailable(String)
+    case modelUnavailable(String)
+    case providerEvidenceTimedOut(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .noCompatibleModel:
+            "The catalog has no model that is confirmed to fit this Mac's memory and available storage."
+        case .runtimeUnavailable(let reason):
+            "No model can be prepared with this Mac's current runtime. \(reason)"
+        case .modelUnavailable(let id):
+            "The selected model (\(id)) is no longer available in the compatible catalog. Refresh the catalog and choose again."
+        case .providerEvidenceTimedOut(let id):
+            "Darkbloom started, but this Mac did not confirm a live provider and local endpoint serving \(id) in time. Try starting it again."
+        }
+    }
+}
+
+protocol OnboardingPreparationServicing: Sendable {
+    func fetchPlan() async throws -> OnboardingPreparationPlan
+    func downloadEvents(
+        modelID: String
+    ) async throws -> AsyncThrowingStream<ModelDownloadStreamEvent, Error>
+    func startProvider(modelID: String) async throws
+}
+
+struct OnboardingPreparationService: OnboardingPreparationServicing {
+    let catalog: any ModelCatalogCLIRunning
+    let startCLI: any SetupStartCLIRunning
+
+    // Initial recommendations require resume-aware storage admission.
+    init(
+        catalog: any ModelCatalogCLIRunning = ProcessModelCatalogCLIRunner(includeDownloadPlans: true),
+        startCLI: any SetupStartCLIRunning = ProcessSetupStartCLI()
+    ) {
+        self.catalog = catalog
+        self.startCLI = startCLI
+    }
+
+    func fetchPlan() async throws -> OnboardingPreparationPlan {
+        let snapshot = try await catalog.fetchSnapshot()
+        guard let memoryGB = snapshot.physicalMemoryGB else {
+            throw OnboardingPreparationServiceError.noCompatibleModel
+        }
+        let localIDs = Set(snapshot.local.map(\.id))
+        var runtimeReasons: [String] = []
+
+        let choices = snapshot.catalog.compactMap { model -> OnboardingModelChoice? in
+            guard let minimumMemoryGB = model.minRamGb,
+                  minimumMemoryGB <= memoryGB,
+                  isInferenceModel(model)
+            else { return nil }
+            let runtime = snapshot.runtimeEligibility(for: model.id)
+            guard runtime.status == .eligible else {
+                runtimeReasons.append(runtime.reason)
+                return nil
+            }
+
+            let sizeBytes = ModelCatalogSize.bytes(
+                totalSizeBytes: model.totalSizeBytes,
+                sizeGB: model.sizeGb
+            )
+            let installed = localIDs.contains(model.id)
+            if !installed, !storageAllowsDownload(
+                modelID: model.id,
+                plan: snapshot.downloadPlans[model.id]
+            ) {
+                return nil
+            }
+            return OnboardingModelChoice(
+                id: model.id,
+                displayName: model.displayName,
+                summary: model.description ?? "Private local inference model",
+                sizeBytes: sizeBytes,
+                minimumMemoryGB: minimumMemoryGB,
+                isInstalled: installed,
+                runtimeEligibility: runtime
+            )
+        }
+
+        guard !choices.isEmpty else {
+            if !runtimeReasons.isEmpty {
+                throw OnboardingPreparationServiceError.runtimeUnavailable(
+                    Set(runtimeReasons).sorted().joined(separator: " "))
+            }
+            throw OnboardingPreparationServiceError.noCompatibleModel
+        }
+
+        // Prefer an already-present compatible model. Otherwise choose the
+        // strongest catalog fit by minimum-RAM requirement, with smaller bytes
+        // as the deterministic tie-breaker. No registry id is hardcoded.
+        let catalogByID = Dictionary(
+            snapshot.catalog.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let ordered = choices.sorted { lhs, rhs in
+            if lhs.isInstalled != rhs.isInstalled { return lhs.isInstalled }
+            let leftKind = recommendationKindRank(catalogByID[lhs.id]?.modelType)
+            let rightKind = recommendationKindRank(catalogByID[rhs.id]?.modelType)
+            if leftKind != rightKind { return leftKind < rightKind }
+            if lhs.minimumMemoryGB != rhs.minimumMemoryGB {
+                return lhs.minimumMemoryGB > rhs.minimumMemoryGB
+            }
+            if lhs.sizeBytes != rhs.sizeBytes { return lhs.sizeBytes < rhs.sizeBytes }
+            return lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending
+        }
+        return OnboardingPreparationPlan(
+            choices: choices.sorted {
+                $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+            },
+            recommendedModelID: ordered[0].id,
+            fetchedAt: snapshot.fetchedAt
+        )
+    }
+
+    /// Screen-load plans only control which choices can be displayed. Starting
+    /// a download always obtains another plan through `prepareDownload`.
+    private func storageAllowsDownload(
+        modelID: String,
+        plan: CLIModelDownloadStoragePlan?
+    ) -> Bool {
+        (try? ValidatedModelDownloadStoragePlan.validate(
+            plan,
+            modelID: modelID
+        )) != nil
+    }
+
+    func downloadEvents(
+        modelID: String
+    ) async throws -> AsyncThrowingStream<ModelDownloadStreamEvent, Error> {
+        let preparation = try await catalog.prepareDownload(modelID: modelID)
+        try Task.checkCancellation()
+        return try preparation.start()
+    }
+
+    func startProvider(modelID: String) async throws {
+        try await startCLI.start(modelID: modelID)
+    }
+
+    private func isInferenceModel(_ model: CLICatalogModel) -> Bool {
+        let type = model.modelType.lowercased()
+        if type == "embeddings" || type == "embedding" { return false }
+        if type == "text" || type == "vision" || type == "vlm" || type == "multimodal" {
+            return true
+        }
+        return model.capabilities?.contains("text-generation") == true
+    }
+
+    private func recommendationKindRank(_ modelType: String?) -> Int {
+        switch modelType?.lowercased() {
+        case "text": 0
+        case "vision", "vlm", "multimodal": 1
+        default: 2
+        }
+    }
+
+}
+
+struct OnboardingProviderEvidence: Equatable, Sendable {
+    let daemonState: DaemonState?
+    let localEndpoint: LocalEndpointInfo?
+    let processIsAlive: Bool
+    let localEndpointProcessIsAlive: Bool
+    let sampledAt: Date
+
+    init(
+        daemonState: DaemonState?,
+        localEndpoint: LocalEndpointInfo?,
+        processIsAlive: Bool? = nil,
+        localEndpointProcessIsAlive: Bool? = nil,
+        sampledAt: Date = .now
+    ) {
+        self.daemonState = daemonState
+        self.localEndpoint = localEndpoint
+        self.processIsAlive = processIsAlive
+            ?? daemonState.map { DaemonStateRuntimeTruth.belongsToLiveProcess($0) }
+            ?? false
+        self.localEndpointProcessIsAlive = localEndpointProcessIsAlive
+            ?? localEndpoint.map { LocalEndpointRuntimeTruth.belongsToLiveProcess($0) }
+            ?? false
+        self.sampledAt = sampledAt
+    }
+
+    static var live: Self {
+        Self(
+            daemonState: DaemonStateFile.read(),
+            localEndpoint: LocalEndpointDiscovery.readInfo()
+        )
+    }
+
+    func reportsStarted(modelID: String) -> Bool {
+        guard let daemonState,
+              let localEndpoint,
+              processIsAlive,
+              localEndpointProcessIsAlive,
+              !daemonState.isStale(now: sampledAt.timeIntervalSince1970),
+              let daemonIdentity = daemonState.processIdentity,
+              localEndpoint.processIdentity == daemonIdentity
+        else { return false }
+        let modelIsLoaded = daemonState.currentModel == modelID
+            || daemonState.warmModels.contains(modelID)
+        guard modelIsLoaded,
+              localEndpoint.pid == daemonState.pid,
+              localEndpoint.port > 0,
+              let baseURL = URL(string: localEndpoint.baseURL),
+              baseURL.host != nil,
+              baseURL.scheme == "http" || baseURL.scheme == "https"
+        else { return false }
+        return true
+    }
+
+}

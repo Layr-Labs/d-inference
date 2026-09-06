@@ -16,13 +16,18 @@
 /// and optionally cleans up local state.
 
 import Foundation
+import ProviderCoreFoundation
 
 // MARK: - Errors
 
 public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
     case coordinatorRequestFailed(String)
     case coordinatorReturnedHTTP(Int, body: String)
+    case invalidProfileResponse(String)
+    case profileResponseTooLarge(maximumBytes: Int)
     case profileWriteFailed(String)
+    case profileOpenFailed(String)
+    case systemSettingsOpenFailed(String)
     case managedByOtherMDM(serverURL: String)
 
     public var description: String {
@@ -31,8 +36,17 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
             return "Failed to reach coordinator: \(detail)"
         case .coordinatorReturnedHTTP(let status, let body):
             return "Coordinator returned HTTP \(status): \(body)"
+        case .invalidProfileResponse(let detail):
+            return "Coordinator returned an invalid enrollment profile: \(detail)"
+        case .profileResponseTooLarge(let maximumBytes):
+            return "Coordinator returned an enrollment profile larger than the "
+                + "\(maximumBytes)-byte safety limit."
         case .profileWriteFailed(let detail):
             return "Failed to write enrollment profile: \(detail)"
+        case .profileOpenFailed(let detail):
+            return "The enrollment profile was downloaded, but macOS could not open it: \(detail). Open the profile manually, then install it in System Settings → General → Device Management."
+        case .systemSettingsOpenFailed(let detail):
+            return "The enrollment profile opened, but System Settings could not be opened automatically: \(detail). Open System Settings → General → Device Management to finish installation."
         case .managedByOtherMDM(let serverURL):
             return "This Mac is already managed by another MDM (server: \(serverURL)). "
                 + "macOS allows only one MDM enrollment per device, so Darkbloom "
@@ -48,6 +62,20 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
 public struct EnrollmentResult: Sendable {
     public let profilePath: URL
     public let alreadyEnrolled: Bool
+    public let profileOpened: Bool
+    public let openWarning: String?
+
+    public init(
+        profilePath: URL,
+        alreadyEnrolled: Bool,
+        profileOpened: Bool = false,
+        openWarning: String? = nil
+    ) {
+        self.profilePath = profilePath
+        self.alreadyEnrolled = alreadyEnrolled
+        self.profileOpened = profileOpened
+        self.openWarning = openWarning
+    }
 }
 
 /// Drives the MDM enrollment flow against a coordinator.
@@ -56,10 +84,53 @@ public struct EnrollmentResult: Sendable {
 /// downloads the profile, saves it to a temp path, and (on macOS) opens
 /// System Settings.
 public struct EnrollmentService: Sendable {
+    typealias OpenCommand = @Sendable ([String]) throws -> Void
+    typealias Pause = @Sendable () async throws -> Void
+    typealias ProfileRequest =
+        @Sendable (URLRequest) async throws -> (Data, URLResponse)
+    typealias EnrollmentStateReader =
+        @Sendable (String) -> MDMEnrollmentState
 
-    public init() {}
+    private let openCommand: OpenCommand
+    private let pauseBeforeOpeningSettings: Pause
+    private let requestProfile: ProfileRequest
+    private let enrollmentStateReader: EnrollmentStateReader
+    private let profileDirectory: URL
 
-    /// Request a per-device enrollment profile and (on macOS) open the
+    public init() {
+        openCommand = Self.runOpen
+        pauseBeforeOpeningSettings = {
+            try await Task.sleep(for: .seconds(1))
+        }
+        requestProfile = { request in
+            try await EnrollmentProfileTransport.fetchProfile(request)
+        }
+        enrollmentStateReader = { coordinatorURL in
+            checkMDMEnrollment(coordinatorURL: coordinatorURL)
+        }
+        profileDirectory = FileManager.default.temporaryDirectory
+    }
+
+    init(
+        openCommand: @escaping OpenCommand,
+        pauseBeforeOpeningSettings: @escaping Pause = {},
+        requestProfile: @escaping ProfileRequest = { request in
+            try await EnrollmentProfileTransport.fetchProfile(request)
+        },
+        enrollmentStateReader: @escaping EnrollmentStateReader = {
+            coordinatorURL in
+            checkMDMEnrollment(coordinatorURL: coordinatorURL)
+        },
+        profileDirectory: URL = FileManager.default.temporaryDirectory
+    ) {
+        self.openCommand = openCommand
+        self.pauseBeforeOpeningSettings = pauseBeforeOpeningSettings
+        self.requestProfile = requestProfile
+        self.enrollmentStateReader = enrollmentStateReader
+        self.profileDirectory = profileDirectory
+    }
+
+    /// Request a generic enrollment profile and (on macOS) open the
     /// System Settings pane so the user can install it.
     ///
     /// - Parameters:
@@ -73,11 +144,12 @@ public struct EnrollmentService: Sendable {
         coordinatorURL: String,
         openSystemSettings: Bool = true
     ) async throws -> EnrollmentResult {
-        switch checkMDMEnrollment(coordinatorURL: coordinatorURL) {
+        switch enrollmentStateReader(coordinatorURL) {
         case .enrolledDarkbloom:
             return EnrollmentResult(
                 profilePath: URL(fileURLWithPath: "/dev/null"),
-                alreadyEnrolled: true
+                alreadyEnrolled: true,
+                profileOpened: false
             )
         case .enrolledOtherMDM(let serverURL):
             throw EnrollmentError.managedByOtherMDM(serverURL: serverURL)
@@ -102,17 +174,18 @@ public struct EnrollmentService: Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await requestProfile(request)
+        } catch EnrollmentError.profileResponseTooLarge(let maximumBytes) {
+            // Preserve the validator's size error when the transport detects
+            // overflow before it can return a body.
+            throw EnrollmentError.profileResponseTooLarge(maximumBytes: maximumBytes)
         } catch {
             throw EnrollmentError.coordinatorRequestFailed(error.localizedDescription)
         }
 
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw EnrollmentError.coordinatorReturnedHTTP(http.statusCode, body: body)
-        }
+        try EnrollmentProfileResponse.validate(data: data, response: response)
 
-        let profilePath = URL(fileURLWithPath: NSTemporaryDirectory())
+        let profilePath = profileDirectory
             .appendingPathComponent("Darkbloom-Enroll-\(UUID().uuidString).mobileconfig")
         do {
             try data.write(to: profilePath, options: .atomic)
@@ -120,41 +193,70 @@ public struct EnrollmentService: Sendable {
             throw EnrollmentError.profileWriteFailed(error.localizedDescription)
         }
 
+        let profileOpened: Bool
+        let openWarning: String?
         if openSystemSettings {
-            // Step 1: register with System Settings by opening the .mobileconfig.
-            _ = try? runOpen(arguments: [profilePath.path])
-            // Tiny pause so the profile registers before we open the pane.
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            // Step 2: open System Settings → Profiles directly.
-            _ = try? runOpen(arguments: [
-                "x-apple.systempreferences:com.apple.Profiles-Settings.extension"
-            ])
+            openWarning = try await openDownloadedProfile(at: profilePath)
+            profileOpened = true
+        } else {
+            openWarning = nil
+            profileOpened = false
         }
 
         return EnrollmentResult(
             profilePath: profilePath,
-            alreadyEnrolled: false
+            alreadyEnrolled: false,
+            profileOpened: profileOpened,
+            openWarning: openWarning
         )
+    }
+
+    /// Opening the profile is the success boundary for `profile_opened`.
+    /// Opening the pane is a convenience; its failure is returned as an
+    /// actionable warning because the downloaded profile has already opened.
+    func openDownloadedProfile(at profilePath: URL) async throws -> String? {
+        do {
+            try openCommand([profilePath.path])
+        } catch {
+            throw EnrollmentError.profileOpenFailed(Self.errorDetail(error))
+        }
+
+        try await pauseBeforeOpeningSettings()
+        do {
+            try openCommand([
+                "x-apple.systempreferences:com.apple.Profiles-Settings.extension"
+            ])
+            return nil
+        } catch {
+            return EnrollmentError.systemSettingsOpenFailed(
+                Self.errorDetail(error)
+            ).description
+        }
     }
 
     /// Open the System Settings → Device Management pane so the user can
     /// remove the profile. Apple requires user interaction; we cannot remove
     /// it programmatically.
     public func openProfilesPaneForRemoval() {
-        _ = try? runOpen(arguments: [
-            "x-apple.systempreferences:com.apple.preferences.configurationprofiles"
-        ])
+        SystemSettingsProfileRemovalPane.open(using: openCommand)
     }
 
-    private func runOpen(arguments: [String]) throws -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = arguments
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-        return process.terminationStatus
+    private static func runOpen(arguments: [String]) throws {
+        try BoundedProcess.run(
+            URL(fileURLWithPath: "/usr/bin/open"),
+            arguments: arguments,
+            timeout: 15,
+            captureStderrTail: 4_096
+        )
+    }
+
+    private static func errorDetail(_ error: Error) -> String {
+        if let localized = error as? any LocalizedError,
+           let description = localized.errorDescription,
+           !description.isEmpty {
+            return description
+        }
+        return String(describing: error)
     }
 }
 
@@ -162,8 +264,8 @@ public struct EnrollmentService: Sendable {
 
 public enum LocalDataCleanup: Sendable {
     /// Delete optional pieces of local Darkbloom state. Caller should ask for
-    /// confirmation before invoking. Each removal is best-effort -- missing
-    /// files are not an error.
+    /// confirmation before invoking. Missing files are not errors; every other
+    /// failure is collected after the remaining cleanup steps are attempted.
     ///
     /// `secureEnclaveKey` (default true) also removes the persistent Secure
     /// Enclave attestation signing key. This is what makes un-enroll /
@@ -173,33 +275,78 @@ public enum LocalDataCleanup: Sendable {
         configDirectory: Bool = true,
         legacyKeyFiles: Bool = true,
         authToken: Bool = true,
+        localEndpoint: Bool = true,
+        localEndpointDirectory: URL? = nil,
         secureEnclaveKey: Bool = true
-    ) {
+    ) throws {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let fm = FileManager.default
+        var failures: [String] = []
+
+        func removeFile(_ url: URL) {
+            guard fm.fileExists(atPath: url.path) else { return }
+            do {
+                try fm.removeItem(at: url)
+            } catch {
+                failures.append("\(url.path): \(error.localizedDescription)")
+            }
+        }
 
         if configDirectory {
             for relative in [".config/darkbloom", ".config/eigeninference"] {
-                let dir = home.appendingPathComponent(relative)
-                try? fm.removeItem(at: dir)
+                removeFile(home.appendingPathComponent(relative))
             }
         }
         if legacyKeyFiles {
             let darkbloomDir = home.appendingPathComponent(".darkbloom")
             for name in ["wallet_key", "enclave_key.data", "node_key", "secret_key"] {
-                try? fm.removeItem(at: darkbloomDir.appendingPathComponent(name))
+                removeFile(darkbloomDir.appendingPathComponent(name))
             }
         }
         if authToken {
-            try? AuthTokenStore.delete()
+            do {
+                try AuthTokenStore.delete()
+            } catch {
+                failures.append("auth token: \(error.localizedDescription)")
+            }
+            do {
+                try ProviderAccountStore.delete()
+            } catch {
+                failures.append("provider account: \(error.localizedDescription)")
+            }
+            do {
+                try ProviderIssuerStore.delete()
+            } catch {
+                failures.append("provider issuer: \(error.localizedDescription)")
+            }
+        }
+        if localEndpoint {
+            let directory = localEndpointDirectory ?? LocalEndpointDiscovery.directory()
+            removeFile(directory.appendingPathComponent("local.json"))
+            removeFile(directory.appendingPathComponent("local_token"))
         }
         if secureEnclaveKey {
             // Remove the persistent Secure Enclave attestation signing key so a
-            // bad/derouted key is regenerated on the next enroll. Best-effort:
-            // missing entitlements or an absent key are not errors. Clear both
-            // the current (v2 = defaultLabel) and the legacy (v1) labels.
-            try? PersistentEnclaveKey.delete()
-            try? PersistentEnclaveKey.delete(label: PersistentEnclaveKey.legacyLabelV1)
+            // bad/derouted key is regenerated on the next enroll. Clear both the
+            // current (v2 = defaultLabel) and the legacy (v1) labels.
+            for label in [nil, PersistentEnclaveKey.legacyLabelV1] {
+                do {
+                    try PersistentEnclaveKey.delete(label: label)
+                } catch {
+                    failures.append("Secure Enclave key: \(error.localizedDescription)")
+                }
+            }
         }
+        if !failures.isEmpty {
+            throw LocalDataCleanupError(failures: failures)
+        }
+    }
+}
+
+public struct LocalDataCleanupError: LocalizedError, Sendable {
+    public let failures: [String]
+
+    public var errorDescription: String? {
+        "local cleanup was incomplete: " + failures.joined(separator: "; ")
     }
 }

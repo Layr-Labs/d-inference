@@ -11,12 +11,11 @@ import Foundation
 public struct ModelCatalogClient: Sendable {
 
     static let maximumCatalogResponseBytes = 4 * 1024 * 1024
-    static let maximumManifestResponseBytes = 1 * 1024 * 1024
+    static let maximumManifestResponseBytes = ModelManifestContract.maximumEncodedBytes
     static let maximumCatalogModelCount = 4_096
     static let maximumCatalogAliasCount = 4_096
-    private static let maximumManifestFileCount = 16_384
     private static let maximumJSONNestingDepth = 32
-    private static let maximumJSONStringBytes = 256 * 1024
+    private static let maximumJSONStringBytes = ModelManifestContract.maximumStringBytes
     private static let maximumJSONCollectionCount = 4_096
 
     private let coordinatorURL: String
@@ -55,10 +54,13 @@ public struct ModelCatalogClient: Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await boundedData(
-                for: request,
+            (data, response) = try await BoundedHTTPBody.read(
+                using: urlSession,
+                request: request,
                 maximumBytes: Self.maximumCatalogResponseBytes,
                 responseName: "catalog response")
+        } catch let error as BoundedHTTPBody.LimitExceeded {
+            throw ModelCatalogError.decodeFailed(error.description)
         } catch let error as ModelCatalogError {
             throw error
         } catch {
@@ -98,10 +100,13 @@ public struct ModelCatalogClient: Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await boundedData(
-                for: request,
+            (data, response) = try await BoundedHTTPBody.read(
+                using: urlSession,
+                request: request,
                 maximumBytes: Self.maximumManifestResponseBytes,
                 responseName: "manifest response")
+        } catch let error as BoundedHTTPBody.LimitExceeded {
+            throw ModelCatalogError.decodeFailed(error.description)
         } catch let error as ModelCatalogError {
             throw error
         } catch {
@@ -113,10 +118,7 @@ public struct ModelCatalogClient: Sendable {
         }
 
         do {
-            try Self.validateJSONLexicalBounds(data, responseName: "manifest response")
-            let manifest = try Self.manifestDecoder.decode(ModelManifest.self, from: data)
-            try Self.validateManifestBounds(manifest)
-            return manifest
+            return try Self.decodeManifestResponse(data, responseName: "manifest response")
         } catch let error as ModelCatalogError {
             throw error
         } catch {
@@ -136,41 +138,20 @@ public struct ModelCatalogClient: Sendable {
         return modelID.addingPercentEncoding(withAllowedCharacters: allowed)
     }
 
-    /// `URLSession.data(for:)` buffers without an application byte ceiling.
-    /// Consume the response stream directly so a missing or dishonest
-    /// Content-Length cannot make catalog JSON an unbounded allocation.
-    private func boundedData(
-        for request: URLRequest,
-        maximumBytes: Int,
+    static func decodeManifestResponse(
+        _ data: Data,
         responseName: String
-    ) async throws -> (Data, URLResponse) {
-        let (bytes, response) = try await urlSession.bytes(for: request)
-        if response.expectedContentLength > Int64(maximumBytes) {
-            throw ModelCatalogError.decodeFailed("\(responseName) exceeds \(maximumBytes)-byte bound")
-        }
-
-        var data = Data()
-        if response.expectedContentLength > 0 {
-            data.reserveCapacity(min(Int(response.expectedContentLength), maximumBytes))
-        }
-        do {
-            for try await byte in bytes {
-                guard data.count < maximumBytes else {
-                    throw ModelCatalogError.decodeFailed(
-                        "\(responseName) exceeds \(maximumBytes)-byte bound")
-                }
-                data.append(byte)
-            }
-        } catch let error as ModelCatalogError {
-            throw error
-        }
-        return (data, response)
+    ) throws -> ModelManifest {
+        try validateJSONLexicalBounds(data, responseName: responseName)
+        let manifest = try manifestDecoder.decode(ModelManifest.self, from: data)
+        try ModelManifestContract.validate(manifest)
+        return manifest
     }
 
     /// Cheap lexical limits run before recursive Codable decoding. They are
     /// deliberately not a JSON parser; malformed syntax still belongs to
     /// JSONDecoder, while depth and individual string size are bounded here.
-    private static func validateJSONLexicalBounds(
+    static func validateJSONLexicalBounds(
         _ data: Data,
         responseName: String
     ) throws {
@@ -290,20 +271,4 @@ public struct ModelCatalogClient: Sendable {
         }
     }
 
-    private static func validateManifestBounds(_ manifest: ModelManifest) throws {
-        let strings = [
-            manifest.modelID, manifest.version, manifest.r2Prefix,
-            manifest.aggregateSHA256,
-        ]
-        guard manifest.files.count <= maximumManifestFileCount,
-            strings.allSatisfy({ $0.utf8.count <= maximumJSONStringBytes }),
-            manifest.files.allSatisfy({ file in
-                file.path.utf8.count <= maximumJSONStringBytes
-                    && file.sha256.utf8.count <= maximumJSONStringBytes
-                    && file.role.utf8.count <= maximumJSONStringBytes
-            })
-        else {
-            throw ModelCatalogError.decodeFailed("manifest exceeds provider structural bound")
-        }
-    }
 }

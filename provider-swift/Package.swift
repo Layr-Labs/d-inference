@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "DarkbloomFanCore", targets: ["DarkbloomFanCore"]),
         .library(name: "DarkbloomFanProtocol", targets: ["DarkbloomFanProtocol"]),
         .library(name: "DarkbloomFanService", targets: ["DarkbloomFanService"]),
+        .executable(name: "DarkbloomApp", targets: ["DarkbloomApp"]),
         .executable(name: "darkbloom", targets: ["darkbloom"]),
         .executable(name: "darkbloom-fan-helper", targets: ["DarkbloomFanHelper"]),
         .executable(name: "darkbloom-enclave", targets: ["DarkbloomEnclaveCLI"]),
@@ -127,6 +128,20 @@ let package = Package(
                 .product(name: "Hummingbird", package: "hummingbird"),
             ],
             path: "Sources/ProviderCore"
+        ),
+
+        // ----------------------------------------------------------------
+        // DarkbloomApp: native macOS setup and provider-management UI. Talks
+        // to the real daemon through `DaemonRuntimeService` (state file +
+        // CLI subprocess) — deliberately runs WITHOUT ProviderCore/MLX, so it
+        // links only the no-MLX ProviderCoreFoundation for the shared
+        // daemon-state / local-endpoint wire contracts.
+        // ----------------------------------------------------------------
+        .executableTarget(
+            name: "DarkbloomApp",
+            dependencies: ["ProviderCoreFoundation"],
+            path: "Sources/DarkbloomApp",
+            resources: [.process("Resources")]
         ),
 
         // ----------------------------------------------------------------
@@ -275,6 +290,11 @@ let package = Package(
             ],
             path: "Tests/DarkbloomFanHelperTests"
         ),
+        .testTarget(
+            name: "DarkbloomAppTests",
+            dependencies: ["DarkbloomApp"],
+            path: "Tests/DarkbloomAppTests"
+        ),
 
         // ----------------------------------------------------------------
         // DarkbloomCLITests — unit tests for the `darkbloom` executable
@@ -285,7 +305,7 @@ let package = Package(
         // ----------------------------------------------------------------
         .testTarget(
             name: "DarkbloomCLITests",
-            dependencies: ["darkbloom"],
+            dependencies: ["darkbloom", "ProviderCoreFoundation"],
             path: "Tests/DarkbloomCLITests"
         ),
 

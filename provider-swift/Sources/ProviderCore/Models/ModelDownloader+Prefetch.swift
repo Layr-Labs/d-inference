@@ -44,21 +44,10 @@ extension ModelDownloader {
             throw ModelCatalogError.ineligible(
                 ModelRuntimeIneligibleError(eligibility: eligibility).localizedDescription)
         }
-        guard manifest.modelID == model.id else {
-            throw ModelCatalogError.downloadFailed("manifest model_id \(manifest.modelID) does not match catalog id \(model.id)")
-        }
-        guard manifest.files.count == manifest.fileCount else {
-            throw ModelCatalogError.downloadFailed("manifest file_count \(manifest.fileCount) does not match files array")
-        }
-        guard !manifest.files.isEmpty else {
-            throw ModelCatalogError.downloadFailed("manifest contains no files")
-        }
-        if let aggregate = model.aggregateSHA256, aggregate != manifest.aggregateSHA256 {
-            throw ModelCatalogError.downloadFailed("catalog aggregate hash does not match manifest")
-        }
-        if let prefix = model.r2Prefix, prefix != manifest.r2Prefix {
-            throw ModelCatalogError.downloadFailed("catalog r2_prefix does not match manifest")
-        }
+        try Self.validateManifestForDownload(manifest, model: model)
+
+        let admissionLock = try await acquireDownloadAdmissionLock()
+        defer { admissionLock.release() }
 
         let cacheDir = Self.cacheSnapshotDirectory(for: model.id)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
@@ -84,7 +73,11 @@ extension ModelDownloader {
 
         // Classify each file once (hashing is expensive) into already-valid vs
         // still-needed. Reused for both progress seeding and the capacity check.
-        let alreadyValid = jobs.map { Self.fileMatches($0.destination, size: $0.file.sizeBytes, sha256: $0.file.sha256) }
+        let diskState = inspectManifestDownloadState(
+            files: jobs.map(\.file),
+            destinations: jobs.map(\.destination)
+        )
+        let alreadyValid = diskState.alreadyValid
 
         // Bytes already verified on disk (resumed files) count toward progress
         // immediately. `progress` is updated as each file completes.
@@ -101,16 +94,11 @@ extension ModelDownloader {
         // would spuriously fail a resume that has plenty of room for what remains.
         // Publishing is a same-volume move of the staging dir, so staged bytes
         // need no extra headroom.
-        // Count bytes already saved in each file's resumable `.part` so a tight-
-        // disk resume isn't rejected for lacking room equal to a whole shard when
-        // the byte-resume below will only append the missing suffix via `Range`.
-        let partBytes = jobs.map { fileSize($0.destination.appendingPathExtension("part")) }
-        let remainingBytes = Self.remainingBytesToFetch(
-            sizes: jobs.map(\.file.sizeBytes),
-            alreadyValid: alreadyValid,
-            partBytes: partBytes
+        try ensureAvailableCapacity(
+            at: snapshotsDir,
+            remainingBytes: diskState.remainingBytes,
+            reserveBytes: 0
         )
-        try Self.ensureAvailableCapacity(at: snapshotsDir, requiredBytes: remainingBytes)
 
         // Sequential downloads (one at a time) so prefetch yields to inference
         // and never saturates bandwidth the way the foreground 4-way concurrent
@@ -195,21 +183,17 @@ extension ModelDownloader {
         var total: Int64 = 0
         for i in sizes.indices {
             if i < alreadyValid.count, alreadyValid[i] { continue }
-            let have = i < partBytes.count ? max(0, partBytes[i]) : 0
-            total += max(0, sizes[i] - have)
+            let size = max(0, sizes[i])
+            let saved = i < partBytes.count ? max(0, partBytes[i]) : 0
+            let remaining = size - min(size, saved)
+            let (next, overflow) = total.addingReportingOverflow(remaining)
+            // Manifest validation proves this cannot overflow for network
+            // manifests. Fail closed for direct/internal callers by requiring
+            // the maximum possible capacity instead of wrapping negative.
+            if overflow { return Int64.max }
+            total = next
         }
         return total
-    }
-
-    internal static func ensureAvailableCapacity(at directory: URL, requiredBytes: Int64) throws {
-        guard requiredBytes > 0 else { return }
-        let values = try directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
-        let available = values.volumeAvailableCapacityForImportantUsage ?? Int64(values.volumeAvailableCapacity ?? 0)
-        guard available <= 0 || available >= requiredBytes else {
-            throw ModelCatalogError.downloadFailed(
-                "insufficient disk space: need \(requiredBytes) bytes, available \(available) bytes"
-            )
-        }
     }
 }
 
@@ -221,6 +205,11 @@ extension ModelDownloader {
 private final class PrefetchByteProgress: @unchecked Sendable {
     private let lock = NSLock()
     private var _done: Int64 = 0
-    func add(_ bytes: Int64) { lock.lock(); _done += bytes; lock.unlock() }
+    func add(_ bytes: Int64) {
+        lock.lock()
+        let (next, overflow) = _done.addingReportingOverflow(max(0, bytes))
+        _done = overflow ? Int64.max : next
+        lock.unlock()
+    }
     var done: Int64 { lock.lock(); defer { lock.unlock() }; return _done }
 }

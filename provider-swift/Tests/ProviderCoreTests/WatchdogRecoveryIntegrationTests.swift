@@ -4,6 +4,11 @@ import Testing
 
 @Suite("Watchdog update and rollback integration", .serialized)
 struct WatchdogRecoveryIntegrationTests {
+    private static let providerIdentity = ProcessIdentity(
+        pid: 4_242,
+        startTimeMicros: 150_000_000
+    )
+
     @Test("down provider installs signed release before restart")
     func forwardUpdateWhileDown() async throws {
         let fixture = try UpdateRecoveryFixture()
@@ -38,6 +43,100 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(state.predecessor?.release.binaryHash.isEmpty == false)
         #expect(state.predecessor?.release.installedBundleHash.isEmpty == false)
         #expect(state.predecessor?.release.metallibHash.isEmpty == false)
+        #expect(state.candidate?.release.binaryMode == 0o755)
+        #expect(state.candidate?.release.enclaveMode == 0o755)
+        #expect(state.candidate?.release.metallibMode != nil)
+        #expect(state.predecessor?.release.binaryMode == 0o755)
+        #expect(state.predecessor?.release.enclaveMode == 0o755)
+        #expect(state.predecessor?.release.metallibMode != nil)
+    }
+
+    @Test("watchdog restart accounting follows a one-shot install that wins during download")
+    func oneShotInstallWinsDuringWatchdogDownload() async throws {
+        let fixture = try UpdateRecoveryFixture(
+            oldVersion: "1.0.0",
+            newVersion: "2.0.0"
+        )
+        defer { fixture.cleanup() }
+        let gate = MockReleaseArtifactGate()
+        let mock = MockCoordinator(
+            release: fixture.mockReleaseFixture(),
+            releaseArtifact: fixture.artifact,
+            releaseArtifactGate: gate
+        )
+        let baseURL = try await mock.start()
+        defer {
+            Task {
+                await gate.release()
+                await mock.shutdown()
+            }
+        }
+
+        let restarts = RecoveryRestartCounter()
+        let service = makeService(
+            updater: fixture.updater(baseURL: baseURL),
+            restarts: restarts
+        )
+        let recovery = Task {
+            await service.recoverDownProvider(
+                autoUpdateEnabled: true,
+                now: 100
+            )
+        }
+        guard await gate.waitUntilRequested(cleanupOnFailure: {
+            recovery.cancel()
+            _ = await recovery.value
+            await mock.shutdown()
+        }) else {
+            Issue.record("watchdog release transfer never reached the deterministic gate")
+            return
+        }
+
+        try fixture.installCompetingApp(version: "3.0.0")
+        await gate.release()
+
+        #expect(
+            await recovery.value
+                == .restartIssued(updatedTo: "3.0.0", rolledBackTo: nil)
+        )
+        #expect(restarts.value == 1)
+        #expect(try fixture.liveBinaryContents() == "3.0.0-darkbloom")
+        let state = try recoveryStore(fixture).loadState()
+        #expect(state.installGeneration == 0)
+        #expect(state.candidate == nil)
+    }
+
+    @Test("pre-existing one-shot install is not reported as this tick's update")
+    func preexistingOneShotInstallIsNotReportedAsUpdate() async throws {
+        let fixture = try UpdateRecoveryFixture(
+            oldVersion: "1.0.0",
+            newVersion: "2.0.0"
+        )
+        defer { fixture.cleanup() }
+        try fixture.installCompetingApp(version: "3.0.0")
+        let mock = MockCoordinator(
+            release: fixture.mockReleaseFixture(),
+            releaseArtifact: fixture.artifact
+        )
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let restarts = RecoveryRestartCounter()
+        let service = makeService(
+            updater: fixture.updater(baseURL: baseURL),
+            restarts: restarts
+        )
+        let outcome = await service.recoverDownProvider(
+            autoUpdateEnabled: true,
+            now: 100
+        )
+
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        #expect(restarts.value == 1)
+        #expect(try fixture.liveBinaryContents() == "3.0.0-darkbloom")
+        let state = try recoveryStore(fixture).loadState()
+        #expect(state.installGeneration == 0)
+        #expect(state.candidate == nil)
     }
 
     @Test("third failed start restores predecessor and quarantines candidate")
@@ -80,7 +179,8 @@ struct WatchdogRecoveryIntegrationTests {
         defer { Task { await context.mock.shutdown() } }
 
         let firstHeartbeat = DaemonState(
-            pid: 4242,
+            pid: Self.providerIdentity.pid,
+            processIdentity: Self.providerIdentity,
             version: "2.0.0",
             writtenAt: 200,
             startedAt: 150
@@ -91,7 +191,8 @@ struct WatchdogRecoveryIntegrationTests {
             now: 200
         )
         let secondHeartbeat = DaemonState(
-            pid: 4242,
+            pid: Self.providerIdentity.pid,
+            processIdentity: Self.providerIdentity,
             version: "2.0.0",
             writtenAt: 261,
             startedAt: 150
@@ -108,6 +209,39 @@ struct WatchdogRecoveryIntegrationTests {
         #expect(state.candidate == nil)
         #expect(state.current?.version == "2.0.0")
         #expect(state.predecessor?.release.version == "1.0.0")
+    }
+
+    @Test("a reused candidate PID cannot satisfy stabilization")
+    func reusedCandidatePIDDoesNotPromote() async throws {
+        let context = try await installedCandidate(stabilizationSeconds: 0)
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        let reused = ProcessIdentity(
+            pid: Self.providerIdentity.pid,
+            startTimeMicros: Self.providerIdentity.startTimeMicros + 1
+        )
+        let service = makeService(
+            updater: context.updater,
+            restarts: context.restarts,
+            stabilizationSeconds: 0,
+            readProcessIdentity: { _ in reused }
+        )
+        let heartbeat = DaemonState(
+            pid: Self.providerIdentity.pid,
+            processIdentity: Self.providerIdentity,
+            version: "2.0.0",
+            writtenAt: 200,
+            startedAt: 150
+        )
+
+        let outcome = service.observeHealthyProvider(
+            providerRunning: true,
+            daemonState: heartbeat,
+            now: 200
+        )
+
+        #expect(outcome == .stabilizing(since: nil))
+        #expect(try recoveryStore(context.fixture).loadState().candidate != nil)
     }
 
     @Test("installed candidate retries restart without reinstalling")
@@ -310,6 +444,21 @@ struct WatchdogRecoveryIntegrationTests {
                 == SelfUpdater.watchdogResourceTimeoutSeconds
         )
         #expect(!session.configuration.waitsForConnectivity)
+
+        let startup = SelfUpdater.startupURLSession()
+        #expect(
+            startup.configuration.timeoutIntervalForRequest
+                == SelfUpdater.startupRequestTimeoutSeconds
+        )
+        #expect(
+            startup.configuration.timeoutIntervalForResource
+                == SelfUpdater.startupResourceTimeoutSeconds
+        )
+        #expect(
+            SelfUpdater.startupResourceTimeoutSeconds
+                < SelfUpdater.watchdogResourceTimeoutSeconds
+        )
+        #expect(!startup.configuration.waitsForConnectivity)
     }
 
     @Test("new version without heartbeat is a failed start, even if process lives")
@@ -584,7 +733,8 @@ struct WatchdogRecoveryIntegrationTests {
         try store.writeState(state)
 
         let oldProviderHeartbeat = DaemonState(
-            pid: 4242,
+            pid: Self.providerIdentity.pid,
+            processIdentity: Self.providerIdentity,
             version: "1.0.0",  // serving OLD version — not the candidate
             writtenAt: 200,
             startedAt: 150
@@ -687,6 +837,36 @@ struct WatchdogRecoveryIntegrationTests {
                 "recovery/predecessor/bin/darkbloom-enclave"
             )
         )
+        #expect(throws: (any Error).self) {
+            try store.verifyPredecessor(predecessor)
+        }
+    }
+
+    @Test("predecessor verification rejects chmod-only tampering")
+    func predecessorPermissionVerification() async throws {
+        let context = try await installedCandidate()
+        defer { context.fixture.cleanup() }
+        defer { Task { await context.mock.shutdown() } }
+        let store = recoveryStore(context.fixture)
+        let state = try store.loadState()
+        guard let predecessor = state.predecessor else {
+            Issue.record("missing app predecessor")
+            return
+        }
+        var partialModeRecord = predecessor
+        partialModeRecord.release.enclaveMode = nil
+        #expect(throws: (any Error).self) {
+            try store.verifyPredecessor(partialModeRecord)
+        }
+        let predecessorBinary = context.fixture.installRoot
+            .appendingPathComponent(
+                "recovery/predecessor/Darkbloom.app/Contents/MacOS/darkbloom"
+            )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o775],
+            ofItemAtPath: predecessorBinary.path
+        )
+
         #expect(throws: (any Error).self) {
             try store.verifyPredecessor(predecessor)
         }
@@ -822,8 +1002,10 @@ struct WatchdogRecoveryIntegrationTests {
         // layout already exchanged. Pre-fix, the tick kickstarted that
         // unfinalized tree with NO candidate attempt recorded — a crash of
         // the new binary would never be charged toward rollback. The fix
-        // replays the journal before kickstart.
-        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        // replays the journal before kickstart. Although `update` reported
+        // replacement failure, that replay finalized v2 as the launch target,
+        // so final restart accounting must report the real transition.
+        #expect(outcome == .restartIssued(updatedTo: "2.0.0", rolledBackTo: nil))
         #expect(restarts.value == 1)
         let store = recoveryStore(fixture)
         #expect(!FileManager.default.fileExists(
@@ -975,7 +1157,6 @@ struct WatchdogRecoveryIntegrationTests {
                     Thread.sleep(forTimeInterval: 0.8)
                     return true
                 },
-                processAlive: { _ in true },
                 log: { _ in }
             )
         )
@@ -1007,7 +1188,8 @@ struct WatchdogRecoveryIntegrationTests {
         defer { Task { await context.mock.shutdown() } }
 
         let heartbeat = DaemonState(
-            pid: 4242,
+            pid: Self.providerIdentity.pid,
+            processIdentity: Self.providerIdentity,
             version: "2.0.0",
             writtenAt: 200,
             startedAt: 150
@@ -1233,14 +1415,10 @@ struct WatchdogRecoveryIntegrationTests {
         let baseURL = try await mock.start()
         defer { Task { await mock.shutdown() } }
         let updater = fixture.updater(baseURL: baseURL)
-        let session = try updater.beginUpdateSession(
-            operation: "watchdog-stop-race"
-        )
-        defer { session.release() }
-        try session.recover(now: 100)
 
         let result = await updater.update(
-            session: session,
+            operation: "watchdog-stop-race",
+            manualOverride: false,
             beforeInstall: { false }
         )
         guard case .cancelled(let reason) = result else {
@@ -1349,7 +1527,10 @@ struct WatchdogRecoveryIntegrationTests {
         restarts: RecoveryRestartCounter,
         stabilizationSeconds: Double = 180,
         candidateStartupTimeoutSeconds: Double = 300,
-        isPastTickDeadline: @escaping @Sendable () -> Bool = { false }
+        isPastTickDeadline: @escaping @Sendable () -> Bool = { false },
+        readProcessIdentity: @escaping @Sendable (Int32) -> ProcessIdentity? = {
+            $0 == Self.providerIdentity.pid ? Self.providerIdentity : nil
+        }
     ) -> WatchdogRecoveryService {
         WatchdogRecoveryService(
             updater: updater,
@@ -1361,7 +1542,7 @@ struct WatchdogRecoveryIntegrationTests {
                 // Injected: tests must never shell out to the real
                 // `launchctl print` for the host's provider job.
                 launchSnapshot: { nil },
-                processAlive: { _ in true },
+                readProcessIdentity: readProcessIdentity,
                 isPastTickDeadline: isPastTickDeadline,
                 log: { _ in }
             ),

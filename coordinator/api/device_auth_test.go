@@ -3,16 +3,19 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/auth"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -131,6 +134,220 @@ func TestDeviceTokenMissingField(t *testing.T) {
 	}
 }
 
+func TestDeviceTokenRevokeUsesRealHTTPRouteAndIsIdempotent(t *testing.T) {
+	srv, st := deviceTestServer()
+	const token = "eigeninference-pt-revoke-me"
+	if err := st.CreateProviderToken(&store.ProviderToken{
+		TokenHash: sha256Hash(token),
+		AccountID: "acct-revoke",
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("create provider token: %v", err)
+	}
+
+	revoke := func() *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodDelete, "/v1/device/token", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := revoke(); rec.Code != http.StatusNoContent {
+		t.Fatalf("first revoke status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if _, err := st.GetProviderToken(token); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("revoked token error = %v, want ErrNotFound", err)
+	}
+	if rec := revoke(); rec.Code != http.StatusNoContent {
+		t.Fatalf("idempotent revoke status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeviceTokenRevokeRequiresBearerToken(t *testing.T) {
+	srv, _ := deviceTestServer()
+	req := httptest.NewRequest(http.MethodDelete, "/v1/device/token", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestDeviceTokenRevokeDisconnectsEveryMatchingLiveProvider(t *testing.T) {
+	srv, st := deviceTestServer()
+	const (
+		token     = "eigeninference-pt-live-revoke"
+		accountID = "acct-live-revoke"
+	)
+	tokenHash := sha256Hash(token)
+	if err := st.CreateProviderToken(&store.ProviderToken{
+		TokenHash: tokenHash,
+		AccountID: accountID,
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("create provider token: %v", err)
+	}
+
+	binding := registry.ProviderAuthBinding{AccountID: accountID, TokenHash: tokenHash}
+	first := srv.registry.RegisterAuthenticated("revoke-first", nil, &protocol.RegisterMessage{}, binding)
+	second := srv.registry.RegisterAuthenticated("revoke-second", nil, &protocol.RegisterMessage{}, binding)
+	guard := srv.registry.RegisterAuthenticated(
+		"revoke-guard",
+		nil,
+		&protocol.RegisterMessage{},
+		registry.ProviderAuthBinding{AccountID: accountID, TokenHash: sha256Hash("other-token")},
+	)
+	pending := &registry.PendingRequest{
+		RequestID:  "revoke-pending",
+		ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
+		ChunkCh:    make(chan registry.ProviderChunk),
+		CompleteCh: make(chan protocol.UsageInfo),
+	}
+	first.AddPending(pending)
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/device/token", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("revoke status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	for _, id := range []string{first.ID, second.ID} {
+		if got := srv.registry.GetProvider(id); got != nil {
+			t.Errorf("revoked provider %q remains registry-visible", id)
+		}
+	}
+	if got := srv.registry.GetProvider(guard.ID); got != guard {
+		t.Fatal("provider authenticated by another token was disconnected")
+	}
+	if first.PendingCount() != 0 {
+		t.Fatalf("pending requests after revoke = %d, want 0", first.PendingCount())
+	}
+	select {
+	case got := <-pending.ErrorCh:
+		if got.StatusCode != http.StatusBadGateway ||
+			got.CoordinatorCause != protocol.CoordinatorCauseProviderDisconnected {
+			t.Fatalf("pending disconnect error = %+v", got)
+		}
+	default:
+		t.Fatal("pending request was not cancelled during token revoke")
+	}
+}
+
+func TestDeviceTokenRegisterRevokeRaceCannotStrandProvider(t *testing.T) {
+	srv, st := deviceTestServer()
+
+	for i := range 64 {
+		rawToken := fmt.Sprintf("eigeninference-pt-register-race-%d", i)
+		tokenHash := sha256Hash(rawToken)
+		accountID := fmt.Sprintf("acct-register-race-%d", i)
+		providerID := fmt.Sprintf("provider-register-race-%d", i)
+		if err := st.CreateProviderToken(&store.ProviderToken{
+			TokenHash: tokenHash,
+			AccountID: accountID,
+			Active:    true,
+		}); err != nil {
+			t.Fatalf("race %d create provider token: %v", i, err)
+		}
+
+		start := make(chan struct{})
+		registerDone := make(chan error, 1)
+		revokeDone := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			<-start
+			_, _, err := srv.registerProvider(providerID, nil, &protocol.RegisterMessage{AuthToken: rawToken})
+			registerDone <- err
+		}()
+		go func() {
+			<-start
+			req := httptest.NewRequest(http.MethodDelete, "/v1/device/token", nil)
+			req.Header.Set("Authorization", "Bearer "+rawToken)
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+			revokeDone <- rec
+		}()
+		close(start)
+
+		registerErr := <-registerDone
+		if registerErr != nil && !errors.Is(registerErr, errProviderTokenRejected) {
+			t.Fatalf("race %d register error = %v", i, registerErr)
+		}
+		if rec := <-revokeDone; rec.Code != http.StatusNoContent {
+			t.Fatalf("race %d revoke status = %d, body = %s", i, rec.Code, rec.Body.String())
+		}
+		if got := srv.registry.GetProvider(providerID); got != nil {
+			t.Fatalf("race %d stranded provider after revoke", i)
+		}
+		if _, err := st.GetProviderToken(rawToken); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("race %d token remains active: %v", i, err)
+		}
+	}
+}
+
+func TestCompletionAfterTokenRevokeCannotCreditProvider(t *testing.T) {
+	srv, st, _ := billingTestServer(t)
+	const (
+		rawToken  = "eigeninference-pt-late-completion"
+		accountID = "acct-late-completion"
+		requestID = "request-late-completion"
+		model     = "late-completion-model"
+	)
+	tokenHash := sha256Hash(rawToken)
+	if err := st.CreateProviderToken(&store.ProviderToken{
+		TokenHash: tokenHash,
+		AccountID: accountID,
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("create provider token: %v", err)
+	}
+	provider := srv.registry.RegisterAuthenticated(
+		"provider-late-completion",
+		nil,
+		&protocol.RegisterMessage{Models: []protocol.ModelInfo{{ID: model}}},
+		registry.ProviderAuthBinding{AccountID: accountID, TokenHash: tokenHash},
+	)
+
+	// Model the post-commit consumer-disconnect path: the provider's pending
+	// entry has already moved to the settlement holder, so disconnect cannot
+	// erase the terminal record before this deliberately late completion.
+	pr := &registry.PendingRequest{
+		RequestID:   requestID,
+		ProviderID:  provider.ID,
+		Model:       model,
+		ConsumerKey: testConsumerID,
+	}
+	srv.settlements.hold(pr, time.Hour, func(*registry.PendingRequest) {})
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/device/token", nil)
+	req.Header.Set("Authorization", "Bearer "+rawToken)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("revoke status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type:      protocol.TypeInferenceComplete,
+		RequestID: requestID,
+		Usage: protocol.UsageInfo{
+			PromptTokens:     10,
+			CompletionTokens: 10,
+		},
+	})
+
+	if got := st.GetWithdrawableBalance(accountID); got != 0 {
+		t.Fatalf("provider withdrawable balance = %d, want 0 after revoke", got)
+	}
+	if earnings, err := st.GetAccountEarnings(accountID, 10); err != nil {
+		t.Fatalf("get provider earnings: %v", err)
+	} else if len(earnings) != 0 {
+		t.Fatalf("post-revoke earnings rows = %d, want 0", len(earnings))
+	}
+}
+
 func TestDeviceApproveAndTokenAuthorized(t *testing.T) {
 	srv, _ := deviceTestServer()
 
@@ -171,6 +388,94 @@ func TestDeviceApproveAndTokenAuthorized(t *testing.T) {
 	}
 	if tokenResp["account_id"] != "acct-1" {
 		t.Errorf("account_id = %q, want acct-1", tokenResp["account_id"])
+	}
+}
+
+func TestDeviceTokenHTTPConcurrentPollAndReplayIssueOnce(t *testing.T) {
+	srv, st := deviceTestServer()
+	const (
+		deviceCode = "concurrent-device-code"
+		userCode   = "RACE-TEST"
+		accountID  = "acct-concurrent-device"
+		polls      = 16
+	)
+	if err := st.CreateDeviceCode(&store.DeviceCode{
+		DeviceCode: deviceCode,
+		UserCode:   userCode,
+		Status:     "pending",
+		ExpiresAt:  time.Now().Add(15 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ApproveDeviceCode(deviceCode, accountID); err != nil {
+		t.Fatal(err)
+	}
+
+	poll := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/v1/device/token",
+			strings.NewReader(`{"device_code":"`+deviceCode+`"}`),
+		)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+
+	responses := make([]*httptest.ResponseRecorder, polls)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range polls {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			responses[i] = poll()
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	authorized := 0
+	var issuedToken string
+	for i, rec := range responses {
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("response %d is not JSON: %v: %s", i, err, rec.Body.String())
+		}
+		if rec.Code == http.StatusOK && payload["status"] == "authorized" {
+			authorized++
+			issuedToken, _ = payload["token"].(string)
+			continue
+		}
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("losing poll %d status = %d, want 404: %s", i, rec.Code, rec.Body.String())
+		}
+		if _, leaked := payload["token"]; leaked {
+			t.Errorf("losing poll %d returned a token: %s", i, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "invalid_grant") {
+			t.Errorf("losing poll %d did not return invalid_grant: %s", i, rec.Body.String())
+		}
+	}
+	if authorized != 1 {
+		t.Fatalf("authorized responses = %d, want 1", authorized)
+	}
+	if issuedToken == "" {
+		t.Fatal("authorized response omitted provider token")
+	}
+	if token, err := st.GetProviderToken(issuedToken); err != nil {
+		t.Fatalf("issued token does not authenticate: %v", err)
+	} else if token.AccountID != accountID {
+		t.Fatalf("issued token account = %q, want %q", token.AccountID, accountID)
+	}
+
+	replay := poll()
+	if replay.Code != http.StatusNotFound || !strings.Contains(replay.Body.String(), "invalid_grant") {
+		t.Fatalf("replay status/body = %d %s, want 404 invalid_grant", replay.Code, replay.Body.String())
+	}
+	if strings.Contains(replay.Body.String(), `"token"`) {
+		t.Fatalf("replay returned a token: %s", replay.Body.String())
 	}
 }
 

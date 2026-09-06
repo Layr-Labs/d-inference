@@ -30,10 +30,18 @@ extension EngineV2Bridge {
     /// dependency on when the child task first gets scheduled.
     func configureMTPStatus(
         _ status: MTPActivationStatus,
-        metricsInterval: Duration = .seconds(60)
+        metricsInterval: Duration = .seconds(60),
+        beforeSamplerActorHopForTesting: (@Sendable () async -> Void)? = nil
     ) {
+        guard !slotPostureSamplerStopped else { return }
         mtpActivationStatus = status
-        slotPostureTask?.cancel()
+        if let previous = slotPostureTask {
+            previous.cancel()
+            // Cancellation cannot retract an actor call that the sampler has
+            // already queued. Keep every replaced handle reachable so
+            // shutdown can join it before releasing the engine.
+            retiredSlotPostureTasks.append(previous)
+        }
         slotPostureTask = nil
         guard metricsInterval > .zero else { return }
         sampleSlotPosture()
@@ -43,14 +51,19 @@ extension EngineV2Bridge {
                 try? await taskSleep(metricsInterval)
                 if Task.isCancelled { return }
                 guard let bridge else { return }
-                await bridge.sampleSlotPosture()
+                await beforeSamplerActorHopForTesting?()
+                await bridge.sampleSlotPosture(fromSampler: true)
             }
         }
     }
 
     /// One posture tick: read the engine's MTP metrics ONCE, log it when a
     /// drafter is loaded, and emit the telemetry sample unconditionally.
-    private func sampleSlotPosture() {
+    private func sampleSlotPosture(fromSampler: Bool = false) {
+        // Cancellation can race the actor hop above. Re-check after entering
+        // the actor so a replaced or shutting-down sampler cannot emit a stale
+        // tick that it queued before cancellation.
+        if fromSampler, Task.isCancelled { return }
         let snapshot = mtpStatusSnapshot()
         if mtpActivationStatus.active { logMTPSnapshot(snapshot) }
         emitSlotPostureTelemetry(snapshot)

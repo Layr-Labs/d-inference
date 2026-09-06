@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-04 · commit `6f364e64b`
+> Last updated: 2026-09-05 · commit `47f68a08a`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -197,7 +197,7 @@ two profiler tables: [`../architecture/system-profiler.md`](../architecture/syst
 | Surface | Content | Cadence |
 |---|---|---|
 | Unified log (`ProviderLogger`, `provider-swift/Sources/ProviderCore/ProviderLogger.swift`) | free-form strings are `privacy: .private`; only the closed `ProviderOperationalMessage` enum is public. WS logger subsystem `dev.darkbloom.provider`, category `coordinator` | continuous |
-| `~/.darkbloom/daemon-state.json` (`DaemonStateFile`, `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`; override `DARKBLOOM_STATE_FILE`) | schema `1`: pid, version, trust, current/warm/advertised models, stats, system, capacity, slots, connectivity, last model-load error | rewritten on every 2 s capacity tick |
+| `~/.darkbloom/daemon-state.json` (`DaemonStateFile`, `provider-swift/Sources/ProviderCoreFoundation/DaemonStateFile.swift`; override `DARKBLOOM_STATE_FILE`) | schema `1`: pid, version, trust, current/warm/advertised models, stats, system, capacity, slots, connectivity, last model-load error | rewritten on every 2 s capacity tick |
 | Local Prometheus `/metrics` (`LocalMetricsResponder`, `provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`) | `mtp_enabled`, `mtp_active`, `mtp_rounds_total`, `mtp_tokens_proposed_total`, `mtp_tokens_accepted_total`, `mtp_inactive_reason{model, reason}` | on scrape |
 | OOM detector (`provider-swift/Sources/ProviderCore/Diagnostics/OOMDetector.swift`) | `~/.darkbloom/oom_marker.json`, `~/.darkbloom/oom_last_scan`, scan of `DiagnosticReports`; findings become an `oom` event that `TelemetryClient.emit` discards | on launch |
 | `PanicHook` (`provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift`) | one stderr line `<ISO8601> FATAL panic kind=… message=…` for `SIGSEGV`, `SIGBUS`, `SIGILL`, `SIGABRT`, `SIGFPE` and uncaught exceptions, then re-raise | on crash |

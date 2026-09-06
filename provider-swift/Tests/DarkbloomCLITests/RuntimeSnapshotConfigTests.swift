@@ -80,6 +80,54 @@ struct RuntimeSnapshotConfigTests {
         #expect(try String(contentsOf: url, encoding: .utf8) == original)
     }
 
+    @Test("model browsing and doctor preserve an explicit dev config without migration")
+    func readOnlyCommandOptionsPreserveDevConfig() throws {
+        let url = tempConfigURL()
+        let original = """
+            # An explicit development endpoint must never be migrated by exploration.
+            config_version = 1
+
+            [provider]
+            name = "read-only-command-dev"
+
+            [coordinator]
+            url = "ws://localhost:8080/ws/provider"
+
+            [backend]
+            engine_v2_max_concurrent = 8
+            """
+        let originalBytes = Data(original.utf8)
+        try originalBytes.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let commandOptions: [(String, ConfigOptions)] = [
+            ("models list", try Models.List.parse([
+                "--json", "--all", "--config", url.path,
+            ]).configOptions),
+            ("models catalog runtime eligibility", try Models.Catalog.parse([
+                "--json", "--include-runtime-eligibility", "--config", url.path,
+            ]).configOptions),
+            ("models catalog", try Models.Catalog.parse([
+                "--json", "--include-download-plans", "--config", url.path,
+            ]).configOptions),
+            ("models download-plan", try Models.DownloadPlan.parse([
+                "org/model", "--json", "--config", url.path,
+            ]).configOptions),
+            ("doctor", try Doctor.parse([
+                "--json", "--config", url.path,
+            ]).configOptions),
+        ]
+        for (command, options) in commandOptions {
+            // Exercise the logging-preserving snapshot boundary with real parsed
+            // options, before catalog HTTP requests, model plans, or doctor probes.
+            let snapshot = try loadRuntimeSnapshot(configOptions: options, migrateOnDisk: false)
+            #expect(snapshot.configPath == url, "wrong config for \(command)")
+            #expect(snapshot.config.coordinator.url == "ws://localhost:8080/ws/provider",
+                    "changed in-memory endpoint for \(command)")
+            #expect(try Data(contentsOf: url) == originalBytes, "rewrote config for \(command)")
+        }
+    }
+
     @Test("update propagates existing-path read failures")
     func updateRejectsUnreadableExistingPath() throws {
         let url = tempConfigURL()

@@ -37,9 +37,7 @@ func TestServiceAccountBilledAtPlatformPriceNoMinimum(t *testing.T) {
 	provider := srv.registry.Register("svc-prov", nil, &protocol.RegisterMessage{
 		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
 	})
-	provider.Mu().Lock()
-	provider.AccountID = provAcct
-	provider.Mu().Unlock()
+	bindProviderAccountForBilling(t, st, provider, provAcct)
 
 	// Tiny request: the platform per-token cost is below the per-request minimum,
 	// and far below the provider-priced cost — so the assertion distinguishes
@@ -99,9 +97,7 @@ func TestServiceReservationNotToppedUpToProviderPrice(t *testing.T) {
 	provider := srv.registry.Register("svc-reserve-prov-id", nil, &protocol.RegisterMessage{
 		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
 	})
-	provider.Mu().Lock()
-	provider.AccountID = provAcct
-	provider.Mu().Unlock()
+	bindProviderAccountForBilling(t, st, provider, provAcct)
 
 	const base int64 = 100
 	balBefore := ledger.Balance(consumerID)

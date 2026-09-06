@@ -195,6 +195,59 @@ func TestSettleProviderFloorDraw_ZeroAmount(t *testing.T) {
 	}
 }
 
+func TestCreditProviderAccount_BaseRewardIsNotCompletedJob(t *testing.T) {
+	for name, s := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			acct := uniqueID("acct-base-reward")
+			providerKey := uniqueID("provider-base-reward")
+			if err := s.CreditProviderAccount(&ProviderEarning{
+				AccountID:        acct,
+				ProviderID:       "provider-work",
+				ProviderKey:      providerKey,
+				JobID:            uniqueID("job-work"),
+				Model:            "qwen3.5-9b",
+				AmountMicroUSD:   100,
+				PromptTokens:     10,
+				CompletionTokens: 20,
+			}); err != nil {
+				t.Fatalf("credit inference work: %v", err)
+			}
+			if err := s.CreditProviderAccount(&ProviderEarning{
+				AccountID:      acct,
+				ProviderID:     "provider-reward",
+				ProviderKey:    providerKey,
+				JobID:          uniqueID("job-base-reward"),
+				Model:          "base_reward",
+				AmountMicroUSD: 50,
+			}); err != nil {
+				t.Fatalf("credit base reward: %v", err)
+			}
+
+			for scope, read := range map[string]func() (ProviderEarningsSummary, error){
+				"account":  func() (ProviderEarningsSummary, error) { return s.GetAccountEarningsSummary(acct) },
+				"provider": func() (ProviderEarningsSummary, error) { return s.GetProviderEarningsSummary(providerKey) },
+			} {
+				summary, err := read()
+				if err != nil {
+					t.Fatalf("%s summary: %v", scope, err)
+				}
+				if summary.Count != 1 {
+					t.Errorf("%s completed jobs = %d, want 1", scope, summary.Count)
+				}
+				if summary.TotalMicroUSD != 150 {
+					t.Errorf("%s total = %d, want 150", scope, summary.TotalMicroUSD)
+				}
+				if summary.PromptTokens != 10 || summary.CompletionTokens != 20 {
+					t.Errorf("%s tokens = %d/%d, want 10/20", scope, summary.PromptTokens, summary.CompletionTokens)
+				}
+			}
+			if balance := s.GetBalance(acct); balance != 150 {
+				t.Errorf("balance = %d, want 150", balance)
+			}
+		})
+	}
+}
+
 // TestSumProviderEarningsByKey_Filters asserts the organic-earnings sum excludes
 // base_reward credits, non-positive amounts, and rows outside [since,until).
 func TestSumProviderEarningsByKey_Filters(t *testing.T) {

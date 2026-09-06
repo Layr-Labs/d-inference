@@ -497,8 +497,7 @@ func applyPendingRouteTelemetry(out *store.InferenceRouteOutcome, pr *registry.P
 	if out == nil || pr == nil {
 		return
 	}
-	out.UsedBackup = pr.UsedBackup
-	out.BackupWon = pr.BackupWon
+	out.UsedBackup, out.BackupWon = pr.BackupState()
 	if pr.Timing == nil {
 		return
 	}

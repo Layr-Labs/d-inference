@@ -16,6 +16,12 @@ struct SelfUpdaterTests {
                 urlSession: SelfUpdater.watchdogURLSession()
             ).verifiesCodeSignatures
         )
+        #expect(
+            SelfUpdater(
+                coordinatorBaseURL: "https://api.example",
+                urlSession: SelfUpdater.startupURLSession()
+            ).verifiesCodeSignatures
+        )
     }
 
     @Test("effective installed version prefers the newer of process and durable record")
@@ -158,6 +164,101 @@ struct SelfUpdaterTests {
         #expect(reason.contains("unsupported release platform"))
     }
 
+    @Test("release download budget rejects declared and streamed overflow")
+    func releaseDownloadBudgetEnforcesEveryChunk() throws {
+        let knownLengthBudget = ReleaseArchiveDownloadBudget(maximumBytes: 4)
+        #expect(throws: ReleaseArchiveDownloadError.self) {
+            try knownLengthBudget.validateExpectedContentLength(5)
+        }
+        try knownLengthBudget.validateExpectedContentLength(-1)
+
+        var streamedBudget = ReleaseArchiveDownloadBudget(maximumBytes: 4)
+        try streamedBudget.consume(3)
+        try streamedBudget.consume(1)
+        #expect(streamedBudget.receivedBytes == 4)
+        #expect(throws: ReleaseArchiveDownloadError.self) {
+            try streamedBudget.consume(1)
+        }
+        #expect(streamedBudget.receivedBytes == 4)
+    }
+
+    @Test("download completion preserves cancellation before continuation attach")
+    func releaseDownloadCompletionPreservesEarlyCancellation() async {
+        let completion = ReleaseArchiveDownloadCompletion()
+        completion.finish(.failure(CancellationError()))
+
+        do {
+            _ = try await withCheckedThrowingContinuation {
+                (
+                    continuation:
+                        CheckedContinuation<(URL, HTTPURLResponse), Error>
+                ) in
+                completion.attach(continuation)
+            }
+            Issue.record("early cancellation was dropped")
+        } catch is CancellationError {
+            // The pre-attach terminal result must resume the later waiter.
+        } catch {
+            Issue.record("unexpected completion error: \(error)")
+        }
+    }
+
+    @Test("download completion delivers cancellation attached first")
+    func releaseDownloadCompletionDeliversAttachedCancellation() async {
+        let completion = ReleaseArchiveDownloadCompletion()
+
+        do {
+            _ = try await withCheckedThrowingContinuation {
+                (
+                    continuation:
+                        CheckedContinuation<(URL, HTTPURLResponse), Error>
+                ) in
+                completion.attach(continuation)
+                completion.finish(.failure(CancellationError()))
+            }
+            Issue.record("attached cancellation was dropped")
+        } catch is CancellationError {
+            // The ordinary attach-before-finish path remains exact-once.
+        } catch {
+            Issue.record("unexpected completion error: \(error)")
+        }
+    }
+
+    @Test("release download aborts before an oversized response body")
+    func releaseDownloadRejectsOversizedResponse() async throws {
+        let artifact = Data(repeating: 0x41, count: 4096)
+        let mock = MockCoordinator(releaseArtifact: artifact)
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+        let maximumBytes: UInt64 = 1024
+        let updater = SelfUpdater(
+            coordinatorBaseURL: baseURL.absoluteString,
+            installRoot: nil,
+            verifyCodeSignatures: false,
+            currentVersion: "1.0.0",
+            maximumReleaseArchiveBytes: maximumBytes
+        )
+        let release = ReleaseInfo(
+            version: "2.0.0",
+            platform: "macos-arm64",
+            url: baseURL
+                .appendingPathComponent("mock-release-artifact")
+                .absoluteString,
+            bundleHash: String(repeating: "0", count: 64)
+        )
+
+        let result = await updater.downloadAndVerify(release: release)
+        guard case .failure(.downloadFailed(let reason)) = result else {
+            Issue.record("oversized release download was not rejected: \(result)")
+            return
+        }
+        #expect(
+            reason.contains(
+                "\(maximumBytes)-byte compressed-size limit"
+            )
+        )
+    }
+
     @Test("ReleaseInfo sha256 compatibility returns bundle hash")
     func releaseInfoShaCompatibility() {
         let hash = String(repeating: "d", count: 64)
@@ -193,6 +294,17 @@ struct SelfUpdaterTests {
         try Data("new darkbloom".utf8).write(to: darkbloom)
         try Data("new enclave".utf8).write(to: enclave)
         try Data("new metallib".utf8).write(to: metallib)
+        for executable in [
+            oldBin.appendingPathComponent("darkbloom"),
+            oldBin.appendingPathComponent("darkbloom-enclave"),
+            darkbloom,
+            enclave,
+        ] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: executable.path
+            )
+        }
 
         let tarball = root.appendingPathComponent("bundle.tar.gz")
         try runTarCreate(sourceDir: stage, tarball: tarball)
@@ -272,6 +384,19 @@ struct SelfUpdaterTests {
         try Data("flat darkbloom".utf8).write(to: binFlat.appendingPathComponent("darkbloom"))
         try Data("flat enclave".utf8).write(to: binFlat.appendingPathComponent("darkbloom-enclave"))
         try Data("flat metallib".utf8).write(to: binFlat.appendingPathComponent("mlx.metallib"))
+        for executable in [
+            oldAppBin.appendingPathComponent("darkbloom"),
+            oldAppBin.appendingPathComponent("darkbloom-enclave"),
+            appMacOS.appendingPathComponent("darkbloom"),
+            appMacOS.appendingPathComponent("darkbloom-enclave"),
+            binFlat.appendingPathComponent("darkbloom"),
+            binFlat.appendingPathComponent("darkbloom-enclave"),
+        ] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: executable.path
+            )
+        }
 
         let tarball = root.appendingPathComponent("bundle.tar.gz")
         try runTarCreate(sourceDir: stage, tarball: tarball)
@@ -366,6 +491,19 @@ struct SelfUpdaterTests {
         try Data("old darkbloom".utf8).write(to: liveMacOS.appendingPathComponent("darkbloom"))
         try Data("old enclave".utf8).write(to: liveMacOS.appendingPathComponent("darkbloom-enclave"))
         try Data("old metallib".utf8).write(to: liveMacOS.appendingPathComponent("mlx.metallib"))
+        for executable in [
+            appMacOS.appendingPathComponent("darkbloom"),
+            appMacOS.appendingPathComponent("darkbloom-enclave"),
+            binFlat.appendingPathComponent("darkbloom"),
+            binFlat.appendingPathComponent("darkbloom-enclave"),
+            liveMacOS.appendingPathComponent("darkbloom"),
+            liveMacOS.appendingPathComponent("darkbloom-enclave"),
+        ] {
+            try fm.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: executable.path
+            )
+        }
         try fm.createSymbolicLink(
             atPath: liveBin.appendingPathComponent("mlx.metallib").path,
             withDestinationPath: "../Darkbloom.app/Contents/MacOS/mlx.metallib")
@@ -781,7 +919,148 @@ struct SelfUpdaterTests {
         ) == "old darkbloom")
     }
 
-    @Test("a later staging pass removes OLD orphaned staging dirs but spares young (possibly live) ones")
+    @Test("staging refuses a provider payload with the wrong exact mode")
+    func stagingRefusesNonExecutablePayload() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "self-updater-stage-mode-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (tarball, release, install) = try makeAppBundleFixture(root: root)
+        let sourceBinary = root.appendingPathComponent(
+            "tarball-src/Darkbloom.app/Contents/MacOS/darkbloom"
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o644],
+            ofItemAtPath: sourceBinary.path
+        )
+        try runTarCreate(
+            sourceDir: root.appendingPathComponent("tarball-src"),
+            tarball: tarball
+        )
+
+        let result = SelfUpdater(
+            coordinatorBaseURL: "https://api.example.test"
+        ).stageBundleForTesting(
+            from: tarball,
+            release: release,
+            installDir: install
+        )
+
+        guard case .failure(let error) = result else {
+            Issue.record("non-executable provider payload was staged")
+            return
+        }
+        #expect(
+            "\(error)".contains(
+                "release payload darkbloom has mode 0644; expected 0755"
+            )
+        )
+    }
+
+    @Test("staging binds exact modes for flat and app payload copies")
+    func stagingBindsExactPayloadModes() throws {
+        let cases: [(String, String, Int)] = [
+            ("flat-darkbloom", "bin/darkbloom", 0o775),
+            ("flat-enclave", "bin/darkbloom-enclave", 0o700),
+            ("flat-metallib", "bin/mlx.metallib", 0o600),
+            (
+                "app-darkbloom",
+                "Darkbloom.app/Contents/MacOS/darkbloom",
+                0o775
+            ),
+            (
+                "app-enclave",
+                "Darkbloom.app/Contents/MacOS/darkbloom-enclave",
+                0o700
+            ),
+            (
+                "app-metallib",
+                "Darkbloom.app/Contents/MacOS/mlx.metallib",
+                0o755
+            ),
+        ]
+
+        for (name, relativePath, mode) in cases {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "self-updater-exact-mode-\(name)-\(UUID().uuidString)",
+                    isDirectory: true
+                )
+            defer { try? FileManager.default.removeItem(at: root) }
+            let (tarball, release, install) = try makeAppBundleFixture(
+                root: root
+            )
+            let source = root.appendingPathComponent(
+                "tarball-src/\(relativePath)"
+            )
+            try FileManager.default.setAttributes(
+                [.posixPermissions: mode],
+                ofItemAtPath: source.path
+            )
+            try runTarCreate(
+                sourceDir: root.appendingPathComponent("tarball-src"),
+                tarball: tarball
+            )
+
+            let result = SelfUpdater(
+                coordinatorBaseURL: "https://api.example.test"
+            ).stageBundleForTesting(
+                from: tarball,
+                release: release,
+                installDir: install
+            )
+            guard case .failure(let error) = result else {
+                Issue.record("\(relativePath) mode \(mode) was accepted")
+                continue
+            }
+            #expect("\(error)".contains("has mode"))
+            #expect("\(error)".contains("expected"))
+        }
+    }
+
+    @Test("commit refuses chmod-only mutation after verification")
+    func commitRefusesPostStageModeMutation() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "self-updater-stage-mode-mutation-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (tarball, release, install) = try makeAppBundleFixture(root: root)
+        let updater = SelfUpdater(
+            coordinatorBaseURL: "https://api.example.test"
+        )
+        guard case .success(let staged) = updater.stageBundleForTesting(
+            from: tarball,
+            release: release,
+            installDir: install
+        ) else {
+            Issue.record("stageBundleForTesting failed")
+            return
+        }
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o775],
+            ofItemAtPath: staged.installedBinary.path
+        )
+
+        guard case .failure(let error) =
+            updater.commitStagedBundleForTesting(staged)
+        else {
+            Issue.record("chmod-mutated staging tree was installed")
+            return
+        }
+        #expect("\(error)".contains("permissions changed after verification"))
+        #expect(try String(
+            contentsOf: install.appendingPathComponent(
+                "Darkbloom.app/Contents/MacOS/darkbloom"
+            ),
+            encoding: .utf8
+        ) == "old darkbloom")
+    }
+
+    @Test("final commit removes OLD orphaned staging dirs but spares young possible peers")
     func stagingCleansUpOrphanedDirs() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory
@@ -810,10 +1089,64 @@ struct SelfUpdaterTests {
             Issue.record("stageBundleForTesting failed")
             return
         }
-        defer { staged.discard() }
 
+        // Lock-free staging never sweeps shared siblings: even an old path
+        // could belong to another live preparer until final ownership checks.
+        #expect(fm.fileExists(atPath: orphan.path))
+        guard case .success = updater.commitStagedBundleForTesting(staged)
+        else {
+            Issue.record("commitStagedBundleForTesting failed")
+            return
+        }
+        // Final commit owns both mutation locks, so it may remove the
+        // ownership-less legacy orphan while preserving a young possible peer.
         #expect(!fm.fileExists(atPath: orphan.path))
         #expect(fm.fileExists(atPath: live.path))
+    }
+
+    @Test("final cleanup preserves an old staging tree whose owner is alive")
+    func stagingCleanupPreservesLiveOwner() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(
+            "self-updater-live-stage-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? fm.removeItem(at: root) }
+        let (tarball, release, install) = try makeAppBundleFixture(root: root)
+        let updater = SelfUpdater(coordinatorBaseURL: "https://api.example.test")
+
+        guard case .success(let livePeer) = updater.stageBundleForTesting(
+            from: tarball,
+            release: release,
+            installDir: install
+        ) else {
+            Issue.record("first stageBundleForTesting failed")
+            return
+        }
+        try fm.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -2 * 60 * 60)],
+            ofItemAtPath: livePeer.stagingRoot.path
+        )
+        guard case .success(let winner) = updater.stageBundleForTesting(
+            from: tarball,
+            release: release,
+            installDir: install
+        ) else {
+            livePeer.discard()
+            Issue.record("second stageBundleForTesting failed")
+            return
+        }
+
+        guard case .success = updater.commitStagedBundleForTesting(winner)
+        else {
+            livePeer.discard()
+            winner.discard()
+            Issue.record("commitStagedBundleForTesting failed")
+            return
+        }
+        #expect(fm.fileExists(atPath: livePeer.stagingRoot.path))
+        livePeer.discard()
+        #expect(!fm.fileExists(atPath: livePeer.stagingRoot.path))
     }
 }
 

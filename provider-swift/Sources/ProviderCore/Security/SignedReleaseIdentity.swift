@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCoreFoundation
 
 /// Fail-closed identity preflight for benchmark evidence captured from a
 /// packaged release candidate.
@@ -59,8 +60,8 @@ public enum SignedReleaseIdentity {
             case .executableUnavailable:
                 "cannot resolve the running executable"
             case .notPackagedMainExecutable:
-                "signed evidence requires Darkbloom.app/Contents/MacOS/darkbloom "
-                    + "as the running bundle main executable"
+                "signed evidence requires the exact Darkbloom.app provider executable "
+                    + "in its legacy main or signed DarkbloomProvider.app helper layout"
             case .signatureInvalid(let detail):
                 "signed release identity verification failed: \(detail)"
             case .binaryHashUnavailable:
@@ -146,21 +147,34 @@ public enum SignedReleaseIdentity {
         }
 
         let executable = processExecutable.resolvingSymlinksInPath()
-        let canonicalBundleExecutable = bundleExecutable.resolvingSymlinksInPath()
-        let app = bundleURL.resolvingSymlinksInPath()
-        let contents = executable.deletingLastPathComponent()
-            .deletingLastPathComponent()
-        guard executable == canonicalBundleExecutable,
-            executable.lastPathComponent == "darkbloom",
-            executable.deletingLastPathComponent().lastPathComponent == "MacOS",
-            contents.lastPathComponent == "Contents",
-            contents.deletingLastPathComponent() == app,
-            app.lastPathComponent == "Darkbloom.app"
-        else {
+        guard let app = ManagedProviderInstallLayout.outerAppURL(forExecutableURL: executable) else {
+            throw VerificationError.notPackagedMainExecutable
+        }
+        let paths: ProviderAppLayout
+        do {
+            paths = try ProviderAppLayout(app: app, expectedVersion: expectedVersion)
+            try paths.validateIdentityMetadata(expectedVersion: expectedVersion)
+        } catch {
+            throw VerificationError.signatureInvalid(String(describing: error))
+        }
+        let contextBundle = bundleURL.resolvingSymlinksInPath()
+        let contextExecutable = bundleExecutable.resolvingSymlinksInPath()
+        let validContext: Bool
+        if let helper = paths.helper {
+            validContext = (contextBundle == helper && contextExecutable == paths.binary)
+                || (contextBundle == app
+                    && contextExecutable == app.appendingPathComponent("Contents/MacOS/DarkbloomApp"))
+        } else {
+            validContext = contextBundle == app && contextExecutable == paths.binary
+        }
+        guard executable == paths.binary, validContext else {
             throw VerificationError.notPackagedMainExecutable
         }
 
         do {
+            if let helper = paths.helper {
+                try dependencies.verifySignature(helper, true)
+            }
             try dependencies.verifySignature(app, true)
         } catch {
             throw VerificationError.signatureInvalid(String(describing: error))

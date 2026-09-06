@@ -520,6 +520,13 @@ type DeviceAuthStore interface {
 	// ApproveDeviceCode links a device code to an account, marking it approved.
 	ApproveDeviceCode(deviceCode, accountID string) error
 
+	// ConsumeDeviceGrant atomically changes one approved device code to consumed
+	// and stores exactly one long-lived provider token linked to the approving
+	// account. tokenHash is the SHA-256 hash of the raw token retained by the
+	// caller. Pending, expired, consumed, and missing grants return the stable
+	// sentinel errors declared in interface.go.
+	ConsumeDeviceGrant(deviceCode, tokenHash string) (*ProviderToken, error)
+
 	// DeleteExpiredDeviceCodes removes device codes that have passed their expiry.
 	DeleteExpiredDeviceCodes() error
 
@@ -531,8 +538,12 @@ type DeviceAuthStore interface {
 	// GetProviderToken validates a provider token and returns it.
 	GetProviderToken(token string) (*ProviderToken, error)
 
-	// RevokeProviderToken deactivates a provider token.
-	RevokeProviderToken(token string) error
+	// RevokeProviderToken deactivates a provider token and returns its canonical
+	// token/account binding. Returning the binding lets the coordinator evict
+	// every live session authenticated by it without a racy lookup after revoke.
+	// Re-revoking an existing inactive token is idempotent and still returns the
+	// binding; an unknown token wraps ErrNotFound.
+	RevokeProviderToken(token string) (*ProviderToken, error)
 }
 
 // InviteStore manages coordinator-generated invite codes and their redemptions.
@@ -572,10 +583,13 @@ type ProviderEarningsStore interface {
 	GetAccountEarnings(accountID string, limit int) ([]ProviderEarning, error)
 
 	// GetProviderEarningsSummary returns lifetime aggregates for a provider node
-	// across ALL accounts that have ever owned the key.
+	// across ALL accounts that have ever owned the key. It wraps ErrNotFound when
+	// the provider has no earnings; operational read errors are returned intact.
 	GetProviderEarningsSummary(providerKey string) (ProviderEarningsSummary, error)
 
-	// GetAccountEarningsSummary returns lifetime aggregates for an account across all linked nodes.
+	// GetAccountEarningsSummary returns lifetime aggregates for an account across
+	// all linked nodes. It wraps ErrNotFound when the account has no earnings;
+	// operational read errors are returned intact.
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)
 
 	// AccountEarningsWindows returns the account's last-24h and last-7d row
@@ -596,6 +610,13 @@ type ProviderEarningsStore interface {
 	// CreditProviderAccount atomically credits a linked provider account and
 	// records the corresponding per-node earning.
 	CreditProviderAccount(earning *ProviderEarning) error
+
+	// CreditProviderAccountIfTokenActive performs the same atomic credit only
+	// while tokenHash names an active provider token owned by earning.AccountID.
+	// The token row and credit are serialized in one store critical section /
+	// PostgreSQL statement, so a revoke that wins the race prevents the credit
+	// and a revoke that waits cannot return before an earlier credit commits.
+	CreditProviderAccountIfTokenActive(tokenHash string, earning *ProviderEarning) error
 
 	// CreditProviderWallet atomically credits an unlinked provider wallet and
 	// records the corresponding payout history row.
@@ -692,6 +713,11 @@ type ProviderStore interface {
 	// TouchProviderSession updates the open session's last_seen heartbeat and
 	// backfills serial/account/provider_key if they were unknown at open time.
 	TouchProviderSession(ctx context.Context, sessionID, serial, accountID, providerKey string, lastSeen time.Time) error
+
+	// ListProviderSessionIdentities resolves the requested ephemeral provider
+	// keys to their physical machines for one account. Historical session rows
+	// are authoritative; provider records cover pre-session legacy data.
+	ListProviderSessionIdentities(ctx context.Context, accountID string, providerKeys []string) ([]ProviderSessionIdentity, error)
 
 	// CloseProviderSession marks the open session for sessionID as ended.
 	CloseProviderSession(ctx context.Context, sessionID, reason string, when time.Time) error

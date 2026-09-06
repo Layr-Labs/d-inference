@@ -63,9 +63,7 @@ func TestHandleCompleteClientGoneAfterCommitSettlesAndPays(t *testing.T) {
 	provider := srv.registry.Register("client-gone-provider", nil, &protocol.RegisterMessage{
 		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
 	})
-	provider.Mu().Lock()
-	provider.AccountID = accountID
-	provider.Mu().Unlock()
+	bindProviderAccountForBilling(t, st, provider, accountID)
 
 	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
 	expectedCost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
@@ -231,9 +229,7 @@ func TestHandleCompleteAfterGraceExpiryIsNoOp(t *testing.T) {
 	provider := srv.registry.Register("late-terminal-provider", nil, &protocol.RegisterMessage{
 		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
 	})
-	provider.Mu().Lock()
-	provider.AccountID = accountID
-	provider.Mu().Unlock()
+	bindProviderAccountForBilling(t, st, provider, accountID)
 
 	consumerID := testConsumerID
 	initialBalance := ledger.Balance(consumerID)

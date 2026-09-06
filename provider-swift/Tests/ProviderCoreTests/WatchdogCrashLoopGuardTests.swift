@@ -699,7 +699,6 @@ struct CrashLoopGuardRecoveryWiringTests {
                 // Injected: tests must never shell out to the real
                 // `launchctl print` for the host's provider job.
                 launchSnapshot: { nil },
-                processAlive: { _ in true },
                 tripKVBackendGuard: { crashCount, _, guardedVersion in
                     log.append("trip(\(crashCount),v\(guardedVersion))")
                     return KVBackendCrashLoopGuard.StagedTrip(
@@ -961,7 +960,6 @@ struct CrashLoopGuardRecoveryWiringTests {
             dependencies: .init(
                 kickstartIfLoaded: { true },
                 launchSnapshot: { nil },
-                processAlive: { _ in true },
                 tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
                     KVBackendCrashLoopGuard.stageTrip(
                         crashCount: crashCount, now: tripNow,
@@ -1068,7 +1066,6 @@ struct CrashLoopGuardRecoveryWiringTests {
             dependencies: .init(
                 kickstartIfLoaded: { true },
                 launchSnapshot: { nil },
-                processAlive: { _ in true },
                 tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
                     KVBackendCrashLoopGuard.stageTrip(
                         crashCount: crashCount, now: tripNow,
@@ -1141,7 +1138,6 @@ struct CrashLoopGuardRecoveryWiringTests {
                     return true
                 },
                 launchSnapshot: { nil },
-                processAlive: { _ in true },
                 tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
                     KVBackendCrashLoopGuard.stageTrip(
                         crashCount: crashCount, now: tripNow,
@@ -1193,7 +1189,6 @@ struct CrashLoopGuardRecoveryWiringTests {
             dependencies: .init(
                 kickstartIfLoaded: { false },  // operator stopped it mid-recovery
                 launchSnapshot: { nil },
-                processAlive: { _ in true },
                 tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
                     KVBackendCrashLoopGuard.stageTrip(
                         crashCount: crashCount, now: tripNow,

@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -138,31 +139,64 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 		rawToken := "eigeninference-pt-" + hex.EncodeToString(tokenBytes)
 		tokenHash := sha256Hash(rawToken)
 
-		pt := &store.ProviderToken{
-			TokenHash: tokenHash,
-			AccountID: dc.AccountID,
-			Label:     "device-" + dc.UserCode,
-			Active:    true,
-		}
-		if err := s.store.CreateProviderToken(pt); err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to create token"))
+		// The store locks the grant, re-checks its state, inserts this token, and
+		// marks the code consumed in one critical section / database transaction.
+		// Concurrent polls therefore cannot mint more than one provider token.
+		pt, err := s.store.ConsumeDeviceGrant(dc.DeviceCode, tokenHash)
+		if err != nil {
+			switch {
+			case errors.Is(err, store.ErrDeviceAuthorizationPending):
+				writeJSON(w, http.StatusOK, map[string]any{"status": "authorization_pending"})
+			case errors.Is(err, store.ErrDeviceCodeExpired):
+				writeJSON(w, http.StatusGone, errorResponse("expired_token", "device code has expired"))
+			case errors.Is(err, store.ErrDeviceGrantConsumed), errors.Is(err, store.ErrNotFound):
+				writeJSON(w, http.StatusNotFound, errorResponse("invalid_grant", "device code is no longer valid"))
+			default:
+				s.logger.Error("failed to consume device grant", "error", err)
+				writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to create token"))
+			}
 			return
 		}
 
 		s.logger.Info("provider token issued",
-			"account_id", dc.AccountID,
+			"account_id", pt.AccountID,
 			"user_code", dc.UserCode,
 		)
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":     "authorized",
 			"token":      rawToken,
-			"account_id": dc.AccountID,
+			"account_id": pt.AccountID,
 		})
+
+	case "consumed":
+		writeJSON(w, http.StatusNotFound, errorResponse("invalid_grant", "device code is no longer valid"))
 
 	default:
 		writeJSON(w, http.StatusGone, errorResponse("expired_token", "device code is no longer valid"))
 	}
+}
+
+// handleDeviceTokenRevoke invalidates the long-lived token before a provider
+// deletes its local copy. Unknown/already-revoked tokens are idempotent success;
+// store failures are surfaced so the client does not falsely report unlinking.
+// DELETE /v1/device/token
+func (s *Server) handleDeviceTokenRevoke(w http.ResponseWriter, r *http.Request) {
+	token := extractBearerToken(r)
+	if token == "" {
+		writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing provider token"))
+		return
+	}
+	if _, _, err := s.revokeProviderToken(token); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		s.logger.Error("failed to revoke provider token", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("server_error", "failed to revoke provider token"))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleDeviceApprove approves a device code, linking it to the authenticated user's account.

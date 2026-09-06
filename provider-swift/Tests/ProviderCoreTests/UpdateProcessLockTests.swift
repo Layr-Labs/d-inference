@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ProviderCore
+import ProviderCoreFoundation
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -26,6 +27,126 @@ struct UpdateProcessLockTests {
             #expect(owner?.pid == getpid())
             #expect(owner?.processIdentity == ProcessIdentity.current())
         }
+    }
+
+    @Test("lock path symlink is rejected without modifying its target")
+    func symlinkPathIsRejected() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appendingPathComponent(
+            "update-lock-symlink-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let outside = root.appendingPathComponent("outside")
+        let lockPath = root
+            .appendingPathComponent("recovery", isDirectory: true)
+            .appendingPathComponent("update.lock")
+        defer { try? fileManager.removeItem(at: root) }
+
+        try fileManager.createDirectory(
+            at: lockPath.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("preserve me".utf8).write(to: outside)
+        try fileManager.createSymbolicLink(
+            atPath: lockPath.path,
+            withDestinationPath: outside.path
+        )
+
+        #expect(throws: UpdateProcessLock.LockError.self) {
+            _ = try UpdateProcessLock.acquire(
+                at: lockPath,
+                operation: "must-not-follow"
+            )
+        }
+        #expect(try Data(contentsOf: outside) == Data("preserve me".utf8))
+        #expect(
+            try fileManager.destinationOfSymbolicLink(atPath: lockPath.path)
+                == outside.path
+        )
+    }
+
+    @Test("self-updater session is blocked by the shared app installer lock")
+    func updaterCoordinatesWithOneShotInstallers() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "shared-install-lock-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installer = try InstallMutationLock.acquirePrimary(
+            in: root,
+            timeout: 0
+        )
+        defer { installer.release() }
+        let updater = SelfUpdater(
+            coordinatorBaseURL: "http://127.0.0.1:1",
+            installRoot: root,
+            verifyCodeSignatures: false,
+            currentVersion: "1.0.0"
+        )
+
+        do {
+            _ = try updater.beginUpdateSession(
+                operation: "must-not-race-installer",
+                timeout: 0
+            )
+            Issue.record("self-updater acquired the one-shot installer lock")
+        } catch UpdateError.lockBusy(_, let owner) {
+            #expect(owner == nil)
+        }
+    }
+
+    @Test("self-updater refuses a pending one-shot transaction and releases locks")
+    func updaterRejectsShellRecoveryJournal() throws {
+        for pendingName in [
+            InstallMutationLock.appRelocationTransactionFileName,
+            ".install-backup-123-456-789",
+            ".install-staging-123-456-789",
+        ] {
+            try assertUpdaterRejectsPendingOneShotArtifact(named: pendingName)
+        }
+    }
+
+    private func assertUpdaterRejectsPendingOneShotArtifact(
+        named pendingName: String
+    ) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "pending-shell-install-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pending = root.appendingPathComponent(
+            pendingName,
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: pending,
+            withIntermediateDirectories: true
+        )
+        let updater = SelfUpdater(
+            coordinatorBaseURL: "http://127.0.0.1:1",
+            installRoot: root,
+            verifyCodeSignatures: false,
+            currentVersion: "1.0.0"
+        )
+
+        do {
+            _ = try updater.beginUpdateSession(
+                operation: "must-recover-shell-first",
+                timeout: 0
+            )
+            Issue.record(
+                "self-updater ignored pending shell artifact \(pendingName)"
+            )
+        } catch UpdateError.replaceFailed(let reason) {
+            #expect(reason.contains(pending.path))
+        }
+
+        try FileManager.default.removeItem(at: pending)
+        let recovered = try updater.beginUpdateSession(
+            operation: "locks-were-released",
+            timeout: 0
+        )
+        recovered.release()
     }
 
     #if canImport(Darwin)

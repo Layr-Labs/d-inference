@@ -80,8 +80,9 @@ else
 fi
 
 # ---- Coordinator (PID 1 — receives SIGTERM from EigenCloud) ----
-# Optional profile signing: the coordinator reads PROFILE_SIGNING_P12_B64 (+
-# _PASSWORD) straight from the env and CMS-signs the /v1/enroll .mobileconfig.
-# Inject via KMS like MDM_PUSH_P12_B64; unset/invalid → profiles served unsigned.
+# Profile signing: the coordinator reads PROFILE_SIGNING_P12_B64 (+ _PASSWORD)
+# and CMS-signs /v1/enroll. Hardware-trust startup fails closed when it is
+# unset/invalid unless EIGENINFERENCE_ALLOW_UNSIGNED_PROFILES=true is explicitly
+# set for local development/tests.
 echo "Starting coordinator..."
 exec coordinator

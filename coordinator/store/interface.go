@@ -30,6 +30,15 @@ var ErrInsufficientBalance = errors.New("insufficient balance or account not fou
 // treating every error as not-found.
 var ErrNotFound = errors.New("not found")
 
+// Device-code exchange errors are stable contract values so the HTTP layer can
+// preserve RFC 8628 responses without inferring grant state from error text.
+var (
+	ErrDeviceAuthorizationPending = errors.New("device authorization pending")
+	ErrDeviceCodeExpired          = errors.New("device code expired")
+	ErrDeviceGrantConsumed        = errors.New("device grant already consumed")
+	ErrProviderTokenInactive      = errors.New("provider token is inactive or belongs to another account")
+)
+
 // Store is the union of every storage-domain sub-interface (defined in
 // interface_domains.go). It was split from a single ~150-method god-interface
 // into composed domains so callers can depend on a narrow slice of the
@@ -753,18 +762,21 @@ type PublishingAPIKey struct {
 // The GitHub Action registers new releases via POST /v1/releases (scoped key).
 // Admins manage releases via /v1/admin/releases (Privy auth).
 type Release struct {
-	Version        string    `json:"version"`                   // semver, e.g. "0.5.0"
-	Platform       string    `json:"platform"`                  // "macos-arm64"
-	Backend        string    `json:"backend,omitempty"`         // "mlx-swift" (post-cutover) or "vllm-mlx" (legacy)
-	BinaryHash     string    `json:"binary_hash"`               // SHA-256 of darkbloom binary (attestation verification)
-	BundleHash     string    `json:"bundle_hash"`               // SHA-256 of the bundle tarball (install.sh download verification)
-	MetallibHash   string    `json:"metallib_hash,omitempty"`   // SHA-256 of mlx.metallib (Swift backend GPU kernel set)
-	PythonHash     string    `json:"python_hash,omitempty"`     // legacy: SHA-256 of bundled Python binary (vllm-mlx backend only)
-	RuntimeHash    string    `json:"runtime_hash,omitempty"`    // legacy: SHA-256 of vllm-mlx package (vllm-mlx backend only)
-	TemplateHashes string    `json:"template_hashes,omitempty"` // comma-separated name=hash pairs
-	URL            string    `json:"url"`                       // R2 download URL for the bundle tarball
-	Changelog      string    `json:"changelog"`                 // human-readable changes in this version
-	Active         bool      `json:"active"`                    // whether this version is accepted by the coordinator
+	Version        string    `json:"version"`                    // semver, e.g. "0.5.0"
+	Platform       string    `json:"platform"`                   // "macos-arm64"
+	Backend        string    `json:"backend,omitempty"`          // "mlx-swift" (post-cutover) or "vllm-mlx" (legacy)
+	BinaryHash     string    `json:"binary_hash"`                // SHA-256 of darkbloom binary (attestation verification)
+	BundleHash     string    `json:"bundle_hash"`                // SHA-256 of the bundle tarball (install.sh download verification)
+	MetallibHash   string    `json:"metallib_hash,omitempty"`    // SHA-256 of mlx.metallib (Swift backend GPU kernel set)
+	PythonHash     string    `json:"python_hash,omitempty"`      // legacy: SHA-256 of bundled Python binary (vllm-mlx backend only)
+	RuntimeHash    string    `json:"runtime_hash,omitempty"`     // legacy: SHA-256 of vllm-mlx package (vllm-mlx backend only)
+	TemplateHashes string    `json:"template_hashes,omitempty"`  // comma-separated name=hash pairs
+	HasApp         *bool     `json:"has_app,omitempty"`          // artifact-derived; nil for legacy rows not inspected under this contract
+	HasFanHelper   *bool     `json:"has_fan_helper,omitempty"`   // artifact-derived; nil for legacy rows
+	HasPagedKernel *bool     `json:"has_paged_kernel,omitempty"` // artifact-derived; nil for legacy rows
+	URL            string    `json:"url"`                        // R2 download URL for the bundle tarball
+	Changelog      string    `json:"changelog"`                  // human-readable changes in this version
+	Active         bool      `json:"active"`                     // whether this version is accepted by the coordinator
 	CreatedAt      time.Time `json:"created_at"`
 }
 
@@ -774,7 +786,7 @@ type DeviceCode struct {
 	DeviceCode string    `json:"device_code"` // opaque code for polling (secret, sent only to device)
 	UserCode   string    `json:"user_code"`   // short human-readable code (e.g. "ABCD-1234")
 	AccountID  string    `json:"account_id"`  // set when user approves (empty while pending)
-	Status     string    `json:"status"`      // "pending", "approved", "expired"
+	Status     string    `json:"status"`      // "pending", "approved", "consumed", "expired"
 	ExpiresAt  time.Time `json:"expires_at"`
 	CreatedAt  time.Time `json:"created_at"`
 }
@@ -813,7 +825,7 @@ type ProviderEarning struct {
 	ID               int64     `json:"id"`
 	AccountID        string    `json:"account_id"`
 	ProviderID       string    `json:"provider_id"`
-	ProviderKey      string    `json:"provider_key"` // X25519 public key (stable hardware ID)
+	ProviderKey      string    `json:"provider_key"` // X25519 session key; map through provider records/sessions for hardware identity
 	JobID            string    `json:"job_id"`
 	Model            string    `json:"model"`
 	AmountMicroUSD   int64     `json:"amount_micro_usd"`
@@ -934,6 +946,14 @@ type ProviderSession struct {
 	LastSeen         time.Time  `json:"last_seen"`
 	DisconnectedAt   *time.Time `json:"disconnected_at,omitempty"`
 	DisconnectReason string     `json:"disconnect_reason"`
+}
+
+// ProviderSessionIdentity maps an ephemeral provider encryption key back to a
+// physical Mac without exposing the full session history to API callers.
+type ProviderSessionIdentity struct {
+	SessionID    string
+	ProviderKey  string
+	SerialNumber string
 }
 
 // ProviderLocation captures approximate geographic location for a provider or

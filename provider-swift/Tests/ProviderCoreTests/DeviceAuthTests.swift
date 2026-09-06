@@ -2,6 +2,31 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
+@Test func coordinatorIssuerCanonicalizesWebSocketAndHTTPURLs() throws {
+    #expect(
+        try canonicalCoordinatorIssuer(
+            "wss://API.Darkbloom.dev/ws/provider?ignored=1#fragment"
+        ) == "https://api.darkbloom.dev"
+    )
+    #expect(
+        try canonicalCoordinatorIssuer("ws://127.0.0.1:8080/custom/path/")
+            == "http://127.0.0.1:8080"
+    )
+    #expect(throws: ProviderCredentialStoreError.invalidCoordinatorURL) {
+        _ = try canonicalCoordinatorIssuer("file:///tmp/coordinator")
+    }
+}
+
+@Test func coordinatorHTTPBaseUsesTheStructurallyParsedIssuer() throws {
+    let maliciousPath = "wss://api.darkbloom.dev/ws/provider@attacker.example"
+    let base = coordinatorHTTPBase(maliciousPath)
+    #expect(base == "https://api.darkbloom.dev")
+
+    let endpoint = try #require(URL(string: base + "/v1/device/token"))
+    #expect(endpoint.host == "api.darkbloom.dev")
+    #expect(endpoint.user == nil)
+}
+
 @Test func authTokenLoadMigratesLegacyTokenToCanonicalPath() throws {
     let tempDir = FileManager.default.temporaryDirectory
         .appendingPathComponent("darkbloom-device-auth-")
@@ -66,4 +91,55 @@ import Testing
 
     #expect(!FileManager.default.fileExists(atPath: canonical.path))
     #expect(!FileManager.default.fileExists(atPath: legacy.path))
+}
+
+@Test func providerTokenRevokerSendsAuthenticatedDelete() async throws {
+    let recorder = TokenRevokeRequestRecorder(status: 204)
+    let revoker = ProviderTokenRevoker { request in
+        try await recorder.send(request)
+    }
+
+    try await revoker.revoke(
+        coordinatorURL: "wss://api.darkbloom.dev/ws/provider",
+        token: "provider-secret"
+    )
+
+    let request = try #require(await recorder.request)
+    #expect(request.httpMethod == "DELETE")
+    #expect(request.url?.absoluteString == "https://api.darkbloom.dev/v1/device/token")
+    #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer provider-secret")
+}
+
+@Test func providerTokenRevokerRejectsNonSuccess() async {
+    let recorder = TokenRevokeRequestRecorder(status: 503)
+    let revoker = ProviderTokenRevoker { request in
+        try await recorder.send(request)
+    }
+
+    await #expect(throws: ProviderTokenRevokeError.rejected(status: 503)) {
+        try await revoker.revoke(
+            coordinatorURL: "wss://api.darkbloom.dev/ws/provider",
+            token: "provider-secret"
+        )
+    }
+}
+
+private actor TokenRevokeRequestRecorder {
+    private(set) var request: URLRequest?
+    private let status: Int
+
+    init(status: Int) {
+        self.status = status
+    }
+
+    func send(_ request: URLRequest) throws -> (Data, URLResponse) {
+        self.request = request
+        let response = try #require(HTTPURLResponse(
+            url: request.url!,
+            statusCode: status,
+            httpVersion: "HTTP/1.1",
+            headerFields: nil
+        ))
+        return (Data(), response)
+    }
 }

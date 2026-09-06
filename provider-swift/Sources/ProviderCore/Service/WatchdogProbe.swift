@@ -32,7 +32,7 @@ public enum WatchdogProbe {
         if !running,
            let state = DaemonStateFile.read(),
            !state.isStale(now: now),
-           recordBelongsToLiveProcess(state) {
+           DaemonStateRuntimeTruth.belongsToLiveProcess(state) {
             running = true
         }
         return ProviderLiveness(loaded: loaded, running: running)
@@ -46,40 +46,18 @@ public enum WatchdogProbe {
         processRunning: Bool,
         daemonState: DaemonState?,
         now: Double,
-        processAlive: (Int32) -> Bool = daemonProcessAlive,
         readIdentity: (Int32) -> ProcessIdentity? = ProcessIdentity.read
     ) -> Bool {
         guard processRunning else { return false }
         guard let daemonState,
-              recordBelongsToLiveProcess(
+              DaemonStateRuntimeTruth.belongsToLiveProcess(
                 daemonState,
-                processAlive: processAlive,
                 readIdentity: readIdentity
               )
         else {
             return true
         }
         return !daemonState.isStale(now: now)
-    }
-
-    /// Whether a daemon-state record is attributable to a currently-live
-    /// process. With a recorded kernel identity the live process at that PID
-    /// must have the SAME start time — a PID the kernel has since reused
-    /// belongs to an unrelated process, so the record came from a DEAD
-    /// provider and must not demote (or add) liveness. Records written before
-    /// `ProcessIdentity` existed keep the PID-alive check.
-    static func recordBelongsToLiveProcess(
-        _ state: DaemonState,
-        processAlive: (Int32) -> Bool = daemonProcessAlive,
-        readIdentity: (Int32) -> ProcessIdentity? = ProcessIdentity.read
-    ) -> Bool {
-        if let recorded = state.processIdentity {
-            guard let live = readIdentity(recorded.pid), live == recorded else {
-                return false
-            }
-            return true
-        }
-        return processAlive(state.pid)
     }
 
     /// The provider's process identity for stale-lock-owner attribution.

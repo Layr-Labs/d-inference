@@ -3,6 +3,7 @@
         coordinator-test coordinator-build coordinator-build-linux coordinator \
         prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
         provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
+        app-unit-test app-bundle-test app-check \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
         docs-check docs-stamp \
@@ -72,7 +73,7 @@ provider-test: ## Build and run Swift provider tests with source-matched metalli
 	    done; \
 	    [ "$$found" -eq 1 ] || { echo "provider test runner bundle not found in $$bin_path" >&2; exit 1; }; \
 	    trap - EXIT HUP INT TERM
-	cd provider-swift && swift test --skip-build
+	./scripts/test-provider-suites.sh
 
 provider: provider-build provider-test ## Build + test provider
 
@@ -81,6 +82,16 @@ benchmark-wrapper-test: ## Unit-test the Gemma benchmark wrapper (no GPU or weig
 
 benchmark-gemma-contbatch: ## Build and benchmark Gemma 4 26B continuous batching
 	python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)
+
+# ---- macOS app (opt-in checks; no app launch) ------------------------------
+
+app-unit-test: ## Run app and shared Foundation unit tests without launching the app
+	swift test --package-path provider-swift --filter 'DarkbloomAppTests|ProviderCoreFoundationTests'
+
+app-bundle-test: ## Check app bundle assembly with temporary fixtures (no Swift build)
+	./scripts/test-bundle-macos-app.sh
+
+app-check: app-unit-test app-bundle-test ## Run app unit and fixture-bundle checks
 
 # ---- Console UI (Next.js 16) ----------------------------------------------
 

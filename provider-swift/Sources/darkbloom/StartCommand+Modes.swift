@@ -45,6 +45,13 @@ extension Start {
             throw ExitCode.failure
         }
 
+        // Refuse an occupied lock before creating credentials or advertising an
+        // endpoint. The refusal is inside the kernel-lock acquisition, so a
+        // concurrent provider cannot be displaced after an app preflight check.
+        try ProcessLifecycle.acquireMediaServingLock(replaceExisting: !noReplace)
+        ProcessLifecycle.preventSystemSleep()
+        defer { ProcessLifecycle.releaseSingleInstanceLock() }
+
         // Direct/local mode: mint (or reuse) a bearer token so the loopback
         // server isn't open to every local process / hostile webpage. --no-auth
         // opts out for trusted/airgapped use.
@@ -76,12 +83,6 @@ extension Start {
         print()
         print("  Shareable any time with: darkbloom local")
         print()
-
-        // Lock acquisition and exact legacy-artifact housekeeping are one
-        // ordered operation shared with coordinator-connected foreground mode.
-        try ProcessLifecycle.acquireMediaServingLock()
-        ProcessLifecycle.preventSystemSleep()
-        defer { ProcessLifecycle.releaseSingleInstanceLock() }
 
         // NOTE: no LegacyCompiledDecodeGate here anymore — the standalone
         // server constructs no legacy engine as of v0.7.5 (CBv2 compiled
@@ -122,15 +123,29 @@ extension Start {
         // Publish discovery metadata so a same-machine client (and
         // `darkbloom local`) can find + authenticate to this server. Removed on
         // exit; the token file persists so the token survives restarts.
+        guard let processIdentity = ProcessIdentity.current() else {
+            await server.stop()
+            LocalEndpoint.removeInfo()
+            printError("Local server started, but its kernel process identity could not be read; refusing to publish an untrusted endpoint.")
+            throw ExitCode.failure
+        }
         let info = LocalEndpoint.Info(
             host: bind,
             port: port,
             apiKey: token ?? "",
             version: ProviderCore.version,
-            pid: ProcessInfo.processInfo.processIdentifier,
+            pid: processIdentity.pid,
+            processIdentity: processIdentity,
             updatedAt: ISO8601DateFormatter().string(from: Date())
         )
-        try? LocalEndpoint.writeInfo(info)
+        do {
+            try LocalEndpoint.writeInfo(info)
+        } catch {
+            await server.stop()
+            LocalEndpoint.removeInfo()
+            printError("Local server started, but secure endpoint discovery could not be written: \(error.localizedDescription)")
+            throw ExitCode.failure
+        }
         defer { LocalEndpoint.removeInfo() }
 
         // The optional fan helper receives a renewable activity lease only
@@ -181,7 +196,9 @@ extension Start {
 
         let (models, modelHashes, modelHashFingerprints) = attachWeightHashes(to: selectedModels)
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
-        let authToken = AuthTokenStore.load()
+        let authToken = try ProviderCredentialStore.authenticationToken(
+            for: coordinatorURL
+        )
         if let identity = ProcessIdentity.current() {
             try? SelfUpdater(
                 coordinatorBaseURL: coordinatorURL
@@ -328,7 +345,10 @@ extension Start {
             return
         }
         print("Checking for provider update...")
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+        let updater = SelfUpdater(
+            coordinatorBaseURL: coordinatorURL,
+            urlSession: SelfUpdater.startupURLSession()
+        )
         switch await updater.update() {
         case .alreadyUpToDate:
             return

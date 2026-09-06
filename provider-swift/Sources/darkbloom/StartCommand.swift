@@ -34,6 +34,9 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Run a local OpenAI-compatible HTTP server only; do not connect to the coordinator.")
     var local = false
 
+    @Flag(help: "With --local, refuse to replace an existing provider. Used by app-owned local sessions.")
+    var noReplace = false
+
     @Flag(help: "Serve a local OpenAI endpoint ALONGSIDE the coordinator (unified mode): same loaded models serve both the public fleet and local clients.")
     var localEndpoint = false
 
@@ -60,6 +63,12 @@ struct Start: AsyncParsableCommand {
         print()
     }
 
+    mutating func validate() throws {
+        guard !noReplace || local else {
+            throw ValidationError("--no-replace requires --local.")
+        }
+    }
+
     mutating func run() async throws {
         Darkbloom.ensureLogging()
         if !foreground {
@@ -74,7 +83,7 @@ struct Start: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions, migrateOnDisk: !local)
         let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
         var effectiveConfig = snapshot.config
         if let idleTimeout {

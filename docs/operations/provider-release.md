@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-06 · commit `2feef1249`
+> Last updated: 2026-09-06 · commit `f3b2ee6a6`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -12,10 +12,18 @@ lands fully or not at all.
 ## Environment-free signing validation
 
 [`provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml)
-is a separate manual workflow for a reviewed full `source_sha` and its existing
-`version`. It has no GitHub `environment` field or environment selector and no
+accepts a reviewed full `source_sha` and its existing `version` through both
+`workflow_dispatch` and `workflow_call`. The registered [CI workflow](../../.github/workflows/ci.yml)
+provides the signing-validation manual entrypoint: its manual event skips the
+ordinary CI jobs and calls this reusable workflow with a relative path at the
+same commit. Push/PR triggers and all ordinary job definitions remain unchanged,
+including the push-only Swift cache job and provider test isolation.
+
+The CI caller maps exactly the five signing secrets named below; it does not
+inherit the repository's entire secret set. Both caller and reusable workflow
+keep only `contents: read` and `actions: read`. The standalone manual entrypoint
+is retained. This path has no GitHub `environment` field or environment selector and no
 coordinator registration, R2 upload, GitHub Release, tag or deployment step.
-Its token has only `contents: read` and `actions: read`.
 
 The build job has no signing secrets. It checks the source's verified commit
 signature and version parity, builds the exact provider and metallib, then stages
@@ -51,11 +59,26 @@ Signed runtime smoke, installation, model correctness and release approval remai
 separate gates. The original release workflow's `validation_only` option still
 selects a deployment environment and is not this isolated path.
 
-Review and make the new manual workflow available before authorizing a dispatch.
+Review the exact caller/reusable workflow commit, expanded build/signing job
+graph, source SHA and version before separately authorizing a real dispatch.
+The registered CI path can select the reviewed branch before a master merge:
+[harmless probe run 34029318546](https://github.com/Layr-Labs/d-inference/actions/runs/34029318546)
+executed one identity-only Ubuntu job from that branch while master CI lacked
+`workflow_dispatch`. That probe did not exercise signing or reusable jobs. Its
+branch creation used an existing account exception to restricted ref creation;
+normal repository access and source-review rules still apply.
+
+GitHub documents [branch selection for a manual workflow](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+and [same-commit relative reusable calls](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow).
+After explicit authorization, the registered entrypoint is selected with
+`gh workflow run ci.yml --ref <reviewed-branch> -f source_sha=<verified-full-sha> -f version=<exact-source-version>`.
+The build rechecks the published signature, exact checkout and existing version;
+secret-name availability alone does not establish credential validity.
 Source preparation and the CPU helper tests do not claim a completed signing run:
 
 ```bash
 python3 scripts/test-provider-signing-validation.py
+python3 scripts/test-provider-signing-routing.py
 ```
 
 ## When to use

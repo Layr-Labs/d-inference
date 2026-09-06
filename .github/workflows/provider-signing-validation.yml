@@ -12,6 +12,28 @@ on:
         required: true
         type: string
 
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Reviewed full commit SHA to build
+        required: true
+        type: string
+      version:
+        description: Exact existing source version; does not change source
+        required: true
+        type: string
+    secrets:
+      APPLE_CERTIFICATE_P12:
+        required: true
+      APPLE_CERTIFICATE_PASSWORD:
+        required: true
+      PROVISIONING_PROFILE_BASE64:
+        required: true
+      APPLE_ID:
+        required: true
+      APPLE_APP_PASSWORD:
+        required: true
+
 permissions:
   contents: read
   actions: read

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-06 · commit `9c107e7b2`
+> Last updated: 2026-09-06 · commit `f3b2ee6a6`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -14,7 +14,11 @@ Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 The [manual signing-validation workflow](../operations/provider-release.md#environment-free-signing-validation)
 builds a reviewed, signed source revision and packages its existing version for
 Apple signing and notarization checks. It retains an Actions artifact for isolated
-validation; the unsigned build and signing run in separate jobs.
+validation; the unsigned build and signing run in separate jobs. CI's explicit
+manual entrypoint calls the reusable signing workflow at the same commit and
+maps only its five required secrets. Ordinary push/PR builds retain their prior
+job definitions and runners; a real signing dispatch requires separate review
+and authorization.
 
 ## Prerequisites
 

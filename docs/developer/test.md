@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-06 · commit `dad6a8e47`
+> Last updated: 2026-09-06 · commit `5ac838810`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -428,6 +428,10 @@ work, unknown dispatches and dropped records reject the measured interval.
 Component rows and sequence width remain separate axes. An observed full-width
 call proves neither constant width for the whole request nor kernel launch
 geometry; the existing concurrency, lifecycle and output gates still apply.
+The native `CBv2ForwardShapeEngineTests` exercise packed/split target dispatch,
+discarded chained work and refusal boundaries with storage-bearing cache rows
+and actual KV progression. Run these alongside the scalar, compiled-expert and
+MTP suites; scalar-only checks cannot establish serving behavior.
 When the native engine exposes `paged_storage`, before/after metrics and batch
 samples retain its queue-captured grant, committed backing, reserved/live pages,
 poison, slack, and over-grant bytes, plus segment and address-page counts.

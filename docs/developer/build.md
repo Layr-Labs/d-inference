@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-06 · commit `72719e35e`
+> Last updated: 2026-09-06 · commit `5ac838810`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -167,6 +167,9 @@ define to emit schema-3 actual-forward-width evidence. The scalar observer and
 benchmark validator must come from the same reviewed source cut. See the
 [prefix-cache benchmark checks](test.md#prefix-cache-benchmark-validation) for
 scope, completion and B2/B4 acceptance requirements.
+The executable's `scripts/benchmarks/radix-engine/Package.resolved` is tracked
+and pins the reviewed provider dependency set. Keep locked resolution enabled
+and verify the resulting source graph when applying local package overrides.
 
 #### Restored SwiftPM runtime resources
 

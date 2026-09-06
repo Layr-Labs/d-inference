@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-06 · commit `72719e35e`
+> Last updated: 2026-09-06 · commit `dad6a8e47`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -413,7 +413,9 @@ they do not cover bridge dispatch, contiguous bridge reservations or HTTP framin
 
 Candidate builds with `RADIX_CANDIDATE` emit report schema 3 and bounded
 `forward_shapes` telemetry. After warmup, the benchmark opens a fresh observation
-scope and records before/after snapshots around each measured cohort. B2/B4
+scope and records before/after snapshots around each measured cohort. A new
+scope requires the scheduler and in-flight work to drain, including discarded
+chained successors whose output request has already stopped. B2/B4
 acceptance requires a completed target decode or MTP-verification call with the
 requested live row count in every cohort. Four B1 calls, speculative columns,
 prefill rows and padded compiled components cannot satisfy that gate.

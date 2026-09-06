@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-06 · commit `6b955ee76`
+> Last updated: 2026-09-06 · commit `b6759aa4b`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -82,6 +82,12 @@ production prompt vectors against it with
 
 CI also applies the [restored-resource cleanup](build.md#restored-swiftpm-runtime-resources)
 before building the debug test product.
+
+The general provider suite passes `--no-parallel` explicitly to Swift Testing.
+Unrelated cases share process-wide MLX state and executor capacity; overlapping
+thousands of them can starve bounded test handshakes. Concurrency tests retain
+their own tasks, barriers and interleavings. This does not serialize provider
+inference or the separate model-concurrency benchmarks.
 
 `scripts/run-provider-tests.sh` runs exact allocator integration, the controlled
 ledger interleaving, the real process-environment projection test and the SSD

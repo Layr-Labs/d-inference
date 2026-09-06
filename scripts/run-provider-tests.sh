@@ -11,7 +11,10 @@ isolated_filters=(
   stageDelta
 )
 isolated_pattern=$(IFS='|'; printf '%s' "${isolated_filters[*]}")
-swift test --skip-build --skip "$isolated_pattern" || provider_test_status=$?
+# Swift Testing otherwise overlaps independent suites sharing process-wide MLX
+# state and cooperative-executor capacity. Tests still create their own tasks
+# and controlled interleavings; only unrelated test cases run sequentially.
+swift test --skip-build --no-parallel --skip "$isolated_pattern" || provider_test_status=$?
 for test_filter in "${isolated_filters[@]}"; do
   ../scripts/run-nested-suite.sh "$test_filter" || provider_test_status=$?
 done

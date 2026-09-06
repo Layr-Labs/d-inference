@@ -114,6 +114,13 @@ type routingSnapshot struct {
 	totalPending     int
 	pendingForModel  int
 	pendingMaxTokens int
+	// Pending prompt work before first content, for the matching model. These
+	// aggregates price reservations not yet reflected by an idle heartbeat.
+	// Unknown sizes and cache participants retain the incoming-prompt proxy.
+	// Token-budget reservations (including output) remain memory accounting.
+	pendingPrefillTokens  float64
+	pendingPrefillUnknown int
+	pendingPrefillKnown   bool
 	// pendingMaxTokensAllModels is pendingMaxTokens WITHOUT the model filter:
 	// the token budgets of every coordinator-pending request on this provider,
 	// any model. Feeds the pooled-budget admission check (pooledBudgetAdmits)
@@ -2109,6 +2116,7 @@ func freeMemoryAdmits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) 
 // (QuickCapacityCheck…) so the two admission paths cannot drift. Caller holds
 // p.mu.
 func fillSnapshotPendingAndPool(snap *routingSnapshot, p *Provider, model string) {
+	snap.pendingPrefillKnown = true
 	if p.BackendCapacity != nil {
 		snap.pooledTokenBudget = providerPooledTokenBudgetForVersion(
 			p.BackendCapacity.Slots, p.Version)
@@ -2126,6 +2134,13 @@ func fillSnapshotPendingAndPool(snap *routingSnapshot, p *Provider, model string
 		}
 		snap.pendingForModel++
 		snap.pendingMaxTokens += tokens
+		if !pr.ContentCommittedSafe() {
+			if pr.EstimatedPromptTokens > 0 && !pr.CacheRoutingParticipates() {
+				snap.pendingPrefillTokens += float64(pr.EstimatedPromptTokens)
+			} else {
+				snap.pendingPrefillUnknown++
+			}
+		}
 	}
 	snap.pendingBytesKnown = bytesKnown
 }
@@ -3141,18 +3156,28 @@ func ttftOccupancyMs(snap *routingSnapshot) float64 {
 }
 
 func queuedPrefillTokensAhead(snap *routingSnapshot, reqPromptTokens int) float64 {
-	if reqPromptTokens <= 0 {
-		return 0
+	if reqPromptTokens < 0 {
+		reqPromptTokens = 0
 	}
 	waiting := snap.backendWaiting
 	reflected := snap.backendRunning + snap.backendWaiting
+	if reflected == 0 && snap.pendingPrefillKnown {
+		// The heartbeat contains no same-model work, so current reservations
+		// are unreflected. Price their own prompts, excluding attempts that
+		// already committed content. Using this request's prompt for every
+		// reservation can underprice short-behind-long and overprice the reverse.
+		return snap.pendingPrefillTokens + float64(snap.pendingPrefillUnknown)*float64(reqPromptTokens)
+	}
+	// With reflected work we cannot join heartbeat queue positions to local
+	// attempts or know their remaining prefill. Preserve the existing proxy
+	// until that evidence exists; do not sum local work on top of it.
 	if extraPending := snap.pendingForModel - reflected; extraPending > 0 {
 		waiting += extraPending
 	}
 	if waiting <= 0 {
 		return 0
 	}
-	return float64(waiting * reqPromptTokens)
+	return float64(waiting) * float64(reqPromptTokens)
 }
 
 // DrainQueuedRequestsForModel attempts to assign queued requests for a

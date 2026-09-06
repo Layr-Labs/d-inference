@@ -8,15 +8,13 @@ enum MyMacsMappingError: Error, Equatable, Sendable {
 
 struct MyMac: Equatable, Identifiable, Sendable {
     let identity: MyMacIdentity
-    /// Current coordinator connection/session identifier.
+    /// Opaque record ID supplied by the account fleet endpoint.
     var providerID: String
     /// Optional X25519 earnings-link key; not physical-machine identity.
     var providerKey: String?
     var accountID: String?
     var lifecycle: MyMacLifecycle
 
-    var serialNumber: String?
-    var secureEnclavePublicKey: String?
     var hardware: MyMacHardwareSnapshot?
     /// `nil` means the model catalog was not reported; `[]` means it was
     /// reported and the provider advertised no models.
@@ -39,10 +37,6 @@ struct MyMac: Equatable, Identifiable, Sendable {
 
     var id: String { identity.id }
 
-    var maskedSerialNumber: String? {
-        MyMacSensitiveIdentifier.masked(serialNumber)
-    }
-
     /// The coordinator accepts deletion only for retained offline records.
     /// `untrusted` is intentionally ineligible because it can still represent
     /// a live registry connection.
@@ -54,7 +48,7 @@ struct MyMac: Equatable, Identifiable, Sendable {
     /// This must never use the prefixed SwiftUI identity key.
     var removalToken: String? {
         guard canRemove else { return nil }
-        return Self.normalized(serialNumber) ?? Self.normalized(providerID)
+        return providerID
     }
 
     init(
@@ -63,9 +57,7 @@ struct MyMac: Equatable, Identifiable, Sendable {
         asOf: Date
     ) throws {
         guard let identity = MyMacIdentity.resolve(
-            serialNumber: wire.serialNumber,
-            secureEnclavePublicKey: wire.sePublicKey,
-            providerSessionID: wire.providerID
+            providerID: wire.providerID
         ) else {
             throw MyMacsMappingError.missingMachineIdentity(providerID: wire.providerID)
         }
@@ -95,12 +87,10 @@ struct MyMac: Equatable, Identifiable, Sendable {
         let live = Self.liveSnapshot(wire: wire, lifecycle: lifecycle)
 
         self.identity = identity
-        providerID = Self.normalized(wire.providerID) ?? wire.providerID
+        providerID = wire.providerID
         providerKey = Self.normalized(wire.providerKey)
         accountID = Self.normalized(wire.accountID)
         self.lifecycle = lifecycle
-        serialNumber = Self.normalized(wire.serialNumber)
-        secureEnclavePublicKey = Self.normalized(wire.sePublicKey)
         hardware = wire.hardware.flatMap(Self.hardware)
         self.models = models
         backend = Self.normalized(wire.backend)

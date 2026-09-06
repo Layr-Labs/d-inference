@@ -25,6 +25,14 @@ enum PreviewCapture {
             await Task.yield()
         }
 
+        let windows = NSApp.windows.map {
+            "title=\($0.title.debugDescription) visible=\($0.isVisible) "
+                + "frame=\($0.frame) content=\($0.contentView != nil)"
+        }.joined(separator: "; ")
+        FileHandle.standardError.write(Data(
+            "Darkbloom preview capture failed: \(windows)\n".utf8
+        ))
+
         NSApp.terminate(nil)
     }
 

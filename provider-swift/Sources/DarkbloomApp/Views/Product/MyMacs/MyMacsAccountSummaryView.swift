@@ -1,133 +1,71 @@
 import SwiftUI
 
+/// Account totals stay separate from the selected machine's report, including
+/// when the fleet is empty after a removal or a refresh retains older data.
 struct MyMacsAccountSummaryView: View {
     let summary: MyMacsAccountSummary?
     let availability: MyMacsSummaryAvailability
     let onOpenContributions: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Across all Macs")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text("Account totals, not estimates for the selected Mac")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                if let summary {
-                    Button(action: onOpenContributions) {
-                        HStack(spacing: 7) {
-                            VStack(alignment: .trailing, spacing: 1) {
-                                Text("Recent account activity")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                Text(
-                                    "\(summary.last24HoursEarnings.formattedUSD()) · " +
-                                        "\(summary.last24HoursJobs.formatted()) jobs"
-                                )
-                                .font(.caption.weight(.medium))
-                            }
-                            Image(systemName: "arrow.up.right")
-                                .font(.caption2.weight(.semibold))
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .help("Open account Contributions")
-                }
-            }
-
+        VStack(alignment: .leading, spacing: 10) {
             Divider()
-
-            switch (summary, availability) {
-            case let (.some(summary), _):
+            if let summary {
                 ViewThatFits(in: .horizontal) {
-                    metricLine(summary)
-                        .frame(minWidth: 560)
-                    VStack(alignment: .leading, spacing: 12) {
-                        metricPair(
-                            first: ("Linked", summary.counts.total.formatted()),
-                            second: (
-                                "Connected",
-                                (summary.counts.online + summary.counts.serving).formatted()
-                            )
-                        )
-                        metricPair(
-                            first: ("Serving", summary.counts.serving.formatted()),
-                            second: ("Needs attention", summary.counts.needingAttention.formatted())
-                        )
+                    HStack(alignment: .center, spacing: 16) {
+                        counts(summary)
+                        Spacer(minLength: 12)
+                        earnings(summary)
+                    }
+                    .frame(minWidth: 650)
+                    VStack(alignment: .leading, spacing: 10) {
+                        counts(summary)
+                        earnings(summary)
                     }
                 }
-
-            case let (.none, .unavailable(message)):
-                Label(message, systemImage: "exclamationmark.arrow.triangle.2.circlepath")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-            case (.none, .available):
-                Label("Account totals were not reported.", systemImage: "info.circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            } else {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "info.circle").foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Account totals unavailable").font(.body.weight(.medium))
+                        Text(unavailableMessage).font(.callout).foregroundStyle(.secondary)
+                    }
+                }
             }
         }
-        .padding(16)
-        .productSurface()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Across all Macs, account totals")
     }
 
-    private func metricLine(_ summary: MyMacsAccountSummary) -> some View {
-        HStack(spacing: 0) {
-            metric(label: "Linked", value: summary.counts.total.formatted())
-            divider
-            metric(
-                label: "Connected",
-                value: (summary.counts.online + summary.counts.serving).formatted()
-            )
-            divider
-            metric(label: "Serving", value: summary.counts.serving.formatted())
-            divider
-            metric(
-                label: "Needs attention",
-                value: summary.counts.needingAttention.formatted(),
-                emphasized: summary.counts.needingAttention > 0
-            )
+    private func counts(_ summary: MyMacsAccountSummary) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Across all Macs").font(.body.weight(.semibold))
+            Text("\(summary.counts.total.formatted()) linked · \((summary.counts.online + summary.counts.serving).formatted()) connected · \(summary.counts.needingAttention.formatted()) need attention")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private func metricPair(
-        first: (String, String),
-        second: (String, String)
-    ) -> some View {
-        HStack(spacing: 0) {
-            metric(label: first.0, value: first.1)
-            divider
-            metric(label: second.0, value: second.1)
+    private func earnings(_ summary: MyMacsAccountSummary) -> some View {
+        Button(action: onOpenContributions) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(summary.last24HoursEarnings.formattedUSD()) · \(summary.last24HoursJobs.formatted()) jobs")
+                        .font(.body.weight(.medium)).monospacedDigit()
+                    Text("Account activity · last 24 hours")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                Image(systemName: "arrow.up.right").font(.callout)
+            }
         }
+        .buttonStyle(.plain)
+        .help("Open account Contributions")
     }
 
-    private func metric(label: String, value: String, emphasized: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label.uppercased())
-                .font(.caption2.weight(.semibold))
-                .tracking(0.7)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(size: 20, weight: .medium, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(emphasized ? ProductPalette.warning : Color.primary)
+    private var unavailableMessage: String {
+        switch availability {
+        case let .unavailable(message): message
+        case .available: "Account totals were not reported."
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(label)
-        .accessibilityValue(value)
-    }
-
-    private var divider: some View {
-        Divider()
-            .frame(height: 34)
-            .padding(.horizontal, 14)
     }
 }

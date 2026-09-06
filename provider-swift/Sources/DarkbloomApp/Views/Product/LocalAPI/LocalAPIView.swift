@@ -6,12 +6,51 @@ struct LocalAPIView: View {
     let onOpenChat: () -> Void
     let onOpenModels: () -> Void
     let onOpenDiagnostics: () -> Void
+    let models: [ModelSummary]
+    let modelsAreLive: Bool
+    let modelCatalogState: ModelCatalogState
+    let selectedModelID: String?
+    let onSelectModel: (String) -> Void
+    let providerSnapshot: ProviderSnapshot?
+    let onRefreshModels: () async -> Void
+    let onOpenProviderControls: () -> Void
+    let onProcessChange: @MainActor () -> Void
+
+    init(
+        store: LocalAPIStore,
+        onOpenChat: @escaping () -> Void,
+        onOpenModels: @escaping () -> Void,
+        onOpenDiagnostics: @escaping () -> Void,
+        models: [ModelSummary] = [],
+        modelsAreLive: Bool = false,
+        modelCatalogState: ModelCatalogState = .loading,
+        selectedModelID: String? = nil,
+        providerSnapshot: ProviderSnapshot? = nil,
+        onRefreshModels: @escaping () async -> Void = {},
+        onSelectModel: @escaping (String) -> Void = { _ in },
+        onOpenProviderControls: @escaping () -> Void = {},
+        onProcessChange: @escaping @MainActor () -> Void = {}
+    ) {
+        self.store = store
+        self.onOpenChat = onOpenChat
+        self.onOpenModels = onOpenModels
+        self.onOpenDiagnostics = onOpenDiagnostics
+        self.models = models
+        self.modelsAreLive = modelsAreLive
+        self.modelCatalogState = modelCatalogState
+        self.selectedModelID = selectedModelID
+        self.onSelectModel = onSelectModel
+        self.providerSnapshot = providerSnapshot
+        self.onRefreshModels = onRefreshModels
+        self.onOpenProviderControls = onOpenProviderControls
+        self.onProcessChange = onProcessChange
+    }
 
     var body: some View {
         ProductPage {
             ProductPageHeader(
                 eyebrow: "On this Mac",
-                title: "Your Mac is an endpoint.",
+                title: "Run AI on your Mac.",
                 subtitle: "Connect any OpenAI-compatible client to models available on this Mac. Darkbloom does not route local requests through its coordinator."
             ) {
                 if let item = store.lastCopiedItem {
@@ -23,13 +62,31 @@ struct LocalAPIView: View {
                 }
             }
 
-            stateContent
-                .padding(.top, 24)
+            LocalAPIStartControls(
+                store: store, models: models, modelsAreLive: modelsAreLive,
+                catalogState: modelCatalogState, providerSnapshot: providerSnapshot,
+                onOpenModels: onOpenModels, onOpenChat: onOpenChat,
+                onOpenProviderControls: onOpenProviderControls,
+                onOpenDiagnostics: onOpenDiagnostics, onSelectModel: onSelectModel,
+                onProcessChange: onProcessChange
+            )
+            .padding(.top, 24)
+
+            stateContent.padding(.top, 20)
+
+            LocalAPIStartCommandsView(store: store, copiedItem: store.lastCopiedItem, onCopy: copy)
         }
         .navigationTitle("Local API")
         // Live stores poll ~/.darkbloom/local.json + probe the endpoint while
         // this surface is visible; fixture stores no-op so previews stay frozen.
         .task { store.startMonitoring() }
+        .task { await onRefreshModels() }
+        .onChange(of: models, initial: true) { _, models in
+            store.syncLocalModelSelection(preferredID: selectedModelID, models: models)
+        }
+        .onChange(of: selectedModelID, initial: true) { _, selectedID in
+            store.syncLocalModelSelection(preferredID: selectedID, models: models)
+        }
         .task(id: store.lastCopiedItem) {
             guard store.lastCopiedItem != nil else { return }
             try? await Task.sleep(for: .seconds(1.6))
@@ -70,12 +127,6 @@ struct LocalAPIView: View {
                 isLive: store.isLive,
                 onRetry: {},
                 onOpenDiagnostics: onOpenDiagnostics
-            )
-
-            LocalAPIStartCommandsView(
-                store: store,
-                copiedItem: store.lastCopiedItem,
-                onCopy: copy
             )
 
             footerActions

@@ -30,7 +30,11 @@ struct ProviderOverviewView: View {
 
             HStack(alignment: .top, spacing: 14) {
                 providerDetails
-                privateAI
+                LocalAIOverviewCard(
+                    isPreview: isPreview,
+                    onOpenChat: onOpenChat,
+                    onOpenLocalAPI: onOpenLocalAPI
+                )
             }
             .padding(.top, 14)
         }
@@ -249,60 +253,6 @@ struct ProviderOverviewView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    private var privateAI: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ProductSectionHeader("For you")
-
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Image(systemName: "bubble.left.and.bubble.right.fill")
-                        .symbolRenderingMode(.hierarchical)
-                        .font(.system(size: 25))
-                        .foregroundStyle(DarkbloomTheme.accent)
-                    Spacer()
-                    ProductStatusBadge(
-                        title: snapshot.localEndpoint?.isReachable == true ? "Local" : "Not running",
-                        systemImage: snapshot.localEndpoint?.isReachable == true ? "lock.fill" : "pause.fill",
-                        tint: snapshot.localEndpoint?.isReachable == true ? ProductPalette.positive : .secondary
-                    )
-                }
-
-                Text("Private AI on this Mac")
-                    .font(.system(size: 16, weight: .semibold))
-                    .padding(.top, 18)
-                Text(
-                    snapshot.localEndpoint?.isReachable == true
-                        ? (isPreview
-                            ? "Connect your own client here, or use the in-app Chat preview. Network routing remains a separate choice."
-                            : "Connect your own client here, or use Chat in Darkbloom. Network routing remains a separate choice.")
-                        : (isPreview
-                            ? "Set up an OpenAI-compatible endpoint for your own clients, or explore the in-app Chat preview."
-                            : "Set up an OpenAI-compatible endpoint for your own clients, then use Chat in Darkbloom.")
-                )
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineSpacing(3)
-                    .padding(.top, 5)
-
-                HStack(spacing: 12) {
-                    Button(snapshot.localEndpoint?.isReachable == true ? "Open Local API" : "Set up Local API", systemImage: "arrow.right") {
-                        onOpenLocalAPI()
-                    }
-                    .buttonStyle(.link)
-
-                    Button(isPreview ? "Preview Chat" : "Open Chat") {
-                        onOpenChat()
-                    }
-                    .buttonStyle(.link)
-                }
-                .padding(.top, 20)
-            }
-            .padding(17)
-            .productSurface()
-            .padding(.top, 10)
-        }
-        .frame(width: 310, alignment: .topLeading)
-    }
 
     private func problemBanner(_ problem: ProviderProblem) -> some View {
         HStack(spacing: 13) {

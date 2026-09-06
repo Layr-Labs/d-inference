@@ -1,8 +1,8 @@
 import Foundation
 
 /// Decoding boundary for the two account-scoped coordinator responses used by
-/// My Macs. A future API service can inject this protocol without leaking JSON
-/// or Go timestamp conventions into the store.
+/// My Macs. Provider IDs stay opaque, and retired public serial fields are
+/// ignored by the wire record. Go timestamp conventions stay at this boundary.
 protocol MyMacsWireDecoding: Sendable {
     func decodeProviders(from data: Data) throws -> MyMacsProvidersWireResponse
     func decodeSummary(from data: Data) throws -> MyMacsSummaryWireResponse

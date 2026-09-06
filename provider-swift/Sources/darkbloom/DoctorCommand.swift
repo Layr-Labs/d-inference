@@ -39,7 +39,7 @@ struct Doctor: AsyncParsableCommand {
             await runUpdateBannerIfEnabled()
         }
 
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions, migrateOnDisk: false)
         let artifacts = await buildDoctorArtifacts(
             snapshot: snapshot,
             coordinatorOverride: coordinator,
@@ -128,7 +128,6 @@ struct Doctor: AsyncParsableCommand {
         let supportInfo: DoctorSupportInfo? = includeSupport
             ? DoctorSupportInfo(
                 coordinator: coordinatorHTTPBase(supportCoordinator),
-                serial: macHardwareSerialNumber() ?? "<unavailable>",
                 authTokenPresent: hasBoundCredential,
                 mdmEnrolled: describeMDMEnrollment(
                     checkMDMEnrollment(coordinatorURL: supportCoordinator)

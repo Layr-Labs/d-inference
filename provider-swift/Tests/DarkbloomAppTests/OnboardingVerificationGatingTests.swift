@@ -295,12 +295,12 @@ struct OnboardingVerificationGatingTests {
 
         flow.cancelPendingOperations()
         await run.value
-        #expect(flow.verificationPhase == .enrollmentPending)
+        #expect(flow.verificationPhase == .profileDetected)
 
         // A trust grant arriving after cancellation must not advance the gate.
         writeTrust(trust(status: "verified", level: "hardware"), to: fixture)
         try? await Task.sleep(for: .milliseconds(100))
-        #expect(flow.verificationPhase == .enrollmentPending)
+        #expect(flow.verificationPhase == .profileDetected)
         #expect(!flow.canContinue)
     }
 }

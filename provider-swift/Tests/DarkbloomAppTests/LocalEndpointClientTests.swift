@@ -93,13 +93,55 @@ struct LocalEndpointClientTests {
         #expect(deltas == [.init(content: "ok")])
     }
 
-    @Test("A stream that ends without [DONE] still finishes cleanly")
-    func streamWithoutDoneFinishes() async throws {
+    @Test("A terminal finish_reason without [DONE] still finishes cleanly", arguments: ["stop", "length", "tool_calls"])
+    func finishReasonWithoutDoneFinishes(reason: String) async throws {
         let client = makeClient(apiKey: nil, lines: [
             #"data: {"choices":[{"delta":{"content":"tail"}}]}"#,
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"\(reason)\"}]}",
         ])
         let deltas = try await collect(client.streamChat(model: "m", messages: []))
-        #expect(deltas == [.init(content: "tail")])
+        #expect(deltas == [.init(content: "tail"), .init(content: "", finishReason: reason)])
+    }
+
+    @Test("EOF without a terminal signal fails, including empty and malformed responses", arguments: [
+        [String](),
+        [#"data: {"choices":[{"delta":{"content":"partial"}}]}"#],
+        ["data: not-json", ": keep-alive"],
+        [#"data: {"choices":[{"delta":{},"finish_reason":null}]}"#],
+        [#"data: {"choices":[{"delta":{},"finish_reason":""}]}"#],
+        [#"data: {"choices":[{"delta":{},"finish_reason":" "}]}"#],
+    ])
+    func prematureEOFFails(lines: [String]) async throws {
+        let client = makeClient(apiKey: nil, lines: lines)
+        await #expect(throws: LocalEndpointError.prematureEndOfStream) {
+            _ = try await collect(client.streamChat(model: "m", messages: []))
+        }
+    }
+
+    @Test("[DONE] alone is terminal and ignores subsequent buffered content")
+    func doneWithoutFinishReason() async throws {
+        let client = makeClient(apiKey: nil, lines: [
+            "data: [DONE]",
+            #"data: {"choices":[{"delta":{"content":"late"}}]}"#,
+        ])
+        #expect(try await collect(client.streamChat(model: "m", messages: [])).isEmpty)
+    }
+
+    @Test("A finish reason is terminal even if the transport subsequently fails")
+    func finishReasonBeforeTransportError() async throws {
+        let client = LocalEndpointClient(
+            baseURL: URL(string: "http://127.0.0.1:8000/v1")!, apiKey: nil,
+            dataTransport: { _ in (Data(), Self.httpResponse(200)) },
+            lineTransport: { _ in
+                (AsyncThrowingStream {
+                    $0.yield(#"data: {"choices":[{"delta":{"content":"finished"},"finish_reason":"stop"}]}"#)
+                    $0.finish(throwing: URLError(.networkConnectionLost))
+                }, Self.httpResponse(200))
+            }
+        )
+        #expect(try await collect(client.streamChat(model: "m", messages: [])) == [
+            .init(content: "finished", finishReason: "stop"),
+        ])
     }
 
     // MARK: Auth header

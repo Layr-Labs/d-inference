@@ -26,11 +26,10 @@ struct DoctorRunArtifacts {
     let support: DoctorSupportInfo?
 }
 
-/// The `--support` block facts (serial/coordinator/auth/enrollment/pid file).
+/// The `--support` block facts (coordinator/auth/enrollment/pid file).
 /// Human output only — the JSON document deliberately stays the check list.
 struct DoctorSupportInfo {
     let coordinator: String
-    let serial: String
     let authTokenPresent: Bool
     let mdmEnrolled: String
     let pidFile: String

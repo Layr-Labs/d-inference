@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import DarkbloomApp
 
@@ -32,6 +33,30 @@ func discoveryPreservesCatalogTruth() {
     let allModelsAreFromCatalog = discovered.allSatisfy { $0.isAvailableFromCatalog }
     #expect(allModelsAreFromCatalog)
     #expect(discovered.last?.fit.canRunOnThisMac == false)
+}
+
+@Test("Search preserves scope and matches names, descriptions, and capabilities")
+@MainActor
+func modelSearchPreservesScope() {
+    let store = ModelLibraryStore()
+    let all = ModelLibraryPresentation.displayedModels(from: store.models, scope: .discover)
+    #expect(ModelLibraryPresentation.displayedModels(
+        from: store.models, scope: .discover, search: "  \n "
+    ) == all)
+    let qwen = ModelLibraryPresentation.displayedModels(
+        from: store.models, scope: .discover, search: "  QWEN  "
+    )
+    #expect(!qwen.isEmpty)
+    #expect(qwen.allSatisfy { $0.displayName.localizedStandardContains("Qwen") })
+    let localOnly = store.models.first { !$0.isAvailableFromCatalog }
+    if let localOnly {
+        #expect(ModelLibraryPresentation.displayedModels(
+            from: store.models, scope: .discover, search: localOnly.id
+        ).isEmpty)
+    }
+    #expect(ModelLibraryPresentation.displayedModels(
+        from: store.models, scope: .installed, search: "no-such-model-918273"
+    ).isEmpty)
 }
 
 @Test("Only rejected model actions produce an error message")

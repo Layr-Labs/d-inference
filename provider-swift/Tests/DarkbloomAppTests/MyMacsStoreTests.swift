@@ -185,7 +185,6 @@ func myMacsPreviewRemovalUsesSessionFallbackWithoutInventingIdentity() throws {
     let neverSeen = try #require(store.macs.first { $0.lifecycle == .neverSeen })
     let originalLifetimeJobs = try #require(store.snapshot?.accountSummary?.lifetimeJobs)
 
-    #expect(neverSeen.serialNumber == nil)
     #expect(neverSeen.removalToken == "preview-session-never-seen")
     #expect(store.removePreviewMac(
         id: neverSeen.id,

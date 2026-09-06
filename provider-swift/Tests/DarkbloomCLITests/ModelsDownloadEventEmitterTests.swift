@@ -151,4 +151,41 @@ struct ModelsDownloadEventEmitterTests {
         #expect(publicCatalog.json)
         #expect(!publicCatalog.includeDownloadPlans)
     }
+
+    @Test("JSON downloads retain runtime capabilities and fail before I/O when ineligible")
+    func jsonDownloadPreservesRuntimeCapabilities() async throws {
+        let modelID = ModelRuntimeRequirements.qwen38ConcreteModelID
+        let model = CatalogModel(
+            id: modelID, s3Name: "gated-fixture", displayName: "Gated fixture", sizeGb: 1)
+        var command = try Models.Download.parse([modelID, "--json"])
+        // Deliberately stop at the next validation boundary after eligibility.
+        // No case can reach a network request, cache lock, or filesystem write.
+        command.reserveBytes = -1
+        let cases: [Set<ProviderRuntimeCapability>] = [
+            [], [.appleM5], [.mlxNAX], [.appleM5, .mlxNAX],
+        ]
+        for capabilities in cases {
+            let (emitter, captured, _) = makeEmitter()
+            do {
+                try await command.runJSON(
+                    entry: model,
+                    downloader: ModelDownloader(runtimeCapabilities: capabilities),
+                    emitter: emitter)
+                Issue.record("expected a validation failure before download I/O")
+            } catch let error as ExitCode {
+                #expect(error == .failure)
+            }
+            #expect(captured.lines.count == 1)
+            let line = try #require(captured.lines.first)
+            let event = try #require(
+                JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: String])
+            #expect(event["event"] == "error")
+            let message = try #require(event["message"])
+            if capabilities == ModelRuntimeRequirements.qwen38RequiredCapabilities {
+                #expect(message == "download failed: download reserve must be non-negative")
+            } else {
+                #expect(message.contains(ModelRuntimeIneligibleError.permanentFailureMarker))
+            }
+        }
+    }
 }

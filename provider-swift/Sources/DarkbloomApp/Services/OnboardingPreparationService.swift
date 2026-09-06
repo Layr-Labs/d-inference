@@ -8,6 +8,21 @@ struct OnboardingModelChoice: Identifiable, Equatable, Sendable {
     let sizeBytes: Int64
     let minimumMemoryGB: Int
     let isInstalled: Bool
+    let runtimeEligibility: CLIModelRuntimeEligibility
+
+    init(
+        id: String, displayName: String, summary: String, sizeBytes: Int64,
+        minimumMemoryGB: Int, isInstalled: Bool,
+        runtimeEligibility: CLIModelRuntimeEligibility = .unreported
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.summary = summary
+        self.sizeBytes = sizeBytes
+        self.minimumMemoryGB = minimumMemoryGB
+        self.isInstalled = isInstalled
+        self.runtimeEligibility = runtimeEligibility
+    }
 }
 
 struct OnboardingPreparationPlan: Equatable, Sendable {
@@ -18,6 +33,7 @@ struct OnboardingPreparationPlan: Equatable, Sendable {
 
 enum OnboardingPreparationServiceError: Error, Equatable, LocalizedError, Sendable {
     case noCompatibleModel
+    case runtimeUnavailable(String)
     case modelUnavailable(String)
     case providerEvidenceTimedOut(String)
 
@@ -25,6 +41,8 @@ enum OnboardingPreparationServiceError: Error, Equatable, LocalizedError, Sendab
         switch self {
         case .noCompatibleModel:
             "The catalog has no model that is confirmed to fit this Mac's memory and available storage."
+        case .runtimeUnavailable(let reason):
+            "No model can be prepared with this Mac's current runtime. \(reason)"
         case .modelUnavailable(let id):
             "The selected model (\(id)) is no longer available in the compatible catalog. Refresh the catalog and choose again."
         case .providerEvidenceTimedOut(let id):
@@ -59,12 +77,18 @@ struct OnboardingPreparationService: OnboardingPreparationServicing {
             throw OnboardingPreparationServiceError.noCompatibleModel
         }
         let localIDs = Set(snapshot.local.map(\.id))
+        var runtimeReasons: [String] = []
 
         let choices = snapshot.catalog.compactMap { model -> OnboardingModelChoice? in
             guard let minimumMemoryGB = model.minRamGb,
                   minimumMemoryGB <= memoryGB,
                   isInferenceModel(model)
             else { return nil }
+            let runtime = snapshot.runtimeEligibility(for: model.id)
+            guard runtime.status == .eligible else {
+                runtimeReasons.append(runtime.reason)
+                return nil
+            }
 
             let sizeBytes = ModelCatalogSize.bytes(
                 totalSizeBytes: model.totalSizeBytes,
@@ -83,11 +107,16 @@ struct OnboardingPreparationService: OnboardingPreparationServicing {
                 summary: model.description ?? "Private local inference model",
                 sizeBytes: sizeBytes,
                 minimumMemoryGB: minimumMemoryGB,
-                isInstalled: installed
+                isInstalled: installed,
+                runtimeEligibility: runtime
             )
         }
 
         guard !choices.isEmpty else {
+            if !runtimeReasons.isEmpty {
+                throw OnboardingPreparationServiceError.runtimeUnavailable(
+                    Set(runtimeReasons).sorted().joined(separator: " "))
+            }
             throw OnboardingPreparationServiceError.noCompatibleModel
         }
 

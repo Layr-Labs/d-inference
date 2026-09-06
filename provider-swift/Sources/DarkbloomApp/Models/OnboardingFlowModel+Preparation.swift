@@ -2,7 +2,7 @@ import Foundation
 
 extension OnboardingFlowModel {
     func loadPreparationCatalog() async {
-        guard !freezesAutomaticProgress else { return }
+        guard !freezesAutomaticProgress, !Task.isCancelled else { return }
         guard let preparationService else {
             preparationFailureDetail = "The model preparation service is unavailable."
             preparationPhase = .catalogFailed
@@ -43,29 +43,43 @@ extension OnboardingFlowModel {
     }
 
     func startPreparation() {
-        guard preparationTask == nil, let choice = selectedPreparationChoice else { return }
-        let service = preparationService
+        guard !freezesAutomaticProgress, !resumeReconciliationState.blocksProgress,
+              step == .preparation, preparationTask == nil,
+              preparationPhase == .choosingModel || preparationPhase == .downloadFailed,
+              let choice = selectedPreparationChoice, let service = preparationService
+        else { return }
+        let revision = operationRevision
         preparationTask = Task { [weak self] in
-            guard let self, let service else { return }
-            defer { self.preparationTask = nil }
+            guard let self, self.isCurrentOperation(revision) else { return }
+            defer {
+                if self.operationRevision == revision { self.preparationTask = nil }
+            }
             if choice.isInstalled || self.downloadCompletedModelID == choice.id {
-                await self.startProvider(modelID: choice.id, using: service)
+                await self.startProvider(modelID: choice.id, using: service, revision: revision)
             } else {
-                await self.downloadAndStart(model: choice, using: service)
+                await self.downloadAndStart(model: choice, using: service, revision: revision)
             }
         }
     }
 
     func retryPreparation() {
+        guard !freezesAutomaticProgress, !resumeReconciliationState.blocksProgress,
+              step == .preparation else { return }
+        let revision = operationRevision
         switch preparationPhase {
         case .catalogFailed, .noCompatibleModel:
-            Task { await loadPreparationCatalog() }
+            Task {
+                guard isCurrentOperation(revision) else { return }
+                await loadPreparationCatalog()
+            }
         case .startFailed:
             guard preparationTask == nil, let selectedModelID, let preparationService else { return }
             preparationTask = Task { [weak self] in
-                guard let self else { return }
-                defer { self.preparationTask = nil }
-                await self.startProvider(modelID: selectedModelID, using: preparationService)
+                guard let self, self.isCurrentOperation(revision) else { return }
+                defer {
+                    if self.operationRevision == revision { self.preparationTask = nil }
+                }
+                await self.startProvider(modelID: selectedModelID, using: preparationService, revision: revision)
             }
         case .downloadFailed:
             startPreparation()
@@ -99,9 +113,10 @@ extension OnboardingFlowModel {
 
     private func downloadAndStart(
         model: OnboardingModelChoice,
-        using service: any OnboardingPreparationServicing
+        using service: any OnboardingPreparationServicing,
+        revision: Int
     ) async {
-        let revision = operationRevision
+        guard isCurrentOperation(revision) else { return }
         var bytesByFile: [String: Int64] = [:]
         var totalByFile: [String: Int64] = [:]
         var receivedDone = false
@@ -110,8 +125,9 @@ extension OnboardingFlowModel {
 
         do {
             let events = try await service.downloadEvents(modelID: model.id)
+            guard isCurrentOperation(revision) else { return }
             for try await event in events {
-                guard revision == operationRevision, !Task.isCancelled else { return }
+                guard isCurrentOperation(revision) else { return }
                 switch event {
                 case .progress(let file, let bytes, let total):
                     bytesByFile[file] = max(0, bytes)
@@ -134,16 +150,19 @@ extension OnboardingFlowModel {
                     throw ModelCatalogCLIError.downloadFailed(message)
                 }
             }
+            // Cancellation can end the stream normally after its .done event.
+            // EOF is not permission to start a superseded setup attempt.
+            guard isCurrentOperation(revision) else { return }
             guard receivedDone else {
                 throw ModelCatalogCLIError.downloadFailed(
                     "The model download ended before the CLI confirmed completion."
                 )
             }
-            await startProvider(modelID: model.id, using: service)
+            await startProvider(modelID: model.id, using: service, revision: revision)
         } catch is CancellationError {
             return
         } catch {
-            guard revision == operationRevision else { return }
+            guard isCurrentOperation(revision) else { return }
             preparationFailureDetail = error.localizedDescription
             preparationPhase = .downloadFailed
         }
@@ -151,24 +170,27 @@ extension OnboardingFlowModel {
 
     private func startProvider(
         modelID: String,
-        using service: any OnboardingPreparationServicing
+        using service: any OnboardingPreparationServicing,
+        revision: Int
     ) async {
-        let revision = operationRevision
+        guard isCurrentOperation(revision), step == .preparation,
+              selectedModelID == modelID else { return }
         preparationFailureDetail = nil
         preparationProgress = 1
+        downloadCompletedModelID = modelID
         preparationPhase = .startingProvider
         providerStartCompleted = false
         do {
             try await service.startProvider(modelID: modelID)
-            guard revision == operationRevision, !Task.isCancelled else { return }
+            guard isCurrentOperation(revision) else { return }
             try await waitForProviderEvidence(modelID: modelID, revision: revision)
-            guard revision == operationRevision, !Task.isCancelled else { return }
+            guard isCurrentOperation(revision) else { return }
             providerStartCompleted = true
             preparationPhase = .ready
         } catch is CancellationError {
             return
         } catch {
-            guard revision == operationRevision else { return }
+            guard isCurrentOperation(revision) else { return }
             providerStartCompleted = false
             preparationFailureDetail = error.localizedDescription
             preparationPhase = .startFailed

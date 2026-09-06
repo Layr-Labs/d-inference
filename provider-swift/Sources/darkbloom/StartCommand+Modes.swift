@@ -45,6 +45,13 @@ extension Start {
             throw ExitCode.failure
         }
 
+        // Refuse an occupied lock before creating credentials or advertising an
+        // endpoint. The refusal is inside the kernel-lock acquisition, so a
+        // concurrent provider cannot be displaced after an app preflight check.
+        try ProcessLifecycle.acquireMediaServingLock(replaceExisting: !noReplace)
+        ProcessLifecycle.preventSystemSleep()
+        defer { ProcessLifecycle.releaseSingleInstanceLock() }
+
         // Direct/local mode: mint (or reuse) a bearer token so the loopback
         // server isn't open to every local process / hostile webpage. --no-auth
         // opts out for trusted/airgapped use.
@@ -76,12 +83,6 @@ extension Start {
         print()
         print("  Shareable any time with: darkbloom local")
         print()
-
-        // Lock acquisition and exact legacy-artifact housekeeping are one
-        // ordered operation shared with coordinator-connected foreground mode.
-        try ProcessLifecycle.acquireMediaServingLock()
-        ProcessLifecycle.preventSystemSleep()
-        defer { ProcessLifecycle.releaseSingleInstanceLock() }
 
         // NOTE: no LegacyCompiledDecodeGate here anymore — the standalone
         // server constructs no legacy engine as of v0.7.5 (CBv2 compiled

@@ -23,7 +23,10 @@ struct ProductToolbar: ToolbarContent {
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
-            if destination == .localAPI {
+            if destination == .chat {
+                // Chat supplies its own conversation toolbar.
+                EmptyView()
+            } else if destination == .localAPI {
                 Button("Run System Check…", systemImage: "stethoscope", action: onDiagnostics)
                 SettingsLink {
                     Label("Settings…", systemImage: "gearshape")

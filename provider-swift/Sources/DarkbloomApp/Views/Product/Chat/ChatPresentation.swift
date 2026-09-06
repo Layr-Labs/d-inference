@@ -3,8 +3,8 @@ import Foundation
 enum ChatPresentation {
     static func submitHint(isLive: Bool) -> String {
         isLive
-            ? "Press Return to send this message to the local endpoint"
-            : "Press Return to send this preview message"
+            ? "Press Return to send this message to the local endpoint. Shift-Return inserts a new line."
+            : "Press Return to send this preview message. Shift-Return inserts a new line."
     }
 
     static func sendLabel(isLive: Bool) -> String {

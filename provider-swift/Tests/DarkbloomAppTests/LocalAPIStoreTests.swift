@@ -133,5 +133,5 @@ func localAPICopyFeedbackCanBeCleared() {
 func localAPIStartCommandsMatchCLI() {
     let store = LocalAPIStore(fixture: .stopped)
     #expect(store.text(for: .command(.unified)) == "darkbloom start --local-endpoint")
-    #expect(store.text(for: .command(.directOnly)) == "darkbloom start --local")
+    #expect(store.text(for: .command(.directOnly)) == "darkbloom start --local --no-replace")
 }

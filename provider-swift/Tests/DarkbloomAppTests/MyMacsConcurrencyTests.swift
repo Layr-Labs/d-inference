@@ -17,11 +17,15 @@ struct MyMacsConcurrencyTests {
         #expect(await fleet.waitForProviderCalls(1))
         let newer = Task { await store.refreshLive(at: newerDate) }
         #expect(await fleet.waitForProviderCalls(2))
+        #expect(store.isRefreshing)
+        #expect(!store.canRefresh)
 
         await fleet.succeedProviderCall(1, with: Self.providers(id: "newer"))
         await newer.value
         #expect(store.snapshot?.macs.map(\.providerID) == ["newer"])
         #expect(store.snapshot?.asOf == newerDate)
+        #expect(!store.isRefreshing)
+        #expect(store.canRefresh)
 
         await fleet.succeedProviderCall(0, with: Self.providers(id: "older"))
         await older.value
@@ -47,6 +51,7 @@ struct MyMacsConcurrencyTests {
 
         #expect(session.accessToken() == nil)
         #expect(store.snapshot == nil)
+        #expect(!store.isRefreshing)
         guard case .signedOut = store.availability else {
             Issue.record("A completed stale request must not resurrect signed-out data")
             return

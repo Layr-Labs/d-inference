@@ -33,7 +33,6 @@ enum DoctorHumanReportRenderer {
             out.append("")
             out.append("Support")
             out.append("  coordinator: \(support.coordinator)")
-            out.append("  serial: \(support.serial)")
             out.append("  auth token: \(support.authTokenPresent ? "present" : "missing")")
             out.append("  mdm enrolled: \(support.mdmEnrolled)")
             out.append("  pid file: \(support.pidFile)")

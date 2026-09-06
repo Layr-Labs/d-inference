@@ -44,7 +44,8 @@ public enum ProcessLifecycle {
     @discardableResult
     public static func acquireSingleInstanceLock(
         at pidFile: URL = ProcessLifecycle.defaultPIDFile(),
-        terminationGracePeriod: TimeInterval = 2.0
+        terminationGracePeriod: TimeInterval = 2.0,
+        replaceExisting: Bool = true
     ) throws -> URL {
         guard let currentIdentity = ProcessIdentity.current() else {
             throw ProcessLifecycleError.currentProcessIdentityUnavailable
@@ -54,7 +55,8 @@ public enum ProcessLifecycle {
             terminationGracePeriod: terminationGracePeriod,
             currentIdentity: currentIdentity,
             readIdentity: ProcessIdentity.read(pid:),
-            terminate: { terminate($0, gracePeriod: $1) }
+            terminate: { terminate($0, gracePeriod: $1) },
+            replaceExisting: replaceExisting
         )
     }
 
@@ -64,7 +66,8 @@ public enum ProcessLifecycle {
         terminationGracePeriod: TimeInterval,
         currentIdentity: ProcessIdentity,
         readIdentity: (Int32) -> ProcessIdentity?,
-        terminate: (ProcessIdentity, TimeInterval) -> Bool
+        terminate: (ProcessIdentity, TimeInterval) -> Bool,
+        replaceExisting: Bool = true
     ) throws -> URL {
         let fm = FileManager.default
 
@@ -89,6 +92,9 @@ public enum ProcessLifecycle {
                 if let acquired = try SingleInstanceKernelLock.tryAcquire(at: lockPath) {
                     kernelLock = acquired
                 } else {
+                    guard replaceExisting else {
+                        throw ProcessLifecycleError.singleInstanceLockBusy
+                    }
                     // A live lock owner may be replaced only when the record
                     // still resolves to that exact kernel process identity.
                     guard let existing = readOwner(at: pidFile)?.processIdentity,
@@ -114,16 +120,24 @@ public enum ProcessLifecycle {
             }
 
             do {
+                if !replaceExisting, let legacyPID = readLegacyPID(at: pidFile),
+                   readIdentity(legacyPID) != nil {
+                    throw ProcessLifecycleError.singleInstanceLockBusy
+                }
                 // Rollout compatibility: a provider from the prior
                 // identity-aware implementation has a safe owner record but no
                 // kernel lock. Once we own the sidecar, terminate that exact
                 // still-live identity before publishing ourselves.
                 if let existing = readOwner(at: pidFile)?.processIdentity,
                    existing != currentIdentity,
-                   readIdentity(existing.pid) == existing,
-                   !terminate(existing, terminationGracePeriod)
+                   readIdentity(existing.pid) == existing
                 {
-                    throw ProcessLifecycleError.existingProviderDidNotExit(existing.pid)
+                    guard replaceExisting else {
+                        throw ProcessLifecycleError.singleInstanceLockBusy
+                    }
+                    guard terminate(existing, terminationGracePeriod) else {
+                        throw ProcessLifecycleError.existingProviderDidNotExit(existing.pid)
+                    }
                 }
 
                 try writeOwner(
@@ -265,13 +279,15 @@ public enum ProcessLifecycle {
     @discardableResult
     public static func acquireMediaServingLock(
         at pidFile: URL = ProcessLifecycle.defaultPIDFile(),
-        terminationGracePeriod: TimeInterval = 2.0
+        terminationGracePeriod: TimeInterval = 2.0,
+        replaceExisting: Bool = true
     ) throws -> URL {
         try acquireMediaServingLock(
             acquireLock: {
                 try acquireSingleInstanceLock(
                     at: pidFile,
-                    terminationGracePeriod: terminationGracePeriod)
+                    terminationGracePeriod: terminationGracePeriod,
+                    replaceExisting: replaceExisting)
             },
             purgeLegacyTelemetryQueue: {
                 TelemetryOverflowQueue.shared.purge()

@@ -135,12 +135,29 @@ final class ModelLibraryStore {
     ) async {
         do {
             let snapshot = try await cli.fetchSnapshot()
+            try Task.checkCancellation()
             apply(snapshot: snapshot)
-            catalogState = .available(lastUpdated: snapshot.fetchedAt)
+            if let error = snapshot.catalogError {
+                catalogState = .offline(
+                    message: error.localizedDescription,
+                    showingCachedResults: models.contains(where: \.isAvailableFromCatalog)
+                )
+            } else {
+                catalogState = .available(lastUpdated: snapshot.fetchedAt)
+            }
             lastActionResult = .applied
         } catch is CancellationError {
-            // Task teardown; whatever the caller already set stays.
+            // A cancelled first load must be retryable when the user returns
+            // from another destination. Keep an existing usable snapshot.
+            if case .loading = catalogState {
+                started = false
+                catalogState = .offline(
+                    message: "Model loading was interrupted. Try again.",
+                    showingCachedResults: !models.isEmpty
+                )
+            }
         } catch {
+            guard !Task.isCancelled else { return }
             if preserveCatalogStateOnError, case .available = catalogState {
                 return
             }
@@ -217,6 +234,10 @@ final class ModelLibraryStore {
             return record(.unavailable("Reconnect to refresh the catalog before downloading."))
         }
 
+        if let reason = models[index].fit.runtimeBlockReason {
+            return record(.unavailable(reason))
+        }
+
         if case .tooLarge(let required, let available) = models[index].fit,
            !allowingIncompatibleModel {
             return record(.requiresCompatibilityConfirmation(
@@ -286,6 +307,17 @@ final class ModelLibraryStore {
     @discardableResult
     func resumeDownload(modelID: ModelSummary.ID) async -> ModelLibraryActionResult {
         guard let index = index(of: modelID) else { return record(.modelNotFound) }
+
+        if case .loading = catalogState {
+            return record(.unavailable("Wait for the catalog to finish loading."))
+        }
+        if case .offline = catalogState {
+            return record(.unavailable("Reconnect to refresh the catalog before downloading."))
+        }
+
+        if let reason = models[index].fit.runtimeBlockReason {
+            return record(.unavailable(reason))
+        }
 
         if isLive {
             let resumeCredit: Int64
@@ -477,6 +509,7 @@ final class ModelLibraryStore {
             return false
         }
         return models[index].installation == expectedInstallation
+            && models[index].fit.runtimeBlockReason == nil
     }
 
     private func startLiveDownload(
@@ -617,97 +650,8 @@ final class ModelLibraryStore {
 
     // MARK: - Snapshot → rows
 
-    /// Rebuild rows from a live snapshot. In-flight installation states
-    /// (downloading/paused/verifying/failed) are PRESERVED: a staged
-    /// download is invisible to the scanner, so the snapshot can't see it.
-    /// The one exception: once the local scan contains the model, disk truth
-    /// wins (publish racing the stream has resolved as success).
     private func apply(snapshot: ModelLibrarySnapshot) {
-        let localIDs = Set(snapshot.local.map(\.id))
-        let catalogIDs = Set(snapshot.catalog.map(\.id))
-        let existingByID = Dictionary(models.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-
-        var rows: [ModelSummary] = snapshot.catalog.map { entry in
-            let installed = localIDs.contains(entry.id)
-            var installation: ModelInstallationState = installed ? .installed : .notInstalled
-            if !installed, let preserved = Self.preservedTransferState(of: existingByID[entry.id]) {
-                installation = preserved
-            }
-            return ModelSummary(
-                id: entry.id,
-                displayName: entry.displayName,
-                family: entry.family,
-                kind: Self.kind(for: entry.modelType),
-                summary: entry.description ?? "",
-                sizeBytes: ModelCatalogSize.bytes(
-                    totalSizeBytes: entry.totalSizeBytes,
-                    sizeGB: entry.sizeGb
-                ),
-                minimumMemoryGB: entry.minRamGb,
-                quantization: entry.quantization,
-                maxContextLength: entry.maxContextLength,
-                capabilities: (entry.capabilities ?? []).map(ModelCapability.init(rawValue:)),
-                origin: .catalog,
-                fit: Self.fit(for: entry, memoryGB: snapshot.physicalMemoryGB),
-                installation: installation,
-                runtime: Self.runtime(for: entry.id, snapshot: snapshot)
-            )
-        }
-
-        rows += snapshot.local
-            .filter { !catalogIDs.contains($0.id) }
-            .map { entry in
-                ModelSummary(
-                    id: entry.id,
-                    displayName: entry.id.split(separator: "/").last.map(String.init) ?? entry.id,
-                    family: nil,
-                    kind: Self.kind(for: entry.modelType),
-                    summary: "A model discovered locally that is not in the active catalog.",
-                    sizeBytes: Int64(clamping: entry.sizeBytes),
-                    minimumMemoryGB: nil,
-                    quantization: entry.quantization,
-                    maxContextLength: nil,
-                    capabilities: [],
-                    origin: .localOnly,
-                    fit: .unknown,
-                    installation: .installed,
-                    runtime: Self.runtime(for: entry.id, snapshot: snapshot)
-                )
-            }
-
-        models = rows
-    }
-
-    private static func preservedTransferState(of model: ModelSummary?) -> ModelInstallationState? {
-        guard let model else { return nil }
-        switch model.installation {
-        case .downloading, .paused, .verifying, .failed:
-            return model.installation
-        case .notInstalled, .installed:
-            return nil
-        }
-    }
-
-    private static func kind(for modelType: String?) -> ModelKind {
-        switch modelType?.lowercased() {
-        case "text": .text
-        case "vision", "vlm", "multimodal": .vision
-        case "embeddings", "embedding": .embeddings
-        default: .unknown
-        }
-    }
-
-    private static func fit(for entry: CLICatalogModel, memoryGB: Int?) -> ModelFit {
-        guard let required = entry.minRamGb, let available = memoryGB else { return .unknown }
-        return required <= available
-            ? .fits
-            : .tooLarge(requiredMemoryGB: required, availableMemoryGB: available)
-    }
-
-    private static func runtime(for modelID: String, snapshot: ModelLibrarySnapshot) -> ModelRuntimeState {
-        if snapshot.servingModelID == modelID { return .serving }
-        if snapshot.warmModelIDs.contains(modelID) { return .warm }
-        return .cold
+        models = ModelLibrarySnapshotMapping.rows(snapshot: snapshot, existingModels: models)
     }
 
     // MARK: - Internals

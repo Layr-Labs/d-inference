@@ -8,25 +8,23 @@ struct SidebarProviderStatus: View {
     }
 
     var body: some View {
-        HStack(spacing: 9) {
-            Circle()
-                .fill(presentation.tint)
-                .frame(width: 8, height: 8)
-                .shadow(color: presentation.tint.opacity(0.35), radius: 3)
-
-            VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Network provider")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(presentation.tint)
+                    .frame(width: 7, height: 7)
                 Text(presentation.sidebarTitle)
-                    .font(.system(size: 11, weight: .semibold))
-                Text(presentation.sidebarDetail)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
             }
-
-            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(presentation.sidebarDetail)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Provider status")
+        .accessibilityLabel("Network provider status")
         .accessibilityValue("\(presentation.sidebarTitle), \(presentation.sidebarDetail)")
     }
 }

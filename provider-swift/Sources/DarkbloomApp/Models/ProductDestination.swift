@@ -42,6 +42,6 @@ enum ProductDestination: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 
     var hidesProviderLifecycleControls: Bool {
-        self == .localAPI || self == .myMacs || self == .availability
+        self == .chat || self == .localAPI || self == .myMacs || self == .availability
     }
 }

@@ -3,6 +3,7 @@ package registry
 import (
 	"io"
 	"log/slog"
+	"reflect"
 	"testing"
 	"time"
 
@@ -24,12 +25,18 @@ func TestIdentityScopedDisconnectCannotEvictReplacementConnection(t *testing.T) 
 		t.Fatalf("old-owner matches = %+v", matches)
 	}
 
+	// Master preserves the first registration for a live session ID. Model an
+	// actual reconnect after removal, while retaining the revocation snapshot.
+	reg.Disconnect(providerID)
 	replacement := reg.RegisterAuthenticated(
 		providerID,
 		nil,
 		&protocol.RegisterMessage{},
 		ProviderAuthBinding{AccountID: "acct-new", TokenHash: "token-new"},
 	)
+	if replacement == original {
+		t.Fatal("fixture did not create a replacement session")
+	}
 	if reg.disconnect(matches[0].id, matches[0].provider) {
 		t.Fatal("conditional disconnect removed a replacement connection")
 	}
@@ -57,7 +64,7 @@ func TestDisconnectDoesNotBlockWhenPendingErrorChannelIsFull(t *testing.T) {
 	provider.AddPending(&PendingRequest{
 		RequestID:  "pending",
 		ErrorCh:    errorCh,
-		ChunkCh:    make(chan string),
+		ChunkCh:    make(chan ProviderChunk),
 		CompleteCh: make(chan protocol.UsageInfo),
 	})
 
@@ -72,7 +79,7 @@ func TestDisconnectDoesNotBlockWhenPendingErrorChannelIsFull(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Disconnect blocked on a full pending error channel")
 	}
-	if got := <-errorCh; got != buffered {
+	if got := <-errorCh; !reflect.DeepEqual(got, buffered) {
 		t.Fatalf("buffered terminal = %+v, want %+v", got, buffered)
 	}
 	if _, ok := <-errorCh; ok {

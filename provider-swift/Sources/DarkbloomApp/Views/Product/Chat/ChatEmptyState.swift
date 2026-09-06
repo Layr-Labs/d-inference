@@ -3,112 +3,86 @@ import SwiftUI
 struct ChatEmptyState: View {
     let identity: MachineIdentity
     let route: ChatRoute
-    /// Replaces the preview-oriented detail copy for live surfaces.
     var detailOverride: String? = nil
     let onSelectSuggestion: (String) -> Void
 
     private let suggestions = [
         ChatPromptSuggestion(
-            title: "Explain unified memory",
-            prompt: "Explain unified memory in plain language.",
-            systemImage: "memorychip"
+            title: "Explain something", prompt: "Explain unified memory in plain language, with an example.",
+            systemImage: "lightbulb"
         ),
         ChatPromptSuggestion(
-            title: "Turn notes into a plan",
-            prompt: "Turn my rough notes into a clear, prioritized plan.",
+            title: "Work through code", prompt: "Help me understand this code and suggest improvements:\n\n",
+            systemImage: "chevron.left.forwardslash.chevron.right"
+        ),
+        ChatPromptSuggestion(
+            title: "Turn notes into a plan", prompt: "Turn these notes into a clear, prioritized plan:\n\n",
             systemImage: "checklist"
         ),
         ChatPromptSuggestion(
-            title: "Draft a thoughtful reply",
-            prompt: "Help me draft a concise, thoughtful reply.",
-            systemImage: "text.bubble"
-        ),
-        ChatPromptSuggestion(
-            title: "Compare two approaches",
-            prompt: "Help me compare two approaches and make the tradeoffs clear.",
+            title: "Compare approaches", prompt: "Compare these two approaches. Explain the tradeoffs and when to choose each:\n\n",
             systemImage: "arrow.triangle.branch"
         ),
     ]
 
     var body: some View {
-        VStack(spacing: 0) {
-            ZStack {
-                SpatialFieldView(
-                    presentation: .welcome,
-                    focus: 0.42,
-                    pointer: CGPoint(x: 0.62, y: 0.48),
-                    activity: 0.25
-                )
+        VStack(alignment: .leading, spacing: 16) {
+            Image(systemName: "bubble.left.and.text.bubble.right")
+                .font(.system(size: 32, weight: .light))
+                .foregroundStyle(DarkbloomTheme.accent)
+                .accessibilityHidden(true)
 
-                Image(systemName: identity.formFactor.symbolName)
-                    .font(.system(size: 31, weight: .ultraLight))
-                    .foregroundStyle(.black)
-            }
-            .frame(width: 104, height: 72)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(.white.opacity(0.78), lineWidth: 1)
-            }
-            .shadow(color: DarkbloomTheme.accent.opacity(0.14), radius: 20, y: 9)
-
-            Text("Start with a thought.")
-                .font(DarkbloomTheme.chivo(26))
-                .tracking(-0.55)
-                .padding(.top, 17)
+            Text("A place to think things through.")
+                .font(.system(size: 28, weight: .semibold))
+                .tracking(-0.6)
+                .fixedSize(horizontal: false, vertical: true)
 
             Text(detail)
+                .font(.system(size: 15))
+                .foregroundStyle(.secondary)
+                .lineSpacing(4)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Try a starting point, then make it your own.")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 490)
-                .padding(.top, 7)
+                .padding(.top, 14)
 
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 215), spacing: 10)],
-                spacing: 10
-            ) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 12)], spacing: 12) {
                 ForEach(suggestions) { suggestion in
-                    Button {
-                        onSelectSuggestion(suggestion.prompt)
-                    } label: {
+                    Button { onSelectSuggestion(suggestion.prompt) } label: {
                         HStack(spacing: 10) {
                             Image(systemName: suggestion.systemImage)
                                 .foregroundStyle(DarkbloomTheme.accent)
-                                .frame(width: 16)
-
+                                .frame(width: 20)
                             Text(suggestion.title)
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(.primary)
-
-                            Spacer()
-
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(.tertiary)
+                            Spacer(minLength: 0)
                         }
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 12)
-                        .productSurface()
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(ProductPalette.elevatedSurface, in: RoundedRectangle(cornerRadius: 10))
+                        .overlay { RoundedRectangle(cornerRadius: 10).stroke(ProductPalette.stroke) }
                     }
                     .buttonStyle(.plain)
-                    .help("Send this sample prompt")
+                    .help("Add this prompt to the composer to edit before sending")
                 }
             }
-            .frame(maxWidth: 540)
-            .padding(.top, 24)
         }
-        .padding(.horizontal, 30)
-        .padding(.vertical, 24)
+        .frame(maxWidth: 650, alignment: .leading)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 32)
+        .frame(maxWidth: .infinity)
     }
 
     private var detail: String {
         if let detailOverride { return detailOverride }
         return switch route {
         case .thisMac:
-            "Type a message or try a prompt below. This UI preview stays on \(identity.displayName); no model runs yet."
+            "Explore the chat experience on \(identity.displayName). This is a preview; replies are samples and no model runs."
         case .privateNetwork:
-            "Try the future network conversation flow. This UI preview does not encrypt, route, or run a model."
+            "Explore a sample network conversation. This preview does not encrypt, route, or run a model."
         }
     }
 }
@@ -117,6 +91,5 @@ private struct ChatPromptSuggestion: Identifiable {
     let title: String
     let prompt: String
     let systemImage: String
-
     var id: String { prompt }
 }

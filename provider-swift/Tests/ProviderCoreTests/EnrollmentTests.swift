@@ -250,7 +250,6 @@ struct EnrollmentTests {
                     (invalid.data, invalid.response)
                 },
                 enrollmentStateReader: { _ in .notEnrolled },
-                serialNumberReader: { fixture.serial },
                 profileDirectory: fixture.root
             )
 
@@ -266,12 +265,6 @@ struct EnrollmentTests {
                 Issue.record("unexpected \(invalid.name) error: \(error)")
             }
 
-            #expect(
-                !FileManager.default.fileExists(
-                    atPath: fixture.profilePath.path
-                ),
-                "wrote \(invalid.name) response"
-            )
             #expect(recorder.calls.isEmpty, "opened \(invalid.name) response")
             #expect(
                 try FileManager.default.contentsOfDirectory(
@@ -304,9 +297,14 @@ struct EnrollmentTests {
         let recorder = EnrollmentOpenRecorder()
         let service = EnrollmentService(
             openCommand: recorder.run,
-            requestProfile: { _ in (payload.data, payload.response) },
+            requestProfile: { request in
+                #expect(request.url == endpoint)
+                #expect(request.httpMethod == "POST")
+                #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+                #expect(request.httpBody == Data("{}".utf8))
+                return (payload.data, payload.response)
+            },
             enrollmentStateReader: { _ in .notEnrolled },
-            serialNumberReader: { fixture.serial },
             profileDirectory: fixture.root
         )
 
@@ -315,11 +313,15 @@ struct EnrollmentTests {
             openSystemSettings: true
         )
 
-        #expect(result.profilePath == fixture.profilePath)
+        #expect(result.profilePath.deletingLastPathComponent().standardizedFileURL == fixture.root.standardizedFileURL)
+        let filename = result.profilePath.deletingPathExtension().lastPathComponent
+        #expect(filename.hasPrefix("Darkbloom-Enroll-"))
+        #expect(UUID(uuidString: String(filename.dropFirst("Darkbloom-Enroll-".count))) != nil)
+        #expect(result.profilePath.pathExtension == "mobileconfig")
         #expect(result.profileOpened)
-        #expect(try Data(contentsOf: fixture.profilePath) == profile)
+        #expect(try Data(contentsOf: result.profilePath) == profile)
         #expect(recorder.calls == [
-            [fixture.profilePath.path],
+            [result.profilePath.path],
             ["x-apple.systempreferences:com.apple.Profiles-Settings.extension"],
         ])
     }
@@ -397,7 +399,6 @@ private func httpResponse(
 
 private struct EnrollmentProfileFixture: Sendable {
     let root: URL
-    let serial = "SERIAL1234"
 
     init() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -407,12 +408,6 @@ private struct EnrollmentProfileFixture: Sendable {
         try FileManager.default.createDirectory(
             at: root,
             withIntermediateDirectories: true
-        )
-    }
-
-    var profilePath: URL {
-        root.appendingPathComponent(
-            "Darkbloom-Enroll-\(serial).mobileconfig"
         )
     }
 

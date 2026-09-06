@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -273,18 +274,22 @@ func TestRuntimeManifestUnionsPerFamilyTemplateHashes(t *testing.T) {
 // included) with a caller-chosen metallib hash and production-shape family
 // template hashes.
 func registerReleaseWithMetallibForTest(
-	t *testing.T, baseURL, cdnURL string, artifacts *releaseArtifactSet, version, metallib string,
-) {
+	t *testing.T, baseURL, cdnURL string, artifacts *releaseArtifactSet, version string, metallib []byte,
+) string {
 	t.Helper()
-	bundle, binaryHash, bundleHash := buildReleaseBundleForTest(t, []byte("provider-"+version))
+	fixture := newReleaseBundleTestFixture(releaseBundleTestApp, []byte("provider-"+version))
+	fixture.entry(t, releaseFlatPayloadSpecs[2].path).body = metallib
+	fixture.entry(t, releaseAppPayloadSpecs[2].path).body = metallib
+	fixture.metallibHash = sha256HexBytesForReleaseTest(metallib)
+	artifact := fixture.build(t)
 	path := "/releases/v" + version + "/darkbloom-bundle-macos-arm64.tar.gz"
 	artifacts.mu.Lock()
-	artifacts.bundles[path] = bundle
+	artifacts.bundles[path] = artifact.bytes
 	artifacts.mu.Unlock()
 	payload := map[string]string{
 		"version": version, "platform": defaultReleasePlatform, "backend": "mlx-swift",
-		"binary_hash": binaryHash, "bundle_hash": bundleHash,
-		"metallib_hash": metallib, "url": cdnURL + path,
+		"binary_hash": artifact.binaryHash, "bundle_hash": artifact.bundleHash,
+		"metallib_hash": artifact.metallibHash, "url": cdnURL + path,
 		"template_hashes": "qwen3.5=" + strings.Repeat("4", 64) + ",gemma4=" + strings.Repeat("6", 64),
 		"changelog":       "release " + version,
 	}
@@ -307,6 +312,7 @@ func registerReleaseWithMetallibForTest(
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("register %s: status=%d body=%s", version, resp.StatusCode, responseBody)
 	}
+	return artifact.metallibHash
 }
 
 // publishedMetallibHashes reads the public manifest endpoint's mlx_metallib
@@ -345,7 +351,7 @@ func TestRegisteringNewerReleaseKeepsPreviousReleaseFleetRuntimeVerified(t *test
 	apiServer := httptest.NewServer(srv.Handler())
 	defer apiServer.Close()
 
-	registerReleaseWithMetallibForTest(t, apiServer.URL, cdn.URL, artifacts, "0.8.15", unionPreviousMetallib)
+	unionPreviousMetallib := registerReleaseWithMetallibForTest(t, apiServer.URL, cdn.URL, artifacts, "0.8.15", []byte("metallib-0.8.15"))
 	if got := publishedMetallibHashes(t, apiServer.URL); !reflect.DeepEqual(got, []string{unionPreviousMetallib}) {
 		t.Fatalf("published mlx_metallib = %v, want only 0.8.15's", got)
 	}
@@ -367,8 +373,10 @@ func TestRegisteringNewerReleaseKeepsPreviousReleaseFleetRuntimeVerified(t *test
 	}
 
 	// THE incident action: CI registers the next release while the fleet is live.
-	registerReleaseWithMetallibForTest(t, apiServer.URL, cdn.URL, artifacts, "0.8.16", unionNewestMetallib)
-	if got := publishedMetallibHashes(t, apiServer.URL); !reflect.DeepEqual(got, []string{unionPreviousMetallib, unionNewestMetallib}) {
+	unionNewestMetallib := registerReleaseWithMetallibForTest(t, apiServer.URL, cdn.URL, artifacts, "0.8.16", []byte("metallib-0.8.16"))
+	wantHashes := []string{unionPreviousMetallib, unionNewestMetallib}
+	sort.Strings(wantHashes)
+	if got := publishedMetallibHashes(t, apiServer.URL); !reflect.DeepEqual(got, wantHashes) {
 		t.Fatalf("published mlx_metallib = %v, want the union of both active releases", got)
 	}
 

@@ -21,9 +21,10 @@ enum ModelLibraryPresentation {
 
     static func displayedModels(
         from models: [ModelSummary],
-        scope: ModelScope
+        scope: ModelScope,
+        search: String = ""
     ) -> [ModelSummary] {
-        switch scope {
+        let scoped: [ModelSummary] = switch scope {
         case .installed:
             models.filter {
                 $0.isInstalled || $0.installation.progress != nil || isFailure($0.installation)
@@ -32,6 +33,13 @@ enum ModelLibraryPresentation {
             models
                 .filter(\.isAvailableFromCatalog)
                 .sorted { compatibilityRank($0.fit) < compatibilityRank($1.fit) }
+        }
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return scoped }
+        return scoped.filter { model in
+            [model.displayName, model.id, model.summary]
+                .contains { $0.localizedStandardContains(query) }
+                || model.capabilities.contains { $0.displayName.localizedStandardContains(query) }
         }
     }
 
@@ -66,8 +74,9 @@ enum ModelLibraryPresentation {
     private static func compatibilityRank(_ fit: ModelFit) -> Int {
         switch fit {
         case .fits: 0
-        case .unknown: 1
+        case .unknown, .runtimeUnknown: 1
         case .tooLarge: 2
+        case .runtimeIneligible: 3
         }
     }
 

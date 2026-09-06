@@ -123,14 +123,10 @@ struct MachineCardSurfaceModifier: ViewModifier {
             .frame(width: 300, height: 322, alignment: alignment)
             .background {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(.ultraThinMaterial)
+                    .fill(.regularMaterial)
                     .overlay {
                         RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .fill(.white.opacity(0.53))
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .stroke(.white.opacity(0.88), lineWidth: 1)
+                            .stroke(DarkbloomTheme.ink.opacity(0.08), lineWidth: 1)
                     }
             }
             .shadow(color: DarkbloomTheme.accent.opacity(0.12), radius: 34, y: 20)

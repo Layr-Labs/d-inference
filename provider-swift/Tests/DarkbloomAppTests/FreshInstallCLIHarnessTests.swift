@@ -56,6 +56,8 @@ struct FreshInstallCLIHarnessTests {
         #expect(plan.recommendedModelID == FreshInstallHarness.modelID)
         #expect(plan.choices.map(\.id) == [FreshInstallHarness.modelID])
         #expect(plan.choices.first?.isInstalled == false)
+        #expect(plan.choices.first?.runtimeEligibility == CLIModelRuntimeEligibility(
+            status: .eligible, reason: "Fresh-install fixture runtime is eligible."))
 
         var downloadEvents: [ModelDownloadStreamEvent] = []
         let events = try await preparation.downloadEvents(
@@ -94,8 +96,8 @@ struct FreshInstallCLIHarnessTests {
             ["login", "--json"],
             ["enroll", "--json"],
             ["doctor", "--json"],
+            ["models", "list", "--json", "--all"],
             ["models", "catalog", "--json", "--include-download-plans"],
-            ["models", "list", "--json"],
             FreshInstallHarness.downloadPlanInvocation,
             FreshInstallHarness.downloadInvocation,
             ["start", "--model", FreshInstallHarness.modelID, "--local-endpoint"],

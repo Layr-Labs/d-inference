@@ -60,7 +60,6 @@ struct FleetClientTests {
           ],
           "backend": "mlx-swift",
           "version": "0.8.1",
-          "serial_number": "FVFGH0STQ6L4",
           "trust_level": "hardware",
           "attested": true,
           "mda_verified": true,
@@ -130,7 +129,6 @@ struct FleetClientTests {
           "models": [],
           "backend": "mlx-swift",
           "version": "0.8.0",
-          "serial_number": "C07QMINI2025",
           "trust_level": "hardware",
           "attested": true,
           "mda_verified": true,
@@ -245,7 +243,7 @@ struct FleetClientTests {
         #expect(live.providerID == "session-live-1")
         #expect(live.status == "serving")
         #expect(live.online == true)
-        #expect(live.serialNumber == "FVFGH0STQ6L4")
+        #expect(live.serialNumber == nil)
         #expect(live.providerKey == "x25519-live-pub")
         #expect(live.trustLevel == "hardware")
         #expect(live.hardware?.memoryAvailableGB == 41.5)
@@ -281,7 +279,7 @@ struct FleetClientTests {
         let serving = try #require(snapshot.macs.first { $0.lifecycle == .serving })
         #expect(serving.removalToken == nil) // live machines are not removable
         let offline = try #require(snapshot.macs.first { $0.lifecycle == .offline })
-        #expect(offline.removalToken == "C07QMINI2025")
+        #expect(offline.removalToken == "session-retained-2")
     }
 
     // MARK: GET /v1/me/summary
@@ -311,18 +309,18 @@ struct FleetClientTests {
         #expect(response.minimumProviderVersion == "0.7.5")
     }
 
-    // MARK: DELETE /v1/me/providers/{serial}
+    // MARK: DELETE /v1/me/providers/{id}
 
-    @Test("Removal sends DELETE to the serial path token")
-    func deleteUsesCoordinatorSerialPath() async throws {
+    @Test("Removal sends DELETE to the opaque provider ID")
+    func deleteUsesCoordinatorProviderIDPath() async throws {
         let recorder = Recorder()
         let client = makeClient(recorder: recorder, statusCode: 200, body: #"{"deleted": true}"#)
 
-        try await client.deleteProvider(removalToken: "C07QMINI2025", bearerToken: "privy-jwt-3")
+        try await client.deleteProvider(removalToken: "session-off-1", bearerToken: "privy-jwt-3")
 
         let request = try #require(recorder.requests.first)
         #expect(request.httpMethod == "DELETE")
-        #expect(request.url?.absoluteString == "https://api.darkbloom.dev/v1/me/providers/C07QMINI2025")
+        #expect(request.url?.absoluteString == "https://api.darkbloom.dev/v1/me/providers/session-off-1")
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer privy-jwt-3")
     }
 
@@ -331,7 +329,7 @@ struct FleetClientTests {
         let client = makeClient(recorder: Recorder(), statusCode: 409, body: Self.conflictJSON)
 
         do {
-            try await client.deleteProvider(removalToken: "FVFGH0STQ6L4", bearerToken: "token")
+            try await client.deleteProvider(removalToken: "session-live-1", bearerToken: "token")
             Issue.record("A 409 must throw, not look like a deletion")
         } catch FleetClientError.httpError(let statusCode, let detail) {
             #expect(statusCode == 409)

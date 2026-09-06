@@ -2,56 +2,25 @@ import Foundation
 import Testing
 @testable import DarkbloomApp
 
-@Test("Mac identity follows serial, SE key, then session ID precedence")
-func myMacIdentityUsesCoordinatorPrecedence() throws {
-    let serialIdentity = try #require(MyMacIdentity.resolve(
-        serialNumber: "SERIAL-1234",
-        secureEnclavePublicKey: "se-key",
-        providerSessionID: "session-a"
-    ))
-    let sameMacNewSession = try #require(MyMacIdentity.resolve(
-        serialNumber: "SERIAL-1234",
-        secureEnclavePublicKey: "different-se-key",
-        providerSessionID: "session-b"
-    ))
-    #expect(serialIdentity == sameMacNewSession)
-    #expect(serialIdentity.source == .serialNumber)
-
-    let enclaveIdentity = try #require(MyMacIdentity.resolve(
-        serialNumber: nil,
-        secureEnclavePublicKey: "se-key",
-        providerSessionID: "session-a"
-    ))
-    #expect(enclaveIdentity.source == .secureEnclavePublicKey)
-
-    let sessionFallback = try #require(MyMacIdentity.resolve(
-        serialNumber: "  ",
-        secureEnclavePublicKey: nil,
-        providerSessionID: "session-a"
-    ))
-    #expect(sessionFallback.source == .providerSessionID)
-    #expect(MyMacIdentity.resolve(
-        serialNumber: nil,
-        secureEnclavePublicKey: nil,
-        providerSessionID: ""
-    ) == nil)
+@Test("Mac identity uses the opaque provider ID without interpreting hardware keys")
+func myMacIdentityUsesOpaqueProviderID() throws {
+    let identity = try #require(MyMacIdentity.resolve(providerID: "provider/opaque:0001"))
+    #expect(identity.value == "provider/opaque:0001")
+    #expect(identity.id == "provider-id:provider/opaque:0001")
+    #expect(MyMacIdentity.resolve(providerID: "provider/opaque:0002") != identity)
+    #expect(MyMacIdentity.resolve(providerID: "") == nil)
+    #expect(MyMacIdentity.resolve(providerID: "  ") == nil)
+    #expect(MyMacIdentity.resolve(providerID: " opaque ")?.value == " opaque ")
 }
 
-@Test("Serial presentation is masked without changing stable identity")
-func myMacSerialPresentationDefaultsToMasked() {
-    #expect(MyMacSensitiveIdentifier.masked("FVFGH0STQ6L4") == "•••• Q6L4")
-    #expect(MyMacSensitiveIdentifier.masked(nil) == nil)
-    #expect(MyMacSensitiveIdentifier.masked("   ") == nil)
-}
-
-@Test("Removal uses coordinator lifecycle and raw serial-or-session tokens")
+@Test("Removal uses coordinator lifecycle and only the opaque provider ID")
 @MainActor
 func myMacRemovalContractMatchesCoordinatorDeletePath() throws {
     let snapshot = try #require(MyMacsStore(fixture: .ready).snapshot)
 
     let offline = try #require(snapshot.macs.first { $0.lifecycle == .offline })
     #expect(offline.canRemove)
-    #expect(offline.removalToken == "C07QMINI2025")
+    #expect(offline.removalToken == offline.providerID)
     #expect(offline.removalToken != offline.id)
 
     let neverSeen = try #require(snapshot.macs.first { $0.lifecycle == .neverSeen })
@@ -82,7 +51,7 @@ func myMacInventoryCoversLifecyclesAndOptionality() throws {
 
     let offline = try #require(snapshot.macs.first { $0.lifecycle == .offline })
     #expect(offline.providerKey == "preview-x25519-mini-persisted")
-    #expect(offline.identity.source == .serialNumber)
+    #expect(offline.identity.value == offline.providerID)
     #expect(offline.live == nil)
     #expect(offline.challenge.freshness == .notApplicable)
     #expect(offline.version.disposition == .belowMinimum)
@@ -90,7 +59,7 @@ func myMacInventoryCoversLifecyclesAndOptionality() throws {
 
     let neverSeen = try #require(snapshot.macs.first { $0.lifecycle == .neverSeen })
     #expect(neverSeen.providerKey == nil)
-    #expect(neverSeen.identity.source == .secureEnclavePublicKey)
+    #expect(neverSeen.identity.value == neverSeen.providerID)
     #expect(neverSeen.hardware == nil)
     #expect(neverSeen.models == nil)
     #expect(neverSeen.reputation == nil)
@@ -292,11 +261,12 @@ func myMacsWireDecoderHandlesGoDatesAndHardwareSentinels() throws {
     })
     #expect(zeroHardware.hardware == nil)
     #expect(zeroHardware.canRemove)
-    #expect(zeroHardware.removalToken == "RAW-SERIAL-01")
-    #expect(zeroHardware.id == "serial:RAW-SERIAL-01")
+    #expect(zeroHardware.removalToken == "session-zero-hardware")
+    #expect(zeroHardware.id == "provider-id:session-zero-hardware")
+    #expect(firstWire.serialNumber == nil)
 
     let partial = try #require(snapshot.macs.first {
-        $0.providerID == "session-partial"
+        $0.providerID == "  session-partial  "
     })
     let hardware = try #require(partial.hardware)
     #expect(hardware.machineModel == nil)
@@ -308,7 +278,7 @@ func myMacsWireDecoderHandlesGoDatesAndHardwareSentinels() throws {
     #expect(hardware.efficiencyCoreCount == nil)
     #expect(hardware.gpuCoreCount == 20)
     #expect(hardware.memoryBandwidthGBs == nil)
-    #expect(partial.removalToken == "session-partial")
+    #expect(partial.removalToken == "  session-partial  ")
     #expect(partial.removalToken != partial.id)
 }
 

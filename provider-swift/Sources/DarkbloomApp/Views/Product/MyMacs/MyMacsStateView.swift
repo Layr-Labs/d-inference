@@ -44,7 +44,7 @@ struct MyMacsStateView: View {
                     Text("Loading linked Macs…")
                         .font(.system(size: 13, weight: .medium))
                     Text("Fetching the inventory for this Darkbloom account.")
-                        .font(.caption)
+                        .font(.body)
                         .foregroundStyle(.secondary)
                 }
 
@@ -83,7 +83,7 @@ struct MyMacsStateView: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 360)
+        .frame(maxWidth: .infinity, minHeight: 220)
         .multilineTextAlignment(.center)
     }
 
@@ -115,9 +115,9 @@ struct MyMacsBanner: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.caption.weight(.semibold))
+                    .font(.body.weight(.semibold))
                 Text(detail)
-                    .font(.caption2)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

@@ -68,10 +68,21 @@ enum ModelFit: Hashable, Sendable {
     case fits
     case tooLarge(requiredMemoryGB: Int, availableMemoryGB: Int)
     case unknown
+    case runtimeIneligible(reason: String)
+    case runtimeUnknown(reason: String)
 
     var canRunOnThisMac: Bool {
-        if case .tooLarge = self { return false }
-        return true
+        switch self {
+        case .tooLarge, .runtimeIneligible, .runtimeUnknown: false
+        case .fits, .unknown: true
+        }
+    }
+
+    var runtimeBlockReason: String? {
+        switch self {
+        case .runtimeIneligible(let reason), .runtimeUnknown(let reason): reason
+        case .fits, .unknown, .tooLarge: nil
+        }
     }
 }
 

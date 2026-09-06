@@ -86,8 +86,8 @@ struct FreshInstallFlowTests {
             ["enroll", "--json"],
             ["doctor", "--json"],
             ["doctor", "--json"],
+            ["models", "list", "--json", "--all"],
             ["models", "catalog", "--json", "--include-download-plans"],
-            ["models", "list", "--json"],
             FreshInstallHarness.downloadPlanInvocation,
             FreshInstallHarness.downloadInvocation,
             ["start", "--model", FreshInstallHarness.modelID, "--local-endpoint"],
@@ -95,7 +95,7 @@ struct FreshInstallFlowTests {
 
         let invocations = try harness.invocations()
         #expect(!invocations.contains { $0 == ["start"] })
-        #expect(!invocations.contains { $0.contains("--all") })
+        #expect(!invocations.contains { $0.first == "start" && $0.contains("--all") })
         #expect(!invocations.contains { $0.first == "local" })
         #expect(!invocations.contains { $0.first == "open" })
         #expect(!FileManager.default.fileExists(

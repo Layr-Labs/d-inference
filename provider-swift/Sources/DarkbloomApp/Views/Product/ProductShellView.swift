@@ -9,8 +9,10 @@ struct ProductShellView: View {
     let localAPIStore: LocalAPIStore
     let myMacsStore: MyMacsStore
     let availabilityStore: AvailabilityStore
-    let chatFixture: PreviewChatFixture
     let isPreview: Bool
+    let chatStore: ChatStore
+    let needsSetup: Bool
+    let onContinueSetup: () -> Void
     let initialDestination: ProductDestination?
     let onSelectDestination: (ProductDestination) -> Void
     let onInitialDestinationApplied: () -> Void
@@ -46,6 +48,14 @@ struct ProductShellView: View {
             .navigationSplitViewColumnWidth(min: 178, ideal: 210, max: 248)
         } detail: {
             destinationView
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if isPreview {
+                        UIPreviewNotice()
+                    }
+                    if needsSetup {
+                        ProductSetupBanner(onContinue: onContinueSetup)
+                    }
+                }
                 .toolbar {
                     ProductToolbar(
                         destination: destination,
@@ -158,15 +168,25 @@ struct ProductShellView: View {
         case .chat:
             PrivateChatView(
                 identity: identity,
-                fixture: chatFixture,
-                isPreview: isPreview
+                store: chatStore,
+                onOpenLocalAPI: { select(.localAPI) },
+                onOpenModels: { select(.models) }
             )
         case .localAPI:
             LocalAPIView(
                 store: localAPIStore,
                 onOpenChat: { select(.chat) },
                 onOpenModels: { select(.models) },
-                onOpenDiagnostics: { showsDiagnostics = true }
+                onOpenDiagnostics: { showsDiagnostics = true },
+                models: modelLibraryStore.models,
+                modelsAreLive: modelLibraryStore.isLive,
+                modelCatalogState: modelLibraryStore.catalogState,
+                selectedModelID: modelLibraryStore.selectedModelID,
+                providerSnapshot: providerStore.snapshot,
+                onRefreshModels: { await modelLibraryStore.refresh() },
+                onSelectModel: { modelLibraryStore.selectModel(id: $0) },
+                onOpenProviderControls: { select(.overview) },
+                onProcessChange: { Task { await providerStore.refresh() } }
             )
         case .myMacs:
             MyMacsView(
@@ -194,7 +214,10 @@ struct ProductShellView: View {
         case .activity:
             ProviderActivityView(snapshot: providerStore.snapshot)
         case .models:
-            ModelLibraryView(store: modelLibraryStore)
+            ModelLibraryView(store: modelLibraryStore) { modelID in
+                modelLibraryStore.selectModel(id: modelID)
+                select(.localAPI)
+            }
         case .machine:
             MachineOverviewView(
                 identity: identity,
@@ -228,6 +251,10 @@ struct ProductShellView: View {
     }
 
     private func request(_ action: ProviderAction) {
+        if needsSetup && (action == .start || action == .restart) {
+            onContinueSetup()
+            return
+        }
         if let confirmation = ProviderActionConfirmation(
             action: action,
             snapshot: providerStore.snapshot

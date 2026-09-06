@@ -9,6 +9,8 @@ final class LocalAPIStore {
     private(set) var isAPIKeyRevealed = false
     private(set) var lastCopiedItem: LocalAPICopyItem?
     var selectedExample: LocalAPICodeExample = .curl
+    let localStart: LocalAPIStartController
+    var selectedLocalModelID: String?
 
     /// Where this store's truth comes from. Fixture mode replays
     /// deterministic preview states; live mode reads the real discovery
@@ -22,6 +24,7 @@ final class LocalAPIStore {
         let discoveryReader: @Sendable () -> LocalEndpointInfo?
         let processIdentityReader: @Sendable (Int32) -> ProcessIdentity?
         let clientFactory: @Sendable (LocalEndpointInfo) -> LocalEndpointClient
+        let providerConflictReader: @Sendable () -> LocalAPIStartConflict?
     }
 
     private let source: Source
@@ -33,15 +36,20 @@ final class LocalAPIStore {
     private var monitoringTask: Task<Void, Never>?
     @ObservationIgnored
     private var lastProbeAt: Date?
+    @ObservationIgnored
+    private var probeCompletion: UInt64 = 0
 
     private init(
         source: Source,
         initialState: LocalAPIState,
         initialDiscoveryInfo: LocalEndpointInfo? = nil,
         pollInterval: Duration,
-        staleAfter: TimeInterval
+        staleAfter: TimeInterval,
+        localStartCLI: (any LocalAPIProviderRunning)? = nil,
+        startConfiguration: LocalAPIStartConfiguration = .init()
     ) {
         self.source = source
+        self.localStart = LocalAPIStartController(cli: localStartCLI, configuration: startConfiguration)
         self.state = initialState
         self.probeCoordinator = LocalAPIProbeCoordinator(
             initialInfo: initialDiscoveryInfo
@@ -69,6 +77,11 @@ final class LocalAPIStore {
         processIdentityReader: @escaping @Sendable (Int32) -> ProcessIdentity? = {
             ProcessIdentity.read(pid: $0)
         },
+        cli: any LocalAPIProviderRunning = ProcessLocalAPIProviderRunner(),
+        startConfiguration: LocalAPIStartConfiguration = .init(),
+        providerConflictReader: @escaping @Sendable () -> LocalAPIStartConflict? = {
+            LocalAPIStartPreflight.liveDaemonConflict()
+        },
         probeTimeout: TimeInterval = 2.5,
         pollInterval: Duration = .seconds(3),
         staleAfter: TimeInterval = 15,
@@ -79,7 +92,8 @@ final class LocalAPIStore {
         let source = LiveSource(
             discoveryReader: discoveryReader,
             processIdentityReader: processIdentityReader,
-            clientFactory: clientFactory
+            clientFactory: clientFactory,
+            providerConflictReader: providerConflictReader
         )
         let initialInfo = discoveryReader()
         let trustedInitialInfo = initialInfo.flatMap { info in
@@ -90,13 +104,15 @@ final class LocalAPIStore {
         }
         return LocalAPIStore(
             source: .live(source),
-            initialState: bootstrapState(
+            initialState: LocalAPIDiscoveryMapping.bootstrapState(
                 info: initialInfo,
                 processIdentityReader: processIdentityReader
             ),
             initialDiscoveryInfo: trustedInitialInfo,
             pollInterval: pollInterval,
-            staleAfter: staleAfter
+            staleAfter: staleAfter,
+            localStartCLI: cli,
+            startConfiguration: startConfiguration
         )
     }
 
@@ -125,6 +141,10 @@ final class LocalAPIStore {
     func text(for item: LocalAPICopyItem) -> String? {
         switch item {
         case .command(let mode):
+            if mode == .directOnly {
+                return selectedLocalModelID.map(LocalAPIStartCommand.display)
+                    ?? "darkbloom start --local --no-replace"
+            }
             return mode.startCommand
         case .baseURL, .apiKey, .code:
             break
@@ -149,6 +169,89 @@ final class LocalAPIStore {
 
     func clearCopyConfirmation() {
         lastCopiedItem = nil
+    }
+
+    // MARK: - Native local-only start
+
+    /// Inputs come from the parent's ModelLibraryStore and ProviderStore. No
+    /// catalog, account state, or provider lifecycle policy is duplicated here.
+    func startLocalOnly(
+        modelID: String,
+        models: [ModelSummary],
+        modelsAreLive: Bool,
+        providerSnapshot: ProviderSnapshot?,
+        onProcessChange: @escaping @MainActor () -> Void = {}
+    ) {
+        guard !localStart.hasActiveSession else { return }
+        guard !Task.isCancelled else {
+            localStart.cancelBeforeStart()
+            return
+        }
+        guard case .live(let live) = source else {
+            localStart.reject(.fixtureMode)
+            return
+        }
+        guard localStart.isLaunchSupported else {
+            localStart.reject(.nonReplacingLaunchUnavailable)
+            return
+        }
+        let preflight: @MainActor () throws -> Void = {
+            try LocalAPIStartPreflight.validateModel(
+                modelID: modelID, models: models, modelsAreLive: modelsAreLive
+            )
+            if let conflict = LocalAPIStartPreflight.conflict(
+                snapshot: providerSnapshot,
+                discovery: live.discoveryReader(),
+                readIdentity: live.processIdentityReader
+            ) ?? live.providerConflictReader() {
+                throw LocalAPIStartError.conflict(conflict)
+            }
+        }
+        // Reject synchronously as well as immediately before entering the CLI
+        // boundary. A queued start must re-read the disk/process evidence.
+        do { try preflight() } catch let error as LocalAPIStartError {
+            localStart.reject(error)
+            return
+        } catch {
+            localStart.reject(.launchFailed(error.localizedDescription))
+            return
+        }
+        selectedLocalModelID = modelID
+        localStart.start(
+            modelID: modelID,
+            preflight: preflight,
+            observe: { [weak self] in
+                guard let self else { return false }
+                let before = self.probeCompletion
+                await self.refreshNow(forceProbe: true)
+                guard !Task.isCancelled, self.probeCompletion != before,
+                      let info = live.discoveryReader(),
+                      info == self.probeCoordinator.info,
+                      info.processIdentity == self.localStart.ownedProcessIdentity,
+                      self.localStart.ownedProcessIdentity != nil,
+                      LocalEndpointRuntimeTruth.belongsToLiveProcess(info, readIdentity: live.processIdentityReader),
+                      let endpoint = self.endpoint, endpoint.health == .reachable,
+                      endpoint.host == "127.0.0.1", endpoint.port == 8000,
+                      endpoint.requiresAuthentication,
+                      endpoint.availableModelIDs?.contains(modelID) == true
+                else { return false }
+                return true
+            },
+            invalidateProbe: { [weak self] in self?.probeCoordinator.cancel() },
+            didChangeProcess: { [weak self] in
+                onProcessChange()
+                Task { [weak self] in await self?.refreshNow(forceProbe: true) }
+            }
+        )
+    }
+
+    func startConflict(providerSnapshot: ProviderSnapshot?) -> LocalAPIStartConflict? {
+        guard case .live(let live) = source else { return nil }
+        return LocalAPIStartPreflight.conflict(
+            snapshot: providerSnapshot,
+            discovery: live.discoveryReader(),
+            readIdentity: live.processIdentityReader
+        )
     }
 
     // MARK: - Live mode: monitoring + probing
@@ -257,44 +360,6 @@ final class LocalAPIStore {
 
     // MARK: - Live internals
 
-    private static func bootstrapState(
-        info: LocalEndpointInfo?,
-        processIdentityReader: @Sendable (Int32) -> ProcessIdentity?
-    ) -> LocalAPIState {
-        guard let info else {
-            return .stopped(message: "No live local discovery record was found.")
-        }
-        guard LocalEndpointRuntimeTruth.belongsToLiveProcess(
-            info,
-            readIdentity: processIdentityReader
-        ) else {
-            return .stopped(message: "The local discovery record does not belong to the running provider. Start the provider again.")
-        }
-        return .running(Self.snapshot(from: info, health: .checking, modelCatalog: .loading))
-    }
-
-    /// Maps the wire discovery record onto the UI snapshot. `mode` stays nil:
-    /// `local.json` does not record how the server was started, and the
-    /// presentation layer reports "Mode not reported" rather than guessing.
-    private static func snapshot(
-        from info: LocalEndpointInfo,
-        health: LocalAPIHealth,
-        modelCatalog: LocalAPIModelCatalog
-    ) -> LocalAPIEndpointSnapshot {
-        LocalAPIEndpointSnapshot(
-            baseURL: URL(string: info.baseURL) ?? URL(string: "http://127.0.0.1:\(info.port)/v1")!,
-            host: info.host,
-            port: info.port,
-            apiKey: info.apiKey.isEmpty ? nil : info.apiKey,
-            pid: info.pid,
-            version: info.version,
-            updatedAt: ISO8601DateFormatter().date(from: info.updatedAt) ?? Date(timeIntervalSince1970: 0),
-            mode: nil,
-            health: health,
-            modelCatalog: modelCatalog
-        )
-    }
-
     /// Adopt the current on-disk truth. Any trusted discovery-record change
     /// advances a revision and cancels the prior probe, binding asynchronous
     /// results to the exact PID/start identity, URL, and key they probed.
@@ -310,6 +375,9 @@ final class LocalAPIStore {
         let recordChanged = probeCoordinator.adopt(trustedInfo)
         if recordChanged {
             lastProbeAt = nil
+            hideAPIKey()
+            clearCopyConfirmation()
+            localStart.endpointBecameUnready()
         }
 
         guard let trustedInfo else {
@@ -317,12 +385,12 @@ final class LocalAPIStore {
             state = .stopped(
                 message: info == nil
                     ? "No live local discovery record was found."
-                    : "The local endpoint discovery is stale or belongs to a different process. Start the provider again."
+                    : "The local endpoint discovery is stale or belongs to a different process. Check the provider controls or Diagnostics."
             )
             return
         }
 
-        let mapped = Self.snapshot(
+        let mapped = LocalAPIDiscoveryMapping.snapshot(
             from: trustedInfo,
             health: .checking,
             modelCatalog: .loading
@@ -414,53 +482,24 @@ final class LocalAPIStore {
         probeID: UUID,
         ticket: LocalAPIProbeCoordinator.Ticket
     ) {
-        guard probeCoordinator.accepts(id: probeID, ticket: ticket) else {
+        guard !Task.isCancelled,
+              probeCoordinator.accepts(id: probeID, ticket: ticket),
+              case .live(let live) = source else { return }
+        // A slow response cannot bless a removed/rotated record or reused PID,
+        // even when no intervening monitoring tick noticed the change.
+        let latest = live.discoveryReader()
+        guard latest == ticket.info,
+              LocalEndpointRuntimeTruth.belongsToLiveProcess(ticket.info, readIdentity: live.processIdentityReader)
+        else {
+            syncDiscovery(info: latest, live: live)
             return
         }
+        probeCompletion &+= 1
+        localStart.endpointDidUpdate(health: health, modelCatalog: modelCatalog)
         guard case .running(var endpoint) = state else { return }
         guard endpoint.health != health || endpoint.modelCatalog != modelCatalog else { return }
         endpoint.health = health
         endpoint.modelCatalog = modelCatalog
         state = .running(endpoint)
-    }
-
-    // MARK: - Code examples
-
-    private func code(
-        _ example: LocalAPICodeExample,
-        endpoint: LocalAPIEndpointSnapshot
-    ) -> String {
-        let modelID = endpoint.availableModelIDs?.first ?? "<model-id>"
-        switch example {
-        case .curl:
-            let authLine = endpoint.requiresAuthentication
-                ? "  -H \"Authorization: Bearer $OPENAI_API_KEY\" \\\n"
-                : ""
-            return """
-            curl \(endpoint.baseURL.absoluteString)/chat/completions \\
-            \(authLine)  -H 'Content-Type: application/json' \\
-              -d '{"model":"\(modelID)","messages":[{"role":"user","content":"Hello from this Mac"}]}'
-            """
-
-        case .python:
-            let apiKey = endpoint.requiresAuthentication
-                ? "os.environ[\"OPENAI_API_KEY\"]"
-                : "\"not-needed\""
-            return """
-            import os
-            from openai import OpenAI
-
-            client = OpenAI(
-                base_url="\(endpoint.baseURL.absoluteString)",
-                api_key=\(apiKey),
-            )
-
-            response = client.chat.completions.create(
-                model="\(modelID)",
-                messages=[{"role": "user", "content": "Hello from this Mac"}],
-            )
-            print(response.choices[0].message.content)
-            """
-        }
     }
 }

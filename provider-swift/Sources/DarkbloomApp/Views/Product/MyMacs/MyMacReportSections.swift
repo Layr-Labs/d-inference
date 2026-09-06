@@ -5,9 +5,10 @@ struct MyMacLatestReportSection: View {
 
     var body: some View {
         MyMacDetailSection("Latest report") {
-            MyMacFactRow("Status", value: MyMacsPresentation.lifecycleTitle(mac.lifecycle))
             MyMacFactRow("Last reported", value: date(mac.lastSeen))
-            MyMacFactRow("Last heartbeat", value: date(mac.live?.lastHeartbeat))
+            if let heartbeat = mac.live?.lastHeartbeat {
+                MyMacFactRow("Last heartbeat", value: date(heartbeat))
+            }
             MyMacFactRow("Last verified", value: date(mac.challenge.lastVerifiedAt))
             MyMacFactRow("Provider version", value: versionValue)
         }
@@ -35,63 +36,27 @@ struct MyMacLatestReportSection: View {
 
 struct MyMacHardwareSection: View {
     let mac: MyMac
-    let serialIsRevealed: Bool
-    let serialWasCopied: Bool
-    let onToggleSerial: () -> Void
-    let onCopySerial: () -> Void
 
     var body: some View {
         MyMacDetailSection("Hardware", detail: "Reported by this provider") {
-            MyMacFactRow("Chip", value: mac.hardware?.chipName ?? MyMacsPresentation.notReported)
-            MyMacFactRow(
-                "Machine model",
-                value: mac.hardware?.machineModel ?? MyMacsPresentation.notReported
-            )
-            MyMacFactRow("Unified memory", value: memory)
-            MyMacFactRow("Memory available for inference", value: availableMemory)
-            MyMacFactRow("CPU cores", value: integer(mac.hardware?.cpuCoreCount))
-            MyMacFactRow(
-                "Performance cores",
-                value: integer(mac.hardware?.performanceCoreCount)
-            )
-            MyMacFactRow(
-                "Efficiency cores",
-                value: integer(mac.hardware?.efficiencyCoreCount)
-            )
-            MyMacFactRow("GPU cores", value: integer(mac.hardware?.gpuCoreCount))
-            MyMacFactRow("Memory bandwidth", value: memoryBandwidth)
-            serialRow
-        }
-    }
-
-    @ViewBuilder
-    private var serialRow: some View {
-        if let serial = mac.serialNumber {
-            MyMacFactRow(
-                "Serial number",
-                value: serialIsRevealed ? serial : (mac.maskedSerialNumber ?? MyMacsPresentation.notReported),
-                isPrivacySensitive: serialIsRevealed
-            ) {
-                HStack(spacing: 8) {
-                    Button(action: onToggleSerial) {
-                        Image(systemName: serialIsRevealed ? "eye.slash" : "eye")
+            if mac.hardware == nil {
+                Text("Hardware information has not been reported.")
+                    .font(.body).foregroundStyle(.secondary)
+            } else {
+                MyMacFactRow("Unified memory", value: memory)
+                MyMacFactRow("CPU cores", value: integer(mac.hardware?.cpuCoreCount))
+                MyMacFactRow("GPU cores", value: integer(mac.hardware?.gpuCoreCount))
+                DisclosureGroup("More hardware details") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        MyMacFactRow("Memory available for inference", value: availableMemory)
+                        MyMacFactRow("Performance cores", value: integer(mac.hardware?.performanceCoreCount))
+                        MyMacFactRow("Efficiency cores", value: integer(mac.hardware?.efficiencyCoreCount))
+                        MyMacFactRow("Memory bandwidth", value: memoryBandwidth)
                     }
-                    .buttonStyle(.borderless)
-                    .help(serialIsRevealed ? "Hide serial number" : "Reveal serial number")
-                    .accessibilityLabel(serialIsRevealed ? "Hide serial number" : "Reveal serial number")
-
-                    if serialIsRevealed {
-                        Button(action: onCopySerial) {
-                            Image(systemName: serialWasCopied ? "checkmark" : "doc.on.doc")
-                        }
-                        .buttonStyle(.borderless)
-                        .help(serialWasCopied ? "Serial number copied" : "Copy serial number")
-                        .accessibilityLabel(serialWasCopied ? "Serial number copied" : "Copy serial number")
-                    }
+                    .padding(.top, 10)
                 }
+                .font(.body)
             }
-        } else {
-            MyMacFactRow("Serial number", value: MyMacsPresentation.notReported)
         }
     }
 
@@ -127,7 +92,7 @@ struct MyMacModelsSection: View {
                 .padding(.vertical, 2)
 
             Text("Capacity report")
-                .font(.caption.weight(.semibold))
+                .font(.body.weight(.semibold))
             capacity
         }
     }
@@ -137,22 +102,22 @@ struct MyMacModelsSection: View {
         if let models = mac.models {
             if models.isEmpty {
                 Text("No models reported")
-                    .font(.caption)
+                    .font(.body)
                     .foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(models) { model in
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
                             Image(systemName: "shippingbox")
-                                .font(.caption2)
+                                .font(.callout)
                                 .foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(model.id)
-                                    .font(.caption.weight(.medium))
+                                    .font(.body.weight(.medium))
                                     .monospaced()
                                     .textSelection(.enabled)
                                 Text(modelDetail(model))
-                                    .font(.caption2)
+                                    .font(.callout)
                                     .foregroundStyle(.secondary)
                             }
                         }
@@ -161,7 +126,7 @@ struct MyMacModelsSection: View {
             }
         } else {
             Text(MyMacsPresentation.notReported)
-                .font(.caption)
+                .font(.body)
                 .foregroundStyle(.secondary)
         }
     }
@@ -172,26 +137,26 @@ struct MyMacModelsSection: View {
         case let .backendSlots(capacity):
             VStack(alignment: .leading, spacing: 8) {
                 Text("Backend slots are the current capacity report.")
-                    .font(.caption2)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 if capacity.slots.isEmpty {
                     Text("No backend slots reported")
-                        .font(.caption)
+                        .font(.body)
                 } else {
                     ForEach(capacity.slots) { slot in
                         HStack(alignment: .firstTextBaseline) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(slot.modelID)
-                                    .font(.caption.weight(.medium))
+                                    .font(.body.weight(.medium))
                                     .monospaced()
                                     .textSelection(.enabled)
                                 Text(slotDetail(slot))
-                                    .font(.caption2)
+                                    .font(.callout)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
                             Text(slotState(slot.state))
-                                .font(.caption2.weight(.semibold))
+                                .font(.callout.weight(.semibold))
                                 .foregroundStyle(slotTint(slot.state))
                         }
                     }
@@ -201,11 +166,11 @@ struct MyMacModelsSection: View {
         case let .legacy(capacity):
             VStack(alignment: .leading, spacing: 6) {
                 Text("Legacy provider report")
-                    .font(.caption2)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 ForEach(legacyModels(capacity), id: \.self) { model in
                     Text(model)
-                        .font(.caption)
+                        .font(.body)
                         .monospaced()
                         .textSelection(.enabled)
                 }
@@ -213,7 +178,7 @@ struct MyMacModelsSection: View {
 
         case .unavailable:
             Text(MyMacsPresentation.notReported)
-                .font(.caption)
+                .font(.body)
                 .foregroundStyle(.secondary)
         }
     }

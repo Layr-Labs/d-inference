@@ -7,6 +7,7 @@ struct WelcomeView: View {
     let onContinue: () -> Void
     let onResume: () -> Void
     let onStartOver: () -> Void
+    let onExplore: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isCapturingDarkbloomPreview) private var isCapturingPreview
@@ -101,7 +102,7 @@ struct WelcomeView: View {
     ) -> some View {
         HStack(alignment: .center, spacing: columnSpacing) {
             VStack(alignment: .leading, spacing: 0) {
-                Text("Put your Mac\nto work.")
+                Text("Your Mac.\nYour AI.")
                     .font(DarkbloomTheme.chivo(isCompact ? 44 : 48))
                     .tracking(-1.4)
                     .lineSpacing(-4)
@@ -109,7 +110,7 @@ struct WelcomeView: View {
                     .accessibilityAddTraits(.isHeader)
                     .welcomeReveal(isPresented, delay: 0.04, reduceMotion: motionIsReduced)
 
-                Text("Run AI privately on this Mac. When it’s idle, it can contribute spare capacity to the Darkbloom network.")
+                Text("Chat, create, and experiment with AI that runs on your Mac. Share spare compute with Darkbloom when you choose.")
                     .font(DarkbloomTheme.chivo(16))
                     .lineSpacing(5)
                     .foregroundStyle(DarkbloomTheme.ink.opacity(0.7))
@@ -148,6 +149,17 @@ struct WelcomeView: View {
                     .padding(.top, isCompact ? 32 : 36)
                     .welcomeReveal(isPresented, delay: 0.18, reduceMotion: motionIsReduced)
                 }
+
+                Button(action: onExplore) {
+                    Label("Explore the app first", systemImage: "arrow.right")
+                        .font(.system(size: 13, weight: .medium))
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(DarkbloomTheme.linkAccent)
+                .padding(.top, 14)
+                .accessibilityHint("Browse Darkbloom without completing setup or starting the engine")
+                .welcomeReveal(isPresented, delay: 0.22, reduceMotion: motionIsReduced)
             }
             .frame(width: columnWidth, alignment: .leading)
 

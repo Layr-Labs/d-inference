@@ -1,240 +1,218 @@
 import SwiftUI
 
-enum ChatSessionMode: Equatable {
-    case fixture
-    case live
-
-    static func resolve(isPreview: Bool) -> Self {
-        isPreview ? .fixture : .live
-    }
-}
-
 struct PrivateChatView: View {
     let identity: MachineIdentity
+    private let onOpenLocalAPI: (() -> Void)?
+    private let onOpenModels: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var store: PreviewChatStore
-    @State private var draft = ""
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var store: ChatStore
     @State private var responseTask: Task<Void, Never>?
-    @FocusState private var composerIsFocused: Bool
+    @State private var connectionTask: Task<Void, Never>?
+    @State private var composerIsFocused = false
 
+    /// Preferred shell integration: keep the store at shell/app scope so
+    /// transcript, draft and in-memory history survive destination changes.
+    init(
+        identity: MachineIdentity,
+        store: ChatStore,
+        onOpenLocalAPI: (() -> Void)? = nil,
+        onOpenModels: (() -> Void)? = nil
+    ) {
+        self.identity = identity
+        self.onOpenLocalAPI = onOpenLocalAPI
+        self.onOpenModels = onOpenModels
+        _store = State(initialValue: store)
+    }
+
+    /// Compatibility initializer for existing product/preview callers.
     init(
         identity: MachineIdentity,
         fixture: PreviewChatFixture = .empty,
-        isPreview: Bool
+        isPreview: Bool,
+        onOpenLocalAPI: (() -> Void)? = nil,
+        onOpenModels: (() -> Void)? = nil
     ) {
-        self.identity = identity
-        // Every preview session stays fixture-driven and deterministic,
-        // including onboarding previews that finish into the product shell.
-        // Real launches use the endpoint discovered in ~/.darkbloom/local.json.
-        switch ChatSessionMode.resolve(isPreview: isPreview) {
-        case .fixture:
-            _store = State(initialValue: PreviewChatStore(fixture: fixture))
-        case .live:
-            _store = State(initialValue: PreviewChatStore(live: LiveChatConfiguration()))
-        }
+        self.init(
+            identity: identity,
+            store: isPreview ? ChatStore(fixture: fixture) : ChatStore(live: LiveChatConfiguration()),
+            onOpenLocalAPI: onOpenLocalAPI,
+            onOpenModels: onOpenModels
+        )
     }
 
     var body: some View {
         GeometryReader { geometry in
-            chatSurface
-                .frame(
-                    width: geometry.size.width,
-                    height: geometry.size.height,
-                    alignment: .top
-                )
-                .clipped()
+            VStack(spacing: 0) {
+                sessionHeader
+                    .fixedSize(horizontal: false, vertical: true)
+                conversationContent
+                    .frame(maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                failureNotice
+                composer
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .background(ProductPalette.pageBackground)
         .navigationTitle("Chat")
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                if store.hasConversation {
-                    Button("New Chat", systemImage: "square.and.pencil", action: resetConversation)
-                        .help(store.isLive
-                            ? "Start a new conversation"
-                            : "Start a new preview conversation")
-                }
-            }
+        .toolbar(id: "darkbloom.chat.actions") {
+            ChatToolbar(canStartNewChat: store.canStartNewChat, onNewChat: resetConversation)
         }
-        .onDisappear(perform: stopResponse)
+        .task {
+            composerIsFocused = true
+            await store.refreshConnection()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { checkConnection() }
+        }
+        .onDisappear {
+            connectionTask?.cancel()
+            stopResponse()
+        }
         .accessibilityElement(children: .contain)
     }
 
-    private var chatSurface: some View {
-        VStack(spacing: 0) {
-            Group {
-                if store.hasConversation {
-                    conversation
-                } else {
-                    ScrollView {
-                        ChatEmptyState(
-                            identity: identity,
-                            route: store.route,
-                            detailOverride: store.isLive
-                                ? "Everything you send runs on \(identity.displayName) through the local endpoint — nothing leaves this Mac."
-                                : nil,
-                            onSelectSuggestion: submit
-                        )
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 42)
-                    }
-                    .scrollIndicators(.hidden)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .layoutPriority(1)
-            .clipped()
-
-            if let failure = store.failure {
-                ChatFailureNotice(
-                    failure: failure,
-                    onRetry: retryFailedResponse,
-                    onDismiss: store.clearFailure
-                )
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-
-            VStack(spacing: 0) {
-                Divider()
-                ChatComposer(
-                    draft: $draft,
-                    route: Binding(
-                        get: { store.route },
-                        set: { store.route = $0 }
-                    ),
-                    isResponding: store.isResponding,
-                    isLive: store.isLive,
-                    isFocused: $composerIsFocused,
-                    availableRoutes: store.isLive ? [.thisMac] : ChatRoute.allCases,
-                    noteOverride: store.isLive ? liveComposerNote : nil,
-                    onSubmit: { submit(draft) },
-                    onStop: stopResponse
-                )
-            }
-            .background(.bar)
-            .fixedSize(horizontal: false, vertical: true)
-        }
+    private var sessionHeader: some View {
+        @Bindable var chat = store
+        return ChatSessionHeader(
+            isLive: store.isLive,
+            connection: store.connection,
+            availableModelIDs: store.availableModelIDs,
+            selectedModelID: $chat.selectedModelID,
+            isResponding: store.isResponding,
+            history: store.history,
+            onRestore: restoreConversation,
+            onRefresh: checkConnection
+        )
     }
 
-    private var liveComposerNote: String {
-        if let model = store.activeModelID {
-            return "On this Mac · \(model) via the local endpoint"
-        }
-        return "On this Mac · the local endpoint picks the model"
-    }
-
-    private var conversation: some View {
-        ScrollViewReader { proxy in
+    @ViewBuilder
+    private var conversationContent: some View {
+        if store.hasConversation {
+            ChatConversationView(
+                messages: store.messages,
+                isResponding: store.isResponding,
+                isLive: store.isLive
+            )
+            .id(store.conversationID)
+        } else {
             ScrollView {
-                LazyVStack(spacing: 22) {
-                    ForEach(store.messages) { message in
-                        ChatMessageView(message: message, isLive: store.isLive)
-                            .id(message.id)
-                    }
-
-                    if store.isResponding {
-                        ChatResponseIndicator(isLive: store.isLive)
-                            .id("responding")
-                    }
-                }
-                .frame(maxWidth: 720)
-                .padding(.horizontal, 30)
-                .padding(.vertical, 30)
-                .frame(maxWidth: .infinity)
-            }
-            .onChange(of: store.messages.count) { _, _ in
-                scrollToLatest(using: proxy)
-            }
-            .onChange(of: store.lastMessageText) { _, _ in
-                scrollToLatest(using: proxy)
-            }
-            .onChange(of: store.isResponding) { _, _ in
-                scrollToLatest(using: proxy)
+                ChatEmptyState(
+                    identity: identity,
+                    route: store.route,
+                    detailOverride: store.isLive
+                        ? "Ask questions, work through code, or try an idea with a model on \(identity.displayName). Messages go directly to your local endpoint."
+                        : nil,
+                    onSelectSuggestion: useSuggestion
+                )
             }
         }
     }
 
-    private func submit(_ rawPrompt: String) {
-        guard let prompt = store.beginResponse(to: rawPrompt) else {
-            composerIsFocused = true
-            return
+    @ViewBuilder
+    private var failureNotice: some View {
+        if let issue = displayedFailure {
+            let retry: (() -> Void)? = store.canRetry ? { retryFailedResponse() } : nil
+            let canCheck = store.isLive && !store.isResponding && store.connection != .checking
+            let check: (() -> Void)? = canCheck ? { checkConnection() } : nil
+            let dismiss: (() -> Void)? = store.failure != nil ? { store.clearFailure() } : nil
+            ChatFailureNotice(
+                failure: issue,
+                onRetry: retry,
+                onCheckConnection: check,
+                onOpenLocalAPI: onOpenLocalAPI,
+                onOpenModels: onOpenModels,
+                onDismiss: dismiss
+            )
         }
+    }
 
-        draft = ""
+    private var composer: some View {
+        @Bindable var chat = store
+        return VStack(spacing: 0) {
+            Divider()
+            ChatComposer(
+                draft: $chat.draft,
+                route: $chat.route,
+                isFocused: $composerIsFocused,
+                conversationID: store.conversationID,
+                isResponding: store.isResponding,
+                isLive: store.isLive,
+                canSend: store.canSend,
+                availableRoutes: store.isLive ? [.thisMac] : ChatRoute.allCases,
+                onSubmit: submit,
+                onStop: stopResponse
+            )
+        }
+        .background(.bar)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var displayedFailure: ChatFailure? {
+        if let failure = store.failure { return failure }
+        if case .unavailable(let failure) = store.connection { return failure }
+        return store.modelSelectionFailure
+    }
+
+    private func submit() {
+        guard store.canSend, let prompt = store.beginResponse(to: store.draft) else { return }
+        store.draft = ""
         startResponse(prompt)
     }
 
-    private func retryFailedResponse() {
-        guard let prompt = store.retryLastFailedResponse() else {
-            composerIsFocused = true
-            return
+    private func useSuggestion(_ prompt: String) {
+        // Suggestions never overwrite work in progress or immediately send.
+        if store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            store.draft = prompt
+        } else {
+            store.draft += "\n\n" + prompt
         }
+        composerIsFocused = true
+    }
+
+    private func retryFailedResponse() {
+        guard let prompt = store.retryLastFailedResponse() else { return }
         startResponse(prompt)
     }
 
     private func startResponse(_ prompt: String) {
         responseTask?.cancel()
         responseTask = Task { @MainActor in
+            guard !Task.isCancelled else { return }
             if store.isLive {
                 await store.respondLive(to: prompt)
             } else {
-                if !reduceMotion {
-                    try? await Task.sleep(for: .milliseconds(620))
-                }
+                if !reduceMotion { try? await Task.sleep(for: .milliseconds(620)) }
                 guard !Task.isCancelled else { return }
                 store.completeResponse(to: prompt)
             }
             guard !Task.isCancelled else { return }
             responseTask = nil
-            composerIsFocused = true
         }
+        composerIsFocused = true
+    }
+
+    private func checkConnection() {
+        connectionTask?.cancel()
+        connectionTask = Task { await store.refreshConnection() }
     }
 
     private func stopResponse() {
         responseTask?.cancel()
         responseTask = nil
         store.stopResponse()
-        composerIsFocused = true
     }
 
     private func resetConversation() {
-        responseTask?.cancel()
-        responseTask = nil
+        stopResponse()
         store.reset()
-        draft = ""
         composerIsFocused = true
     }
 
-    private func scrollToLatest(using proxy: ScrollViewProxy) {
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.22)) {
-            if store.isResponding {
-                proxy.scrollTo("responding", anchor: .bottom)
-            } else if let lastMessage = store.messages.last {
-                proxy.scrollTo(lastMessage.id, anchor: .bottom)
-            }
-        }
-    }
-}
-
-private struct ChatResponseIndicator: View {
-    var isLive: Bool = false
-
-    private var label: String {
-        isLive ? "Generating on this Mac…" : "Preparing a sample reply…"
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            ProgressView()
-                .controlSize(.small)
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Spacer()
-        }
-        .padding(.leading, 40)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(label)
+    private func restoreConversation(_ id: UUID) {
+        stopResponse()
+        store.restoreConversation(id)
+        composerIsFocused = true
     }
 }

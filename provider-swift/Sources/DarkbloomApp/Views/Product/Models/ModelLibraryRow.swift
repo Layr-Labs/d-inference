@@ -4,6 +4,7 @@ struct ModelLibraryRow: View {
     let model: ModelSummary
     let isSelected: Bool
     let allowsSelection: Bool
+    var offersLocalStart = false
     let onSelect: () -> Void
     let onPrimaryAction: () -> Void
     let onRemove: () -> Void
@@ -27,7 +28,7 @@ struct ModelLibraryRow: View {
                 }
 
                 Text(model.summary)
-                    .font(.system(size: 11))
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
 
@@ -38,20 +39,10 @@ struct ModelLibraryRow: View {
                         .lineLimit(2)
                 }
 
-                HStack(spacing: 7) {
-                    Text(ByteCountFormatter.string(fromByteCount: model.sizeBytes, countStyle: .file))
-                    if let quantization = model.quantization {
-                        Text("· \(quantization)")
-                    }
-                    if let minimumMemoryGB = model.minimumMemoryGB {
-                        Text("· \(minimumMemoryGB) GB memory")
-                    }
-                    ForEach(model.capabilities.prefix(2), id: \.rawValue) { capability in
-                        Text("· \(capability.displayName)")
-                    }
-                }
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+                Text(metadata)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 14)
@@ -101,6 +92,10 @@ struct ModelLibraryRow: View {
                 Button("Unavailable") {}
                     .buttonStyle(.bordered)
                     .disabled(true)
+            } else if offersLocalStart {
+                Button("Use locally", systemImage: "bubble.left", action: onPrimaryAction)
+                    .buttonStyle(.borderedProminent)
+                    .help("Choose this model in Local API, then start local AI")
             } else if !allowsSelection {
                 EmptyView()
             } else if isSelected {
@@ -126,6 +121,24 @@ struct ModelLibraryRow: View {
             ProductStatusBadge(title: "Doesn’t fit this Mac", systemImage: "xmark", tint: ProductPalette.warning)
         case .unknown:
             ProductStatusBadge(title: "Compatibility unknown", systemImage: "questionmark", tint: .secondary)
+        case .runtimeIneligible(let reason):
+            VStack(alignment: .trailing, spacing: 4) {
+                ProductStatusBadge(title: "Runtime unavailable", systemImage: "xmark", tint: ProductPalette.warning)
+                Text(reason)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 230, alignment: .trailing)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case .runtimeUnknown(let reason):
+            VStack(alignment: .trailing, spacing: 4) {
+                ProductStatusBadge(title: "Runtime not verified", systemImage: "questionmark", tint: .secondary)
+                Text(reason)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 230, alignment: .trailing)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -147,10 +160,18 @@ struct ModelLibraryRow: View {
         }
     }
 
+    private var metadata: String {
+        var parts = [ByteCountFormatter.string(fromByteCount: model.sizeBytes, countStyle: .file)]
+        if let quantization = model.quantization { parts.append(quantization) }
+        if let minimumMemoryGB = model.minimumMemoryGB { parts.append("\(minimumMemoryGB) GB memory") }
+        parts += model.capabilities.prefix(2).map(\.displayName)
+        return parts.joined(separator: " · ")
+    }
+
     private var modelTint: Color {
         switch model.fit {
         case .fits: DarkbloomTheme.accent
-        case .unknown, .tooLarge: .secondary
+        case .unknown, .tooLarge, .runtimeIneligible, .runtimeUnknown: .secondary
         }
     }
 }

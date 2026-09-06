@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-05 · commit `47f68a08a`
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,
@@ -115,7 +115,7 @@ read the daemon's snapshot `~/.darkbloom/daemon-state.json`; its refresh period
 and the stale threshold are in
 [troubleshooting → Doctor checks](./troubleshooting.md#doctor-checks). A stale
 snapshot is reported as such
-(`provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`, `isStale`).
+(`provider-swift/Sources/ProviderCoreFoundation/DaemonState.swift`, `isStale`).
 
 The provider is earning once `doctor` shows the trust level the coordinator
 requires for routing; see [attestation](./attestation.md) for the levels and how

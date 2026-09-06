@@ -13,6 +13,7 @@ struct ContentView: View {
     let localAPIStore: LocalAPIStore
     let myMacsStore: MyMacsStore
     let availabilityStore: AvailabilityStore
+    let chatStore: ChatStore
 
     @State private var appIsVisible: Bool
     @State private var launchIsVisible: Bool
@@ -37,7 +38,8 @@ struct ContentView: View {
         contributionsStore: ContributionsStore = ContributionsStore(),
         localAPIStore: LocalAPIStore = LocalAPIStore(),
         myMacsStore: MyMacsStore = MyMacsStore(),
-        availabilityStore: AvailabilityStore = AvailabilityStore()
+        availabilityStore: AvailabilityStore = AvailabilityStore(),
+        chatStore: ChatStore = ChatStore()
     ) {
         self.showsLaunchExperience = showsLaunchExperience
         self.launchMode = launchMode
@@ -51,93 +53,105 @@ struct ContentView: View {
         self.localAPIStore = localAPIStore
         self.myMacsStore = myMacsStore
         self.availabilityStore = availabilityStore
+        self.chatStore = chatStore
         _appIsVisible = State(initialValue: !showsLaunchExperience)
         _launchIsVisible = State(initialValue: showsLaunchExperience)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if !launchIsVisible, showsPreviewChrome {
-                UIPreviewNotice()
-            }
-
-            ZStack {
-                if appIsVisible {
-                    switch appFlowStore.phase {
-                    case .welcome:
-                        WelcomeView(
-                            identity: identity,
-                            resumableDraft: appFlowStore.resumableOnboardingDraft,
-                            showsPreviewChrome: showsPreviewChrome,
-                            onContinue: {
-                                withAnimation(.easeOut(duration: 0.44)) {
-                                    appFlowStore.startOnboarding()
-                                }
-                            },
-                            onResume: {
-                                withAnimation(.easeOut(duration: 0.44)) {
-                                    appFlowStore.resumeOnboarding()
-                                }
-                            },
-                            onStartOver: {
-                                withAnimation(.easeOut(duration: 0.44)) {
-                                    appFlowStore.startOverOnboarding()
-                                }
+        ZStack {
+            if appIsVisible {
+                switch appFlowStore.phase {
+                case .welcome:
+                    WelcomeView(
+                        identity: identity,
+                        resumableDraft: appFlowStore.resumableOnboardingDraft,
+                        showsPreviewChrome: showsPreviewChrome,
+                        onContinue: {
+                            withAnimation(.easeOut(duration: 0.44)) {
+                                appFlowStore.startOnboarding()
                             }
-                        )
-                        .transition(.opacity.combined(with: .offset(x: -10)))
-                    case .onboarding:
-                        OnboardingFlowView(
-                            identity: identity,
-                            flow: appFlowStore.onboardingFlow,
-                            previewConfiguration: onboardingPreview,
-                            onExit: {
-                                withAnimation(.easeOut(duration: 0.4)) {
-                                    appFlowStore.leaveOnboarding()
-                                }
-                            },
-                            onFinish: { choice in
-                                withAnimation(.easeOut(duration: 0.44)) {
-                                    _ = appFlowStore.completeOnboarding(opening: choice.destination)
-                                }
-                            }
-                        )
-                        .transition(.opacity.combined(with: .offset(x: 10)))
-                    case .product:
-                        ProductShellView(
-                            identity: identity,
-                            providerStore: providerStore,
-                            modelLibraryStore: modelLibraryStore,
-                            diagnosticsStore: diagnosticsStore,
-                            contributionsStore: contributionsStore,
-                            localAPIStore: localAPIStore,
-                            myMacsStore: myMacsStore,
-                            availabilityStore: availabilityStore,
-                            chatFixture: productPreview?.chatFixture ?? .empty,
-                            isPreview: showsPreviewChrome,
-                            initialDestination: productPreview?.destination
-                                ?? appFlowStore.pendingInitialProductDestination,
-                            onSelectDestination: appFlowStore.selectProductDestination,
-                            onInitialDestinationApplied: appFlowStore.consumePendingInitialProductDestination
-                        )
-                        .transition(.opacity)
-                    }
-                }
-
-                if launchIsVisible {
-                    DarkbloomLaunchView(
-                        mode: launchMode,
-                        onRevealApp: {
-                            appIsVisible = true
                         },
-                        onFinished: {
-                            launchIsVisible = false
+                        onResume: {
+                            withAnimation(.easeOut(duration: 0.44)) {
+                                appFlowStore.resumeOnboarding()
+                            }
+                        },
+                        onStartOver: {
+                            withAnimation(.easeOut(duration: 0.44)) {
+                                appFlowStore.startOverOnboarding()
+                            }
+                        },
+                        onExplore: appFlowStore.exploreProduct
+                    )
+                    .transition(.opacity.combined(with: .offset(x: -10)))
+                case .onboarding:
+                    OnboardingFlowView(
+                        identity: identity,
+                        flow: appFlowStore.onboardingFlow,
+                        previewConfiguration: onboardingPreview,
+                        exitTitle: appFlowStore.onboardingExitTitle,
+                        onExit: {
+                            withAnimation(.easeOut(duration: 0.4)) {
+                                appFlowStore.leaveOnboarding()
+                            }
+                        },
+                        onFinish: { choice in
+                            withAnimation(.easeOut(duration: 0.44)) {
+                                if !appFlowStore.completeOnboarding(opening: choice.destination) {
+                                    appFlowStore.onboardingFlow.recoverRejectedCompletion()
+                                }
+                            }
                         }
                     )
-                    .zIndex(1)
+                    .transition(.opacity.combined(with: .offset(x: 10)))
+                case .product:
+                    ProductShellView(
+                        identity: identity,
+                        providerStore: providerStore,
+                        modelLibraryStore: modelLibraryStore,
+                        diagnosticsStore: diagnosticsStore,
+                        contributionsStore: contributionsStore,
+                        localAPIStore: localAPIStore,
+                        myMacsStore: myMacsStore,
+                        availabilityStore: availabilityStore,
+                        isPreview: showsPreviewChrome,
+                        chatStore: chatStore,
+                        needsSetup: !appFlowStore.hasCompletedNetworkOnboarding,
+                        onContinueSetup: {
+                            if appFlowStore.resumableOnboardingDraft != nil {
+                                appFlowStore.resumeOnboarding()
+                            } else {
+                                appFlowStore.startOnboarding()
+                            }
+                        },
+                        initialDestination: productPreview?.destination
+                            ?? appFlowStore.pendingInitialProductDestination,
+                        onSelectDestination: appFlowStore.selectProductDestination,
+                        onInitialDestinationApplied: appFlowStore.consumePendingInitialProductDestination
+                    )
+                    .transition(.opacity)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if launchIsVisible {
+                DarkbloomLaunchView(
+                    mode: launchMode,
+                    onRevealApp: {
+                        appIsVisible = true
+                    },
+                    onFinished: {
+                        launchIsVisible = false
+                    }
+                )
+                .zIndex(1)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !launchIsVisible, showsPreviewChrome, appFlowStore.phase != .product {
+                UIPreviewNotice()
+            }
         }
         .task {
             let detected = await SystemProfilerMachineIdentityProvider().current()

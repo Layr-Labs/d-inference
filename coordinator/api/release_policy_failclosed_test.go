@@ -447,6 +447,9 @@ func TestRegisterReleaseInventoryFailureConvergesPolicyWithCommittedRelease(t *t
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("initial SyncBinaryHashes: %v", err)
 	}
+	if err := srv.SyncRuntimeManifest(); err != nil {
+		t.Fatalf("initial SyncRuntimeManifest: %v", err)
+	}
 	before := srv.releaseTrustPolicy.Load()
 
 	const model = "register-converge-model"
@@ -459,14 +462,14 @@ func TestRegisterReleaseInventoryFailureConvergesPolicyWithCommittedRelease(t *t
 		t.Fatalf("provider was not routable before registration: %#v", routed)
 	}
 
-	bundle, binaryHash, bundleHash := buildReleaseBundleForTest(t, []byte("provider-2.1.0"))
+	artifact := buildReleaseBundleForTest(t, []byte("provider-2.1.0"))
 	const artifactPath = "/releases/v2.1.0/darkbloom-bundle-macos-arm64.tar.gz"
 	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != artifactPath {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write(bundle)
+		_, _ = w.Write(artifact.bytes)
 	}))
 	defer cdn.Close()
 	srv.SetR2CDNURL(cdn.URL)
@@ -476,7 +479,7 @@ func TestRegisterReleaseInventoryFailureConvergesPolicyWithCommittedRelease(t *t
 	st.setFailReads(true)
 	body := fmt.Sprintf(
 		`{"version":"2.1.0","platform":"macos-arm64","backend":"mlx-swift","binary_hash":%q,"bundle_hash":%q,"metallib_hash":%q,"url":%q,"changelog":"converge"}`,
-		binaryHash, bundleHash, trHashC, cdn.URL+artifactPath)
+		artifact.binaryHash, artifact.bundleHash, artifact.metallibHash, cdn.URL+artifactPath)
 	response := doReq(srv, http.MethodPost, "/v1/releases", "Bearer release-key", body)
 	if response.Code != http.StatusOK {
 		t.Fatalf("registration must remain atomic once the release committed: status=%d body=%s",
@@ -487,7 +490,7 @@ func TestRegisterReleaseInventoryFailureConvergesPolicyWithCommittedRelease(t *t
 	if converged == nil || !converged.Required || converged.Generation <= before.Generation {
 		t.Fatalf("policy did not advance with the committed registration: before=%+v after=%+v", before, converged)
 	}
-	if entries := converged.ByBinaryHash[binaryHash]; len(entries) != 1 || entries[0].Version != "2.1.0" {
+	if entries := converged.ByBinaryHash[artifact.binaryHash]; len(entries) != 1 || entries[0].Version != "2.1.0" {
 		t.Fatalf("policy does not authorize the committed release: %+v", converged.ByBinaryHash)
 	}
 	if len(converged.ByBinaryHash[trHashA]) != 1 {
@@ -513,7 +516,7 @@ func TestRegisterReleaseInventoryFailureConvergesPolicyWithCommittedRelease(t *t
 	}
 
 	// The runtime manifest converged with the committed release too.
-	if srv.knownRuntimeManifest == nil || !srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"][trHashC] {
+	if srv.knownRuntimeManifest == nil || !srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"][artifact.metallibHash] {
 		t.Fatalf("runtime manifest did not converge with the committed release: %+v", srv.knownRuntimeManifest)
 	}
 
@@ -531,7 +534,7 @@ func TestRegisterReleaseInventoryFailureConvergesPolicyWithCommittedRelease(t *t
 		t.Fatalf("recovery SyncBinaryHashes: %v", err)
 	}
 	recovered := srv.releaseTrustPolicy.Load()
-	if len(recovered.ByBinaryHash[trHashA]) != 1 || len(recovered.ByBinaryHash[binaryHash]) != 1 {
+	if len(recovered.ByBinaryHash[trHashA]) != 1 || len(recovered.ByBinaryHash[artifact.binaryHash]) != 1 {
 		t.Fatalf("recovery did not converge onto the full inventory: %+v", recovered.ByBinaryHash)
 	}
 }

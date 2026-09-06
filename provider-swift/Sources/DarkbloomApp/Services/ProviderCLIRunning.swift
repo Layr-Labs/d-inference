@@ -57,6 +57,7 @@ struct ProcessProviderCLIRunner: ProviderCLIRunning {
     }
 
     func run(arguments: [String], timeout: Duration) async throws -> ProviderCLIResult {
+        try Task.checkCancellation()
         guard let executable = locator.locate() else {
             throw ProviderCLIError.cliNotFound
         }
@@ -105,27 +106,22 @@ struct ProcessProviderCLIRunner: ProviderCLIRunning {
                 }
 
                 do {
-                    try process.run()
+                    try guardBox.launch(process)
                 } catch {
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
+                    process.terminationHandler = nil
                     guardBox.resume { continuation.resume(throwing: error) }
                     return
                 }
 
-                guardBox.watchdog = Task {
+                guardBox.installWatchdog(Task {
                     try? await Task.sleep(for: timeout)
                     guard !Task.isCancelled else { return }
-                    guardBox.timedOut = true
-                    if process.isRunning { process.terminate() }
-                }
-                // Close the race where a fast-exiting child resumed before the
-                // watchdog was stored (its cancel arrived at nil).
-                if guardBox.isResumed {
-                    guardBox.watchdog?.cancel()
-                }
+                    guardBox.timeOut(process)
+                })
             }
         } onCancel: {
-            guardBox.cancelled = true
-            if process.isRunning { process.terminate() }
+            guardBox.cancel(process)
         }
     }
 }
@@ -142,19 +138,48 @@ private final class ResumeGuard: @unchecked Sendable {
     }
 
     var timedOut: Bool {
-        get { lock.withLock { flagsStorage.timedOut } }
-        set { lock.withLock { flagsStorage.timedOut = newValue } }
+        lock.withLock { flagsStorage.timedOut }
     }
 
     var cancelled: Bool {
-        get { lock.withLock { flagsStorage.cancelled } }
-        set { lock.withLock { flagsStorage.cancelled = newValue } }
+        lock.withLock { flagsStorage.cancelled }
     }
 
-    var watchdog: Task<Void, Never>?
+    private var watchdog: Task<Void, Never>?
 
-    var isResumed: Bool {
-        lock.withLock { resumed }
+    /// Serialize cancellation with process creation: cancelling before launch
+    /// must not merely try to terminate a child that does not exist yet.
+    func launch(_ process: Process) throws {
+        try lock.withLock {
+            try Task.checkCancellation()
+            guard !flagsStorage.cancelled else { throw CancellationError() }
+            try process.run()
+        }
+    }
+
+    func cancel(_ process: Process) {
+        lock.withLock {
+            flagsStorage.cancelled = true
+            if process.isRunning { process.terminate() }
+        }
+    }
+
+    func timeOut(_ process: Process) {
+        lock.withLock {
+            guard !resumed else { return }
+            flagsStorage.timedOut = true
+            if process.isRunning { process.terminate() }
+        }
+    }
+
+    func installWatchdog(_ task: Task<Void, Never>) {
+        let alreadyResumed = lock.withLock {
+            if resumed { return true }
+            watchdog = task
+            return false
+        }
+        // A fast child may exit before the watchdog is installed.
+        if alreadyResumed { task.cancel() }
     }
 
     func resume(_ body: () -> Void) {

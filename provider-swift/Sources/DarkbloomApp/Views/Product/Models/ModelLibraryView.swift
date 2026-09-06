@@ -2,13 +2,15 @@ import SwiftUI
 
 struct ModelLibraryView: View {
     let store: ModelLibraryStore
+    var onUseModel: ((String) -> Void)? = nil
 
     @State private var scope = ModelScope.installed
+    @State private var searchText = ""
     @State private var compatibilityConfirmation: CompatibilityConfirmation?
     @State private var modelToRemove: ModelSummary?
 
     private var displayedModels: [ModelSummary] {
-        ModelLibraryPresentation.displayedModels(from: store.models, scope: scope)
+        ModelLibraryPresentation.displayedModels(from: store.models, scope: scope, search: searchText)
     }
 
     var body: some View {
@@ -16,7 +18,7 @@ struct ModelLibraryView: View {
             ProductPageHeader(
                 eyebrow: "Models",
                 title: "AI that fits this Mac.",
-                subtitle: "Darkbloom can choose a compatible model automatically. Come here only when you want more control."
+                subtitle: "Find a model for your next idea. Browse what fits, manage downloads, and see what’s ready on this Mac."
             ) {
                 Picker("Model scope", selection: $scope) {
                     ForEach(ModelScope.allCases) { scope in
@@ -24,7 +26,10 @@ struct ModelLibraryView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
                 .frame(width: 210)
+                .fixedSize()
+                .accessibilityLabel("Model library scope")
             }
 
             if case let .offline(message, showingCachedResults) = store.catalogState {
@@ -57,7 +62,14 @@ struct ModelLibraryView: View {
 
             LazyVStack(spacing: 10) {
                 if displayedModels.isEmpty {
-                    ModelLibraryEmptyState { scope = .discover }
+                    if case .loading = store.catalogState {
+                        ProgressView("Finding models…")
+                            .frame(maxWidth: .infinity, minHeight: 180)
+                    } else if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        ContentUnavailableView.search(text: searchText)
+                    } else {
+                        ModelLibraryEmptyState { scope = .discover }
+                    }
                 } else {
                     ForEach(displayedModels) { model in
                         ModelLibraryRow(
@@ -65,6 +77,7 @@ struct ModelLibraryView: View {
                             isSelected: store.selectedModelID == model.id,
                             allowsSelection: ModelLibraryPresentation
                                 .allowsTransientSelection(isLive: store.isLive),
+                            offersLocalStart: onUseModel != nil,
                             onSelect: { store.selectModel(id: model.id) },
                             onPrimaryAction: {
                                 Task { await performPrimaryAction(for: model) }
@@ -77,6 +90,7 @@ struct ModelLibraryView: View {
             .padding(.top, 10)
         }
         .navigationTitle("Models")
+        .searchable(text: $searchText, placement: .toolbar, prompt: "Search models")
         .confirmationDialog(
             "Download a model larger than this Mac’s recommended limit?",
             isPresented: Binding(
@@ -186,6 +200,7 @@ struct ModelLibraryView: View {
             break
         case .installed:
             store.selectModel(id: model.id)
+            onUseModel?(model.id)
         }
     }
 

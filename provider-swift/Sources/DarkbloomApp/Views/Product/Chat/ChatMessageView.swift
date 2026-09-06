@@ -5,46 +5,48 @@ struct ChatMessageView: View {
     let isLive: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            if message.role == .assistant {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(DarkbloomTheme.accent)
-                    .frame(width: 28, height: 28)
-                    .background(DarkbloomTheme.accent.opacity(0.10), in: Circle())
-            } else {
-                Spacer(minLength: 52)
-            }
-
-            VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 5) {
-                Text(message.text)
-                    .font(.system(size: 13))
-                    .lineSpacing(4)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .background(
-                        message.role == .user
-                            ? DarkbloomTheme.accent.opacity(0.10)
-                            : ProductPalette.surface,
-                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    )
-
-                if message.isPreview {
-                    Text("PREVIEW RESPONSE")
-                        .font(.system(size: 10, weight: .semibold))
-                        .tracking(0.6)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: message.role == .user ? "person.crop.circle" : "sparkles")
+                    .foregroundStyle(message.role == .user ? Color.secondary : DarkbloomTheme.accent)
+                    .accessibilityHidden(true)
+                Text(message.role == .user ? "You" : "Darkbloom")
+                    .fontWeight(.semibold)
+                if let model = message.modelID {
+                    Text(model)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
+                Spacer(minLength: 0)
             }
+            .font(.system(size: 13))
 
-            if message.role == .assistant {
-                Spacer(minLength: 52)
+            ChatMessageBody(text: message.text, rendersMarkdown: message.role == .assistant)
+                .font(.system(size: 15))
+                .lineSpacing(5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 12) {
+                if message.isPreview {
+                    Text("Sample reply · no model ran")
+                } else if let interruption = message.interruption {
+                    Text(interruption == .stopped ? "Stopped · partial response kept" : "Interrupted · partial response kept")
+                }
+                Spacer(minLength: 0)
+                ChatCopyButton(text: message.text, label: "Copy")
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+        }
+        .padding(message.role == .user ? 16 : 0)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            if message.role == .user {
+                RoundedRectangle(cornerRadius: 12).fill(DarkbloomTheme.accent.opacity(0.07))
             }
         }
-        .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(ChatPresentation.messageLabel(message, isLive: isLive))
-        .accessibilityValue(message.text)
     }
 }

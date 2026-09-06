@@ -37,7 +37,7 @@ enum OnboardingStep: Int, CaseIterable, Codable, Identifiable, Sendable {
         case .account: "YOUR DARKBLOOM"
         case .enrollment: "VERIFY THIS MAC"
         case .preparation: "PRIVATE AI"
-        case .verification: "TRUST CEREMONY"
+        case .verification: "FINAL CHECK"
         case .complete: "READY"
         }
     }
@@ -58,13 +58,13 @@ enum OnboardingStep: Int, CaseIterable, Codable, Identifiable, Sendable {
         case .readiness:
             "Darkbloom will make sure this Mac can run private AI and join the network safely. Nothing changes during this check."
         case .account:
-            "Link this Mac to your Darkbloom fleet with a short-lived browser code. Darkbloom requires this account link before network setup."
+            "Sign in through your browser to keep your Macs and earnings together. Return here when you’ve approved this Mac."
         case .enrollment:
             "Darkbloom uses a read-only management profile to verify this is a genuine, securely configured Mac."
         case .preparation:
-            "Choose a catalog model confirmed to fit this Mac. Darkbloom downloads and verifies it before starting the provider and local API."
+            "Choose a model that fits this Mac. Darkbloom handles the download and checks it before starting your local AI engine."
         case .verification:
-            "Profile detection, enrollment check-in, and hardware trust are separate checks. Darkbloom will show exactly which one is still pending."
+            "We’re confirming this Mac is ready to connect. You’ll see each check as it completes."
         case .complete:
             "Your account, verification profile, private model, local API, and hardware trust are ready."
         }

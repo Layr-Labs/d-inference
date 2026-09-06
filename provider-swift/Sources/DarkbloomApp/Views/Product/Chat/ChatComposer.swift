@@ -3,15 +3,12 @@ import SwiftUI
 struct ChatComposer: View {
     @Binding var draft: String
     @Binding var route: ChatRoute
+    @Binding var isFocused: Bool
+    let conversationID: UUID
     let isResponding: Bool
     let isLive: Bool
-    var isFocused: FocusState<Bool>.Binding
-    /// Selectable routes; live stores restrict this to `.thisMac` because
-    /// network routing isn't a live surface yet (honesty over symmetry).
+    let canSend: Bool
     var availableRoutes: [ChatRoute] = ChatRoute.allCases
-    /// Overrides the small status line next to the route picker (live
-    /// surfaces report the real endpoint instead of preview copy).
-    var noteOverride: String? = nil
     let onSubmit: () -> Void
     let onStop: () -> Void
 
@@ -20,107 +17,104 @@ struct ChatComposer: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            HStack(alignment: .bottom, spacing: 10) {
-                TextField("Message Darkbloom", text: $draft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .lineLimit(1...5)
-                    .focused(isFocused)
-                    .onSubmit(onSubmit)
-                    .accessibilityHint(ChatPresentation.submitHint(isLive: isLive))
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .bottom, spacing: 12) {
+                ZStack(alignment: .topLeading) {
+                    if draft.isEmpty {
+                        Text(isResponding ? "Write your next message…" : "Message Darkbloom…")
+                            .font(.system(size: 15))
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 4)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                    ChatTextEditor(
+                        text: $draft, isFocused: $isFocused,
+                        conversationID: conversationID, onSubmit: submit
+                    )
+                    .id(conversationID)
+                }
+                .frame(maxWidth: .infinity)
 
                 sendOrStopButton
             }
-            .padding(.leading, 14)
-            .padding(.trailing, 8)
-            .padding(.vertical, 8)
-            .background {
-                RoundedRectangle(cornerRadius: 17, style: .continuous)
-                    .fill(ProductPalette.elevatedSurface)
-                    .shadow(
-                        color: isFocused.wrappedValue
-                            ? DarkbloomTheme.accent.opacity(0.10)
-                            : .clear,
-                        radius: 16,
-                        y: 5
-                    )
-            }
+            .padding(14)
+            .background(ProductPalette.elevatedSurface, in: RoundedRectangle(cornerRadius: 16))
             .overlay {
-                RoundedRectangle(cornerRadius: 17, style: .continuous)
-                    .stroke(
-                        isFocused.wrappedValue
-                            ? DarkbloomTheme.accent.opacity(0.34)
-                            : ProductPalette.stroke,
-                        lineWidth: 1
-                    )
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(isFocused ? DarkbloomTheme.accent.opacity(0.55) : ProductPalette.stroke)
             }
 
-            HStack(spacing: 8) {
-                Menu {
-                    ForEach(availableRoutes) { option in
-                        Button {
-                            route = option
-                        } label: {
-                            Label(option.title, systemImage: option.systemImage)
-                        }
-                    }
-                } label: {
-                    Label(route.title, systemImage: route.systemImage)
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    routeLabel
+                    Spacer(minLength: 16)
+                    keyboardHint
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .disabled(isResponding || availableRoutes.count <= 1)
-
-                Text(noteOverride ?? route.previewNote)
-                    .lineLimit(1)
-
-                Spacer()
-
-                Text("Return to send")
+                VStack(alignment: .leading, spacing: 5) {
+                    routeLabel
+                    keyboardHint
+                }
             }
-            .font(.system(size: 10))
+            .font(.system(size: 12))
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 4)
+            .padding(.horizontal, 3)
         }
-        .frame(maxWidth: 720)
-        .padding(.horizontal, 28)
-        .padding(.top, 12)
-        .padding(.bottom, 14)
+        .frame(maxWidth: 780)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
         .frame(maxWidth: .infinity)
+    }
+
+    private var keyboardHint: some View {
+        Text("Return to send · Shift-Return for a new line")
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private var routeLabel: some View {
+        if isLive {
+            Label("Local to this Mac", systemImage: "desktopcomputer")
+        } else {
+            Menu {
+                ForEach(availableRoutes) { option in
+                    Button(option.title) { route = option }
+                }
+            } label: {
+                Label("\(route.title) · Preview", systemImage: route.systemImage)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(isResponding)
+        }
     }
 
     @ViewBuilder
     private var sendOrStopButton: some View {
         if isResponding {
             Button(action: onStop) {
-                composerButtonIcon("stop.fill", tint: DarkbloomTheme.accent)
+                Image(systemName: "stop.fill")
+                    .frame(width: 36, height: 36)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.bordered)
             .help(ChatPresentation.stopLabel(isLive: isLive))
             .accessibilityLabel(ChatPresentation.stopLabel(isLive: isLive))
         } else {
-            Button(action: onSubmit) {
-                composerButtonIcon(
-                    "arrow.up",
-                    tint: draftIsEmpty
-                        ? Color.secondary.opacity(0.30)
-                        : DarkbloomTheme.accent
-                )
+            Button(action: submit) {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 36, height: 36)
             }
-            .buttonStyle(.plain)
-            .disabled(draftIsEmpty)
-            .keyboardShortcut(.return, modifiers: [.command])
+            .buttonStyle(.borderedProminent)
+            .tint(DarkbloomTheme.accent)
+            .disabled(draftIsEmpty || !canSend)
             .help(ChatPresentation.sendLabel(isLive: isLive))
             .accessibilityLabel(ChatPresentation.sendLabel(isLive: isLive))
         }
     }
 
-    private func composerButtonIcon(_ systemImage: String, tint: Color) -> some View {
-        Image(systemName: systemImage)
-            .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(.white)
-            .frame(width: 32, height: 32)
-            .background(tint, in: Circle())
+    private func submit() {
+        guard canSend, !isResponding, !draftIsEmpty else { return }
+        onSubmit()
     }
 }

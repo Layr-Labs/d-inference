@@ -1,57 +1,5 @@
 import Foundation
 
-struct LocalChatMessage: Identifiable, Equatable, Sendable {
-    enum Role: Sendable {
-        case user
-        case assistant
-    }
-
-    let id: UUID
-    let role: Role
-    let text: String
-    let isPreview: Bool
-
-    init(
-        id: UUID = UUID(),
-        role: Role,
-        text: String,
-        isPreview: Bool = false
-    ) {
-        self.id = id
-        self.role = role
-        self.text = text
-        self.isPreview = isPreview
-    }
-}
-
-enum ChatRoute: String, CaseIterable, Identifiable, Sendable {
-    case thisMac
-    case privateNetwork
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .thisMac: "This Mac"
-        case .privateNetwork: "Private network"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .thisMac: "desktopcomputer"
-        case .privateNetwork: "point.3.connected.trianglepath.dotted"
-        }
-    }
-
-    var previewNote: String {
-        switch self {
-        case .thisMac: "Local chat UI · no model is running"
-        case .privateNetwork: "Network chat UI · nothing is routed"
-        }
-    }
-}
-
 enum PreviewChatFixture: String, Sendable {
     case empty
     case conversation

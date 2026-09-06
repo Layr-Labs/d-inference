@@ -512,7 +512,7 @@ struct AccountSessionTests {
 
     // MARK: Machine removal
 
-    @Test("Removal hits the coordinator with the serial token before reconciling counts")
+    @Test("Removal hits the coordinator with its opaque provider ID before reconciling counts")
     @MainActor
     func removalSucceeds() async throws {
         let session = StubAccountSession()
@@ -526,7 +526,7 @@ struct AccountSessionTests {
 
         #expect(removed)
         #expect(fleet.deleteCalls.count == 1)
-        #expect(fleet.deleteCalls.first?.removalToken == "OFFLINESERIAL1")
+        #expect(fleet.deleteCalls.first?.removalToken == "session-off-1")
         #expect(fleet.deleteCalls.first?.bearerToken == "token-1")
         #expect(store.mac(id: offline.id) == nil)
         #expect(store.macs.count == 1)
@@ -534,9 +534,9 @@ struct AccountSessionTests {
         #expect(store.snapshot?.accountSummary?.counts.offline == 0)
         // Activity totals stay account-scoped (the coordinator preserves them).
         #expect(store.snapshot?.accountSummary?.lifetimeJobs == 42)
-        // Timestamp advancement after removal is pinned by the
-        // removePreviewMac tests in MyMacsStoreTests.
-        guard case let .ready(_, .available) = store.availability else {
+        // A DELETE does not refresh any of the remaining reports.
+        #expect(store.snapshot?.asOf == Self.referenceDate)
+        guard case .ready(_, .available) = store.availability else {
             Issue.record("Removal should leave the inventory ready, got \(store.availability)")
             return
         }
@@ -573,10 +573,11 @@ struct AccountSessionTests {
         let offline = try #require(store.macs.first { $0.lifecycle == .offline })
         #expect(!(await store.removeMac(id: offline.id)))
 
-        guard case let .staleRetained(_, _, message, .available) = store.availability else {
-            Issue.record("Removal failure should retain inventory, got \(store.availability)")
+        guard case .ready(_, .available) = store.availability else {
+            Issue.record("Removal failure must retain the existing report state")
             return
         }
+        let message = try #require(store.removalErrorMessage)
         #expect(message.contains("Could not remove"))
         #expect(message.contains("online"))
         #expect(store.macs.count == 2)

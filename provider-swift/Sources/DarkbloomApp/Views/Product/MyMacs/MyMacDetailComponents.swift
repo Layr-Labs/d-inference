@@ -5,64 +5,60 @@ struct MyMacDetailSection<Content: View>: View {
     let detail: String?
     let content: Content
 
-    init(
-        _ title: String,
-        detail: String? = nil,
-        @ViewBuilder content: () -> Content
-    ) {
+    init(_ title: String, detail: String? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
         self.detail = detail
         self.content = content()
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ProductSectionHeader(title, detail: detail)
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.headline).accessibilityAddTraits(.isHeader)
+                if let detail {
+                    Text(detail).font(.callout).foregroundStyle(.secondary)
+                }
+            }
             content
         }
         .padding(.vertical, 4)
     }
 }
 
-struct MyMacFactRow<Trailing: View>: View {
+struct MyMacFactRow: View {
     let label: String
     let value: String
-    let isPrivacySensitive: Bool
-    let trailing: Trailing
 
-    init(
-        _ label: String,
-        value: String,
-        isPrivacySensitive: Bool = false,
-        @ViewBuilder trailing: () -> Trailing
-    ) {
+    init(_ label: String, value: String) {
         self.label = label
         self.value = value
-        self.isPrivacySensitive = isPrivacySensitive
-        self.trailing = trailing()
     }
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 14) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 132, alignment: .leading)
-
-            Text(value)
-                .font(.caption.weight(.medium))
-                .textSelection(.enabled)
-                .privacySensitive(isPrivacySensitive)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            trailing
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: 16) {
+                factLabel.frame(width: 144, alignment: .leading)
+                factValue
+            }
+            .frame(minWidth: 390)
+            VStack(alignment: .leading, spacing: 4) {
+                factLabel
+                factValue
+            }
         }
+        .accessibilityElement(children: .combine)
     }
-}
 
-extension MyMacFactRow where Trailing == EmptyView {
-    init(_ label: String, value: String) {
-        self.init(label, value: value, isPrivacySensitive: false) { EmptyView() }
+    private var factLabel: some View {
+        Text(label).font(.body).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var factValue: some View {
+        Text(value).font(.body.weight(.medium))
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -74,14 +70,12 @@ struct MyMacStatusBadge: View {
             MyMacsPresentation.lifecycleTitle(mac.lifecycle),
             systemImage: MyMacsPresentation.lifecycleSymbol(mac.lifecycle)
         )
-        .font(.caption2.weight(.semibold))
+        .font(.callout.weight(.semibold))
         .foregroundStyle(tint)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
+        .fixedSize()
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
         .background(tint.opacity(0.10), in: Capsule())
-        .overlay {
-            Capsule().stroke(tint.opacity(0.18), lineWidth: 1)
-        }
     }
 
     private var tint: Color {
@@ -102,10 +96,9 @@ struct MyMacNoticeList: View {
     var body: some View {
         if items.isEmpty {
             Label(emptyText, systemImage: "checkmark.circle")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.body).foregroundStyle(.secondary)
         } else {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 ForEach(items) { item in
                     Label {
                         Text(MyMacsPresentation.attentionDescription(item.reason))
@@ -113,7 +106,7 @@ struct MyMacNoticeList: View {
                     } icon: {
                         Image(systemName: noticeSymbol(item.level))
                     }
-                    .font(.caption)
+                    .font(.body)
                     .foregroundStyle(tint)
                 }
             }

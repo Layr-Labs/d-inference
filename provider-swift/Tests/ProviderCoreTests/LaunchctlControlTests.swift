@@ -24,7 +24,6 @@ struct LaunchctlControlTests {
             binaryPath: persistedPath,
             coordinatorURL: "wss://api.darkbloom.dev/ws/provider",
             models: [],
-            idleTimeout: nil,
             configPath: nil
         )
         let watchdogPlist = WatchdogAgent.makeWatchdogPlist(

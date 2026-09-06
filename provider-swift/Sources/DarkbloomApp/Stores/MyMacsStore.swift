@@ -61,6 +61,9 @@ final class MyMacsStore {
     /// Live-mode-only surface: sign-in handoff bookkeeping.
     private(set) var isSigningIn = false
     private(set) var signInErrorMessage: String?
+    private(set) var isRefreshing = false
+    private(set) var removingMacID: String?
+    private(set) var removalErrorMessage: String?
 
     @ObservationIgnored
     let mode: MyMacsStoreMode
@@ -74,8 +77,12 @@ final class MyMacsStore {
     private var didStart = false
     @ObservationIgnored
     private var liveTask: Task<Void, Never>?
-    @ObservationIgnored
     private var liveRevision: UInt64 = 0
+    @ObservationIgnored
+    private var snapshotBearerToken: String?
+
+    /// Binds a confirmation to the operation/account state that presented it.
+    var actionRevision: UInt64 { liveRevision }
 
     init(fixture: MyMacsFixture = .ready) {
         let state = MyMacsFixtures.make(fixture)
@@ -117,7 +124,8 @@ final class MyMacsStore {
     }
 
     var canRefresh: Bool {
-        switch availability {
+        guard !isRefreshing, removingMacID == nil else { return false }
+        return switch availability {
         case .ready, .staleRetained:
             snapshot != nil
         case .loading, .signedOut, .unavailable:
@@ -200,7 +208,8 @@ final class MyMacsStore {
     /// synchronously; live mode DELETEs `removalToken` coordinates-side first
     /// and applies the same bookkeeping only after the coordinator confirms.
     @discardableResult
-    func removeMac(id: String) async -> Bool {
+    func removeMac(id: String, expectedRevision: UInt64? = nil) async -> Bool {
+        if let expectedRevision, expectedRevision != liveRevision { return false }
         switch mode {
         case .fixture:
             return removePreviewMac(id: id)
@@ -291,6 +300,11 @@ final class MyMacsStore {
         guard let fleet, canPublish(revision: revision, bearerToken: bearerToken) else {
             return
         }
+        prepareSnapshot(for: bearerToken)
+        isRefreshing = true
+        defer {
+            if revision == liveRevision { isRefreshing = false }
+        }
         do {
             let providers = try await fleet.providers(bearerToken: bearerToken)
             guard canPublish(revision: revision, bearerToken: bearerToken) else {
@@ -315,6 +329,7 @@ final class MyMacsStore {
                 return
             }
             snapshot = updated
+            snapshotBearerToken = bearerToken
             availability = .ready(
                 lastUpdated: date,
                 summary: updated.accountSummary == nil
@@ -352,6 +367,8 @@ final class MyMacsStore {
             availability = .signedOut
             return
         }
+        prepareSnapshot(for: bearerToken)
+        isRefreshing = true
         liveTask = Task { [weak self] in
             await self?.refreshLive(
                 at: .now,
@@ -376,11 +393,24 @@ final class MyMacsStore {
         liveTask?.cancel()
         liveTask = nil
         isSigningIn = false
+        isRefreshing = false
+        removingMacID = nil
+        removalErrorMessage = nil
         return nextLiveRevision()
     }
 
     private func invalidateLiveWork() {
         _ = supersedeLiveWork()
+    }
+
+    private func prepareSnapshot(for bearerToken: String) {
+        // Retain failures only inside the session that produced the snapshot.
+        // A replaced token must not display or mutate the previous account.
+        if let snapshotBearerToken, snapshotBearerToken != bearerToken {
+            snapshot = nil
+            self.snapshotBearerToken = nil
+            availability = .loading
+        }
     }
 
     private func canPublish(revision: UInt64, bearerToken: String? = nil) -> Bool {
@@ -432,6 +462,17 @@ final class MyMacsStore {
             return false
         }
 
+        guard snapshotBearerToken == bearerToken else {
+            prepareSnapshot(for: bearerToken)
+            availability = .unavailable(
+                message: "Your account session changed. Reload My Macs before removing a saved record."
+            )
+            return false
+        }
+        removingMacID = id
+        defer {
+            if revision == liveRevision { removingMacID = nil }
+        }
         do {
             try await fleet.deleteProvider(removalToken: removalToken, bearerToken: bearerToken)
         } catch FleetClientError.sessionExpired {
@@ -441,19 +482,9 @@ final class MyMacsStore {
             guard canPublish(revision: revision, bearerToken: bearerToken) else {
                 return false
             }
-            // 403 (not owned), 404 (already gone), 409 (still online),
-            // transport: retain the inventory and surface the failure without
-            // collapsing the page into the unavailable state.
-            guard let retained = snapshot else {
-                availability = .unavailable(message: LiveCopy.unavailable)
-                return false
-            }
-            availability = .staleRetained(
-                lastUpdated: retained.asOf,
-                failedAt: date,
-                message: "Could not remove that Mac. \(error.localizedDescription)",
-                summary: currentSummaryAvailability
-            )
+            // A failed DELETE is a separate action error; it cannot refresh
+            // reports or replace an existing stale-fetch warning.
+            removalErrorMessage = "Could not remove that Mac. \(error.localizedDescription)"
             return false
         }
 
@@ -462,7 +493,7 @@ final class MyMacsStore {
         guard canPublish(revision: revision, bearerToken: bearerToken) else {
             return false
         }
-        return removePreviewMac(id: id, at: date)
+        return removeRetainedMac(id: id, at: date, advancesReportTime: false)
     }
 
     private var currentSummaryAvailability: MyMacsSummaryAvailability {
@@ -501,6 +532,12 @@ final class MyMacsStore {
     /// live path after the coordinator confirms a DELETE.
     @discardableResult
     func removePreviewMac(id: String, at requestedDate: Date = .now) -> Bool {
+        removeRetainedMac(id: id, at: requestedDate, advancesReportTime: true)
+    }
+
+    private func removeRetainedMac(
+        id: String, at requestedDate: Date, advancesReportTime: Bool
+    ) -> Bool {
         guard var snapshot,
               let index = snapshot.macs.firstIndex(where: { $0.id == id }),
               snapshot.macs[index].canRemove,
@@ -535,9 +572,15 @@ final class MyMacsStore {
             snapshot.accountSummary = summary
         }
 
-        let updatedAt = max(requestedDate, previousDate.addingTimeInterval(1))
+        let updatedAt = advancesReportTime
+            ? max(requestedDate, previousDate.addingTimeInterval(1)) : previousDate
         snapshot.asOf = updatedAt
         self.snapshot = snapshot
+        // A successful DELETE did not refresh the other machines' reports or
+        // the account earnings. Keep both the timestamp and stale warning.
+        if !advancesReportTime, case .staleRetained = availability {
+            return true
+        }
         availability = .ready(lastUpdated: updatedAt, summary: summaryAvailability)
         return true
     }

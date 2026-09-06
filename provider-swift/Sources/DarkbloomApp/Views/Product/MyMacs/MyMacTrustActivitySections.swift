@@ -24,7 +24,7 @@ struct MyMacVerificationSection: View {
                 .padding(.vertical, 2)
 
             Text("Needs attention")
-                .font(.caption.weight(.semibold))
+                .font(.body.weight(.semibold))
             MyMacNoticeList(
                 items: mac.attention.coordinatorItems,
                 emptyText: "No coordinator attention items",
@@ -35,9 +35,9 @@ struct MyMacVerificationSection: View {
                 Divider()
                     .padding(.vertical, 2)
                 Text("Recent observations")
-                    .font(.caption.weight(.semibold))
+                    .font(.body.weight(.semibold))
                 Text("These observations do not change the account attention count.")
-                    .font(.caption2)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 MyMacNoticeList(
                     items: mac.attention.operationalNotices,
@@ -123,9 +123,8 @@ struct MyMacTechnicalDetails: View {
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 8) {
-                MyMacFactRow("Provider session", value: mac.providerID)
+                MyMacFactRow("Provider ID", value: mac.providerID)
                 MyMacFactRow("Backend", value: mac.backend ?? MyMacsPresentation.notReported)
-                MyMacFactRow("Inventory identity", value: identitySource)
                 MyMacFactRow("Provider record registered", value: date(mac.registeredAt))
             }
             .padding(.top, 10)
@@ -134,14 +133,6 @@ struct MyMacTechnicalDetails: View {
                 .font(.subheadline.weight(.semibold))
         }
         .padding(.vertical, 5)
-    }
-
-    private var identitySource: String {
-        switch mac.identity.source {
-        case .serialNumber: "Serial number"
-        case .secureEnclavePublicKey: "Secure Enclave public key"
-        case .providerSessionID: "Provider session fallback"
-        }
     }
 
     private func date(_ value: Date?) -> String {

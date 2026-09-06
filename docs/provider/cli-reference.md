@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-05 · commit `94c7c31eb`
+> Last updated: 2026-09-06 · commit `47f68a08a`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -62,6 +62,7 @@ Declaration order of `Darkbloom.configuration.subcommands` (21):
 | `--idle-timeout <mins>` | `UInt64?` | `backend.idle_timeout_mins` (`60`) | Override the idle unload timeout for this run |
 | `--foreground` / `--no-foreground` | flag, **hidden** | `false` | Serve in this process instead of installing the LaunchAgent; launchd passes it |
 | `--local` | flag | `false` | Coordinator-less OpenAI-compatible server ([direct mode](./direct-mode.md)) |
+| `--no-replace` | flag | `false` | Requires `--local`; refuse an occupied kernel lock or a still-live legacy owner without terminating it (`provider-swift/Sources/darkbloom/StartCommand.swift`, `Start.validate`; `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift`, `acquireSingleInstanceLock`) |
 | `--local-endpoint` | flag | `false` | Local endpoint alongside the coordinator; mutually exclusive with `--local` |
 | `--port <n>` | `UInt16` | `8000` | Local server port |
 | `--bind <addr>` | `String` | `127.0.0.1` | Local server bind address |
@@ -71,6 +72,26 @@ Exit 1 (`ExitCode.failure`) when `--local` and `--local-endpoint` are combined,
 a debugger is attached, RAM is below 8 GB, Metal is unavailable, hardware
 detection fails, no model is selected, or the local server does not bind within
 5 s (`StartCommand+Preflight.swift`, `StartCommand+Modes.swift`).
+
+The native app invokes `darkbloom start --local --model <id> --no-replace`
+(`provider-swift/Sources/DarkbloomApp/Services/LocalAPIStartContract.swift`,
+`LocalAPIStartCommand.arguments`). `Start.validate` rejects `--no-replace`
+without `--local`. In `Start.runLocalStandalone`
+(`provider-swift/Sources/darkbloom/StartCommand+Modes.swift`),
+`acquireMediaServingLock(replaceExisting: !noReplace)` runs before token
+creation or endpoint publication. `ProcessLifecycle.acquireSingleInstanceLock`
+checks `replaceExisting` before either takeover path can signal another
+provider; refusal throws `singleInstanceLockBusy` and preserves its owner
+record. The default remains `false` for `noReplace`, so starts without the
+flag retain their existing replacement policy. An older CLI rejects the unknown
+flag; the app does not retry without it.
+
+`start --local` loads its runtime snapshot with `migrateOnDisk: false`,
+skipping automatic provider configuration migration. The app's command passes
+no configuration-writing options. An explicit `--idle-timeout` without
+`--foreground` still writes the policy to configuration; local serving still
+creates/reuses credentials and publishes discovery after acquiring the lock. See
+[configuration sources](../reference/configuration.md#where-values-are-set).
 
 ### `darkbloom stop`
 
@@ -104,6 +125,7 @@ and how to read the line in [attestation → Verify](./attestation.md#verify).
 | `--strict` | flag | `false` | Exit 1 on any WARN as well as FAIL |
 | `--coordinator <url>` | `String?` | config URL | Coordinator for the network checks |
 | `--support` | flag | `false` | Append coordinator URL, token presence, MDM state, PID-file path |
+| `--json` | flag | `false` | One schema-1 JSON report on stdout; no update banner, unchanged failure exit status (`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `Doctor.run`) |
 | `--clear-backend-guard` | flag | `false` | Delete `~/.darkbloom/kv-backend-guard.json`, reset the crash-loop counter in `watchdog-state.json`, exit |
 
 Exit 1 when any detailed check or diagnosis line is FAIL (or WARN with
@@ -123,16 +145,31 @@ Same checks as `doctor`; any WARN or FAIL exits 1.
 | Subcommand | Flag / positional | Type | Default | Effect |
 |---|---|---|---|---|
 | `list` | `--json` | flag | `false` | Raw output |
-| `list` | `--all` | flag | `false` | Include models filtered out by `backend.enabled_models` |
+| `list` | `--all` | flag | `false` | Scan all disk inventory, ignoring enabled-model and available-memory filters (`provider-swift/Sources/darkbloom/ModelsCommand.swift`, `Models.List.listedModels`) |
 | `list` | `--hash <model-id>` | `String?` | `nil` | Compute the aggregate SHA-256 of one model |
 | `catalog` | `--coordinator <url>` | `String?` | config URL | Catalog source |
 | `catalog` | `--json` | flag | `false` | Raw output |
+| `catalog` | `--include-download-plans` | flag | `false` | With `--json`, emit `models`, resume-aware `download_plans`, and per-model `runtime_eligibility` instead of the plain catalog array (`provider-swift/Sources/darkbloom/ModelsCommand.swift`, `Models.Catalog.run`) |
 | `catalog` | `--type <t>` | `String?` | `nil` | Filter by `model_type` (e.g. `text`) |
 | `download` | `<modelID>` | `String` | — | Catalog id (or S3 name) |
 | `download` | `--coordinator <url>` | `String?` | config URL | Resolve the catalog entry |
 | `download` | `--r2-cdn <url>` | `String?` | `DARKBLOOM_R2_CDN_URL`, else `https://models.darkbloom.ai` (`provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift`, `defaultR2CDNURL`) | Mirror base URL |
 | `remove` | `<modelID>` | `String` | — | Model to delete from `~/.cache/huggingface/hub` |
 | `remove` | `--force` | flag | `false` | Skip confirmation |
+
+`runtime_eligibility` is keyed by catalog model ID. Each value has `status`
+(`eligible`, `ineligible`, or `unknown`) and `reason`, computed in the CLI by
+`ModelRuntimeRequirements.evaluate`
+(`provider-swift/Sources/darkbloom/ModelsCatalogOutput.swift`,
+`ModelsCatalogRuntimeEligibility`). The app presents this verdict before RAM
+fit; it does not infer runtime support or duplicate the CLI's capability table.
+An older CLI's missing verdict remains unknown in the app.
+
+`doctor` and model `list` / `catalog` load runtime snapshots with
+`migrateOnDisk: false`: inspection does not create or migrate provider
+configuration. These reads can still inspect hardware, contact the coordinator,
+or hash staged files for download plans. Starting serving, downloading/removing
+models, and `doctor --clear-backend-guard` are separate mutating actions.
 
 ### `darkbloom local`
 
@@ -207,6 +244,7 @@ Without flags: `log stream --predicate 'subsystem == "dev.darkbloom.provider"' -
 | `--idle-timeout <mins>` | Idle-memory policy, saved to `[backend] idle_timeout_mins` (0 = always ready); skips the memory prompt |
 | `--foreground` | Run in the foreground (used by launchd; normally implicit) |
 | `--local` | Run a local OpenAI server only; do not connect to the coordinator |
+| `--no-replace` | With `--local`, refuse to replace an existing provider; see [the start contract](#darkbloom-start) |
 | `--local-endpoint` | Serve a local OpenAI endpoint alongside the coordinator |
 | `--port <port>` | Port for `--local` / `--local-endpoint` (default 8000) |
 | `--bind <addr>` | Bind address for local modes (default 127.0.0.1) |
@@ -670,7 +708,7 @@ manual use.
 | Config | `~/.config/darkbloom/provider.toml`; a config at a legacy path is copied here on the next run | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`defaultConfigPath`); `provider-swift/Sources/darkbloom/Darkbloom.swift` (`migrateConfigIfNeeded`) |
 | Device token | `~/.darkbloom/auth_token` (`DARKBLOOM_AUTH_TOKEN_PATH`) | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` |
 | Local-mode token / discovery | `~/.darkbloom/local_token`, `~/.darkbloom/local.json` (`DARKBLOOM_LOCAL_DIR`), both `0600` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` |
-| Daemon state | `~/.darkbloom/daemon-state.json` (`DARKBLOOM_STATE_FILE`) | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` |
+| Daemon state | `~/.darkbloom/daemon-state.json` (`DARKBLOOM_STATE_FILE`) | `provider-swift/Sources/ProviderCoreFoundation/DaemonStateFile.swift` |
 | PID file | `~/.darkbloom/provider.pid` (`DARKBLOOM_PID_FILE`) | `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift` |
 | Warm-model journal | `~/.darkbloom/loaded-models.json` (`DARKBLOOM_LOADED_MODELS_FILE`) | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` |
 | Watchdog state | `~/.darkbloom/watchdog-state.json` (`DARKBLOOM_WATCHDOG_STATE`) | `provider-swift/Sources/ProviderCore/Service/WatchdogState.swift` |
@@ -751,7 +789,7 @@ automatic updates with `darkbloom autoupdate disable`.
 | Coordinator reconnect backoff | `ExponentialBackoff(base: 1.0, max: 30.0)` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift` |
 | WebSocket ping interval / pong timeout | `pingInterval = 10.0` s / `pongTimeout = 30.0` s | same |
 | State-file and capacity refresh | every `max(1, heartbeat_interval_secs / 2)` s; the heartbeat default is in the [`provider.toml` table](#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift` |
-| State-file stale threshold | `isStale(maxAge: 90)` s; `doctor` calls the daemon wedged after `max(8 × refresh period, 90)` s | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`; `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift` (`wedgedAfterSeconds`) |
+| State-file stale threshold | `isStale(maxAge: 90)` s; `doctor` calls the daemon wedged after `max(8 × refresh period, 90)` s | `provider-swift/Sources/ProviderCoreFoundation/DaemonState.swift`; `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift` (`wedgedAfterSeconds`) |
 | Idle unload | `idle_timeout_mins` ([`provider.toml` table](#providertoml-keys-read-by-the-cli)); polled every 60 s; unloads the model, the daemon keeps running | `provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift` |
 | Watchdog check interval | `checkIntervalSeconds = 60` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |
 | Crash-loop guard trip | `crashLoopTripThreshold = 3` restarts | `provider-swift/Sources/ProviderCore/Service/WatchdogDecision.swift` |

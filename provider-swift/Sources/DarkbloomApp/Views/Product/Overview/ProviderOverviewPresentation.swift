@@ -19,7 +19,7 @@ extension ProviderSnapshot {
         if runState == .online, trust.state != .verified {
             return ProviderStatePresentation(
                 overline: "VERIFICATION INCOMPLETE",
-                title: "Private AI is ready. Network work is waiting.",
+                title: "One more check before network work.",
                 detail: trust.guidance ?? trust.reason,
                 badgeTitle: status.badgeTitle,
                 badgeIcon: status.icon,
@@ -35,7 +35,7 @@ extension ProviderSnapshot {
             return state(
                 "AVAILABLE · IDLE",
                 title: "Ready when work arrives.",
-                detail: "This Mac is available to the private network and ready for your own local inference.",
+                detail: "This Mac is available to accept encrypted work from the Darkbloom network.",
                 badge: status.sidebarTitle,
                 icon: status.icon,
                 action: "Take offline",
@@ -47,7 +47,7 @@ extension ProviderSnapshot {
             return state(
                 "SERVING PRIVATELY",
                 title: "Private work is in bloom.",
-                detail: "Encrypted work is running on this Mac. Prompt content stays hidden from the network coordinator.",
+                detail: "Encrypted network requests are being processed on this Mac. Activity shows counts and timing without conversation content.",
                 badge: "Serving",
                 icon: "waveform.path.ecg",
                 action: "Take offline",
@@ -57,9 +57,9 @@ extension ProviderSnapshot {
             )
         case .paused:
             return state(
-                "PAUSED BY YOU",
-                title: "This Mac is offline.",
-                detail: "It will stay unavailable—even after a restart—until you turn Darkbloom back on.",
+                "NETWORK PAUSED",
+                title: "Available when you choose.",
+                detail: "Start local AI from Local API, or make this Mac available for network work.",
                 badge: "Paused",
                 icon: "pause.circle.fill",
                 action: "Make available",
@@ -71,7 +71,7 @@ extension ProviderSnapshot {
             return state(
                 "OUTSIDE YOUR SCHEDULE",
                 title: "Resting until the next window.",
-                detail: "Darkbloom is disconnected and the unified Local API is unavailable. It will reconnect when your schedule begins.",
+                detail: "Network work is paused outside the schedule you chose.",
                 badge: "Scheduled off",
                 icon: "moon.zzz.fill",
                 action: "Review schedule",
@@ -94,11 +94,11 @@ extension ProviderSnapshot {
         case .stale:
             return state(
                 "NOT RESPONDING",
-                title: "Darkbloom lost the thread.",
-                detail: "The provider has not checked in recently. Restart it to restore private inference and network availability.",
+                title: "The network provider needs attention.",
+                detail: "Its last report is out of date. Restart the network provider to request a fresh connection.",
                 badge: "Not responding",
                 icon: "exclamationmark.octagon.fill",
-                action: "Restart Darkbloom",
+                action: "Restart network provider",
                 tint: ProductPalette.critical,
                 focus: 0.12,
                 activity: 0.01

@@ -1,5 +1,7 @@
 # Darkbloom - Decentralized Private Inference
 
+> Last updated: 2026-09-05 · commit `47f68a08a`
+
 Darkbloom is a decentralized private inference network for Apple Silicon Macs. Consumers use OpenAI-compatible APIs, the coordinator handles routing, auth, billing, attestation, and capacity management, and providers run local inference workloads on macOS hardware using MLX-Swift. Request bodies are encrypted hop by hop (NaCl Box on each leg): the coordinator decrypts inside its confidential-VM memory for routing and billing, does not log or retain prompt content, and re-seals each request to the provider's attested key; the provider is the plaintext endpoint. Exact model: `docs/architecture/security/encryption.md`. Docs map: `docs/README.md`; docs rules: `docs/AGENTS.md`.
 
 ## Project Structure
@@ -57,17 +59,21 @@ e2e/                  System-level E2E testing framework
     ├── deps/                External dependency lifecycle (ephemeral Postgres)
     └── profile/             Segment stats aggregation, diffing, JSON export
 
-provider-swift/       Swift provider CLI for Apple Silicon Macs
+provider-swift/       Swift provider CLI and native macOS app for Apple Silicon Macs
 ├── Sources/ProviderCore/             coordinator client, protocol, hardware, security, inference, server, telemetry, model downloads
 ├── Sources/ProviderCoreFoundation/   model manifests, scanner, weight hashing, template render check, daemon-state
 │                                     schema (`DaemonState`/`DaemonStateFile`), local-endpoint discovery record
 │                                     (`LocalEndpointInfo`), launchd labels (`DarkbloomServiceLabels`) — no-MLX,
 │                                     Linux-buildable; the ONLY provider layer the macOS app links
-├── Sources/DarkbloomApp/             SwiftUI macOS app (window + menu bar). Views stay fixture-driven for
-│                                     deterministic previews; real launches are a UI wrapper over machine-readable
-│                                     CLI/file contracts. Fresh setup runs readiness → account → enrollment →
-│                                     model download/start → live trust verification with no Terminal. Release apps
-│                                     relocate to ~/.darkbloom/Darkbloom.app before setup. NO MLX/ProviderCore dependency.
+├── Sources/DarkbloomApp/             SwiftUI app (main window, settings, menu bar); CLI wrapper with NO MLX/ProviderCore dependency
+│   ├── App/                         bootstrap, stable AppStores, install handoff, application-quit handling
+│   ├── Models/                      presentation/wire models and resumable OnboardingFlowModel
+│   ├── Services/                    CLI subprocesses, daemon/local discovery, account/fleet HTTP clients
+│   ├── Stores/                      app-wide observable state (ChatStore, LocalAPIStore, provider, models, fleet, etc.)
+│   ├── Views/                       Welcome, Onboarding, Product feature folders, Settings, MenuBar
+│   ├── Support/                     theme, fonts, DEBUG preview/capture configuration
+│   └── Resources/                   visual assets and DarkbloomSpatialField.metal (app shader, not MLX kernels)
+├── Resources/DarkbloomApp/           bundle Info.plist and fonts staged by build/release scripts
 ├── Sources/darkbloom/                CLI (`start`, `stop`, `status`, `models`, `benchmark`, `doctor --json`,
 │                                     `login --json`, `logout`, `config get|set schedule`, `earnings`, `local`, etc. —
 │                                     every machine-readable mode the app consumes)
@@ -92,6 +98,8 @@ admin-ui/             Next.js 16 internal read-only ops dashboard (SELECT-only q
                       prod read replica; Basic Auth via src/proxy.ts; has vitest tests, not in CI)
 
 landing/              static landing page (index.html, earn calculator, network stats)
+
+script/build_and_run.sh checkout-local debug app staging/launch; --preview, --no-build, --debug, --logs, --telemetry, --verify
 
 scripts/              build, signing, install, and deploy helpers
 ├── install.sh        end-user installer served from coordinator (hash + codesign verification, ownership-aware Darkbloom.app swap)
@@ -151,6 +159,31 @@ make provider-build           # cd provider-swift && swift build
 make provider-test            # cd provider-swift && swift test
 make provider                 # build + test
 ```
+
+### Native macOS app
+```bash
+make app-unit-test            # SwiftPM app + ProviderCoreFoundation tests; does not launch the app
+make app-bundle-test          # temporary bundle fixtures; no Swift/Metal build or app launch
+make app-check                # both checks above (opt-in; includes a Swift test build)
+./script/build_and_run.sh --preview chat --verify   # build/stage/launch this checkout's DEBUG app
+./script/build_and_run.sh --no-build --preview chat # relaunch its previously staged DEBUG bundle
+```
+
+The app target links only `ProviderCoreFoundation`; its package still resolves
+the provider's local submodules. `make build` compiles the Swift products but
+does not stage or launch `dist/Darkbloom.app`. The launch script stages only the
+GUI and its visual resources; live development uses the managed signed CLI or
+the DEBUG-only `DARKBLOOM_CLI_PATH` override. See
+[build](docs/developer/build.md#6-native-macos-app) and
+[app checks](docs/developer/test.md#native-macos-app).
+
+App invariants to preserve:
+
+- **Explore vs setup:** `AppFlowStore.exploreProduct` opens real product stores without completing network onboarding or launching a provider. Setup remains readiness → account → enrollment → model preparation/start → live trust verification. `AppFlowPreferences` persists the completion flag and normalized resumable draft; preview overrides do not write them.
+- **State lifetime:** `AppStoreFactory` creates one stable set of stores for all scenes. Chat drafts/history survive navigation in memory only; leaving Chat stops generation. Scene storage restores the selected product destination. Local session ownership survives navigation; application quit waits for the app-owned child to stop, and never globally stops an externally discovered provider.
+- **Read-only observation:** `doctor --json`, `models list --json --all`, and `models catalog --json --include-download-plans` use non-migrating runtime snapshots. Reading can probe hardware/public endpoints or hash resumable download files; it must not start serving or rewrite provider settings. Keep these paths separate from explicit start, enrollment, download/remove, and schedule writes.
+- **CLI-owned eligibility:** `ModelsCatalogRuntimeEligibility` calls `ModelRuntimeRequirements.evaluate` and emits `runtime_eligibility` per catalog ID. The app presents `eligible`, `ineligible`, or `unknown` before RAM fit; it must not add its own runtime-capability table. An older CLI that omits the verdict leaves catalog eligibility unknown.
+- **Evidence:** fixture previews, bundle assembly tests, and `--verify` window checks do not prove live inference, APNs/profile authorization, or production readiness. Follow the separate gates in [app release](docs/operations/app-release.md).
 
 ### Console UI (Next.js 16)
 ```bash

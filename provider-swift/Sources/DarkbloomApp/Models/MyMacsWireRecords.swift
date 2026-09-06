@@ -141,7 +141,7 @@ struct MyMacsReputationWireRecord: Codable, Equatable, Sendable {
 }
 
 struct MyMacsProviderWireRecord: Codable, Equatable, Sendable {
-    /// Per-connection provider session identifier. This is not stable machine identity.
+    /// Opaque account-scoped provider record ID. Use verbatim for removal.
     var providerID: String
     var accountID: String?
     var status: String
@@ -152,7 +152,9 @@ struct MyMacsProviderWireRecord: Codable, Equatable, Sendable {
     var models: [MyMacsModelWireRecord]?
     var backend: String?
     var version: String?
-    var serialNumber: String?
+    // Source compatibility for existing preview constructors only. The retired
+    // public field is deliberately excluded from Codable and domain mapping.
+    var serialNumber: String? = nil
 
     var trustLevel: String?
     var attested: Bool?
@@ -196,7 +198,6 @@ struct MyMacsProviderWireRecord: Codable, Equatable, Sendable {
         case models
         case backend
         case version
-        case serialNumber = "serial_number"
         case trustLevel = "trust_level"
         case attested
         case mdaVerified = "mda_verified"

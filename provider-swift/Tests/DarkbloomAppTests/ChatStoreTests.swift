@@ -15,6 +15,10 @@ private func chatTestResponse(statusCode: Int = 200) -> HTTPURLResponse {
     )!
 }
 
+private func chatTestCatalog() -> Data {
+    Data(#"{"data":[{"id":"gpt-oss-20b"},{"id":"endpoint-model"}]}"#.utf8)
+}
+
 @Suite("Live chat store streams the local endpoint into the transcript")
 @MainActor
 struct ChatStoreTests {
@@ -41,7 +45,7 @@ struct ChatStoreTests {
             baseURL: URL(string: "http://127.0.0.1:8000/v1")!,
             apiKey: "dk-test",
             dataTransport: { _ in
-                let data = #"{"data":[{"id":"endpoint-model"}]}"#.data(using: .utf8)!
+                let data = chatTestCatalog()
                 return (data, HTTPURLResponse(url: URL(string: "http://127.0.0.1:8000/v1/models")!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
             },
             lineTransport: { _ in
@@ -107,7 +111,7 @@ struct ChatStoreTests {
         let client = LocalEndpointClient(
             baseURL: URL(string: "http://127.0.0.1:8000/v1")!,
             apiKey: "dk-test",
-            dataTransport: { _ in (Data(), chatTestResponse()) },
+            dataTransport: { _ in (chatTestCatalog(), chatTestResponse()) },
             lineTransport: { request in
                 recorder.bodies.append(request.httpBody)
                 let stream = AsyncThrowingStream<String, Error> { $0.yield("data: [DONE]"); $0.finish() }
@@ -185,8 +189,8 @@ struct ChatStoreTests {
         #expect(recorder.streamCount == 0)
     }
 
-    @Test("Identity is revalidated after model lookup before plaintext POST")
-    func identityChangeDuringModelLookupDoesNotSendPrompt() async throws {
+    @Test("Identity is revalidated after model lookup before plaintext POST", arguments: [false, true])
+    func identityChangeDuringModelLookupDoesNotSendPrompt(explicitSelection: Bool) async throws {
         let info = testInfo()
         let reused = ProcessIdentity(
             pid: info.pid,
@@ -231,6 +235,7 @@ struct ChatStoreTests {
             clientFactory: { _ in client }
         ))
 
+        if explicitSelection { store.selectedModelID = "endpoint-model" }
         let prompt = try #require(store.beginResponse(to: "private prompt"))
         await store.respondLive(to: prompt)
 
@@ -248,7 +253,7 @@ struct ChatStoreTests {
 
         #expect(!store.isResponding)
         #expect(store.failure == .noDiscovery)
-        #expect(store.failure?.detail.contains("Overview") == true)
+        #expect(store.failure?.recovery == .localAPI)
         #expect(store.messages.count == 1)  // only the user message
     }
 
@@ -257,7 +262,7 @@ struct ChatStoreTests {
         let client = LocalEndpointClient(
             baseURL: URL(string: "http://127.0.0.1:8000/v1")!,
             apiKey: "dk-test",
-            dataTransport: { _ in (Data(), chatTestResponse()) },
+            dataTransport: { _ in (chatTestCatalog(), chatTestResponse()) },
             lineTransport: { _ in
                 let stream = AsyncThrowingStream<String, Error> { continuation in
                     continuation.yield(#"data: {"choices":[{"delta":{"content":"half"}}]}"#)
@@ -272,7 +277,7 @@ struct ChatStoreTests {
 
         #expect(store.messages.last?.text == "half")
         #expect(store.failure?.title == "The local endpoint did not respond")
-        #expect(store.failure?.detail.contains("Start the provider from the Overview") == true)
+        #expect(store.failure?.recovery == .localAPI)
         #expect(!store.isResponding)
     }
 
@@ -281,7 +286,7 @@ struct ChatStoreTests {
         let client = LocalEndpointClient(
             baseURL: URL(string: "http://127.0.0.1:8000/v1")!,
             apiKey: "dk-test",
-            dataTransport: { _ in (Data(), chatTestResponse()) },
+            dataTransport: { _ in (chatTestCatalog(), chatTestResponse()) },
             lineTransport: { _ in
                 (AsyncThrowingStream { $0.finish() }, HTTPURLResponse(url: URL(string: "http://127.0.0.1:8000/v1")!, statusCode: 503, httpVersion: nil, headerFields: nil)!)
             }
@@ -320,7 +325,7 @@ struct ChatStoreTests {
         let client = LocalEndpointClient(
             baseURL: URL(string: "http://127.0.0.1:8000/v1")!,
             apiKey: "dk-test",
-            dataTransport: { _ in (Data(), chatTestResponse()) },
+            dataTransport: { _ in (chatTestCatalog(), chatTestResponse()) },
             lineTransport: { request in
                 let attempt = recorder.record(request.httpBody)
                 let stream = AsyncThrowingStream<String, Error> { continuation in
@@ -453,7 +458,7 @@ struct ChatStoreTests {
             baseURL: URL(string: "http://127.0.0.1:8000/v1")!,
             apiKey: "dk-test",
             dataTransport: { request in
-                (#"{"data":[]}"#.data(using: .utf8)!, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                (chatTestCatalog(), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
             },
             lineTransport: { _ in
                 let stream = AsyncThrowingStream<String, Error> { continuation in
@@ -479,6 +484,9 @@ struct ChatStoreTests {
         let prompt = try #require(store.beginResponse(to: "stream"))
         let task = Task { @MainActor in await store.respondLive(to: prompt) }
 
+        store.draft = "A follow-up I am still editing"
+        let conversationID = store.conversationID
+
         // "partial" is the only text reachable before the gate opens.
         while store.messages.last?.text != "partial" {
             try? await Task.sleep(for: .milliseconds(5))
@@ -491,6 +499,13 @@ struct ChatStoreTests {
         #expect(!store.isResponding)
         #expect(store.failure == nil)
         #expect(store.messages.last?.text == "partial")
+        #expect(store.messages.last?.interruption == .stopped)
+        #expect(store.draft == "A follow-up I am still editing")
+        let stoppedTranscript = store.messages
+        store.reset()
+        store.restoreConversation(conversationID)
+        #expect(store.messages == stoppedTranscript)
+        #expect(store.draft == "A follow-up I am still editing")
     }
 
     @Test("Stopping before the first token leaves no empty assistant bubble")

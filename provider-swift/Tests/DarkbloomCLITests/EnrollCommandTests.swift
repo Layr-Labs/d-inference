@@ -7,7 +7,7 @@ import Testing
 
 @Suite("enroll output")
 struct EnrollCommandTests {
-    private let profileURL = URL(fileURLWithPath: "/tmp/Darkbloom-Enroll-C02TEST.mobileconfig")
+    private let profileURL = URL(fileURLWithPath: "/tmp/Darkbloom-Enroll-fixture.mobileconfig")
 
     @Test("--json and --no-open flags parse without changing human defaults")
     func flagsParse() throws {
@@ -26,7 +26,6 @@ struct EnrollCommandTests {
     func jsonGoldenDocuments() throws {
         let already = EnrollmentCommandResult(
             serviceResult: EnrollmentResult(
-                serialNumber: "C02TEST",
                 profilePath: URL(fileURLWithPath: "/dev/null"),
                 alreadyEnrolled: true,
                 profileOpened: false
@@ -34,7 +33,6 @@ struct EnrollCommandTests {
         )
         let opened = EnrollmentCommandResult(
             serviceResult: EnrollmentResult(
-                serialNumber: "C02TEST",
                 profilePath: profileURL,
                 alreadyEnrolled: false,
                 profileOpened: true
@@ -42,7 +40,6 @@ struct EnrollCommandTests {
         )
         let downloaded = EnrollmentCommandResult(
             serviceResult: EnrollmentResult(
-                serialNumber: "C02TEST",
                 profilePath: profileURL,
                 alreadyEnrolled: false,
                 profileOpened: false
@@ -50,23 +47,23 @@ struct EnrollCommandTests {
         )
 
         #expect(try EnrollmentJSONRenderer.render(already) ==
-            #"{"schema":1,"serial_number":"C02TEST","status":"already_enrolled"}"#)
+            #"{"schema":1,"status":"already_enrolled"}"#)
         #expect(try EnrollmentJSONRenderer.render(opened) ==
-            #"{"profile_path":"/tmp/Darkbloom-Enroll-C02TEST.mobileconfig","schema":1,"serial_number":"C02TEST","status":"profile_opened"}"#)
+            #"{"profile_path":"/tmp/Darkbloom-Enroll-fixture.mobileconfig","schema":1,"status":"profile_opened"}"#)
         #expect(try EnrollmentJSONRenderer.render(downloaded) ==
-            #"{"profile_path":"/tmp/Darkbloom-Enroll-C02TEST.mobileconfig","schema":1,"serial_number":"C02TEST","status":"profile_downloaded"}"#)
+            #"{"profile_path":"/tmp/Darkbloom-Enroll-fixture.mobileconfig","schema":1,"status":"profile_downloaded"}"#)
     }
 
-    @Test("schema keys and optional profile path are exact")
+    @Test("schema keys are serial-free and optional profile path is exact")
     func jsonSchemaKeysAreExact() throws {
         let already = try jsonObject(alreadyEnrolled: true, openedProfile: true)
-        #expect(Set(already.keys) == ["schema", "status", "serial_number"])
+        #expect(Set(already.keys) == ["schema", "status"])
         #expect((already["schema"] as? NSNumber)?.intValue == 1)
         #expect(already["status"] as? String == "already_enrolled")
-        #expect(already["serial_number"] as? String == "C02TEST")
+        #expect(already["serial_number"] == nil)
 
         let opened = try jsonObject(alreadyEnrolled: false, openedProfile: true)
-        #expect(Set(opened.keys) == ["schema", "status", "serial_number", "profile_path"])
+        #expect(Set(opened.keys) == ["schema", "status", "profile_path"])
         #expect(opened["status"] as? String == "profile_opened")
         #expect(opened["profile_path"] as? String == profileURL.path)
 
@@ -79,7 +76,6 @@ struct EnrollCommandTests {
         let command = try parsedEnroll([])
         var stdout = ""
         try await awaitCommand(command, result: EnrollmentResult(
-            serialNumber: "C02TEST",
             profilePath: URL(fileURLWithPath: "/dev/null"),
             alreadyEnrolled: true,
             profileOpened: false
@@ -104,8 +100,7 @@ struct EnrollCommandTests {
                 #expect(coordinatorURL == "wss://api.example.test")
                 #expect(!openSystemSettings)
                 return EnrollmentResult(
-                    serialNumber: "C02TEST",
-                    profilePath: URL(fileURLWithPath: "/tmp/Darkbloom-Enroll-C02TEST.mobileconfig"),
+                    profilePath: URL(fileURLWithPath: "/tmp/Darkbloom-Enroll-fixture.mobileconfig"),
                     alreadyEnrolled: false,
                     profileOpened: false
                 )
@@ -118,11 +113,10 @@ struct EnrollCommandTests {
             Darkbloom Device Attestation Enrollment
             Coordinator: https://api.example.test
 
-              → Device serial:  C02TEST
-              → Profile saved:  /tmp/Darkbloom-Enroll-C02TEST.mobileconfig
+              → Profile saved:  /tmp/Darkbloom-Enroll-fixture.mobileconfig
 
               Install the profile manually:
-                open /tmp/Darkbloom-Enroll-C02TEST.mobileconfig
+                open /tmp/Darkbloom-Enroll-fixture.mobileconfig
 
             After installing, verify with: darkbloom doctor
             """ + "\n")
@@ -137,8 +131,7 @@ struct EnrollCommandTests {
             enroll: { _, openSystemSettings in
                 #expect(openSystemSettings)
                 return EnrollmentResult(
-                    serialNumber: "C02TEST",
-                    profilePath: URL(fileURLWithPath: "/tmp/Darkbloom-Enroll-C02TEST.mobileconfig"),
+                    profilePath: URL(fileURLWithPath: "/tmp/Darkbloom-Enroll-fixture.mobileconfig"),
                     alreadyEnrolled: false,
                     profileOpened: true
                 )
@@ -151,8 +144,7 @@ struct EnrollCommandTests {
             Darkbloom Device Attestation Enrollment
             Coordinator: https://api.example.test
 
-              → Device serial:  C02TEST
-              → Profile saved:  /tmp/Darkbloom-Enroll-C02TEST.mobileconfig
+              → Profile saved:  /tmp/Darkbloom-Enroll-fixture.mobileconfig
 
               System Settings → Device Management is now open.
               Click Install on the Darkbloom profile and enter your password.
@@ -179,8 +171,7 @@ struct EnrollCommandTests {
                 #expect(coordinatorURL == "wss://api.example.test")
                 #expect(!openSystemSettings)
                 return EnrollmentResult(
-                    serialNumber: "C02TEST",
-                    profilePath: URL(fileURLWithPath: "/tmp/Darkbloom-Enroll-C02TEST.mobileconfig"),
+                    profilePath: URL(fileURLWithPath: "/tmp/Darkbloom-Enroll-fixture.mobileconfig"),
                     alreadyEnrolled: false,
                     profileOpened: false
                 )
@@ -190,7 +181,7 @@ struct EnrollCommandTests {
         )
 
         #expect(stdout == [
-            #"{"profile_path":"/tmp/Darkbloom-Enroll-C02TEST.mobileconfig","schema":1,"serial_number":"C02TEST","status":"profile_downloaded"}"#,
+            #"{"profile_path":"/tmp/Darkbloom-Enroll-fixture.mobileconfig","schema":1,"status":"profile_downloaded"}"#,
         ])
         #expect(stderr.isEmpty)
     }
@@ -205,7 +196,6 @@ struct EnrollCommandTests {
             enroll: { _, requestedOpen in
                 #expect(requestedOpen)
                 return EnrollmentResult(
-                    serialNumber: "C02TEST",
                     profilePath: URL(fileURLWithPath: "/tmp/Darkbloom.mobileconfig"),
                     alreadyEnrolled: false,
                     profileOpened: false
@@ -216,14 +206,13 @@ struct EnrollCommandTests {
         )
 
         #expect(stdout == [
-            #"{"profile_path":"/tmp/Darkbloom.mobileconfig","schema":1,"serial_number":"C02TEST","status":"profile_downloaded"}"#,
+            #"{"profile_path":"/tmp/Darkbloom.mobileconfig","schema":1,"status":"profile_downloaded"}"#,
         ])
     }
 
     @Test("secondary System Settings warnings remain machine-readable")
     func settingsWarningIsRendered() throws {
         let result = EnrollmentCommandResult(serviceResult: EnrollmentResult(
-            serialNumber: "C02TEST",
             profilePath: profileURL,
             alreadyEnrolled: false,
             profileOpened: true,
@@ -231,7 +220,7 @@ struct EnrollCommandTests {
         ))
 
         #expect(try EnrollmentJSONRenderer.render(result) ==
-            #"{"profile_path":"/tmp/Darkbloom-Enroll-C02TEST.mobileconfig","schema":1,"serial_number":"C02TEST","status":"profile_opened","warning":"Open Device Management manually."}"#)
+            #"{"profile_path":"/tmp/Darkbloom-Enroll-fixture.mobileconfig","schema":1,"status":"profile_opened","warning":"Open Device Management manually."}"#)
         #expect(EnrollmentHumanRenderer.completion(result).contains(
             "Warning: Open Device Management manually."
         ))
@@ -271,7 +260,6 @@ struct EnrollCommandTests {
     ) throws -> [String: Any] {
         let result = EnrollmentCommandResult(
             serviceResult: EnrollmentResult(
-                serialNumber: "C02TEST",
                 profilePath: profileURL,
                 alreadyEnrolled: alreadyEnrolled,
                 profileOpened: openedProfile

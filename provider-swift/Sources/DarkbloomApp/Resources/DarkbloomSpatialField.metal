@@ -182,11 +182,14 @@ float3 darkbloomLaunchField(float2 uv, float time, float focus) {
     foldRelief += darkbloomFold(animatedField, firstLevel + 0.018, 0.026) * 0.050;
     foldRelief += darkbloomFold(animatedField, secondLevel + 0.015, 0.024) * 0.038;
 
-    float3 paper = float3(1.0, 1.0, 1.0);
-    float3 pale = float3(181.0 / 255.0, 204.0 / 255.0, 1.0);
-    float3 mist = float3(126.0 / 255.0, 156.0 / 255.0, 1.0);
-    float3 cobalt = float3(49.0 / 255.0, 93.0 / 255.0, 236.0 / 255.0);
-    float3 deep = float3(37.0 / 255.0, 75.0 / 255.0, 227.0 / 255.0);
+    // The canvas carries the resolved system appearance into the shader.
+    // Keep the same geometry and motion in both appearances.
+    float3 paper = float3(currentColor.rgb);
+    float dark = 1.0 - step(0.5, dot(paper, float3(0.2126, 0.7152, 0.0722)));
+    float3 pale = mix(float3(181.0 / 255.0, 204.0 / 255.0, 1.0), float3(0.10, 0.14, 0.25), dark);
+    float3 mist = mix(float3(126.0 / 255.0, 156.0 / 255.0, 1.0), float3(0.16, 0.24, 0.46), dark);
+    float3 cobalt = mix(float3(49.0 / 255.0, 93.0 / 255.0, 236.0 / 255.0), float3(0.14, 0.29, 0.65), dark);
+    float3 deep = mix(float3(37.0 / 255.0, 75.0 / 255.0, 227.0 / 255.0), float3(0.10, 0.20, 0.51), dark);
 
     float cobaltCurrent = 0.0;
     cobaltCurrent += darkbloomBlob(point, topCenter, float2(0.31, 0.25)) * 0.92;

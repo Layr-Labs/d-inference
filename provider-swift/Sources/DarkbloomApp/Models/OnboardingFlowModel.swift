@@ -8,8 +8,14 @@ import ProviderCoreFoundation
 final class OnboardingFlowModel {
     var step: OnboardingStep { didSet { publishDraft() } }
     var readinessCompletedCount = 0 { didSet { publishDraft() } }
-    var readinessPhase: ReadinessPhase = .checking { didSet { publishDraft() } }
+    var readinessPhase: ReadinessPhase = .checking {
+        didSet {
+            if readinessPhase == .checking { readinessFailureDetail = nil }
+            publishDraft()
+        }
+    }
     var readinessItems: [ReadinessEvaluation.Item] = []
+    var readinessFailureDetail: String?
     var accountPhase: AccountLinkPhase = .introduction { didSet { publishDraft() } }
     var enrollmentPhase: EnrollmentPhase = .overview { didSet { publishDraft() } }
     var enrollmentFailureDetail: String?
@@ -145,8 +151,8 @@ final class OnboardingFlowModel {
 
     func restore(from draft: OnboardingDraft) {
         let draft = draft.normalizedForResume
-        cancelPendingOperations()
         isApplyingDraft = true
+        cancelPendingOperations()
         step = draft.step
         readinessCompletedCount = draft.readinessCompletedCount
         readinessPhase = draft.readinessPhase
@@ -178,8 +184,8 @@ final class OnboardingFlowModel {
     }
 
     func resetForNewSetup() {
-        cancelPendingOperations()
         isApplyingDraft = true
+        cancelPendingOperations()
         step = .readiness
         readinessCompletedCount = 0
         readinessPhase = .checking
@@ -277,18 +283,6 @@ final class OnboardingFlowModel {
         return true
     }
 
-    func cancelPendingOperations() {
-        operationRevision &+= 1
-        accountLinkTask?.cancel()
-        accountLinkTask = nil
-        accountLinkRequestInFlight = false
-        enrollmentPollTask?.cancel()
-        enrollmentPollTask = nil
-        enrollmentPollSession = nil
-        preparationTask?.cancel()
-        preparationTask = nil
-    }
-
     // MARK: - Account linking
 
     func showAccountApproval(at date: Date = .now) {
@@ -332,22 +326,25 @@ final class OnboardingFlowModel {
         accountLinkAttempt += 1
         accountLinkFailureDetail = nil
         accountLinkRequestInFlight = true
+        let revision = operationRevision
         accountLinkTask = Task { [weak self] in
-            guard let self else { return }
+            guard let self, self.isCurrentOperation(revision) else { return }
             defer {
-                self.accountLinkTask = nil
-                self.accountLinkRequestInFlight = false
+                if self.operationRevision == revision {
+                    self.accountLinkTask = nil
+                    self.accountLinkRequestInFlight = false
+                }
             }
             do {
                 for try await event in accountLinkRunner.linkEvents() {
-                    if Task.isCancelled { break }
+                    guard self.isCurrentOperation(revision) else { return }
                     self.handleAccountLink(event)
                     if event.isTerminal { return }
                 }
-                guard !Task.isCancelled else { return }
+                guard self.isCurrentOperation(revision) else { return }
                 self.applyAccountLinkError("The login helper exited before the account was linked.")
             } catch {
-                guard !Task.isCancelled else { return }
+                guard self.isCurrentOperation(revision) else { return }
                 self.applyAccountLinkError(error.localizedDescription)
             }
         }

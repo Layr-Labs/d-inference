@@ -58,6 +58,10 @@ struct DoctorJSONReport: Decodable, Sendable, Equatable {
 enum DiagnosticsCLIError: Error, Equatable, LocalizedError, Sendable {
     /// No `darkbloom` binary found in any known install location.
     case cliNotFound
+    /// The installed CLI's argument parser rejected the required JSON mode.
+    case incompatibleCLI
+    /// macOS could not launch the installed provider; retains technical detail.
+    case launchFailed(String)
     /// The CLI exited non-zero without emitting a decodable report; carries
     /// the stderr-derived message.
     case exited(Int32, message: String)
@@ -72,17 +76,19 @@ enum DiagnosticsCLIError: Error, Equatable, LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .cliNotFound:
-            "The Darkbloom provider CLI is not installed. Install it from darkbloom.dev, then run the system check again."
-        case .exited(let status, let message):
-            message.isEmpty
-                ? "The system check failed (exit \(status)). Try running it again."
-                : message
+            "The Darkbloom provider is not installed. Install the latest Darkbloom app from darkbloom.dev, then run the system check again."
+        case .incompatibleCLI:
+            "The installed Darkbloom provider does not support this app's system check. Update the provider, then run the check again."
+        case .launchFailed:
+            "The installed Darkbloom provider could not be opened. Update or reinstall the provider, then run the system check again."
+        case .exited:
+            "The Darkbloom provider could not complete the system check. Try again; if it still fails, update the provider and retry."
         case .timedOut:
             "The system check did not finish in time. Try running it again."
         case .undecodable:
-            "The installed provider CLI cannot produce a system-check report. Update the provider from darkbloom.dev, then try again."
+            "The installed Darkbloom provider did not return a system-check report this app can read. Update the provider, then run the check again."
         case .unsupportedSchema(let schema):
-            "The provider CLI's diagnostics output (schema \(schema)) is newer than this app understands. Update the Darkbloom app, then try again."
+            "The provider's system-check report (schema \(schema)) is newer than this app understands. Update the Darkbloom app, then try again."
         }
     }
 }
@@ -138,6 +144,10 @@ struct ProcessDiagnosticsCLIRunner: DiagnosticsCLIRunning {
             cleanup: {
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
+                // A launch failure leaves the parent write ends open; close
+                // them before draining so cleanup also reaches EOF in that case.
+                try? stdoutPipe.fileHandleForWriting.close()
+                try? stderrPipe.fileHandleForWriting.close()
                 // Drain whatever the handler queue hasn't flushed yet — the
                 // child's end is closed at exit, so this returns promptly,
                 // and the JSON must not be truncated by a racy tail.
@@ -150,20 +160,39 @@ struct ProcessDiagnosticsCLIRunner: DiagnosticsCLIRunning {
         case .timedOut:
             throw DiagnosticsCLIError.timedOut
         case .exited(let status):
-            let stdout = stdoutBox.bytes
-            if let report = try? JSONDecoder().decode(DoctorJSONReport.self, from: stdout) {
-                // A failing-report exit (e.g. 1) still carries the full
-                // document — decode-wins-over-exit-code is intentional.
-                guard report.schema == DoctorJSONReport.supportedSchema else {
-                    throw DiagnosticsCLIError.unsupportedSchema(report.schema)
-                }
-                return report
-            }
-            if !stdout.isEmpty {
-                throw DiagnosticsCLIError.undecodable
-            }
-            throw DiagnosticsCLIError.exited(status, message: stderrBox.lastLine)
+            return try Self.decodeReport(
+                exitStatus: status, stdout: stdoutBox.bytes, stderr: stderrBox.bytes)
         }
+    }
+
+    /// A valid report remains authoritative even when checks exit nonzero.
+    /// Parser/process failures describe the installed software, not the Mac's
+    /// hardware. Inspect the full bounded stderr, not its trailing help line.
+    static func decodeReport(
+        exitStatus: Int32,
+        stdout: Data,
+        stderr: Data
+    ) throws -> DoctorJSONReport {
+        if let report = try? JSONDecoder().decode(DoctorJSONReport.self, from: stdout) {
+            guard report.schema == DoctorJSONReport.supportedSchema else {
+                throw DiagnosticsCLIError.unsupportedSchema(report.schema)
+            }
+            return report
+        }
+        if exitStatus != 0 {
+            let stderrText = String(decoding: stderr, as: UTF8.self)
+            let output = stderrText + "\n" + String(decoding: stdout, as: UTF8.self)
+            let parserErrors = [
+                "unknown option", "unrecognized option", "unexpected argument",
+                "unknown argument", "unrecognized argument", "unknown flag", "unrecognized flag",
+            ]
+            let rejectsJSON = output.lowercased().split(separator: "\n").contains { line in
+                line.contains("--json") && parserErrors.contains { line.contains($0) }
+            }
+            if rejectsJSON { throw DiagnosticsCLIError.incompatibleCLI }
+            throw DiagnosticsCLIError.exited(exitStatus, message: stderrText)
+        }
+        throw DiagnosticsCLIError.undecodable
     }
 
     /// Run the child to termination, timeout, or cancellation — exactly one
@@ -197,7 +226,9 @@ struct ProcessDiagnosticsCLIRunner: DiagnosticsCLIRunning {
                     try process.run()
                 } catch {
                     cleanup()
-                    guardBox.resume { continuation.resume(throwing: error) }
+                    guardBox.resume {
+                        continuation.resume(throwing: DiagnosticsCLIError.launchFailed(error.localizedDescription))
+                    }
                     return
                 }
 
@@ -287,18 +318,5 @@ private final class BoundedOutput: @unchecked Sendable {
 
     var bytes: Data {
         lock.withLock { data }
-    }
-
-    /// Last non-empty line, for user-facing failure messages.
-    var lastLine: String {
-        text
-            .split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-            .last ?? ""
-    }
-
-    private var text: String {
-        lock.withLock { String(decoding: data, as: UTF8.self) }
     }
 }

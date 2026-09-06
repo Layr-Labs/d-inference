@@ -149,8 +149,8 @@ func TestDeleteMyProvider_TransferredLiveProviderIsNotDisconnected(t *testing.T)
 	)
 	live.SetAttestationResult(&attestation.VerificationResult{SerialNumber: "SER-XFER"})
 
-	r := reqWithUser(http.MethodDelete, "/v1/me/providers/SER-XFER", "", "acct-old")
-	r.SetPathValue("serial", "SER-XFER")
+	r := reqWithUser(http.MethodDelete, "/v1/me/providers/stale-owner-session", "", "acct-old")
+	r.SetPathValue("id", "stale-owner-session")
 	w := httptest.NewRecorder()
 	srv.handleDeleteMyProvider(w, r)
 

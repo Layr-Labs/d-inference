@@ -87,9 +87,10 @@ struct OnboardingLiveLinkTests {
         }
     }
 
-    /// Poll the @MainActor flow state until the predicate holds (or 5 s).
+    /// The full suite runs synchronous hardware/config tests alongside the main
+    /// actor. Allow their scheduling delay without changing production timeouts.
     private func eventually(_ predicate: @MainActor () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + .seconds(15)
         while ContinuousClock.now < deadline {
             if predicate() { return true }
             try? await Task.sleep(for: .milliseconds(10))
@@ -214,9 +215,13 @@ struct OnboardingLiveLinkTests {
             .init(events: [
                 .code(userCode: "HALF-WAY0", verificationURI: "https://app.darkbloom.dev/link", expiresIn: 600),
             ], openEnded: true),
+            .init(events: [
+                .code(userCode: "HALF-WAY1", verificationURI: "https://app.darkbloom.dev/link", expiresIn: 600),
+            ], openEnded: true),
         ])
         let flow = makeFlow(runner: runner)
         flow.startAccountLink()
+        let attempt = flow.accountLinkTask
 
         let waiting = await eventually { flow.accountPhase == .waitingForApproval }
         #expect(waiting)
@@ -226,8 +231,8 @@ struct OnboardingLiveLinkTests {
         #expect(settled)
         // The attempt was cut pre-approval: the phase must not advance to
         // .linked on its own (no lingering task can mutate the flow).
-        try? await Task.sleep(for: .milliseconds(100))
-        #expect(flow.accountPhase == .waitingForApproval)
+        await attempt?.value
+        #expect(flow.accountPhase == .introduction)
 
         // Going back uses the same cancellation path (regression anchor).
         let flow2 = makeFlow(runner: runner)

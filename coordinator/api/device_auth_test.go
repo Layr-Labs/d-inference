@@ -202,7 +202,7 @@ func TestDeviceTokenRevokeDisconnectsEveryMatchingLiveProvider(t *testing.T) {
 	pending := &registry.PendingRequest{
 		RequestID:  "revoke-pending",
 		ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
-		ChunkCh:    make(chan string),
+		ChunkCh:    make(chan registry.ProviderChunk),
 		CompleteCh: make(chan protocol.UsageInfo),
 	}
 	first.AddPending(pending)

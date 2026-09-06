@@ -109,6 +109,11 @@ struct ModelCatalogCLIRunnerTests {
               "total_size_bytes" : 5000000000
             }
           ],
+          "runtime_eligibility" : {
+            "mlx-community/Qwen2.5-7B-Instruct-4bit" : {
+              "status" : "eligible", "reason" : "Fixture runtime is eligible."
+            }
+          },
           "download_plans" : {
             "mlx-community/Qwen2.5-7B-Instruct-4bit" : {
               "remaining_bytes" : 1000000000,
@@ -123,6 +128,10 @@ struct ModelCatalogCLIRunnerTests {
             exit 0
         fi
         if [ "$2" = "list" ]; then
+            if [ "$3" != "--json" ] || [ "$4" != "--all" ]; then
+                echo "disk inventory requires --json --all" >&2
+                exit 9
+            fi
             /bin/cat <<'EOF'
         {
           "cacheDirectory" : "/Users/x/.cache/huggingface/hub",
@@ -181,6 +190,7 @@ struct ModelCatalogCLIRunnerTests {
         defer { try? FileManager.default.removeItem(at: stateURL) }
 
         let snapshot = try await runner(script: script, stateFileURL: stateURL).fetchSnapshot()
+        #expect(snapshot.catalogError == nil)
 
         let catalog = try #require(snapshot.catalog.first)
         #expect(catalog.id == "mlx-community/Qwen2.5-7B-Instruct-4bit")
@@ -188,6 +198,8 @@ struct ModelCatalogCLIRunnerTests {
         #expect(catalog.totalSizeBytes == 5_000_000_000)
         #expect(catalog.capabilities == ["text-generation", "tools"])
         #expect(catalog.minRamGb == 16)
+        #expect(snapshot.runtimeEligibility(for: catalog.id).status == .eligible)
+        #expect(snapshot.runtimeEligibility(for: catalog.id).reason == "Fixture runtime is eligible.")
         let plan = try #require(snapshot.downloadPlans[catalog.id])
         #expect(plan.remainingBytes == 1_000_000_000)
         #expect(plan.reserveBytes == 2_147_483_648)
@@ -200,6 +212,23 @@ struct ModelCatalogCLIRunnerTests {
         #expect(snapshot.warmModelIDs == ["mlx-community/Llama-3.2-3B-Instruct-4bit"])
         #expect(snapshot.servingModelID == "mlx-community/Llama-3.2-3B-Instruct-4bit")
         #expect(snapshot.physicalMemoryGB == 32)
+    }
+
+    @Test("runtime verdicts decode and missing or future metadata remains unknown")
+    func runtimeEligibilityWireCompatibility() async throws {
+        for status in ["ineligible", "unknown", "future-status"] {
+            let script = try makeStubCLI(contents: multiCommandScript.replacingOccurrences(
+                of: #""status" : "eligible""#, with: "\"status\" : \"\(status)\""))
+            let snapshot = try await runner(script: script).fetchSnapshot()
+            let model = try #require(snapshot.catalog.first)
+            let expected: CLIModelRuntimeEligibility.Status = status == "ineligible" ? .ineligible : .unknown
+            #expect(snapshot.runtimeEligibility(for: model.id).status == expected)
+        }
+        let legacy = try makeStubCLI(contents: multiCommandScript.replacingOccurrences(
+            of: "runtime_eligibility", with: "future_runtime_eligibility"))
+        let snapshot = try await runner(script: legacy).fetchSnapshot()
+        let model = try #require(snapshot.catalog.first)
+        #expect(snapshot.runtimeEligibility(for: model.id) == .unreported)
     }
 
     @Test("stale, identity-less, and PID-reused daemon records never keep models warm")
@@ -283,11 +312,120 @@ struct ModelCatalogCLIRunnerTests {
         #expect(reused.servingModelID == nil)
     }
 
-    @Test("A non-zero CLI exit surfaces the last stderr line")
+    @Test("Registry failure retains fresh local inventory with a typed catalog error")
+    func catalogFailureRetainsLocalInventory() async throws {
+        let transcript = FileManager.default.temporaryDirectory
+            .appendingPathComponent("offline-inventory-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: transcript) }
+        let script = try makeStubCLI(contents: multiCommandScript
+            .replacingOccurrences(of: "#!/bin/sh", with: """
+                #!/bin/sh
+                echo "$@" >> "\(transcript.path)"
+                """)
+            .replacingOccurrences(of: #"if [ "$2" = "catalog" ]; then"#, with: """
+                if [ "$2" = "catalog" ]; then
+                    echo "registry unavailable" >&2
+                    exit 7
+                """))
+        defer { try? FileManager.default.removeItem(at: script.deletingLastPathComponent()) }
+
+        let snapshot = try await runner(script: script).fetchSnapshot()
+
+        #expect(snapshot.catalogError == .exited(7, message: "registry unavailable"))
+        #expect(snapshot.catalog.isEmpty)
+        #expect(snapshot.downloadPlans.isEmpty)
+        #expect(snapshot.runtimeEligibility.isEmpty)
+        #expect(snapshot.local.map(\.id) == ["mlx-community/Llama-3.2-3B-Instruct-4bit"])
+        #expect(snapshot.local.first?.sizeBytes == 2_000_000_000)
+        #expect(snapshot.physicalMemoryGB == 32)
+        let calls = try String(contentsOf: transcript, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        #expect(calls == [
+            "models list --json --all",
+            "models catalog --json --include-download-plans",
+        ])
+    }
+
+    @Test("Malformed catalog output retains inventory but malformed inventory still throws")
+    func malformedSnapshotSourcesRemainTyped() async throws {
+        for phase in ["catalog", "list"] {
+            let script = try makeStubCLI(contents: multiCommandScript.replacingOccurrences(
+                of: "if [ \"$2\" = \"\(phase)\" ]; then", with: """
+                    if [ "$2" = "\(phase)" ]; then
+                        echo 'not JSON'
+                        exit 0
+                    """))
+            defer { try? FileManager.default.removeItem(at: script.deletingLastPathComponent()) }
+
+            if phase == "catalog" {
+                let snapshot = try await runner(script: script).fetchSnapshot()
+                #expect(snapshot.catalogError == .unreadableOutput(
+                    command: "models catalog --json --include-download-plans"))
+                #expect(snapshot.local.count == 1)
+            } else {
+                do {
+                    _ = try await runner(script: script).fetchSnapshot()
+                    Issue.record("Inventory decode failure must not return an offline snapshot")
+                } catch let error as ModelCatalogCLIError {
+                    #expect(error == .unreadableOutput(command: "models list --json --all"))
+                }
+            }
+        }
+    }
+
+    @Test("Cancelling either inventory or catalog propagates instead of returning an offline snapshot")
+    func snapshotCancellationPropagates() async throws {
+        for phase in ["list", "catalog"] {
+            let marker = FileManager.default.temporaryDirectory
+                .appendingPathComponent("snapshot-cancel-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: marker) }
+            let script = try makeStubCLI(contents: multiCommandScript.replacingOccurrences(
+                of: "if [ \"$2\" = \"\(phase)\" ]; then", with: """
+                    if [ "$2" = "\(phase)" ]; then
+                        echo ready > "\(marker.path)"
+                        exec /bin/sleep 30
+                    """))
+            defer { try? FileManager.default.removeItem(at: script.deletingLastPathComponent()) }
+            let cli = runner(script: script)
+            let task = Task { try await cli.fetchSnapshot() }
+            defer { task.cancel() }
+            let deadline = ContinuousClock.now + .seconds(5)
+            while !FileManager.default.fileExists(atPath: marker.path), ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(FileManager.default.fileExists(atPath: marker.path))
+            task.cancel()
+            do {
+                _ = try await task.value
+                Issue.record("Cancellation must not return a snapshot")
+            } catch is CancellationError {
+                // Expected, including when the local scan already succeeded.
+            }
+        }
+    }
+
+    @Test("A located CLI that cannot launch throws a typed inventory error")
+    func inventoryLaunchFailureIsTyped() async throws {
+        let script = try makeStubCLI(contents: "#!/nonexistent-darkbloom-test-interpreter\n")
+        defer { try? FileManager.default.removeItem(at: script.deletingLastPathComponent()) }
+        do {
+            _ = try await runner(script: script).fetchSnapshot()
+            Issue.record("Expected a launch failure")
+        } catch let error as ModelCatalogCLIError {
+            guard case .launchFailed(let command, let message) = error else {
+                Issue.record("Expected typed launch failure, got \(error)")
+                return
+            }
+            #expect(command == "models list --json --all")
+            #expect(!message.isEmpty)
+        }
+    }
+
+    @Test("A non-zero inventory exit surfaces the last stderr line")
     func fetchFailureSurfacesStderr() async throws {
         let script = try makeStubCLI(contents: """
             #!/bin/sh
-            echo "could not fetch catalog: coordinator unreachable (connection refused)" >&2
+            echo "could not scan local models: permission denied" >&2
             exit 1
             """)
 
@@ -295,7 +433,7 @@ struct ModelCatalogCLIRunnerTests {
             _ = try await runner(script: script).fetchSnapshot()
             Issue.record("expected a non-zero exit error")
         } catch let error as ModelCatalogCLIError {
-            #expect(error == .exited(1, message: "could not fetch catalog: coordinator unreachable (connection refused)"))
+            #expect(error == .exited(1, message: "could not scan local models: permission denied"))
         }
     }
 

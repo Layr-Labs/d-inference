@@ -83,9 +83,13 @@ private struct ReadinessSurface: View {
                 .frame(height: 1)
                 .padding(.vertical, 13)
 
-            VStack(spacing: 0) {
-                ForEach(flow.readinessItems) { item in
-                    SetupStatusRow(title: item.title, detail: item.detail, state: item.state)
+            if flow.readinessPhase == .unavailable, let failure = flow.readinessFailureDetail {
+                ReadinessServiceFailure(message: failure)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(flow.readinessItems) { item in
+                        SetupStatusRow(title: item.title, detail: item.detail, state: item.state)
+                    }
                 }
             }
 
@@ -97,12 +101,12 @@ private struct ReadinessSurface: View {
                     .font(DarkbloomTheme.chivo(9, weight: .medium))
                     .foregroundStyle(Color.orange.opacity(0.86))
                     .lineLimit(3)
-            } else {
+            } else if flow.readinessPhase != .unavailable {
                 Text(flow.usesLiveReadiness
-                    ? "Only local hardware, storage, and boot-security prerequisites gate this step."
-                    : "Fixture preview · live setup runs darkbloom doctor --json.")
-                    .font(DarkbloomTheme.chivo(9))
-                    .foregroundStyle(DarkbloomTheme.ink.opacity(0.38))
+                    ? "These checks help choose a model and connect this Mac safely."
+                    : "Sample checks for this preview.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(23)

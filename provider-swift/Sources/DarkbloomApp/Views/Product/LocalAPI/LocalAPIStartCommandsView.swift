@@ -4,27 +4,30 @@ struct LocalAPIStartCommandsView: View {
     let store: LocalAPIStore
     let copiedItem: LocalAPICopyItem?
     let onCopy: (LocalAPICopyItem) -> Void
+    @State private var isExpanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            ProductSectionHeader(
-                "Start from Terminal",
-                detail: "UI controls will be connected later"
-            )
+        DisclosureGroup("Advanced: Terminal commands", isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("These commands are alternatives to the native controls. Stop any existing provider through its controls before changing modes.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
 
-            commandRow(
-                mode: .unified,
-                title: "Local + network",
-                detail: "Serve local clients and private network work from the same provider process."
-            )
+                commandRow(
+                    mode: .unified,
+                    title: "Local + network",
+                    detail: "Serve local clients and private network work from the same provider process."
+                )
 
-            Divider()
+                Divider()
 
-            commandRow(
-                mode: .directOnly,
-                title: "Local only",
-                detail: "Run a coordinator-free foreground server for direct requests on this Mac."
-            )
+                commandRow(
+                    mode: .directOnly,
+                    title: "Local only",
+                    detail: "Run a coordinator-free foreground server for direct requests on this Mac."
+                )
+            }
+            .padding(.top, 12)
         }
         .padding(.vertical, 20)
         .overlay(alignment: .bottom) { Divider() }
@@ -41,7 +44,7 @@ struct LocalAPIStartCommandsView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(mode.startCommand)
+            Text(store.text(for: .command(mode)) ?? mode.startCommand)
                 .font(.system(size: 11, design: .monospaced))
                 .textSelection(.enabled)
                 .padding(.horizontal, 12)

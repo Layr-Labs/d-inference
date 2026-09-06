@@ -30,7 +30,7 @@ struct OnboardingStageScaffold<Detail: View, Visual: View>: View {
                 Text(step.eyebrow)
                     .font(DarkbloomTheme.chivo(10, weight: .medium))
                     .tracking(1.25)
-                    .foregroundStyle(DarkbloomTheme.accent)
+                    .foregroundStyle(DarkbloomTheme.linkAccent)
 
                 Text(title)
                     .font(DarkbloomTheme.chivo(isCompact ? 40 : 44))

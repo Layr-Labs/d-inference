@@ -249,8 +249,6 @@ func fetchLegacyWalletEarnings(
     }
     return ProviderAccountEarningsReport(
         accountID: wallet,
-        currentMachineID: macHardwareSerialNumber()
-            .flatMap(ProviderMachineIdentity.id(serialNumber:)),
         earnings: earnings,
         totalMicroUSD: legacy.totalEarnedMicroUSD,
         totalUSD: legacy.totalEarnedUSD,
@@ -324,9 +322,13 @@ struct Earnings: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        report.currentProviderKey = DaemonStateFile.read()?.identity?.providerKey
-        report.currentMachineID = macHardwareSerialNumber()
-            .flatMap(ProviderMachineIdentity.id(serialNumber:))
+        let identity = resolveCurrentEarningsIdentity(
+            accountID: report.accountID,
+            providers: report.providers,
+            daemonIdentity: DaemonStateFile.read()?.identity
+        )
+        report.currentProviderKey = identity.providerKey
+        report.currentMachineID = identity.machineID
 
         if json {
             try printJSON(report)

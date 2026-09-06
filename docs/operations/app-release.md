@@ -1,11 +1,18 @@
 # Darkbloom App Release Runbook
 
-How the SwiftUI **Darkbloom** macOS app (`DarkbloomApp`) ships as the primary
-human download in the provider release: one version and approval gate, with a
-public app zip plus a legacy verifier/self-update tar registered with the
-coordinator. Production releases remain human-approved per
-[README.md](README.md) safety rule 1 — this document describes what the
-approved operator executes and verifies, not an automated path.
+> Last updated: 2026-09-06 · commit `47f68a08a`
+
+Use this runbook to package and qualify the SwiftUI **Darkbloom** macOS app
+(`DarkbloomApp`) with its provider CLI. The public app zip and the legacy
+verifier/self-update tar share one provider version and release approval gate.
+
+## When to use
+
+Use for a combined GUI/CLI release or its rollback. For checkout-local debug
+builds and fixture previews, follow [Build](../developer/build.md#6-native-macos-app);
+for automated checks, follow [Test](../developer/test.md#native-macos-app).
+Production releases require explicit human approval for the specific operation
+per [the operations rules](README.md).
 
 ## Prerequisites
 
@@ -17,8 +24,6 @@ approved operator executes and verifies, not an automated path.
   `keychain-access-groups = SLDQ2GJ6TL.io.darkbloom.provider` and
   `aps-environment = production` for the **provider CLI**; installs break if no
   release row is registered (`GET /v1/releases/latest` → 404).
-
-## Decisions (and why)
 
 ### Bundle id: `io.darkbloom.provider`
 
@@ -60,25 +65,27 @@ row; a divergent app version would need new coordinator schema and split hash
 contracts for zero user-visible benefit. The app has no independent release
 cadence.
 
-### CLI co-bundling and the locator order
+### CLI co-bundling and managed-path validation
 
-`DarkbloomCLILocator` resolves the `darkbloom` binary in this order:
+The GUI is a CLI wrapper: the `DarkbloomApp` target in
+`provider-swift/Package.swift` depends only on `ProviderCoreFoundation`.
+Inference, runtime capability detection, and provider lifecycle policy stay in
+the CLI and `ProviderCore`; the GUI does not link MLX.
 
-1. `DARKBLOOM_CLI_PATH` (dev/test override)
-2. `<own bundle>/Contents/MacOS/darkbloom` — **release layout**
-3. `~/.darkbloom/bin/darkbloom` — installer symlink
-4. `/usr/local/bin/darkbloom`, `/opt/homebrew/bin/darkbloom`
+`provider-swift/Sources/DarkbloomApp/Services/DarkbloomCLILocator.swift`
+(`SystemDarkbloomCLILocator.locate`) accepts `DARKBLOOM_CLI_PATH` in DEBUG
+builds only. Otherwise it uses `ManagedCLIPathValidator` to validate
+`~/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom`, the sole shipping
+candidate. It does not fall back to the launching bundle, installer symlink,
+or PATH. This keeps provider service paths out of Downloads and temporary
+extraction directories.
 
-For a direct download, the app first relocates itself to the canonical
-`~/.darkbloom/Darkbloom.app`; probe 2 then runs the co-bundled CLI from that
-stable, user-writable location without requiring a separate install. The app
-also creates `~/Applications/Darkbloom.app` as a user-visible symlink when it
-can do so without replacing an unrelated item. After install.sh places the
-combined app at the same canonical path, probe 2 and probe 3 resolve to **the
-same bytes** (`bin/darkbloom` is a symlink into the bundle) - probe 2 merely
-short-circuits. An unsigned dev
-build contains no co-bundled CLI, so probe 2 misses and the installed CLI
-(probe 3) wins: dev launches keep talking to the production-signed daemon.
+A direct download relocates to that canonical bundle before interactive
+setup. The app creates `~/Applications/Darkbloom.app` as a convenience symlink
+when doing so will not replace unrelated content. The shell installer uses
+the same canonical app path. A debug GUI staged by `script/build_and_run.sh`
+contains no CLI and uses the validated managed CLI unless explicitly
+overridden in DEBUG; its runtime actions therefore affect that real install.
 
 ### Direct app relocation and writable updates
 
@@ -170,17 +177,11 @@ change:
 | `Contents/MacOS/DarkbloomApp` (main executable) | derived from Info.plist → `io.darkbloom.provider` | `scripts/entitlements.plist` (network only) | **NEW** |
 | `Darkbloom.app` bundle | — | `scripts/entitlements.plist` | seals everything |
 
-Two verified facts relax two historical assumptions:
-
-- **Duplicate identifiers inside one bundle are fine.** Main executable and
-  nested CLI both resolve to `io.darkbloom.provider`;
-  `codesign --verify --deep --strict` accepts this layout (verified locally
-  with ad-hoc signatures on the exact structure).
-- **codesign no longer derives the CLI's identifier.** When the CLI stopped
-  being the bundle's main executable, `codesign` would have derived a
-  basename-style identifier. The explicit `--identifier` pin in
-  `release-swift.yml` plus a release-workflow guard
-  (`CLI_SIGNING_ID != io.darkbloom.provider` → fail) keeps the identity stable.
+Both the main executable and nested CLI use `io.darkbloom.provider`. The
+explicit CLI `--identifier` pin in `.github/workflows/release-swift.yml`, plus
+its `CLI_SIGNING_ID` guard, keeps the nested executable's identity stable.
+Qualify the actual signed artifact below; an ad-hoc signature check does not
+establish shipping profile authorization.
 
 #### Remaining assumption (verify on the dev release, before prod)
 
@@ -202,7 +203,7 @@ for an end-to-end check:
 - Dev-release verification (below) therefore includes a live attestation run
   from the co-bundled CLI.
 
-## Layout
+### Distribution layout
 
 Human-facing GitHub release asset `Darkbloom-macOS-arm64.zip`:
 
@@ -272,8 +273,10 @@ invoking `/usr/bin/tar`.
 
 ## Steps (human-approved release operator)
 
-1. Land source changes; confirm `swift build -c release --product DarkbloomApp`
-   builds, then run `scripts/test-bundle-macos-app.sh`,
+1. Prepare the release candidate and run `make app-check` and
+   `make provider-test`. From
+   `provider-swift/`, confirm `swift build -c release --product DarkbloomApp`
+   builds, then from the repo root run
    `scripts/test-install-atomic.sh`,
    `scripts/test-release-archive-safety.sh`, and
    `scripts/test-macos-app-unsigned-debug-lifecycle.sh` locally. The last
@@ -295,14 +298,119 @@ invoking `/usr/bin/tar`.
 
 ## Verification
 
+### Product flow and session verification
+
+Use live services in a development environment with the matching CLI, then
+repeat the applicable checks on the signed dev release. Fixture previews are
+for presentation review only. Record the artifact/version, model, endpoint,
+and observed result for live checks.
+
+1. On a fresh app launch, choose **Explore the app first**. Confirm that real
+   product screens open with **Set up this Mac** still available. Browsing
+   does not start the engine, enroll the Mac, or persist network setup
+   completion (`provider-swift/Sources/DarkbloomApp/Stores/AppFlowStore.swift`,
+   `exploreProduct`). Existing fresh, running hardware-trusted provider
+   evidence can bootstrap an already configured Mac
+   (`provider-swift/Sources/DarkbloomApp/Stores/AppFlowBootstrapEvidence.swift`,
+   `canOpenProductWithoutOnboarding`); browsing is not that evidence.
+2. Choose **Set up this Mac** and exercise readiness → account → enrollment →
+   model preparation/start → live trust verification. Leave setup and resume
+   it, including after relaunch. The normalized draft and completion flag
+   persist in UserDefaults; leaving setup cancels pending work and returns to
+   the prior welcome/product phase. Only verified completion clears the draft
+   (`AppFlowStore.completeOnboarding` and
+   `provider-swift/Sources/DarkbloomApp/Stores/AppFlowPreferences.swift`,
+   `UserDefaultsAppFlowPreferences`). A CLI launch or service failure must not
+   be presented as a failed hardware-security check.
+3. Refresh Models and Diagnostics without changing provider configuration or
+   starting inference. Check the machine-readable contracts below. Runtime
+   eligibility comes from the CLI's canonical policy before the app considers
+   RAM fit. For catalog entries, absent/unknown eligibility stays unknown and
+   blocks runtime actions; it is not inferred from the model name or RAM.
+   **Use locally** selects a model and opens Local API without starting it
+   (`provider-swift/Sources/DarkbloomApp/Stores/ModelLibraryStore.swift`,
+   `fit` / `selectModel`, and
+   `provider-swift/Sources/DarkbloomApp/Views/Product/ProductShellView.swift`).
+4. In Chat, verify connection checking against a trusted local discovery
+   record and its live process identity. The catalog check sends no prompt;
+   an advertised model is not proof of residency or inference. Send a real
+   prompt separately and verify streamed content, stop/retry behavior, and an
+   unavailable selected model. Leave Chat and return: the transcript, draft,
+   model choice, and in-app history remain; leaving the view stops an active
+   response. **New Chat** archives the current transcript/draft for restoration
+   during this app session. Quit/relaunch starts with empty chat state:
+   prompts are not written to disk by `ChatStore`
+   (`provider-swift/Sources/DarkbloomApp/Stores/ChatStore.swift`,
+   `reset` / `restoreConversation`, and
+   `provider-swift/Sources/DarkbloomApp/Models/ChatSession.swift`,
+   `ChatConversation`). Product destination restoration uses `SceneStorage`, not
+   transcript persistence.
+5. Check Local API independently from Chat. Existing endpoint observation is
+   read-only. **Start** invokes
+   `darkbloom start --local --model <id> --no-replace` through
+   `provider-swift/Sources/DarkbloomApp/Services/LocalAPIStartContract.swift`
+   (`LocalAPIStartCommand`). The CLI atomically refuses both an occupied kernel
+   lock and a still-live legacy owner before signaling that owner or creating
+   credentials; see [the start contract](../provider/cli-reference.md#darkbloom-start).
+   Check that a competing provider remains running with its owner record and
+   endpoint intact. An older CLI must reject the flag without a retry that
+   drops it. Local startup skips automatic config migration, and the app's
+   exact command does not change idle policy, schedule, or launchd settings.
+   Confirm successful startup from the owned child's authenticated endpoint,
+   then check that navigation retains the foreground session and that
+   readiness belongs to that exact child and requested model. Ending the local session cancels only the owned process; application
+   quit waits for it to exit and stays open if shutdown cannot be confirmed.
+   Quitting never stops an externally discovered provider
+   (`provider-swift/Sources/DarkbloomApp/Stores/LocalAPIStartController.swift`,
+   `shutdown`, and
+   `provider-swift/Sources/DarkbloomApp/App/DarkbloomAppDelegate.swift`,
+   `applicationShouldTerminate`). These session records are not a persisted
+   auto-restart setting.
+6. Check My Macs and Contributions with a linked account, signed-out state,
+   and failed refresh. Missing or stale account data must remain distinct
+   from an empty fleet, and late results after sign-out must not restore the
+   previous account's inventory
+   (`provider-swift/Sources/DarkbloomApp/Stores/MyMacsStore.swift`,
+   `refresh` / `signOut`).
+
+Read-only app queries can probe hardware, fetch public/account endpoints, or
+hash staged download files; “read-only” does not mean offline or no subprocess.
+Keep these queries separate from explicit setup, download/remove, schedule,
+and provider lifecycle actions.
+
+| Query | Contract and source |
+|---|---|
+| `darkbloom doctor --json` | One diagnostic report; `Doctor.run` in `provider-swift/Sources/darkbloom/DoctorCommand.swift` uses `migrateOnDisk: false`. A valid report can accompany a failing exit status. `--clear-backend-guard` is a separate mutating action. |
+| `darkbloom models list --json --all` | All disk inventory, independent of enabled-model and available-memory filters; non-migrating snapshot (`provider-swift/Sources/darkbloom/ModelsCommand.swift`, `Models.List.listedModels`). |
+| `darkbloom models catalog --json --include-download-plans` | `models`, `download_plans`, and per-ID `runtime_eligibility` (`eligible`, `ineligible`, `unknown`, each with `reason`). Plain `catalog --json` remains an array. `ModelsCatalogRuntimeEligibility` in `provider-swift/Sources/darkbloom/ModelsCatalogOutput.swift` calls `ModelRuntimeRequirements.evaluate`; no app-owned policy table. |
+| `darkbloom earnings --json` | Account earnings with this Mac's identity resolved from authenticated account mappings and matching daemon identity, without reading a raw hardware serial (`provider-swift/Sources/darkbloom/CurrentEarningsIdentity.swift`, `resolveCurrentEarningsIdentity`). |
+| Local endpoint catalog probe | Read `~/.darkbloom/local.json`, validate kernel PID/start identity, then `GET /v1/models`; it does not launch serving or submit a prompt (`provider-swift/Sources/DarkbloomApp/Stores/ChatEndpointSession.swift`, `validate` / `resolveModel`). |
+
+### Local-start regression coverage
+
+The source contract has focused tests in
+`provider-swift/Tests/DarkbloomCLITests/LocalStartContractTests.swift`
+(`appLaunchArguments`, `requiresLocalMode`, `networkDefaultIsUnchanged`) and
+`provider-swift/Tests/ProviderCoreTests/NonReplacingProviderLockTests.swift`
+(`occupiedOwnerIsPreserved`). The lock test covers both kernel-lock and
+legacy-owner refusal, no termination signal, owner-record preservation, and
+successful acquisition once the owner exits.
+
+These suites are outside `make app-unit-test`'s app/Foundation filter; they
+belong to `make provider-test`. Record their actual execution results alongside
+the app lifecycle tests. Source inspection and automated checks do not replace
+the live inference and signed-artifact checks below.
+
 ### Hermetic unsigned lifecycle coverage
 
 The normal macOS CI step named **Test unsigned debug app fresh-user lifecycle**
 runs `scripts/test-macos-app-unsigned-debug-lifecycle.sh`. It assembles an
 unsigned DEBUG bundle in an isolated temporary home, uses the DEBUG-only
 relocation bypass, and proves the exact welcome window plus ready install
-state. It does **not** claim Developer ID signing, notarization, stapling,
-Gatekeeper acceptance, or signed relocation.
+state. It does **not** establish actual inference, APNs/profile authorization,
+Developer ID signing, notarization, stapling, Gatekeeper acceptance, signed
+relocation, or production readiness. `make app-check` likewise covers unit
+contracts and fixture bundle assembly, not these live release gates.
 
 ### Signed artifact qualification (no signing secrets required)
 
@@ -391,12 +499,9 @@ After the **dev** release (before any prod tag):
   protect them exactly like Terminal installs. Arbitrary downgrade remains an
   explicit one-machine recovery, never an automatic relocation.
 
-## Version-display sync rule (`LatestProviderVersion`)
+## Related
 
-Unchanged, and now broader: the fallback constant in
-`coordinator/api/server.go` is the *display* floor for the whole bundle —
-provider CLI **and** app — when no release row exists. The app reports its
-`CFBundleShortVersionString` (== release version), so the sync rule still
-holds: keep `LatestProviderVersion` == `ProviderCore.version`;
-`scripts/check-release-version.sh` enforces the pair at release time; the
-app cannot drift because it is stamped from the same resolved `VERSION`.
+- [Build](../developer/build.md#6-native-macos-app) — checkout GUI staging and launch-script options.
+- [Test](../developer/test.md#native-macos-app) — app unit, bundle fixture, and unsigned lifecycle checks.
+- [Provider release](provider-release.md) — version synchronization, release registration, and provider release procedure. `scripts/check-release-version.sh` keeps `LatestProviderVersion` and `ProviderCore.version` aligned; the GUI bundle uses that same resolved version.
+- [Provider CLI reference](../provider/cli-reference.md) — provider commands and configuration.

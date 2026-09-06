@@ -8,6 +8,12 @@ final class AppFlowStore {
     private(set) var hasCompletedNetworkOnboarding: Bool
     private(set) var resumableOnboardingDraft: OnboardingDraft?
     private(set) var pendingInitialProductDestination: ProductDestination?
+    private var onboardingReturnPhase: AppPhase = .welcome
+
+    var isExploring: Bool { phase == .product && !hasCompletedNetworkOnboarding }
+    var onboardingExitTitle: String {
+        onboardingReturnPhase == .product ? "Back to app" : "Back to welcome"
+    }
 
     let onboardingFlow: OnboardingFlowModel
 
@@ -70,6 +76,7 @@ final class AppFlowStore {
     }
 
     func startOnboarding() {
+        rememberOnboardingReturnPhase()
         if persistenceEnabled, !hasCompletedNetworkOnboarding {
             persist(draft: onboardingFlow.draft)
         }
@@ -77,6 +84,7 @@ final class AppFlowStore {
     }
 
     func resumeOnboarding() {
+        rememberOnboardingReturnPhase()
         guard resumableOnboardingDraft != nil else {
             startOnboarding()
             return
@@ -86,6 +94,7 @@ final class AppFlowStore {
     }
 
     func startOverOnboarding() {
+        rememberOnboardingReturnPhase()
         if persistenceEnabled {
             preferences.onboardingDraft = nil
             resumableOnboardingDraft = nil
@@ -97,12 +106,25 @@ final class AppFlowStore {
     func leaveOnboarding() {
         guard phase == .onboarding else { return }
         onboardingFlow.cancelPendingOperations()
-        phase = .welcome
+        phase = onboardingReturnPhase
+    }
+
+    /// Browsing is a navigation choice, never evidence that setup succeeded.
+    /// Keep the real stores and resumable draft; do not persist a completion.
+    func exploreProduct() {
+        onboardingFlow.cancelPendingOperations()
+        selectedDestination = .overview
+        pendingInitialProductDestination = .overview
+        phase = .product
+    }
+
+    private func rememberOnboardingReturnPhase() {
+        if phase != .onboarding { onboardingReturnPhase = phase }
     }
 
     func applyBootstrapEvidence(_ evidence: AppFlowBootstrapEvidence) {
         guard persistenceEnabled,
-              phase == .welcome,
+              (phase == .welcome || isExploring),
               !hasCompletedNetworkOnboarding,
               resumableOnboardingDraft == nil,
               evidence.canOpenProductWithoutOnboarding

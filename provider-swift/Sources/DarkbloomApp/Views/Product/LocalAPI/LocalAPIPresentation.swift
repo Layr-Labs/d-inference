@@ -76,7 +76,7 @@ enum LocalAPIPresentation {
         case .failed:
             "The endpoint did not return its available-model catalog."
         case .available(let modelIDs) where modelIDs.isEmpty:
-            "Download a supported GPT-OSS or Gemma 4 model before sending requests."
+            "Choose an installed, compatible model from Models before sending requests."
         case .available(let modelIDs):
             modelIDs.joined(separator: " · ")
         }
@@ -127,7 +127,7 @@ enum LocalAPIPresentation {
 
     static func credentialsDetail(isLive: Bool) -> String {
         if isLive {
-            return "Darkbloom reads this credential from the provider’s owner-only local discovery record. Keep it secret and rotate it by restarting the local endpoint."
+            return "Darkbloom reads this credential from the provider’s owner-only local discovery record. This key persists across restarts. Keep it secret."
         }
         return "The provider stores its local token with owner-only file permissions. This preview uses a fixture and never reads that file."
     }

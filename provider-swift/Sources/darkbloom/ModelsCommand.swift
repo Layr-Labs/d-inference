@@ -39,7 +39,7 @@ extension Models {
         @Flag(help: "Emit JSON instead of a table.")
         var json = false
 
-        @Flag(help: "Show every discovered local model, ignoring the config enabled_models filter.")
+        @Flag(help: "Show every model on disk, ignoring enabled_models and available-memory filters.")
         var all = false
 
         @Option(help: "Compute an on-demand integrity hash for one model ID.")
@@ -61,12 +61,10 @@ extension Models {
                 return
             }
 
-            let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
-            let models = advertisedModels(
-                from: snapshot.models,
-                config: snapshot.config,
-                includeDisabled: all
-            )
+            let snapshot = try loadRuntimeSnapshot(
+                configOptions: configOptions,
+                migrateOnDisk: false)
+            let models = listedModels(from: snapshot)
 
             if json {
                 let payload = ModelsOutput(
@@ -89,6 +87,19 @@ extension Models {
             print("Local MLX models")
             printModelTable(models)
         }
+
+        /// Disk inventory must not lose installed models because another model
+        /// is enabled or current memory pressure prevents loading them.
+        func listedModels(
+            from snapshot: RuntimeSnapshot,
+            scanAll: () -> [ModelInfo] = {
+                guard let directory = ModelScanner.defaultCacheDirectory() else { return [] }
+                return ModelScanner.scanAllModels(in: directory)
+            }
+        ) -> [ModelInfo] {
+            if all { return scanAll() }
+            return advertisedModels(from: snapshot.models, config: snapshot.config)
+        }
     }
 }
 
@@ -108,14 +119,16 @@ extension Models {
         @Flag(help: "Emit JSON instead of a table.")
         var json = false
 
-        @Flag(help: "Include side-effect-free, resume-aware disk plans in JSON output.")
+        @Flag(help: "Include resume-aware disk plans and runtime eligibility in JSON output.")
         var includeDownloadPlans = false
 
         @Option(help: "Filter by model_type (e.g. text).")
         var type: String?
 
         mutating func run() async throws {
-            let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+            let snapshot = try loadRuntimeSnapshot(
+                configOptions: configOptions,
+                migrateOnDisk: false)
             let coordinatorURL = coordinator ?? snapshot.config.coordinator.url
             let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
 
@@ -126,6 +139,20 @@ extension Models {
                 printError("\(error)")
                 throw ExitCode.failure
             }
+
+            // Bind the metallib and run the GPU diagnostic only when some entry
+            // is gated: `catalog` is the default `models` subcommand and the
+            // verdict is never printed otherwise. nil when hardware detection
+            // failed, so the lines say "unknown" rather than wrongly reporting
+            // every gated model ineligible.
+            let anyGated = entries.contains {
+                !ModelRuntimeRequirements.requiredCapabilities(
+                    for: $0.id, catalogRequirements: $0.requiredProviderCapabilities
+                ).isEmpty
+            }
+            let runtimeCapabilities: Set<ProviderRuntimeCapability>? = anyGated && (!json || includeDownloadPlans)
+                ? snapshot.hardware.map { ProviderRuntimeCapabilityDetector.detectLive(hardware: $0) }
+                : nil
 
             if json {
                 if includeDownloadPlans {
@@ -141,7 +168,8 @@ extension Models {
                     }
                     try printJSON(ModelsCatalogPlanOutput(
                         models: entries,
-                        downloadPlans: plans
+                        downloadPlans: plans,
+                        runtimeCapabilities: runtimeCapabilities
                     ))
                 } else {
                     try printJSON(entries)
@@ -160,19 +188,6 @@ extension Models {
             } else {
                 localModels = []
             }
-            // Bind the metallib and run the GPU diagnostic only when some entry
-            // is gated: `catalog` is the default `models` subcommand and the
-            // verdict is never printed otherwise. nil when hardware detection
-            // failed, so the lines say "unknown" rather than wrongly reporting
-            // every gated model ineligible.
-            let anyGated = entries.contains {
-                !ModelRuntimeRequirements.requiredCapabilities(
-                    for: $0.id, catalogRequirements: $0.requiredProviderCapabilities
-                ).isEmpty
-            }
-            let runtimeCapabilities: Set<ProviderRuntimeCapability>? = anyGated
-                ? snapshot.hardware.map { ProviderRuntimeCapabilityDetector.detectLive(hardware: $0) }
-                : nil
             let downloadedIDs = Set(localModels.map(\.id))
             let catalogIDs = Set(entries.map(\.id))
 
@@ -215,16 +230,6 @@ extension Models {
     }
 }
 
-private struct ModelsCatalogPlanOutput: Encodable {
-    let models: [CatalogModel]
-    let downloadPlans: [String: ModelDownloadStoragePlan]
-
-    enum CodingKeys: String, CodingKey {
-        case models
-        case downloadPlans = "download_plans"
-    }
-}
-
 // MARK: - download-plan
 
 extension Models {
@@ -255,7 +260,9 @@ extension Models {
         }
 
         mutating func run() async throws {
-            let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+            let snapshot = try loadRuntimeSnapshot(
+                configOptions: configOptions,
+                migrateOnDisk: false)
             let coordinatorURL = coordinator ?? snapshot.config.coordinator.url
             let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
             let catalog: [CatalogModel]
@@ -367,16 +374,16 @@ extension Models {
                 throw ExitCode.failure
             }
 
-            if json {
-                try await runJSON(entry: entry, client: client, emitter: emitter)
-                return
-            }
-
-            print("Downloading \(entry.displayName) (\(entry.id))…")
             let downloader = ModelDownloader(
                 r2CDNURL: r2CDN,
                 catalogClient: client,
                 runtimeCapabilities: runtimeCapabilities)
+            if json {
+                try await runJSON(entry: entry, downloader: downloader, emitter: emitter)
+                return
+            }
+
+            print("Downloading \(entry.displayName) (\(entry.id))…")
             do {
                 try await downloader.download(
                     model: entry,
@@ -398,12 +405,11 @@ extension Models {
         /// event (plus terminal done/error) as one compact JSON object per
         /// stdout line for machine consumers like the Darkbloom app. Human
         /// output stays on stderr-only paths (printError).
-        private func runJSON(
+        func runJSON(
             entry: CatalogModel,
-            client: ModelCatalogClient,
+            downloader: ModelDownloader,
             emitter: ModelsDownloadEventEmitter
         ) async throws {
-            let downloader = ModelDownloader(r2CDNURL: r2CDN, catalogClient: client)
             do {
                 try await downloader.download(
                     model: entry,

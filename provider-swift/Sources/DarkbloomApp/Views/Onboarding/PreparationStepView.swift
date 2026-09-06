@@ -9,8 +9,13 @@ struct PreparationStepView: View {
         OnboardingStageScaffold(step: .preparation, isCompact: isCompact) {
             VStack(alignment: .leading, spacing: 13) {
                 actions
+                if flow.freezesAutomaticProgress, flow.preparationPhase != .ready {
+                    OnboardingQuietButton(title: "Preview completed setup", systemImage: "arrow.right") {
+                        flow.previewPreparationRetry()
+                    }
+                }
                 Text(detail)
-                    .font(DarkbloomTheme.chivo(10))
+                    .font(.system(size: 12))
                     .lineSpacing(3)
                     .foregroundStyle(DarkbloomTheme.ink.opacity(0.52))
                     .fixedSize(horizontal: false, vertical: true)
@@ -28,7 +33,7 @@ struct PreparationStepView: View {
         case .choosingModel:
             OnboardingPrimaryButton(
                 title: flow.selectedPreparationChoice?.isInstalled == true
-                    ? "Start provider and local API"
+                    ? "Start using this model"
                     : "Download and start",
                 systemImage: "arrow.down.circle",
                 isDisabled: flow.selectedPreparationChoice == nil
@@ -41,7 +46,7 @@ struct PreparationStepView: View {
         case .verifying:
             workingButton("Verifying model files…")
         case .startingProvider:
-            workingButton("Starting provider and local API…")
+            workingButton("Starting your AI engine…")
         case .ready:
             OnboardingPrimaryButton(title: "Continue", systemImage: "arrow.right") {
                 flow.continueToNextStep()
@@ -50,7 +55,7 @@ struct PreparationStepView: View {
         case .downloadFailed:
             retryActions(title: "Resume download")
         case .startFailed:
-            retryActions(title: "Start provider again")
+            retryActions(title: "Try starting again")
         case .catalogFailed:
             retryActions(title: "Reload model catalog")
         case .noCompatibleModel:
@@ -82,15 +87,15 @@ struct PreparationStepView: View {
     private var detail: String {
         if let failure = flow.preparationFailureDetail { return failure }
         if !flow.usesLivePreparation {
-            return "Fixture preview · live setup uses the CLI catalog, verified download stream, and noninteractive provider start."
+            return "Sample setup only. No model is downloaded and no engine is started."
         }
         return switch flow.preparationPhase {
         case .choosingModel:
-            "The recommendation comes from the live catalog's minimum-RAM and size data for \(identity.chipName). Choose any compatible model before continuing."
+            "These models fit your \(identity.chipName). You can explore more models later."
         case .ready:
-            "The provider start command completed with the selected model and a local OpenAI-compatible endpoint."
+            "Your model is ready for Chat and other apps on this Mac."
         default:
-            "Downloads resume from verified partial files after an interruption. Darkbloom starts only after the CLI confirms completion."
+            "You can pick up an interrupted download where you left off. Your engine starts after the model is checked."
         }
     }
 }

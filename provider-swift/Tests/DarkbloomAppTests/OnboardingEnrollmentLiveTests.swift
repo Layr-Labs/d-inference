@@ -6,7 +6,7 @@ import Testing
 @Suite("Onboarding live enrollment CLI and evidence")
 @MainActor
 struct OnboardingEnrollmentLiveTests {
-    @Test("All schema-1 enrollment statuses decode with snake-case fields")
+    @Test("All schema-1 enrollment statuses decode with and without legacy serial fields")
     func statusDecoding() throws {
         let cases: [(String, EnrollmentCLIStatus, String?)] = [
             ("already_enrolled", .alreadyEnrolled, nil),
@@ -16,11 +16,13 @@ struct OnboardingEnrollmentLiveTests {
 
         for (status, expected, path) in cases {
             let pathJSON = path.map { ",\"profile_path\":\"\($0)\"" } ?? ""
-            let data = Data("{\"schema\":1,\"status\":\"\(status)\",\"serial_number\":\"SERIAL\"\(pathJSON)}".utf8)
-            let response = try JSONDecoder().decode(EnrollmentCLIResponse.self, from: data)
-            #expect(response.status == expected)
-            #expect(response.serialNumber == "SERIAL")
-            #expect(response.profilePath == path)
+            for serialJSON in ["", ",\"serial_number\":\"SERIAL\""] {
+                let data = Data("{\"schema\":1,\"status\":\"\(status)\"\(serialJSON)\(pathJSON)}".utf8)
+                let response = try JSONDecoder().decode(EnrollmentCLIResponse.self, from: data)
+                #expect(response.status == expected)
+                #expect(response.serialNumber == (serialJSON.isEmpty ? nil : "SERIAL"))
+                #expect(response.profilePath == path)
+            }
         }
     }
 
@@ -33,7 +35,7 @@ struct OnboardingEnrollmentLiveTests {
         let script = directory.appendingPathComponent("darkbloom")
         try """
         #!/bin/sh
-        printf '%s\\n' '{"schema":1,"serial_number":"FAST","status":"already_enrolled"}'
+        printf '%s\\n' '{"schema":1,"status":"already_enrolled"}'
         printf '%s\\n' 'fast child diagnostic' >&2
         """.write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
@@ -45,7 +47,7 @@ struct OnboardingEnrollmentLiveTests {
         for _ in 0..<100 {
             let response = try await cli.enroll()
             #expect(response.status == .alreadyEnrolled)
-            #expect(response.serialNumber == "FAST")
+            #expect(response.serialNumber == nil)
         }
     }
 

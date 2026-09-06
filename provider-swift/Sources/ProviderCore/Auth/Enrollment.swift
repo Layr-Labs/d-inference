@@ -66,13 +66,11 @@ public struct EnrollmentResult: Sendable {
     public let openWarning: String?
 
     public init(
-        serialNumber: String,
         profilePath: URL,
         alreadyEnrolled: Bool,
         profileOpened: Bool = false,
         openWarning: String? = nil
     ) {
-        self.serialNumber = serialNumber
         self.profilePath = profilePath
         self.alreadyEnrolled = alreadyEnrolled
         self.profileOpened = profileOpened
@@ -92,13 +90,11 @@ public struct EnrollmentService: Sendable {
         @Sendable (URLRequest) async throws -> (Data, URLResponse)
     typealias EnrollmentStateReader =
         @Sendable (String) -> MDMEnrollmentState
-    typealias SerialNumberReader = @Sendable () -> String?
 
     private let openCommand: OpenCommand
     private let pauseBeforeOpeningSettings: Pause
     private let requestProfile: ProfileRequest
     private let enrollmentStateReader: EnrollmentStateReader
-    private let serialNumberReader: SerialNumberReader
     private let profileDirectory: URL
 
     public init() {
@@ -112,7 +108,6 @@ public struct EnrollmentService: Sendable {
         enrollmentStateReader = { coordinatorURL in
             checkMDMEnrollment(coordinatorURL: coordinatorURL)
         }
-        serialNumberReader = macHardwareSerialNumber
         profileDirectory = FileManager.default.temporaryDirectory
     }
 
@@ -126,19 +121,16 @@ public struct EnrollmentService: Sendable {
             coordinatorURL in
             checkMDMEnrollment(coordinatorURL: coordinatorURL)
         },
-        serialNumberReader: @escaping SerialNumberReader =
-            macHardwareSerialNumber,
         profileDirectory: URL = FileManager.default.temporaryDirectory
     ) {
         self.openCommand = openCommand
         self.pauseBeforeOpeningSettings = pauseBeforeOpeningSettings
         self.requestProfile = requestProfile
         self.enrollmentStateReader = enrollmentStateReader
-        self.serialNumberReader = serialNumberReader
         self.profileDirectory = profileDirectory
     }
 
-    /// Request a per-device enrollment profile and (on macOS) open the
+    /// Request a generic enrollment profile and (on macOS) open the
     /// System Settings pane so the user can install it.
     ///
     /// - Parameters:

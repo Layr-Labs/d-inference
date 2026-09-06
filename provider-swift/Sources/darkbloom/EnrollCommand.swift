@@ -6,7 +6,7 @@ struct Enroll: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Enroll this Mac in Darkbloom MDM (device-attestation profile).",
         discussion: """
-        Requests a per-device .mobileconfig profile from the coordinator,
+        Requests a generic .mobileconfig profile from the coordinator,
         opens it (registering with System Settings), then opens the
         Profiles pane so you can click Install. The profile lets the
         coordinator verify that SIP/Secure Boot are on and that the
@@ -95,12 +95,10 @@ struct EnrollmentCommandResult: Encodable, Equatable, Sendable {
 
     let schema = 1
     let status: Status
-    let serialNumber: String
     let profilePath: String?
     let warning: String?
 
     init(serviceResult: EnrollmentResult) {
-        serialNumber = serviceResult.serialNumber
         warning = serviceResult.openWarning
         if serviceResult.alreadyEnrolled {
             status = .alreadyEnrolled
@@ -114,7 +112,6 @@ struct EnrollmentCommandResult: Encodable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case schema
         case status
-        case serialNumber = "serial_number"
         case profilePath = "profile_path"
         case warning
     }

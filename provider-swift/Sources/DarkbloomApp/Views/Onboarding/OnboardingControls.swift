@@ -100,14 +100,10 @@ struct OnboardingPanelModifier: ViewModifier {
         content
             .background {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(.ultraThinMaterial)
+                    .fill(.regularMaterial)
                     .overlay {
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .fill(.white.opacity(0.56))
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .stroke(.white.opacity(0.9), lineWidth: 1)
+                            .stroke(DarkbloomTheme.ink.opacity(0.08), lineWidth: 1)
                     }
             }
             .shadow(color: DarkbloomTheme.accent.opacity(0.12), radius: 34, y: 20)

@@ -1,5 +1,17 @@
 # Changelog
 
+> Last updated: 2026-09-05 · commit `47f68a08a`
+
+## Unreleased (2026-09-05) — native macOS app refresh
+
+- Add “Explore the app first” before network setup. Keep account linking, enrollment, model preparation, and live trust verification in a resumable setup flow; browsing does not mark setup complete or start serving.
+- Keep Chat and Local API stores alive across page and setup navigation. Chat supports streaming, stop/retry, model selection, and session history with draft restoration; transcripts and drafts stay in memory for the current app session.
+- Start installed models locally without network enrollment. The app owns its foreground CLI child, observes authenticated endpoint readiness, and stops that child on quit. `start --local --no-replace` refuses live owners atomically and reclaims stale records without changing normal network-start behavior.
+- Refresh the welcome, setup, Chat, Models, and My Macs views, including smaller-window layouts, keyboard input, and actionable service errors. Distinguish missing or incompatible CLI diagnostics from failed hardware checks, and preserve account-scoped fleet identity.
+- Read installed models independently of enabled-model and memory filters. Display CLI-owned `runtime_eligibility` and preserve unknown or ineligible results instead of inferring runtime support from RAM. Diagnostic and model inventory reads do not migrate provider configuration.
+- Keep installed models usable during a catalog outage, preserve cached runtime eligibility, and make cancelled initial inventory loads retryable. Local startup preserves development configuration instead of applying network-start migrations.
+- Add `make app-unit-test`, `make app-bundle-test`, and `make app-check`. Update `script/build_and_run.sh` to stage a debug app before replacing only this checkout's running bundle, with fixture previews, exact-process logs/debugging, and window verification. These checks do not qualify inference, APNs attestation, or a production release.
+
 ## Unreleased — stats request-flow refresh
 
 - Restore Stats refreshes on large usage windows by aggregating request origins before looking up provider locations. Preserve weighted coordinates, request/token counts, and the top-50 flow limit while avoiding large temporary sorts.

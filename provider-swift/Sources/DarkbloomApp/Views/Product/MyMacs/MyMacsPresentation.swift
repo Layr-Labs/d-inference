@@ -52,26 +52,20 @@ enum MyMacsAttentionFilter: String, CaseIterable, Identifiable, Sendable {
 enum MyMacsPresentation {
     static let notReported = "Not reported"
 
-    static func isThisMac(_ mac: MyMac, currentSerialNumber: String?) -> Bool {
-        guard let currentSerialNumber, !currentSerialNumber.isEmpty else { return false }
-        return mac.serialNumber == currentSerialNumber
-    }
-
-    static func defaultSelection(
-        in macs: [MyMac],
-        currentSerialNumber: String?
-    ) -> String? {
-        if let thisMac = macs.first(where: {
-            isThisMac($0, currentSerialNumber: currentSerialNumber)
-        }) {
-            return thisMac.id
-        }
+    static func defaultSelection(in macs: [MyMac]) -> String? {
         if let connected = macs.first(where: { $0.lifecycle.isOperationallyConnected }) {
             return connected.id
         }
         return macs.max(by: {
             ($0.lastSeen ?? .distantPast) < ($1.lastSeen ?? .distantPast)
         })?.id
+    }
+
+    static func reconciledSelection(_ selection: String?, in macs: [MyMac]) -> String? {
+        if let selection, macs.contains(where: { $0.id == selection }) {
+            return selection
+        }
+        return defaultSelection(in: macs)
     }
 
     static func filtered(
@@ -81,6 +75,7 @@ enum MyMacsPresentation {
         attention: MyMacsAttentionFilter
     ) -> [MyMac] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayTitles = query.isEmpty ? [:] : titles(in: macs)
         return macs.filter { mac in
             guard status.includes(mac.lifecycle) else { return false }
             if attention == .needsAttention, !mac.attention.requiresAttention {
@@ -88,66 +83,42 @@ enum MyMacsPresentation {
             }
             guard !query.isEmpty else { return true }
 
-            return searchableValues(for: mac).contains {
+            return ([displayTitles[mac.id] ?? title(for: mac)] + searchableValues(for: mac)).contains {
                 $0.localizedCaseInsensitiveContains(query)
             }
         }
     }
 
-    /// A Mac is named by its reported machine model. The chip belongs on the
-    /// supporting line so the inventory remains scannable by physical form.
+    /// Name Macs by reported model; hardware specifications belong in detail.
     static func title(for mac: MyMac) -> String {
         mac.hardware?.machineModel ?? "Mac"
     }
 
-    /// Duplicate reported machine models gain only a privacy-preserving serial
-    /// suffix. Unique machine models never expose identifier material in their
-    /// default title.
+    /// Duplicate model names use an account-local ordinal, sorted by opaque
+    /// ID so filtering and response ordering cannot rename a selected Mac.
+    /// No hardware identifiers become display names or searchable metadata.
     static func title(for mac: MyMac, in fleet: [MyMac]) -> String {
-        let baseTitle = title(for: mac)
-        let duplicateCount = fleet.count {
-            title(for: $0).localizedCaseInsensitiveCompare(baseTitle) == .orderedSame
-        }
-        guard duplicateCount > 1, let suffix = mac.maskedSerialNumber else {
-            return baseTitle
-        }
-        return "\(baseTitle) · \(suffix)"
+        titles(in: fleet)[mac.id] ?? title(for: mac)
     }
 
-    /// The bloomline has less horizontal room than the inventory. Preserve the
-    /// same privacy-safe four-character suffix without spending width on the
-    /// mask glyphs; the complete masked title remains available on hover and
-    /// to assistive technology.
-    static func bloomlineTitle(for mac: MyMac, in fleet: [MyMac]) -> String {
-        let baseTitle = title(for: mac)
-        let duplicateCount = fleet.count {
-            title(for: $0).localizedCaseInsensitiveCompare(baseTitle) == .orderedSame
+    /// Compute once per fleet/search pass so large duplicate-model fleets do
+    /// not repeatedly sort the full inventory for every rendered row.
+    static func titles(in fleet: [MyMac]) -> [String: String] {
+        let groups = Dictionary(grouping: fleet) {
+            title(for: $0).folding(options: .caseInsensitive, locale: .current)
         }
-        guard duplicateCount > 1,
-              let serialNumber = mac.serialNumber?.trimmingCharacters(
-                  in: .whitespacesAndNewlines
-              ),
-              !serialNumber.isEmpty
-        else {
-            return baseTitle
+        var titles: [String: String] = [:]
+        for peers in groups.values {
+            for (index, mac) in peers.sorted(by: { $0.providerID < $1.providerID }).enumerated() {
+                let base = title(for: mac)
+                titles[mac.id] = peers.count > 1 ? "\(base) · \(index + 1)" : base
+            }
         }
-        return "\(baseTitle) · #\(serialNumber.suffix(4))"
+        return titles
     }
 
     static func supportLine(for mac: MyMac) -> String {
-        let parts: [String?] = [
-            mac.hardware?.chipName,
-            mac.hardware?.memoryGB.map { "\($0) GB memory" },
-            mac.hardware?.gpuCoreCount.map { "\($0) GPU cores" },
-        ]
-        let reported = parts.compactMap { $0 }
-        return reported.isEmpty ? notReported : reported.joined(separator: " · ")
-    }
-
-    /// The narrow inventory keeps only the primary hardware discriminator.
-    /// Memory and GPU detail are presented in the selected Mac pane.
-    static func inventorySupportLine(for mac: MyMac) -> String {
-        mac.hardware?.chipName ?? notReported
+        mac.hardware?.chipName ?? "Chip not reported"
     }
 
     static func lifecycleTitle(_ lifecycle: MyMacLifecycle) -> String {
@@ -164,9 +135,9 @@ enum MyMacsPresentation {
     static func lifecycleDetail(_ mac: MyMac) -> String {
         switch mac.lifecycle {
         case .serving:
-            "This Mac is currently serving requests."
+            "Serving requests at the last update."
         case .online:
-            "Connected to Darkbloom and not currently serving."
+            "Connected and not serving requests at the last update."
         case .offline:
             mac.lastSeen.map { "Last reported \(relativeDate($0))." }
                 ?? "The last report time was not provided."
@@ -221,8 +192,6 @@ enum MyMacsPresentation {
             title(for: mac),
             mac.hardware?.machineModel,
             mac.hardware?.chipName,
-            mac.serialNumber,
-            mac.maskedSerialNumber,
             mac.providerID,
             mac.version.installed,
             lifecycleTitle(mac.lifecycle),

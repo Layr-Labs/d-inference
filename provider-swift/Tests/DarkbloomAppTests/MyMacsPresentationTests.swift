@@ -1,25 +1,18 @@
 import Testing
 @testable import DarkbloomApp
 
-@Test("My Macs selects an exact local serial before connection fallbacks")
+@Test("My Macs keeps a visible selection and falls back only when it leaves the inventory")
 @MainActor
-func myMacsDefaultSelectionUsesExactSerial() throws {
+func myMacsSelectionReconcilesVisibleOpaqueIDs() throws {
     let macs = MyMacsStore(fixture: .ready).macs
     let offline = try #require(macs.first { $0.lifecycle == .offline })
     let serving = try #require(macs.first { $0.lifecycle == .serving })
 
-    #expect(MyMacsPresentation.defaultSelection(
-        in: macs,
-        currentSerialNumber: offline.serialNumber
-    ) == offline.id)
-    #expect(MyMacsPresentation.defaultSelection(
-        in: macs,
-        currentSerialNumber: "MINI2025"
-    ) == serving.id)
-    #expect(MyMacsPresentation.isThisMac(
-        offline,
-        currentSerialNumber: "MINI2025"
-    ) == false)
+    #expect(MyMacsPresentation.defaultSelection(in: macs) == serving.id)
+    #expect(MyMacsPresentation.reconciledSelection(offline.id, in: macs) == offline.id)
+    #expect(MyMacsPresentation.reconciledSelection(offline.id, in: [serving]) == serving.id)
+    #expect(MyMacsPresentation.reconciledSelection(offline.id, in: []) == nil)
+    #expect(MyMacsPresentation.reconciledSelection("removed-record", in: macs) == serving.id)
 }
 
 @Test("My Macs filters search raw reported model IDs and coordinator attention")
@@ -54,49 +47,35 @@ func myMacsFiltersAreTruthful() throws {
     #expect(attention.allSatisfy { $0.attention.requiresAttention })
 }
 
-@Test("My Macs titles lead with machine model and disambiguate only duplicate models")
+@Test("Duplicate Mac names use deterministic ordinals without hardware identifiers")
 @MainActor
-func myMacsTitlesPreserveHierarchyAndSerialPrivacy() throws {
+func myMacsTitlesPreserveHierarchyAndIdentifierPrivacy() throws {
     let macs = MyMacsStore(fixture: .ready).macs
     let macBook = try #require(macs.first { $0.lifecycle == .serving })
     let studios = macs.filter { $0.hardware?.machineModel == "Mac Studio" }
 
     #expect(MyMacsPresentation.title(for: macBook, in: macs) == "MacBook Pro")
-    #expect(!MyMacsPresentation.title(for: macBook, in: macs).contains("••••"))
     #expect(MyMacsPresentation.supportLine(for: macBook).hasPrefix("Apple M4 Max"))
     #expect(!MyMacsPresentation.supportLine(for: macBook).contains("MacBook Pro"))
-    #expect(MyMacsPresentation.inventorySupportLine(for: macBook) == "Apple M4 Max")
-
     #expect(studios.count == 2)
+    #expect(Set(studios.map { MyMacsPresentation.title(for: $0, in: macs) }) == [
+        "Mac Studio · 1", "Mac Studio · 2",
+    ])
     for studio in studios {
         let title = MyMacsPresentation.title(for: studio, in: macs)
-        #expect(title.hasPrefix("Mac Studio · •••• "))
-        #expect(!title.contains(studio.serialNumber ?? "serial-not-reported"))
-
-        let compactTitle = MyMacsPresentation.bloomlineTitle(for: studio, in: macs)
-        #expect(compactTitle.hasPrefix("Mac Studio · #"))
-        #expect(!compactTitle.contains("•"))
-        #expect(compactTitle.hasSuffix(String(try #require(studio.serialNumber).suffix(4))))
+        #expect(title == MyMacsPresentation.title(for: studio, in: Array(macs.reversed())))
+        #expect(!title.contains(studio.providerID))
+    }
+    let secondStudio = MyMacsPresentation.filtered(
+        macs, searchText: "Mac Studio · 2", status: .all, attention: .all
+    )
+    #expect(secondStudio.count == 1)
+    for query in ["H2YVQ0STUDIO", "H2YUNTRUSTED", "Q6L4"] {
+        #expect(MyMacsPresentation.filtered(
+            macs, searchText: query, status: .all, attention: .all
+        ).isEmpty)
     }
 }
-
-#if DEBUG
-@Test("My Macs product preview resolves a deterministic fixture-aligned This Mac")
-@MainActor
-func myMacsPreviewIdentityMatchesInventoryFixture() throws {
-    let identity = try #require(SystemProfilerMachineIdentityProvider.previewIdentity(
-        environment: ["DARKBLOOM_PREVIEW_PRODUCT_DESTINATION": "my-macs"]
-    ))
-    let macs = MyMacsStore(fixture: .ready).macs
-    let thisMac = try #require(macs.first {
-        MyMacsPresentation.isThisMac($0, currentSerialNumber: identity.serialNumber)
-    })
-
-    #expect(identity.serialNumber == "FVFGH0STQ6L4")
-    #expect(thisMac.lifecycle == .serving)
-    #expect(MyMacsPresentation.title(for: thisMac) == "MacBook Pro")
-}
-#endif
 
 @Test("My Macs and Local API suppress network lifecycle toolbar controls")
 func productDestinationLifecycleControlScopeIsExplicit() {

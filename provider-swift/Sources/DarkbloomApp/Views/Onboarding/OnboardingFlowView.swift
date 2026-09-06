@@ -4,6 +4,7 @@ struct OnboardingFlowView: View {
     let identity: MachineIdentity
     let onExit: () -> Void
     let onFinish: (OnboardingCompletionChoice) -> Void
+    let exitTitle: String
 
     let flow: OnboardingFlowModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -13,10 +14,12 @@ struct OnboardingFlowView: View {
         identity: MachineIdentity,
         flow: OnboardingFlowModel? = nil,
         previewConfiguration: OnboardingPreviewConfiguration? = nil,
+        exitTitle: String = "Back to welcome",
         onExit: @escaping () -> Void,
         onFinish: @escaping (OnboardingCompletionChoice) -> Void
     ) {
         self.identity = identity
+        self.exitTitle = exitTitle
         self.onExit = onExit
         self.onFinish = onFinish
         self.flow = flow ?? OnboardingFlowModel(
@@ -98,6 +101,10 @@ struct OnboardingFlowView: View {
 
             Spacer()
 
+            OnboardingProgressView(step: flow.step)
+
+            Spacer()
+
             if flow.step != .complete {
                 Button {
                     if !flow.goBack() {
@@ -107,7 +114,7 @@ struct OnboardingFlowView: View {
                     HStack(spacing: 7) {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 9, weight: .semibold))
-                        Text(flow.step == .readiness ? "Back to welcome" : "Back")
+                        Text(flow.step == .readiness ? exitTitle : "Back")
                             .font(DarkbloomTheme.chivo(11, weight: .medium))
                     }
                     .foregroundStyle(DarkbloomTheme.ink.opacity(0.44))

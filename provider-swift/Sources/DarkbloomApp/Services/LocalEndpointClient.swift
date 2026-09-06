@@ -12,6 +12,8 @@ enum LocalEndpointError: Error, Equatable, LocalizedError {
     case httpError(statusCode: Int, detail: String?)
     /// No HTTP response at all — nothing is listening (or it hung).
     case unreachable(String)
+    /// The body ended without either SSE completion signal.
+    case prematureEndOfStream
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +24,8 @@ enum LocalEndpointError: Error, Equatable, LocalizedError {
                 + (detail.map { " \($0)" } ?? "")
         case .unreachable(let reason):
             "The local endpoint is not reachable. \(reason)"
+        case .prematureEndOfStream:
+            "The local endpoint closed the stream before the response finished."
         }
     }
 }
@@ -131,6 +135,7 @@ struct LocalEndpointClient: Sendable {
     /// that carries content or a finish reason; role-only chunks, comments,
     /// blank lines, and malformed `data:` payloads are skipped (tolerant by
     /// design — a broken chunk must not kill an otherwise-good stream).
+    /// EOF is successful only after a finish reason or the [DONE] sentinel.
     func streamChat(model: String, messages: [ChatMessage]) -> AsyncThrowingStream<ChatDelta, Error> {
         let request: URLRequest
         do {
@@ -142,15 +147,24 @@ struct LocalEndpointClient: Sendable {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
+                    try Task.checkCancellation()
                     let (lines, response) = try await lineTransport(request)
                     let status = Self.httpStatus(of: response)
                     guard (200..<300).contains(status) else {
                         throw LocalEndpointError.httpError(statusCode: status, detail: nil)
                     }
                     for try await line in lines {
+                        try Task.checkCancellation()
                         switch Self.parseSSELine(line) {
                         case .delta(let delta):
                             continuation.yield(delta)
+                            if let reason = delta.finishReason,
+                               !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                // Completion is authoritative even when the
+                                // transport omits [DONE] or later disconnects.
+                                continuation.finish()
+                                return
+                            }
                         case .done:
                             continuation.finish()
                             return
@@ -158,7 +172,8 @@ struct LocalEndpointClient: Sendable {
                             continue
                         }
                     }
-                    continuation.finish()
+                    try Task.checkCancellation()
+                    throw LocalEndpointError.prematureEndOfStream
                 } catch {
                     continuation.finish(throwing: Self.normalize(error))
                 }

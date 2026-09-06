@@ -393,7 +393,7 @@ struct LocalAPIStoreLiveTests {
         defer { store.stopMonitoring() }
 
         // Wait for the first probe cycle to reach a settled state.
-        for _ in 0..<300 where probe.probeCount == 0 {
+        for _ in 0..<300 where store.endpoint?.health != .reachable {
             try? await Task.sleep(for: .milliseconds(5))
         }
         #expect(store.endpoint?.health == .reachable)

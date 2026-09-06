@@ -73,5 +73,6 @@ extension OnboardingFlowModel {
         readinessItems = evaluation.items
         readinessCompletedCount = evaluation.completedCount
         readinessPhase = evaluation.phase
+        readinessFailureDetail = evaluation.failureMessage
     }
 }

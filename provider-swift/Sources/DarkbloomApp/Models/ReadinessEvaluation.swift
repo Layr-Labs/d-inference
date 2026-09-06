@@ -37,6 +37,7 @@ struct ReadinessEvaluation: Equatable, Sendable {
 
     let phase: ReadinessPhase
     let items: [Item]
+    var failureMessage: String? = nil
 
     var completedCount: Int {
         items.filter { $0.state == .complete || $0.state == .advisory }.count
@@ -88,7 +89,7 @@ enum ReadinessEvaluator {
                 ? detail(for: CheckID.macOS, in: checks, fallback: "Supported macOS version")
                 : failureDetail(checks: macOSCheck.checks, fallback: "A supported macOS version could not be confirmed."),
             action: macOSOK ? nil : advice(from: macOSCheck.checks)
-                ?? "Update this Mac to macOS Sonoma 14 or later, then run the check again.",
+                ?? "Update macOS to a version supported by this Darkbloom release, then run the check again.",
             state: macOSOK ? .complete : .issue,
             doctorCheckIDs: [CheckID.macOS]
         )
@@ -167,13 +168,14 @@ enum ReadinessEvaluator {
         ReadinessEvaluation(
             phase: .unavailable,
             items: [
-                ReadinessEvaluation.Item(id: "apple-silicon", title: "Apple silicon", detail: message, action: "Run the system check again.", state: .issue, doctorCheckIDs: [CheckID.hardware, CheckID.metalGPU]),
+                ReadinessEvaluation.Item(id: "apple-silicon", title: "Apple silicon", detail: "Waiting for the system check", action: nil, state: .waiting, doctorCheckIDs: [CheckID.hardware, CheckID.metalGPU]),
                 ReadinessEvaluation.Item(id: "supported-macos", title: "macOS", detail: "Waiting for the system check", action: nil, state: .waiting, doctorCheckIDs: [CheckID.macOS]),
                 ReadinessEvaluation.Item(id: "secure-enclave", title: "Secure Enclave", detail: "Waiting for the system check", action: nil, state: .waiting, doctorCheckIDs: [CheckID.secureEnclave]),
                 ReadinessEvaluation.Item(id: "unified-memory", title: "Unified memory", detail: "Waiting for the system check", action: nil, state: .waiting, doctorCheckIDs: [CheckID.hardware]),
                 ReadinessEvaluation.Item(id: "available-storage", title: "Available storage", detail: "Waiting for the system check", action: nil, state: .waiting, doctorCheckIDs: []),
                 ReadinessEvaluation.Item(id: "boot-security", title: "Boot security", detail: "Waiting for the system check", action: nil, state: .waiting, doctorCheckIDs: [CheckID.sip, CheckID.authenticatedRoot]),
-            ]
+            ],
+            failureMessage: message
         )
     }
 

@@ -6,6 +6,46 @@ import Testing
 @Suite("Onboarding live model preparation")
 @MainActor
 struct OnboardingPreparationLiveTests {
+    @Test("runtime-ineligible and unknown installed models are never recommended despite enough RAM")
+    func runtimeGateOverridesInstalledAndRAMPreference() async throws {
+        let gated = catalogModel(id: "org/gated", minRAM: 24, size: 4_000_000_000)
+        let supported = catalogModel(id: "org/supported", minRAM: 8, size: 1_000_000_000)
+        for status in [CLIModelRuntimeEligibility.Status.ineligible, .unknown] {
+            let plan = try await service(snapshot: snapshot(
+                catalog: [gated, supported], local: [localModel(id: gated.id)], memoryGB: 128,
+                runtimeEligibility: [
+                    gated.id: .init(status: status, reason: "This runtime is unavailable."),
+                    supported.id: .init(status: .eligible, reason: "This runtime is supported."),
+                ])).fetchPlan()
+            #expect(plan.recommendedModelID == supported.id)
+            #expect(plan.choices.map(\.id) == [supported.id])
+            #expect(plan.choices.first?.runtimeEligibility.status == .eligible)
+        }
+    }
+
+    @Test("missing runtime metadata blocks preparation with provider-update guidance")
+    func missingRuntimeMetadataRequiresUpdate() async {
+        let model = catalogModel(id: "org/unverified", minRAM: 8, size: 1_000_000_000)
+        let service = service(snapshot: snapshot(
+            catalog: [model], memoryGB: 128, runtimeEligibility: [:]))
+        await #expect(throws: OnboardingPreparationServiceError.runtimeUnavailable(
+            CLIModelRuntimeEligibility.unreported.reason)) {
+            try await service.fetchPlan()
+        }
+    }
+
+    @Test("a catalog containing only an ineligible runtime explains why preparation is blocked")
+    func ineligibleRuntimeReasonIsActionable() async {
+        let model = catalogModel(id: "org/ineligible", minRAM: 8, size: 1_000_000_000)
+        let reason = "Requires Apple M5. Unavailable on this Mac: Apple M5."
+        let service = service(snapshot: snapshot(
+            catalog: [model], memoryGB: 128,
+            runtimeEligibility: [model.id: .init(status: .ineligible, reason: reason)]))
+        await #expect(throws: OnboardingPreparationServiceError.runtimeUnavailable(reason)) {
+            try await service.fetchPlan()
+        }
+    }
+
     @Test("Recommendation prefers a compatible installed model without hardcoded ids")
     func recommendationPrefersInstalled() async throws {
         let installed = catalogModel(id: "catalog/already-here", minRAM: 8, size: 2_000_000_000)
@@ -503,6 +543,7 @@ struct OnboardingPreparationLiveTests {
             catalog: snapshot.catalog,
             local: snapshot.local,
             downloadPlans: plans,
+            runtimeEligibility: snapshot.runtimeEligibility,
             warmModelIDs: snapshot.warmModelIDs,
             servingModelID: snapshot.servingModelID,
             physicalMemoryGB: snapshot.physicalMemoryGB,
@@ -518,12 +559,16 @@ struct OnboardingPreparationLiveTests {
         catalog: [CLICatalogModel],
         local: [CLILocalModelEntry] = [],
         memoryGB: Int,
-        downloadPlans: [String: CLIModelDownloadStoragePlan] = [:]
+        downloadPlans: [String: CLIModelDownloadStoragePlan] = [:],
+        runtimeEligibility: [String: CLIModelRuntimeEligibility]? = nil
     ) -> ModelLibrarySnapshot {
         ModelLibrarySnapshot(
             catalog: catalog,
             local: local,
             downloadPlans: downloadPlans,
+            runtimeEligibility: runtimeEligibility ?? Dictionary(uniqueKeysWithValues: catalog.map {
+                ($0.id, CLIModelRuntimeEligibility(status: .eligible, reason: "Fixture runtime is eligible."))
+            }),
             warmModelIDs: [],
             servingModelID: nil,
             physicalMemoryGB: memoryGB,

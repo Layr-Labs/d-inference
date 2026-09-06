@@ -163,7 +163,6 @@ struct DoctorHumanReportRendererTests {
             bootSecurityGuide: "macos: update macOS",
             support: DoctorSupportInfo(
                 coordinator: "http://localhost:8080",
-                serial: "C02TEST",
                 authTokenPresent: true,
                 mdmEnrolled: "no",
                 pidFile: "/tmp/darkbloom.pid"
@@ -188,7 +187,6 @@ struct DoctorHumanReportRendererTests {
 
             Support
               coordinator: http://localhost:8080
-              serial: C02TEST
               auth token: present
               mdm enrolled: no
               pid file: /tmp/darkbloom.pid

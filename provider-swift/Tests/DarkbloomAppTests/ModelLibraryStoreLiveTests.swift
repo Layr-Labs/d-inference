@@ -144,12 +144,14 @@ struct ModelLibraryStoreLiveTests {
 
     private func makeSnapshot(
         catalog: [CLICatalogModel] = [],
+        catalogError: ModelCatalogCLIError? = nil,
         local: [CLILocalModelEntry] = [],
         downloadPlans: [String: CLIModelDownloadStoragePlan] = [:],
         automaticallyPlanDownloads: Bool = true,
         warmModelIDs: Set<String> = [],
         servingModelID: String? = nil,
-        physicalMemoryGB: Int? = 32
+        physicalMemoryGB: Int? = 32,
+        runtimeEligibility: [String: CLIModelRuntimeEligibility]? = nil
     ) -> ModelLibrarySnapshot {
         let plans: [String: CLIModelDownloadStoragePlan]
         if automaticallyPlanDownloads, downloadPlans.isEmpty {
@@ -170,8 +172,12 @@ struct ModelLibraryStoreLiveTests {
         }
         return ModelLibrarySnapshot(
             catalog: catalog,
+            catalogError: catalogError,
             local: local,
             downloadPlans: plans,
+            runtimeEligibility: runtimeEligibility ?? Dictionary(uniqueKeysWithValues: catalog.map {
+                ($0.id, CLIModelRuntimeEligibility(status: .eligible, reason: "Fixture runtime is eligible."))
+            }),
             warmModelIDs: warmModelIDs,
             servingModelID: servingModelID,
             physicalMemoryGB: physicalMemoryGB,
@@ -218,6 +224,59 @@ struct ModelLibraryStoreLiveTests {
     }
 
     // MARK: Snapshot → rows
+
+    @Test("enough RAM cannot override a refused or unknown runtime verdict")
+    func runtimeEligibilityBlocksRAMOverride() async throws {
+        let model = try #require(catalogEntry(id: "org/runtime-gated", minRamGb: 16))
+        let cases: [CLIModelRuntimeEligibility] = [
+            .init(status: .ineligible, reason: "Requires hardware unavailable on this Mac."),
+            .init(status: .unknown, reason: "Runtime detection was unavailable."),
+        ]
+        for verdict in cases {
+            let cli = StubModelCatalogCLI(snapshot: .success(makeSnapshot(
+                catalog: [model], physicalMemoryGB: 128,
+                runtimeEligibility: [model.id: verdict])))
+            let store = ModelLibraryStore(live: cli)
+            await store.start()
+            #expect(store.models.first?.fit.runtimeBlockReason == verdict.reason)
+            #expect(store.models.first?.fit.canRunOnThisMac == false)
+            #expect(await store.beginDownload(modelID: model.id, allowingIncompatibleModel: true)
+                == .unavailable(verdict.reason))
+            #expect(await store.resumeDownload(modelID: model.id) == .unavailable(verdict.reason))
+            #expect(cli.prepareCount == 0)
+            #expect(cli.channels.isEmpty)
+        }
+    }
+
+    @Test("missing runtime verdicts never become confirmed RAM compatibility")
+    func missingRuntimeVerdictIsUnknown() async throws {
+        let model = try #require(catalogEntry(id: "org/model", minRamGb: 8))
+        let cli = StubModelCatalogCLI(snapshot: .success(makeSnapshot(
+            catalog: [model], runtimeEligibility: [:])))
+        let store = ModelLibraryStore(live: cli)
+        await store.start()
+        #expect(store.models.first?.fit == .runtimeUnknown(reason: CLIModelRuntimeEligibility.unreported.reason))
+    }
+
+    @Test("runtime eligibility is rechecked after a delayed download preflight")
+    func changedRuntimeVerdictFencesDelayedStart() async throws {
+        let model = try #require(catalogEntry(id: "org/delayed", minRamGb: 8))
+        let gate = StubPreparationGate()
+        let cli = StubModelCatalogCLI(
+            snapshot: .success(makeSnapshot(catalog: [model])), preparationGate: gate)
+        let store = ModelLibraryStore(live: cli)
+        await store.start()
+        let start = Task { await store.beginDownload(modelID: model.id) }
+        #expect(await _eventually { cli.prepareCount == 1 })
+        cli.setSnapshot(.success(makeSnapshot(catalog: [model], runtimeEligibility: [
+            model.id: .init(status: .ineligible, reason: "Runtime became unavailable."),
+        ])))
+        await store.refresh()
+        await gate.open()
+        #expect(await start.value == .invalidState)
+        #expect(cli.channels.isEmpty)
+        #expect(store.models.first?.installation == .notInstalled)
+    }
 
     @Test("live start builds rows from catalog + local list + daemon warmth")
     func startBuildsRows() async {
@@ -286,6 +345,156 @@ struct ModelLibraryStoreLiveTests {
         store.retryCatalog()
         #expect(await _eventually { store.catalogState == .available(lastUpdated: makeSnapshot().fetchedAt) })
         #expect(cli.fetchCount == 2)
+    }
+
+    @Test("First offline refresh exposes installed models for local use without asserting eligibility")
+    func offlineFirstRefreshKeepsLocalModels() async throws {
+        let modelID = "local/custom"
+        let cli = StubModelCatalogCLI(snapshot: .success(makeSnapshot(
+            catalogError: .exited(7, message: "registry unavailable"),
+            local: [localEntry(id: modelID)],
+            warmModelIDs: [modelID]
+        )))
+        let store = ModelLibraryStore(live: cli)
+        await store.start()
+
+        #expect(store.catalogState == .offline(message: "registry unavailable", showingCachedResults: false))
+        let model = try #require(store.installedModels.first)
+        #expect(model.id == modelID)
+        #expect(model.origin == .localOnly)
+        #expect(model.fit == .unknown)
+        #expect(model.runtime == .warm)
+        try LocalAPIStartPreflight.validateModel(modelID: modelID, models: store.models, modelsAreLive: store.isLive)
+        #expect(await store.beginDownload(modelID: modelID) == .unavailable(
+            "This model is not available in the current catalog."))
+        #expect(cli.prepareCount == 0)
+        #expect(cli.channels.isEmpty)
+    }
+
+    @Test("Offline refresh preserves cached eligibility while replacing installed and warm state")
+    func offlineRefreshPreservesEligibilityAndRefreshesInventory() async throws {
+        let eligible = try #require(catalogEntry(id: "catalog/eligible", minRamGb: 16))
+        let refused = try #require(catalogEntry(id: "catalog/refused", minRamGb: 16))
+        let downloadable = try #require(catalogEntry(id: "catalog/download", minRamGb: 16))
+        let reason = "The installed runtime cannot load this model."
+        let cli = StubModelCatalogCLI(snapshot: .success(makeSnapshot(
+            catalog: [eligible, refused, downloadable],
+            local: [localEntry(id: eligible.id), localEntry(id: "local/removed")],
+            warmModelIDs: [eligible.id],
+            runtimeEligibility: [
+                eligible.id: .init(status: .eligible, reason: "Supported"),
+                refused.id: .init(status: .ineligible, reason: reason),
+                downloadable.id: .init(status: .eligible, reason: "Supported"),
+            ]
+        )))
+        let store = ModelLibraryStore(live: cli)
+        await store.start()
+        store.selectModel(id: eligible.id)
+
+        cli.setSnapshot(.success(makeSnapshot(
+            catalogError: .exited(7, message: "registry unavailable"),
+            local: [localEntry(id: refused.id), localEntry(id: "local/new")]
+        )))
+        await store.refresh()
+
+        #expect(store.catalogState == .offline(message: "registry unavailable", showingCachedResults: true))
+        #expect(Set(store.installedModels.map(\.id)) == [refused.id, "local/new"])
+        #expect(!store.models.contains { $0.id == "local/removed" })
+        #expect(store.selectedModelID == eligible.id)
+        #expect(store.selectedModel?.installation == .notInstalled)
+        #expect(store.selectedModel?.runtime == .cold)
+        #expect(store.selectedModel?.fit == .fits)
+        let blocked = try #require(store.models.first { $0.id == refused.id })
+        #expect(blocked.fit == .runtimeIneligible(reason: reason))
+        #expect(blocked.origin == .catalog)
+        #expect(throws: LocalAPIStartError.self) {
+            try LocalAPIStartPreflight.validateModel(modelID: refused.id, models: store.models, modelsAreLive: true)
+        }
+        try LocalAPIStartPreflight.validateModel(modelID: "local/new", models: store.models, modelsAreLive: true)
+        #expect(await store.beginDownload(modelID: downloadable.id) == .unavailable(
+            "Reconnect to refresh the catalog before downloading."))
+        #expect(cli.prepareCount == 0)
+        #expect(cli.channels.isEmpty)
+
+        // Recovery supplies the next authoritative CLI verdict.
+        cli.setSnapshot(.success(makeSnapshot(
+            catalog: [eligible, refused, downloadable], local: [localEntry(id: refused.id)]
+        )))
+        await store.refresh()
+        #expect(store.catalogState == .available(lastUpdated: makeSnapshot().fetchedAt))
+        #expect(store.installedModels.first?.fit == .fits)
+    }
+
+    @Test("A missing catalog verdict cannot clear a cached runtime refusal")
+    func missingVerdictPreservesCachedRefusal() async throws {
+        let entry = try #require(catalogEntry(id: "catalog/refused"))
+        let refusal = CLIModelRuntimeEligibility(status: .ineligible, reason: "Unsupported runtime")
+        let cli = StubModelCatalogCLI(snapshot: .success(makeSnapshot(
+            catalog: [entry], local: [localEntry(id: entry.id)], runtimeEligibility: [entry.id: refusal]
+        )))
+        let store = ModelLibraryStore(live: cli)
+        await store.start()
+        cli.setSnapshot(.success(makeSnapshot(
+            catalog: [entry], local: [localEntry(id: entry.id)], runtimeEligibility: [:]
+        )))
+        await store.refresh()
+        #expect(store.installedModels.first?.fit == .runtimeIneligible(reason: refusal.reason))
+        cli.setSnapshot(.success(makeSnapshot(local: [localEntry(id: entry.id)])))
+        await store.refresh()
+        #expect(store.installedModels.first?.fit == .runtimeIneligible(reason: refusal.reason))
+    }
+
+    @Test("Offline refresh preserves paused progress and refuses resume before preflight")
+    func offlineResumeDoesNotPrepareDownload() async throws {
+        let entry = try #require(catalogEntry(id: "catalog/download", sizeBytes: 4_000))
+        let cli = StubModelCatalogCLI(snapshot: .success(makeSnapshot(catalog: [entry])))
+        let store = ModelLibraryStore(live: cli)
+        await store.start()
+        #expect(await store.beginDownload(modelID: entry.id) == .applied)
+        #expect(await _eventually { cli.channel(id: 1) != nil })
+        let channel = try #require(cli.channel(id: 1))
+        channel.continuation.yield(.progress(file: "weights", bytes: 1_000, total: 4_000))
+        #expect(await _eventually { store.models.first?.installation.progress?.downloadedBytes == 1_000 })
+        #expect(store.pauseDownload(modelID: entry.id) == .applied)
+        let paused = store.models.first?.installation
+        cli.setSnapshot(.success(makeSnapshot(catalogError: .exited(7, message: "registry unavailable"))))
+        await store.refresh()
+
+        #expect(store.models.first?.installation == paused)
+        #expect(await store.resumeDownload(modelID: entry.id) == .unavailable(
+            "Reconnect to refresh the catalog before downloading."))
+        #expect(cli.prepareCount == 1)
+        #expect(cli.channels.count == 1)
+    }
+
+    @Test("A cancelled refresh does not publish a returned offline snapshot")
+    func cancelledRefreshDoesNotPublishOfflineInventory() async {
+        let cli = StubModelCatalogCLI(snapshot: .success(makeSnapshot(local: [localEntry(id: "local/original")])))
+        let store = ModelLibraryStore(live: cli)
+        await store.start()
+        cli.setSnapshot(.success(makeSnapshot(
+            catalogError: .exited(7, message: "registry unavailable"), local: [localEntry(id: "local/new")]
+        )))
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await store.refresh()
+        }
+        await task.value
+        #expect(store.catalogState == .available(lastUpdated: makeSnapshot().fetchedAt))
+        #expect(store.installedModels.map(\.id) == ["local/original"])
+    }
+
+    @Test("Returning after a cancelled first load can fetch the installed inventory")
+    func cancelledInitialLoadCanRestart() async {
+        let cli = StubModelCatalogCLI(snapshot: .failure(CancellationError()))
+        let store = ModelLibraryStore(live: cli)
+        await store.start()
+        #expect(store.catalogState != .loading)
+        cli.setSnapshot(.success(makeSnapshot(local: [localEntry(id: "local/installed")])))
+        await store.start()
+        #expect(cli.fetchCount == 2)
+        #expect(store.installedModels.map(\.id) == ["local/installed"])
+        #expect(store.catalogState == .available(lastUpdated: makeSnapshot().fetchedAt))
     }
 
     @Test("insufficient download plan blocks the CLI before process creation")

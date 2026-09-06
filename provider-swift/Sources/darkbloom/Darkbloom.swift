@@ -90,7 +90,7 @@ public func runUpdateBannerIfEnabled() async {
     // wrapper is uninitialized outside ArgumentParser's decoding lifecycle
     // and accessing it causes a fatal error. Pass nil to use defaults.
     let coordinatorURL: String
-    if let snapshot = try? loadRuntimeSnapshot(configPath: nil) {
+    if let snapshot = try? loadRuntimeSnapshot(configPath: nil, migrateOnDisk: false) {
         coordinatorURL = snapshot.config.coordinator.url
     } else {
         coordinatorURL = "https://api.darkbloom.dev"
@@ -116,9 +116,9 @@ struct RuntimeSnapshot {
     let models: [ModelInfo]
 }
 
-func loadRuntimeSnapshot(configOptions: ConfigOptions) throws -> RuntimeSnapshot {
+func loadRuntimeSnapshot(configOptions: ConfigOptions, migrateOnDisk: Bool = true) throws -> RuntimeSnapshot {
     Darkbloom.ensureLogging()
-    return try loadRuntimeSnapshot(configPath: configOptions.config)
+    return try loadRuntimeSnapshot(configPath: configOptions.config, migrateOnDisk: migrateOnDisk)
 }
 
 func loadRuntimeSnapshot(

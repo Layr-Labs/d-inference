@@ -221,6 +221,12 @@ describe("withdrawalStatusPresentation", () => {
     expect(withdrawalStatusPresentation("pending").label).toBe("Processing");
   });
 
+  it("identifies an unknown withdrawal held for manual reconciliation", () => {
+    const copy = withdrawalStatusPresentation("pending", false, "manual_reconciliation_required");
+    expect(copy.label).toBe("Needs review");
+    expect(copy.detail).toContain("funds remain reserved");
+  });
+
   it("transferred -> On the way, via daily payout", () => {
     const p = withdrawalStatusPresentation("transferred");
     expect(p.label).toBe("On the way");

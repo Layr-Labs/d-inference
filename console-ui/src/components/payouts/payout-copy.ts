@@ -29,6 +29,11 @@ const ACCOUNT_CLOSED_MESSAGE =
 // Copy for withdraw-path error codes. Codes absent here fall through to the
 // raw backend message.
 const WITHDRAW_ERROR_COPY = new Map<string, Omit<PayoutErrorPresentation, "code">>([
+  ["quote_paused", {
+    message: "Bank withdrawals are paused. Your unsubmitted confirmation has been released.",
+    refreshStatus: true,
+    closeModal: true,
+  }],
   ["stripe_account_gone", {
     message: ACCOUNT_CLOSED_MESSAGE,
     refreshStatus: true,
@@ -192,10 +197,14 @@ export function classifyDashboardError(err: unknown): PayoutErrorPresentation {
 // (including whether the instant fee was refunded).
 export function withdrawSuccessMessage(resp: {
   status: string;
+  payout_rail?: "connect" | "global";
   method: string;
   eta?: string;
   message?: string;
 }): string {
+  if (resp.payout_rail === "global") return resp.status === "posted"
+    ? "Your bank transfer has been sent. Your bank may take several business days to credit it."
+    : "Your withdrawal is being processed. Track its status in Recent withdrawals.";
   const eta = resp.eta ? ` (ETA ${resp.eta})` : "";
   if (resp.method === "instant") {
     if (resp.status === "submitted") {
@@ -256,8 +265,16 @@ export interface WithdrawalStatusPresentation {
 export function withdrawalStatusPresentation(
   status: string,
   refunded?: boolean,
+  reason?: string,
 ): WithdrawalStatusPresentation {
+  if (status === "pending" && reason === "manual_reconciliation_required") {
+    return { label: "Needs review", detail: "Contact support to check this withdrawal. Your funds remain reserved; do not submit another payment." };
+  }
+  if (status === "processing" && reason === "under_review") {
+    return { label: "Under review", detail: "Stripe is reviewing this withdrawal. You do not need to submit it again." };
+  }
   switch (status) {
+    case "processing":
     case "pending":
       return { label: "Processing", detail: "Your withdrawal is being processed." };
     case "transferred":
@@ -265,6 +282,11 @@ export function withdrawalStatusPresentation(
         label: "On the way",
         detail: "Arrives via Stripe's daily payout in your local currency.",
       };
+    case "posted":
+      return { label: "Sent to bank", detail: "Funds left Stripe. Your bank may take several business days to credit your account." };
+    case "returned":
+    case "canceled":
+      return refunded ? { label: "Returned to balance", detail: "The transfer was returned and your available earnings were restored." } : { label: "Return pending", detail: "Your transfer is being reconciled." };
     case "paid":
       return { label: "Paid", detail: "Paid out to your bank or card." };
     case "failed":

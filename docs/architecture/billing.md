@@ -1,11 +1,11 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-04 · commit `075d37a91`
+> Last updated: 2026-09-06 · commit `8c22f0cdb`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
 settles the provider-reported cost after the terminal message, and credits the
-provider a withdrawable share that it withdraws through Stripe Connect. This
+provider a withdrawable share that it withdraws through Stripe. Connect and the Global Payouts adapter share the earned-balance ledger. This
 page explains the money path and what it guarantees. Constants, formulas,
 routes, and env vars are tabulated in
 [`reference/pricing-model.md`](../reference/pricing-model.md); the consumer
@@ -31,7 +31,7 @@ how-to is [`consumer/billing.md`](../consumer/billing.md).
   credits. `users.role = "service"` (`coordinator/store/interface.go`
   `RoleService`) marks wholesale partners.
 - **Two balance columns.** `balances.balance_micro_usd` is spendable;
-  `balances.withdrawable_micro_usd` is the earned subset that Stripe Connect
+  `balances.withdrawable_micro_usd` is the earned subset that Stripe
   may pay out (`coordinator/store/postgres.go` DDL and
   `coordinator/store/postgres_withdrawable_migration.go`).
 
@@ -186,6 +186,18 @@ sequence is stated under Failure modes.
 Withdrawal row state machine: `pending → transferred → paid | failed`
 (`handleStripeWithdraw` comment block). There is no coordinator-side payout
 schedule or threshold beyond `MinWithdrawMicroUSD`.
+
+### International bank withdrawals
+
+When Global Payouts is enabled, the server returns its explicit country policy in the existing payout status response. New destinations outside the configured Connect transfer region use Stripe-hosted recipient onboarding. Existing ready Connect destinations remain on Connect (`coordinator/api/global_payouts_onboarding.go`, `maybeGlobalOnboard`). With the feature disabled, users without a Global Payouts recipient retain the legacy Connect onboarding and country menu, even when Global Payouts credentials are staged. Transient Stripe bank-lookup failures preserve the last verified destination and return a temporary error. The UI presents bank setup and withdrawal without asking users to select payment infrastructure.
+
+`handleGlobalPayoutQuote` (`coordinator/api/global_payouts_withdraw.go`) verifies recipient and bank eligibility and stores an immutable request plus local-currency estimate without moving earnings. Confirming the quote calls `BeginGlobalPayout` (`coordinator/store/global_payouts_postgres.go`), which locks the payout and recipient, guards both balance columns, and records the debit in one transaction. Connect withdrawals contend on the same balance row.
+
+`syncGlobalPayout` (`coordinator/api/global_payouts_reconcile.go`) uses a persistent idempotency key and reconciles current Stripe state after webhook notifications. Leases bound concurrent sends. Ambiguous results retain the debit; repeated confirmations retain the original identity even after unlinking. A definitive rejection of the first send is recorded with `RecordGlobalPayoutRejection` before the refund transaction; subsequent workers apply that saved rejection without another send if the refund write fails. A bank return refunds once in the same transaction as its state change. Known external payments continue to reconcile against their immutable source even when the configured funding account changes. Old unsubmitted quotes are invalidated before debit; a confirmed intent with no previous dispatch is refunded if its funding source changed. Ambiguous attempts retain their debit. After twelve hours without an external ID, `GlobalPayout.RequiresManualReconciliation` excludes the marked payout from automatic scans and claims while retaining its debit and history. The UI labels `posted` as sent, not paid. The [rollout runbook](../operations/global-payouts.md) defines live validation and rollback obligations.
+
+`useStripeWithdrawal` (`console-ui/src/components/payouts/useStripeWithdrawal.ts`) saves the confirmation identity in account-scoped browser storage before sending it. Global Payouts status loading restores that identity before enabling another withdrawal; Connect status and submission do not read this storage. Recovery remains available after remounts, zero remaining balance, or paused admissions. Storage failures stop Global Payouts submission; credentials and full bank details are not stored.
+
+Recipient limits are stored in API minor units and shown before review. USD destination bounds are checked before requesting a quote; foreign-currency bounds are checked against Stripe's credited quote amount and its amount-limit errors. A USD input is never compared directly with a foreign-currency floor (`coordinator/billing/globalpayouts/recipient_limits.go`, `Country.Limits`).
 
 ### Consumer referral
 

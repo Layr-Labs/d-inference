@@ -228,6 +228,7 @@ export default function BillingContent() {
 
           {/* Withdraw to Bank (Stripe Connect Express) */}
           <StripePayoutsCard
+              confirmationPending={payouts.withdrawConfirmationPending}
             status={payouts.status}
             withdrawals={payouts.withdrawals}
             balanceMicroUsd={balance?.balance_micro_usd ?? 0}
@@ -431,6 +432,8 @@ export default function BillingContent() {
       {/* Stripe Withdraw Modal */}
       <PayoutModal open={payouts.withdrawOpen} onClose={() => !payouts.withdrawLoading && payouts.setWithdrawOpen(false)}>
         <StripeWithdrawModal
+          quote={payouts.withdrawQuote}
+          confirmationPending={payouts.withdrawConfirmationPending}
           status={payouts.status}
           balanceMicroUsd={balance?.balance_micro_usd ?? 0}
           amount={payouts.withdrawAmount}

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-06 · commit `b5e76a4fc`
+> Last updated: 2026-09-06 · commit `d01b82078`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -84,10 +84,12 @@ CI also applies the [restored-resource cleanup](build.md#restored-swiftpm-runtim
 before building the debug test product.
 
 `scripts/run-provider-tests.sh` runs exact allocator integration, the controlled
-ledger interleaving, and the real process-environment projection test in separate
-processes. The general suite excludes those cases; each isolated invocation
-uses the existing nonempty/no-skips guard. A general-suite failure does not
-silence the isolated gates, and isolation does not relax their assertions.
+ledger interleaving, the real process-environment projection test and the SSD
+sidecar stage-deadline test in separate processes. The general suite excludes
+those cases; each isolated invocation uses the existing nonempty/no-skips guard.
+A general-suite failure does not silence the isolated gates. Isolation keeps the
+stage-deadline assertion at the production budget without unrelated suite load;
+it does not change an assertion or runtime resource-selection rule.
 
 ```bash
 make provider-test

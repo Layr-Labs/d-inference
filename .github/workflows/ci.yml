@@ -135,13 +135,15 @@ jobs:
           key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
             spm-v3-${{ runner.os }}-
-      - name: Discard cached metallibs and release resource bundles
+      - name: Discard cached runtime resources before rebuilding
         run: |
           for root in provider-swift/.build libs/mlx-swift-lm/.build; do
             [ -d "$root" ] || continue
             find "$root" -type f -name mlx.metallib -delete
+            # The inactive package may also contain a divergent debug bundle
+            # from an older cache. Each subsequent build recreates its resources.
             find "$root" -mindepth 3 -maxdepth 3 -type d \
-              -path "$root/*-apple-macosx/release/*.bundle" -prune -exec rm -rf {} +
+              -path "$root/*-apple-macosx/*/*.bundle" -prune -exec rm -rf {} +
           done
       - name: Install pinned Rust toolchain for production prompt parity
         run: |

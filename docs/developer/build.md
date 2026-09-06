@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-06 · commit `b07e34fd6`
+> Last updated: 2026-09-06 · commit `d01b82078`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -153,13 +153,13 @@ produced library.
 
 #### Restored SwiftPM runtime resources
 
-The Provider Tests job removes restored metallibs and release-configuration
-resource bundles before building its debug test product
-(`.github/workflows/ci.yml`). The shared cache warmer builds release provider
-products, so retaining those bundles alongside a fresh debug bundle makes
-runtime resource discovery ambiguous. Release-bundle removal is limited to
-platform/configuration output directories; compiled objects and debug bundles
-remain cached. Ambiguous runtime resources remain an error.
+The Provider Tests job removes restored metallibs and resource bundles from
+all macOS build configurations in both package caches before building its debug
+test product (`.github/workflows/ci.yml`). An inactive package's cached debug
+bundle can contain older source just as a release bundle can. Each subsequent
+package build recreates its own resources; compiled objects and dependency
+checkouts remain cached. Runtime lookup accepts byte-identical copies and
+continues to reject divergent copies.
 
 The separate [signing-validation workflow](../operations/provider-release.md#environment-free-signing-validation)
 checks packaging and Apple signing without selecting a deployment environment.

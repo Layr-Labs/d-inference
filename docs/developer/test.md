@@ -1047,6 +1047,22 @@ supplement because its full connected routing fixture already includes tools
 and vision. Neither test's process success constitutes broad answer-quality
 acceptance; apply the [release acceptance criteria](../design/release-090-acceptance.md).
 
+The opt-in `ReleaseCoResidencyLiveTests` suite covers the exact Qwen 3.6,
+GPT-OSS 20B and Gemma 4 QAT artifacts in three live slots. Set
+`DARKBLOOM_RELEASE_CORESIDENCY_CONFIG` to the reviewed fixture and
+`DARKBLOOM_RELEASE_CORESIDENCY_CONFIG_SHA256` to its SHA256, then select only
+`ReleaseCoResidencyLiveTests` in the separately built, owned test runner.
+The fixture binds model paths, canonical prompt tokens, metallib and isolated
+ephemeral cache paths; its declared operator memory cap must match the
+environment. It uses detected hardware and normal admission/MTP/cache policy.
+After measured Qwen SSD prefix consumption, it requires real generation during
+each newcomer load and grant shrink, then cancellation, reservation drain,
+recovery and grant growth after unload. Cleanup is awaited on failure as well
+as success. This checks generation/load overlap after restore, not concurrent
+SSD I/O. The suite skips ordinary CI when no fixture is supplied; a release run
+must execute its one test with no skips and retain the complete cleanup report.
+The harness is prepared; these instructions do not claim a completed live run.
+
 Owned two-host startup waits up to five minutes for the existing GPU ≤42°C
 and load1 ≤4 entry thresholds. Identity, disk, nonfinite measurements and
 foreign processes still refuse immediately. Lease pings and cancellation

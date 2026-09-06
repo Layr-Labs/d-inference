@@ -7,21 +7,15 @@ struct ChatFailureNotice: View {
     let onOpenLocalAPI: (() -> Void)?
     let onOpenModels: (() -> Void)?
     let onDismiss: (() -> Void)?
+    var hasInlineStart = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "exclamationmark.bubble")
-                    .foregroundStyle(ProductPalette.warning)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(failure.title)
-                        .font(.system(size: 14, weight: .semibold))
-                    Text(failure.detail)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            HStack(alignment: .top, spacing: 12) {
+                Text(summary)
+                    .font(DarkbloomTheme.chivo(13, weight: .medium))
+                    .foregroundStyle(StudioPalette.ink)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 if let onDismiss {
                     Button(action: onDismiss) { Image(systemName: "xmark") }
@@ -32,35 +26,40 @@ struct ChatFailureNotice: View {
             }
 
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) { actions }
-                VStack(alignment: .leading, spacing: 8) { actions }
+                HStack(spacing: 16) { actions }
+                VStack(alignment: .leading, spacing: 10) { actions }
             }
-            .controlSize(.small)
+            .font(DarkbloomTheme.chivo(12))
+            .foregroundStyle(StudioPalette.accent)
+
+            ChatLocalStartDetails(summary: "Details", detail: failure.title + "\n" + failure.detail)
         }
-        .padding(14)
-        .frame(maxWidth: 780, alignment: .leading)
-        .background(ProductPalette.elevatedSurface, in: RoundedRectangle(cornerRadius: 12))
-        .overlay { RoundedRectangle(cornerRadius: 12).stroke(ProductPalette.stroke) }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
+    }
+
+    private var summary: String {
+        if failure == .selectedModelUnavailable { return "Choose an available model above to continue." }
+        if failure == .noModels { return "Choose a local model for this chat." }
+        if failure == .noDiscovery { return "Start a local model to send your message." }
+        if onRetry != nil { return "The reply couldn’t finish. You can try it again." }
+        return "Your local connection needs attention. Your draft is still here."
     }
 
     @ViewBuilder
     private var actions: some View {
         if let onRetry {
-            Button("Try Again", action: onRetry)
-                .buttonStyle(.borderedProminent)
+            Button("Try again", action: onRetry)
+                .buttonStyle(StudioPrimaryButtonStyle())
                 .help("Retry the failed turn without adding your message again")
         }
         if failure.recovery == .models, let onOpenModels {
-            Button("Open Models", action: onOpenModels).buttonStyle(.bordered)
+            Button("Open Library", action: onOpenModels).buttonStyle(.borderless)
         } else if let onOpenLocalAPI, failure.recovery != nil {
-            Button("Open Local API", action: onOpenLocalAPI).buttonStyle(.bordered)
+            Button(hasInlineStart ? "Diagnostics" : "Connection settings", action: onOpenLocalAPI)
+                .buttonStyle(.borderless)
         }
         if let onCheckConnection {
-            Button("Check Connection", action: onCheckConnection).buttonStyle(.bordered)
+            Button("Check connection", action: onCheckConnection).buttonStyle(.borderless)
         }
     }
 }

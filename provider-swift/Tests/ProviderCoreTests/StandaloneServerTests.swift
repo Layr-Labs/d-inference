@@ -217,7 +217,9 @@ import Testing
             },
             makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
     try await server.start()
-    #expect(await server.waitUntilBound(timeoutSeconds: 10))
+    // Full CI also starts signed-runtime and filesystem recovery fixtures;
+    // allow scheduler contention while still requiring a real bound server.
+    #expect(await server.waitUntilBound(timeoutSeconds: 30))
 
     let stopper = Task { await server.stop() }
 

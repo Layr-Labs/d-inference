@@ -8,8 +8,6 @@ struct ContributionLedgerView: View {
     private var scope: ContributionScope { store.scope }
 
     var body: some View {
-        @Bindable var bindableStore = store
-
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 18) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -23,14 +21,24 @@ struct ContributionLedgerView: View {
 
                 Spacer()
 
-                Picker("Machines", selection: $bindableStore.scope) {
+                Picker("Machines", selection: Binding(get: { store.scope }, set: { store.setScope($0) })) {
                     ForEach(ContributionScope.allCases) { scope in
                         Text(scope.title).tag(scope)
+                            .disabled(scope == .thisMac && !store.canIdentifyThisMac)
                     }
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
+                .disabled(!store.canIdentifyThisMac)
                 .frame(width: 190)
+            }
+
+            if store.isLive && !store.canIdentifyThisMac {
+                Text("Showing account activity. This Mac can’t be matched to the network’s records yet.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 12)
             }
 
             if records.isEmpty {

@@ -288,7 +288,12 @@ extension ProviderLoop {
         return failed.isEmpty || failed == hash
     }
 
-    func applyVerifiedPrefetch(modelId: String) async {
+    func applyVerifiedPrefetch(
+        modelId: String,
+        resolveSnapshot: @escaping @Sendable (String) -> URL? = {
+            ModelScanner.resolveLocalPath(modelID: $0)
+        }
+    ) async {
         guard ModelRuntimeRequirements.isEligible(
             modelID: modelId, available: loopConfig.runtimeCapabilities)
         else {
@@ -309,10 +314,13 @@ extension ProviderLoop {
         // Compute ModelInfo + weight hash off-actor (CPU/IO heavy for big
         // builds). The prefetcher already aggregate-verified the snapshot, so
         // this hash is over a known-good build. Returns nil if the on-disk
-        // snapshot cannot be resolved/scanned.
+        // snapshot cannot be resolved/scanned. The resolver is injectable so
+        // integration tests can keep all fixture bytes in their private cache.
         let computed = await Task.detached(priority: .utility) { () -> (ModelInfo, String?)? in
-            guard let info = Self.scanVerifiedModelInfo(modelId: modelId) else { return nil }
-            let hash = WeightHasher.computeHash(for: modelId)
+            guard let snapshot = resolveSnapshot(modelId),
+                  let info = ModelScanner.parseModelInfo(snapshotDir: snapshot, modelName: modelId)
+            else { return nil }
+            let hash = WeightHasher.computeHash(snapshotDir: snapshot, modelID: modelId)
             var withHash = info
             withHash.weightHash = hash
             return (withHash, hash)
@@ -634,13 +642,4 @@ extension ProviderLoop {
             await handlePrefetchModelRequest(modelId: desired, priority: Self.desiredModelsPrefetchPriority, send: send)
         }
     }
-
-    /// Scan the on-disk snapshot for a freshly-prefetched model to produce an
-    /// advertised `ModelInfo` (type, quantization, size, memory estimate).
-    /// Static + nonisolated so it can run inside the off-actor hashing task.
-    private static func scanVerifiedModelInfo(modelId: String) -> ModelInfo? {
-        guard let snapshot = ModelScanner.resolveLocalPath(modelID: modelId) else { return nil }
-        return ModelScanner.parseModelInfo(snapshotDir: snapshot, modelName: modelId)
-    }
-
 }

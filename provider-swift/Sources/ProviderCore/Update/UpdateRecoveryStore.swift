@@ -349,6 +349,12 @@ final class UpdateRecoveryStore: @unchecked Sendable {
                 "recorded files are missing")
         }
         do {
+            if predecessor.layout == .app {
+                let paths = try ProviderAppLayout(app: bundle, expectedVersion: predecessor.release.version)
+                guard binary == paths.binary, enclave == paths.enclave, metallib == paths.metallib else {
+                    throw StoreError.predecessorVerificationFailed("recorded paths are not the app runtime payload")
+                }
+            }
             let modes = try UpdateArtifactModes(
                 binary: binary,
                 enclave: enclave,

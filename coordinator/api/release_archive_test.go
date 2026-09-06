@@ -697,6 +697,7 @@ func TestReleaseArchiveRejectsMalformedHeadersAndTrailingData(t *testing.T) {
 }
 
 type releaseArchiveFixture struct {
+	linkname string
 	name     string
 	typeflag byte
 	body     []byte
@@ -718,6 +719,7 @@ func buildReleaseArchiveForTest(
 			Name:     fixture.name,
 			Mode:     0o755,
 			Typeflag: typeflag,
+			Linkname: fixture.linkname,
 		}
 		if typeflag == tar.TypeReg || typeflag == tar.TypeRegA {
 			header.Size = int64(len(fixture.body))
@@ -738,6 +740,7 @@ func buildReleaseArchiveForTest(
 }
 
 type rawReleaseTarEntry struct {
+	linkname       string
 	name           string
 	typeflag       byte
 	body           []byte
@@ -749,13 +752,16 @@ type rawReleaseTarEntry struct {
 func buildRawReleaseArchiveForTest(entries ...rawReleaseTarEntry) []byte {
 	var output bytes.Buffer
 	for _, entry := range entries {
-		output.Write(releaseTarHeaderForTest(
+		header := releaseTarHeaderForTest(
 			entry.name,
 			entry.typeflag,
 			entry.rawModeField,
 			entry.rawSizeField,
 			int64(len(entry.body)),
-		))
+		)
+		copy(header[157:257], entry.linkname)
+		checksumReleaseTarHeaderForTest(header)
+		output.Write(header)
 		if entry.omitBodyAndPad {
 			continue
 		}
@@ -795,12 +801,19 @@ func releaseTarHeaderForTest(
 	copy(header[257:263], []byte("ustar\x00"))
 	copy(header[263:265], []byte("00"))
 
+	checksumReleaseTarHeaderForTest(header)
+	return header
+}
+
+func checksumReleaseTarHeaderForTest(header []byte) {
+	for index := 148; index < 156; index++ {
+		header[index] = ' '
+	}
 	var checksum int64
 	for _, value := range header {
 		checksum += int64(value)
 	}
 	copy(header[148:156], []byte(fmt.Sprintf("%06o\x00 ", checksum)))
-	return header
 }
 
 func releasePAXRecordForTest(key, value string) []byte {

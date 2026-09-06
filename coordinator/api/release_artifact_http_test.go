@@ -67,6 +67,15 @@ func TestReleasePayloadSpecsMatchInstallerLayouts(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "nested provider app",
+			got:  releaseNestedAppPayloadSpecs,
+			want: []releasePayloadSpec{
+				{path: "Darkbloom.app/Contents/Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom", kind: releasePayloadBinary, mode: releaseExecutableMode},
+				{path: "Darkbloom.app/Contents/Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom-enclave", kind: releasePayloadEnclave, mode: releaseExecutableMode},
+				{path: "Darkbloom.app/Contents/Helpers/DarkbloomProvider.app/Contents/MacOS/mlx.metallib", kind: releasePayloadMetallib, mode: releaseDataMode},
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -103,6 +112,7 @@ func TestReleaseRegistrationAcceptsAppAndLegacyBundleLayouts(t *testing.T) {
 			layout: releaseBundleTestLegacyApp,
 		},
 		{name: "legacy flat bundle", layout: releaseBundleTestLegacy},
+		{name: "nested signed CLI app", layout: releaseBundleTestNestedApp, wantApp: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

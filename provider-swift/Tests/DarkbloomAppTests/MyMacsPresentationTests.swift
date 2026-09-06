@@ -81,5 +81,6 @@ func myMacsTitlesPreserveHierarchyAndIdentifierPrivacy() throws {
 func productDestinationLifecycleControlScopeIsExplicit() {
     #expect(ProductDestination.myMacs.hidesProviderLifecycleControls)
     #expect(ProductDestination.localAPI.hidesProviderLifecycleControls)
-    #expect(!ProductDestination.overview.hidesProviderLifecycleControls)
+    #expect(ProductDestination.overview.hidesProviderLifecycleControls)
+    #expect(!ProductDestination.networkOverview.hidesProviderLifecycleControls)
 }

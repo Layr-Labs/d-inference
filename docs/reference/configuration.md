@@ -1,9 +1,9 @@
 # Configuration reference
 
-> Last updated: 2026-09-06 · commit `47f68a08a`
+> Last updated: 2026-09-06 · commit `63caa59f5`
 
 Every environment variable read by the coordinator, the provider CLI
-(`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
+(`darkbloom`), native macOS app, console-ui and admin-ui: accepted values, the compiled default,
 the code that reads it, and its effect. Defaults are the fallbacks at the cited
 symbol; a production or dev host may pin a different value in its environment
 file. Secrets are named, never valued. Unless a row says *live*, the variable is
@@ -323,6 +323,8 @@ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative value
 |---|---|---|---|---|
 | `DARKBLOOM_NO_UPDATE_CHECK` | any value | unset | `provider-swift/Sources/darkbloom/Darkbloom.swift`; `provider-swift/Sources/darkbloom/StartCommand+Modes.swift`; `provider-swift/Sources/darkbloom/WatchdogCommand.swift`; `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`; forwarded by `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` | Skips the startup version banner, the in-daemon auto-update loop, the start-mode check and the watchdog's update check; `scripts/install.sh` sets it for the runtime smoke test. |
 | `DARKBLOOM_AUTH_TOKEN_PATH` | file path | `~/.darkbloom/auth_token` | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` | Where the device-auth token is stored. |
+| `DARKBLOOM_PROVIDER_ACCOUNT_PATH` | file path | `~/.darkbloom/provider_account` | `provider-swift/Sources/ProviderCore/Auth/ProviderAccountStore.swift` (`accountPath`) | Account bound to the provider token. Test credentials must isolate all three credential paths. |
+| `DARKBLOOM_PROVIDER_ISSUER_PATH` | file path | `~/.darkbloom/provider_issuer` | `provider-swift/Sources/ProviderCore/Auth/ProviderCredentialStore.swift` (`ProviderIssuerStore.issuerPath`) | Recorded HTTP(S) origin that issued the provider token; normal authentication requires it to match the configured coordinator. |
 | `DARKBLOOM_LOCAL_DIR` | directory | `~/.darkbloom` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` | Directory for `local_token` and `local.json` (direct mode). |
 | `DARKBLOOM_STATE_FILE` | file path | `~/.darkbloom/daemon-state.json` | `provider-swift/Sources/ProviderCoreFoundation/DaemonStateFile.swift` | Daemon state snapshot read by `status`, `doctor` and the watchdog. |
 | `DARKBLOOM_LOADED_MODELS_FILE` | file path | `~/.darkbloom/loaded-models.json` | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` | Warm-model journal. |
@@ -406,6 +408,20 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 | `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `DYLD_FRAMEWORK_PATH`, `LD_PRELOAD`, `MallocStackLogging`, `MallocStackLoggingNoCompact`, `MallocScribble`, `MallocGuardEdges`, `MallocLogFile`, `MallocErrorAbort`, `NSZombieEnabled`, `OBJC_DEBUG_POOL_ALLOCATION`, `CFNETWORK_DIAGNOSTICS` | — | — | `provider-swift/Sources/ProviderCore/Security/EnvironmentScrubber.swift` | Removed from the daemon's environment at start; reported as the `env_scrubbed` capability. |
 
 `scripts/install.sh` additionally reads `COORD_URL` (substituted by the coordinator when it serves `/install.sh`; required when the script is run from source), `HOME` (install root `$HOME/.darkbloom`), `TMPDIR` (enrollment-profile temp dir only) and the two code-signing requirement constants `DARKBLOOM_DESIGNATED_REQUIREMENT` and `DARKBLOOM_FAN_HELPER_REQUIREMENT`. See [`../provider/installation.md`](../provider/installation.md).
+
+## Native macOS app
+
+The shipping GUI uses the validated real helper CLI in the managed app; the
+path is fixed by `ManagedProviderInstallLayout`, not a runtime setting. Legacy
+regular CLI fallback requires the helper to be absent. See
+[CLI paths](../provider/cli-reference.md#paths-and-identifiers) and
+[app release qualification](../operations/app-release.md).
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `DARKBLOOM_CLI_PATH` | executable path | unset | `provider-swift/Sources/DarkbloomApp/Services/DarkbloomCLILocator.swift` (`SystemDarkbloomCLILocator.locate`) | DEBUG-only CLI override; compiled out of release builds. Without it, validate the real managed CLI with no-follow path checks. |
+| `DARKBLOOM_SKIP_APP_RELOCATION` | `1` | unset | `provider-swift/Sources/DarkbloomApp/Services/AppInstallCoordinator.swift` (`coordinate`) | DEBUG-only relocation bypass for isolated lifecycle harnesses; no shipping bypass. |
+| `DARKBLOOM_ALLOW_APP_DOWNGRADE` | `1` | unset | `provider-swift/Sources/DarkbloomApp/Services/AppInstallCoordinator.swift` (`allowDowngradeEnvironmentKey`) | Explicit signed-app downgrade recovery; signature checks and the pending recovery-state guard still apply. Follow the [one-machine rollback procedure](../operations/app-release.md#direct-app-relocation-and-writable-updates). |
 
 ## console-ui
 

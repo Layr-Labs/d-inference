@@ -64,6 +64,7 @@ struct ModelCatalogCLIRunnerTests {
 
     private func runner(
         script: URL,
+        includeDownloadPlans: Bool = false,
         stateFileURL: URL? = nil,
         physicalMemoryBytes: UInt64 = 32 * 1_073_741_824,
         now: @escaping @Sendable () -> Date = Date.init,
@@ -74,6 +75,7 @@ struct ModelCatalogCLIRunnerTests {
             AppModelDownloadAdmissionController()
     ) -> ProcessModelCatalogCLIRunner {
         ProcessModelCatalogCLIRunner(
+            includeDownloadPlans: includeDownloadPlans,
             locator: SystemDarkbloomCLILocator(
                 environment: [SystemDarkbloomCLILocator.environmentKey: script.path],
                 homeDirectory: URL(fileURLWithPath: "/tmp")
@@ -87,10 +89,14 @@ struct ModelCatalogCLIRunnerTests {
         )
     }
 
-    /// A stubs double duty: discriminates catalog vs list on $2, both exit 0.
+    /// Browsing only accepts the runtime-only catalog command and unfiltered inventory.
     private let multiCommandScript = """
         #!/bin/sh
         if [ "$2" = "catalog" ]; then
+            if [ "$#" -ne 4 ] || [ "$1" != "models" ] || [ "$3" != "--json" ] || [ "$4" != "--include-runtime-eligibility" ]; then
+                echo "catalog browsing must not request storage plans" >&2
+                exit 9
+            fi
             /bin/cat <<'EOF'
         {
           "models" : [
@@ -114,15 +120,7 @@ struct ModelCatalogCLIRunnerTests {
               "status" : "eligible", "reason" : "Fixture runtime is eligible."
             }
           },
-          "download_plans" : {
-            "mlx-community/Qwen2.5-7B-Instruct-4bit" : {
-              "remaining_bytes" : 1000000000,
-              "reserve_bytes" : 2147483648,
-              "required_available_bytes" : 3147483648,
-              "available_bytes" : 4000000000,
-              "has_sufficient_capacity" : true
-            }
-          }
+          "download_plans" : {}
         }
         EOF
             exit 0
@@ -200,10 +198,7 @@ struct ModelCatalogCLIRunnerTests {
         #expect(catalog.minRamGb == 16)
         #expect(snapshot.runtimeEligibility(for: catalog.id).status == .eligible)
         #expect(snapshot.runtimeEligibility(for: catalog.id).reason == "Fixture runtime is eligible.")
-        let plan = try #require(snapshot.downloadPlans[catalog.id])
-        #expect(plan.remainingBytes == 1_000_000_000)
-        #expect(plan.reserveBytes == 2_147_483_648)
-        #expect(plan.hasSufficientCapacity)
+        #expect(snapshot.downloadPlans.isEmpty)
 
         let local = try #require(snapshot.local.first)
         #expect(local.id == "mlx-community/Llama-3.2-3B-Instruct-4bit")
@@ -212,6 +207,26 @@ struct ModelCatalogCLIRunnerTests {
         #expect(snapshot.warmModelIDs == ["mlx-community/Llama-3.2-3B-Instruct-4bit"])
         #expect(snapshot.servingModelID == "mlx-community/Llama-3.2-3B-Instruct-4bit")
         #expect(snapshot.physicalMemoryGB == 32)
+    }
+
+    @Test("onboarding explicitly requests storage plans and retains storage-aware recommendations")
+    func planInclusiveSnapshotSupportsOnboarding() async throws {
+        let script = try makeStubCLI(contents: multiCommandScript
+            .replacingOccurrences(of: "--include-runtime-eligibility", with: "--include-download-plans")
+            .replacingOccurrences(of: #""download_plans" : {}"#, with: #""download_plans" : {"mlx-community/Qwen2.5-7B-Instruct-4bit":{"remaining_bytes":1000000000,"reserve_bytes":2147483648,"required_available_bytes":3147483648,"available_bytes":4000000000,"has_sufficient_capacity":true}}"#))
+        defer { try? FileManager.default.removeItem(at: script.deletingLastPathComponent()) }
+        let cli = runner(script: script, includeDownloadPlans: true)
+        let snapshot = try await cli.fetchSnapshot()
+        #expect(snapshot.catalogError == nil)
+        let modelID = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+        let plan = try #require(snapshot.downloadPlans[modelID])
+        #expect(plan.remainingBytes == 1_000_000_000)
+        #expect(plan.reserveBytes == 2_147_483_648)
+        #expect(plan.hasSufficientCapacity)
+        let preparation = try await OnboardingPreparationService(catalog: cli).fetchPlan()
+        #expect(preparation.recommendedModelID == modelID)
+        #expect(preparation.choices.map(\.id) == [modelID])
+        #expect(preparation.choices.first?.isInstalled == false)
     }
 
     @Test("runtime verdicts decode and missing or future metadata remains unknown")
@@ -342,7 +357,7 @@ struct ModelCatalogCLIRunnerTests {
             .split(separator: "\n").map(String.init)
         #expect(calls == [
             "models list --json --all",
-            "models catalog --json --include-download-plans",
+            "models catalog --json --include-runtime-eligibility",
         ])
     }
 
@@ -360,7 +375,7 @@ struct ModelCatalogCLIRunnerTests {
             if phase == "catalog" {
                 let snapshot = try await runner(script: script).fetchSnapshot()
                 #expect(snapshot.catalogError == .unreadableOutput(
-                    command: "models catalog --json --include-download-plans"))
+                    command: "models catalog --json --include-runtime-eligibility"))
                 #expect(snapshot.local.count == 1)
             } else {
                 do {

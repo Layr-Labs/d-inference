@@ -24,6 +24,10 @@ struct ModelSummary: Identifiable, Hashable, Sendable {
     var isAvailableFromCatalog: Bool {
         origin == .catalog
     }
+
+    var supportsChat: Bool {
+        capabilities.contains(.chat) || capabilities.contains(.textGeneration)
+    }
 }
 
 enum ModelKind: String, Hashable, Sendable {
@@ -41,6 +45,7 @@ struct ModelCapability: RawRepresentable, Hashable, Sendable {
     }
 
     static let textGeneration = Self(rawValue: "text-generation")
+    static let chat = Self(rawValue: "chat")
     static let vision = Self(rawValue: "vision")
     static let tools = Self(rawValue: "tools")
     static let reasoning = Self(rawValue: "reasoning")
@@ -49,6 +54,7 @@ struct ModelCapability: RawRepresentable, Hashable, Sendable {
     var displayName: String {
         switch self {
         case .textGeneration: "Text"
+        case .chat: "Chat"
         case .vision: "Vision"
         case .tools: "Tools"
         case .reasoning: "Reasoning"

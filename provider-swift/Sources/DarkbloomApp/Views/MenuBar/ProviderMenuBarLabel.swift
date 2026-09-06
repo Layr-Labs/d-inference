@@ -5,14 +5,12 @@ struct ProviderMenuBarLabelPresentation: Equatable, Sendable {
     let accessibilityLabel: String
 
     init(content: ProviderMenuBarContent) {
+        systemImage = "sparkle"
         switch content {
         case .setup:
-            systemImage = "circle.dashed"
-            accessibilityLabel = "Darkbloom, setup incomplete"
+            accessibilityLabel = "Darkbloom, network setup required"
         case .provider(let snapshot):
-            let status = snapshot.statusPresentation
-            systemImage = status.icon
-            accessibilityLabel = "Darkbloom, \(status.sidebarTitle)"
+            accessibilityLabel = "Darkbloom network, \(ProviderMenuBarNetworkPresentation(snapshot: snapshot).title)"
         }
     }
 }

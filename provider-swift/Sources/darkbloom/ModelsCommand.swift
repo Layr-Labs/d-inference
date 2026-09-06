@@ -122,6 +122,9 @@ extension Models {
         @Flag(help: "Include resume-aware disk plans and runtime eligibility in JSON output.")
         var includeDownloadPlans = false
 
+        @Flag(help: "Include runtime eligibility in JSON output without planning downloads.")
+        var includeRuntimeEligibility = false
+
         @Option(help: "Filter by model_type (e.g. text).")
         var type: String?
 
@@ -150,27 +153,26 @@ extension Models {
                     for: $0.id, catalogRequirements: $0.requiredProviderCapabilities
                 ).isEmpty
             }
-            let runtimeCapabilities: Set<ProviderRuntimeCapability>? = anyGated && (!json || includeDownloadPlans)
+            let runtimeCapabilities: Set<ProviderRuntimeCapability>? = anyGated && (!json || includeDownloadPlans || includeRuntimeEligibility)
                 ? snapshot.hardware.map { ProviderRuntimeCapabilityDetector.detectLive(hardware: $0) }
                 : nil
 
             if json {
-                if includeDownloadPlans {
-                    let downloader = ModelDownloader(catalogClient: client)
-                    var plans: [String: ModelDownloadStoragePlan] = [:]
+                if includeDownloadPlans || includeRuntimeEligibility {
+                    let output: ModelsCatalogPlanOutput
                     do {
-                        for entry in entries {
-                            plans[entry.id] = try await downloader.storagePlan(for: entry)
-                        }
+                        output = try await makePlanOutput(
+                            models: entries,
+                            runtimeCapabilities: runtimeCapabilities,
+                            storagePlan: { entry in
+                                try await ModelDownloader(catalogClient: client).storagePlan(for: entry)
+                            }
+                        )
                     } catch let error as ModelCatalogError {
                         printError("could not plan model download: \(error)")
                         throw ExitCode.failure
                     }
-                    try printJSON(ModelsCatalogPlanOutput(
-                        models: entries,
-                        downloadPlans: plans,
-                        runtimeCapabilities: runtimeCapabilities
-                    ))
+                    try printJSON(output)
                 } else {
                     try printJSON(entries)
                 }

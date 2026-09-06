@@ -48,7 +48,7 @@ private struct ChatCodeBlock: View {
                 ChatCopyButton(text: content, label: "Copy code")
             }
             .font(.system(size: 12))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(StudioPalette.secondaryInk)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             Divider()
@@ -60,8 +60,8 @@ private struct ChatCodeBlock: View {
                     .padding(12)
             }
         }
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
-        .overlay { RoundedRectangle(cornerRadius: 10).stroke(ProductPalette.stroke) }
+        .background(StudioPalette.surface, in: RoundedRectangle(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(StudioPalette.line) }
     }
 }
 

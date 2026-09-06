@@ -843,6 +843,7 @@ private struct RawTarEntry {
     let mode: UInt32
     let rawSizeField: Data?
     let omitBodyAndPadding: Bool
+    let linkTarget: String
 
     init(
         name: String,
@@ -850,7 +851,8 @@ private struct RawTarEntry {
         body: Data = Data(),
         mode: UInt32 = 0o755,
         rawSizeField: Data? = nil,
-        omitBodyAndPadding: Bool = false
+        omitBodyAndPadding: Bool = false,
+        linkTarget: String = ""
     ) {
         self.name = name
         self.typeflag = typeflag
@@ -858,6 +860,7 @@ private struct RawTarEntry {
         self.mode = mode
         self.rawSizeField = rawSizeField
         self.omitBodyAndPadding = omitBodyAndPadding
+        self.linkTarget = linkTarget
     }
 }
 
@@ -966,6 +969,7 @@ private func tarHeader(_ entry: RawTarEntry) -> Data {
         header[index] = 32
     }
     header[156] = entry.typeflag
+    write(Array(entry.linkTarget.utf8), into: &header, at: 157, count: 100)
     write(Array("ustar\0".utf8), into: &header, at: 257, count: 6)
     write(Array("00".utf8), into: &header, at: 263, count: 2)
 
@@ -1000,4 +1004,128 @@ private func paxRecord(key: String, value: String) -> Data {
         }
         length = record.utf8.count
     }
+}
+
+
+extension ReleaseArchivePreflightTests {
+    @Test("exact nested alias is accepted with a complete regular target graph")
+    func acceptsNestedProviderAlias() throws {
+        let fixture = try ArchivePreflightFixture()
+        defer { fixture.remove() }
+        let entries = try nestedProviderTarEntries()
+        for (name, order) in [("forward", entries), ("reverse", Array(entries.reversed()))] {
+            let archive = try fixture.writeArchive(named: name, entries: order)
+            try ReleaseArchivePreflight.validate(archive)
+        }
+    }
+
+    @Test("PAX zero size cannot conceal a nonzero raw provider alias size")
+    func rejectsPAXHiddenProviderAliasSize() throws {
+        let fixture = try ArchivePreflightFixture()
+        defer { fixture.remove() }
+        let alias = ReleaseArchiveProviderLayout.alias
+        let remaining = try nestedProviderTarEntries().filter { $0.name != alias }
+        for rawSize in [UInt64(0), 1, 512] {
+            // No physical payload: the following bytes are valid tar headers.
+            // This isolates the raw-size check from checksum/truncation errors.
+            let entries: [RawTarEntry] = [
+                .init(name: "PaxHeaders/provider-alias", typeflag: 120,
+                      body: paxRecord(key: "size", value: "0")),
+                .init(name: alias, typeflag: 50,
+                      rawSizeField: Data(String(format: "%011llo", rawSize).utf8) + Data([0]),
+                      omitBodyAndPadding: true, linkTarget: ProviderAppLayout.aliasTarget),
+            ] + remaining
+            let archive = try fixture.writeArchive(named: "pax-alias-size-\(rawSize)", entries: entries)
+            if rawSize == 0 {
+                try ReleaseArchivePreflight.validate(archive)
+            } else {
+                expectPreflightFailure(archive, contains: "provider alias has a non-zero size")
+            }
+        }
+    }
+
+    @Test("no alias can escape or replace a required regular provider target")
+    func rejectsNestedProviderGraphTampering() throws {
+        let fixture = try ArchivePreflightFixture()
+        defer { fixture.remove() }
+        let valid = try nestedProviderTarEntries()
+        let alias = ReleaseArchiveProviderLayout.alias
+        let nestedBinary = "Darkbloom.app/" + ProviderAppLayout.nestedBinaryRelativePath
+        let helper = "Darkbloom.app/" + ProviderAppLayout.helperRelativePath
+        let cases: [(String, [RawTarEntry])] = [
+            ("missing-target", valid.filter { $0.name != nestedBinary }),
+            ("missing-alias", valid.filter { $0.name != alias }),
+            ("wrong-target", valid.filter { $0.name != alias } + [
+                .init(name: alias, typeflag: 50, linkTarget: "../Helpers/Other.app/Contents/MacOS/darkbloom")]),
+            ("absolute-target", valid.filter { $0.name != alias } + [
+                .init(name: alias, typeflag: 50, linkTarget: "/tmp/darkbloom")]),
+            ("equivalent-target", valid.filter { $0.name != alias } + [
+                .init(name: alias, typeflag: 50, linkTarget: "../Helpers/DarkbloomProvider.app/Contents/MacOS/./darkbloom")]),
+            ("regular-alias", valid.filter { $0.name != alias } + [.init(name: alias)]),
+            ("hardlink-target", valid.filter { $0.name != nestedBinary } + [
+                .init(name: nestedBinary, typeflag: 49, linkTarget: "bin/darkbloom")]),
+            ("symlink-parent", valid.filter { $0.name != helper } + [
+                .init(name: helper, typeflag: 50, linkTarget: "../Other.app")]),
+            ("file-parent", valid.filter { $0.name != helper } + [.init(name: helper)]),
+            ("directory-target", valid.filter { $0.name != nestedBinary } + [.init(name: nestedBinary, typeflag: 53)]),
+            ("alias-child", valid + [.init(name: alias + "/child")]),
+            ("case-alias", valid + [.init(name: alias.lowercased(), typeflag: 50, linkTarget: ProviderAppLayout.aliasTarget)]),
+            ("nonempty-alias", valid.filter { $0.name != alias } + [
+                .init(name: alias, typeflag: 50, body: Data("x".utf8), linkTarget: ProviderAppLayout.aliasTarget)]),
+            ("wrong-target-mode", valid.filter { $0.name != nestedBinary } + [.init(name: nestedBinary, mode: 0o700)]),
+        ]
+        for (name, entries) in cases {
+            let archive = try fixture.writeArchive(named: name, entries: entries)
+            #expect(throws: ReleaseArchivePreflightError.self) { try ReleaseArchivePreflight.validate(archive) }
+        }
+    }
+
+    @Test("nested archive metadata, profiles, and runtime modes are mandatory")
+    func rejectsNestedProviderMetadata() throws {
+        let fixture = try NestedProviderFixture()
+        defer { fixture.cleanup() }
+        try NestedProviderFixture.editInfo(app: fixture.helper, key: "CFBundleVersion", value: "different")
+        let archive = try fixture.archive()
+        #expect(throws: ReleaseArchivePreflightError.self) { try ReleaseArchivePreflight.validate(archive.url) }
+
+        let raw = try ArchivePreflightFixture()
+        defer { raw.remove() }
+        let valid = try nestedProviderTarEntries()
+        for path in [
+            "Darkbloom.app/Contents/embedded.provisionprofile",
+            "Darkbloom.app/" + ProviderAppLayout.helperRelativePath + "/Contents/Info.plist",
+            "Darkbloom.app/" + ProviderAppLayout.nestedMacOSRelativePath + "/mlx.metallib",
+        ] {
+            let archive = try raw.writeArchive(named: UUID().uuidString, entries: valid.filter { $0.name != path })
+            #expect(throws: ReleaseArchivePreflightError.self) { try ReleaseArchivePreflight.validate(archive) }
+        }
+    }
+}
+
+private func nestedProviderTarEntries() throws -> [RawTarEntry] {
+    let app = "Darkbloom.app"
+    let helper = app + "/" + ProviderAppLayout.helperRelativePath
+    func info(_ executable: String) throws -> Data {
+        try PropertyListSerialization.data(fromPropertyList: [
+            "CFBundleIdentifier": "io.darkbloom.provider", "CFBundleExecutable": executable,
+            "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "0.8.11", "CFBundleVersion": "0.8.11",
+        ], format: .xml, options: 0)
+    }
+    let directories = [app, app + "/Contents", app + "/Contents/MacOS", app + "/Contents/Helpers",
+        app + "/Contents/Resources", helper, helper + "/Contents", helper + "/Contents/MacOS", helper + "/Contents/Resources"]
+    var entries = directories.map { RawTarEntry(name: $0, typeflag: 53) }
+    entries += [
+        .init(name: app + "/Contents/Info.plist", body: try info("DarkbloomApp"), mode: 0o644),
+        .init(name: helper + "/Contents/Info.plist", body: try info("darkbloom"), mode: 0o644),
+        .init(name: app + "/Contents/embedded.provisionprofile", body: Data("profile".utf8), mode: 0o644),
+        .init(name: helper + "/Contents/embedded.provisionprofile", body: Data("profile".utf8), mode: 0o644),
+        .init(name: app + "/Contents/MacOS/DarkbloomApp"),
+        .init(name: helper + "/Contents/MacOS/darkbloom"),
+        .init(name: ReleaseArchiveProviderLayout.alias, typeflag: 50, linkTarget: ProviderAppLayout.aliasTarget),
+    ]
+    for bundle in [app, helper] {
+        entries.append(.init(name: bundle + "/Contents/MacOS/darkbloom-enclave"))
+        entries.append(.init(name: bundle + "/Contents/MacOS/mlx.metallib", mode: 0o644))
+    }
+    return entries
 }

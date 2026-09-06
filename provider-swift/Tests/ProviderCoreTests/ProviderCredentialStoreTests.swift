@@ -202,12 +202,12 @@ struct ProviderCredentialStoreTests {
         }
     }
 
-    private struct CredentialFiles {
+    struct CredentialFiles: Sendable {
         let directory: URL
         let token: URL
     }
 
-    private func withCredentialFiles<T: Sendable>(
+    func withCredentialFiles<T: Sendable>(
         _ body: @Sendable (CredentialFiles) async throws -> T
     ) async throws -> T {
         try await credentialEnvironmentTestLock.withLock {

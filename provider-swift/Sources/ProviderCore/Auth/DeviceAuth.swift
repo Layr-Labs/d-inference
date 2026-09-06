@@ -61,8 +61,37 @@ public enum AuthTokenStore: Sendable {
     }
 
     static func load(canonicalPath: URL, legacyPaths: [URL]) -> String? {
+        // Reading may migrate a retained legacy token. Serialize the entire
+        // canonical recheck/copy with publication, including for custom paths.
+        // A lock failure must never fall back to an unsynchronized migration.
+        try? ProviderCredentialProcessLock.withLock(tokenPath: canonicalPath) {
+            try loadUnlocked(canonicalPath: canonicalPath, legacyPaths: legacyPaths)
+        }
+    }
+
+    /// Only for ProviderCredentialStore callers already holding the credential
+    /// lock for tokenPath(). Taking the public load path here would nest flock.
+    static func loadWhileCredentialLocked() throws -> String? {
+        try loadUnlocked(
+            canonicalPath: tokenPath(),
+            legacyPaths: tokenPathOverride() == nil ? legacyTokenPaths() : []
+        )
+    }
+
+    private static func loadUnlocked(canonicalPath: URL, legacyPaths: [URL]) throws -> String? {
         if let token = readToken(from: canonicalPath) {
             return token
+        }
+
+        // A killed publication can leave fresh metadata without a token.
+        // Never combine that metadata with a retained legacy token. Inspection
+        // failures also fail closed for both public and already-locked readers.
+        do {
+            guard try !ProviderCredentialRecoveryArtifacts.hasTokenBackup(canonicalPath: canonicalPath) else {
+                throw ProviderCredentialStoreError.credentialRecoveryRequired
+            }
+        } catch {
+            throw ProviderCredentialStoreError.credentialRecoveryRequired
         }
 
         for legacyPath in legacyPaths where legacyPath != canonicalPath {
@@ -198,7 +227,7 @@ public enum DeviceAuthError: Error, CustomStringConvertible, Sendable {
         case .alreadyLoggedIn(let prefix):
             return "Already logged in (token: \(prefix)...). Run 'darkbloom logout' first to unlink."
         case .credentialRecoveryRequired:
-            return "The saved login predates coordinator binding. Run 'darkbloom logout --local-only', then log in again."
+            return "The saved login has incomplete account or coordinator binding. Run 'darkbloom login' to authorize a fresh login."
         case .coordinatorUnreachable(let detail):
             return "Failed to reach coordinator: \(detail)"
         case .deviceCodeRequestFailed(let detail):
@@ -241,6 +270,9 @@ public func coordinatorHTTPBase(_ wsURL: String) -> String {
 ///     `.linked`/`.error` before this function returns or throws — a consumer
 ///     keying off terminal events never hangs, because the poll loop below is
 ///     bounded by the coordinator-provided expiry.
+///   - recoverIncompleteCredential: Opt in only for an explicit login action.
+///     Fresh authorization may replace an unchanged incomplete credential; the
+///     old token is never used to authenticate or infer its missing binding.
 /// - Returns: The auth token string on success.
 /// - Throws: `DeviceAuthError` on failure.
 @discardableResult
@@ -249,15 +281,18 @@ public func performDeviceCodeLogin(
     onDisplayCode: @Sendable (String, String, Int) -> Void,
     onPollTick: (@Sendable () -> Void)? = nil,
     openBrowser: Bool = true,
-    onEvent: (@Sendable (DeviceLoginEvent) -> Void)? = nil
+    onEvent: (@Sendable (DeviceLoginEvent) -> Void)? = nil,
+    recoverIncompleteCredential: Bool = false
 ) async throws -> String {
     do {
+        try Task.checkCancellation()
         let token = try await runDeviceCodeLogin(
             coordinatorURL: coordinatorURL,
             onDisplayCode: onDisplayCode,
             onPollTick: onPollTick,
             openBrowser: openBrowser,
-            onEvent: onEvent
+            onEvent: onEvent,
+            recoverIncompleteCredential: recoverIncompleteCredential
         )
         onEvent?(.linked)
         return token
@@ -275,12 +310,18 @@ private func runDeviceCodeLogin(
     onDisplayCode: @Sendable (String, String, Int) -> Void,
     onPollTick: (@Sendable () -> Void)?,
     openBrowser: Bool,
-    onEvent: (@Sendable (DeviceLoginEvent) -> Void)?
+    onEvent: (@Sendable (DeviceLoginEvent) -> Void)?,
+    recoverIncompleteCredential: Bool
 ) async throws -> String {
     let existingCredential: ProviderCredential?
+    let recovery: ProviderCredentialRecovery?
     do {
-        existingCredential = try ProviderCredentialStore.load()
-    } catch ProviderCredentialStoreError.incompleteCredential {
+        recovery = recoverIncompleteCredential
+            ? try ProviderCredentialRecovery.prepare(for: coordinatorURL)
+            : nil
+        existingCredential = recovery == nil ? try ProviderCredentialStore.load() : nil
+    } catch let error as ProviderCredentialStoreError
+        where error == .incompleteCredential || error == .credentialRecoveryRequired {
         throw DeviceAuthError.credentialRecoveryRequired
     } catch {
         throw DeviceAuthError.invalidResponse(error.localizedDescription)
@@ -415,11 +456,16 @@ private func runDeviceCodeLogin(
                     "authorized but no account identity in response"
                 )
             }
-            try ProviderCredentialStore.save(
-                token: token,
-                accountID: accountID,
-                coordinatorURL: coordinatorURL
-            )
+            try Task.checkCancellation()
+            if let recovery {
+                try recovery.publish(token: token, accountID: accountID)
+            } else {
+                try ProviderCredentialStore.save(
+                    token: token,
+                    accountID: accountID,
+                    coordinatorURL: coordinatorURL
+                )
+            }
             return token
 
         default:

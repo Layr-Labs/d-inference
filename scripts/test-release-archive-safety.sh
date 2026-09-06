@@ -46,9 +46,15 @@ sub write_field {
 }
 
 sub tar_header {
-    my ($name, $typeflag, $body_size, $raw_size, $raw_mode) = @_;
+    my ($name, $typeflag, $body_size, $raw_size, $raw_mode, $link) = @_;
     my $header = "\0" x $block_size;
+    if (length($name) > 100) {
+        my $slash = rindex($name, "/");
+        write_field(\$header, 345, 155, substr($name, 0, $slash));
+        $name = substr($name, $slash + 1);
+    }
     write_field(\$header, 0, 100, $name);
+    write_field(\$header, 157, 100, $link // "");
     write_field(
         \$header,
         100,
@@ -73,7 +79,7 @@ sub tar_header {
 }
 
 sub emit_entry {
-    my ($name, $typeflag, $body, $raw_size, $omit_body, $raw_mode) = @_;
+    my ($name, $typeflag, $body, $raw_size, $omit_body, $raw_mode, $link) = @_;
     $body //= "";
     print tar_header(
         $name,
@@ -81,6 +87,7 @@ sub emit_entry {
         length($body),
         $raw_size,
         $raw_mode,
+        $link,
     );
     return if $omit_body;
     print $body;
@@ -99,7 +106,81 @@ sub pax_record {
     }
 }
 
-if ($mode eq "large") {
+if ($mode =~ /\Anested_/) {
+    my $alias = "Darkbloom.app/Contents/MacOS/darkbloom";
+    my $helper = "Darkbloom.app/Contents/Helpers/DarkbloomProvider.app";
+    my $target = "$helper/Contents/MacOS/darkbloom";
+    my $link = "../Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom";
+    $link = "/$target" if $mode eq "nested_absolute";
+    $link = "../../../../tmp/darkbloom" if $mode eq "nested_escape";
+    $link = "../Helpers/./DarkbloomProvider.app/Contents/MacOS/darkbloom"
+        if $mode eq "nested_equivalent";
+    $link =~ s/DarkbloomProvider/darkbloomprovider/ if $mode eq "nested_case_link";
+    $link = "darkbloom" if $mode eq "nested_loop";
+    $link .= "/" if $mode eq "nested_target_slash";
+    $link .= "\0hidden" if $mode eq "nested_link_after_nul";
+    my @directories = (
+        "bin", "Darkbloom.app", "Darkbloom.app/Contents",
+        "Darkbloom.app/Contents/MacOS", "Darkbloom.app/Contents/Helpers",
+        $helper, "$helper/Contents", "$helper/Contents/MacOS",
+    );
+    for my $directory (@directories) {
+        next if $directory eq $helper && $mode eq "nested_missing_ancestor";
+        $directory =~ s/DarkbloomProvider/darkbloomprovider/
+            if $directory eq $helper && $mode eq "nested_case_ancestor";
+        my $kind = "5";
+        $kind = "2" if $directory eq $helper && $mode eq "nested_symlink_ancestor";
+        $kind = "0" if $directory eq $helper && $mode eq "nested_file_ancestor";
+        emit_entry($directory, $kind, "", undef, 0);
+    }
+    if ($mode eq "nested_target_first") {
+        emit_entry($target, "0", "", undef, 0);
+    }
+    if ($mode eq "nested_alias_descendant_first") {
+        emit_entry("$alias/child", "0", "", undef, 0);
+    }
+    my $alias_name = $alias;
+    $alias_name .= "/" if $mode eq "nested_alias_slash";
+    $alias_name =~ s/\/darkbloom\z/\/Darkbloom/ if $mode eq "nested_case_alias";
+    $alias_name = "bin/darkbloom" if $mode eq "nested_flat_alias";
+    my $alias_type = $mode eq "nested_hardlink" ? "1" : "2";
+    if ($mode eq "nested_pax_link") {
+        emit_entry("PaxHeaders/alias", "x", pax_record("linkpath", $link), undef, 0);
+    } elsif ($mode eq "nested_long_link") {
+        emit_entry("LongLink", "K", "$link\0", undef, 0);
+    } elsif ($mode eq "nested_pax_concealed_size") {
+        emit_entry("PaxHeaders/alias", "x", pax_record("size", "0"), undef, 0);
+    }
+    emit_entry($alias_name, $alias_type,
+        $mode eq "nested_alias_size" || $mode eq "nested_pax_concealed_size" ? "x" : "",
+        undef, 0, "0000777\0", $link);
+    if ($mode eq "nested_alias_descendant_after") {
+        emit_entry("$alias/child", "0", "", undef, 0);
+    }
+    if ($mode eq "nested_alias_duplicate") {
+        emit_entry($alias, "0", "", undef, 0);
+    }
+    if ($mode ne "nested_missing_target" && $mode ne "nested_target_first") {
+        my $kind = "0";
+        $kind = "5" if $mode eq "nested_directory_target";
+        $kind = "2" if $mode eq "nested_symlink_target";
+        $target =~ s/\/darkbloom\z/\/Darkbloom/ if $mode eq "nested_case_target";
+        emit_entry($target, $kind, "", undef, 0,
+            $mode eq "nested_target_mode" ? "0000644\0" : "0000755\0");
+    }
+    emit_entry("bin/darkbloom", "0", "", undef, 0)
+        unless $mode eq "nested_flat_alias" || $mode eq "nested_missing_flat";
+    if ($mode eq "nested_codesign" || $mode eq "nested_misplaced_codesign") {
+        emit_entry("PaxHeaders/metal", "x",
+            pax_record("LIBARCHIVE.xattr.com.apple.cs.CodeSignature", "c2ln"), undef, 0);
+        my $name = $mode eq "nested_codesign" ? "mlx.metallib" : "other.metallib";
+        emit_entry("$helper/Contents/MacOS/$name", "0", "metal", undef, 0, "0000644\0");
+    } elsif ($mode eq "nested_metallib_mode") {
+        emit_entry("$helper/Contents/MacOS/mlx.metallib", "0", "metal", undef, 0);
+    } elsif ($mode eq "nested_enclave_mode") {
+        emit_entry("$helper/Contents/MacOS/darkbloom-enclave", "0", "", undef, 0, "0000644\0");
+    }
+} elsif ($mode eq "large") {
     emit_entry(
         "large-sparse-payload",
         "0",
@@ -384,6 +465,36 @@ run_preflight "$VALID"
 run_preflight "$(make_fixture pax_path)"
 run_preflight "$(make_fixture gnu_long)"
 run_preflight "$(make_fixture pax_legacy_codesign)"
+run_preflight "$(make_fixture nested_valid)"
+run_preflight "$(make_fixture nested_target_first)"
+run_preflight "$(make_fixture nested_codesign)"
+
+for variant in absolute escape equivalent case_link loop target_slash; do
+    expect_rejection "$(make_fixture "nested_$variant")" "unexpected target"
+done
+for variant in case_alias flat_alias symlink_ancestor symlink_target hardlink; do
+    expect_rejection "$(make_fixture "nested_$variant")" "unsupported node type"
+done
+for variant in missing_target directory_target case_target missing_flat; do
+    expect_rejection "$(make_fixture "nested_$variant")" "requires exact regular path"
+done
+for variant in missing_ancestor case_ancestor; do
+    expect_rejection "$(make_fixture "nested_$variant")" "requires exact directory ancestor"
+done
+expect_rejection "$(make_fixture nested_file_ancestor)" "descends through file"
+expect_rejection "$(make_fixture nested_alias_descendant_first)" "conflicts with descendant"
+expect_rejection "$(make_fixture nested_alias_descendant_after)" "descends through file"
+expect_rejection "$(make_fixture nested_alias_duplicate)" "duplicate"
+expect_rejection "$(make_fixture nested_alias_slash)" "ends with a slash"
+expect_rejection "$(make_fixture nested_link_after_nul)" "non-zero padding in tar linkname"
+expect_rejection "$(make_fixture nested_alias_size)" "non-zero size"
+expect_rejection "$(make_fixture nested_pax_concealed_size)" "non-zero size"
+expect_rejection "$(make_fixture nested_target_mode)" "expected 0755"
+expect_rejection "$(make_fixture nested_enclave_mode)" "expected 0755"
+expect_rejection "$(make_fixture nested_metallib_mode)" "expected 0644"
+expect_rejection "$(make_fixture nested_pax_link)" "unsupported PAX link metadata"
+expect_rejection "$(make_fixture nested_long_link)" "unsupported GNU long-link metadata"
+expect_rejection "$(make_fixture nested_misplaced_codesign)" "not attached to mlx.metallib"
 
 MODE_PAYLOAD="$ROOT/mode-payload"
 mkdir -p "$MODE_PAYLOAD"

@@ -1,15 +1,26 @@
 # Changelog
 
-> Last updated: 2026-09-05 · commit `47f68a08a`
+> Last updated: 2026-09-06 · commit `63caa59f5`
 
 ## Unreleased (2026-09-05) — native macOS app refresh
 
-- Add “Explore the app first” before network setup. Keep account linking, enrollment, model preparation, and live trust verification in a resumable setup flow; browsing does not mark setup complete or start serving.
+- Package the signed provider CLI as the main executable of `DarkbloomProvider.app` inside the GUI bundle, with its own matching provisioning profile and real runtime resources. Keep the outer app identity and single provider version, and preserve the exact outer CLI alias for shell compatibility.
+- Validate the nested layout across installer, updater, coordinator, and managed GUI/service paths; retain legacy regular layouts and verify signed payload parity. Local helper launch and Gemma/Paged kernel probes pass; final signed-release, persistent Secure Enclave/APNs, and MDM qualification remain separate gates ([signing report](docs/reports/2026-09-05-macos-app-signing-qualification.md)).
+- Open a native Studio before network setup, with four main areas: Studio, Library, Network, and This Mac. Start and select local models in the conversation surface; keep network controls and enrollment in their own area. Browsing does not mark setup complete or start serving.
+- Separate menu-bar **Local AI** and **Darkbloom network** status and actions. Open Studio or Network directly; offer **End session** only for the app-owned local child, preserve externally managed endpoints, and distinguish provider liveness, verification, and reported inference. Network setup/start/restart waits until an owned local session ends.
+- Open Network on an explanation of Darkbloom, a link to use network AI in the web console, and this Mac’s optional compute contribution, with setup and sharing controls below.
+- Display readable account balances while retaining exact ledger amounts. Default to account-wide activity when the server cannot identify this Mac, rather than implying it has no completed work.
+- Refresh older account links through an explicit browser authorization in a focused account sheet. Preserve the existing credential until replacement succeeds; strict account/issuer checks still apply to normal credential reads.
 - Keep Chat and Local API stores alive across page and setup navigation. Chat supports streaming, stop/retry, model selection, and session history with draft restoration; transcripts and drafts stay in memory for the current app session.
 - Start installed models locally without network enrollment. The app owns its foreground CLI child, observes authenticated endpoint readiness, and stops that child on quit. `start --local --no-replace` refuses live owners atomically and reclaims stale records without changing normal network-start behavior.
 - Refresh the welcome, setup, Chat, Models, and My Macs views, including smaller-window layouts, keyboard input, and actionable service errors. Distinguish missing or incompatible CLI diagnostics from failed hardware checks, and preserve account-scoped fleet identity.
 - Read installed models independently of enabled-model and memory filters. Display CLI-owned `runtime_eligibility` and preserve unknown or ineligible results instead of inferring runtime support from RAM. Diagnostic and model inventory reads do not migrate provider configuration.
 - Keep installed models usable during a catalog outage, preserve cached runtime eligibility, and make cancelled initial inventory loads retryable. Local startup preserves development configuration instead of applying network-start migrations.
+- Browse the catalog through `--include-runtime-eligibility` without computing disk plans or hashing staged weights. Downloads still obtain a fresh storage plan when requested; network onboarding retains its explicit storage-aware preparation.
+- Show compact model comparisons and recommendations based on CLI compatibility and installed/download size. Recognize the catalog's `chat` capability, preserve unclassified local models, and keep an explicit Library choice instead of silently sending to the previous model.
+- Isolate prefetch test caches from the user's Hugging Face cache, including setup failures, and avoid a redundant synchronous process wait in the cross-process lock tests.
+- Keep weight-hash test failures out of the real daemon status file by giving each test loop its own status path.
+- Run imported GPU regressions in a separate test process from provider/CLI configuration tests, preserving both required suites and their execution-count checks.
 - Add `make app-unit-test`, `make app-bundle-test`, and `make app-check`. Update `script/build_and_run.sh` to stage a debug app before replacing only this checkout's running bundle, with fixture previews, exact-process logs/debugging, and window verification. These checks do not qualify inference, APNs attestation, or a production release.
 
 ## Unreleased — stats request-flow refresh

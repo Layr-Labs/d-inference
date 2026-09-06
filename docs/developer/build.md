@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-05 · commit `47f68a08a`
+> Last updated: 2026-09-05 · commit `63caa59f5`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -172,7 +172,14 @@ resource bundle's `default.metallib`. This is the app's visual shader; the
 script does not stage the provider CLI or its inference `mlx.metallib`.
 The development bundle uses `dev.darkbloom.app` and is not a Developer ID
 release artifact. For a combined shipping bundle, use the
-[app release runbook](../operations/app-release.md).
+[app release runbook](../operations/app-release.md#distribution-layout).
+`scripts/bundle-macos-app.sh` assembles the CLI as the main executable of
+`Contents/Helpers/DarkbloomProvider.app`, with colocated enclave/metallib files.
+`scripts/stage-swiftpm-resource-bundles.sh` stages real runtime bundles beside
+that helper and in the outer app. The release workflow embeds the matching
+profile, signs the canonical helper code, seals the helper, copies signed
+compatibility payloads to the outer app, and seals the GUI. Local assembly
+alone does not qualify that signed artifact.
 
 Build and staging finish before the script asks the previous app at this
 checkout's exact bundle and executable paths to quit. It waits for graceful
@@ -200,10 +207,12 @@ flags or a debug phase alone do not select fixture services
 For live development, omit fixture settings and use an installed managed CLI.
 `provider-swift/Sources/DarkbloomApp/Services/DarkbloomCLILocator.swift`
 (`SystemDarkbloomCLILocator.locate`) accepts `DARKBLOOM_CLI_PATH` only in DEBUG;
-otherwise it validates the CLI at
-`~/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom`. There is no PATH or
-Downloads fallback. Read-only screens use CLI/file contracts; pressing a
-runtime or setup action can change the real provider state. See the
+otherwise it validates the real managed helper CLI at
+`~/.darkbloom/Darkbloom.app/Contents/Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom`.
+A legacy regular outer CLI is accepted only when the helper is absent; a
+malformed helper fails validation. The outer CLI alias is not a managed launch
+path. There is no PATH or Downloads fallback. Read-only screens use CLI/file
+contracts; pressing a runtime or setup action can change the real provider state. See the
 [product verification procedure](../operations/app-release.md#product-flow-and-session-verification)
 for exploration, network setup, and session lifetime.
 
@@ -276,7 +285,7 @@ and `/usr/local/bin/promptsidecar`, OCI labels
 | `prompt-sidecar-build` | `cargo build --locked --release --bin promptsidecar` |
 | `prompt-sidecar` | format + check + test + build |
 | `provider-build` | `swift build` + `scripts/fetch-metallib.sh <bin-path>` |
-| `provider-test` | `swift build --build-tests`, stage `mlx.metallib` into the bin dir and every `*PackageTests.xctest/Contents/MacOS`, then `swift test --skip-build` |
+| `provider-test` | `swift build --build-tests`, stage `mlx.metallib` into the bin dir and every `*PackageTests.xctest/Contents/MacOS`, then both required partitions in `scripts/test-provider-suites.sh` |
 | `provider` | `provider-build` + `provider-test` |
 | `app-unit-test` | `swift test --package-path provider-swift --filter 'DarkbloomAppTests\|ProviderCoreFoundationTests'`; no app launch, but may build the package test graph |
 | `app-bundle-test` | `scripts/test-bundle-macos-app.sh`; temporary executables and shader fixtures, no Swift/Metal build or app launch |

@@ -1,7 +1,30 @@
 import Foundation
 import ProviderCore
 
+extension Models.Catalog {
+    /// Runtime-only browsing must never inspect or hash staged model weights.
+    /// Keep the planner lazy; only the explicit download-plan flag invokes it.
+    func makePlanOutput(
+        models: [CatalogModel],
+        runtimeCapabilities: Set<ProviderRuntimeCapability>?,
+        storagePlan: (CatalogModel) async throws -> ModelDownloadStoragePlan
+    ) async throws -> ModelsCatalogPlanOutput {
+        var plans: [String: ModelDownloadStoragePlan] = [:]
+        if includeDownloadPlans {
+            for model in models {
+                plans[model.id] = try await storagePlan(model)
+            }
+        }
+        return ModelsCatalogPlanOutput(
+            models: models,
+            downloadPlans: plans,
+            runtimeCapabilities: runtimeCapabilities
+        )
+    }
+}
+
 /// Additive app envelope. Plain `models catalog --json` remains the catalog array.
+/// Runtime-only snapshots include an empty `download_plans` object.
 struct ModelsCatalogPlanOutput: Encodable {
     let models: [CatalogModel]
     let downloadPlans: [String: ModelDownloadStoragePlan]

@@ -146,10 +146,19 @@ struct ModelsDownloadEventEmitterTests {
         ])
         #expect(appCatalog.json)
         #expect(appCatalog.includeDownloadPlans)
+        #expect(!appCatalog.includeRuntimeEligibility)
+
+        let lightweightCatalog = try Models.Catalog.parse([
+            "--json", "--include-runtime-eligibility",
+        ])
+        #expect(lightweightCatalog.json)
+        #expect(lightweightCatalog.includeRuntimeEligibility)
+        #expect(!lightweightCatalog.includeDownloadPlans)
 
         let publicCatalog = try Models.Catalog.parse(["--json"])
         #expect(publicCatalog.json)
         #expect(!publicCatalog.includeDownloadPlans)
+        #expect(!publicCatalog.includeRuntimeEligibility)
     }
 
     @Test("JSON downloads retain runtime capabilities and fail before I/O when ineligible")

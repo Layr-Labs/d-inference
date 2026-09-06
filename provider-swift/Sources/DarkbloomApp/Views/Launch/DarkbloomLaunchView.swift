@@ -29,11 +29,11 @@ struct DarkbloomLaunchView: View {
                         .shadow(color: DarkbloomTheme.accent.opacity(0.72), radius: 54)
 
                     Circle()
-                        .fill(.white)
+                        .fill(DarkbloomTheme.canvas)
                         .frame(width: shortSide * 0.34, height: shortSide * 0.34)
                         .scaleEffect(whiteBloomIsOpen ? 5.9 : 0.01)
                         .blur(radius: whiteBloomIsOpen ? 0 : 12)
-                        .shadow(color: .white.opacity(0.9), radius: whiteBloomIsOpen ? 26 : 8)
+                        .shadow(color: DarkbloomTheme.canvas.opacity(0.9), radius: whiteBloomIsOpen ? 26 : 8)
 
                     Circle()
                         .fill(DarkbloomTheme.accent)
@@ -44,7 +44,7 @@ struct DarkbloomLaunchView: View {
                 }
                 .opacity(isDissolving ? 0 : 1)
 
-                Color.white
+                DarkbloomTheme.canvas
                     .opacity(whiteCanvasIsVisible && !isDissolving ? 1 : 0)
 
                 Text("Darkbloom")

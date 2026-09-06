@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+# Compiler-free nested-layout coverage with synthetic executables and an
+# explicitly mocked signature verifier. The default suite uses signed Mach-O.
+if [ "${1:-}" = "--nested-provider-shell-only" ]; then
+    exec bash "$(dirname "$0")/test-install-nested-provider.sh"
+fi
+
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-install-test.XXXXXX")
 trap 'rm -rf "$ROOT"' EXIT
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -891,6 +897,8 @@ for installer_label in source embedded; do
 done
 
 source "$REPO_ROOT/scripts/test-install-recovery-fixtures.sh"
+source "$REPO_ROOT/scripts/test-install-nested-provider-fixtures.sh"
+run_nested_provider_tests
 
 assert_interrupted_app_transaction_recovers() {
     local installer=$1

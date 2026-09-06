@@ -30,7 +30,7 @@ func menuBarProviderContentRequiresCompletedSetup() {
     #expect(content.showsProviderControls)
 }
 
-@Test("Menu bar label is monochrome-ready and changes with provider state")
+@Test("Menu bar keeps its brand icon and announces provider state")
 func menuBarLabelTracksProviderState() {
     let setup = ProviderMenuBarLabelPresentation(content: .setup)
     let online = ProviderMenuBarLabelPresentation(
@@ -46,13 +46,12 @@ func menuBarLabelTracksProviderState() {
         content: .provider(ProviderPreviewScenario.stale.snapshot)
     )
 
-    #expect(setup.systemImage == "circle.dashed")
-    #expect(setup.accessibilityLabel == "Darkbloom, setup incomplete")
-    #expect(online.systemImage == "checkmark.circle.fill")
-    #expect(serving.systemImage == "waveform.path.ecg")
-    #expect(attention.systemImage == "exclamationmark.triangle.fill")
-    #expect(stale.systemImage == "exclamationmark.octagon.fill")
-    #expect(serving.accessibilityLabel == "Darkbloom, Serving")
+    #expect([setup, online, serving, attention, stale].allSatisfy { $0.systemImage == "sparkle" })
+    #expect(setup.accessibilityLabel == "Darkbloom, network setup required")
+    #expect(online.accessibilityLabel == "Darkbloom network, Network provider running")
+    #expect(attention.accessibilityLabel == "Darkbloom network, Network needs attention")
+    #expect(stale.accessibilityLabel == "Darkbloom network, Sharing status unknown")
+    #expect(serving.accessibilityLabel == "Darkbloom network, Handling requests")
 }
 
 @Test("Menu bar label represents transition states")
@@ -61,13 +60,13 @@ func menuBarLabelTracksTransitions() {
 
     snapshot.runState = .starting
     #expect(
-        ProviderMenuBarLabelPresentation(content: .provider(snapshot)).systemImage
-            == "ellipsis.circle.fill"
+        ProviderMenuBarLabelPresentation(content: .provider(snapshot)).accessibilityLabel
+            == "Darkbloom network, Starting network provider"
     )
 
     snapshot.runState = .restarting
     #expect(
-        ProviderMenuBarLabelPresentation(content: .provider(snapshot)).systemImage
-            == "arrow.clockwise.circle.fill"
+        ProviderMenuBarLabelPresentation(content: .provider(snapshot)).accessibilityLabel
+            == "Darkbloom network, Restarting network provider"
     )
 }

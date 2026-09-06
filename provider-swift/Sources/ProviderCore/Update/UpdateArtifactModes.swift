@@ -60,19 +60,23 @@ struct UpdateArtifactModes: Equatable, Sendable {
         switch path {
         case "bin/darkbloom",
              "darkbloom",
-             "Darkbloom.app/Contents/MacOS/darkbloom":
+             "Darkbloom.app/Contents/MacOS/darkbloom",
+             "Darkbloom.app/Contents/MacOS/DarkbloomApp",
+             "Darkbloom.app/Contents/Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom":
             expected = expectedBinary
             label = "darkbloom"
         case "bin/darkbloom-enclave",
              "darkbloom-enclave",
              "bin/eigeninference-enclave",
              "eigeninference-enclave",
-             "Darkbloom.app/Contents/MacOS/darkbloom-enclave":
+             "Darkbloom.app/Contents/MacOS/darkbloom-enclave",
+             "Darkbloom.app/Contents/Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom-enclave":
             expected = expectedEnclave
             label = "darkbloom-enclave"
         case "bin/mlx.metallib",
              "mlx.metallib",
-             "Darkbloom.app/Contents/MacOS/mlx.metallib":
+             "Darkbloom.app/Contents/MacOS/mlx.metallib",
+             "Darkbloom.app/Contents/Helpers/DarkbloomProvider.app/Contents/MacOS/mlx.metallib":
             expected = expectedMetallib
             label = "mlx.metallib"
         default:
@@ -110,7 +114,7 @@ struct UpdateArtifactModes: Equatable, Sendable {
     private static func regularFileMode(_ url: URL) throws -> UInt32 {
         let descriptor = open(
             url.path,
-            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
         )
         guard descriptor >= 0 else {
             throw posixError("open \(url.path) for permission verification")

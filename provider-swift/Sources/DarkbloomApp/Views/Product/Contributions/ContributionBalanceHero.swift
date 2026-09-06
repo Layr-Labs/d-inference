@@ -19,13 +19,16 @@ struct ContributionBalanceHero: View {
                     .foregroundStyle(DarkbloomTheme.accent)
                     .labelStyle(ContributionHeroLabelStyle())
 
-                Text(ContributionsPresentation.amount(snapshot.withdrawableBalance))
+                Text(ContributionsPresentation.summaryAmount(snapshot.withdrawableBalance))
+                    .help(ContributionsPresentation.amount(snapshot.withdrawableBalance))
+                    .accessibilityValue(ContributionsPresentation.amount(snapshot.withdrawableBalance))
                     .font(.system(size: 42, weight: .medium, design: .rounded))
                     .monospacedDigit()
                     .tracking(-1.4)
                     .padding(.top, 12)
 
-                Text("of \(ContributionsPresentation.amount(snapshot.availableBalance)) available")
+                Text("of \(ContributionsPresentation.summaryAmount(snapshot.availableBalance)) available")
+                    .help(ContributionsPresentation.amount(snapshot.availableBalance))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .padding(.top, 3)

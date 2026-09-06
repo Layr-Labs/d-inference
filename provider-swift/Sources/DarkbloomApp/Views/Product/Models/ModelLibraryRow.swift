@@ -9,169 +9,141 @@ struct ModelLibraryRow: View {
     let onPrimaryAction: () -> Void
     let onRemove: () -> Void
 
+    @State private var showsDetails = false
+
     var body: some View {
-        HStack(spacing: 15) {
-            Image(systemName: model.kind == .vision ? "eye" : "text.bubble")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(modelTint)
-                .frame(width: 40, height: 40)
-                .background(
-                    modelTint.opacity(0.09),
-                    in: RoundedRectangle(cornerRadius: 11)
-                )
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 8) {
-                    Text(model.displayName)
-                        .font(.system(size: 14, weight: .semibold))
-                    runtimeBadge
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: ModelLibraryColumns.spacing) {
+                Button { showsDetails = true } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(model.displayName)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(StudioPalette.ink)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                            .multilineTextAlignment(.leading)
+                        Text(capabilityDetail)
+                            .font(.system(size: 11))
+                            .foregroundStyle(StudioPalette.secondaryInk)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("View details for \(model.displayName)")
+                .accessibilityLabel("Details for \(model.displayName)")
+                .popover(isPresented: $showsDetails, arrowEdge: .leading) {
+                    ModelLibraryModelDetails(model: model)
                 }
 
-                Text(model.summary)
+                Text(ModelLibraryColumns.storage(model.sizeBytes))
                     .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .monospacedDigit()
+                    .foregroundStyle(StudioPalette.secondaryInk)
+                    .frame(width: ModelLibraryColumns.storageWidth, alignment: .trailing)
+                    .accessibilityLabel("Storage: \(ModelLibraryColumns.storage(model.sizeBytes))")
 
-                if case .failed(let failure) = model.installation {
-                    Label(failure.message, systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(ProductPalette.warning)
-                        .lineLimit(2)
+                VStack(alignment: .leading, spacing: 4) {
+                    ModelLibraryFitLabel(fit: model.fit)
+                    if let runtimeTitle {
+                        Text(runtimeTitle)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(StudioPalette.secondaryInk)
+                    }
                 }
+                .frame(width: ModelLibraryColumns.compatibilityWidth, alignment: .leading)
 
-                Text(metadata)
+                ModelLibraryActions(
+                    model: model,
+                    isSelected: isSelected,
+                    allowsSelection: allowsSelection,
+                    offersLocalStart: offersLocalStart,
+                    onSelect: onSelect,
+                    onPrimaryAction: onPrimaryAction,
+                    onRemove: onRemove
+                )
+                .frame(width: ModelLibraryColumns.actionWidth, alignment: .trailing)
+            }
+
+            if case .failed(let failure) = model.installation {
+                Label(failure.message, systemImage: "exclamationmark.triangle")
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(ProductPalette.warning)
                     .fixedSize(horizontal: false, vertical: true)
             }
-
-            Spacer(minLength: 14)
-
-            compatibilityBadge
-
-            primaryButton
-
-            if model.isInstalled {
-                Menu {
-                    if allowsSelection {
-                        Button("Use for private chat", action: onSelect)
-                        Divider()
-                    }
-                    Button("Remove Download…", role: .destructive, action: onRemove)
-                        .disabled(model.runtime != .cold)
-                } label: {
-                    Image(systemName: "ellipsis")
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-            }
         }
-        .padding(16)
-        .productSurface()
+        .padding(.vertical, 14)
         .accessibilityElement(children: .contain)
     }
 
-    @ViewBuilder
-    private var primaryButton: some View {
-        switch model.installation {
-        case .notInstalled:
-            Button("Download", action: onPrimaryAction)
-                .buttonStyle(.bordered)
-        case .downloading:
-            Button("Pause", systemImage: "pause.fill", action: onPrimaryAction)
-                .buttonStyle(.bordered)
-        case .paused:
-            Button("Resume", systemImage: "play.fill", action: onPrimaryAction)
-                .buttonStyle(.borderedProminent)
-        case .verifying:
-            ProgressView()
-                .controlSize(.small)
-                .help("Verifying model weights")
-        case .installed:
-            if !model.fit.canRunOnThisMac {
-                Button("Unavailable") {}
-                    .buttonStyle(.bordered)
-                    .disabled(true)
-            } else if offersLocalStart {
-                Button("Use locally", systemImage: "bubble.left", action: onPrimaryAction)
-                    .buttonStyle(.borderedProminent)
-                    .help("Choose this model in Local API, then start local AI")
-            } else if !allowsSelection {
-                EmptyView()
-            } else if isSelected {
-                Button("Selected", systemImage: "checkmark", action: onPrimaryAction)
-                    .buttonStyle(.bordered)
-                    .disabled(true)
-            } else {
-                Button("Use", systemImage: "sparkles", action: onPrimaryAction)
-                    .buttonStyle(.borderedProminent)
-            }
-        case .failed(let failure):
-            Button(failure.isResumable ? "Resume" : "Download Again", action: onPrimaryAction)
-                .buttonStyle(.borderedProminent)
-        }
+    private var capabilityDetail: String {
+        let capabilities = model.capabilities.map(\.displayName).joined(separator: ", ")
+        if !capabilities.isEmpty { return capabilities }
+        return model.quantization ?? "Details not provided"
     }
 
-    @ViewBuilder
-    private var compatibilityBadge: some View {
-        switch model.fit {
-        case .fits:
-            ProductStatusBadge(title: "Compatible", systemImage: "checkmark", tint: ProductPalette.positive)
-        case .tooLarge:
-            ProductStatusBadge(title: "Doesn’t fit this Mac", systemImage: "xmark", tint: ProductPalette.warning)
-        case .unknown:
-            ProductStatusBadge(title: "Compatibility unknown", systemImage: "questionmark", tint: .secondary)
-        case .runtimeIneligible(let reason):
-            VStack(alignment: .trailing, spacing: 4) {
-                ProductStatusBadge(title: "Runtime unavailable", systemImage: "xmark", tint: ProductPalette.warning)
-                Text(reason)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: 230, alignment: .trailing)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        case .runtimeUnknown(let reason):
-            VStack(alignment: .trailing, spacing: 4) {
-                ProductStatusBadge(title: "Runtime not verified", systemImage: "questionmark", tint: .secondary)
-                Text(reason)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: 230, alignment: .trailing)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var runtimeBadge: some View {
+    private var runtimeTitle: String? {
         switch model.runtime {
-        case .serving:
-            ProductStatusBadge(title: "Serving", systemImage: "waveform", tint: DarkbloomTheme.accent)
-        case .warm:
-            ProductStatusBadge(title: "Warm", systemImage: "bolt.fill", tint: ProductPalette.positive)
-        case .loading:
-            ProductStatusBadge(title: "Loading", systemImage: "ellipsis", tint: DarkbloomTheme.accent)
-        case .reloading:
-            ProductStatusBadge(title: "Reloading", systemImage: "arrow.clockwise", tint: DarkbloomTheme.accent)
-        case .crashed:
-            ProductStatusBadge(title: "Load failed", systemImage: "exclamationmark", tint: ProductPalette.critical)
-        default:
-            EmptyView()
+        case .cold: nil
+        case .serving: "Serving"
+        case .warm: "Loaded"
+        case .loading: "Loading"
+        case .reloading: "Reloading"
+        case .crashed: "Load failed"
+        }
+    }
+}
+
+/// Shared widths keep the collection readable as a comparison at a 900pt window.
+/// The name column takes the remaining width and wraps instead of pushing actions out.
+enum ModelLibraryColumns {
+    static let spacing: CGFloat = 12
+    static let storageWidth: CGFloat = 65
+    static let compatibilityWidth: CGFloat = 110
+    static let actionWidth: CGFloat = 126
+
+    static func storage(_ bytes: Int64) -> String {
+        bytes > 0 ? ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) : "Unknown"
+    }
+}
+
+struct ModelLibraryFitLabel: View {
+    let fit: ModelFit
+
+    var body: some View {
+        Label(title, systemImage: symbol)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(fit == .fits ? StudioPalette.accent : StudioPalette.secondaryInk)
+            .fixedSize(horizontal: false, vertical: true)
+            .help(detail)
+    }
+
+    private var title: String {
+        switch fit {
+        case .fits: "Fits this Mac"
+        case .tooLarge: "Needs more memory"
+        case .unknown: "Not checked"
+        case .runtimeIneligible: "Unsupported"
+        case .runtimeUnknown: "Not verified"
         }
     }
 
-    private var metadata: String {
-        var parts = [ByteCountFormatter.string(fromByteCount: model.sizeBytes, countStyle: .file)]
-        if let quantization = model.quantization { parts.append(quantization) }
-        if let minimumMemoryGB = model.minimumMemoryGB { parts.append("\(minimumMemoryGB) GB memory") }
-        parts += model.capabilities.prefix(2).map(\.displayName)
-        return parts.joined(separator: " · ")
+    private var symbol: String {
+        switch fit {
+        case .fits: "checkmark.circle"
+        case .tooLarge, .runtimeIneligible: "exclamationmark.circle"
+        case .unknown, .runtimeUnknown: "questionmark.circle"
+        }
     }
 
-    private var modelTint: Color {
-        switch model.fit {
-        case .fits: DarkbloomTheme.accent
-        case .unknown, .tooLarge, .runtimeIneligible, .runtimeUnknown: .secondary
+    private var detail: String {
+        switch fit {
+        case .fits: "Runtime support and memory fit passed the latest compatibility check."
+        case .tooLarge(let required, let available):
+            "Recommends \(required) GB of memory; this Mac has \(available) GB available for it."
+        case .unknown: "Compatibility is unknown for this model."
+        case .runtimeIneligible(let reason), .runtimeUnknown(let reason): reason
         }
     }
 }

@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// A model list and provider snapshot are supplied by the product shell. This
-/// surface does not construct a library or infer enrollment/account readiness.
+/// Selection and lifecycle policy remain owned by the supplied stores.
 struct LocalAPIStartControls: View {
     let store: LocalAPIStore
     let models: [ModelSummary]
@@ -18,27 +17,39 @@ struct LocalAPIStartControls: View {
     private var installed: [ModelSummary] { models.filter(\.isInstalled) }
     private var selected: ModelSummary? { installed.first { $0.id == store.selectedLocalModelID } }
     private var conflict: LocalAPIStartConflict? { store.startConflict(providerSnapshot: providerSnapshot) }
+    private var canStart: Bool {
+        store.isLive && modelsAreLive && store.localStart.isLaunchSupported
+            && selected != nil && selected.map { modelIssue($0) == nil } == true
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            ProductSectionHeader(
-                "Local-only AI",
-                detail: store.isLive && modelsAreLive ? "Runs on this Mac" : "Sample / unconnected data"
-            )
-            Text("Try an installed model without network enrollment. Local requests use this Mac’s loopback endpoint and API key.")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text("Model")
+                    .font(DarkbloomTheme.chivo(19, weight: .medium))
+                    .accessibilityAddTraits(.isHeader)
+                if !store.isLive || !modelsAreLive {
+                    Text("Sample / unconnected data")
+                        .font(.system(size: 11))
+                        .foregroundStyle(StudioPalette.secondaryInk)
+                }
+                Spacer(minLength: 0)
+                Button("Open Library", action: onOpenModels)
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(StudioPalette.accent)
+            }
 
             if store.localStart.hasActiveSession {
                 sessionControls
             } else if let conflict {
                 Text(conflict.message)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                HStack {
-                    Button("Open Provider Controls", action: onOpenProviderControls)
-                    Button("Open Diagnostics", action: onOpenDiagnostics)
+                    .font(.system(size: 13))
+                    .foregroundStyle(StudioPalette.secondaryInk)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 14) {
+                    Button("Provider controls", action: onOpenProviderControls)
+                    Button("Diagnostics", action: onOpenDiagnostics)
                 }
                 failureMessage
             } else {
@@ -46,86 +57,110 @@ struct LocalAPIStartControls: View {
                 failureMessage
             }
         }
-        .padding(.vertical, 20)
-        .overlay(alignment: .bottom) { Divider() }
+        .foregroundStyle(StudioPalette.ink)
+        .tint(StudioPalette.accent)
     }
 
     @ViewBuilder
     private var modelControls: some View {
         if installed.isEmpty {
             Text(emptyModelMessage)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-            Button("Open Models", action: onOpenModels)
-                .buttonStyle(.bordered)
+                .font(.system(size: 13))
+                .foregroundStyle(StudioPalette.secondaryInk)
+                .fixedSize(horizontal: false, vertical: true)
         } else {
-            Picker("Installed model", selection: Binding(
-                get: { store.selectedLocalModelID },
-                set: { selection in
-                    store.selectedLocalModelID = selection
-                    if let selection { onSelectModel(selection) }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    modelPicker
+                    startButton
                 }
-            )) {
-                Text("Choose a model").tag(String?.none)
-                ForEach(installed) { model in
-                    Text(installed.filter { $0.displayName == model.displayName }.count > 1 ? model.id : model.displayName)
-                        .tag(Optional(model.id))
+                VStack(alignment: .leading, spacing: 12) {
+                    modelPicker
+                    startButton
                 }
             }
-            .frame(maxWidth: 480, alignment: .leading)
 
             if let selected, let issue = modelIssue(selected) {
-                Text(issue).font(.system(size: 11)).foregroundStyle(ProductPalette.warning)
+                Text(issue)
+                    .font(.system(size: 12))
+                    .foregroundStyle(ProductPalette.warning)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            HStack(spacing: 12) {
-                Button("Start Local AI") {
-                    guard let selected else { return }
-                    store.startLocalOnly(
-                        modelID: selected.id, models: models, modelsAreLive: modelsAreLive,
-                        providerSnapshot: providerSnapshot, onProcessChange: onProcessChange
-                    )
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!store.isLive || !modelsAreLive || !store.localStart.isLaunchSupported || selected == nil || selected.map { modelIssue($0) != nil } == true)
-                Button("Manage Models", action: onOpenModels)
-            }
-            Text("Keep Darkbloom open while using this local session. Models load when first requested, so the first response may take longer.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+            Text("Keep Darkbloom open. The first request loads the model.")
+                .font(.system(size: 12))
+                .foregroundStyle(StudioPalette.secondaryInk)
         }
         if store.isLive && modelsAreLive && !store.localStart.isLaunchSupported {
             Text(LocalAPIStartError.nonReplacingLaunchUnavailable.localizedDescription)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Button("Open Diagnostics", action: onOpenDiagnostics)
+                .font(.system(size: 12))
+                .foregroundStyle(StudioPalette.secondaryInk)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Diagnostics", action: onOpenDiagnostics)
         }
         if !store.isLive || !modelsAreLive {
-            Text("Sample models cannot launch a real provider. Open the live app to start local AI.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+            Text("Sample data cannot start a model.")
+                .font(.system(size: 12))
+                .foregroundStyle(StudioPalette.secondaryInk)
         }
+    }
+
+    private var modelPicker: some View {
+        Picker("Installed model", selection: Binding(
+            get: { store.selectedLocalModelID },
+            set: { selection in
+                store.selectedLocalModelID = selection
+                if let selection { onSelectModel(selection) }
+            }
+        )) {
+            Text("Choose a model").tag(String?.none)
+            ForEach(installed) { model in
+                Text(installed.filter { $0.displayName == model.displayName }.count > 1 ? model.id : model.displayName)
+                    .tag(Optional(model.id))
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .controlSize(.large)
+        .font(.system(size: 14, weight: .medium))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(selected?.id ?? "Choose an installed model")
+        .accessibilityLabel("Installed model")
+    }
+
+    private var startButton: some View {
+        Button("Start model") {
+            guard let selected else { return }
+            store.startLocalOnly(
+                modelID: selected.id, models: models, modelsAreLive: modelsAreLive,
+                providerSnapshot: providerSnapshot, onProcessChange: onProcessChange
+            )
+        }
+        .buttonStyle(StudioPrimaryButtonStyle())
+        .disabled(!canStart)
     }
 
     private var sessionControls: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
                 if store.localStart.state.isWaiting || store.localStart.state == .cancelling {
                     ProgressView().controlSize(.small)
+                        .accessibilityLabel("Updating local session")
                 }
                 Text(sessionMessage)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(sessionHasFailed ? ProductPalette.warning : StudioPalette.ink)
                     .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
-            HStack(spacing: 12) {
+            HStack(spacing: 14) {
                 if case .ready = store.localStart.state {
-                    Button("Try in Chat", action: onOpenChat)
-                        .buttonStyle(.borderedProminent)
+                    Button("Open chat", action: onOpenChat)
                 }
                 if case .failed = store.localStart.state {
-                    Button("Check Again") { store.localStart.checkAgain() }
-                    Button("Open Diagnostics", action: onOpenDiagnostics)
+                    Button("Check again") { store.localStart.checkAgain() }
+                    Button("Diagnostics", action: onOpenDiagnostics)
                 }
-                Button(store.localStart.state.isWaiting ? "Cancel Start" : "End Local Session") {
+                Button(store.localStart.state.isWaiting ? "Cancel start" : "End local session") {
                     store.localStart.cancel()
                 }
                 .disabled(store.localStart.state == .cancelling)
@@ -139,24 +174,30 @@ struct LocalAPIStartControls: View {
             Text(error.localizedDescription)
                 .font(.system(size: 12))
                 .foregroundStyle(ProductPalette.warning)
+                .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
-            Button("Open Diagnostics", action: onOpenDiagnostics)
+            Button("Diagnostics", action: onOpenDiagnostics)
         } else if case .cancelled = store.localStart.state {
-            Text("The start request was cancelled. Endpoint status below reflects the latest observation.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+            Text("Start cancelled. Connection status is shown below.")
+                .font(.system(size: 12))
+                .foregroundStyle(StudioPalette.secondaryInk)
         }
+    }
+
+    private var sessionHasFailed: Bool {
+        if case .failed = store.localStart.state { return true }
+        return false
     }
 
     private var sessionMessage: String {
         switch store.localStart.state {
-        case .starting(let id): "Starting local AI for \(modelName(id))…"
-        case .waitingForEndpoint(let id): "Waiting for a verified endpoint advertising \(modelName(id))…"
-        case .ready(let id): "The endpoint is responding and advertises \(modelName(id)). Ready for a first request."
+        case .starting(let id): "Starting \(modelName(id))…"
+        case .waitingForEndpoint(let id): "Waiting for the endpoint to respond and list \(modelName(id))…"
+        case .ready(let id): "Selected model: \(modelName(id)). Models load when needed."
         case .cancelling: "Ending this app’s local session…"
         case .failed(let error): error.localizedDescription
         case .cancelled: "Local start cancelled."
-        case .idle: "Local session idle."
+        case .idle: "No local session."
         }
     }
 
@@ -166,9 +207,9 @@ struct LocalAPIStartControls: View {
 
     private var emptyModelMessage: String {
         switch catalogState {
-        case .loading: "Checking this Mac’s installed models…"
-        case .offline: "The model library is unavailable. Open Models to refresh the installed list."
-        case .available: "Install a model in Models, then return here to start local AI."
+        case .loading: "Checking installed models…"
+        case .offline: "The model library is unavailable. Open Library to refresh it."
+        case .available: "Install a model from Library to get started."
         }
     }
 

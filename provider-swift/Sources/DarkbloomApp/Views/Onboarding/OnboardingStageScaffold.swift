@@ -27,10 +27,9 @@ struct OnboardingStageScaffold<Detail: View, Visual: View>: View {
     var body: some View {
         HStack(alignment: .center, spacing: isCompact ? 24 : 40) {
             VStack(alignment: .leading, spacing: 0) {
-                Text(step.eyebrow)
-                    .font(DarkbloomTheme.chivo(10, weight: .medium))
-                    .tracking(1.25)
-                    .foregroundStyle(DarkbloomTheme.linkAccent)
+                Text(step.eyebrow.lowercased().capitalized)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(StudioPalette.secondaryInk)
 
                 Text(title)
                     .font(DarkbloomTheme.chivo(isCompact ? 40 : 44))
@@ -44,7 +43,7 @@ struct OnboardingStageScaffold<Detail: View, Visual: View>: View {
                 Text(message)
                     .font(DarkbloomTheme.chivo(15))
                     .lineSpacing(4)
-                    .foregroundStyle(DarkbloomTheme.ink.opacity(0.66))
+                    .foregroundStyle(StudioPalette.secondaryInk)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 18)
 

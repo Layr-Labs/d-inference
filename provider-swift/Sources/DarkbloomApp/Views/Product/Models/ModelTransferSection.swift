@@ -6,9 +6,8 @@ struct ModelTransferSection: View {
     let onResume: (ModelSummary.ID) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ProductSectionHeader("Preparing models", detail: "Verified downloads")
-
+        VStack(alignment: .leading, spacing: 12) {
+            ProductSectionHeader("Downloads", detail: "\(models.count) in progress")
             VStack(spacing: 0) {
                 ForEach(Array(models.enumerated()), id: \.element.id) { index, model in
                     ModelTransferRow(
@@ -16,14 +15,14 @@ struct ModelTransferSection: View {
                         onPause: { onPause(model.id) },
                         onResume: { onResume(model.id) }
                     )
-                    .padding(16)
-
+                    .padding(14)
                     if index < models.count - 1 {
-                        Divider().padding(.leading, 58)
+                        Rectangle().fill(StudioPalette.line).frame(height: 1)
+                            .padding(.horizontal, 14)
                     }
                 }
             }
-            .productSurface()
+            .background(StudioPalette.surface, in: RoundedRectangle(cornerRadius: 10))
         }
     }
 }

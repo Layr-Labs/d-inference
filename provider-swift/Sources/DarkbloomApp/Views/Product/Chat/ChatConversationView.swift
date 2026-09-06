@@ -12,7 +12,7 @@ struct ChatConversationView: View {
         GeometryReader { viewport in
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 28) {
+                    LazyVStack(alignment: .leading, spacing: 36) {
                         ForEach(messages) { message in
                             if !message.text.isEmpty {
                                 ChatMessageView(message: message, isLive: isLive)
@@ -22,8 +22,8 @@ struct ChatConversationView: View {
                         if isResponding { responseIndicator }
                         Color.clear.frame(height: 1).id("chat-bottom")
                     }
-                    .frame(maxWidth: 780)
-                    .padding(.horizontal, 20)
+                    .frame(maxWidth: 840)
+                    .padding(.horizontal, 40)
                     .padding(.vertical, 28)
                     .frame(maxWidth: .infinity)
                     .background {
@@ -68,8 +68,7 @@ struct ChatConversationView: View {
                         } label: {
                             Label("Jump to Latest", systemImage: "arrow.down")
                         }
-                        .buttonStyle(.bordered)
-                        .background(.regularMaterial, in: Capsule())
+                        .buttonStyle(StudioPrimaryButtonStyle())
                         .padding(12)
                     }
                 }
@@ -84,8 +83,8 @@ struct ChatConversationView: View {
                  ? (messages.last?.text.isEmpty == false && messages.last?.role == .assistant
                     ? "Responding on this Mac…" : "Waiting for the model… First replies may take longer.")
                  : "Preparing a sample reply…")
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
+                .font(DarkbloomTheme.chivo(12))
+                .foregroundStyle(StudioPalette.secondaryInk)
         }
         .accessibilityElement(children: .combine)
     }

@@ -3,182 +3,131 @@ import SwiftUI
 struct ProviderOverviewView: View {
     let identity: MachineIdentity
     let store: ProviderStore
-    let isPreview: Bool
+    let needsSetup: Bool
+    let localSessionIsActive: Bool
+    let onContinueSetup: () -> Void
     let onOpenChat: () -> Void
-    let onOpenLocalAPI: () -> Void
     let onOpenAvailability: () -> Void
     let onOpenMachine: () -> Void
     let onRequestAction: (ProviderAction) -> Void
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var bloomPulse = false
 
     private var snapshot: ProviderSnapshot { store.snapshot }
     private var presentation: ProviderStatePresentation { snapshot.presentation }
 
     var body: some View {
         ProductPage {
-            providerHero
+            NetworkIntroductionView()
+                .padding(.bottom, 30)
+            ProductSectionHeader("Share this Mac’s compute", detail: identity.displayName)
+            Text("Network sharing is separate from local AI in Studio. Choose when this Mac can accept network work, and pause sharing whenever you need it.")
+                .font(.system(size: 13))
+                .foregroundStyle(StudioPalette.secondaryInk)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 8)
+
+            if localSessionIsActive {
+                HStack(spacing: 16) {
+                    Text("End your local Studio session before starting network sharing.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(StudioPalette.secondaryInk)
+                    Spacer(minLength: 0)
+                    Button("Open Studio", action: onOpenChat)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(StudioPalette.accent)
+                }
+                .padding(.vertical, 18)
+            }
+
+            if needsSetup {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Connect your account, verify this Mac, and choose a model to contribute.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(StudioPalette.secondaryInk)
+                    Button("Connect this Mac", action: onContinueSetup)
+                        .buttonStyle(StudioPrimaryButtonStyle())
+                        .disabled(localSessionIsActive)
+                }
+                .padding(.vertical, 20)
+            } else {
+                providerHero
+            }
 
             if let problem = snapshot.lastProblem {
                 problemBanner(problem)
                     .padding(.top, 14)
             }
 
-            metrics
-                .padding(.top, 14)
-
-            HStack(alignment: .top, spacing: 14) {
-                providerDetails
-                LocalAIOverviewCard(
-                    isPreview: isPreview,
-                    onOpenChat: onOpenChat,
-                    onOpenLocalAPI: onOpenLocalAPI
-                )
+            if !needsSetup, snapshot.pid != nil {
+                metrics.padding(.top, 28)
             }
-            .padding(.top, 14)
+
+            if !needsSetup {
+                providerDetails.padding(.top, 14)
+            }
         }
-        .navigationTitle("Overview")
+        .navigationTitle("Network status")
         .task {
             store.startMonitoring()
-        }
-        .onChange(of: snapshot.runState) { previous, current in
-            guard !current.isTransitioning, previous != current else { return }
-            bloomPulse = true
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(700))
-                bloomPulse = false
-            }
         }
     }
 
     private var providerHero: some View {
-        ZStack {
-            SpatialFieldView(
-                presentation: .welcome,
-                focus: presentation.fieldFocus,
-                pointer: CGPoint(x: 0.73, y: 0.50),
-                activity: presentation.fieldActivity
-            )
-
-            LinearGradient(
-                colors: [.white.opacity(0.96), .white.opacity(0.68), .white.opacity(0.18)],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-
-            HStack(spacing: 28) {
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(presentation.tint)
-                            .frame(width: 8, height: 8)
-                            .shadow(color: presentation.tint.opacity(0.45), radius: 5)
-                        Text(presentation.overline)
-                            .font(.system(size: 11, weight: .semibold))
-                            .tracking(1.0)
-                    }
-
-                    Text(presentation.title)
-                        .font(DarkbloomTheme.chivo(34))
-                        .tracking(-1)
-                        .lineSpacing(-2)
-                        .padding(.top, 13)
-
-                    Text(presentation.detail)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                        .lineSpacing(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: 430, alignment: .leading)
-                        .padding(.top, 9)
-
-                    HStack(spacing: 10) {
-                        Button {
-                            if snapshot.runState == .scheduledOff {
-                                onOpenAvailability()
-                            } else if snapshot.runState == .attention {
-                                onOpenMachine()
-                            } else {
-                                onRequestAction(store.primaryAction)
-                            }
-                        } label: {
-                            if let pendingAction = store.pendingAction, pendingAction == store.primaryAction {
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .frame(minWidth: 100)
-                            } else {
-                                Label(
-                                    snapshot.runState == .attention ? "Review verification" : presentation.primaryActionTitle,
-                                    systemImage: snapshot.runState == .scheduledOff
-                                        ? "calendar.badge.clock"
-                                        : (snapshot.runState == .attention
-                                            ? "checkmark.shield"
-                                            : store.primaryAction.systemImage)
-                                )
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .disabled(
-                            snapshot.runState == .scheduledOff
-                                ? false
-                                : !store.canPerform(store.primaryAction)
-                        )
-
-                    }
-                    .padding(.top, 24)
-                }
-
-                Spacer(minLength: 10)
-
-                ZStack {
-                    Circle()
-                        .stroke(presentation.tint.opacity(reduceMotion ? 0.12 : 0.26), lineWidth: 1)
-                        .frame(width: 160, height: 160)
-                        .scaleEffect(reduceMotion ? 1 : (bloomPulse ? 1.24 : 0.78))
-                        .opacity(reduceMotion ? 1 : (bloomPulse ? 0 : 0.42))
-                        .animation(reduceMotion ? nil : .easeOut(duration: 0.7), value: bloomPulse)
-
-                    Circle()
-                        .fill(.white.opacity(0.52))
-                        .frame(width: 152, height: 152)
-                        .overlay {
-                            Circle().stroke(.white.opacity(0.76), lineWidth: 1)
-                        }
-                        .shadow(color: DarkbloomTheme.accent.opacity(0.14), radius: 30, y: 12)
-
-                    Image(systemName: identity.formFactor.symbolName)
-                        .symbolRenderingMode(.monochrome)
-                        .font(.system(size: 82, weight: .ultraLight))
-                        .foregroundStyle(.black)
-
-                    if snapshot.isServing {
-                        Circle()
-                            .fill(DarkbloomTheme.accent)
-                            .frame(width: 9, height: 9)
-                            .overlay {
-                                Circle()
-                                    .stroke(.white, lineWidth: 2)
-                            }
-                            .offset(x: 56, y: -52)
-                            .accessibilityLabel("Currently serving")
-                    }
-                }
-                .frame(width: 190)
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(spacing: 8) {
+                Circle().fill(presentation.tint).frame(width: 7, height: 7)
+                Text(presentation.overline.capitalized)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(StudioPalette.secondaryInk)
+                Spacer()
+                Text(identity.displayName)
+                    .font(.system(size: 12))
+                    .foregroundStyle(StudioPalette.secondaryInk)
             }
-            .padding(.horizontal, 30)
-            .padding(.vertical, 28)
+            Text(presentation.title)
+                .font(DarkbloomTheme.chivo(26))
+                .tracking(-0.7)
+                .accessibilityAddTraits(.isHeader)
+            Text(presentation.detail)
+                .font(.system(size: 14))
+                .foregroundStyle(StudioPalette.secondaryInk)
+                .frame(maxWidth: 540, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 20) {
+                Button {
+                    if snapshot.runState == .scheduledOff { onOpenAvailability() }
+                    else if needsVerificationReview { onOpenMachine() }
+                    else { onRequestAction(store.primaryAction) }
+                } label: {
+                    if store.pendingAction != nil {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text(needsVerificationReview ? "Review verification" : presentation.primaryActionTitle)
+                    }
+                }
+                .buttonStyle(StudioPrimaryButtonStyle())
+                .disabled(store.pendingAction != nil ||
+                    (localSessionIsActive && (store.primaryAction == .start || store.primaryAction == .restart)) ||
+                    (snapshot.runState != .scheduledOff && !needsVerificationReview && !store.canPerform(store.primaryAction)))
+                Button("Manage availability", action: onOpenAvailability)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(StudioPalette.accent)
+                if store.canPerform(.restart) {
+                    Button("Restart provider") { onRequestAction(.restart) }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(StudioPalette.secondaryInk)
+                        .disabled(localSessionIsActive)
+                }
+            }
+            .padding(.top, 4)
         }
-        .frame(minHeight: 266)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Color.white.opacity(0.88), lineWidth: 1)
-        }
-        .shadow(color: DarkbloomTheme.accent.opacity(0.09), radius: 28, y: 14)
-        .environment(\.colorScheme, .light)
-        .accessibilityElement(children: .contain)
+        .padding(.vertical, 14)
+        .padding(.bottom, 24)
+        .overlay(alignment: .bottom) { StudioPalette.line.frame(height: 1) }
+    }
+
+    private var needsVerificationReview: Bool {
+        snapshot.runState == .attention || (snapshot.runState == .online && snapshot.trust.state != .verified)
     }
 
     private var metrics: some View {

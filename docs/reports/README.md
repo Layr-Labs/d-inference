@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-05 · commit `94c7c31eb`
+> Last updated: 2026-09-05 · commit `63caa59f5`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -54,6 +54,7 @@ Plans and decision memos live in [`../design/`](../design/README.md).
 
 | Date | Report | One line |
 |---|---|---|
+| 2026-09-05 | [macOS app signing qualification](2026-09-05-macos-app-signing-qualification.md) | Raw CLI launch failure, passing nested-helper controls, and separate final release/attestation gates |
 | 2026-07-04 | [provider-trust-reliability](2026-07-04-provider-trust-reliability.md) | Why ~11% of the fleet stalled at `self_signed`, and the per-connection MDM fix |
 | 2026-07-17 | [eigencloud-to-gcp-migration](2026-07-17-eigencloud-to-gcp-migration.md) | Record of the prod move from EigenCloud to a GCP Confidential VM (complete) |
 

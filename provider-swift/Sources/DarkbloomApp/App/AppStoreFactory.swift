@@ -95,6 +95,7 @@ enum AppStoreFactory {
         )
         let accountUnlinkStore = AccountUnlinkStore(
             refreshAfterSuccess: {
+                appFlowStore.accountLinkWasRemoved()
                 try myMacsStore.signOut()
                 await providerStore.refresh()
                 await modelLibraryStore.refresh()

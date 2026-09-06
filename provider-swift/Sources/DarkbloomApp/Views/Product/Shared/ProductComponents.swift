@@ -9,7 +9,9 @@ struct ProductPage<Content: View>: View {
 
     var body: some View {
         ScrollView {
-            content
+            VStack(alignment: .leading, spacing: 0) {
+                content
+            }
                 .frame(maxWidth: 980, alignment: .leading)
                 .padding(.horizontal, 34)
                 .padding(.top, 30)
@@ -42,20 +44,19 @@ struct ProductPageHeader<Trailing: View>: View {
         HStack(alignment: .top, spacing: 24) {
             VStack(alignment: .leading, spacing: 8) {
                 if let eyebrow {
-                    Text(eyebrow.uppercased())
-                        .font(.system(size: 11, weight: .semibold))
-                        .tracking(1.1)
-                        .foregroundStyle(DarkbloomTheme.accent)
+                    Text(eyebrow)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(StudioPalette.secondaryInk)
                 }
 
                 Text(title)
-                    .font(DarkbloomTheme.chivo(30))
-                    .tracking(-0.8)
+                    .font(DarkbloomTheme.chivo(36))
+                    .tracking(-1.2)
                     .accessibilityAddTraits(.isHeader)
 
                 Text(subtitle)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 14))
+                    .foregroundStyle(StudioPalette.secondaryInk)
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 580, alignment: .leading)
@@ -118,9 +119,8 @@ struct ProductMetricTile: View {
                 Circle()
                     .fill(tint)
                     .frame(width: 6, height: 6)
-                Text(label.uppercased())
-                    .font(.system(size: 10, weight: .semibold))
-                    .tracking(0.8)
+                Text(label)
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
             }
 
@@ -213,7 +213,7 @@ struct ProductSurfaceModifier: ViewModifier {
                     .fill(ProductPalette.surface)
                     .overlay {
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(ProductPalette.stroke, lineWidth: 1)
+                            .stroke(ProductPalette.stroke.opacity(0.5), lineWidth: 0.5)
                     }
             }
     }
@@ -226,10 +226,10 @@ extension View {
 }
 
 enum ProductPalette {
-    static let pageBackground = Color(nsColor: .windowBackgroundColor)
-    static let surface = Color(nsColor: .controlBackgroundColor).opacity(0.82)
-    static let elevatedSurface = Color(nsColor: .textBackgroundColor)
-    static let stroke = Color.primary.opacity(0.075)
+    static let pageBackground = StudioPalette.canvas
+    static let surface = StudioPalette.surface
+    static let elevatedSurface = StudioPalette.surface
+    static let stroke = StudioPalette.line
     static let positive = adaptiveColor(
         light: NSColor(srgbRed: 0.02, green: 0.39, blue: 0.23, alpha: 1),
         dark: NSColor(srgbRed: 0.34, green: 0.86, blue: 0.60, alpha: 1)

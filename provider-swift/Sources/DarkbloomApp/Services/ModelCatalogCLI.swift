@@ -3,8 +3,9 @@ import ProviderCoreFoundation
 
 /// App-side adapter for model catalog + downloads. The app never links
 /// ProviderCore and never reimplements downloader logic: it shells out to
-/// the `darkbloom` CLI — `models catalog --json --include-download-plans`
-/// (coordinator catalog plus read-only disk admission),
+/// the `darkbloom` CLI — `models catalog --json --include-runtime-eligibility`
+/// (coordinator catalog plus runtime eligibility; onboarding explicitly opts
+/// into `--include-download-plans` for storage-aware model selection),
 /// `models list --json` (local cache scan), `models download --json`
 /// (NDJSON progress stream), `models remove --force` — and merges the
 /// results with the daemon's `daemon-state.json` (warm/serving models).
@@ -65,6 +66,7 @@ protocol ModelCatalogCLIRunning: Sendable {
 // MARK: - Subprocess implementation
 
 struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
+    private let includeDownloadPlans: Bool
     private let locator: any DarkbloomCLILocating
     private let stateFileURL: URL
     private let physicalMemoryBytes: UInt64
@@ -73,6 +75,7 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
     private let downloadAdmission: AppModelDownloadAdmissionController
 
     init(
+        includeDownloadPlans: Bool = false,
         locator: any DarkbloomCLILocating = SystemDarkbloomCLILocator(),
         stateFileURL: URL = DaemonStateFile.path(),
         physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
@@ -81,6 +84,7 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
             ProcessIdentity.read,
         downloadAdmission: AppModelDownloadAdmissionController = .shared
     ) {
+        self.includeDownloadPlans = includeDownloadPlans
         self.locator = locator
         self.stateFileURL = stateFileURL
         self.physicalMemoryBytes = physicalMemoryBytes
@@ -110,15 +114,19 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
             throw ModelCatalogCLIError.unreadableOutput(command: "models list --json --all")
         }
 
+        let catalogArguments = [
+            "models", "catalog", "--json",
+            includeDownloadPlans ? "--include-download-plans" : "--include-runtime-eligibility",
+        ]
         var catalogPlan: CLICatalogPlanOutput?
         var catalogError: ModelCatalogCLIError?
         do {
             let catalogOutput = try await runShortCommand(
                 executable: executable,
-                arguments: ["models", "catalog", "--json", "--include-download-plans"],
-                // Storage plans hash already-complete staged shards before
-                // crediting them. Keep the deliberate large-model allowance.
-                timeout: .seconds(600)
+                arguments: catalogArguments,
+                // Library browsing skips weight hashing. Onboarding's explicit
+                // storage plans retain the allowance for large staged shards.
+                timeout: .seconds(includeDownloadPlans ? 600 : 60)
             )
             guard catalogOutput.status == 0 else {
                 throw ModelCatalogCLIError.exited(catalogOutput.status, message: catalogOutput.stderrTail)
@@ -127,7 +135,7 @@ struct ProcessModelCatalogCLIRunner: ModelCatalogCLIRunning {
                 catalogPlan = try JSONDecoder().decode(CLICatalogPlanOutput.self, from: catalogOutput.stdout)
             } catch {
                 throw ModelCatalogCLIError.unreadableOutput(
-                    command: "models catalog --json --include-download-plans"
+                    command: catalogArguments.joined(separator: " ")
                 )
             }
         } catch is CancellationError {

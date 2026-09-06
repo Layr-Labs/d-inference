@@ -32,7 +32,7 @@ struct HowItWorksSheet: View {
                 Text("How Darkbloom works")
                     .font(DarkbloomTheme.chivo(24))
                     .tracking(-0.4)
-                Text("Private AI for you. Useful compute when you choose.")
+                Text("A network of Macs, and your own local studio.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
@@ -53,28 +53,27 @@ struct HowItWorksSheet: View {
     private var overview: some View {
         VStack(spacing: 12) {
             explanationRow(
-                icon: "lock.shield.fill",
-                title: "Private inference stays on this Mac",
-                detail: "Your own chats and local API requests run on your Apple silicon. Prompts and responses are not sent to a central inference service."
+                icon: "network",
+                title: "Use AI across the network",
+                detail: "Darkbloom connects AI apps with participating Apple silicon Macs. Use network models from the web console or an OpenAI-compatible client."
             )
             explanationRow(
                 icon: "moon.stars.fill",
-                title: "Spare capacity can help when this Mac is idle",
-                detail: "When you make it available, Darkbloom can use otherwise-idle capacity for encrypted network work. Your local work remains the priority."
+                title: "Contribute this Mac when you choose",
+                detail: "Connect your account and verify this Mac to provide compute to the network. Choose an availability schedule, pause sharing, and review its contribution."
             )
             explanationRow(
-                icon: "slider.horizontal.3",
-                title: "You stay in control",
-                detail: "Pause network availability at any time or choose a schedule. Darkbloom shows what the provider is doing without exposing request content."
+                icon: "macbook",
+                title: "Work locally in Studio",
+                detail: "Studio runs an installed model on this Mac without network enrollment. Your local session and network sharing have separate controls."
             )
         }
     }
 
     private var setupSteps: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("SETUP ON THIS MAC")
-                .font(.system(size: 10, weight: .bold))
-                .tracking(1)
+            Text("Connect this Mac to the network")
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.secondary)
 
             VStack(spacing: 0) {
@@ -107,7 +106,7 @@ struct HowItWorksSheet: View {
 
             Spacer()
 
-            Button("Set up this Mac") {
+            Button("Connect this Mac") {
                 dismiss()
                 onStartSetup()
             }

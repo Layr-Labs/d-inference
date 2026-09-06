@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-05 · commit `47f68a08a`
+> Last updated: 2026-09-06 · commit `63caa59f5`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -81,7 +81,7 @@ make provider-test
 # = cd provider-swift && swift build --build-tests
 #   ./scripts/fetch-metallib.sh <bin-path>            (build mlx.metallib from libs/mlx-swift source)
 #   cp mlx.metallib into every <bin-path>/*PackageTests.xctest/Contents/MacOS/
-#   cd provider-swift && swift test --skip-build
+#   ./scripts/test-provider-suites.sh
 ```
 
 The metallib staging is not optional: MLX loads `mlx.metallib` from beside the
@@ -90,6 +90,15 @@ Without it kernel-backed tests fail or silently exercise a different kernel
 set than production. To run a subset: `cd provider-swift && swift test
 --skip-build --filter <Suite>` after `make provider-test` has staged the
 metallib once.
+
+`scripts/test-provider-suites.sh` runs provider/app/CLI tests and imported
+`GPTOSSOptimizationTests` in separate processes, with a nonzero execution-count
+check for each. GPU regression tests latch process-global MLX settings;
+configuration tests intentionally mutate those environment keys. Each partition
+uses explicit `--no-parallel` to avoid starving bounded subprocess fixtures;
+race tests retain their own controlled concurrency. Keeping both partitions
+mandatory avoids order-dependent comparisons against changed values.
+Set `DARKBLOOM_TEST_LOG_DIR` to retain the two logs in a chosen directory.
 
 **Nested `libs/mlx-swift-lm` suites.** The paged-KV correctness gates live in
 the submodule, not in `provider-swift/`. Build them once, stage the metallib,
@@ -144,15 +153,42 @@ The focused regression coverage lives in
 | Explore before network setup; stable app-wide stores; preview isolation | `AppExplorationTests`, `AppBootstrapTests`; injected preferences/services, not enrollment on a Mac |
 | Chat drafts/history, retry, model validation, connection errors | `ChatSessionTests`, `ChatStoreTests`, `ChatModelValidationTests`, `ChatReadinessTests`; fixtures and injected transports, not actual model output |
 | Local model selection, launch conflicts, discovery identity, owned-child shutdown | `LocalAPIModelSelectionTests`, `LocalAPIStartFlowTests`, `LocalAPIStartSafetyTests`, `LocalAPIProcessLifetimeTests`; ownership/readiness contracts, not successful inference |
-| CLI-owned catalog eligibility and diagnostic failures | `ModelCatalogCLITests`, `ModelLibraryStoreLiveTests`, `DiagnosticsCLITests`; decoding/presentation of CLI data |
+| CLI-owned catalog eligibility, lightweight browsing, and diagnostic failures | `ModelCatalogCLITests`, `ModelsCatalogOutputTests`, `ModelLibraryStoreLiveTests`, `DiagnosticsCLITests`; decoding/presentation and proof that lightweight queries never call the storage planner |
 | Setup cancellation and stale completion recovery | `OnboardingCancellationRegressionTests`, `OnboardingCompletionRecoveryTests`; rejected/late results cannot complete setup |
+| Live contribution scope and older account links | `ContributionsLiveTests`; unknown machine identity defaults to account activity, and incomplete credentials offer explicit reconnect |
 
 `scripts/test-bundle-macos-app.sh` stages fake executable files and uses an
 `xcrun` shim for shader output. It checks bundle layout, version/resource
-staging, foreign-output preservation, and zip contents in temporary paths.
+staging, the exact outer CLI alias, real helper runtime files, foreign-output
+preservation, and zip contents in temporary paths.
 It does not compile or execute the native app, sign code, or call Apple notary
 services. `.github/workflows/ci.yml` runs it as `make app-bundle-test` in
 **Provider Tests**.
+
+Archive and install fixtures are separate checks:
+
+```bash
+./scripts/test-release-archive-safety.sh
+./scripts/test-install-nested-provider.sh
+```
+
+The nested installer fixtures cover the allowed alias, helper metadata/profile,
+regular runtime targets, hash parity, rejected alternate links, and legacy
+regular layouts. Swift coverage lives in `ReleaseArchivePreflightTests`,
+`NestedProviderUpdateTests`, `ManagedProviderInstallLayoutTests`, and
+`ManagedCLIPathValidatorTests`; coordinator coverage is in
+`coordinator/api/release_archive_nested_test.go` and
+`coordinator/api/release_artifact_nested_test.go`. These are structural and
+update-contract checks, not AMFI launch or attestation evidence.
+
+For a real signed artifact, use
+`scripts/qualify-signed-macos-app.sh --expected-version <version> <app-or-zip>`
+as described in [signed artifact qualification](../operations/app-release.md#signed-artifact-qualification-no-signing-secrets-required).
+It checks signing/notary/Gatekeeper and executes the signed helper's version
+and Gemma/Paged runtime smoke. The
+[September 5 probe report](../reports/2026-09-05-macos-app-signing-qualification.md)
+records the earlier controls; it does not qualify the final release or prove
+model inference, persistent Secure Enclave keys, APNs, or MDM.
 
 For an interactive debug window check, follow
 [the app build procedure](build.md#6-native-macos-app).
@@ -281,6 +317,13 @@ The harness builds the provider itself (`e2e/testbed/provider.go`,
 and stages `mlx.metallib`, unless `DARKBLOOM_PROVIDER_BINARY` points at a
 binary that already has `mlx.metallib` beside it.
 
+The testbed creates a complete provider credential for its own coordinator:
+token, account, and issuer files. Child processes receive all three path
+overrides, including absent files for unauthenticated tests, so they cannot
+inherit the operator’s login (`e2e/testbed/provider_credentials.go`,
+`prepareProviderAuth`, `providerCredentialEnvironment`). Check this isolation
+without a model or GPU using `go test -race ./e2e/testbed/...`.
+
 | Env var | Read in | Effect |
 |---|---|---|
 | `DARKBLOOM_REPO_ROOT` | `e2e/testbed/suite.go` | Repo root (auto-detected from cwd when unset) |
@@ -389,7 +432,7 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt -l .` · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `make app-bundle-test`, `swift build --build-tests`, metallib staging, `swift test`, `test-macos-app-unsigned-debug-lifecycle.sh`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt -l .` · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `make app-bundle-test`, `swift build --build-tests`, metallib staging, both partitions via `test-provider-suites.sh`, `test-macos-app-unsigned-debug-lifecycle.sh`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 120 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) → current coordinator vs released v0.7.12 provider (`scripts/fetch-v0712-provider.sh`, `DARKBLOOM_MIXED_VERSION_EXPECT=artifact`, fails unless `MIXED_VERSION_TIER_ARTIFACT_OK` appears) → released v0.7.12 coordinator (`git worktree add … v0.7.12`) vs candidate provider (`NonStreamingInference`, `StreamingInference`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

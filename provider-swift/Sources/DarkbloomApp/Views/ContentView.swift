@@ -119,14 +119,12 @@ struct ContentView: View {
                         chatStore: chatStore,
                         needsSetup: !appFlowStore.hasCompletedNetworkOnboarding,
                         onContinueSetup: {
-                            if appFlowStore.resumableOnboardingDraft != nil {
-                                appFlowStore.resumeOnboarding()
-                            } else {
-                                appFlowStore.startOnboarding()
-                            }
+                            appFlowStore.requestNetworkSetup(
+                                localSessionIsActive: localAPIStore.localStart.hasActiveSession)
                         },
-                        initialDestination: productPreview?.destination
-                            ?? appFlowStore.pendingInitialProductDestination,
+                        initialDestination: appFlowStore.pendingInitialProductDestination
+                            ?? productPreview?.destination,
+                        navigationRequest: appFlowStore.pendingInitialProductDestination,
                         onSelectDestination: appFlowStore.selectProductDestination,
                         onInitialDestinationApplied: appFlowStore.consumePendingInitialProductDestination
                     )

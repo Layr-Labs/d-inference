@@ -3,15 +3,33 @@ import SwiftUI
 struct ProviderMenuBarProviderControls: View {
     let snapshot: ProviderSnapshot
     let providerStore: ProviderStore
+    let localAPIStore: LocalAPIStore
+    let allowsRuntimeActions: Bool
 
-    @State private var confirmation: ProviderActionConfirmation?
+    @State private var confirmationAction: ProviderAction?
+
+    private var confirmation: ProviderMenuBarActionConfirmation? {
+        confirmationAction.flatMap { ProviderMenuBarActionConfirmation(action: $0, snapshot: snapshot) }
+    }
 
     var body: some View {
-        let status = snapshot.statusPresentation
+        let status = ProviderMenuBarNetworkPresentation(snapshot: snapshot)
         let primaryAction = providerStore.primaryAction
 
         VStack(alignment: .leading, spacing: 13) {
-            statusHeader(status)
+            MenuBarStatus(
+                title: status.title,
+                detail: status.detail,
+                tone: status.tone,
+                isBusy: providerStore.pendingAction != nil || snapshot.runState.isTransitioning
+            )
+
+            if localAPIStore.localStart.hasActiveSession {
+                Text("End your local session before starting or restarting network sharing.")
+                    .font(DarkbloomTheme.chivo(11))
+                    .foregroundStyle(StudioPalette.secondaryInk)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if let confirmation {
                 inlineConfirmation(confirmation)
@@ -25,48 +43,17 @@ struct ProviderMenuBarProviderControls: View {
                 failureView(failure)
             }
         }
-        .task {
-            providerStore.startMonitoring()
-        }
     }
 
     private var scheduledOffNote: some View {
         Label {
-            Text("Darkbloom will reconnect when the next availability window begins. Change the plan from Availability in the app.")
+            Text("Change sharing hours from Availability in Network.")
                 .fixedSize(horizontal: false, vertical: true)
         } icon: {
             Image(systemName: "calendar.badge.clock")
         }
-        .font(.system(size: 10.5))
-        .foregroundStyle(.secondary)
-        .padding(10)
-        .background(.quaternary.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    private func statusHeader(_ status: ProviderStatusPresentation) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: status.icon)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(status.tint)
-                .frame(width: 25, height: 25)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(status.sidebarTitle)
-                    .font(.system(size: 14, weight: .semibold))
-                Text(status.sidebarDetail)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-
-            Spacer(minLength: 4)
-
-            if providerStore.pendingAction != nil {
-                ProgressView()
-                    .controlSize(.small)
-                    .accessibilityLabel("Provider action in progress")
-            }
-        }
+        .font(DarkbloomTheme.chivo(11))
+        .foregroundStyle(StudioPalette.secondaryInk)
     }
 
     private func actionButtons(primaryAction: ProviderAction) -> some View {
@@ -74,49 +61,56 @@ struct ProviderMenuBarProviderControls: View {
             Button {
                 request(primaryAction)
             } label: {
-                Label(primaryAction.title, systemImage: primaryAction.systemImage)
+                Label(ProviderMenuBarActionPresentation.title(primaryAction), systemImage: primaryAction.systemImage)
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(!providerStore.canPerform(primaryAction))
+            .buttonStyle(MenuBarButtonStyle(prominent: true))
+            .disabled(!canPerform(primaryAction))
 
             if primaryAction != .restart {
                 Button {
                     request(.restart)
                 } label: {
-                    Label("Restart", systemImage: ProviderAction.restart.systemImage)
+                    Text(ProviderMenuBarActionPresentation.title(.restart))
                 }
-                .buttonStyle(.bordered)
-                .disabled(!providerStore.canPerform(.restart))
+                .buttonStyle(MenuBarButtonStyle())
+                .disabled(!canPerform(.restart))
             }
         }
     }
 
-    private func inlineConfirmation(_ confirmation: ProviderActionConfirmation) -> some View {
+    private func inlineConfirmation(_ confirmation: ProviderMenuBarActionConfirmation) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             Text(confirmation.title)
-                .font(.system(size: 12, weight: .semibold))
+                .font(DarkbloomTheme.chivo(12, weight: .medium))
             Text(confirmation.message)
-                .font(.system(size: 10.5))
-                .foregroundStyle(.secondary)
+                .font(DarkbloomTheme.chivo(11))
+                .foregroundStyle(StudioPalette.secondaryInk)
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 8) {
                 Button("Cancel") {
-                    self.confirmation = nil
+                    confirmationAction = nil
                 }
+                .buttonStyle(MenuBarButtonStyle())
                 .keyboardShortcut(.cancelAction)
 
                 Spacer()
 
                 Button(confirmation.buttonTitle, role: .destructive) {
-                    self.confirmation = nil
+                    confirmationAction = nil
                     perform(confirmation.action)
                 }
+                .buttonStyle(MenuBarButtonStyle())
+                .disabled(!canPerform(confirmation.action))
             }
         }
         .padding(10)
-        .background(.quaternary.opacity(0.65), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(StudioPalette.surface, in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(StudioPalette.line, lineWidth: 1)
+        }
     }
 
     private func failureView(_ failure: ProviderStoreFailure) -> some View {
@@ -125,25 +119,29 @@ struct ProviderMenuBarProviderControls: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(ProductPalette.critical)
                 Text(failure.message)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .font(DarkbloomTheme.chivo(11))
+                    .foregroundStyle(StudioPalette.secondaryInk)
+                    .lineLimit(3)
+                    .help(failure.message)
                 Spacer(minLength: 4)
             }
 
             HStack {
-                if providerStore.retryableFailureAction != nil {
-                    Button("Try Again") {
-                        Task {
-                            await providerStore.retryFailure()
-                        }
+                if let action = providerStore.retryableFailureAction {
+                    Button("Try network action again") {
+                        guard canPerform(action) else { return }
+                        providerStore.dismissFailure()
+                        request(action)
                     }
+                    .disabled(!canPerform(action))
                 }
 
                 Button("Dismiss") {
                     providerStore.dismissFailure()
                 }
             }
+            .buttonStyle(.borderless)
+            .font(DarkbloomTheme.chivo(11))
         }
         .padding(9)
         .background(
@@ -153,8 +151,9 @@ struct ProviderMenuBarProviderControls: View {
     }
 
     private func request(_ action: ProviderAction) {
-        if let confirmation = ProviderActionConfirmation(action: action, snapshot: snapshot) {
-            self.confirmation = confirmation
+        guard canPerform(action) else { return }
+        if ProviderMenuBarActionConfirmation(action: action, snapshot: snapshot) != nil {
+            confirmationAction = action
         } else {
             perform(action)
         }
@@ -162,7 +161,19 @@ struct ProviderMenuBarProviderControls: View {
 
     private func perform(_ action: ProviderAction) {
         Task {
+            // Re-check after scheduling and confirmation: a local start may
+            // have acquired ownership while the popup was open.
+            guard canPerform(action) else { return }
             await providerStore.perform(action)
         }
+    }
+
+    private func canPerform(_ action: ProviderAction) -> Bool {
+        guard allowsRuntimeActions || !action.changesRuntime else { return false }
+        guard !ProviderMenuBarActionPresentation.isBlocked(
+            action,
+            hasActiveLocalSession: localAPIStore.localStart.hasActiveSession
+        ) else { return false }
+        return providerStore.canPerform(action)
     }
 }

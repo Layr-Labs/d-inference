@@ -9,6 +9,7 @@ struct ChatComposer: View {
     let isLive: Bool
     let canSend: Bool
     var availableRoutes: [ChatRoute] = ChatRoute.allCases
+    var isProminent = false
     let onSubmit: () -> Void
     let onStop: () -> Void
 
@@ -17,32 +18,37 @@ struct ChatComposer: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .bottom, spacing: 12) {
                 ZStack(alignment: .topLeading) {
                     if draft.isEmpty {
-                        Text(isResponding ? "Write your next message…" : "Message Darkbloom…")
+                        Text(isResponding ? "Write your next message…" : "An idea, a question, a first draft…")
                             .font(.system(size: 15))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(StudioPalette.secondaryInk)
                             .padding(.top, 4)
                             .allowsHitTesting(false)
                             .accessibilityHidden(true)
                     }
                     ChatTextEditor(
                         text: $draft, isFocused: $isFocused,
-                        conversationID: conversationID, onSubmit: submit
+                        conversationID: conversationID,
+                        minimumHeight: isProminent ? 104 : 58, onSubmit: submit
                     )
                     .id(conversationID)
                 }
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, minHeight: isProminent ? 104 : 58, alignment: .topLeading)
 
                 sendOrStopButton
             }
-            .padding(14)
-            .background(ProductPalette.elevatedSurface, in: RoundedRectangle(cornerRadius: 16))
+            .padding(isProminent ? 20 : 16)
+            .background {
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(StudioPalette.surface)
+                    .onTapGesture { isFocused = true }
+            }
             .overlay {
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(isFocused ? DarkbloomTheme.accent.opacity(0.55) : ProductPalette.stroke)
+                RoundedRectangle(cornerRadius: 20)
+                    .stroke(isFocused ? StudioPalette.accent : StudioPalette.line, lineWidth: isFocused ? 1.5 : 1)
             }
 
             ViewThatFits(in: .horizontal) {
@@ -57,24 +63,20 @@ struct ChatComposer: View {
                 }
             }
             .font(.system(size: 12))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(StudioPalette.secondaryInk)
             .padding(.horizontal, 3)
         }
-        .frame(maxWidth: 780)
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-        .frame(maxWidth: .infinity)
     }
 
     private var keyboardHint: some View {
-        Text("Return to send · Shift-Return for a new line")
+        Text("Return to send   ⇧ Return for a new line")
             .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder
     private var routeLabel: some View {
         if isLive {
-            Label("Local to this Mac", systemImage: "desktopcomputer")
+            Text("Private to this Mac")
         } else {
             Menu {
                 ForEach(availableRoutes) { option in
@@ -94,19 +96,18 @@ struct ChatComposer: View {
         if isResponding {
             Button(action: onStop) {
                 Image(systemName: "stop.fill")
-                    .frame(width: 36, height: 36)
+                    .frame(width: 16, height: 24)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(StudioPrimaryButtonStyle())
             .help(ChatPresentation.stopLabel(isLive: isLive))
             .accessibilityLabel(ChatPresentation.stopLabel(isLive: isLive))
         } else {
             Button(action: submit) {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 15, weight: .semibold))
-                    .frame(width: 36, height: 36)
+                    .frame(width: 16, height: 24)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(DarkbloomTheme.accent)
+            .buttonStyle(StudioPrimaryButtonStyle())
             .disabled(draftIsEmpty || !canSend)
             .help(ChatPresentation.sendLabel(isLive: isLive))
             .accessibilityLabel(ChatPresentation.sendLabel(isLive: isLive))

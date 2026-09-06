@@ -104,6 +104,9 @@ struct RuntimeSnapshotConfigTests {
             ("models list", try Models.List.parse([
                 "--json", "--all", "--config", url.path,
             ]).configOptions),
+            ("models catalog runtime eligibility", try Models.Catalog.parse([
+                "--json", "--include-runtime-eligibility", "--config", url.path,
+            ]).configOptions),
             ("models catalog", try Models.Catalog.parse([
                 "--json", "--include-download-plans", "--config", url.path,
             ]).configOptions),

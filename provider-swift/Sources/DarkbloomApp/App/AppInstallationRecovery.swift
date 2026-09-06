@@ -1,11 +1,13 @@
 import AppKit
+import ProviderCoreFoundation
 
 struct AppInstallationRecovery: Equatable, Sendable {
     let destination: URL
     let preservedForeignApp: URL?
 
     var managedCLIURL: URL {
-        destination.appendingPathComponent("Contents/MacOS/darkbloom")
+        ManagedProviderCLIPathValidator().validatedCLIURL(appBundleURL: destination)
+            ?? ManagedProviderInstallLayout.cliURL(appBundleURL: destination)
     }
 
     @MainActor

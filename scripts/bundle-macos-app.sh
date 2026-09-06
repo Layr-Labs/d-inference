@@ -154,19 +154,43 @@ mkdir -p \
     "$APP/Contents/Helpers" \
     "$APP/Contents/Resources/darkbloom-runtime-capabilities"
 
-# Main executable + co-bundled CLI payload. DarkbloomCLILocator probes
-# Contents/MacOS/darkbloom inside the app bundle FIRST, so the CLI must live
-# here (identical bytes to the flat bin/ verifier copies: CI cmp-enforces).
+PROVIDER_APP="$APP/Contents/Helpers/DarkbloomProvider.app"
+mkdir -p "$PROVIDER_APP/Contents/MacOS" "$PROVIDER_APP/Contents/Resources"
+
+# The provider must be the main executable of its own signed helper app for
+# macOS to authorize its provisioning profile. Retain only this exact sealed
+# compatibility alias at the historical CLI path; the GUI/launchd locator uses
+# the real managed helper executable.
 install -m 0755 \
     "$BIN_DIR/$APP_PROCESS_NAME" \
     "$APP/Contents/MacOS/$APP_PROCESS_NAME"
 install -m 0755 \
     "$BIN_DIR/$CLI_NAME" \
+    "$PROVIDER_APP/Contents/MacOS/$CLI_NAME"
+ln -s "../Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom" \
     "$APP/Contents/MacOS/$CLI_NAME"
 install -m 0755 \
     "$BIN_DIR/$ENCLAVE_NAME" \
     "$APP/Contents/MacOS/$ENCLAVE_NAME"
 install -m 0644 "$MLX_METALLIB" "$APP/Contents/MacOS/mlx.metallib"
+install -m 0755 "$BIN_DIR/$ENCLAVE_NAME" "$PROVIDER_APP/Contents/MacOS/$ENCLAVE_NAME"
+install -m 0644 "$MLX_METALLIB" "$PROVIDER_APP/Contents/MacOS/mlx.metallib"
+
+cat > "$PROVIDER_APP/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleExecutable</key><string>darkbloom</string>
+    <key>CFBundleIdentifier</key><string>io.darkbloom.provider</string>
+    <key>CFBundleName</key><string>Darkbloom Provider</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$VERSION</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>LSUIElement</key><true/>
+</dict></plist>
+EOF
+chmod 0644 "$PROVIDER_APP/Contents/Info.plist"
 
 # Dormant opt-in root helper (same contract as the legacy bundle: sealed
 # under Contents/Helpers with a capability marker).

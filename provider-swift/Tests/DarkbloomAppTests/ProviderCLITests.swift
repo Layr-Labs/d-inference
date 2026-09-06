@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ProviderCoreFoundation
 @testable import DarkbloomApp
 
 @Suite("Provider CLI locator + process runner")
@@ -25,7 +26,7 @@ struct ProviderCLITests {
         #expect(locator.locate() == URL(fileURLWithPath: "/tmp/fake-darkbloom"))
     }
 
-    @Test("Shipping lookup accepts the canonical all-regular managed app CLI")
+    @Test("Shipping lookup preserves a regular legacy managed app CLI")
     func locatorUsesOnlyManagedAppCLI() throws {
         let fixture = try CLILocatorFixture()
         defer { fixture.remove() }
@@ -38,7 +39,7 @@ struct ProviderCLITests {
 
         #expect(locator.locate() == fixture.managedCLI)
         #expect(locator.locate() != fixture.sourceCLI)
-        #expect(locator.managedCLIURL == fixture.managedCLI)
+        #expect(locator.managedCLIURL == ManagedProviderInstallLayout.cliURL(homeDirectory: fixture.home))
     }
 
     @Test("A downloaded source CLI is never a shipping fallback")

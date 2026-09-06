@@ -93,7 +93,9 @@ final class LocalAPIStartWorld: @unchecked Sendable {
 func localAPIStartStore(
     cli: LocalAPIRecordingCLI,
     world: LocalAPIStartWorld,
-    readinessTimeout: Duration = .seconds(2),
+    // Successful-start tests use the production budget under the full parallel
+    // suite. Deadline behavior itself is exercised with a manually fired gate.
+    readinessTimeout: Duration = .seconds(30),
     shutdownTimeout: Duration = .seconds(1),
     waitForReadinessTimeout: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
     providerConflictReader: @escaping @Sendable () -> LocalAPIStartConflict? = { nil }

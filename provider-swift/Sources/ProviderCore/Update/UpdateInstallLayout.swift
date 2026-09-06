@@ -26,11 +26,13 @@ extension UpdateRecoveryStore {
         switch layout {
         case .app:
             let source = installRoot.appendingPathComponent("Darkbloom.app")
+            _ = try ProviderAppLayout(app: source, expectedVersion: version)
             copiedBundle = nextRoot.appendingPathComponent("Darkbloom.app")
             try fm.copyItem(at: source, to: copiedBundle)
-            copiedBinary = copiedBundle.appendingPathComponent("Contents/MacOS/darkbloom")
-            copiedEnclave = copiedBundle.appendingPathComponent("Contents/MacOS/darkbloom-enclave")
-            copiedMetallib = copiedBundle.appendingPathComponent("Contents/MacOS/mlx.metallib")
+            let paths = try ProviderAppLayout(app: copiedBundle, expectedVersion: version)
+            copiedBinary = paths.binary
+            copiedEnclave = paths.enclave
+            copiedMetallib = paths.metallib
         case .flat:
             let sourceBin = installRoot.appendingPathComponent("bin")
             copiedBundle = nextRoot.appendingPathComponent("bin")
@@ -86,15 +88,9 @@ extension UpdateRecoveryStore {
             bundlePath: layout == .app
                 ? "predecessor/Darkbloom.app"
                 : "predecessor/bin",
-            binaryPath: layout == .app
-                ? "predecessor/Darkbloom.app/Contents/MacOS/darkbloom"
-                : "predecessor/bin/darkbloom",
-            enclavePath: layout == .app
-                ? "predecessor/Darkbloom.app/Contents/MacOS/darkbloom-enclave"
-                : "predecessor/bin/darkbloom-enclave",
-            metallibPath: layout == .app
-                ? "predecessor/Darkbloom.app/Contents/MacOS/mlx.metallib"
-                : "predecessor/bin/mlx.metallib",
+            binaryPath: "predecessor/" + String(copiedBinary.path.dropFirst(nextRoot.path.count + 1)),
+            enclavePath: "predecessor/" + String(copiedEnclave.path.dropFirst(nextRoot.path.count + 1)),
+            metallibPath: "predecessor/" + String(copiedMetallib.path.dropFirst(nextRoot.path.count + 1)),
             verifiedAt: now
         )
         try UpdateAtomicFilesystem.writeJSON(
@@ -124,9 +120,10 @@ extension UpdateRecoveryStore {
         let metallib: URL
         if let app = staged.extractedApp {
             bundle = app
-            binary = app.appendingPathComponent("Contents/MacOS/darkbloom")
-            enclave = app.appendingPathComponent("Contents/MacOS/darkbloom-enclave")
-            metallib = app.appendingPathComponent("Contents/MacOS/mlx.metallib")
+            let paths = try ProviderAppLayout(app: app, expectedVersion: staged.release.version)
+            binary = paths.binary
+            enclave = paths.enclave
+            metallib = paths.metallib
         } else {
             bundle = staged.stagingRoot.appendingPathComponent("bin")
             binary = staged.flatDarkbloom
@@ -221,7 +218,9 @@ extension UpdateRecoveryStore {
             }
             let bin = installRoot.appendingPathComponent("bin")
             try fm.createDirectory(at: bin, withIntermediateDirectories: true)
-            let appBin = "../Darkbloom.app/Contents/MacOS"
+            let paths = try ProviderAppLayout(app: installRoot.appendingPathComponent("Darkbloom.app"))
+            let appBin = "../Darkbloom.app/" + (paths.helper == nil
+                ? "Contents/MacOS" : ProviderAppLayout.nestedMacOSRelativePath)
             for (name, target) in [
                 ("mlx.metallib", "\(appBin)/mlx.metallib"),
                 ("darkbloom-enclave", "\(appBin)/darkbloom-enclave"),
@@ -264,7 +263,14 @@ extension UpdateRecoveryStore {
         _ record: InstalledReleaseRecord,
         layout: VerifiedPredecessor.Layout
     ) throws -> Bool {
-        let paths = artifactPaths(root: installRoot, layout: layout)
+        guard UpdateAtomicFilesystem.itemExists(installRoot.appendingPathComponent(layout == .app ? "Darkbloom.app" : "bin")) else {
+            return false
+        }
+        // A different installed version is a nonmatch during replay; only a
+        // fully validated target or predecessor can subsequently be installed.
+        guard let paths = try? artifactPaths(root: installRoot, layout: layout, expectedVersion: record.version) else {
+            return false
+        }
         guard fm.fileExists(atPath: paths.binary.path),
               fm.fileExists(atPath: paths.enclave.path),
               fm.fileExists(atPath: paths.metallib.path)
@@ -302,7 +308,12 @@ extension UpdateRecoveryStore {
         target: InstalledReleaseRecord,
         layout: VerifiedPredecessor.Layout
     ) throws -> Bool {
-        let paths = artifactPaths(root: stagingRoot, layout: layout)
+        guard UpdateAtomicFilesystem.itemExists(stagingRoot.appendingPathComponent(layout == .app ? "Darkbloom.app" : "bin")) else {
+            return false
+        }
+        guard let paths = try? artifactPaths(root: stagingRoot, layout: layout, expectedVersion: target.version) else {
+            return false
+        }
         guard fm.fileExists(atPath: paths.binary.path),
               fm.fileExists(atPath: paths.enclave.path),
               fm.fileExists(atPath: paths.metallib.path)
@@ -350,22 +361,9 @@ extension UpdateRecoveryStore {
         _ predecessor: VerifiedPredecessor,
         at stagingRoot: URL
     ) throws {
-        let bundle: URL
-        let binary: URL
-        let enclave: URL
-        let metallib: URL
-        switch predecessor.layout {
-        case .app:
-            bundle = stagingRoot.appendingPathComponent("Darkbloom.app")
-            binary = bundle.appendingPathComponent("Contents/MacOS/darkbloom")
-            enclave = bundle.appendingPathComponent("Contents/MacOS/darkbloom-enclave")
-            metallib = bundle.appendingPathComponent("Contents/MacOS/mlx.metallib")
-        case .flat:
-            bundle = stagingRoot.appendingPathComponent("bin")
-            binary = bundle.appendingPathComponent("darkbloom")
-            enclave = bundle.appendingPathComponent("darkbloom-enclave")
-            metallib = bundle.appendingPathComponent("mlx.metallib")
-        }
+        let paths = try artifactPaths(
+            root: stagingRoot, layout: predecessor.layout, expectedVersion: predecessor.release.version)
+        let (bundle, binary, enclave, metallib) = paths
         let modes = try UpdateArtifactModes(
             binary: binary,
             enclave: enclave,
@@ -410,7 +408,12 @@ extension UpdateRecoveryStore {
         bundle: URL,
         binary: URL
     ) throws {
+        let appLayout = try (layout == .app ? ProviderAppLayout(app: bundle) : nil)
+        if let appLayout, appLayout.binary != binary.standardizedFileURL {
+            throw StoreError.predecessorVerificationFailed("recorded executable is not the app runtime payload")
+        }
         guard verifyCodeSignatures else { return }
+        try appLayout?.validateIdentityMetadata()
         #if canImport(Darwin)
         let target = layout == .app ? bundle : binary
         do {
@@ -419,6 +422,9 @@ extension UpdateRecoveryStore {
                 deep: layout == .app
             )
             if layout == .app {
+                if let helper = appLayout?.helper {
+                    try DarkbloomCodeSignature.verify(helper, deep: true)
+                }
                 try FanHelperCapabilityVerifier.verify(
                     app: bundle,
                     executable: binary,
@@ -469,9 +475,8 @@ extension UpdateRecoveryStore {
 
     private func liveLayout() throws -> VerifiedPredecessor.Layout {
         let app = installRoot.appendingPathComponent("Darkbloom.app")
-        if fm.fileExists(atPath: app.appendingPathComponent("Contents/MacOS/darkbloom").path),
-           fm.fileExists(atPath: app.appendingPathComponent("Contents/MacOS/mlx.metallib").path)
-        {
+        if UpdateAtomicFilesystem.itemExists(app) {
+            _ = try ProviderAppLayout(app: app)
             return .app
         }
         let bin = installRoot.appendingPathComponent("bin")
@@ -484,20 +489,16 @@ extension UpdateRecoveryStore {
         throw StoreError.missingLiveInstall
     }
 
-    private func artifactPaths(
+    func artifactPaths(
         root: URL,
-        layout: VerifiedPredecessor.Layout
-    ) -> (bundle: URL, binary: URL, enclave: URL, metallib: URL) {
+        layout: VerifiedPredecessor.Layout,
+        expectedVersion: String? = nil
+    ) throws -> (bundle: URL, binary: URL, enclave: URL, metallib: URL) {
         switch layout {
         case .app:
             let bundle = root.appendingPathComponent("Darkbloom.app")
-            let app = bundle.appendingPathComponent("Contents/MacOS")
-            return (
-                bundle,
-                app.appendingPathComponent("darkbloom"),
-                app.appendingPathComponent("darkbloom-enclave"),
-                app.appendingPathComponent("mlx.metallib")
-            )
+            let paths = try ProviderAppLayout(app: bundle, expectedVersion: expectedVersion)
+            return (bundle, paths.binary, paths.enclave, paths.metallib)
         case .flat:
             let bin = root.appendingPathComponent("bin")
             return (

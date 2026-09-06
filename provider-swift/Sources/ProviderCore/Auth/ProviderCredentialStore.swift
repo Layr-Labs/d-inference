@@ -79,7 +79,7 @@ public enum ProviderCredentialStore: Sendable {
         let issuer = try canonicalCoordinatorIssuer(coordinatorURL)
 
         try ProviderCredentialProcessLock.withLock {
-            guard AuthTokenStore.load() == nil else {
+            guard try AuthTokenStore.loadWhileCredentialLocked() == nil else {
                 throw ProviderCredentialStoreError.alreadyLoggedIn
             }
 
@@ -161,7 +161,7 @@ public enum ProviderCredentialStore: Sendable {
     }
 
     private static func loadUnlocked() throws -> ProviderCredential? {
-        guard let token = AuthTokenStore.load() else {
+        guard let token = try AuthTokenStore.loadWhileCredentialLocked() else {
             return nil
         }
         guard let accountID = ProviderAccountStore.load(),
@@ -183,6 +183,7 @@ public enum ProviderCredentialStoreError: LocalizedError, Sendable, Equatable {
     case invalidCoordinatorURL
     case alreadyLoggedIn
     case incompleteCredential
+    case credentialRecoveryRequired
     case issuerMismatch(expected: String, actual: String)
     case credentialChanged
     case lockUnavailable(String)
@@ -198,11 +199,13 @@ public enum ProviderCredentialStoreError: LocalizedError, Sendable, Equatable {
         case .alreadyLoggedIn:
             "this Mac is already linked to a provider account"
         case .incompleteCredential:
-            "the saved provider credential has no verifiable account or issuer; run `darkbloom logout --local-only`, then sign in again"
+            "the saved provider credential has no verifiable account or issuer; run `darkbloom login` to authorize a fresh login"
+        case .credentialRecoveryRequired:
+            "the saved provider credential requires recovery; run `darkbloom login` to authorize a fresh login"
         case .issuerMismatch(let expected, let actual):
             "the saved provider credential belongs to \(actual), not \(expected); switch back or sign out before changing coordinators"
         case .credentialChanged:
-            "the saved provider credential changed during account unlink; retry without deleting the newer login"
+            "the saved provider credential changed during account linking or unlinking; retry without replacing or deleting the newer login"
         case .lockUnavailable(let reason):
             "could not lock the saved provider credential: \(reason)"
         }

@@ -3,6 +3,7 @@ import Foundation
 enum ProductDestination: String, CaseIterable, Codable, Identifiable, Sendable {
     case overview
     case chat
+    case networkOverview = "network-overview"
     case localAPI = "local-api"
     case myMacs = "my-macs"
     case contributions
@@ -15,8 +16,9 @@ enum ProductDestination: String, CaseIterable, Codable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .overview: "Overview"
+        case .overview: "Studio"
         case .chat: "Chat"
+        case .networkOverview: "Network status"
         case .localAPI: "Local API"
         case .myMacs: "My Macs"
         case .contributions: "Contributions"
@@ -31,6 +33,7 @@ enum ProductDestination: String, CaseIterable, Codable, Identifiable, Sendable {
         switch self {
         case .overview: "sparkles"
         case .chat: "bubble.left.and.bubble.right"
+        case .networkOverview: "network"
         case .localAPI: "chevron.left.forwardslash.chevron.right"
         case .myMacs: "rectangle.3.group"
         case .contributions: "chart.line.uptrend.xyaxis"
@@ -42,6 +45,6 @@ enum ProductDestination: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 
     var hidesProviderLifecycleControls: Bool {
-        self == .chat || self == .localAPI || self == .myMacs || self == .availability
+        self == .overview || self == .chat || self == .localAPI || self == .myMacs || self == .availability || self == .models
     }
 }

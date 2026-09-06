@@ -20,6 +20,17 @@ enum FanHelperCapabilityVerifier {
         executable: URL,
         signaturePolicy: DarkbloomCodeSignature.Policy?
     ) throws {
+        // Fan service payloads belong to the outer GUI bundle. A nested CLI
+        // must never redirect this check to its own Helpers/Resources tree.
+        guard app.lastPathComponent != "DarkbloomProvider.app" else {
+            throw UpdateError.replaceFailed("fan capability verification requires the outer Darkbloom.app")
+        }
+        if UpdateAtomicFilesystem.itemExists(app.appendingPathComponent(ProviderAppLayout.helperRelativePath)) {
+            let paths = try ProviderAppLayout(app: app)
+            guard paths.binary == executable.standardizedFileURL else {
+                throw UpdateError.replaceFailed("fan capability verification requires the outer app and real provider CLI")
+            }
+        }
         let fileManager = FileManager.default
         let codePresent = try binaryContainsCapability(executable)
         let marker = app.appendingPathComponent(markerRelativePath)

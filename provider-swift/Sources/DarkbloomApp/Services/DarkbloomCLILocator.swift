@@ -10,8 +10,9 @@ protocol DarkbloomCLILocating: Sendable {
 ///
 ///  1. `DARKBLOOM_CLI_PATH` — debug/test override, compiled out of release
 ///     builds.
-///  2. `~/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom` — the only
-///     shipping candidate.
+///  2. The real nested helper CLI in `~/.darkbloom/Darkbloom.app`.
+///     Existing flat installs remain supported only while the helper is absent.
+///     A malformed helper never enables a fallback to the flat executable.
 ///
 /// The GUI must invoke the managed bundle directly. Falling back to the
 /// currently-running bundle or a PATH symlink can make `darkbloom start`

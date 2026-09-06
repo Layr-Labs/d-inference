@@ -1,31 +1,24 @@
 import SwiftUI
 
 struct ProviderMenuBarSetupView: View {
+    let hasActiveLocalSession: Bool
     let onContinue: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Finish setting up this Mac")
-                        .font(.system(size: 14, weight: .semibold))
-                    Text("Complete the guided setup before provider status or controls appear here.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            } icon: {
-                Image(systemName: "circle.dashed")
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(DarkbloomTheme.accent)
-            }
+            MenuBarStatus(
+                title: "Network setup required",
+                detail: hasActiveLocalSession
+                    ? "End your local session before setting up this Mac to share compute."
+                    : "Set up this Mac to share compute. Local AI works independently.",
+                tone: .neutral
+            )
 
             Button(action: onContinue) {
-                Label("Continue Setup…", systemImage: "arrow.up.right")
-                    .frame(maxWidth: .infinity)
+                MenuBarNavigationLabel(title: "Set up network sharing", systemImage: "arrow.right")
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .buttonStyle(MenuBarButtonStyle(prominent: true))
+            .disabled(hasActiveLocalSession)
         }
     }
 }

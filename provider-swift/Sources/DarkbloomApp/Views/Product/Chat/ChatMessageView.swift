@@ -5,26 +5,25 @@ struct ChatMessageView: View {
     let isLive: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
-                Image(systemName: message.role == .user ? "person.crop.circle" : "sparkles")
-                    .foregroundStyle(message.role == .user ? Color.secondary : DarkbloomTheme.accent)
-                    .accessibilityHidden(true)
                 Text(message.role == .user ? "You" : "Darkbloom")
-                    .fontWeight(.semibold)
+                    .font(DarkbloomTheme.chivo(12, weight: .medium))
+                    .foregroundStyle(message.role == .user ? StudioPalette.secondaryInk : StudioPalette.accent)
                 if let model = message.modelID {
                     Text(model)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(StudioPalette.secondaryInk)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
                 Spacer(minLength: 0)
             }
-            .font(.system(size: 13))
+            .font(DarkbloomTheme.chivo(12))
 
             ChatMessageBody(text: message.text, rendersMarkdown: message.role == .assistant)
-                .font(.system(size: 15))
-                .lineSpacing(5)
+                .font(DarkbloomTheme.chivo(message.role == .user ? 22 : 15, weight: message.role == .user ? .medium : .regular))
+                .foregroundStyle(StudioPalette.ink)
+                .lineSpacing(6)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 12) {
@@ -37,15 +36,9 @@ struct ChatMessageView: View {
                 ChatCopyButton(text: message.text, label: "Copy")
             }
             .font(.system(size: 12))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(StudioPalette.secondaryInk)
         }
-        .padding(message.role == .user ? 16 : 0)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            if message.role == .user {
-                RoundedRectangle(cornerRadius: 12).fill(DarkbloomTheme.accent.opacity(0.07))
-            }
-        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(ChatPresentation.messageLabel(message, isLive: isLive))
     }

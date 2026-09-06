@@ -118,7 +118,7 @@ public enum LaunchAgent: Sendable {
     ) throws {
         // Persist only the canonical managed app CLI. Deriving this from the
         // current process could pin launchd to Downloads or App Translocation.
-        let binaryPath = LaunchctlControl.managedExecutablePath()
+        let binaryPath = try LaunchctlControl.managedExecutablePath()
 
         // If already loaded, unload first so we pick up plist changes.
         if isLoaded() {

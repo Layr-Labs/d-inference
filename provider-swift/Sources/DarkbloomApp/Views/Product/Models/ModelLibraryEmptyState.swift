@@ -1,23 +1,46 @@
 import SwiftUI
 
 struct ModelLibraryEmptyState: View {
+    var scope: ModelScope = .installed
+    var searchText = ""
     let onExplore: () -> Void
 
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
-        VStack(spacing: 9) {
-            Image(systemName: "shippingbox")
-                .font(.system(size: 26, weight: .light))
-                .foregroundStyle(.secondary)
-            Text("No models on this Mac yet")
-                .font(.system(size: 14, weight: .semibold))
-            Text("Explore compatible models and Darkbloom will verify every download before use.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Button("Explore models", action: onExplore)
-                .buttonStyle(.borderedProminent)
-                .padding(.top, 5)
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(DarkbloomTheme.chivo(23, weight: .medium))
+                .foregroundStyle(StudioPalette.ink)
+            Text(detail)
+                .font(.system(size: 13))
+                .foregroundStyle(StudioPalette.secondaryInk)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(buttonTitle, action: onExplore)
+                .buttonStyle(StudioPrimaryButtonStyle())
+                .padding(.top, 4)
         }
-        .frame(maxWidth: .infinity, minHeight: 190)
-        .productSurface()
+        .padding(24)
+        .frame(maxWidth: .infinity, minHeight: 170, alignment: .leading)
+        .background(StudioPalette.surface, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var title: String {
+        if isSearching { return "No matching models" }
+        return scope == .installed ? "Your first model starts here." : "No catalog models to show"
+    }
+
+    private var detail: String {
+        if isSearching { return "Try another name or capability, or clear your search to see this collection." }
+        return scope == .installed
+            ? "Discover models that fit this Mac. Downloads are verified before they’re ready to use."
+            : "Refresh the catalog to check which models are available."
+    }
+
+    private var buttonTitle: String {
+        if isSearching { return "Clear search" }
+        return scope == .installed ? "Discover models" : "Refresh catalog"
     }
 }

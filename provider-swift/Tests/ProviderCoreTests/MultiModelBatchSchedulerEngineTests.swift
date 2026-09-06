@@ -88,21 +88,29 @@ func multiModelDeadlineAfterReservationReleasesWithoutSubmit() async throws {
     let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
         tokenizer: TokenizerHandle(MultiModelDeadlineTokenizer()),
         engineV2Bridge: bridge)
-    let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 10_000)
-    let engine = MultiModelBatchSchedulerEngine(
-        registryProvider: { @Sendable in ["deadline-model": entry] },
-        ensureLoaded: { @Sendable _ in },
-        reserveModel: { @Sendable _ in await gate.wait() },
-        releaseModel: { @Sendable _ in await releaseCounter.increment() },
-        firstContentDeadline: deadline)
     let request = OpenAIChatCompletionRequest(
         model: "deadline-model",
         messages: [.init(role: .user, content: .text("hi"))])
 
-    let submission = Task {
+    // Begin the simulated request's budget when this task starts receiving it,
+    // not while the full suite may still be scheduling thousands of fixtures.
+    // The engine still carries one unchanged deadline through reservation.
+    let submission = Task(priority: .high) {
+        let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 10_000)
+        let engine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in ["deadline-model": entry] },
+            ensureLoaded: { @Sendable _ in },
+            reserveModel: { @Sendable _ in await gate.wait(deadline: deadline) },
+            releaseModel: { @Sendable _ in await releaseCounter.increment() },
+            firstContentDeadline: deadline)
         try await engine.streamChatCompletion(request: request)
     }
+    defer {
+        submission.cancel()
+        Task { await gate.release() }
+    }
     #expect(await gate.waitUntilEntered(timeout: .seconds(30)))
+    let deadline = try #require(await gate.requestDeadline)
     let clock = ContinuousClock()
     try await clock.sleep(
         until: deadline.instant.advanced(by: .milliseconds(1)))
@@ -557,8 +565,10 @@ private actor MultiModelDeadlineGate {
     private var entered = false
     private var released = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var requestDeadline: FirstContentDeadline?
 
-    func wait() async {
+    func wait(deadline: FirstContentDeadline) async {
+        requestDeadline = deadline
         entered = true
         guard !released else { return }
         await withCheckedContinuation { waiters.append($0) }

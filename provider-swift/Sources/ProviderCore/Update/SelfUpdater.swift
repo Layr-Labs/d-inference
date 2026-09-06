@@ -570,28 +570,18 @@ public struct SelfUpdater: Sendable {
         /// directory. Cleanup verifies the durable marker before deleting.
         fileprivate let ownership: UpdateStagingOwnershipRecord
 
-        var installedBinary: URL {
-            extractedApp?.appendingPathComponent("Contents/MacOS/darkbloom")
-                ?? flatDarkbloom
-        }
-
-        var installedEnclave: URL {
-            extractedApp?.appendingPathComponent(
-                "Contents/MacOS/darkbloom-enclave"
-            ) ?? flatEnclave
-        }
-
-        var installedMetallib: URL {
-            extractedApp?.appendingPathComponent("Contents/MacOS/mlx.metallib")
-                ?? flatMetallib
-        }
+        let installedBinary: URL
+        let installedEnclave: URL
+        let installedMetallib: URL
 
         func currentArtifactModes() throws -> UpdateArtifactModes {
-            try UpdateArtifactModes(
-                binary: installedBinary,
-                enclave: installedEnclave,
-                metallib: installedMetallib
-            )
+            if let app = extractedApp {
+                let paths = try ProviderAppLayout(app: app, expectedVersion: release.version)
+                return try UpdateArtifactModes(
+                    binary: paths.binary, enclave: paths.enclave, metallib: paths.metallib)
+            }
+            return try UpdateArtifactModes(
+                binary: installedBinary, enclave: installedEnclave, metallib: installedMetallib)
         }
 
         func validateOwnership() throws {
@@ -807,12 +797,30 @@ public struct SelfUpdater: Sendable {
                     )
                 }
             }
+            let appLayout = try (hasAppBundle
+                ? ProviderAppLayout(app: extractedApp, expectedVersion: release.version)
+                : nil)
+            if let paths = appLayout, paths.helper != nil {
+                // The signed helper owns the running CLI and its colocated
+                // metallib. Flat/outer compatibility copies are not authority.
+                guard let binaryHash = release.binaryHash,
+                      let metallibHash = release.metallibHash
+                else {
+                    throw UpdateError.replaceFailed("nested release requires binary and metallib hashes")
+                }
+                try verifyHash(file: paths.binary, expected: binaryHash, label: "nested darkbloom")
+                try verifyHash(file: paths.metallib, expected: metallibHash, label: "nested mlx.metallib")
+                try verifyHash(
+                    file: extractedApp.appendingPathComponent("Contents/MacOS/mlx.metallib"),
+                    expected: metallibHash, label: "outer mlx.metallib")
+            }
             if let signaturePolicy = verification.codeSignaturePolicy {
-                if hasAppBundle {
-                    let appDarkbloom = extractedApp
-                        .appendingPathComponent("Contents/MacOS/darkbloom")
-                    let appMetallib = extractedApp
-                        .appendingPathComponent("Contents/MacOS/mlx.metallib")
+                if let paths = appLayout {
+                    if signaturePolicy == .darkbloomProduction {
+                        try paths.validateIdentityMetadata(expectedVersion: release.version)
+                    }
+                    let appDarkbloom = paths.binary
+                    let appMetallib = paths.metallib
                     if let binaryHash = release.binaryHash {
                         try verifyHash(
                             file: appDarkbloom,
@@ -832,6 +840,11 @@ public struct SelfUpdater: Sendable {
                         label: "darkbloom",
                         policy: signaturePolicy
                     )
+                    if let helper = paths.helper {
+                        try verifyCodeSignature(
+                            file: helper, label: "DarkbloomProvider.app", deep: true,
+                            policy: signaturePolicy)
+                    }
                     try verifyCodeSignature(
                         file: extractedApp,
                         label: "Darkbloom.app",
@@ -842,6 +855,7 @@ public struct SelfUpdater: Sendable {
                         try verifyRuntimeCapabilities(
                             app: extractedApp,
                             executable: appDarkbloom,
+                            runtimeBundle: paths.runtimeBundle,
                             fileManager: fm,
                             signaturePolicy: signaturePolicy)
                     }
@@ -859,18 +873,9 @@ public struct SelfUpdater: Sendable {
             }
 
             let artifactModes: UpdateArtifactModes
-            if hasAppBundle {
+            if let paths = appLayout {
                 artifactModes = try UpdateArtifactModes(
-                    binary: extractedApp.appendingPathComponent(
-                        "Contents/MacOS/darkbloom"
-                    ),
-                    enclave: extractedApp.appendingPathComponent(
-                        "Contents/MacOS/darkbloom-enclave"
-                    ),
-                    metallib: extractedApp.appendingPathComponent(
-                        "Contents/MacOS/mlx.metallib"
-                    )
-                )
+                    binary: paths.binary, enclave: paths.enclave, metallib: paths.metallib)
             } else {
                 artifactModes = flatArtifactModes
             }
@@ -892,7 +897,10 @@ public struct SelfUpdater: Sendable {
                 release: release,
                 stagedTreeHash: stagedTreeHash,
                 artifactModes: artifactModes,
-                ownership: ownership
+                ownership: ownership,
+                installedBinary: appLayout?.binary ?? flatDarkbloom,
+                installedEnclave: appLayout?.enclave ?? flatEnclave,
+                installedMetallib: appLayout?.metallib ?? flatMetallib
             ))
         } catch let error as UpdateError {
             try? fm.removeItem(at: stagingRoot)
@@ -958,6 +966,10 @@ public struct SelfUpdater: Sendable {
             }
             if session.store.verifyCodeSignatures {
                 if let app = staged.extractedApp {
+                    let paths = try ProviderAppLayout(app: app, expectedVersion: staged.release.version)
+                    if let helper = paths.helper {
+                        try verifyCodeSignature(file: helper, label: "DarkbloomProvider.app", deep: true)
+                    }
                     try verifyCodeSignature(
                         file: app,
                         label: "Darkbloom.app",
@@ -965,9 +977,7 @@ public struct SelfUpdater: Sendable {
                     )
                     try FanHelperCapabilityVerifier.verify(
                         app: app,
-                        executable: app.appendingPathComponent(
-                            "Contents/MacOS/darkbloom"
-                        ),
+                        executable: paths.binary,
                         signaturePolicy: .darkbloomProduction
                     )
                 } else {
@@ -1192,14 +1202,10 @@ public struct SelfUpdater: Sendable {
     /// Pure path derivation behind `liveInstallDir` (separated for tests).
     static func installRoot(forExecutablePath executablePath: String) -> URL {
         let execURL = URL(fileURLWithPath: executablePath).resolvingSymlinksInPath()
-        let parentDir = execURL.deletingLastPathComponent()
-        if parentDir.lastPathComponent == "MacOS" {
-            // Inside .app bundle: MacOS -> Contents -> Darkbloom.app -> root
-            return parentDir
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
+        if let app = ManagedProviderInstallLayout.outerAppURL(forExecutableURL: execURL) {
+            return app.deletingLastPathComponent()
         }
+        let parentDir = execURL.deletingLastPathComponent()
         // Flat bin/ layout or unknown: bin -> root
         return parentDir.deletingLastPathComponent()
     }
@@ -1403,6 +1409,7 @@ public struct SelfUpdater: Sendable {
     private func verifyRuntimeCapabilities(
         app: URL,
         executable: URL,
+        runtimeBundle: URL,
         fileManager: FileManager,
         signaturePolicy: DarkbloomCodeSignature.Policy
     ) throws {
@@ -1411,7 +1418,7 @@ public struct SelfUpdater: Sendable {
             executable: executable,
             signaturePolicy: signaturePolicy
         )
-        let marker = app.appendingPathComponent(
+        let marker = runtimeBundle.appendingPathComponent(
             PackagedRuntimeSmoke.pagedCapabilityRelativePath)
         let markerPresent = fileManager.fileExists(atPath: marker.path)
         let binary = try Data(contentsOf: executable, options: [.mappedIfSafe])
@@ -1435,7 +1442,7 @@ public struct SelfUpdater: Sendable {
                 "paged runtime capability marker is invalid")
         }
 
-        let resourceRoot = app.appendingPathComponent(
+        let resourceRoot = runtimeBundle.appendingPathComponent(
             "Contents/Resources",
             isDirectory: true)
         let bundles = try fileManager.contentsOfDirectory(

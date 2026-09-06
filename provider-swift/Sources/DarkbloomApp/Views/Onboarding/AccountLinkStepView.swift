@@ -10,7 +10,7 @@ struct AccountLinkStepView: View {
             VStack(alignment: .leading, spacing: 12) {
                 accountStatus
                 actions
-                Text("Darkbloom product policy requires an account before this Mac can join your fleet. The profile itself is installed by macOS.")
+                Text("Link this Mac so its network contributions are credited to your account.")
                     .font(DarkbloomTheme.chivo(11))
                     .lineSpacing(3)
                     .foregroundStyle(DarkbloomTheme.ink.opacity(0.62))

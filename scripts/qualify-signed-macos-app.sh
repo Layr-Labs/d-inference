@@ -57,15 +57,30 @@ esac
 
 INFO_PLIST="$APP/Contents/Info.plist"
 APP_BINARY="$APP/Contents/MacOS/DarkbloomApp"
-CLI="$APP/Contents/MacOS/darkbloom"
-ENCLAVE="$APP/Contents/MacOS/darkbloom-enclave"
-METALLIB="$APP/Contents/MacOS/mlx.metallib"
+PROVIDER_APP="$APP/Contents/Helpers/DarkbloomProvider.app"
+CLI_ALIAS="$APP/Contents/MacOS/darkbloom"
+CLI="$PROVIDER_APP/Contents/MacOS/darkbloom"
+ENCLAVE="$PROVIDER_APP/Contents/MacOS/darkbloom-enclave"
+METALLIB="$PROVIDER_APP/Contents/MacOS/mlx.metallib"
 FAN_HELPER="$APP/Contents/Helpers/darkbloom-fan-helper"
-PROFILE="$APP/Contents/embedded.provisionprofile"
+PROFILE="$PROVIDER_APP/Contents/embedded.provisionprofile"
 APP_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 FAN_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 EXPECTED_ACCESS_GROUP='SLDQ2GJ6TL.io.darkbloom.provider'
 EXPECTED_APNS_ENVIRONMENT='production' # pragma: allowlist secret
+
+for directory in "$APP/Contents" "$APP/Contents/Helpers" "$PROVIDER_APP" "$PROVIDER_APP/Contents" "$PROVIDER_APP/Contents/MacOS"; do
+    [ -d "$directory" ] && [ ! -L "$directory" ] || fail "provider path contains a non-directory or symlink: $directory"
+done
+[ -L "$CLI_ALIAS" ] || fail "canonical CLI compatibility alias is missing"
+[ "$(readlink "$CLI_ALIAS")" = '../Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom' ] \
+    || fail "CLI compatibility alias has an unexpected target"
+cmp "$APP/Contents/MacOS/mlx.metallib" "$METALLIB" \
+    || fail "outer and runtime metallib bytes differ"
+cmp "$APP/Contents/MacOS/darkbloom-enclave" "$ENCLAVE" \
+    || fail "outer and runtime enclave bytes differ"
+cmp "$APP/Contents/embedded.provisionprofile" "$PROFILE" \
+    || fail "outer and helper profiles differ"
 
 [ -f "$INFO_PLIST" ] || fail "Contents/Info.plist is missing"
 for executable in "$APP_BINARY" "$CLI" "$ENCLAVE" "$FAN_HELPER"; do
@@ -98,13 +113,25 @@ if [ -n "$EXPECTED_VERSION" ]; then
         || fail "artifact version $SHORT_VERSION does not match expected $EXPECTED_VERSION"
 fi
 
+PROVIDER_INFO="$PROVIDER_APP/Contents/Info.plist"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PROVIDER_INFO")" = 'io.darkbloom.provider' ] \
+    || fail "unexpected helper bundle identifier"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$PROVIDER_INFO")" = 'darkbloom' ] \
+    || fail "provider is not the helper bundle main executable"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PROVIDER_INFO")" = "$SHORT_VERSION" ] \
+    || fail "helper version differs from outer app"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PROVIDER_INFO")" = "$BUNDLE_VERSION" ] \
+    || fail "helper build version differs from outer app"
+
 /usr/bin/codesign --verify --deep --strict --verbose=2 \
     "-R=$APP_REQUIREMENT" "$APP"
+/usr/bin/codesign --verify --deep --strict --verbose=2 \
+    "-R=$APP_REQUIREMENT" "$PROVIDER_APP"
 /usr/bin/codesign --verify --strict --verbose=2 \
     "-R=$APP_REQUIREMENT" "$CLI"
 /usr/bin/codesign --verify --strict --verbose=2 \
     "-R=$FAN_REQUIREMENT" "$FAN_HELPER"
-for signed_code in "$APP" "$APP_BINARY" "$CLI" "$ENCLAVE" "$FAN_HELPER"; do
+for signed_code in "$APP" "$PROVIDER_APP" "$APP_BINARY" "$CLI" "$ENCLAVE" "$FAN_HELPER"; do
     /usr/bin/codesign -dvvv "$signed_code" 2>&1 \
         | /usr/bin/grep -Eq '^CodeDirectory .*flags=.*runtime' \
         || fail "hardened runtime flag is missing: $signed_code"
@@ -195,14 +222,28 @@ for resource in \
     "$APP/Contents/Resources/DarkbloomProvider_DarkbloomApp.bundle/default.metallib" \
     "$APP/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal" \
     "$APP/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1" \
-    "$APP/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
+    "$APP/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1" \
+    "$PROVIDER_APP/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal" \
+    "$PROVIDER_APP/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1"
 do
     [ -s "$resource" ] || fail "required sealed resource is missing: $resource"
 done
+
+# Static signatures do not prove AMFI accepts restricted entitlements on a
+# nested executable. Exercise the actual signed helper without starting a
+# provider, touching account/enrollment state, or loading a model.
+REPORTED_VERSION=$("$CLI" --version) || fail "signed helper could not launch"
+[ "$REPORTED_VERSION" = "$SHORT_VERSION" ] || fail "signed helper version mismatch"
+DARKBLOOM_NO_UPDATE_CHECK=1 \
+    DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
+    MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
+    MLX_GATHER_QMM_EXPERT_SLICES=1 \
+    "$CLI" runtime-smoke || fail "signed helper runtime smoke failed"
 
 echo "Signed Darkbloom artifact qualified non-destructively:"
 echo "  Version: $SHORT_VERSION"
 echo "  Developer ID requirement: verified"
 echo "  Notarization ticket: stapled and valid"
 echo "  Gatekeeper assessment: accepted"
-echo "  CLI/profile entitlements: shipping APNs + persistent keychain authorized"
+echo "  Nested CLI launch and packaged runtime: passed"
+echo "  CLI/profile grants: matched; persistent Secure Enclave/APNs still requires live qualification"

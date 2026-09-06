@@ -24,7 +24,7 @@ private struct CacheHashStubProcessor: UserInputProcessor {
 
 @Suite("SSD cache weight-hash eligibility")
 struct WeightHashCacheEligibilityTests {
-    private func makeLoop() throws -> ProviderLoop {
+    private func makeLoop() async throws -> (ProviderLoop, URL) {
         let modelID = "test/cache-hash-model"
         let config = ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/ignored",
@@ -50,10 +50,16 @@ struct WeightHashCacheEligibilityTests {
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)),
             modelHashes: [modelID: "stale-observable-hash"],
             modelHashFingerprints: [modelID: "old-fingerprint"])
-        return try ProviderLoop(
+        let loop = try ProviderLoop(
             config: config,
             purgeLegacyFiles: false,
             attestationSigner: nil)
+        // Failed hash checks publish daemon status too. Keep those synthetic
+        // failures out of the operator's live state file.
+        let stateURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cache-hash-state-\(UUID().uuidString).json")
+        await loop.setDaemonStateFileForTesting(stateURL)
+        return (loop, stateURL)
     }
 
     private func makeSnapshot(_ label: String, weights: String = "weights-before") throws -> URL {
@@ -82,7 +88,8 @@ struct WeightHashCacheEligibilityTests {
         let modelID = "test/cache-hash-model"
         let path = try makeSnapshot("matching")
         defer { try? FileManager.default.removeItem(at: path) }
-        let loop = try makeLoop()
+        let (loop, stateURL) = try await makeLoop()
+        defer { try? FileManager.default.removeItem(at: stateURL) }
         let pre = try await loop.captureWeightHashForTesting(
             modelId: modelID,
             modelPath: path,
@@ -115,7 +122,8 @@ struct WeightHashCacheEligibilityTests {
         let originalDate = try #require(
             try weights.resourceValues(forKeys: [.contentModificationDateKey])
                 .contentModificationDate)
-        let loop = try makeLoop()
+        let (loop, stateURL) = try await makeLoop()
+        defer { try? FileManager.default.removeItem(at: stateURL) }
         let pre = try await loop.captureWeightHashForTesting(
             modelId: modelID,
             modelPath: path,
@@ -149,7 +157,8 @@ struct WeightHashCacheEligibilityTests {
         let modelID = "test/cache-hash-model"
         let path = try makeSnapshot("missing")
         defer { try? FileManager.default.removeItem(at: path) }
-        let loop = try makeLoop()
+        let (loop, stateURL) = try await makeLoop()
+        defer { try? FileManager.default.removeItem(at: stateURL) }
         let pre = try await loop.captureWeightHashForTesting(
             modelId: modelID,
             modelPath: path,
@@ -189,7 +198,8 @@ struct WeightHashCacheEligibilityTests {
         let modelID = "test/cache-hash-model"
         let path = try makeSnapshot("missing-pre")
         defer { try? FileManager.default.removeItem(at: path) }
-        let loop = try makeLoop()
+        let (loop, stateURL) = try await makeLoop()
+        defer { try? FileManager.default.removeItem(at: stateURL) }
         let pre = ProviderLoop.WeightHashSnapshot(
             fingerprint: nil, hash: nil, recomputed: true)
         let post = try await loop.captureWeightHashForTesting(

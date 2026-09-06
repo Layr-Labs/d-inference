@@ -34,11 +34,11 @@ extension ProviderSnapshot {
         case .online:
             return state(
                 "AVAILABLE · IDLE",
-                title: "Ready when work arrives.",
-                detail: "This Mac is available to accept encrypted work from the Darkbloom network.",
+                title: "This Mac is connected.",
+                detail: "Darkbloom reports this Mac online. Requests run here when the network selects it.",
                 badge: status.sidebarTitle,
                 icon: status.icon,
-                action: "Take offline",
+                action: "Pause sharing",
                 tint: status.tint,
                 focus: 0.30,
                 activity: 0.34
@@ -46,11 +46,11 @@ extension ProviderSnapshot {
         case .serving:
             return state(
                 "SERVING PRIVATELY",
-                title: "Private work is in bloom.",
-                detail: "Encrypted network requests are being processed on this Mac. Activity shows counts and timing without conversation content.",
+                title: "This Mac is handling requests.",
+                detail: "The provider can handle both local and network requests. Activity shows counts and timing without conversation content.",
                 badge: "Serving",
                 icon: "waveform.path.ecg",
-                action: "Take offline",
+                action: "Pause sharing",
                 tint: DarkbloomTheme.accent,
                 focus: 0.62,
                 activity: 0.82
@@ -58,11 +58,11 @@ extension ProviderSnapshot {
         case .paused:
             return state(
                 "NETWORK PAUSED",
-                title: "Available when you choose.",
-                detail: "Start local AI from Local API, or make this Mac available for network work.",
+                title: "Network sharing is paused.",
+                detail: "This Mac is not accepting network requests. Start sharing when you’re ready to contribute compute.",
                 badge: "Paused",
                 icon: "pause.circle.fill",
-                action: "Make available",
+                action: "Start sharing",
                 tint: .secondary,
                 focus: 0.08,
                 activity: 0.02
@@ -104,11 +104,11 @@ extension ProviderSnapshot {
                 activity: 0.01
             )
         case .starting:
-            return transitioning("STARTING", title: "Waking this Mac.", detail: "Preparing models and reconnecting securely…")
+            return transitioning("CONNECTING", title: "Connecting this Mac.", detail: "Preparing models and reconnecting to Darkbloom…")
         case .stopping:
-            return transitioning("GOING OFFLINE", title: "Releasing this Mac.", detail: "Finishing the transition and unloading provider resources…")
+            return transitioning("PAUSING", title: "Pausing network sharing.", detail: "Finishing the transition and releasing provider resources…")
         case .restarting:
-            return transitioning("RESTARTING", title: "Beginning again, cleanly.", detail: "Darkbloom is restarting its local provider…")
+            return transitioning("RECONNECTING", title: "Reconnecting to Darkbloom.", detail: "The network provider is restarting…")
         }
     }
 

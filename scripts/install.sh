@@ -382,9 +382,21 @@ sub read_metadata {
     return $payload;
 }
 
+# The GUI keeps one compatibility alias for existing CLI callers. No other
+# symlink (including a link at the legacy verifier path) is permitted.
+my $provider_alias = "Darkbloom.app/Contents/MacOS/darkbloom";
+my $provider_root = "Darkbloom.app/Contents/Helpers/DarkbloomProvider.app";
+my $provider_target = "$provider_root/Contents/MacOS/darkbloom";
+my $provider_link = "../Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom";
 my %nodes;
+my %node_paths;
 my %has_descendants;
 my %expected_payload_modes = (
+    "$provider_target" => [0755, "nested darkbloom"],
+    "$provider_root/Contents/MacOS/darkbloom-enclave" =>
+        [0755, "nested darkbloom-enclave"],
+    "$provider_root/Contents/MacOS/mlx.metallib" =>
+        [0644, "nested mlx.metallib"],
     "bin/darkbloom" => [0755, "darkbloom"],
     "darkbloom" => [0755, "darkbloom"],
     "Darkbloom.app/Contents/MacOS/darkbloom" => [0755, "darkbloom"],
@@ -416,7 +428,8 @@ sub code_signature_metadata_path {
     my ($path) = @_;
     return $path eq "bin/mlx.metallib"
         || $path eq "mlx.metallib"
-        || $path eq "Darkbloom.app/Contents/MacOS/mlx.metallib";
+        || $path eq "Darkbloom.app/Contents/MacOS/mlx.metallib"
+        || $path eq "$provider_root/Contents/MacOS/mlx.metallib";
 }
 
 sub add_node {
@@ -427,7 +440,7 @@ sub add_node {
     reject("duplicate or case-conflicting path $path")
         if exists($nodes{$key});
     reject("file $path conflicts with descendant entries")
-        if $kind eq "regular" && $has_descendants{$key};
+        if $kind ne "directory" && $has_descendants{$key};
 
     unless ($key eq ".") {
         my @parts = split("/", $key, -1);
@@ -442,6 +455,26 @@ sub add_node {
         }
     }
     $nodes{$key} = $kind;
+    $node_paths{$key} = $path;
+}
+
+sub validate_provider_alias {
+    return unless ($nodes{fold_path($provider_alias)} // "") eq "symlink";
+    for my $path ($provider_alias, $provider_target, "bin/darkbloom") {
+        my $key = fold_path($path);
+        my $expected = $path eq $provider_alias ? "symlink" : "regular";
+        reject("provider alias requires exact $expected path $path")
+            unless ($nodes{$key} // "") eq $expected
+                && $node_paths{$key} eq $path;
+        my @parts = split("/", $path);
+        for my $end (1 .. $#parts) {
+            my $ancestor = join("/", @parts[0 .. $end - 1]);
+            my $ancestor_key = fold_path($ancestor);
+            reject("provider alias requires exact directory ancestor $ancestor")
+                unless ($nodes{$ancestor_key} // "") eq "directory"
+                    && $node_paths{$ancestor_key} eq $ancestor;
+        }
+    }
 }
 
 sub validate_checksum {
@@ -601,6 +634,15 @@ sub validate_archive {
             $kind = "regular";
             reject("regular-file path $path ends with a slash")
                 if $path_has_trailing_slash;
+        } elsif ($typeflag eq "2" && $path eq $provider_alias) {
+            $kind = "symlink";
+            reject("provider alias path ends with a slash")
+                if $path_has_trailing_slash;
+            reject("provider alias has a non-zero size")
+                if $size != 0 || $header_size != 0;
+            my $link = tar_string(substr($header, 157, 100), "linkname");
+            reject("provider alias has an unexpected target")
+                unless $link eq $provider_link;
         } elsif ($typeflag eq "5") {
             $kind = "directory";
             reject("directory $path has a non-zero size") if $size != 0;
@@ -628,6 +670,7 @@ sub validate_archive {
 
 my $validated = eval {
     validate_archive();
+    validate_provider_alias();
     1;
 };
 my $validation_error = $@;
@@ -831,8 +874,10 @@ verify_fan_helper_capability() {
 
 verify_staged_app() {
     local app=$1
-    local executable="$app/Contents/MacOS/darkbloom"
-    local marker="$app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1"
+    local provider_app
+    provider_app=$(staged_provider_app "$app")
+    local executable="$provider_app/Contents/MacOS/darkbloom"
+    local marker="$provider_app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1"
 
     if [ "$INSTALL_TEST_MODE" = "1" ]; then
         codesign --verify --deep --strict --verbose=2 "$app" >/dev/null 2>&1 || {
@@ -841,6 +886,19 @@ verify_staged_app() {
         }
     else
         verify_staged_app_signature "$app" || return 1
+    fi
+    if [ "$provider_app" != "$app" ]; then
+        if [ "$INSTALL_TEST_MODE" = "1" ]; then
+            codesign --verify --deep --strict --verbose=2 "$provider_app" >/dev/null 2>&1 || {
+                fail_install "Strict code-signature verification failed for nested provider."
+                return 1
+            }
+        else
+            verify_code_requirement "$provider_app" 1 "$DARKBLOOM_DESIGNATED_REQUIREMENT" || {
+                fail_install "Nested provider does not satisfy the pinned signature requirement."
+                return 1
+            }
+        fi
     fi
     verify_fan_helper_capability "$app" || return 1
 
@@ -864,9 +922,9 @@ verify_staged_app() {
 
     shopt -s nullglob
     local paged_resources=(
-        "$app/Contents/Resources"/*.bundle/pagedattention.metal
+        "$provider_app/Contents/Resources"/*.bundle/pagedattention.metal
     )
-    local expected_resource="$app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
+    local expected_resource="$provider_app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
     [ "${#paged_resources[@]}" -eq 1 ] \
         && [ "${paged_resources[0]}" = "$expected_resource" ] \
         && [ -s "$expected_resource" ] \
@@ -886,17 +944,154 @@ verify_staged_app() {
         }
 }
 
+# Select the real CLI only after verify_staged_app_payload has validated the
+# exact compatibility alias and every directory in its helper path. Generic
+# payload mode checks remain nofollow for old and new layouts alike.
+staged_provider_app() {
+    local app=$1
+    if [ -L "$app/Contents/MacOS/darkbloom" ]; then
+        printf '%s/Contents/Helpers/DarkbloomProvider.app\n' "$app"
+    else
+        printf '%s\n' "$app"
+    fi
+}
+
+# SwiftPM bundles and the paged marker are duplicated for the CLI's physical
+# bundle lookup. GUI fonts and the fan-helper marker legitimately remain outer.
+verify_nested_provider_resources() {
+    local outer=$1
+    local nested=$2
+    shopt -s nullglob
+    local outer_bundles=("$outer"/*.bundle)
+    local nested_bundles=("$nested"/*.bundle)
+    [ "${#outer_bundles[@]}" -eq "${#nested_bundles[@]}" ] || {
+        fail_install "Nested provider must duplicate every outer SwiftPM resource bundle."
+        return 1
+    }
+    local bundle
+    for bundle in "${outer_bundles[@]}"; do
+        local copy="$nested/${bundle##*/}"
+        if [ ! -d "$bundle" ] || [ -L "$bundle" ] \
+            || [ ! -d "$copy" ] || [ -L "$copy" ] \
+            || ! diff -qr "$bundle" "$copy" >/dev/null; then
+            fail_install "Nested provider SwiftPM resources must match the outer app."
+            return 1
+        fi
+    done
+    local marker=darkbloom-runtime-capabilities/paged-kernel-v1
+    if [ -e "$outer/$marker" ] || [ -L "$outer/$marker" ] \
+        || [ -e "$nested/$marker" ] || [ -L "$nested/$marker" ]; then
+        if [ ! -f "$outer/$marker" ] || [ -L "$outer/$marker" ] \
+            || [ ! -f "$nested/$marker" ] || [ -L "$nested/$marker" ] \
+            || ! cmp -s "$outer/$marker" "$nested/$marker"; then
+            fail_install "Nested provider paged marker must match the outer app."
+            return 1
+        fi
+    fi
+}
+
+verify_nested_provider_layout() {
+    local app=$1
+    local helper="$app/Contents/Helpers/DarkbloomProvider.app"
+    local alias="$app/Contents/MacOS/darkbloom"
+    local directory
+    for directory in \
+        "$app" "$app/Contents" "$app/Contents/MacOS" \
+        "$app/Contents/Helpers" "$helper" "$helper/Contents" \
+        "$helper/Contents/MacOS" "$app/Contents/Resources" \
+        "$helper/Contents/Resources"
+    do
+        [ -d "$directory" ] && [ ! -L "$directory" ] || {
+            fail_install "Nested provider ancestor must be a real directory: $directory"
+            return 1
+        }
+    done
+    [ -L "$alias" ] \
+        && [ "$(readlink "$alias")" = "../Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom" ] || {
+        fail_install "Nested provider requires the exact CLI compatibility alias."
+        return 1
+    }
+
+    local bundle
+    local file
+    for bundle in "$app" "$helper"; do
+        for file in Info.plist embedded.provisionprofile; do
+            [ -f "$bundle/Contents/$file" ] \
+                && [ ! -L "$bundle/Contents/$file" ] \
+                && [ -s "$bundle/Contents/$file" ] || {
+                fail_install "Nested provider requires a regular nonempty $file in $bundle."
+                return 1
+            }
+        done
+        local expected_executable=darkbloom
+        [ "$bundle" != "$app" ] || expected_executable=DarkbloomApp
+        local key
+        local expected
+        for key in CFBundleExecutable CFBundleIdentifier CFBundlePackageType; do
+            case "$key" in
+                CFBundleExecutable) expected=$expected_executable ;;
+                CFBundleIdentifier) expected=io.darkbloom.provider ;;
+                CFBundlePackageType) expected=APPL ;;
+            esac
+            [ "$(/usr/libexec/PlistBuddy -c "Print :$key" \
+                "$bundle/Contents/Info.plist" 2>/dev/null)" = "$expected" ] || {
+                fail_install "Nested provider $key must be $expected in $bundle."
+                return 1
+            }
+        done
+    done
+    local outer_version
+    local helper_version
+    outer_version=$(read_canonical_app_version "$app") \
+        && helper_version=$(read_canonical_app_version "$helper") \
+        && [ "$outer_version" = "$helper_version" ] || {
+        fail_install "Nested provider and GUI must have matching canonical bundle versions."
+        return 1
+    }
+    cmp -s "$app/Contents/embedded.provisionprofile" \
+        "$helper/Contents/embedded.provisionprofile" || {
+        fail_install "Nested provider provisioning profile must match the GUI profile."
+        return 1
+    }
+    verify_nested_provider_resources \
+        "$app/Contents/Resources" "$helper/Contents/Resources" || return 1
+    verify_release_payload_mode \
+        "$app/Contents/MacOS/DarkbloomApp" 755 "GUI executable" \
+        && verify_release_payload_mode \
+            "$app/Contents/MacOS/darkbloom-enclave" 755 "Outer enclave" \
+        && verify_release_payload_mode \
+            "$app/Contents/MacOS/mlx.metallib" 644 "Outer metallib"
+}
+
 verify_staged_app_payload() {
     local app=$1
     local binary_hash=$2
     local metallib_hash=$3
-    local app_bin="$app/Contents/MacOS"
     [ -n "$binary_hash" ] && [ -n "$metallib_hash" ] || {
         fail_install "App releases require binary_hash and metallib_hash."
         return 1
     }
+    local helper="$app/Contents/Helpers/DarkbloomProvider.app"
+    if [ -L "$app/Contents/MacOS/darkbloom" ] \
+        || [ -e "$helper" ] || [ -L "$helper" ]; then
+        verify_nested_provider_layout "$app" || return 1
+    fi
+    local provider_app
+    provider_app=$(staged_provider_app "$app")
+    local app_bin="$provider_app/Contents/MacOS"
+    verify_release_payload_modes "$app_bin" "App release payload" || return 1
+    if [ "$provider_app" != "$app" ]; then
+        if ! cmp -s "$app_bin/darkbloom-enclave" "$app/Contents/MacOS/darkbloom-enclave" \
+            || ! cmp -s "$app_bin/darkbloom-enclave" "${app%/*}/bin/darkbloom-enclave"; then
+            fail_install "Nested provider enclave must match the outer and flat copies."
+            return 1
+        fi
+    fi
     verify_file_hash "$app_bin/darkbloom" "$binary_hash" "App binary" \
-        && verify_file_hash "$app_bin/mlx.metallib" "$metallib_hash" "App metallib"
+        && verify_file_hash "$app_bin/mlx.metallib" "$metallib_hash" "App metallib" || return 1
+    if [ "$provider_app" != "$app" ]; then
+        verify_file_hash "$app/Contents/MacOS/mlx.metallib" "$metallib_hash" "Outer app metallib" || return 1
+    fi
 }
 
 # ~/.darkbloom/Darkbloom.app ownership: release bundles have always carried
@@ -3305,12 +3500,6 @@ install_bundle_atomically_locked() {
     }
 
     if [ -d "$stage/Darkbloom.app" ]; then
-        verify_release_payload_modes \
-            "$stage/Darkbloom.app/Contents/MacOS" "App release payload" || {
-            cleanup_install_staging_after_attempt \
-                "$stage" "$install_dir" "$transaction_id" || true
-            return 1
-        }
         verify_staged_app_payload \
             "$stage/Darkbloom.app" "$binary_hash" "$metallib_hash" || {
             cleanup_install_staging_after_attempt \

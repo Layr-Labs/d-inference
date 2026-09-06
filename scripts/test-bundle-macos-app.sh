@@ -78,6 +78,20 @@ PATH="$SHIMS:$PATH" "$BUNDLER" \
 test ! -e "$APP/foreign-sentinel"
 test -x "$APP/Contents/MacOS/DarkbloomApp"
 test -x "$APP/Contents/MacOS/darkbloom"
+PROVIDER_APP="$APP/Contents/Helpers/DarkbloomProvider.app"
+test -L "$APP/Contents/MacOS/darkbloom"
+test "$(readlink "$APP/Contents/MacOS/darkbloom")" = '../Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom'
+test -f "$PROVIDER_APP/Contents/MacOS/darkbloom"
+test ! -L "$PROVIDER_APP/Contents/MacOS/darkbloom"
+test "$(stat -f '%Lp' "$PROVIDER_APP/Contents/MacOS/darkbloom")" = 755
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$PROVIDER_APP/Contents/Info.plist")" = darkbloom
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PROVIDER_APP/Contents/Info.plist")" = io.darkbloom.provider
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PROVIDER_APP/Contents/Info.plist")" = 9.8.7
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PROVIDER_APP/Contents/Info.plist")" = 9.8.7
+cmp "$PROVIDER_APP/Contents/MacOS/mlx.metallib" "$APP/Contents/MacOS/mlx.metallib"
+cmp "$PROVIDER_APP/Contents/MacOS/darkbloom-enclave" "$APP/Contents/MacOS/darkbloom-enclave"
+cmp "$PROVIDER_APP/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal" "$APP/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
+test -s "$PROVIDER_APP/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1"
 test -x "$APP/Contents/MacOS/darkbloom-enclave"
 test -x "$APP/Contents/Helpers/darkbloom-fan-helper"
 test "$(stat -f '%Lp' "$APP/Contents/Helpers/darkbloom-fan-helper")" = "755"
@@ -120,6 +134,9 @@ ROOT_ENTRY_COUNT=$(/usr/bin/find "$ARCHIVE_ROOT" \
 test "$ROOT_ENTRY_COUNT" = "1"
 ARCHIVED_APP="$ARCHIVE_ROOT/Darkbloom.app"
 test -d "$ARCHIVED_APP"
+test -L "$ARCHIVED_APP/Contents/MacOS/darkbloom"
+test "$(readlink "$ARCHIVED_APP/Contents/MacOS/darkbloom")" = '../Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom'
+test ! -L "$ARCHIVED_APP/Contents/Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom"
 cmp "$APP/Contents/MacOS/darkbloom" \
     "$ARCHIVED_APP/Contents/MacOS/darkbloom"
 cmp "$APP/Contents/MacOS/DarkbloomApp" \

@@ -230,9 +230,30 @@ struct ContributionsLiveTests {
         await store.refresh()
 
         #expect(store.snapshot?.currentProviderKeys == [])
-        #expect(store.filteredLedger.isEmpty)
-        store.setScope(.allMacs)
+        #expect(!store.canIdentifyThisMac)
+        #expect(store.scope == .allMacs)
+        store.setScope(.thisMac)
+        #expect(store.scope == .allMacs)
         #expect(store.filteredLedger.count == 3)
+    }
+
+    @Test("incomplete and interrupted account links offer reconnect and clear recovery after success", arguments: [
+        "Error: the saved provider credential has no verifiable account or issuer; run `darkbloom login` to authorize a fresh login",
+        "Error: the saved provider credential requires recovery; run `darkbloom login` to authorize a fresh login",
+    ])
+    @MainActor
+    func olderAccountLinkNeedsReconnect(message: String) async {
+        let cli = StubCLI()
+        cli.error = ContributionsCLIError.failure(exitStatus: 1,
+            message: message)
+        let store = ContributionsStore(cli: cli)
+        await store.refresh()
+        #expect(store.accountLinkNeedsRefresh)
+        cli.error = nil
+        cli.payload = payload()
+        await store.refresh()
+        #expect(!store.accountLinkNeedsRefresh)
+        #expect(store.snapshot != nil)
     }
 
     @Test("transport failure surfaces the CLI's one-line guidance")

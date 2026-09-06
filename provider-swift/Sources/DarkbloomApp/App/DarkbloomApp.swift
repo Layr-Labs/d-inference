@@ -72,8 +72,12 @@ struct DarkbloomApp: App {
             height: configuration.previewWindowSize?.height ?? 680
         )
         .windowResizability(.contentMinSize)
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            #if DEBUG
+            DebugMenuCommands()
+            #endif
             if installPresentation.showsProviderCommands {
                 ProviderCommands()
             }
@@ -92,22 +96,46 @@ struct DarkbloomApp: App {
             }
         }
 
-        MenuBarExtra("Darkbloom", systemImage: "sparkles") {
-            if installPresentation.showsProviderMenuControls {
-                ProviderMenuBarView(
-                    content: ProviderMenuBarContent.resolve(
-                        hasCompletedSetup: stores.appFlowStore.hasCompletedNetworkOnboarding,
-                        snapshot: stores.providerStore.snapshot
-                    ),
-                    providerStore: stores.providerStore,
-                    showsPreviewChrome: configuration.showsPreviewChrome
-                )
-            } else {
-                Button("Quit Darkbloom") {
-                    NSApp.terminate(nil)
-                }
-            }
+        #if DEBUG
+        Window("Menu Bar Preview", id: DebugMenuCommands.windowID) {
+            menuContent
+        }
+        .windowResizability(.contentSize)
+        #endif
+
+        MenuBarExtra {
+            menuContent
+        } label: {
+            ProviderMenuBarLabel(content: ProviderMenuBarContent.resolve(
+                hasCompletedSetup: stores.appFlowStore.hasCompletedNetworkOnboarding,
+                snapshot: stores.providerStore.snapshot
+            ))
         }
         .menuBarExtraStyle(.window)
+    }
+
+    @ViewBuilder
+    private var menuContent: some View {
+        if installPresentation.showsProviderMenuControls {
+            ProviderMenuBarView(
+                content: ProviderMenuBarContent.resolve(
+                    hasCompletedSetup: stores.appFlowStore.hasCompletedNetworkOnboarding,
+                    snapshot: stores.providerStore.snapshot
+                ),
+                providerStore: stores.providerStore,
+                localAPIStore: stores.localAPIStore,
+                showsPreviewChrome: configuration.showsPreviewChrome,
+                onOpenStudio: { stores.appFlowStore.openProduct(.overview) },
+                onOpenNetwork: { stores.appFlowStore.openProduct(.networkOverview) },
+                onContinueSetup: {
+                    stores.appFlowStore.requestNetworkSetup(
+                        localSessionIsActive: stores.localAPIStore.localStart.hasActiveSession)
+                }
+            )
+        } else {
+            Button("Quit Darkbloom") {
+                NSApp.terminate(nil)
+            }
+        }
     }
 }

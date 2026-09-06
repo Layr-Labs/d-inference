@@ -21,7 +21,28 @@ const (
 	maxReleaseArchiveMetadataBytes  int64 = 1 << 20 // 1 MiB per PAX/long-name record
 
 	releaseTarBlockSize = 512
+
+	// This is the only link allowed in a release archive. The nested app makes
+	// the signed CLI a main executable with its own provisioning profile.
+	releaseAppCLIAliasPath   = "Darkbloom.app/Contents/MacOS/darkbloom"
+	releaseNestedAppPath     = "Darkbloom.app/Contents/Helpers/DarkbloomProvider.app"
+	releaseNestedCLIPath     = releaseNestedAppPath + "/Contents/MacOS/darkbloom"
+	releaseAppCLIAliasTarget = "../Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom"
 )
+
+// Match the explicit, exactly cased directory headers required by the Swift
+// preflight and installer for the nested provider layout only.
+var releaseNestedAppDirectoryPaths = [...]string{
+	"Darkbloom.app",
+	"Darkbloom.app/Contents",
+	"Darkbloom.app/Contents/MacOS",
+	"Darkbloom.app/Contents/Resources",
+	"Darkbloom.app/Contents/Helpers",
+	releaseNestedAppPath,
+	releaseNestedAppPath + "/Contents",
+	releaseNestedAppPath + "/Contents/MacOS",
+	releaseNestedAppPath + "/Contents/Resources",
+}
 
 type releaseArchivePolicy struct {
 	maxExpandedBytes  int64
@@ -44,13 +65,15 @@ type releaseArchiveNodeKind uint8
 const (
 	releaseArchiveRegular releaseArchiveNodeKind = iota
 	releaseArchiveDirectory
+	releaseArchiveSymlink
 )
 
 type releaseArchiveEntry struct {
-	Path string
-	Kind releaseArchiveNodeKind
-	Size int64
-	Mode int64
+	Path     string
+	Kind     releaseArchiveNodeKind
+	Size     int64
+	Mode     int64
+	Linkname string
 }
 
 type releaseArchiveVisitor func(releaseArchiveEntry, io.Reader) error
@@ -63,14 +86,17 @@ type releaseArchivePendingMetadata struct {
 }
 
 type releaseArchivePathTracker struct {
-	nodes          map[string]releaseArchiveNodeKind
-	hasDescendants map[string]struct{}
+	nodes            map[string]releaseArchiveNodeKind
+	exactDirectories map[string]struct{}
+	hasDescendants   map[string]struct{}
+	hasNestedCLI     bool
 }
 
 func newReleaseArchivePathTracker() *releaseArchivePathTracker {
 	return &releaseArchivePathTracker{
-		nodes:          make(map[string]releaseArchiveNodeKind),
-		hasDescendants: make(map[string]struct{}),
+		nodes:            make(map[string]releaseArchiveNodeKind),
+		exactDirectories: make(map[string]struct{}),
+		hasDescendants:   make(map[string]struct{}),
 	}
 }
 
@@ -115,7 +141,7 @@ func validateReleaseArchive(
 			); err != nil {
 				return err
 			}
-			return nil
+			return tracker.validateCLIAliasTarget()
 		}
 
 		entryCount++
@@ -235,6 +261,7 @@ func validateReleaseArchive(
 		pending = releaseArchivePendingMetadata{}
 
 		var kind releaseArchiveNodeKind
+		var linkname string
 		switch typeflag {
 		case 0, '0':
 			kind = releaseArchiveRegular
@@ -244,6 +271,18 @@ func validateReleaseArchive(
 					effectivePath,
 				)
 			}
+		case '2':
+			if effectivePath != releaseAppCLIAliasPath {
+				return fmt.Errorf("release archive entry %q uses unsupported node type 0x%02x", effectivePath, typeflag)
+			}
+			if pathHasTrailingSlash || headerSize != 0 || effectiveSize != 0 {
+				return fmt.Errorf("release archive CLI alias must have no trailing slash or payload")
+			}
+			linkname, err = releaseTarString(header[157:257])
+			if err != nil || linkname != releaseAppCLIAliasTarget {
+				return fmt.Errorf("release archive CLI alias must target exactly %q", releaseAppCLIAliasTarget)
+			}
+			kind = releaseArchiveSymlink
 		case '5':
 			kind = releaseArchiveDirectory
 			if effectiveSize != 0 {
@@ -272,10 +311,11 @@ func validateReleaseArchive(
 		}
 
 		entry := releaseArchiveEntry{
-			Path: effectivePath,
-			Kind: kind,
-			Size: effectiveSize,
-			Mode: headerMode,
+			Path:     effectivePath,
+			Kind:     kind,
+			Size:     effectiveSize,
+			Mode:     headerMode,
+			Linkname: linkname,
 		}
 		if err := visitReleaseArchivePayload(r, entry, visitor); err != nil {
 			return err
@@ -593,7 +633,8 @@ func releasePathAllowsCodeSignatureMetadata(path string) bool {
 	switch path {
 	case "bin/mlx.metallib",
 		"mlx.metallib",
-		"Darkbloom.app/Contents/MacOS/mlx.metallib":
+		"Darkbloom.app/Contents/MacOS/mlx.metallib",
+		releaseNestedAppPath + "/Contents/MacOS/mlx.metallib":
 		return true
 	default:
 		return false
@@ -780,7 +821,7 @@ func (tracker *releaseArchivePathTracker) add(
 	if _, duplicate := tracker.nodes[key]; duplicate {
 		return fmt.Errorf("release archive contains duplicate or case-conflicting path %q", path)
 	}
-	if kind == releaseArchiveRegular {
+	if kind != releaseArchiveDirectory {
 		if _, hasChildren := tracker.hasDescendants[key]; hasChildren {
 			return fmt.Errorf("release archive file %q conflicts with descendant entries", path)
 		}
@@ -798,6 +839,27 @@ func (tracker *releaseArchivePathTracker) add(
 		}
 	}
 	tracker.nodes[key] = kind
+	if kind == releaseArchiveDirectory {
+		tracker.exactDirectories[path] = struct{}{}
+	}
+	if path == releaseNestedCLIPath && kind == releaseArchiveRegular {
+		tracker.hasNestedCLI = true
+	}
+	return nil
+}
+
+func (tracker *releaseArchivePathTracker) validateCLIAliasTarget() error {
+	if tracker.nodes[foldReleaseArchivePath(releaseAppCLIAliasPath)] != releaseArchiveSymlink {
+		return nil // Legacy archives may omit explicit directory headers.
+	}
+	if !tracker.hasNestedCLI {
+		return fmt.Errorf("release archive CLI alias requires regular target %q", releaseNestedCLIPath)
+	}
+	for _, path := range releaseNestedAppDirectoryPaths {
+		if _, present := tracker.exactDirectories[path]; !present {
+			return fmt.Errorf("nested provider archive requires exact directory %q", path)
+		}
+	}
 	return nil
 }
 

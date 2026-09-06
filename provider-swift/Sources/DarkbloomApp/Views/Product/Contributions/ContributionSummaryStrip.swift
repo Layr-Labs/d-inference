@@ -10,9 +10,10 @@ struct ContributionSummaryStrip: View {
         HStack(spacing: 0) {
             metric(
                 title: "Lifetime",
-                value: ContributionsPresentation.amount(snapshot.earnedLifetime),
+                value: ContributionsPresentation.summaryAmount(snapshot.earnedLifetime),
                 detail: "account earnings"
             )
+            .help(ContributionsPresentation.amount(snapshot.earnedLifetime))
             divider
             metric(
                 title: "Lifetime jobs",

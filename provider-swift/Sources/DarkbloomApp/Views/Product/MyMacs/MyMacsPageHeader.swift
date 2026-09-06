@@ -27,7 +27,8 @@ struct MyMacsPageHeader: View {
     private var title: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Your Macs")
-                .font(DarkbloomTheme.chivo(26, weight: .medium))
+                .font(DarkbloomTheme.chivo(36))
+                .tracking(-1.2)
                 .accessibilityAddTraits(.isHeader)
             Text(isPreview ? "Sample fleet · UI preview" : "Macs linked to your account")
                 .font(.body)
@@ -52,6 +53,7 @@ struct MyMacsPageHeader: View {
             }
             if canLink {
                 Button("Link a Mac", systemImage: "plus", action: onLink)
+                    .buttonStyle(StudioPrimaryButtonStyle())
             }
         }
         .fixedSize()

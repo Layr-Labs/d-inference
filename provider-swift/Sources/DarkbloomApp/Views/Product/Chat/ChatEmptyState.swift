@@ -1,95 +1,71 @@
 import SwiftUI
 
-struct ChatEmptyState: View {
-    let identity: MachineIdentity
-    let route: ChatRoute
-    var detailOverride: String? = nil
+/// The empty state *is* the working surface: title, live editor, then starters.
+/// The same draft binding is used here and below an active conversation.
+struct ChatEmptyState<Workspace: View>: View {
+    let compact: Bool
     let onSelectSuggestion: (String) -> Void
+    private let workspace: Workspace
 
-    private let suggestions = [
-        ChatPromptSuggestion(
-            title: "Explain something", prompt: "Explain unified memory in plain language, with an example.",
-            systemImage: "lightbulb"
-        ),
-        ChatPromptSuggestion(
-            title: "Work through code", prompt: "Help me understand this code and suggest improvements:\n\n",
-            systemImage: "chevron.left.forwardslash.chevron.right"
-        ),
-        ChatPromptSuggestion(
-            title: "Turn notes into a plan", prompt: "Turn these notes into a clear, prioritized plan:\n\n",
-            systemImage: "checklist"
-        ),
-        ChatPromptSuggestion(
-            title: "Compare approaches", prompt: "Compare these two approaches. Explain the tradeoffs and when to choose each:\n\n",
-            systemImage: "arrow.triangle.branch"
-        ),
-    ]
+    init(
+        compact: Bool,
+        onSelectSuggestion: @escaping (String) -> Void,
+        @ViewBuilder workspace: () -> Workspace
+    ) {
+        self.compact = compact
+        self.onSelectSuggestion = onSelectSuggestion
+        self.workspace = workspace()
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Image(systemName: "bubble.left.and.text.bubble.right")
-                .font(.system(size: 32, weight: .light))
-                .foregroundStyle(DarkbloomTheme.accent)
-                .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: compact ? 24 : 32) {
+            HStack(alignment: .center, spacing: 24) {
+                Text("Room for an idea.")
+                    .font(DarkbloomTheme.chivo(compact ? 46 : 62, weight: .medium))
+                    .tracking(compact ? -1.8 : -2.6)
+                    .foregroundStyle(StudioPalette.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 0)
+                StudioPresence()
+            }
 
-            Text("A place to think things through.")
-                .font(.system(size: 28, weight: .semibold))
-                .tracking(-0.6)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 18) {
+                workspace
+            }
 
-            Text(detail)
-                .font(.system(size: 15))
-                .foregroundStyle(.secondary)
-                .lineSpacing(4)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("Try a starting point, then make it your own.")
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .padding(.top, 14)
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 12)], spacing: 12) {
-                ForEach(suggestions) { suggestion in
-                    Button { onSelectSuggestion(suggestion.prompt) } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: suggestion.systemImage)
-                                .foregroundStyle(DarkbloomTheme.accent)
-                                .frame(width: 20)
-                            Text(suggestion.title)
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(.primary)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(14)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(ProductPalette.elevatedSurface, in: RoundedRectangle(cornerRadius: 10))
-                        .overlay { RoundedRectangle(cornerRadius: 10).stroke(ProductPalette.stroke) }
-                    }
-                    .buttonStyle(.plain)
-                    .help("Add this prompt to the composer to edit before sending")
-                }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 28) { starters }
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)],
+                    alignment: .leading, spacing: 16
+                ) { starters }
             }
         }
-        .frame(maxWidth: 650, alignment: .leading)
-        .padding(.horizontal, 24)
-        .padding(.vertical, 32)
+        .frame(maxWidth: 840, alignment: .leading)
         .frame(maxWidth: .infinity)
     }
 
-    private var detail: String {
-        if let detailOverride { return detailOverride }
-        return switch route {
-        case .thisMac:
-            "Explore the chat experience on \(identity.displayName). This is a preview; replies are samples and no model runs."
-        case .privateNetwork:
-            "Explore a sample network conversation. This preview does not encrypt, route, or run a model."
+    private var starters: some View {
+        ForEach(ChatPromptStarter.all) { starter in
+            Button(starter.title) { onSelectSuggestion(starter.prompt) }
+                .buttonStyle(.borderless)
+                .font(DarkbloomTheme.chivo(13))
+                .foregroundStyle(StudioPalette.secondaryInk)
+                .help("Add this starting point to your draft. Edit it before sending.")
         }
     }
 }
 
-private struct ChatPromptSuggestion: Identifiable {
+private struct ChatPromptStarter: Identifiable {
     let title: String
     let prompt: String
-    let systemImage: String
-    var id: String { prompt }
+    var id: String { title }
+
+    static let all = [
+        Self(title: "Shape an idea", prompt: "Help me develop this idea. Ask useful questions and suggest a direction:\n\n"),
+        Self(title: "Work through code", prompt: "Help me understand this code and suggest improvements:\n\n"),
+        Self(title: "Make a plan", prompt: "Turn these notes into a clear, prioritized plan:\n\n"),
+        Self(title: "Explain something", prompt: "Explain unified memory in plain language, with an example."),
+    ]
 }

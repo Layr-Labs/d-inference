@@ -13,7 +13,7 @@ import Testing
 /// it at a throwaway directory and restores the environment afterwards.
 @Suite("Device login live events", .serialized)
 struct DeviceLoginEventTests {
-    private func withAuthTokenOverride<T: Sendable>(
+    func withAuthTokenOverride<T: Sendable>(
         _ body: @Sendable (URL) async throws -> T
     ) async throws -> T {
         try await credentialEnvironmentTestLock.withLock {
@@ -76,8 +76,8 @@ struct DeviceLoginEventTests {
         }
     }
 
-    @Test("Approval emits .code once then a terminal .linked, and saves the token")
-    func loginEmitsCodeThenLinked() async throws {
+    @Test("Approval emits .code once then a terminal .linked, and saves the token", arguments: [false, true])
+    func loginEmitsCodeThenLinked(recoverIncompleteCredential: Bool) async throws {
         try await withAuthTokenOverride { tokenPath in
             let mock = MockCoordinator(
                 deviceCode: MockDeviceCodeFixture(
@@ -94,7 +94,8 @@ struct DeviceLoginEventTests {
                 coordinatorURL: base.absoluteString,
                 onDisplayCode: { _, _, _ in },
                 openBrowser: false,
-                onEvent: { recorder.record($0) }
+                onEvent: { recorder.record($0) },
+                recoverIncompleteCredential: recoverIncompleteCredential
             )
 
             #expect(token == "mock-token-123")
@@ -246,8 +247,8 @@ struct DeviceLoginEventTests {
         }
     }
 
-    @Test("An existing login short-circuits with an .error event before any network call")
-    func loginEmitsErrorWhenAlreadyLoggedIn() async throws {
+    @Test("An existing login short-circuits with an .error event before any network call", arguments: [false, true])
+    func loginEmitsErrorWhenAlreadyLoggedIn(recoverIncompleteCredential: Bool) async throws {
         try await withAuthTokenOverride { _ in
             try ProviderCredentialStore.save(
                 token: "existing-token-with-20-plus-characters",
@@ -263,7 +264,8 @@ struct DeviceLoginEventTests {
                     coordinatorURL: "http://127.0.0.1:1",
                     onDisplayCode: { _, _, _ in },
                     openBrowser: false,
-                    onEvent: { recorder.record($0) }
+                    onEvent: { recorder.record($0) },
+                    recoverIncompleteCredential: recoverIncompleteCredential
                 )
                 Issue.record("expected the flow to throw when already logged in")
             } catch let error as DeviceAuthError {
@@ -283,7 +285,7 @@ struct DeviceLoginEventTests {
         }
     }
 
-    @Test("A legacy credential fails with an actionable local recovery command")
+    @Test("Implicit login refuses legacy credentials and points to explicit login")
     func legacyCredentialEmitsRecoveryGuidance() async throws {
         try await withAuthTokenOverride { _ in
             try AuthTokenStore.save("legacy-token-without-issuer")
@@ -308,7 +310,10 @@ struct DeviceLoginEventTests {
                 Issue.record("unexpected events: \(recorder.events)")
                 return
             }
-            #expect(message.contains("logout --local-only"))
+            #expect(message.contains("darkbloom login"))
+            #expect(AuthTokenStore.load() == "legacy-token-without-issuer")
+            #expect(ProviderAccountStore.load() == nil)
+            #expect(ProviderIssuerStore.load() == nil)
             #expect(recorder.events.count == 1)
         }
     }

@@ -512,20 +512,6 @@ private final class NoopSuccessPrefetcher: ModelPrefetcher, @unchecked Sendable 
 @Suite("ProviderLoop prefetch integration", .serialized)
 struct ProviderLoopPrefetchTests {
 
-    /// Seed a minimal valid MLX snapshot (config.json + one .safetensors) in the
-    /// HuggingFace cache so the scanner + WeightHasher can read it.
-    private func seedSnapshot(modelID: String) throws -> URL {
-        let snapshot = ModelDownloader.cacheSnapshotDirectory(for: modelID)
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
-        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
-        let refs = modelDir.appendingPathComponent("refs", isDirectory: true)
-        try FileManager.default.createDirectory(at: refs, withIntermediateDirectories: true)
-        try Data(#"{"model_type":"gpt_oss"}"#.utf8).write(to: snapshot.appendingPathComponent("config.json"))
-        try Data("fake mlx weight bytes".utf8).write(to: snapshot.appendingPathComponent("model.safetensors"))
-        try "local".write(to: refs.appendingPathComponent("main"), atomically: true, encoding: .utf8)
-        return modelDir
-    }
-
     private func makeLoop(models: [ModelInfo], maxModelSlots: UInt64 = 2) throws -> ProviderLoop {
         let config = ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/ignored",
@@ -562,17 +548,22 @@ struct ProviderLoopPrefetchTests {
 
     @Test("verified prefetch advertises the new build and records its weight hash")
     func verifiedPrefetchAdvertisesAndHashes() async throws {
+        let cache = try PrefetchTestModelCache()
+        defer { try? cache.remove() }
+
         let startupModel = ModelInfo(id: "org/startup", modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let newModelID = "org/prefetched-\(UUID().uuidString)"
-        let modelDir = try seedSnapshot(modelID: newModelID)
-        defer { try? FileManager.default.removeItem(at: modelDir) }
+        try cache.seedSnapshot(modelID: newModelID)
 
         let loop = try makeLoop(models: [startupModel])
         let client = makeClient()
         let coord = ModelPrefetchCoordinator(
             prefetcher: NoopSuccessPrefetcher(),
             preCheck: { _ in .needsFetch },
-            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+            onVerified: { id in
+                await loop.applyVerifiedPrefetch(
+                    modelId: id, resolveSnapshot: { cache.resolveSnapshot($0) })
+            }
         )
         // Capture outbound messages so we can assert a `models_update` is emitted
         // on verify (the authoritative ModelInfo + weight hash for the coordinator
@@ -615,6 +606,7 @@ struct ProviderLoopPrefetchTests {
         // And it rides on the advertised ModelInfo for reconnect registration.
         let advertisedInfo = await client.currentAdvertisedModels().first { $0.id == newModelID }
         #expect(advertisedInfo?.weightHash == recordedHash)
+        #expect(advertisedInfo?.sizeBytes == 21)
 
         // A `models_update` outbound message was emitted carrying the build id
         // AND a non-empty weight hash (the security-gap fix: the coordinator can
@@ -635,17 +627,23 @@ struct ProviderLoopPrefetchTests {
 
     @Test("verified prefetch whose snapshot can't be scanned is NOT advertised")
     func verifiedPrefetchUnscannableSnapshotNotAdvertised() async throws {
+        let cache = try PrefetchTestModelCache()
+        defer { try? cache.remove() }
+
         // The prefetch reports verified (download succeeded) but NO snapshot is on
-        // disk, so `scanVerifiedModelInfo` returns nil. The provider must NOT
+        // disk, so the snapshot scan returns nil. The provider must NOT
         // advertise a synthetic zero-size ModelInfo (which would be routed with
         // estimatedMemoryGb == 0, bypassing memory sizing) — it advertises nothing
         // and emits no models_update, so the coordinator never routes the build.
         let startupModel = ModelInfo(id: "org/startup", modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let newModelID = "org/unscannable-\(UUID().uuidString)"
-        // Deliberately do NOT seed a snapshot; make sure no stray dir exists.
-        let modelDir = ModelDownloader.cacheModelDirectory(for: newModelID)
-        try? FileManager.default.removeItem(at: modelDir)
-        defer { try? FileManager.default.removeItem(at: modelDir) }
+        // Another test can have the same ID on disk while this cache stays
+        // empty: snapshot discovery must remain local to the injected cache.
+        let otherCache = try PrefetchTestModelCache()
+        defer { try? otherCache.remove() }
+        try otherCache.seedSnapshot(modelID: newModelID)
+        #expect(otherCache.resolveSnapshot(newModelID) != nil)
+        #expect(cache.resolveSnapshot(newModelID) == nil)
 
         let loop = try makeLoop(models: [startupModel])
         let client = makeClient()
@@ -654,7 +652,8 @@ struct ProviderLoopPrefetchTests {
             prefetcher: NoopSuccessPrefetcher(), // "downloads" without touching disk
             preCheck: { _ in .needsFetch },
             onVerified: { id in
-                await loop.applyVerifiedPrefetch(modelId: id)
+                await loop.applyVerifiedPrefetch(
+                    modelId: id, resolveSnapshot: { cache.resolveSnapshot($0) })
                 verifiedCalls.record(id) // record AFTER applyVerifiedPrefetch completes
             }
         )
@@ -677,10 +676,12 @@ struct ProviderLoopPrefetchTests {
 
     @Test("verified prefetch raises the effective slot cap so old+new can be resident together")
     func verifiedPrefetchRaisesEffectiveSlotCap() async throws {
+        let cache = try PrefetchTestModelCache()
+        defer { try? cache.remove() }
+
         let startupModel = ModelInfo(id: "org/startup", modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let newModelID = "org/prefetched-\(UUID().uuidString)"
-        let modelDir = try seedSnapshot(modelID: newModelID)
-        defer { try? FileManager.default.removeItem(at: modelDir) }
+        try cache.seedSnapshot(modelID: newModelID)
 
         // Operator default: 3 concurrent slots. A provider that boots advertising
         // ONE model used to freeze its cap at 1 (PR #283 P2 bug) and could not
@@ -690,7 +691,10 @@ struct ProviderLoopPrefetchTests {
         let coord = ModelPrefetchCoordinator(
             prefetcher: NoopSuccessPrefetcher(),
             preCheck: { _ in .needsFetch },
-            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+            onVerified: { id in
+                await loop.applyVerifiedPrefetch(
+                    modelId: id, resolveSnapshot: { cache.resolveSnapshot($0) })
+            }
         )
         let outbound = OutboundRecorder()
         let capturingSend = SendHandle { outbound.record($0) }
@@ -716,10 +720,12 @@ struct ProviderLoopPrefetchTests {
 
     @Test("effective slot cap never exceeds the operator-configured hard cap")
     func effectiveSlotCapHonorsHardCap() async throws {
+        let cache = try PrefetchTestModelCache()
+        defer { try? cache.remove() }
+
         let startupModel = ModelInfo(id: "org/startup", modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let newModelID = "org/prefetched-\(UUID().uuidString)"
-        let modelDir = try seedSnapshot(modelID: newModelID)
-        defer { try? FileManager.default.removeItem(at: modelDir) }
+        try cache.seedSnapshot(modelID: newModelID)
 
         // Operator opted out of concurrency with a hard cap of 1.
         let loop = try makeLoop(models: [startupModel], maxModelSlots: 1)
@@ -727,7 +733,10 @@ struct ProviderLoopPrefetchTests {
         let coord = ModelPrefetchCoordinator(
             prefetcher: NoopSuccessPrefetcher(),
             preCheck: { _ in .needsFetch },
-            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+            onVerified: { id in
+                await loop.applyVerifiedPrefetch(
+                    modelId: id, resolveSnapshot: { cache.resolveSnapshot($0) })
+            }
         )
         let outbound = OutboundRecorder()
         let capturingSend = SendHandle { outbound.record($0) }
@@ -748,6 +757,9 @@ struct ProviderLoopPrefetchTests {
 
     @Test("prefetch of an already-advertised+hashed model short-circuits to verified")
     func alreadyHashedShortCircuits() async throws {
+        let cache = try PrefetchTestModelCache()
+        defer { try? cache.remove() }
+
         let modelID = "org/already-hashed"
         let startup = ModelInfo(id: modelID, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1, weightHash: "abc123")
         // Seed config with a known hash so the pre-check sees a recorded hash.
@@ -757,7 +769,10 @@ struct ProviderLoopPrefetchTests {
         let coord = ModelPrefetchCoordinator(
             prefetcher: prefetcher,
             preCheck: { id in await loop.prefetchPreCheckForTesting(id) },
-            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+            onVerified: { id in
+                await loop.applyVerifiedPrefetch(
+                    modelId: id, resolveSnapshot: { cache.resolveSnapshot($0) })
+            }
         )
         await loop.installPrefetchCoordinatorForTesting(coord, client: client)
 
@@ -772,6 +787,9 @@ struct ProviderLoopPrefetchTests {
 
     @Test("desired_models for a build the provider lacks triggers a prefetch of the desired build")
     func desiredModelsTriggersPrefetchOfMissingBuild() async throws {
+        let cache = try PrefetchTestModelCache()
+        defer { try? cache.remove() }
+
         // A brand-new provider advertises nothing yet for this alias. It receives
         // a desired_models entry naming a build it does not have on disk; the
         // declarative reconcile must kick off a background prefetch OF THE DESIRED
@@ -787,7 +805,10 @@ struct ProviderLoopPrefetchTests {
         let coord = ModelPrefetchCoordinator(
             prefetcher: prefetcher,
             preCheck: { id in await loop.prefetchPreCheckForTesting(id) },
-            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+            onVerified: { id in
+                await loop.applyVerifiedPrefetch(
+                    modelId: id, resolveSnapshot: { cache.resolveSnapshot($0) })
+            }
         )
         let outbound = OutboundRecorder()
         let capturingSend = SendHandle { outbound.record($0) }
@@ -817,13 +838,15 @@ struct ProviderLoopPrefetchTests {
 
     @Test("applyVerifiedPrefetch hard-swaps: advertises desired, drops previous from advertisedModels + store, emits models_update")
     func applyVerifiedPrefetchHardSwapsDroppingPrevious() async throws {
+        let cache = try PrefetchTestModelCache()
+        defer { try? cache.remove() }
+
         // Seed the on-disk snapshot for the DESIRED build so applyVerifiedPrefetch
         // can scan + hash it. The PREVIOUS build is advertised at startup (loop)
         // and in the client's AdvertisedModelStore, so we can observe the drop.
         let desiredBuild = "org/desired-\(UUID().uuidString)"
         let previousBuild = "org/previous-\(UUID().uuidString)"
-        let modelDir = try seedSnapshot(modelID: desiredBuild)
-        defer { try? FileManager.default.removeItem(at: modelDir) }
+        try cache.seedSnapshot(modelID: desiredBuild)
 
         let previousInfo = ModelInfo(id: previousBuild, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let loop = try makeLoop(models: [previousInfo], maxModelSlots: 3)
@@ -835,7 +858,10 @@ struct ProviderLoopPrefetchTests {
         let coord = ModelPrefetchCoordinator(
             prefetcher: NoopSuccessPrefetcher(),
             preCheck: { id in await loop.prefetchPreCheckForTesting(id) },
-            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+            onVerified: { id in
+                await loop.applyVerifiedPrefetch(
+                    modelId: id, resolveSnapshot: { cache.resolveSnapshot($0) })
+            }
         )
         let outbound = OutboundRecorder()
         let capturingSend = SendHandle { outbound.record($0) }
@@ -899,6 +925,9 @@ struct ProviderLoopPrefetchTests {
 
     @Test("desired already converged but previous learned LATE drops previous AND re-emits models_update")
     func reconcileAlreadyConvergedLatePreviousEmitsUpdate() async throws {
+        let cache = try PrefetchTestModelCache()
+        defer { try? cache.remove() }
+
         // Models a real sequence: the provider verified the desired build BEFORE
         // any previous build was set on the alias (so the original verify carried
         // no drop). Later the operator sets previous_build; desired_models now
@@ -908,8 +937,7 @@ struct ProviderLoopPrefetchTests {
         // previous build to a provider that has locally stopped serving it.
         let desiredBuild = "org/desired-\(UUID().uuidString)"
         let previousBuild = "org/previous-\(UUID().uuidString)"
-        let modelDir = try seedSnapshot(modelID: desiredBuild)
-        defer { try? FileManager.default.removeItem(at: modelDir) }
+        try cache.seedSnapshot(modelID: desiredBuild)
 
         let previousInfo = ModelInfo(id: previousBuild, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let loop = try makeLoop(models: [previousInfo], maxModelSlots: 3)
@@ -919,7 +947,10 @@ struct ProviderLoopPrefetchTests {
         let coord = ModelPrefetchCoordinator(
             prefetcher: NoopSuccessPrefetcher(),
             preCheck: { id in await loop.prefetchPreCheckForTesting(id) },
-            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+            onVerified: { id in
+                await loop.applyVerifiedPrefetch(
+                    modelId: id, resolveSnapshot: { cache.resolveSnapshot($0) })
+            }
         )
         let outbound = OutboundRecorder()
         let capturingSend = SendHandle { outbound.record($0) }
@@ -974,11 +1005,13 @@ struct ProviderLoopPrefetchTests {
 
     @Test("late verify for stale desired build is ignored after alias retarget")
     func staleDesiredPrefetchVerifyIsIgnoredAfterRetarget() async throws {
+        let cache = try PrefetchTestModelCache()
+        defer { try? cache.remove() }
+
         let staleDesired = "org/stale-\(UUID().uuidString)"
         let currentBuild = "org/current-\(UUID().uuidString)"
         let newDesired = "org/new-\(UUID().uuidString)"
-        let staleDir = try seedSnapshot(modelID: staleDesired)
-        defer { try? FileManager.default.removeItem(at: staleDir) }
+        try cache.seedSnapshot(modelID: staleDesired)
 
         let currentInfo = ModelInfo(id: currentBuild, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let loop = try makeLoop(models: [currentInfo], maxModelSlots: 3)
@@ -989,7 +1022,10 @@ struct ProviderLoopPrefetchTests {
         let coord = ModelPrefetchCoordinator(
             prefetcher: prefetcher,
             preCheck: { id in await loop.prefetchPreCheckForTesting(id) },
-            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+            onVerified: { id in
+                await loop.applyVerifiedPrefetch(
+                    modelId: id, resolveSnapshot: { cache.resolveSnapshot($0) })
+            }
         )
         let outbound = OutboundRecorder()
         let capturingSend = SendHandle { outbound.record($0) }
@@ -1017,7 +1053,8 @@ struct ProviderLoopPrefetchTests {
             send: capturingSend
         )
 
-        await loop.applyVerifiedPrefetch(modelId: staleDesired)
+        await loop.applyVerifiedPrefetch(
+            modelId: staleDesired, resolveSnapshot: { cache.resolveSnapshot($0) })
 
         #expect(!(await loop.isModelAdvertised(staleDesired)))
         #expect(await loop.isModelAdvertised(currentBuild))
@@ -1027,25 +1064,13 @@ struct ProviderLoopPrefetchTests {
         await coord.shutdown(timeout: .seconds(3))
     }
 
-    /// Seed a snapshot with config.json but NO weight files. scanVerifiedModelInfo
-    /// returns nil (parseModelInfo requires sizeBytes > 0) — the same guard the
-    /// nil-weight-hash case falls into: a verify that can't produce a hashed,
-    /// advertisable build. Used to prove neither path strands the previous build.
-    private func seedConfigOnlySnapshot(modelID: String) throws -> URL {
-        let snapshot = ModelDownloader.cacheSnapshotDirectory(for: modelID)
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
-        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
-        let refs = modelDir.appendingPathComponent("refs", isDirectory: true)
-        try FileManager.default.createDirectory(at: refs, withIntermediateDirectories: true)
-        try Data(#"{"model_type":"gpt_oss"}"#.utf8).write(to: snapshot.appendingPathComponent("config.json"))
-        try "local".write(to: refs.appendingPathComponent("main"), atomically: true, encoding: .utf8)
-        return modelDir
-    }
-
     @Test("a verify that can't produce an advertisable+hashed build keeps the previous build (no strand)")
     func verifiedPrefetchUnhashableKeepsPrevious() async throws {
+        let cache = try PrefetchTestModelCache()
+        defer { try? cache.remove() }
+
         // A verify whose snapshot yields no advertisable+hashed ModelInfo (here:
-        // no weight files, so scanVerifiedModelInfo returns nil — the same early
+        // no weight files, so the snapshot scan returns nil — the same early
         // return the nil-weight-hash guard takes) must NOT advertise/emit the
         // build AND must leave the previous build untouched. Dropping previous
         // here while the build can't be advertised would strand the provider on
@@ -1053,8 +1078,7 @@ struct ProviderLoopPrefetchTests {
         // hashless build, so the local drop must not run ahead of a real swap.
         let desiredBuild = "org/unhashable-\(UUID().uuidString)"
         let previousBuild = "org/previous-\(UUID().uuidString)"
-        let modelDir = try seedConfigOnlySnapshot(modelID: desiredBuild)
-        defer { try? FileManager.default.removeItem(at: modelDir) }
+        try cache.seedSnapshot(modelID: desiredBuild, includeWeights: false)
 
         let previousInfo = ModelInfo(id: previousBuild, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let loop = try makeLoop(models: [previousInfo], maxModelSlots: 3)
@@ -1066,7 +1090,8 @@ struct ProviderLoopPrefetchTests {
             prefetcher: NoopSuccessPrefetcher(),
             preCheck: { id in await loop.prefetchPreCheckForTesting(id) },
             onVerified: { id in
-                await loop.applyVerifiedPrefetch(modelId: id)
+                await loop.applyVerifiedPrefetch(
+                    modelId: id, resolveSnapshot: { cache.resolveSnapshot($0) })
                 verifiedCalls.record(id)
             }
         )
@@ -1102,6 +1127,9 @@ struct ProviderLoopPrefetchTests {
 
     @Test("a failed desired-build prefetch retries with bounded backoff, and a fresh push resets the budget")
     func failedDesiredPrefetchSchedulesBoundedRetries() async throws {
+        let cache = try PrefetchTestModelCache()
+        defer { try? cache.remove() }
+
         // One transient download failure must not strand the provider on the old
         // build: each failure of a still-desired build schedules one retry per
         // configured delay, then gives up until the next desired_models push.
@@ -1113,7 +1141,10 @@ struct ProviderLoopPrefetchTests {
         let coord = ModelPrefetchCoordinator(
             prefetcher: prefetcher,
             preCheck: { id in await loop.prefetchPreCheckForTesting(id) },
-            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+            onVerified: { id in
+                await loop.applyVerifiedPrefetch(
+                    modelId: id, resolveSnapshot: { cache.resolveSnapshot($0) })
+            }
         )
         let outbound = OutboundRecorder()
         let capturingSend = SendHandle { outbound.record($0) }
@@ -1143,6 +1174,9 @@ struct ProviderLoopPrefetchTests {
 
     @Test("a pending prefetch retry is cancelled when the build leaves the desired set")
     func failedDesiredPrefetchRetryStopsAfterRetarget() async throws {
+        let cache = try PrefetchTestModelCache()
+        defer { try? cache.remove() }
+
         let oldDesired = "org/old-desired-\(UUID().uuidString)"
         let newDesired = "org/new-desired-\(UUID().uuidString)"
 
@@ -1152,7 +1186,10 @@ struct ProviderLoopPrefetchTests {
         let coord = ModelPrefetchCoordinator(
             prefetcher: prefetcher,
             preCheck: { id in await loop.prefetchPreCheckForTesting(id) },
-            onVerified: { id in await loop.applyVerifiedPrefetch(modelId: id) }
+            onVerified: { id in
+                await loop.applyVerifiedPrefetch(
+                    modelId: id, resolveSnapshot: { cache.resolveSnapshot($0) })
+            }
         )
         let outbound = OutboundRecorder()
         let capturingSend = SendHandle { outbound.record($0) }

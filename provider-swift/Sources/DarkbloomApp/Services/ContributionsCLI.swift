@@ -12,6 +12,15 @@ enum ContributionsCLIError: Error, Equatable, LocalizedError, Sendable {
     case exited(Int32, message: String)
     case timedOut(command: String)
     case invalidOutput(String)
+    case accountLinkNeedsRefresh
+
+    static func failure(exitStatus: Int32, message: String) -> Self {
+        if message.contains("saved provider credential has no verifiable account or issuer")
+            || message.contains("saved provider credential requires recovery") {
+            return .accountLinkNeedsRefresh
+        }
+        return .exited(exitStatus, message: message)
+    }
 
     var errorDescription: String? {
         switch self {
@@ -23,6 +32,8 @@ enum ContributionsCLIError: Error, Equatable, LocalizedError, Sendable {
             "The command `darkbloom \(command)` did not finish in time."
         case .invalidOutput(let detail):
             "The provider CLI returned unreadable earnings data (\(detail))."
+        case .accountLinkNeedsRefresh:
+            "This Mac’s saved account link is incomplete. Reconnect to restore access to account activity."
         }
     }
 }
@@ -102,8 +113,8 @@ struct ProcessContributionsCLI: ContributionsCLIRunning {
                         stdout: stdout.text
                     ))
                 } else {
-                    continuation.resume(throwing: ContributionsCLIError.exited(
-                        status,
+                    continuation.resume(throwing: ContributionsCLIError.failure(
+                        exitStatus: status,
                         message: stderr.lastLine
                     ))
                 }

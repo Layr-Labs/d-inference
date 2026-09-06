@@ -21,18 +21,20 @@ final class ProviderCredentialProcessLock: @unchecked Sendable {
         _ = close(descriptor)
     }
 
-    static func withLock<T>(_ body: () throws -> T) throws -> T {
+    static func withLock<T>(
+        tokenPath: URL = AuthTokenStore.tokenPath(),
+        _ body: () throws -> T
+    ) throws -> T {
         processMutex.lock()
         defer { processMutex.unlock() }
 
-        let lock = try acquire()
+        let lock = try acquire(tokenPath: tokenPath)
         return try withExtendedLifetime(lock) {
             try body()
         }
     }
 
-    private static func acquire() throws -> ProviderCredentialProcessLock {
-        let tokenPath = AuthTokenStore.tokenPath()
+    private static func acquire(tokenPath: URL) throws -> ProviderCredentialProcessLock {
         let directory = tokenPath.deletingLastPathComponent()
         try FileManager.default.createDirectory(
             at: directory,

@@ -51,25 +51,28 @@ struct Login: AsyncParsableCommand {
         }
 
         do {
-            try await performDeviceCodeLogin(
-                coordinatorURL: coordinatorURL,
-                onDisplayCode: { userCode, verificationURI, expiresIn in
-                    guard !emitJSON else { return }
-                    print()
-                    print("  To link this machine, open this URL in your browser:")
-                    print()
-                    print("    \(verificationURI)")
-                    print()
-                    print("  Then enter this code:")
-                    print()
-                    print("    \(userCode)")
-                    print()
-                    print("  Waiting for approval (expires in \(expiresIn / 60) minutes)...")
-                },
-                onPollTick: pollTick,
-                openBrowser: !emitJSON,
-                onEvent: onEvent
-            )
+            _ = try await DeviceLoginSignalCancellation.run {
+                try await performDeviceCodeLogin(
+                    coordinatorURL: coordinatorURL,
+                    onDisplayCode: { userCode, verificationURI, expiresIn in
+                        guard !emitJSON else { return }
+                        print()
+                        print("  To link this machine, open this URL in your browser:")
+                        print()
+                        print("    \(verificationURI)")
+                        print()
+                        print("  Then enter this code:")
+                        print()
+                        print("    \(userCode)")
+                        print()
+                        print("  Waiting for approval (expires in \(expiresIn / 60) minutes)...")
+                    },
+                    onPollTick: pollTick,
+                    openBrowser: !emitJSON,
+                    onEvent: onEvent,
+                    recoverIncompleteCredential: true
+                )
+            }
 
             guard !emitJSON else { return }
             print()
@@ -79,6 +82,9 @@ struct Login: AsyncParsableCommand {
             print("  Earnings will be credited to your account wallet.")
             print()
             print("  Start serving with: darkbloom start")
+        } catch is CancellationError {
+            printError("Login cancelled.")
+            throw ExitCode.failure
         } catch let error as DeviceAuthError {
             // The --json error event was already emitted by performDeviceCodeLogin;
             // this stderr line is for humans/collectors and cannot corrupt the

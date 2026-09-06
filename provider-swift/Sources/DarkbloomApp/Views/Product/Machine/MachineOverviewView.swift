@@ -27,71 +27,63 @@ struct MachineOverviewView: View {
     var body: some View {
         ProductPage {
             ProductPageHeader(
-                eyebrow: "This Mac",
                 title: identity.displayName,
-                subtitle: "Your machine’s private inference identity, hardware, and trust posture."
+                subtitle: "The hardware behind your studio, and its connection to Darkbloom."
             ) {
                 Button("Run system check", systemImage: "stethoscope", action: onRunDiagnostics)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(StudioPrimaryButtonStyle())
                     .controlSize(.large)
             }
 
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 18) {
-                    hardwarePassport
-                    trustPanel
-                        .frame(width: 292)
-                }
-
-                VStack(spacing: 14) {
-                    hardwarePassport
-                    trustPanel
-                }
-            }
-            .padding(.top, 26)
+            hardwarePassport.padding(.top, 26)
 
             ProductSectionHeader("Hardware", detail: "Detected on this Mac")
                 .padding(.top, 28)
 
             LazyVGrid(
-                columns: [GridItem(.flexible()), GridItem(.flexible())],
-                spacing: 12
+                columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4),
+                spacing: 0
             ) {
                 ForEach(hardwareMetrics, id: \.0) { metric in
-                    HStack(spacing: 13) {
+                    VStack(alignment: .leading, spacing: 12) {
                         Image(systemName: metric.2)
-                            .font(.system(size: 14, weight: .medium))
+                            .font(.system(size: 16, weight: .medium))
                             .foregroundStyle(DarkbloomTheme.accent)
-                            .frame(width: 34, height: 34)
-                            .background(DarkbloomTheme.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 9))
 
                         VStack(alignment: .leading, spacing: 3) {
                             Text(metric.0)
-                                .font(.system(size: 11))
+                                .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
                             Text(metric.1)
-                                .font(.system(size: 14, weight: .medium))
-                                .lineLimit(1)
+                                .font(.system(size: 18, weight: .medium))
+                                .lineLimit(2)
                                 .minimumScaleFactor(0.72)
                         }
-                        Spacer()
                     }
-                    .padding(15)
-                    .productSurface()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 19)
+                    .padding(.horizontal, 6)
+                    .overlay(alignment: .bottom) { StudioPalette.line.frame(height: 1) }
                 }
             }
 
-            ProductSectionHeader("Identity")
-                .padding(.top, 28)
-
-            VStack(spacing: 0) {
-                identityRow("Model", value: identity.modelIdentifier.isEmpty ? "—" : identity.modelIdentifier)
-                Divider().padding(.leading, 16)
-                identityRow("Model number", value: identity.modelNumber ?? "—")
-                Divider().padding(.leading, 16)
-                serialIdentityRow
+            DisclosureGroup("Network verification") {
+                trustPanel.padding(.top, 12)
             }
-            .productSurface()
+            .padding(.top, 24)
+
+            DisclosureGroup("Hardware identity") {
+                VStack(spacing: 0) {
+                    identityRow("Model", value: identity.modelIdentifier.isEmpty ? "—" : identity.modelIdentifier)
+                    Divider().padding(.leading, 16)
+                    identityRow("Model number", value: identity.modelNumber ?? "—")
+                    Divider().padding(.leading, 16)
+                    serialIdentityRow
+                }
+                .productSurface()
+                .padding(.top, 12)
+            }
+            .padding(.top, 18)
         }
         .navigationTitle(identity.displayName)
     }
@@ -99,10 +91,9 @@ struct MachineOverviewView: View {
     private var hardwarePassport: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Label("PRIVATE HARDWARE PASSPORT", systemImage: "person.text.rectangle")
-                    .font(.system(size: 10, weight: .semibold))
-                    .tracking(0.7)
-                    .foregroundStyle(DarkbloomTheme.accent)
+                Label("Your hardware", systemImage: "person.text.rectangle")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(StudioPalette.secondaryInk)
                 Spacer()
             }
 
@@ -115,8 +106,8 @@ struct MachineOverviewView: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text(identity.chipName)
-                        .font(DarkbloomTheme.chivo(24))
-                        .tracking(-0.5)
+                        .font(DarkbloomTheme.chivo(32))
+                        .tracking(-1)
                     Text(identity.inferenceFunFact)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
@@ -128,7 +119,7 @@ struct MachineOverviewView: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
-        .productSurface()
+        .background(StudioPalette.accentSoft, in: RoundedRectangle(cornerRadius: 20))
     }
 
     private var trustPanel: some View {

@@ -14,6 +14,7 @@ struct SpatialFieldView: View {
     let focus: CGFloat
     let pointer: CGPoint
     let activity: CGFloat
+    let allowsAnimation: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isCapturingDarkbloomPreview) private var isCapturingPreview
@@ -21,6 +22,11 @@ struct SpatialFieldView: View {
 
     private var motionIsReduced: Bool {
         reduceMotion || isCapturingPreview
+    }
+
+    private var isAnimating: Bool {
+        allowsAnimation && !motionIsReduced && scenePhase == .active
+            && (presentation == .bloom || focus > 0.01 || activity > 0.01)
     }
 
     private var frozenTime: TimeInterval {
@@ -54,12 +60,14 @@ struct SpatialFieldView: View {
         presentation: SpatialFieldPresentation = .bloom,
         focus: CGFloat = 0,
         pointer: CGPoint = CGPoint(x: 0.5, y: 0.5),
-        activity: CGFloat = 0
+        activity: CGFloat = 0,
+        allowsAnimation: Bool = true
     ) {
         self.presentation = presentation
         self.focus = focus
         self.pointer = pointer
         self.activity = activity
+        self.allowsAnimation = allowsAnimation
     }
 
     var body: some View {
@@ -67,10 +75,10 @@ struct SpatialFieldView: View {
             TimelineView(
                 .animation(
                     minimumInterval: minimumFrameInterval,
-                    paused: motionIsReduced || scenePhase != .active
+                    paused: !isAnimating
                 )
             ) { timeline in
-                let time = motionIsReduced
+                let time = !isAnimating
                     ? frozenTime
                     : timeline.date.timeIntervalSinceReferenceDate
                         .truncatingRemainder(dividingBy: 120)

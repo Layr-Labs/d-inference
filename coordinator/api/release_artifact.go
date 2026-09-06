@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 
 const (
 	maxReleasePayloadBytes int64 = 512 << 20
+	maxReleasePlistBytes   int64 = 1 << 20
 	releaseExecutableMode  int64 = 0o755
 	releaseDataMode        int64 = 0o644
 
@@ -55,6 +57,11 @@ var (
 		{path: "Darkbloom.app/Contents/MacOS/darkbloom-enclave", kind: releasePayloadEnclave, mode: releaseExecutableMode},
 		{path: "Darkbloom.app/Contents/MacOS/mlx.metallib", kind: releasePayloadMetallib, mode: releaseDataMode},
 	}
+	releaseNestedAppPayloadSpecs = []releasePayloadSpec{
+		{path: releaseNestedCLIPath, kind: releasePayloadBinary, mode: releaseExecutableMode},
+		{path: releaseNestedAppPath + "/Contents/MacOS/darkbloom-enclave", kind: releasePayloadEnclave, mode: releaseExecutableMode},
+		{path: releaseNestedAppPath + "/Contents/MacOS/mlx.metallib", kind: releasePayloadMetallib, mode: releaseDataMode},
+	}
 	releaseLegacyAppBaseFileSpecs = []releaseArtifactFileSpec{
 		{path: "Darkbloom.app/Contents/Info.plist", mode: releaseDataMode},
 		{path: "Darkbloom.app/Contents/embedded.provisionprofile", mode: releaseDataMode},
@@ -92,15 +99,20 @@ var (
 			mode: releaseDataMode,
 		},
 	}
-	releasePayloadSpecsByPath = indexReleasePayloadSpecs(
+	releaseNestedAppBaseFileSpecs         = nestedReleaseArtifactFileSpecs(releaseLegacyAppBaseFileSpecs)
+	releaseNestedPagedCapabilityFileSpecs = nestedReleaseArtifactFileSpecs(releasePagedCapabilityFileSpecs)
+	releasePayloadSpecsByPath             = indexReleasePayloadSpecs(
 		releaseFlatPayloadSpecs,
 		releaseAppPayloadSpecs,
+		releaseNestedAppPayloadSpecs,
 	)
 	releaseArtifactFileSpecsByPath = indexReleaseArtifactFileSpecs(
 		releaseLegacyAppBaseFileSpecs,
 		releaseGUIAppFileSpecs,
 		releaseFanCapabilityFileSpecs,
 		releasePagedCapabilityFileSpecs,
+		releaseNestedAppBaseFileSpecs,
+		releaseNestedPagedCapabilityFileSpecs,
 	)
 )
 
@@ -111,16 +123,33 @@ type releasePayload struct {
 }
 
 type releasePayloadCollector struct {
-	found         map[string]releasePayload
-	foundFiles    map[string]struct{}
-	hasAppContent bool
+	found               map[string]releasePayload
+	foundFiles          map[string]struct{}
+	hasAppContent       bool
+	hasNestedAppContent bool
+	hasCLIAlias         bool
+	plists              map[string][]byte
+	profileHashes       map[string]string
 }
 
 func newReleasePayloadCollector() *releasePayloadCollector {
 	return &releasePayloadCollector{
-		found:      make(map[string]releasePayload, len(releasePayloadSpecsByPath)),
-		foundFiles: make(map[string]struct{}, len(releaseArtifactFileSpecsByPath)),
+		found:         make(map[string]releasePayload, len(releasePayloadSpecsByPath)),
+		foundFiles:    make(map[string]struct{}, len(releaseArtifactFileSpecsByPath)),
+		plists:        make(map[string][]byte),
+		profileHashes: make(map[string]string),
 	}
+}
+
+// Mirror runtime resources into the nested CLI's bundle without widening the
+// set of paths recognized as payloads or capability markers.
+func nestedReleaseArtifactFileSpecs(specs []releaseArtifactFileSpec) []releaseArtifactFileSpec {
+	nested := make([]releaseArtifactFileSpec, len(specs))
+	for index, spec := range specs {
+		spec.path = releaseNestedAppPath + strings.TrimPrefix(spec.path, "Darkbloom.app")
+		nested[index] = spec
+	}
+	return nested
 }
 
 func indexReleasePayloadSpecs(groups ...[]releasePayloadSpec) map[string]releasePayloadSpec {
@@ -161,6 +190,16 @@ func (collector *releasePayloadCollector) visit(
 	collector.hasAppContent = collector.hasAppContent ||
 		foldedPath == "darkbloom.app" ||
 		strings.HasPrefix(foldedPath, "darkbloom.app/")
+
+	nestedPath := foldReleaseArchivePath(releaseNestedAppPath)
+	collector.hasNestedAppContent = collector.hasNestedAppContent ||
+		foldedPath == nestedPath || strings.HasPrefix(foldedPath, nestedPath+"/")
+	if entry.Path == releaseAppCLIAliasPath && entry.Kind == releaseArchiveSymlink {
+		// validateReleaseArchive already checked the exact link bytes and will
+		// require the regular target, with no link/file ancestors, at tar EOF.
+		collector.hasCLIAlias = true
+		return nil
+	}
 
 	if spec, required := releasePayloadSpecsByPath[entry.Path]; required {
 		return collector.collectPayload(entry, contents, spec)
@@ -266,6 +305,24 @@ func (collector *releasePayloadCollector) collectArtifactFile(
 			return fmt.Errorf("release artifact marker %q has invalid contents", entry.Path)
 		}
 	}
+	if entry.Path == releaseLegacyAppBaseFileSpecs[0].path ||
+		entry.Path == releaseNestedAppBaseFileSpecs[0].path {
+		// Legacy bundles retain their old opaque-plist acceptance. Only the
+		// nested layout parses these bounded bytes during final validation.
+		data, err := io.ReadAll(io.LimitReader(contents, maxReleasePlistBytes+1))
+		if err != nil {
+			return fmt.Errorf("read release plist %q: %w", entry.Path, err)
+		}
+		collector.plists[entry.Path] = data
+	}
+	if entry.Path == releaseLegacyAppBaseFileSpecs[1].path ||
+		entry.Path == releaseNestedAppBaseFileSpecs[1].path {
+		hasher := sha256.New()
+		if _, err := io.Copy(hasher, contents); err != nil {
+			return fmt.Errorf("read release profile %q: %w", entry.Path, err)
+		}
+		collector.profileHashes[entry.Path] = hex.EncodeToString(hasher.Sum(nil))
+	}
 	collector.foundFiles[entry.Path] = struct{}{}
 	return nil
 }
@@ -286,20 +343,18 @@ func (collector *releasePayloadCollector) validate(release *store.Release) error
 
 	hasApp := false
 	if collector.hasAppContent {
-		if err := collector.require(releaseAppPayloadSpecs); err != nil {
-			return err
-		}
 		if err := collector.requireFiles(releaseLegacyAppBaseFileSpecs); err != nil {
 			return err
 		}
-		for index, appSpec := range releaseAppPayloadSpecs {
-			flatSpec := releaseFlatPayloadSpecs[index]
-			if collector.found[appSpec.path].hash != collector.found[flatSpec.path].hash {
-				return fmt.Errorf(
-					"app and flat copies of %s do not match",
-					releasePayloadKindName(appSpec.kind),
-				)
+		appSpecs := releaseAppPayloadSpecs
+		if collector.hasCLIAlias || collector.hasNestedAppContent {
+			if err := collector.validateNestedApp(release.Version); err != nil {
+				return err
 			}
+			appSpecs = appSpecs[1:] // The outer CLI is the validated alias.
+		}
+		if err := collector.validatePayloadCopies(appSpecs, "app"); err != nil {
+			return err
 		}
 		if collector.hasAnyFiles(releaseGUIAppFileSpecs) {
 			if err := collector.requireFiles(releaseGUIAppFileSpecs); err != nil {
@@ -330,6 +385,173 @@ func (collector *releasePayloadCollector) validate(release *store.Release) error
 	release.HasFanHelper = &hasFanHelper
 	release.HasPagedKernel = &hasPagedKernel
 	return nil
+}
+
+func (collector *releasePayloadCollector) validatePayloadCopies(specs []releasePayloadSpec, label string) error {
+	if err := collector.require(specs); err != nil {
+		return err
+	}
+	for _, spec := range specs {
+		flatSpec := releaseFlatPayloadSpecs[spec.kind]
+		if collector.found[spec.path].hash != collector.found[flatSpec.path].hash {
+			return fmt.Errorf("%s and flat copies of %s do not match", label, releasePayloadKindName(spec.kind))
+		}
+	}
+	return nil
+}
+
+func (collector *releasePayloadCollector) validateNestedApp(version string) error {
+	if !collector.hasCLIAlias {
+		return fmt.Errorf("nested provider app requires the exact outer CLI alias")
+	}
+	if err := collector.validatePayloadCopies(releaseNestedAppPayloadSpecs, "nested app"); err != nil {
+		return err
+	}
+	if err := collector.requireFiles(releaseNestedAppBaseFileSpecs); err != nil {
+		return err
+	}
+	if err := collector.requireFiles(releaseGUIAppFileSpecs); err != nil {
+		return err
+	}
+	if collector.profileHashes[releaseLegacyAppBaseFileSpecs[1].path] !=
+		collector.profileHashes[releaseNestedAppBaseFileSpecs[1].path] {
+		return fmt.Errorf("outer and nested provider provisioning profiles differ")
+	}
+	for _, info := range []struct{ path, executable string }{
+		{releaseLegacyAppBaseFileSpecs[0].path, "DarkbloomApp"},
+		{releaseNestedAppBaseFileSpecs[0].path, "darkbloom"},
+	} {
+		if err := validateReleaseBundlePlist(collector.plists[info.path], info.executable, version); err != nil {
+			return fmt.Errorf("release plist %q: %w", info.path, err)
+		}
+	}
+	binary := collector.found[releaseNestedCLIPath]
+	// Fan service assets stay anchored in the outer GUI app; only the paged
+	// kernel is resolved relative to the nested CLI's own Resources directory.
+	_, err := collector.validateCapability(binary.hasPagedCapability, releaseNestedPagedCapabilityFileSpecs, "nested paged-kernel")
+	return err
+}
+
+// Only the new nested layout requires XML identity validation. The release
+// bundler emits XML; external DTDs/entities are never loaded by encoding/xml.
+// Profiles keep the same regular/nonempty/mode/size checks as the outer app;
+// their bytes must match. Cryptographic signature/profile qualification
+// belongs to the bundler.
+func validateReleaseBundlePlist(data []byte, executable, version string) error {
+	if int64(len(data)) > maxReleasePlistBytes {
+		return fmt.Errorf("Info.plist exceeds the %d-byte limit", maxReleasePlistBytes)
+	}
+	want := map[string]string{
+		"CFBundleExecutable":         executable,
+		"CFBundleIdentifier":         "io.darkbloom.provider",
+		"CFBundlePackageType":        "APPL",
+		"CFBundleShortVersionString": strings.TrimPrefix(version, "v"),
+		"CFBundleVersion":            strings.TrimPrefix(version, "v"),
+	}
+	decoder := xml.NewDecoder(bytes.NewReader(data))
+	for _, name := range []string{"plist", "dict"} {
+		token, err := nextReleasePlistToken(decoder)
+		start, ok := token.(xml.StartElement)
+		if err != nil || !ok || start.Name != (xml.Name{Local: name}) {
+			return fmt.Errorf("Info.plist must contain one XML plist dictionary")
+		}
+	}
+	seen := make(map[string]bool)
+	for {
+		token, err := nextReleasePlistToken(decoder)
+		if err != nil {
+			return fmt.Errorf("invalid Info.plist dictionary: %w", err)
+		}
+		if end, ok := token.(xml.EndElement); ok && end.Name == (xml.Name{Local: "dict"}) {
+			break
+		}
+		keyStart, ok := token.(xml.StartElement)
+		if !ok || keyStart.Name != (xml.Name{Local: "key"}) {
+			return fmt.Errorf("Info.plist dictionary requires key/value pairs")
+		}
+		key, err := readReleasePlistText(decoder, keyStart)
+		if err != nil {
+			return err
+		}
+		if seen[key] {
+			return fmt.Errorf("Info.plist repeats key %q", key)
+		}
+		seen[key] = true
+		token, err = nextReleasePlistToken(decoder)
+		valueStart, ok := token.(xml.StartElement)
+		if err != nil || !ok || valueStart.Name.Space != "" || valueStart.Name.Local == "key" {
+			return fmt.Errorf("Info.plist key %q is missing its value", key)
+		}
+		if expected, required := want[key]; required {
+			if valueStart.Name.Local != "string" {
+				return fmt.Errorf("Info.plist %s must be a string", key)
+			}
+			value, err := readReleasePlistText(decoder, valueStart)
+			if err != nil {
+				return err
+			}
+			if value != expected {
+				return fmt.Errorf("Info.plist %s is %q; expected %q", key, value, expected)
+			}
+		} else if err := decoder.Skip(); err != nil {
+			return fmt.Errorf("invalid Info.plist value for %q: %w", key, err)
+		}
+	}
+	for key := range want {
+		if !seen[key] {
+			return fmt.Errorf("Info.plist is missing %s", key)
+		}
+	}
+	token, err := nextReleasePlistToken(decoder)
+	end, ok := token.(xml.EndElement)
+	if err != nil || !ok || end.Name != (xml.Name{Local: "plist"}) {
+		return fmt.Errorf("Info.plist must contain one dictionary")
+	}
+	if _, err := nextReleasePlistToken(decoder); err != io.EOF {
+		return fmt.Errorf("Info.plist contains trailing content")
+	}
+	return nil
+}
+
+func nextReleasePlistToken(decoder *xml.Decoder) (xml.Token, error) {
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		switch value := token.(type) {
+		case xml.Comment, xml.Directive, xml.ProcInst:
+			continue
+		case xml.CharData:
+			if strings.TrimSpace(string(value)) != "" {
+				return nil, fmt.Errorf("unexpected text in Info.plist")
+			}
+		default:
+			return token, nil
+		}
+	}
+}
+
+func readReleasePlistText(decoder *xml.Decoder, start xml.StartElement) (string, error) {
+	var text strings.Builder
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", fmt.Errorf("invalid Info.plist text: %w", err)
+		}
+		switch value := token.(type) {
+		case xml.CharData:
+			text.Write(value)
+		case xml.EndElement:
+			if value.Name == start.Name {
+				return text.String(), nil
+			}
+			return "", fmt.Errorf("invalid Info.plist text element")
+		case xml.Comment:
+		default:
+			return "", fmt.Errorf("Info.plist %s must contain only text", start.Name.Local)
+		}
+	}
 }
 
 func (collector *releasePayloadCollector) hasAnyFiles(

@@ -2,6 +2,15 @@ import Foundation
 import Testing
 @testable import DarkbloomApp
 
+@Test("Summary balances round to cents while precise amounts remain available")
+func summaryBalancesAreReadable() {
+    let locale = Locale(identifier: "en_US")
+    let balance = MicroUSD(223_736_192)
+    #expect(ContributionsPresentation.summaryAmount(balance, locale: locale) == "$223.74")
+    #expect(balance.formattedUSD(locale: locale) == "$223.736192")
+    #expect(ContributionsPresentation.summaryAmount(.zero, locale: locale) == "$0.00")
+}
+
 @Test("Payout entry stays exact at micro-USD precision")
 func payoutEntryUsesExactMicroUSD() {
     let locale = Locale(identifier: "en_US_POSIX")

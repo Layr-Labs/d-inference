@@ -14,6 +14,21 @@ manifest=$3
 [[ -d "$app_bundle" ]] || { echo "App bundle does not exist: $app_bundle" >&2; exit 1; }
 resource_root="$app_bundle/Contents/Resources"
 mkdir -p "$resource_root"
+provider_app="$app_bundle/Contents/Helpers/DarkbloomProvider.app"
+resource_roots=("$resource_root")
+if [[ -e "$provider_app" || -L "$provider_app" ]]; then
+  for directory in "$app_bundle/Contents" "$app_bundle/Contents/Helpers" "$provider_app/Contents"; do
+    [[ -d "$directory" && ! -L "$directory" ]] || {
+      echo "Provider helper ancestor must be a real directory: $directory" >&2
+      exit 1
+    }
+  done
+  [[ -d "$provider_app" && ! -L "$provider_app" ]] || {
+    echo "Provider helper app must be a real directory: $provider_app" >&2
+    exit 1
+  }
+  resource_roots+=("$provider_app/Contents/Resources")
+fi
 
 shopt -s nullglob
 bundles=("$bin_dir"/*.bundle)
@@ -29,13 +44,15 @@ for source_bundle in "${bundles[@]}"; do
     exit 1
   }
   bundle_name=$(basename "$source_bundle")
-  destination="$resource_root/$bundle_name"
-  rm -rf "$destination"
-  /usr/bin/ditto "$source_bundle" "$destination"
-  [[ -d "$destination" ]] || {
-    echo "Failed to stage SwiftPM resource bundle: $bundle_name" >&2
-    exit 1
-  }
+  for destination_root in "${resource_roots[@]}"; do
+    destination="$destination_root/$bundle_name"
+    rm -rf "$destination"
+    /usr/bin/ditto "$source_bundle" "$destination"
+    [[ -d "$destination" ]] || {
+      echo "Failed to stage SwiftPM resource bundle: $bundle_name" >&2
+      exit 1
+    }
+  done
   printf '%s\n' "$bundle_name" >> "$manifest"
 done
 
@@ -59,6 +76,11 @@ capability_dir="$resource_root/darkbloom-runtime-capabilities"
 mkdir -p "$capability_dir"
 printf '1\n' > "$capability_dir/paged-kernel-v1"
 chmod 0644 "$capability_dir/paged-kernel-v1"
+if (( ${#resource_roots[@]} == 2 )); then
+  provider_capabilities="${resource_roots[1]}/darkbloom-runtime-capabilities"
+  mkdir -p "$provider_capabilities"
+  install -m 0644 "$capability_dir/paged-kernel-v1" "$provider_capabilities/paged-kernel-v1"
+fi
 
 LC_ALL=C sort -u "$manifest" -o "$manifest"
 echo "Staged ${#bundles[@]} SwiftPM resource bundle(s) in Contents/Resources"

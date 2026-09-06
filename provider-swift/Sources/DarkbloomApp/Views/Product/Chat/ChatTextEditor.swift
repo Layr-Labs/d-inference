@@ -7,6 +7,7 @@ struct ChatTextEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var isFocused: Bool
     let conversationID: UUID
+    var minimumHeight: CGFloat = 58
     let onSubmit: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -64,7 +65,8 @@ struct ChatTextEditor: NSViewRepresentable {
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
         // Measurement must not resize the live text container or force layout:
         // SwiftUI also asks during its minimum-window constraint pass.
-        ChatComposerSizing.size(text: text, proposedWidth: proposal.width)
+        let size = ChatComposerSizing.size(text: text, proposedWidth: proposal.width)
+        return CGSize(width: size.width, height: max(minimumHeight, size.height))
     }
 
     private func update(_ editor: ChatInputTextView, context: Context) {

@@ -4,6 +4,12 @@ struct PrivateChatView: View {
     let identity: MachineIdentity
     private let onOpenLocalAPI: (() -> Void)?
     private let onOpenModels: (() -> Void)?
+    private let localAPIStore: LocalAPIStore?
+    private let modelLibraryStore: ModelLibraryStore?
+    private let providerSnapshot: ProviderSnapshot?
+    private let onOpenDiagnostics: (() -> Void)?
+    private let onOpenProviderControls: (() -> Void)?
+    private let onProcessChange: @MainActor () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -18,11 +24,23 @@ struct PrivateChatView: View {
         identity: MachineIdentity,
         store: ChatStore,
         onOpenLocalAPI: (() -> Void)? = nil,
-        onOpenModels: (() -> Void)? = nil
+        onOpenModels: (() -> Void)? = nil,
+        localAPIStore: LocalAPIStore? = nil,
+        modelLibraryStore: ModelLibraryStore? = nil,
+        providerSnapshot: ProviderSnapshot? = nil,
+        onOpenDiagnostics: (() -> Void)? = nil,
+        onOpenProviderControls: (() -> Void)? = nil,
+        onProcessChange: @escaping @MainActor () -> Void = {}
     ) {
         self.identity = identity
         self.onOpenLocalAPI = onOpenLocalAPI
         self.onOpenModels = onOpenModels
+        self.localAPIStore = localAPIStore
+        self.modelLibraryStore = modelLibraryStore
+        self.providerSnapshot = providerSnapshot
+        self.onOpenDiagnostics = onOpenDiagnostics
+        self.onOpenProviderControls = onOpenProviderControls
+        self.onProcessChange = onProcessChange
         _store = State(initialValue: store)
     }
 
@@ -32,33 +50,83 @@ struct PrivateChatView: View {
         fixture: PreviewChatFixture = .empty,
         isPreview: Bool,
         onOpenLocalAPI: (() -> Void)? = nil,
-        onOpenModels: (() -> Void)? = nil
+        onOpenModels: (() -> Void)? = nil,
+        localAPIStore: LocalAPIStore? = nil,
+        modelLibraryStore: ModelLibraryStore? = nil,
+        providerSnapshot: ProviderSnapshot? = nil,
+        onOpenDiagnostics: (() -> Void)? = nil,
+        onOpenProviderControls: (() -> Void)? = nil,
+        onProcessChange: @escaping @MainActor () -> Void = {}
     ) {
         self.init(
             identity: identity,
             store: isPreview ? ChatStore(fixture: fixture) : ChatStore(live: LiveChatConfiguration()),
             onOpenLocalAPI: onOpenLocalAPI,
-            onOpenModels: onOpenModels
+            onOpenModels: onOpenModels,
+            localAPIStore: localAPIStore,
+            modelLibraryStore: modelLibraryStore,
+            providerSnapshot: providerSnapshot,
+            onOpenDiagnostics: onOpenDiagnostics,
+            onOpenProviderControls: onOpenProviderControls,
+            onProcessChange: onProcessChange
         )
     }
 
     var body: some View {
         GeometryReader { geometry in
+            let compact = geometry.size.width < 760
             VStack(spacing: 0) {
                 sessionHeader
+                    .padding(.horizontal, compact ? 24 : 40)
+                    .padding(.vertical, 16)
                     .fixedSize(horizontal: false, vertical: true)
-                conversationContent
+
+                if store.hasConversation {
+                    ChatConversationView(
+                        messages: store.messages,
+                        isResponding: store.isResponding,
+                        isLive: store.isLive
+                    )
+                    .id(store.conversationID)
                     .frame(maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                failureNotice
-                composer
+
+                    // Expanded diagnostics scroll independently at the minimum
+                    // window size, leaving the editor and Stop within reach.
+                    ViewThatFits(in: .vertical) {
+                        recoveryContent.fixedSize(horizontal: false, vertical: true)
+                        ScrollView { recoveryContent }
+                            .frame(height: 116)
+                    }
+                    .frame(maxHeight: 116, alignment: .top)
+                    .padding(.horizontal, compact ? 24 : 40)
+
+                    composer(prominent: false)
+                        .padding(.horizontal, compact ? 24 : 40)
+                        .padding(.top, 12)
+                        .padding(.bottom, 20)
+                } else {
+                    ScrollView {
+                        ChatEmptyState(compact: compact, onSelectSuggestion: useSuggestion) {
+                            composer(prominent: true)
+                            localStartControls
+                            failureNotice
+                        }
+                        .padding(.horizontal, compact ? 24 : 40)
+                        .padding(.top, geometry.size.height < 540 ? 12 : (compact ? 16 : 44))
+                        .padding(.bottom, 32)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
-        .background(ProductPalette.pageBackground)
-        .navigationTitle("Chat")
-        .toolbar(id: "darkbloom.chat.actions") {
-            ChatToolbar(canStartNewChat: store.canStartNewChat, onNewChat: resetConversation)
-        }
+        .background(StudioPalette.canvas)
+        .foregroundStyle(StudioPalette.ink)
+        .tint(StudioPalette.accent)
+        .modifier(ChatLocalStartObservation(
+            store: localAPIStore, library: modelLibraryStore,
+            chat: store, onRefreshConnection: checkConnection
+        ))
         .task {
             composerIsFocused = true
             await store.refreshConnection()
@@ -82,31 +150,40 @@ struct PrivateChatView: View {
             selectedModelID: $chat.selectedModelID,
             isResponding: store.isResponding,
             history: store.history,
+            canStartNewChat: store.canStartNewChat,
+            onNewChat: resetConversation,
             onRestore: restoreConversation,
             onRefresh: checkConnection
         )
     }
 
+    private var recoveryContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            failureNotice
+            localStartControls
+        }
+    }
+
+    private var hasInlineStart: Bool {
+        store.isLive && localAPIStore != nil && modelLibraryStore != nil
+    }
+
     @ViewBuilder
-    private var conversationContent: some View {
-        if store.hasConversation {
-            ChatConversationView(
-                messages: store.messages,
-                isResponding: store.isResponding,
-                isLive: store.isLive
+    private var localStartControls: some View {
+        if store.isLive, let localAPIStore, let modelLibraryStore {
+            ChatLocalStartView(
+                store: localAPIStore,
+                library: modelLibraryStore,
+                chat: store,
+                providerSnapshot: providerSnapshot,
+                onOpenModels: onOpenModels,
+                onOpenDiagnostics: onOpenDiagnostics ?? onOpenLocalAPI,
+                onOpenProviderControls: onOpenProviderControls,
+                onProcessChange: onProcessChange,
+                onRefreshConnection: checkConnection
             )
-            .id(store.conversationID)
-        } else {
-            ScrollView {
-                ChatEmptyState(
-                    identity: identity,
-                    route: store.route,
-                    detailOverride: store.isLive
-                        ? "Ask questions, work through code, or try an idea with a model on \(identity.displayName). Messages go directly to your local endpoint."
-                        : nil,
-                    onSelectSuggestion: useSuggestion
-                )
-            }
+            .frame(maxWidth: 840, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
     }
 
@@ -121,37 +198,46 @@ struct PrivateChatView: View {
                 failure: issue,
                 onRetry: retry,
                 onCheckConnection: check,
-                onOpenLocalAPI: onOpenLocalAPI,
+                onOpenLocalAPI: hasInlineStart ? onOpenDiagnostics : onOpenLocalAPI,
                 onOpenModels: onOpenModels,
-                onDismiss: dismiss
+                onDismiss: dismiss,
+                hasInlineStart: hasInlineStart
             )
+            .frame(maxWidth: 840, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
     }
 
-    private var composer: some View {
+    private func composer(prominent: Bool) -> some View {
         @Bindable var chat = store
-        return VStack(spacing: 0) {
-            Divider()
-            ChatComposer(
-                draft: $chat.draft,
-                route: $chat.route,
-                isFocused: $composerIsFocused,
-                conversationID: store.conversationID,
-                isResponding: store.isResponding,
-                isLive: store.isLive,
-                canSend: store.canSend,
-                availableRoutes: store.isLive ? [.thisMac] : ChatRoute.allCases,
-                onSubmit: submit,
-                onStop: stopResponse
-            )
-        }
-        .background(.bar)
+        return ChatComposer(
+            draft: $chat.draft,
+            route: $chat.route,
+            isFocused: $composerIsFocused,
+            conversationID: store.conversationID,
+            isResponding: store.isResponding,
+            isLive: store.isLive,
+            canSend: store.canSend,
+            availableRoutes: store.isLive ? [.thisMac] : ChatRoute.allCases,
+            isProminent: prominent,
+            onSubmit: submit,
+            onStop: stopResponse
+        )
+        .frame(maxWidth: 840)
+        .frame(maxWidth: .infinity)
         .fixedSize(horizontal: false, vertical: true)
     }
 
     private var displayedFailure: ChatFailure? {
         if let failure = store.failure { return failure }
-        if case .unavailable(let failure) = store.connection { return failure }
+        if case .unavailable(let failure) = store.connection {
+            // Expected setup states are explained beside the inline Start action.
+            // A failed turn still takes precedence and retains its retry action.
+            if hasInlineStart && (failure == .noDiscovery || failure == .untrustedDiscovery || failure == .noModels) {
+                return nil
+            }
+            return failure
+        }
         return store.modelSelectionFailure
     }
 

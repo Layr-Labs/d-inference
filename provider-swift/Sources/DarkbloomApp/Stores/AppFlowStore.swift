@@ -112,10 +112,27 @@ final class AppFlowStore {
     /// Browsing is a navigation choice, never evidence that setup succeeded.
     /// Keep the real stores and resumable draft; do not persist a completion.
     func exploreProduct() {
+        openProduct(.overview)
+    }
+
+    /// Menu-bar navigation uses the same exploration boundary as Welcome.
+    /// This never grants network readiness or starts a local/network provider.
+    func openProduct(_ destination: ProductDestination) {
         onboardingFlow.cancelPendingOperations()
-        selectedDestination = .overview
-        pendingInitialProductDestination = .overview
+        selectedDestination = destination
+        pendingInitialProductDestination = destination
         phase = .product
+    }
+
+    @discardableResult
+    func requestNetworkSetup(localSessionIsActive: Bool) -> Bool {
+        guard !localSessionIsActive else {
+            openProduct(.overview)
+            return false
+        }
+        if resumableOnboardingDraft != nil { resumeOnboarding() }
+        else { startOnboarding() }
+        return true
     }
 
     private func rememberOnboardingReturnPhase() {
@@ -159,6 +176,20 @@ final class AppFlowStore {
 
     func selectProductDestination(_ destination: ProductDestination) {
         selectedDestination = destination
+    }
+
+    /// A completed walkthrough is no longer evidence of a usable network link
+    /// after the user explicitly unlinks this Mac. Keep the product and its
+    /// independent local stores open, while making network setup available.
+    func accountLinkWasRemoved() {
+        onboardingFlow.resetForNewSetup()
+        hasCompletedNetworkOnboarding = false
+        resumableOnboardingDraft = nil
+        if persistenceEnabled {
+            preferences.hasCompletedNetworkOnboarding = false
+            preferences.onboardingDraft = nil
+        }
+        if phase == .onboarding { phase = .product }
     }
 
     /// Consumes the one-shot destination handoff created by setup completion.

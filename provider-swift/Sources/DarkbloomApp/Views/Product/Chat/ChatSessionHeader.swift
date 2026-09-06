@@ -7,6 +7,8 @@ struct ChatSessionHeader: View {
     @Binding var selectedModelID: String?
     let isResponding: Bool
     let history: [ChatConversation]
+    let canStartNewChat: Bool
+    let onNewChat: () -> Void
     let onRestore: (UUID) -> Void
     let onRefresh: () -> Void
 
@@ -22,33 +24,30 @@ struct ChatSessionHeader: View {
                 HStack { controls; Spacer(minLength: 0) }
             }
         }
-        .font(.system(size: 13))
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .background(.bar)
-        .overlay(alignment: .bottom) { Divider() }
+        .font(DarkbloomTheme.chivo(12))
+        .foregroundStyle(StudioPalette.secondaryInk)
     }
 
     @ViewBuilder
     private var connectionLabel: some View {
         if !isLive {
-            Label("Preview · no model runs", systemImage: "eye")
-                .foregroundStyle(.secondary)
+            Text("Preview. No model runs.")
+                .foregroundStyle(StudioPalette.secondaryInk)
         } else {
             switch connection {
             case .unchecked, .checking:
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Connecting to local chat…")
+                    Text("Checking this Mac…")
                 }
-                .foregroundStyle(.secondary)
+                .foregroundStyle(StudioPalette.secondaryInk)
             case .available:
-                Label("Local chat available", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.secondary)
+                Label("On this Mac", systemImage: "circle.fill")
+                    .labelStyle(ChatConnectionLabelStyle())
+                    .foregroundStyle(StudioPalette.secondaryInk)
             case .unavailable(let failure):
-                Label(failure == .noModels ? "No model available" : "Local chat disconnected",
-                      systemImage: "exclamationmark.circle")
-                    .foregroundStyle(ProductPalette.warning)
+                Text(failure == .noModels ? "Choose a local model" : "Local model offline")
+                    .foregroundStyle(StudioPalette.secondaryInk)
             }
         }
     }
@@ -72,8 +71,9 @@ struct ChatSessionHeader: View {
                     Text(selectedModelID ?? "Choose a model")
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .frame(maxWidth: 240)
+                        .frame(maxWidth: 190)
                 }
+                .menuStyle(.borderlessButton)
                 .disabled(isResponding)
                 .help("Choose a model advertised by the local endpoint. It may load when you send.")
                 .accessibilityLabel("Chat model")
@@ -100,10 +100,32 @@ struct ChatSessionHeader: View {
             } label: {
                 Label("History", systemImage: "clock.arrow.circlepath")
             }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
             .disabled(history.isEmpty)
             .help("Return to a previous conversation. History is kept in memory for this app session.")
             .accessibilityLabel("Chat history, \(history.count) conversations")
+
+            Button("New chat", systemImage: "square.and.pencil", action: onNewChat)
+                .buttonStyle(.borderless)
+                .foregroundStyle(StudioPalette.ink)
+                .keyboardShortcut("n", modifiers: [.command])
+                .disabled(!canStartNewChat)
+                .fixedSize()
+                .help("New chat (⌘N). Keep this conversation and draft in History.")
         }
         .controlSize(.small)
+    }
+}
+
+private struct ChatConnectionLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 7) {
+            configuration.icon
+                .font(.system(size: 5))
+                .foregroundStyle(StudioPalette.accent)
+                .accessibilityHidden(true)
+            configuration.title
+        }
     }
 }

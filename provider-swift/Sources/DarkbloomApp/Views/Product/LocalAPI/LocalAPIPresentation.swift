@@ -45,9 +45,9 @@ enum LocalAPIPresentation {
         case .thisMac:
             "Bound to loopback. Other devices cannot connect to this address."
         case .network:
-            "Reachable through one configured network address. The endpoint uses HTTP, not built-in TLS."
+            "Bound to one network address over HTTP, without built-in TLS."
         case .allInterfaces:
-            "Reachable through every active interface over HTTP, without built-in TLS. Keep API-key authentication on and use only trusted networks."
+            "Bound to all network interfaces over HTTP, without built-in TLS. Use trusted networks and API-key authentication."
         }
     }
 
@@ -76,7 +76,7 @@ enum LocalAPIPresentation {
         case .failed:
             "The endpoint did not return its available-model catalog."
         case .available(let modelIDs) where modelIDs.isEmpty:
-            "Choose an installed, compatible model from Models before sending requests."
+            "Choose an installed, compatible model from Library before sending requests."
         case .available(let modelIDs):
             modelIDs.joined(separator: " · ")
         }
@@ -99,7 +99,7 @@ enum LocalAPIPresentation {
         let endpoint = isLive ? "endpoint" : "sample endpoint"
         return switch phase {
         case .starting: "\(isLive ? "Endpoint" : "Sample endpoint") is starting"
-        case .stopped: "No \(endpoint) is running"
+        case .stopped: "No \(endpoint) found"
         case .unavailable: "The \(endpoint) needs attention"
         }
     }
@@ -111,7 +111,7 @@ enum LocalAPIPresentation {
         case .reachable where endpoint.isOpenWithoutAuthentication:
             "\(noun) open"
         case .reachable:
-            "\(noun) ready"
+            "\(noun) responding"
         case .unreachable:
             "\(noun) unavailable"
         }

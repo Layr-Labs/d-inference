@@ -6,6 +6,7 @@ func productDestinationOrderIsStable() {
     #expect(ProductDestination.allCases == [
         .overview,
         .chat,
+        .networkOverview,
         .localAPI,
         .myMacs,
         .contributions,

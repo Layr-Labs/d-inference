@@ -122,8 +122,12 @@ struct FreshInstallHarness: Sendable {
         ProcessAccountLinkCLI(locator: locator())
     }
 
-    func modelRunner(memoryGB: UInt64 = 32) -> ProcessModelCatalogCLIRunner {
+    func modelRunner(
+        memoryGB: UInt64 = 32,
+        includeDownloadPlans: Bool = false
+    ) -> ProcessModelCatalogCLIRunner {
         ProcessModelCatalogCLIRunner(
+            includeDownloadPlans: includeDownloadPlans,
             locator: locator(),
             stateFileURL: stateFile,
             physicalMemoryBytes: memoryGB * 1_073_741_824
@@ -157,7 +161,7 @@ struct FreshInstallHarness: Sendable {
         verificationCheckInGrace: Duration = .milliseconds(100)
     ) -> OnboardingFlowModel {
         let preparation = OnboardingPreparationService(
-            catalog: modelRunner(),
+            catalog: modelRunner(includeDownloadPlans: true),
             startCLI: ProcessSetupStartCLI(runner: providerRunner(), timeout: .seconds(2))
         )
         return OnboardingFlowModel(

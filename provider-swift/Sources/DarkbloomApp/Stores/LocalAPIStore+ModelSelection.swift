@@ -10,7 +10,17 @@ extension LocalAPIStore {
             return
         }
         if let selectedLocalModelID, eligibleLocalModel(selectedLocalModelID, in: models) { return }
-        selectedLocalModelID = models.first(where: { eligibleLocalModel($0.id, in: models) })?.id
+        // Prefer a compatible, lighter installed model for the first session.
+        // Unclassified local files (including speech/embedding models) require
+        // an explicit choice. The same CLI preflight remains authoritative.
+        selectedLocalModelID = models
+            .filter { $0.fit == .fits && $0.supportsChat
+                && eligibleLocalModel($0.id, in: models) }
+            .sorted { lhs, rhs in
+                let leftSize = lhs.sizeBytes > 0 ? lhs.sizeBytes : Int64.max
+                let rightSize = rhs.sizeBytes > 0 ? rhs.sizeBytes : Int64.max
+                return leftSize == rightSize ? lhs.id < rhs.id : leftSize < rightSize
+            }.first?.id
     }
 
     private func eligibleLocalModel(_ id: String, in models: [ModelSummary]) -> Bool {

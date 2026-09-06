@@ -106,12 +106,13 @@ public enum WatchdogAgent: Sendable {
         configPath: URL? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws {
+        let binaryPath = try LaunchctlControl.managedExecutablePath()
         if isLoaded() {
             try bootout()
             Thread.sleep(forTimeInterval: 0.2)
         }
         try writePlist(
-            binaryPath: LaunchctlControl.managedExecutablePath(),
+            binaryPath: binaryPath,
             configPath: configPath,
             environment: environment
         )

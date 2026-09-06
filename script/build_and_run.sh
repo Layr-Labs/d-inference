@@ -56,7 +56,7 @@ while (($#)); do
     --preview)
       (($# >= 2)) || fail "--preview requires a product destination."
       case "$2" in
-        overview|chat|local-api|my-macs|contributions|availability|activity|models|machine)
+        overview|chat|network-overview|local-api|my-macs|contributions|availability|activity|models|machine)
           PREVIEW_DESTINATION="$2"
           ;;
         *) fail "Unknown preview destination: $2" ;;

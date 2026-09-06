@@ -9,88 +9,105 @@ struct ModelLibraryView: View {
     @State private var compatibilityConfirmation: CompatibilityConfirmation?
     @State private var modelToRemove: ModelSummary?
 
-    private var displayedModels: [ModelSummary] {
-        ModelLibraryPresentation.displayedModels(from: store.models, scope: scope, search: searchText)
+    private var collection: ModelLibraryCollection {
+        ModelLibraryPresentation.collection(
+            from: store.models,
+            scope: scope,
+            search: searchText,
+            catalogState: store.catalogState
+        )
+    }
+
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var isRefreshing: Bool {
+        if case .loading = store.catalogState { return true }
+        return false
     }
 
     var body: some View {
-        ProductPage {
-            ProductPageHeader(
-                eyebrow: "Models",
-                title: "AI that fits this Mac.",
-                subtitle: "Find a model for your next idea. Browse what fits, manage downloads, and see what’s ready on this Mac."
-            ) {
-                Picker("Model scope", selection: $scope) {
-                    ForEach(ModelScope.allCases) { scope in
-                        Text(scope.title).tag(scope)
-                    }
+        let collection = self.collection
+
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Model library")
+                        .font(DarkbloomTheme.chivo(34, weight: .medium))
+                        .tracking(-1)
+                        .accessibilityAddTraits(.isHeader)
+                    Text("Choose a model for local AI. Manage what’s on this Mac.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(StudioPalette.secondaryInk)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 210)
-                .fixedSize()
-                .accessibilityLabel("Model library scope")
-            }
 
-            if case let .offline(message, showingCachedResults) = store.catalogState {
-                ModelCatalogOfflineBanner(
-                    message: message,
-                    showingCachedResults: showingCachedResults,
-                    onRetry: store.retryCatalog
+                ModelLibraryControls(
+                    scope: $scope,
+                    searchText: $searchText,
+                    isRefreshing: isRefreshing,
+                    onRefresh: store.retryCatalog
                 )
-                .padding(.top, 22)
-            }
 
-            if !store.activeTransfers.isEmpty {
-                ModelTransferSection(
-                    models: store.activeTransfers,
-                    onPause: { store.pauseDownload(modelID: $0) },
-                    onResume: { modelID in
-                        Task { await store.resumeDownload(modelID: modelID) }
-                    }
-                )
-                .padding(.top, 24)
-            }
+                if case let .offline(message, showingCachedResults) = store.catalogState {
+                    ModelCatalogOfflineBanner(
+                        message: message,
+                        showingCachedResults: showingCachedResults,
+                        onRetry: store.retryCatalog
+                    )
+                }
 
-            ProductSectionHeader(
-                scope == .installed ? "On this Mac" : "Darkbloom catalog",
-                detail: scope == .installed
-                    ? "\(store.installedModels.count) installed"
-                    : catalogDetail
-            )
-            .padding(.top, 26)
+                if !collection.transfers.isEmpty {
+                    ModelTransferSection(
+                        models: collection.transfers,
+                        onPause: { store.pauseDownload(modelID: $0) },
+                        onResume: { modelID in
+                            Task { await store.resumeDownload(modelID: modelID) }
+                        }
+                    )
+                }
 
-            LazyVStack(spacing: 10) {
-                if displayedModels.isEmpty {
-                    if case .loading = store.catalogState {
+                if collection.isEmpty {
+                    if isRefreshing {
                         ProgressView("Finding models…")
-                            .frame(maxWidth: .infinity, minHeight: 180)
-                    } else if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        ContentUnavailableView.search(text: searchText)
+                            .frame(maxWidth: .infinity, minHeight: 150)
                     } else {
-                        ModelLibraryEmptyState { scope = .discover }
+                        ModelLibraryEmptyState(scope: scope, searchText: searchText) {
+                            if isSearching {
+                                searchText = ""
+                            } else if scope == .installed {
+                                scope = .discover
+                            } else {
+                                store.retryCatalog()
+                            }
+                        }
                     }
                 } else {
-                    ForEach(displayedModels) { model in
-                        ModelLibraryRow(
-                            model: model,
-                            isSelected: store.selectedModelID == model.id,
-                            allowsSelection: ModelLibraryPresentation
-                                .allowsTransientSelection(isLive: store.isLive),
-                            offersLocalStart: onUseModel != nil,
-                            onSelect: { store.selectModel(id: model.id) },
-                            onPrimaryAction: {
-                                Task { await performPrimaryAction(for: model) }
-                            },
-                            onRemove: { modelToRemove = model }
-                        )
-                    }
+                    ModelLibraryCollectionView(
+                        collection: collection,
+                        scope: scope,
+                        isSearching: isSearching,
+                        selectedModelID: store.selectedModelID,
+                        allowsSelection: ModelLibraryPresentation.allowsTransientSelection(isLive: store.isLive),
+                        offersLocalStart: onUseModel != nil,
+                        onSelect: { store.selectModel(id: $0.id) },
+                        onPrimaryAction: { model in
+                            Task { await performPrimaryAction(for: model) }
+                        },
+                        onRemove: { modelToRemove = $0 }
+                    )
                 }
             }
-            .padding(.top, 10)
+            .frame(maxWidth: 960, alignment: .leading)
+            .padding(.horizontal, 26)
+            .padding(.top, 24)
+            .padding(.bottom, 32)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
-        .navigationTitle("Models")
-        .searchable(text: $searchText, placement: .toolbar, prompt: "Search models")
+        .foregroundStyle(StudioPalette.ink)
+        .background(StudioPalette.canvas)
+        .tint(StudioPalette.accent)
         .confirmationDialog(
             "Download a model larger than this Mac’s recommended limit?",
             isPresented: Binding(
@@ -163,10 +180,6 @@ struct ModelLibraryView: View {
         }
     }
 
-    private var catalogDetail: String {
-        ModelLibraryPresentation.catalogDetail(for: store.catalogState)
-    }
-
     private var activeTransferSignature: String {
         ModelLibraryPresentation.activeTransferSignature(for: store.activeTransfers)
     }
@@ -178,19 +191,12 @@ struct ModelLibraryView: View {
     private func performPrimaryAction(for model: ModelSummary) async {
         switch model.installation {
         case .notInstalled:
-            let result = await store.beginDownload(modelID: model.id)
-            if case let .requiresCompatibilityConfirmation(required, available) = result {
-                compatibilityConfirmation = CompatibilityConfirmation(
-                    modelID: model.id,
-                    requiredMemoryGB: required,
-                    availableMemoryGB: available
-                )
-            }
+            await requestDownload(for: model)
         case .failed(let failure):
             if failure.isResumable {
                 await store.resumeDownload(modelID: model.id)
             } else {
-                await store.beginDownload(modelID: model.id)
+                await requestDownload(for: model)
             }
         case .paused:
             await store.resumeDownload(modelID: model.id)
@@ -201,6 +207,17 @@ struct ModelLibraryView: View {
         case .installed:
             store.selectModel(id: model.id)
             onUseModel?(model.id)
+        }
+    }
+
+    private func requestDownload(for model: ModelSummary) async {
+        let result = await store.beginDownload(modelID: model.id)
+        if case let .requiresCompatibilityConfirmation(required, available) = result {
+            compatibilityConfirmation = CompatibilityConfirmation(
+                modelID: model.id,
+                requiredMemoryGB: required,
+                availableMemoryGB: available
+            )
         }
     }
 

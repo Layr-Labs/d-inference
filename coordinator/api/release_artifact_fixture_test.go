@@ -15,6 +15,7 @@ const (
 	releaseBundleTestLegacy releaseBundleTestLayout = iota
 	releaseBundleTestLegacyApp
 	releaseBundleTestApp
+	releaseBundleTestNestedApp
 )
 
 type releaseBundleTestEntry struct {
@@ -109,14 +110,72 @@ func newReleaseBundleTestFixture(
 			},
 		)
 		baseGroups := [][]releaseArtifactFileSpec{releaseLegacyAppBaseFileSpecs}
-		if layout == releaseBundleTestApp {
+		if layout == releaseBundleTestApp || layout == releaseBundleTestNestedApp {
 			baseGroups = append(baseGroups, releaseGUIAppFileSpecs)
 		}
 		for _, specs := range baseGroups {
 			fixture.addArtifactFiles(specs)
 		}
 	}
+	if layout == releaseBundleTestNestedApp {
+		for _, directory := range nestedProviderDirectoryPathsForTest {
+			present := false
+			for _, entry := range fixture.entries {
+				if entry.name == directory+"/" && entry.typeflag == tar.TypeDir {
+					present = true
+					break
+				}
+			}
+			if !present {
+				fixture.entries = append(fixture.entries, releaseBundleTestEntry{
+					name: directory + "/", mode: 0o755, typeflag: tar.TypeDir,
+				})
+			}
+		}
+		for index := range fixture.entries {
+			entry := &fixture.entries[index]
+			if entry.name == releaseAppCLIAliasPath {
+				entry.typeflag = tar.TypeSymlink
+				entry.mode = 0o777
+				entry.linkname = releaseAppCLIAliasTarget
+				entry.body = nil
+			}
+		}
+		for _, spec := range releaseNestedAppPayloadSpecs {
+			fixture.entries = append(fixture.entries, releaseBundleTestEntry{
+				name: spec.path, mode: spec.mode, typeflag: tar.TypeReg,
+				body: append([]byte(nil), payloads[spec.kind]...),
+			})
+		}
+		fixture.addArtifactFiles(releaseNestedAppBaseFileSpecs)
+		fixture.addArtifactFiles(nestedReleaseArtifactFileSpecs(releaseGUIAppFileSpecs[1:]))
+		for index := range fixture.entries {
+			entry := &fixture.entries[index]
+			switch entry.name {
+			case releaseLegacyAppBaseFileSpecs[0].path:
+				entry.body = releaseBundleInfoPlistForTest("DarkbloomApp")
+			case releaseNestedAppBaseFileSpecs[0].path:
+				entry.body = releaseBundleInfoPlistForTest("darkbloom")
+			case releaseLegacyAppBaseFileSpecs[1].path, releaseNestedAppBaseFileSpecs[1].path:
+				entry.body = []byte("same-embedded-provisionprofile")
+			}
+		}
+	}
 	return fixture
+}
+
+func releaseBundleInfoPlistForTest(executable string) []byte {
+	return []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>` + executable + `</string>
+<key>CFBundleIdentifier</key><string>io.darkbloom.provider</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1.0.0</string>
+<key>CFBundleShortVersionString</key><string>1.0.0</string>
+<key>LSUIElement</key><true/>
+<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLSchemes</key><array><string>darkbloom</string></array></dict></array>
+</dict></plist>`)
 }
 
 func (fixture *releaseBundleTestFixture) addArtifactFiles(

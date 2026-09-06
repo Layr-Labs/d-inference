@@ -4,8 +4,10 @@ struct ContributionsView: View {
     let store: ContributionsStore
     let onReviewAvailability: () -> Void
     let onOpenDiagnostics: () -> Void
+    let identity: MachineIdentity
 
     @State private var showsPayout = false
+    @State private var showsAccountReconnect = false
 
     var body: some View {
         ProductPage {
@@ -44,6 +46,11 @@ struct ContributionsView: View {
         .sheet(isPresented: $showsPayout) {
             if !store.isLive {
                 PreviewPayoutSheet(store: store)
+            }
+        }
+        .sheet(isPresented: $showsAccountReconnect) {
+            AccountReconnectView(identity: identity) {
+                Task { await store.refresh() }
             }
         }
         .task {
@@ -140,8 +147,10 @@ struct ContributionsView: View {
         VStack(alignment: .leading, spacing: 0) {
             ProductPageHeader(
                 eyebrow: "Network",
-                title: "Contributions are out of reach.",
-                subtitle: store.isLive
+                title: store.accountLinkNeedsRefresh ? "Reconnect your account." : "Contributions are out of reach.",
+                subtitle: store.accountLinkNeedsRefresh
+                    ? "Your current login stays in place until you finish signing in again."
+                    : store.isLive
                     ? "Your provider can keep running. Darkbloom just can’t load account totals right now."
                     : "Your provider can keep running. Darkbloom just can’t load account totals in this UI preview right now."
             )
@@ -155,7 +164,7 @@ struct ContributionsView: View {
                     .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Account data unavailable")
+                    Text(store.accountLinkNeedsRefresh ? "Account link needs a refresh" : "Account data unavailable")
                         .font(.system(size: 14, weight: .semibold))
                     Text(message)
                         .font(.system(size: 11))
@@ -165,8 +174,9 @@ struct ContributionsView: View {
                 Spacer()
 
                 HStack(spacing: 12) {
-                    Button("Try again") {
-                        store.retryPreviewLoad()
+                    Button(store.accountLinkNeedsRefresh ? "Reconnect account" : "Try again") {
+                        if store.accountLinkNeedsRefresh { showsAccountReconnect = true }
+                        else { store.retryPreviewLoad() }
                     }
                     .buttonStyle(.borderedProminent)
 

@@ -6,27 +6,33 @@ struct ModelCatalogOfflineBanner: View {
     let onRetry: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
             Image(systemName: "wifi.slash")
-                .foregroundStyle(ProductPalette.warning)
-            VStack(alignment: .leading, spacing: 2) {
+                .foregroundStyle(StudioPalette.secondaryInk)
+                .padding(.top, 2)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
                 Text(message)
-                    .font(.system(size: 12, weight: .semibold))
-                if showingCachedResults {
-                    Text("Showing the last catalog saved on this Mac.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(StudioPalette.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(showingCachedResults
+                     ? "Showing the saved catalog. Reconnect before downloading."
+                     : "Reconnect to browse and download models.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(StudioPalette.secondaryInk)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
+            Spacer(minLength: 8)
             Button("Try Again", action: onRetry)
                 .buttonStyle(.bordered)
+                .fixedSize()
         }
         .padding(14)
-        .background(ProductPalette.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 13))
+        .background(StudioPalette.surface, in: RoundedRectangle(cornerRadius: 10))
         .overlay {
-            RoundedRectangle(cornerRadius: 13)
-                .stroke(ProductPalette.warning.opacity(0.18), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(StudioPalette.line, lineWidth: 1)
         }
     }
 }

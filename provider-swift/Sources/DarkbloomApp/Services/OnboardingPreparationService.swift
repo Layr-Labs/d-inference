@@ -63,8 +63,9 @@ struct OnboardingPreparationService: OnboardingPreparationServicing {
     let catalog: any ModelCatalogCLIRunning
     let startCLI: any SetupStartCLIRunning
 
+    // Initial recommendations require resume-aware storage admission.
     init(
-        catalog: any ModelCatalogCLIRunning = ProcessModelCatalogCLIRunner(),
+        catalog: any ModelCatalogCLIRunning = ProcessModelCatalogCLIRunner(includeDownloadPlans: true),
         startCLI: any SetupStartCLIRunning = ProcessSetupStartCLI()
     ) {
         self.catalog = catalog

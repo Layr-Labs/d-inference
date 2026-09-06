@@ -61,4 +61,19 @@ struct LocalAPIModelSelectionTests {
         store.syncLocalModelSelection(preferredID: nil, models: [available, unsupported])
         #expect(store.selectedLocalModelID == available.id)
     }
+
+    @Test("First local choice prefers confirmed compatibility while preserving explicit unknown-model choices")
+    func defaultPrefersVerifiedModel() {
+        let store = LocalAPIStore(fixture: .stopped)
+        var unknown = localAPIInstalledModel(id: "local/first-unknown")
+        unknown.fit = .unknown
+        store.syncLocalModelSelection(preferredID: nil, models: [unknown])
+        #expect(store.selectedLocalModelID == nil)
+        let compatible = localAPIInstalledModel(id: "local/verified")
+        store.syncLocalModelSelection(preferredID: nil, models: [unknown, compatible])
+        #expect(store.selectedLocalModelID == compatible.id)
+        store.syncLocalModelSelection(preferredID: unknown.id, models: [unknown, compatible])
+        #expect(store.selectedLocalModelID == unknown.id)
+        #expect(store.localStart.state == .idle)
+    }
 }

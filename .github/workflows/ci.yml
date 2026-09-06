@@ -177,10 +177,10 @@ jobs:
             find provider-swift/.build -type d -path '*.xctest/Contents/MacOS' -print
           )
       - name: Run Swift tests
-        working-directory: provider-swift
         # NOTE: do NOT pass --build-tests-relinking flags; the bundle is already
         # built above, so `swift test` reuses it (and our colocated metallib).
-        run: swift test
+        # Separate process-global GPU latches from config tests that mutate env.
+        run: ./scripts/test-provider-suites.sh
       - name: Test unsigned debug app fresh-user lifecycle
         timeout-minutes: 10
         env:
@@ -302,8 +302,9 @@ jobs:
         timeout-minutes: 10
         run: ../../scripts/run-nested-suite.sh CBv2KVSharingParityTests
       - name: Run atomic installer artifact tests
-        # Recovery checkpoints and historical transaction fixtures exceed two minutes.
-        timeout-minutes: 10
+        # Nested-helper, recovery and historical transaction fixtures can exceed
+        # ten minutes under concurrent compilation; keep the full matrix required.
+        timeout-minutes: 20
         run: ./scripts/test-install-atomic.sh
 
   cache-swift:

@@ -9,6 +9,13 @@ enum ContributionsPresentation {
         value.formattedUSD()
     }
 
+    /// Round only the summary label. The ledger and underlying integer amount
+    /// retain micro-dollar precision; hover exposes the exact balance.
+    static func summaryAmount(_ value: MicroUSD, locale: Locale = .current) -> String {
+        let dollars = Decimal(value.rawValue) / Decimal(1_000_000)
+        return dollars.formatted(.currency(code: "USD").precision(.fractionLength(2)).locale(locale))
+    }
+
     static func jobCount(_ value: Int64) -> String {
         value.formatted()
     }

@@ -81,11 +81,15 @@ struct AppLaunchLifecycleTests {
         #expect(recovery.destination == destination)
         #expect(
             recovery.managedCLIURL
-                == destination.appendingPathComponent("Contents/MacOS/darkbloom")
+                == destination.appendingPathComponent(
+                    "Contents/Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom"
+                )
         )
         #expect(
             recovery.managedCLIURL
-                != source.appendingPathComponent("Contents/MacOS/darkbloom")
+                != source.appendingPathComponent(
+                    "Contents/Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom"
+                )
         )
 
         let presentation = AppInstallScenePresentation(

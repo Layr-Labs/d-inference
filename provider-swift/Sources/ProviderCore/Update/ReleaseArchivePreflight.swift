@@ -172,9 +172,10 @@ private final class ReleaseArchiveByteStream {
     }
 }
 
-private enum ReleaseArchiveNodeKind {
+enum ReleaseArchiveNodeKind {
     case regular
     case directory
+    case providerAlias
 }
 
 private struct ReleaseArchivePendingMetadata {
@@ -198,7 +199,7 @@ private final class ReleaseArchivePathTracker {
             throw ReleaseArchivePreflightError(
                 "release archive contains duplicate or case-conflicting path \(path)")
         }
-        if kind == .regular, pathsWithDescendants.contains(key) {
+        if kind != .directory, pathsWithDescendants.contains(key) {
             throw ReleaseArchivePreflightError(
                 "release archive file \(path) conflicts with descendant entries")
         }
@@ -239,6 +240,7 @@ private final class ReleaseTarValidator {
     private let policy: ReleaseArchivePolicy
     private let pathTracker = ReleaseArchivePathTracker()
     private var pending = ReleaseArchivePendingMetadata()
+    private var providerLayout = ReleaseArchiveProviderLayout()
     private var expandedBytes: UInt64 = 0
     private var entryCount = 0
 
@@ -264,6 +266,7 @@ private final class ReleaseTarValidator {
             let header = [UInt8](blockData)
             if header.allSatisfy({ $0 == 0 }) {
                 try validateEndMarker()
+                try providerLayout.validate()
                 return
             }
 
@@ -346,6 +349,15 @@ private final class ReleaseTarValidator {
                     throw ReleaseArchivePreflightError(
                         "release archive regular-file path \(effectivePath) ends with a slash")
                 }
+            case 50: // the exact outer provider CLI compatibility alias only
+                guard headerSize == 0 else {
+                    throw ReleaseArchivePreflightError("provider alias has a non-zero size")
+                }
+                try ReleaseArchiveProviderLayout.validateAlias(
+                    path: effectivePath,
+                    target: tarString(Array(header[157..<257]), label: "linkname"),
+                    size: effectiveSize, trailingSlash: pathHasTrailingSlash)
+                kind = .providerAlias
             case 53:
                 kind = .directory
                 guard effectiveSize == 0 else {
@@ -376,8 +388,17 @@ private final class ReleaseTarValidator {
                 throw ReleaseArchivePreflightError(mismatch)
             }
             try pathTracker.add(effectivePath, kind: kind)
+            providerLayout.add(path: effectivePath, kind: kind)
             try addTarPayloadBytes(effectiveSize)
-            try stream.skip(effectiveSize)
+            if kind == .regular, providerLayout.needsMetadata(effectivePath) {
+                guard effectiveSize <= policy.maxMetadataBytes else {
+                    throw ReleaseArchivePreflightError("provider bundle metadata exceeds the metadata limit")
+                }
+                let data = try stream.readExactly(Int(effectiveSize)) ?? Data()
+                providerLayout.recordMetadata(path: effectivePath, data: data)
+            } else {
+                try stream.skip(effectiveSize)
+            }
             try skipPadding(for: effectiveSize)
         }
     }
@@ -657,7 +678,8 @@ private final class ReleaseTarValidator {
         switch path {
         case "bin/mlx.metallib",
              "mlx.metallib",
-             "Darkbloom.app/Contents/MacOS/mlx.metallib":
+             "Darkbloom.app/Contents/MacOS/mlx.metallib",
+             "Darkbloom.app/Contents/Helpers/DarkbloomProvider.app/Contents/MacOS/mlx.metallib":
             true
         default:
             false

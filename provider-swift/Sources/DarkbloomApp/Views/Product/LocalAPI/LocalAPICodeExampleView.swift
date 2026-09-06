@@ -11,27 +11,31 @@ struct LocalAPICodeExampleView: View {
     var body: some View {
         @Bindable var store = store
 
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center) {
-                ProductSectionHeader(
-                    "Try it",
-                    detail: "OpenAI-compatible chat completions"
-                )
+        LocalAPIDisclosure("Code examples") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 16) {
+                    Picker("Example", selection: $store.selectedExample) {
+                        ForEach(LocalAPICodeExample.allCases) { example in
+                            Text(example.title).tag(example)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 168)
 
-                Picker("Example", selection: $store.selectedExample) {
-                    ForEach(LocalAPICodeExample.allCases) { example in
-                        Text(example.title).tag(example)
+                    Spacer(minLength: 0)
+                    if endpoint.availableModelIDs?.isEmpty == false,
+                       store.text(for: .code(store.selectedExample)) != nil {
+                        LocalAPICopyButton(
+                            title: "Copy example", item: .code(store.selectedExample),
+                            copiedItem: store.lastCopiedItem, onCopy: onCopy
+                        )
                     }
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 150)
-            }
 
-            catalogContent
+                catalogContent
+            }
         }
-        .padding(.vertical, 20)
-        .overlay(alignment: .bottom) { Divider() }
     }
 
     @ViewBuilder
@@ -39,37 +43,30 @@ struct LocalAPICodeExampleView: View {
         switch endpoint.modelCatalog {
         case .available(let modelIDs) where !modelIDs.isEmpty:
             codeContent
-
         case .available:
             guidanceRow(
-                icon: "shippingbox",
-                title: "A model is required before you can try the endpoint.",
+                title: "This endpoint has no compatible models.",
                 detail: LocalAPIPresentation.availableModelDetail(endpoint.modelCatalog)
             ) {
-                Button("Open Models", action: onOpenModels)
+                Button("Open Library", action: onOpenModels)
             }
-
         case .loading:
             guidanceRow(
-                icon: "ellipsis.circle",
                 title: "Checking available models…",
                 detail: LocalAPIPresentation.availableModelDetail(endpoint.modelCatalog)
             ) {
-                ProgressView()
-                    .controlSize(.small)
+                ProgressView().controlSize(.small)
                     .accessibilityLabel("Checking the available model catalog")
             }
-
         case .failed:
             guidanceRow(
-                icon: "exclamationmark.triangle.fill",
-                title: "The available-model catalog is out of reach.",
+                title: "The model list is unavailable.",
                 detail: LocalAPIPresentation.availableModelDetail(endpoint.modelCatalog)
             ) {
-                HStack(spacing: 10) {
-                    Button("Check Again", action: onRetryCatalog)
-                        .buttonStyle(.borderedProminent)
-                    Button("Open Diagnostics", action: onOpenDiagnostics)
+                HStack(spacing: 14) {
+                    Button("Check again", action: onRetryCatalog)
+                        .buttonStyle(StudioPrimaryButtonStyle())
+                    Button("Diagnostics", action: onOpenDiagnostics)
                 }
             }
         }
@@ -78,75 +75,43 @@ struct LocalAPICodeExampleView: View {
     @ViewBuilder
     private var codeContent: some View {
         if let code = store.text(for: .code(store.selectedExample)) {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text(store.selectedExample.title.uppercased())
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .tracking(0.7)
-                        .foregroundStyle(.secondary)
-
-                    Spacer()
-
-                    Button {
-                        onCopy(.code(store.selectedExample))
-                    } label: {
-                        Label(
-                            store.lastCopiedItem == .code(store.selectedExample) ? "Copied" : "Copy",
-                            systemImage: store.lastCopiedItem == .code(store.selectedExample)
-                                ? "checkmark"
-                                : "doc.on.doc"
-                        )
-                    }
-                    .buttonStyle(.borderless)
-                }
-                .padding(.horizontal, 13)
-                .padding(.vertical, 9)
-
-                Divider()
-
-                ScrollView(.horizontal) {
-                    Text(code)
-                        .font(.system(size: 11, design: .monospaced))
-                        .lineSpacing(3)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .padding(14)
-                }
-                .accessibilityLabel("\(store.selectedExample.title) example")
+            ScrollView(.horizontal) {
+                Text(code)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(StudioPalette.ink)
+                    .lineSpacing(4)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(16)
             }
-            .background(ProductPalette.surface)
-            .overlay { Rectangle().stroke(ProductPalette.stroke, lineWidth: 1) }
+            .background(StudioPalette.surface, in: RoundedRectangle(cornerRadius: 8))
+            .accessibilityLabel("\(store.selectedExample.title) example")
 
             if endpoint.requiresAuthentication {
                 Text(store.isLive
-                    ? "Export OPENAI_API_KEY with the API key before running this example. The key is referenced by name and is never embedded in copied code."
-                    : "Export OPENAI_API_KEY with the sample key before running this example. The key is referenced by name and is never embedded in copied code.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                    ? "Set OPENAI_API_KEY to your API key. Copied examples never include the key."
+                    : "Set OPENAI_API_KEY to the sample key. Copied examples never include the key.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(StudioPalette.secondaryInk)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
     private func guidanceRow<Actions: View>(
-        icon: String,
         title: String,
         detail: String,
         @ViewBuilder actions: () -> Actions
     ) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .foregroundStyle(ProductPalette.warning)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-                Text(detail)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(StudioPalette.ink)
+            Text(detail)
+                .font(.system(size: 12))
+                .foregroundStyle(StudioPalette.secondaryInk)
+                .fixedSize(horizontal: false, vertical: true)
             actions()
         }
-        .padding(.vertical, 12)
     }
 }

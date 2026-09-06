@@ -71,16 +71,26 @@ enum LaunchctlControl {
         run(["print", target(label: label, uid: uid)], captureStdout: true)
     }
 
-    /// The only executable path launchd is allowed to persist.
+    /// Persist the validated nested managed CLI, or a valid legacy flat CLI.
+    /// Reject malformed installs before writing or reloading a LaunchAgent.
     ///
     /// In particular, do not derive this from `_NSGetExecutablePath` or
     /// `realpath`: a CLI started from Downloads or App Translocation would
     /// otherwise survive in a LaunchAgent plist after the source app exits.
     static func managedExecutablePath(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
-    ) -> String {
-        ManagedProviderInstallLayout.cliURL(
+    ) throws -> String {
+        guard let executable = ManagedProviderCLIPathValidator().validatedCLIURL(
             homeDirectory: homeDirectory
-        ).path
+        ) else {
+            throw ManagedExecutableUnavailable()
+        }
+        return executable.path
+    }
+
+    struct ManagedExecutableUnavailable: LocalizedError {
+        var errorDescription: String? {
+            "The managed Darkbloom CLI is missing or has an unsafe path. Reinstall Darkbloom before starting the provider."
+        }
     }
 }

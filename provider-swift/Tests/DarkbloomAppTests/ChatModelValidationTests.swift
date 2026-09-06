@@ -20,6 +20,50 @@ struct ChatModelValidationTests {
         ))
     }
 
+    @Test("A Library handoff preserves intent and cannot send to a different model or retarget an active turn")
+    func libraryHandoffRespectsActiveTurn() async throws {
+        let endpoint = ChatCatalogScenario(models: ["catalog/a", "catalog/b"])
+        let chat = store(endpoint)
+        #expect(ChatModelHandoff.select("catalog/b", in: chat))
+        #expect(!chat.canSend)
+        await chat.refreshConnection()
+        #expect(ChatModelHandoff.select("catalog/b", in: chat))
+        #expect(ChatModelHandoff.select("catalog/missing", in: chat))
+        #expect(chat.selectedModelID == "catalog/missing")
+        #expect(!chat.canSend)
+        #expect(chat.modelSelectionFailure == .selectedModelUnavailable)
+        #expect(ChatModelHandoff.select("catalog/b", in: chat))
+        #expect(chat.selectedModelID == "catalog/b")
+        let prompt = try #require(chat.beginResponse(to: "Keep this model"))
+        #expect(ChatModelHandoff.select("catalog/a", in: chat))
+        #expect(chat.selectedModelID == "catalog/a")
+        await chat.respondLive(to: prompt)
+        let request = try #require(await endpoint.requests.last { $0.httpMethod == "POST" })
+        let body = try #require(request.httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["model"] as? String == "catalog/b")
+        #expect(chat.selectedModelID == "catalog/a")
+    }
+
+    @Test("Restoring History after a model choice survives later endpoint readiness")
+    func historyWinsOverEarlierStartupChoice() async throws {
+        let endpoint = ChatCatalogScenario(models: ["catalog/a", "catalog/b"])
+        let chat = store(endpoint)
+        await chat.refreshConnection()
+        ChatModelHandoff.select("catalog/b", in: chat)
+        chat.draft = "Saved draft on B"
+        let savedID = chat.conversationID
+        chat.reset()
+        ChatModelHandoff.select("catalog/a", in: chat)
+        chat.restoreConversation(savedID)
+        await endpoint.setModels(["catalog/a"])
+        await chat.refreshConnection()
+        #expect(chat.selectedModelID == "catalog/b")
+        #expect(chat.draft == "Saved draft on B")
+        #expect(!chat.canSend)
+        #expect(chat.modelSelectionFailure == .selectedModelUnavailable)
+    }
+
     @Test("Every send and retry reads the catalog; a missing selection never POSTs or retargets")
     func retryValidatesCurrentCatalog() async throws {
         let endpoint = ChatCatalogScenario(models: ["catalog/a"], replies: [.httpError(503)])

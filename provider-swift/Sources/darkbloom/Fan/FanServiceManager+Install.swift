@@ -2,6 +2,7 @@ import DarkbloomFanProtocol
 import DarkbloomFanService
 import CryptoKit
 import Foundation
+import ProviderCoreFoundation
 
 #if canImport(Darwin)
 import Darwin
@@ -10,20 +11,12 @@ import Darwin
 extension FanServiceManager {
     func bundledHelperURL() throws -> URL {
         let executable = try currentExecutableURL()
-        let directory = executable.deletingLastPathComponent()
-        guard directory.lastPathComponent == "MacOS" else {
+        guard let app = ManagedProviderInstallLayout.outerAppURL(forExecutableURL: executable) else {
             throw FanServiceManagerError.helperNotBundled([
                 "a signed Darkbloom.app/Contents/Helpers installation"
             ])
         }
-        let contents = directory.deletingLastPathComponent()
-        let app = contents.deletingLastPathComponent()
-        guard app.pathExtension == "app" else {
-            throw FanServiceManagerError.helperNotBundled([
-                "a signed Darkbloom.app/Contents/Helpers installation"
-            ])
-        }
-        let helper = contents.appendingPathComponent("Helpers/darkbloom-fan-helper")
+        let helper = app.appendingPathComponent("Contents/Helpers/darkbloom-fan-helper")
         try verifyBundledApp(app: app, executable: executable, helper: helper)
         return helper
     }
@@ -189,9 +182,11 @@ extension FanServiceManager {
         // Recheck the enclosing seal after copying from the user-owned app.
         // This catches substitutions racing the initial preflight.
         let executable = try currentExecutableURL()
-        let contents = executable.deletingLastPathComponent().deletingLastPathComponent()
+        guard let app = ManagedProviderInstallLayout.outerAppURL(forExecutableURL: executable) else {
+            throw FanServiceManagerError.unsafeFile("could not locate the enclosing Darkbloom app")
+        }
         try verifyBundledApp(
-            app: contents.deletingLastPathComponent(),
+            app: app,
             executable: executable,
             helper: source
         )

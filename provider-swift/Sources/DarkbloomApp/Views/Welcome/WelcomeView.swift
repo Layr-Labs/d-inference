@@ -102,15 +102,15 @@ struct WelcomeView: View {
     ) -> some View {
         HStack(alignment: .center, spacing: columnSpacing) {
             VStack(alignment: .leading, spacing: 0) {
-                Text("Your Mac.\nYour AI.")
-                    .font(DarkbloomTheme.chivo(isCompact ? 44 : 48))
-                    .tracking(-1.4)
-                    .lineSpacing(-4)
+                Text("A little space.\nA lot of\npossibility.")
+                    .font(DarkbloomTheme.chivo(isCompact ? 46 : 54))
+                    .tracking(-2)
+                    .lineSpacing(-3)
                     .foregroundStyle(DarkbloomTheme.ink)
                     .accessibilityAddTraits(.isHeader)
                     .welcomeReveal(isPresented, delay: 0.04, reduceMotion: motionIsReduced)
 
-                Text("Chat, create, and experiment with AI that runs on your Mac. Share spare compute with Darkbloom when you choose.")
+                Text("Run AI on this Mac, or connect it to Darkbloom’s network of Macs. Start in your local studio; share compute when you choose.")
                     .font(DarkbloomTheme.chivo(16))
                     .lineSpacing(5)
                     .foregroundStyle(DarkbloomTheme.ink.opacity(0.7))
@@ -119,46 +119,34 @@ struct WelcomeView: View {
                     .padding(.top, 22)
                     .welcomeReveal(isPresented, delay: 0.11, reduceMotion: motionIsReduced)
 
-                if let resumableDraft {
-                    ResumeSetupCard(
-                        draft: resumableDraft,
-                        showsPreviewChrome: showsPreviewChrome,
-                        onResume: onResume,
-                        onStartOver: { confirmsStartOver = true }
-                    )
-                    .padding(.top, isCompact ? 26 : 30)
-                    .welcomeReveal(isPresented, delay: 0.18, reduceMotion: motionIsReduced)
-                } else {
-                    HStack(spacing: isCompact ? 14 : 18) {
-                        SetupMacButton(
-                            action: onContinue,
-                            onHoverChanged: { isHovering in
-                                withAnimation(
-                                    motionIsReduced ? nil : .easeOut(duration: 0.3)
-                                ) {
-                                    fieldActivity = isHovering ? 0.42 : 0
-                                }
-                            }
-                        )
-                            .keyboardShortcut(.defaultAction)
-
-                        HowItWorksButton(width: isCompact ? 132 : 142) {
-                            showsHowItWorks = true
-                        }
+                HStack(spacing: 18) {
+                    Button("Open your studio", action: onExplore)
+                        .buttonStyle(StudioPrimaryButtonStyle())
+                        .keyboardShortcut(.defaultAction)
+                        .accessibilityHint("Start exploring local AI without network enrollment")
+                    HowItWorksButton(width: isCompact ? 132 : 142) {
+                        showsHowItWorks = true
                     }
-                    .padding(.top, isCompact ? 32 : 36)
-                    .welcomeReveal(isPresented, delay: 0.18, reduceMotion: motionIsReduced)
                 }
+                .padding(.top, 28)
+                .welcomeReveal(isPresented, delay: 0.18, reduceMotion: motionIsReduced)
 
-                Button(action: onExplore) {
-                    Label("Explore the app first", systemImage: "arrow.right")
-                        .font(.system(size: 13, weight: .medium))
-                        .padding(.vertical, 8)
+                HStack(spacing: 14) {
+                    Button(resumableDraft == nil ? "Set up network sharing" : "Resume network setup",
+                           action: resumableDraft == nil ? onContinue : onResume)
+                    if resumableDraft != nil {
+                        Menu {
+                            Button("Start setup over…") { confirmsStartOver = true }
+                        } label: { Image(systemName: "ellipsis") }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                    }
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(DarkbloomTheme.linkAccent)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(StudioPalette.secondaryInk)
                 .padding(.top, 14)
-                .accessibilityHint("Browse Darkbloom without completing setup or starting the engine")
+                .accessibilityHint("Optional setup to contribute this Mac to Darkbloom")
                 .welcomeReveal(isPresented, delay: 0.22, reduceMotion: motionIsReduced)
             }
             .frame(width: columnWidth, alignment: .leading)

@@ -161,7 +161,9 @@ struct ProcessLifecycleSubprocessTests {
     ) async throws {
         for _ in 0..<3_000 {
             if !process.isRunning {
-                process.waitUntilExit()
+                // Foundation has already observed termination, so the status
+                // is available. A second synchronous wait can block a Swift
+                // concurrency worker on the launch thread's run loop.
                 return
             }
             try await Task.sleep(for: .milliseconds(10))

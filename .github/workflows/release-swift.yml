@@ -474,6 +474,7 @@ jobs:
           # the .app shape (and embedding the provisioning profile below) is
           # what authorizes keychain-access-groups for the persistent SE key.
           APP="$STAGE/Darkbloom.app"
+          PROVIDER_APP="$APP/Contents/Helpers/DarkbloomProvider.app"
           scripts/bundle-macos-app.sh \
             "$BIN_DIR" \
             "${{ steps.metallib.outputs.metallib }}" \
@@ -484,7 +485,9 @@ jobs:
             install -m 0644 \
               /tmp/embedded.provisionprofile \
               "$APP/Contents/embedded.provisionprofile"
-            echo "Provisioning profile embedded in app bundle"
+            install -m 0644 /tmp/embedded.provisionprofile \
+              "$PROVIDER_APP/Contents/embedded.provisionprofile"
+            echo "Provisioning profile embedded in GUI and provider helper bundles"
           fi
 
           # Copy every product resource bundle into the canonical signed-app
@@ -507,7 +510,7 @@ jobs:
             DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
             MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
             MLX_GATHER_QMM_EXPERT_SLICES=1 \
-            "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
+            "$PROVIDER_APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT"
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
@@ -526,32 +529,28 @@ jobs:
           codesign --verify --strict --verbose=2 \
             "-R=$FAN_HELPER_REQUIREMENT" \
             "$APP/Contents/Helpers/$FAN_HELPER_NAME"
+          # AMFI authorizes the CLI profile only when the CLI is a bundle's
+          # main executable. Sign its real helper app after its colocated code.
           codesign --force --options runtime --timestamp \
-            --keychain "$KEYCHAIN_PATH" \
-            --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/mlx.metallib"
-          # darkbloom-enclave only uses ephemeral SE keys (no keychain).
-          # It gets its own entitlements without keychain-access-groups and
-          # application-identifier so AMFI doesn't require a provisioning
-          # profile match for it.
+            --keychain "$KEYCHAIN_PATH" --sign "$DEVELOPER_ID" \
+            "$PROVIDER_APP/Contents/MacOS/mlx.metallib"
           codesign --force --options runtime --timestamp \
             --entitlements provider-swift/entitlements-enclave.plist \
-            --keychain "$KEYCHAIN_PATH" \
-            --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$ENCLAVE_NAME"
-          # The CLI is now NESTED code (DarkbloomApp is the bundle's main
-          # executable). Pin its signing identifier explicitly to what it was
-          # as the legacy wrapper's main executable — fan-helper XPC client
-          # authorization, the APNs topic, and the keychain access group are
-          # all keyed to `io.darkbloom.provider`, and codesign would
-          # otherwise derive a basename-based identifier here. Duplicate
-          # identifiers between the main executable and this nested binary
-          # are accepted by codesign/--deep (verified locally with this exact
-          # layout); the bundle's designated requirement resolves to the
-          # shared identifier regardless.
+            --keychain "$KEYCHAIN_PATH" --sign "$DEVELOPER_ID" \
+            "$PROVIDER_APP/Contents/MacOS/$ENCLAVE_NAME"
           codesign --force --options runtime --timestamp \
             --identifier "io.darkbloom.provider" \
             --entitlements provider-swift/entitlements.plist \
-            --keychain "$KEYCHAIN_PATH" \
-            --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$CLI_NAME"
+            --keychain "$KEYCHAIN_PATH" --sign "$DEVELOPER_ID" "$PROVIDER_APP"
+          codesign --verify --deep --strict --verbose=2 "$PROVIDER_APP"
+          # Copy already-signed helper code so both runtime and legacy views
+          # carry identical bytes and detached metallib signature attributes.
+          ditto "$PROVIDER_APP/Contents/MacOS/mlx.metallib" "$APP/Contents/MacOS/mlx.metallib"
+          ditto "$PROVIDER_APP/Contents/MacOS/$ENCLAVE_NAME" "$APP/Contents/MacOS/$ENCLAVE_NAME"
+          test "$(readlink "$APP/Contents/MacOS/$CLI_NAME")" = \
+            '../Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom'
+          cmp "$APP/Contents/MacOS/mlx.metallib" "$PROVIDER_APP/Contents/MacOS/mlx.metallib"
+          cmp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$PROVIDER_APP/Contents/MacOS/$ENCLAVE_NAME"
           # GUI main executable: its own entitlements (network only — no
           # keychain-access-groups / application-identifier / aps-environment)
           # so profile authorization stays a CLI-only property. Its signing
@@ -566,14 +565,14 @@ jobs:
             --sign "$DEVELOPER_ID" "$APP"
 
           codesign --verify --deep --strict --verbose=2 "$APP"
-          codesign --verify --verbose=2 "$APP/Contents/MacOS/$CLI_NAME"
+          codesign --verify --verbose=2 "$PROVIDER_APP/Contents/MacOS/$CLI_NAME"
           codesign --verify --verbose=2 "$APP/Contents/MacOS/$APP_BINARY_NAME"
 
           # Packaged post-sign smoke: the release-candidate evaluator must be
           # exposed by the exact signed main executable. This checks command
           # wiring/help only; CI never downloads or runs model weights.
           SIGNED_BENCHMARK_HELP=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
-            "$APP/Contents/MacOS/$CLI_NAME" benchmark --help)
+            "$PROVIDER_APP/Contents/MacOS/$CLI_NAME" benchmark --help)
           printf '%s\n' "$SIGNED_BENCHMARK_HELP" \
             | grep -F -- '--scheduler-prefill-decision'
 
@@ -583,7 +582,7 @@ jobs:
           # silently no-ops. Fail the build instead of shipping a broken
           # attestation.
           EXPECTED_ACCESS_GROUP="SLDQ2GJ6TL.io.darkbloom.provider"
-          ENTITLEMENTS=$(codesign -d --entitlements - --xml "$APP/Contents/MacOS/$CLI_NAME" 2>&1 || true)
+          ENTITLEMENTS=$(codesign -d --entitlements - --xml "$PROVIDER_APP/Contents/MacOS/$CLI_NAME" 2>&1 || true)
           if ! echo "$ENTITLEMENTS" | grep -q "keychain-access-groups"; then
             echo "::error::Signed CLI is missing keychain-access-groups entitlement"
             echo "$ENTITLEMENTS"
@@ -602,7 +601,7 @@ jobs:
           #       se) is what blocks even-root debugger attach / dylib injection;
           #       Developer ID + notarization strips it.
           rm -f /tmp/cli-ents.plist
-          codesign -d --entitlements /tmp/cli-ents.plist --xml "$APP/Contents/MacOS/$CLI_NAME" 2>/dev/null || true
+          codesign -d --entitlements /tmp/cli-ents.plist --xml "$PROVIDER_APP/Contents/MacOS/$CLI_NAME" 2>/dev/null || true
           # Fail loudly if extraction produced nothing — otherwise the
           # get-task-allow check below would pass vacuously on an empty file.
           if [ ! -s /tmp/cli-ents.plist ]; then
@@ -643,7 +642,7 @@ jobs:
             echo "::error::Bundle designated requirement lost the Apple anchor: $APP_DR"
             exit 1
           }
-          CLI_SIGNING_ID=$(codesign -dvvv "$APP/Contents/MacOS/$CLI_NAME" 2>&1 | awk -F= '/^Identifier=/{print $2; exit}')
+          CLI_SIGNING_ID=$(codesign -dvvv "$PROVIDER_APP/Contents/MacOS/$CLI_NAME" 2>&1 | awk -F= '/^Identifier=/{print $2; exit}')
           if [ "$CLI_SIGNING_ID" != "io.darkbloom.provider" ]; then
             echo "::error::Co-bundled CLI identifier drifted to '$CLI_SIGNING_ID' — fan-helper XPC, APNs topic, and keychain group authorization depend on io.darkbloom.provider"
             exit 1
@@ -683,7 +682,7 @@ jobs:
           # non-executable metallib here, then byte-matches all three against
           # the app copies before making the release visible.
           mkdir -p "$STAGE/bin"
-          cp "$APP/Contents/MacOS/$CLI_NAME" "$STAGE/bin/$CLI_NAME"
+          cp "$PROVIDER_APP/Contents/MacOS/$CLI_NAME" "$STAGE/bin/$CLI_NAME"
           cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$ENCLAVE_NAME"
           cp "$APP/Contents/MacOS/mlx.metallib" "$STAGE/bin/mlx.metallib"
 
@@ -740,6 +739,7 @@ jobs:
           # the distribution artifact can be rebuilt or uploaded.
           STAGE="${{ steps.bundle.outputs.stage }}"
           APP="$STAGE/Darkbloom.app"
+          PROVIDER_APP="$APP/Contents/Helpers/DarkbloomProvider.app"
           xcrun stapler staple "$APP"
           xcrun stapler validate "$APP"
           spctl --assess --type execute --verbose=4 "$APP"
@@ -747,7 +747,7 @@ jobs:
 
           # Stapling the bundle must not change the executable bytes registered
           # with the coordinator and verified by provider self-update.
-          cmp "$STAGE/bin/$CLI_NAME" "$APP/Contents/MacOS/$CLI_NAME"
+          cmp "$STAGE/bin/$CLI_NAME" "$PROVIDER_APP/Contents/MacOS/$CLI_NAME"
           cmp "$STAGE/bin/$ENCLAVE_NAME" "$APP/Contents/MacOS/$ENCLAVE_NAME"
           cmp "$STAGE/bin/mlx.metallib" "$APP/Contents/MacOS/mlx.metallib"
 
@@ -830,10 +830,22 @@ jobs:
             -f "$LEGACY_BUNDLE" \
             -C "$SMOKE_ROOT"
           FINAL_APP_BIN="$SMOKE_ROOT/Darkbloom.app/Contents/MacOS"
+          FINAL_PROVIDER_APP="$SMOKE_ROOT/Darkbloom.app/Contents/Helpers/DarkbloomProvider.app"
+          FINAL_PROVIDER_BIN="$FINAL_PROVIDER_APP/Contents/MacOS"
+          test "$(readlink "$FINAL_APP_BIN/$CLI_NAME")" = \
+            '../Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom'
+          test ! -L "$FINAL_PROVIDER_BIN/$CLI_NAME"
+          test "$(stat -f '%Lp' "$FINAL_PROVIDER_BIN/mlx.metallib")" = 644
+          cmp "$FINAL_PROVIDER_BIN/mlx.metallib" "$FINAL_APP_BIN/mlx.metallib"
+          cmp "$FINAL_PROVIDER_BIN/$CLI_NAME" "$SMOKE_ROOT/bin/$CLI_NAME"
+          test -s "$FINAL_PROVIDER_APP/Contents/embedded.provisionprofile"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$FINAL_PROVIDER_APP/Contents/Info.plist")" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$FINAL_PROVIDER_APP/Contents/Info.plist")" = 'io.darkbloom.provider'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$FINAL_PROVIDER_APP/Contents/Info.plist")" = 'darkbloom'
           FINAL_FLAT_BIN="$SMOKE_ROOT/bin"
           FINAL_APP_METALLIB="$FINAL_APP_BIN/mlx.metallib"
           FINAL_FLAT_METALLIB="$FINAL_FLAT_BIN/mlx.metallib"
-          test "$(stat -f '%Lp' "$FINAL_APP_BIN/$CLI_NAME")" = 755
+          test "$(stat -f '%Lp' "$FINAL_PROVIDER_BIN/$CLI_NAME")" = 755
           test "$(stat -f '%Lp' "$FINAL_APP_BIN/$ENCLAVE_NAME")" = 755
           test "$(stat -f '%Lp' "$FINAL_APP_METALLIB")" = 644
           test "$(stat -f '%Lp' "$FINAL_FLAT_BIN/$CLI_NAME")" = 755
@@ -880,7 +892,7 @@ jobs:
           test ! -L "$FINAL_FAN_MARKER"
           test "$(tr -d '[:space:]' < "$FINAL_FAN_MARKER")" = "1"
           LC_ALL=C grep -a -q -F 'darkbloom-fan-helper-v1' \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME"
+            "$FINAL_PROVIDER_BIN/$CLI_NAME"
           FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
           codesign --verify --strict --verbose=2 \
             "-R=$FAN_HELPER_REQUIREMENT" "$FINAL_FAN_HELPER"
@@ -890,11 +902,11 @@ jobs:
             DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
             MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
             MLX_GATHER_QMM_EXPERT_SLICES=1 \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke)
+            "$FINAL_PROVIDER_BIN/$CLI_NAME" runtime-smoke)
           printf '%s\n' "$FINAL_SMOKE_OUTPUT"
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
-          REPORTED=$("$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" --version)
+          REPORTED=$("$FINAL_PROVIDER_BIN/$CLI_NAME" --version)
           ./scripts/check-release-version.sh "$VERSION" "$REPORTED"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
             "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "$VERSION"
@@ -924,9 +936,15 @@ jobs:
             exit 1
           fi
           ZIP_APP="$ZIP_SMOKE_ROOT/Darkbloom.app"
+          ZIP_PROVIDER_APP="$ZIP_APP/Contents/Helpers/DarkbloomProvider.app"
+          test "$(readlink "$ZIP_APP/Contents/MacOS/$CLI_NAME")" = \
+            '../Helpers/DarkbloomProvider.app/Contents/MacOS/darkbloom'
+          test ! -L "$ZIP_PROVIDER_APP/Contents/MacOS/$CLI_NAME"
+          test -s "$ZIP_PROVIDER_APP/Contents/embedded.provisionprofile"
+          cmp "$ZIP_APP/Contents/MacOS/mlx.metallib" "$ZIP_PROVIDER_APP/Contents/MacOS/mlx.metallib"
 
           test -x "$ZIP_APP/Contents/MacOS/$APP_BINARY_NAME"
-          test -x "$ZIP_APP/Contents/MacOS/$CLI_NAME"
+          test -x "$ZIP_PROVIDER_APP/Contents/MacOS/$CLI_NAME"
           test -x "$ZIP_APP/Contents/MacOS/$ENCLAVE_NAME"
           test -s "$ZIP_APP/Contents/MacOS/mlx.metallib"
           test -x "$ZIP_APP/Contents/Helpers/$FAN_HELPER_NAME"
@@ -940,12 +958,13 @@ jobs:
           test -s "$ZIP_APP/Contents/embedded.provisionprofile"
           while IFS= read -r bundle_name; do
             test -d "$ZIP_APP/Contents/Resources/$bundle_name"
+            test -d "$ZIP_PROVIDER_APP/Contents/Resources/$bundle_name"
           done < /tmp/darkbloom-swiftpm-resource-bundles.txt
 
           cmp "$APP/Contents/MacOS/$APP_BINARY_NAME" \
             "$ZIP_APP/Contents/MacOS/$APP_BINARY_NAME"
-          cmp "$APP/Contents/MacOS/$CLI_NAME" \
-            "$ZIP_APP/Contents/MacOS/$CLI_NAME"
+          cmp "$PROVIDER_APP/Contents/MacOS/$CLI_NAME" \
+            "$ZIP_PROVIDER_APP/Contents/MacOS/$CLI_NAME"
           cmp "$APP/Contents/MacOS/$ENCLAVE_NAME" \
             "$ZIP_APP/Contents/MacOS/$ENCLAVE_NAME"
           cmp "$APP/Contents/MacOS/mlx.metallib" \
@@ -959,7 +978,7 @@ jobs:
           echo "$ZIP_APP_DR" | grep -qF 'identifier "io.darkbloom.provider"'
           echo "$ZIP_APP_DR" | grep -qF 'anchor apple generic'
           ZIP_CLI_SIGNING_ID=$(codesign -dvvv \
-            "$ZIP_APP/Contents/MacOS/$CLI_NAME" 2>&1 \
+            "$ZIP_PROVIDER_APP/Contents/MacOS/$CLI_NAME" 2>&1 \
             | awk -F= '/^Identifier=/{print $2; exit}')
           test "$ZIP_CLI_SIGNING_ID" = "io.darkbloom.provider"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
@@ -974,10 +993,10 @@ jobs:
           # exercised against the exact post-staple public artifact.
           ./scripts/qualify-signed-macos-app.sh \
             --expected-version "$VERSION" "$APP_ARCHIVE"
-          ZIP_REPORTED=$("$ZIP_APP/Contents/MacOS/$CLI_NAME" --version)
+          ZIP_REPORTED=$("$ZIP_PROVIDER_APP/Contents/MacOS/$CLI_NAME" --version)
           ./scripts/check-release-version.sh "$VERSION" "$ZIP_REPORTED"
           ZIP_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
-            "$ZIP_APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
+            "$ZIP_PROVIDER_APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
           printf '%s\n' "$ZIP_SMOKE_OUTPUT"
           printf '%s\n' "$ZIP_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'

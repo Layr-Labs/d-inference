@@ -5,6 +5,26 @@ import Testing
 
 @Suite("FreshInstall hermetic CLI harness", .serialized)
 struct FreshInstallCLIHarnessTests {
+    @Test("Library startup and refresh use runtime-only catalog snapshots")
+    @MainActor
+    func libraryBrowsingSkipsStoragePlans() async throws {
+        let harness = try FreshInstallHarness()
+        defer { harness.cleanup() }
+        let library = ModelLibraryStore(live: harness.modelRunner())
+
+        await library.start()
+        #expect(library.models.map(\.id) == [FreshInstallHarness.modelID])
+        #expect(library.models.first?.fit == .fits)
+        await library.refresh()
+
+        #expect(try harness.invocations() == [
+            ["models", "list", "--json", "--all"],
+            ["models", "catalog", "--json", "--include-runtime-eligibility"],
+            ["models", "list", "--json", "--all"],
+            ["models", "catalog", "--json", "--include-runtime-eligibility"],
+        ])
+    }
+
     @Test("all onboarding machine contracts stay inside temporary state")
     func allMachineContractsAreHermetic() async throws {
         let harness = try FreshInstallHarness()
@@ -46,7 +66,7 @@ struct FreshInstallCLIHarnessTests {
         #expect(enrolledDoctor.reportsDarkbloomEnrollment)
 
         let preparation = OnboardingPreparationService(
-            catalog: harness.modelRunner(),
+            catalog: harness.modelRunner(includeDownloadPlans: true),
             startCLI: ProcessSetupStartCLI(
                 runner: harness.providerRunner(),
                 timeout: .seconds(2)

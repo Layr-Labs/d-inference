@@ -11,75 +11,92 @@ struct LocalAPICredentialsView: View {
     var body: some View {
         if endpoint.requiresAuthentication {
             VStack(alignment: .leading, spacing: 8) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(LocalAPIPresentation.apiKeyLabel(isLive: isLive).uppercased())
-                        .font(.system(size: 9, weight: .bold))
-                        .tracking(0.8)
-                        .foregroundStyle(.secondary)
+                Text(LocalAPIPresentation.apiKeyLabel(isLive: isLive))
+                    .font(.system(size: 12))
+                    .foregroundStyle(StudioPalette.secondaryInk)
 
-                    if isRevealed {
-                        Text(endpoint.apiKey ?? "")
-                            .font(.system(size: 11, design: .monospaced))
-                            .lineLimit(1)
-                            .textSelection(.enabled)
-                            .accessibilityHidden(true)
-                    } else {
-                        Text("••••••••••••••••••••••••")
-                            .font(.system(size: 11, design: .monospaced))
-                            .lineLimit(1)
-                            .accessibilityHidden(true)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 16) {
+                        keyValue
+                        Spacer(minLength: 0)
+                        keyActions
+                    }
+                    VStack(alignment: .leading, spacing: 10) {
+                        keyValue
+                        keyActions
                     }
                 }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(LocalAPIPresentation.apiKeyLabel(isLive: isLive))
-                .accessibilityValue(isRevealed ? "Revealed" : "Hidden")
 
-                HStack(spacing: 12) {
-                    Button(isRevealed ? "Hide" : (isLive ? "Reveal key" : "Reveal sample key")) {
-                        onReveal(!isRevealed)
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(
-                        isRevealed
-                            ? "Hide \(LocalAPIPresentation.apiKeyLabel(isLive: isLive))"
-                            : "Reveal \(LocalAPIPresentation.apiKeyLabel(isLive: isLive))"
-                    )
-
-                    Button {
-                        onCopy(.apiKey)
-                    } label: {
-                        Label(
-                            copiedItem == .apiKey
-                                ? "Copied"
-                                : (isLive ? "Copy key" : "Copy sample key"),
-                            systemImage: copiedItem == .apiKey ? "checkmark" : "doc.on.doc"
-                        )
-                    }
-                    .buttonStyle(.bordered)
-                    .accessibilityLabel("Copy \(LocalAPIPresentation.apiKeyLabel(isLive: isLive))")
-
-                    Spacer(minLength: 0)
+                DisclosureGroup("Key storage") {
+                    Text(LocalAPIPresentation.credentialsDetail(isLive: isLive))
+                        .font(.system(size: 12))
+                        .foregroundStyle(StudioPalette.secondaryInk)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 7)
                 }
-
-                Text(LocalAPIPresentation.credentialsDetail(isLive: isLive))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                .font(.system(size: 11))
+                .foregroundStyle(StudioPalette.secondaryInk)
+                .padding(.top, 3)
             }
         } else {
             Label {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("Authentication is disabled")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text("Any process that can reach this address can send inference requests.")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(StudioPalette.ink)
+                    Text("Anyone who can reach this address can send requests.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(StudioPalette.secondaryInk)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             } icon: {
-                Image(systemName: "exclamationmark.triangle.fill")
+                Image(systemName: "exclamationmark.triangle")
                     .foregroundStyle(ProductPalette.warning)
             }
             .accessibilityElement(children: .combine)
         }
+    }
+
+    private var keyValue: some View {
+        Group {
+            if isRevealed {
+                Text(endpoint.apiKey ?? "")
+                    .textSelection(.enabled)
+                    .accessibilityHidden(true)
+            } else {
+                Text("••••••••••••••••••••••••")
+                    .accessibilityHidden(true)
+            }
+        }
+        .font(.system(size: 13, design: .monospaced))
+        .foregroundStyle(StudioPalette.ink)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(LocalAPIPresentation.apiKeyLabel(isLive: isLive))
+        .accessibilityValue(isRevealed ? "Revealed" : "Hidden")
+    }
+
+    private var keyActions: some View {
+        HStack(spacing: 15) {
+            Button(isRevealed ? "Hide" : "Reveal") {
+                onReveal(!isRevealed)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(
+                isRevealed
+                    ? "Hide \(LocalAPIPresentation.apiKeyLabel(isLive: isLive))"
+                    : "Reveal \(LocalAPIPresentation.apiKeyLabel(isLive: isLive))"
+            )
+
+            LocalAPICopyButton(
+                title: isLive ? "Copy key" : "Copy sample key",
+                item: .apiKey, copiedItem: copiedItem, onCopy: onCopy
+            )
+            .accessibilityLabel("Copy \(LocalAPIPresentation.apiKeyLabel(isLive: isLive))")
+        }
+        .font(.system(size: 12, weight: .medium))
+        .foregroundStyle(StudioPalette.accent)
+        .fixedSize()
     }
 }

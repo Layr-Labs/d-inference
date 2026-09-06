@@ -49,18 +49,30 @@ struct MyMacsStateView: View {
                 }
 
             case .signedOut:
-                ContentUnavailableView {
-                    Label("Sign in to see your Macs", systemImage: "person.crop.circle.badge.exclamationmark")
-                } description: {
-                    // A live sign-in failure lands here as `message`; absent
-                    // one, the explanation stays preview-deterministic.
-                    Text(
-                        message
-                            ?? "My Macs is account-scoped. Sign in to Darkbloom, then return here to see linked machines."
-                    )
-                } actions: {
-                    primaryAction
+                HStack(alignment: .center, spacing: 42) {
+                    Image(systemName: "rectangle.3.group")
+                        .font(.system(size: 88, weight: .ultraLight))
+                        .foregroundStyle(StudioPalette.accent)
+                        .frame(width: 180, height: 200)
+                        .background(StudioPalette.accentSoft, in: RoundedRectangle(cornerRadius: 28))
+                    VStack(alignment: .leading, spacing: 18) {
+                        Text("One place for\nevery Mac.")
+                            .font(DarkbloomTheme.chivo(34))
+                            .tracking(-1)
+                            .accessibilityAddTraits(.isHeader)
+                        Text(message ?? "Sign in to see your linked Macs, check their activity, and manage how they contribute to Darkbloom.")
+                            .font(.system(size: 14))
+                            .foregroundStyle(StudioPalette.secondaryInk)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: 340, alignment: .leading)
+                        primaryAction.buttonStyle(StudioPrimaryButtonStyle())
+                        Text("Local AI in Studio works without network setup.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(StudioPalette.secondaryInk)
+                    }
+                    .multilineTextAlignment(.leading)
                 }
+                .padding(.vertical, 44)
 
             case .empty:
                 ContentUnavailableView {

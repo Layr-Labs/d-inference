@@ -187,6 +187,8 @@ Choose your country of residence in bank setup and use a bank account in that co
 
 For international bank withdrawals, enter a USD amount and select **Review withdrawal**. Review the estimated local deposit, destination, withdrawal fee and expected timing, then select **Confirm withdrawal**. Reviewing does not deduct earnings. An expired estimate must be refreshed. If a response is interrupted, **Check withdrawal** resolves the existing withdrawal before allowing another. The same browser remembers that confirmation when you reload or reopen the page, including when your remaining balance is zero.
 
+If history shows **Needs review**, contact support with the withdrawal ID. Its funds remain reserved until the outcome is established; do not submit another payment for that withdrawal.
+
 In history, **Sent to bank** means the transfer left Stripe; it can take additional time for your bank to credit it. **Returned to balance** means the transfer was returned and your withdrawable earnings were restored. Your bank can charge additional fees. Existing Connect withdrawals keep their current payout schedule. See the [pricing reference](../reference/pricing-model.md#global-payouts-withdrawals).
 
 The form shows the bank's published deposit minimum and maximum in local currency. If an amount is outside those limits, adjust the USD withdrawal and review again; Stripe confirms the exchange rate. When new withdrawals are paused, an unsubmitted confirmation is released. Already-submitted withdrawals can still be checked.

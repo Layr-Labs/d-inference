@@ -121,6 +121,8 @@ func (c Country) Limits() RecipientLimits {
 }
 
 func CurrencyExponent(currency string) int {
+	// Global Payouts explicitly publishes 132300.00 MGA as 13230000 API units;
+	// keep MGA at exponent 2 for this API.
 	switch strings.ToLower(currency) {
 	case "bif", "clp", "djf", "gnf", "jpy", "kmf", "krw", "pyg", "rwf", "ugx", "vnd", "vuv", "xaf", "xof", "xpf":
 		return 0

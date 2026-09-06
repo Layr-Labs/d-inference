@@ -100,14 +100,33 @@ it("does not send a confirmation unless its identity was saved successfully", as
   expect(api.withdrawStripe).not.toHaveBeenCalled();
 });
 
-it("blocks new quotes if saved confirmation recovery cannot be read", async () => {
-  vi.spyOn(localStorage,"getItem").mockImplementation(() => { throw new Error("storage unavailable"); });
+it.each(["unavailable", "malformed"])("blocks Global quotes if saved confirmation recovery is %s", async (storage) => {
+  vi.spyOn(localStorage,"getItem").mockImplementation(() => {
+    if (storage === "unavailable") throw new Error("storage unavailable");
+    return "{";
+  });
   const toast=vi.fn();
   const { result }=renderHook(() => useStripePayouts({addToast:toast}));
   await waitFor(() => expect(api.fetchStripeStatus).toHaveBeenCalled());
   await act(() => result.current.withdraw());
   expect(api.fetchBankWithdrawalQuote).not.toHaveBeenCalled();
   expect(api.withdrawStripe).not.toHaveBeenCalled();
+});
+
+it.each(["unavailable", "malformed", "saved global quote"])("keeps Connect withdrawals independent of %s browser recovery", async (storage) => {
+  api.fetchStripeStatus.mockResolvedValue({ account_id: "provider-a", configured: true, has_account: true, status: "ready", payout_rail: "connect" });
+  api.withdrawStripe.mockResolvedValue({ status: "transferred", method: "standard" });
+  const read = vi.spyOn(localStorage, "getItem").mockImplementation(() => {
+    if (storage === "unavailable") throw new Error("storage unavailable");
+    return storage === "malformed" ? "{" : JSON.stringify(completeQuote);
+  });
+  const { result } = renderHook(() => useStripePayouts({ addToast: testToast }));
+  await waitFor(() => expect(result.current.status?.payout_rail).toBe("connect"));
+  expect(result.current.withdrawConfirmationPending).toBe(false);
+  await act(() => result.current.withdraw());
+  expect(api.withdrawStripe).toHaveBeenCalledWith("10", "standard", undefined);
+  expect(api.fetchBankWithdrawalQuote).not.toHaveBeenCalled();
+  expect(read).not.toHaveBeenCalled();
 });
 
 it("releases a saved confirmation when the server atomically pauses its unsubmitted quote", async () => {

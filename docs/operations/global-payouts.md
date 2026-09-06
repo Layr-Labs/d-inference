@@ -35,13 +35,22 @@ Before activation, review the cost of covering these fees. Before confirming the
 7. Verify the resulting outbound-payment ID and bank arrival independently. `posted` is displayed as **Sent to bank**, because it does not prove the bank has released funds. Confirm the ledger debit once and actual bank credit before declaring the route verified.
 8. Verify the quoted fee schedule before a destination's first confirmed withdrawal, then monitor actual charges, rejection and return patterns. The implementation keeps the user-facing standard withdrawal fee at zero; Darkbloom pays Stripe's payout charges. Published local-currency limits are shown before review and enforced against Stripe's credited quote amount; USD destination limits are rejected before a quote request. Stripe can impose additional bank limits. Additional country-specific capabilities or verifications must be resolved before treating that route as verified.
 
-## Verify
+### Troubleshooting
+
+- **403 from Stripe:** inspect exact key permissions. Do not rotate unrelated credentials or substitute a broad secret key.
+- **Country absent:** reconcile the live account's menu and API capability with `Countries`. Public documentation alone does not establish account entitlement.
+- **Quote rejected:** no withdrawal is submitted. `recipient_amount_limit` names the local deposit threshold; adjust the USD amount and review again. Check destination requirements, bank eligibility, currency, limits, required payee verification and funding access.
+- **Unknown send result:** use the internal ID and `gp-withdraw-<id>` to find the original Stripe request. Do not independently pay from the Dashboard or credit the ledger before establishing the outcome.
+- **Posted but no bank credit:** use the Stripe payout detail and bank trace. Posted is not a guaranteed delivery receipt.
+- **Returned:** confirm Stripe's current state. The signed webhook or reconciler restores earnings once. Do not add a second manual refund.
+
+## Verification
 
 The source-of-truth payout row is `global_payout_withdrawals` and its `data` object. Quote state is `quoted`; a confirmed withdrawal atomically debits both balance columns and moves to `pending`. Stripe then supplies `processing`, `posted`, `failed`, `canceled`, or `returned`. Refunds are atomic with the state update and applied once. State cannot regress from posted to processing or reopen after a refund (`coordinator/store/global_payouts.go`, `applyGlobalResult`).
 
 Expired unconfirmed quotes are pruned according to the [retention policy](../reference/pricing-model.md#global-payouts-withdrawals); confirmed payout records are preserved.
 
-Each internal quote ID identifies at most one confirmed withdrawal. Retries use its persisted Stripe idempotency key and immutable request. Pending withdrawals with no outbound-payment ID stop resubmitting after 12 hours. A definitive first-send rejection is persisted before the refund transaction and reused if the refund write fails. Known external payouts continue to reconcile against their original funding account after configuration changes. An obsolete unconfirmed quote is invalidated before debit. A debited intent that has never reached a send is refunded; prior ambiguous attempts stay held. After an ambiguous first attempt, subsequent API errors do not automatically refund: changed permissions or funding configuration must not cause a refund when money may already have moved (`coordinator/api/global_payouts_reconcile.go`, `syncGlobalPayout`).
+Each internal quote ID identifies at most one confirmed withdrawal. Retries use its persisted Stripe idempotency key and immutable request. Pending withdrawals with no outbound-payment ID stop resubmitting after 12 hours and receive `failure_code=manual_reconciliation_required`. They keep their debit and remain visible in history, but subsequent automatic scans and claims skip them. Investigate the original request before any manual action; a verified external ID allows readback reconciliation to resume. A definitive first-send rejection is persisted before the refund transaction and reused if the refund write fails. Known external payouts continue to reconcile against their original funding account after configuration changes. An obsolete unconfirmed quote is invalidated before debit. A debited intent that has never reached a send is refunded; prior ambiguous attempts stay held. After an ambiguous first attempt, subsequent API errors do not automatically refund: changed permissions or funding configuration must not cause a refund when money may already have moved (`coordinator/api/global_payouts_reconcile.go`, `syncGlobalPayout`).
 
 Inspect without exposing the stored request or recipient information:
 
@@ -56,15 +65,6 @@ WHERE status <> 'quoted'
 ORDER BY submitted_at DESC
 LIMIT 50;
 ```
-
-## Troubleshooting
-
-- **403 from Stripe:** inspect exact key permissions. Do not rotate unrelated credentials or substitute a broad secret key.
-- **Country absent:** reconcile the live account's menu and API capability with `Countries`. Public documentation alone does not establish account entitlement.
-- **Quote rejected:** no withdrawal is submitted. `recipient_amount_limit` names the local deposit threshold; adjust the USD amount and review again. Check destination requirements, bank eligibility, currency, limits, required payee verification and funding access.
-- **Unknown send result:** use the internal ID and `gp-withdraw-<id>` to find the original Stripe request. Do not independently pay from the Dashboard or credit the ledger before establishing the outcome.
-- **Posted but no bank credit:** use the Stripe payout detail and bank trace. Posted is not a guaranteed delivery receipt.
-- **Returned:** confirm Stripe's current state. The signed webhook or reconciler restores earnings once. Do not add a second manual refund.
 
 ## Rollback
 

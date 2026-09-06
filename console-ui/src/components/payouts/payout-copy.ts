@@ -267,6 +267,9 @@ export function withdrawalStatusPresentation(
   refunded?: boolean,
   reason?: string,
 ): WithdrawalStatusPresentation {
+  if (status === "pending" && reason === "manual_reconciliation_required") {
+    return { label: "Needs review", detail: "Contact support to check this withdrawal. Your funds remain reserved; do not submit another payment." };
+  }
   if (status === "processing" && reason === "under_review") {
     return { label: "Under review", detail: "Stripe is reviewing this withdrawal. You do not need to submit it again." };
   }

@@ -9,6 +9,8 @@ import (
 var ErrPayoutConflict = errors.New("payout state changed; refresh and try again")
 var ErrPayoutQuoteExpired = errors.New("withdrawal quote expired; review a fresh quote")
 
+const GlobalPayoutManualReview = "manual_reconciliation_required"
+
 // GlobalPayoutStore is discovered through As so CachedStore and test wrappers
 // preserve access. These tables do not write users or require user-cache invalidation.
 type GlobalPayoutStore interface {
@@ -111,8 +113,15 @@ func globalQuotePruneLimit(limit int) int {
 func globalPayoutRefund(status string) bool {
 	return status == "failed" || status == "canceled" || status == "returned"
 }
+
+// RequiresManualReconciliation parks unknown outcomes without refunding them.
+// Attaching a verified external payment ID permits readback reconciliation again.
+func (p GlobalPayout) RequiresManualReconciliation() bool {
+	return p.ExternalID == "" && p.Rejection == nil && p.FailureCode == GlobalPayoutManualReview
+}
+
 func globalPayoutReconcile(p GlobalPayout, now time.Time) bool {
-	return (p.Status == "pending" || p.Status == "processing" || (p.Status == "posted" && now.Sub(p.SubmittedAt) < 90*24*time.Hour)) && !p.LeaseUntil.After(now) && now.Sub(p.CheckedAt) >= time.Minute
+	return !p.RequiresManualReconciliation() && (p.Status == "pending" || p.Status == "processing" || (p.Status == "posted" && now.Sub(p.SubmittedAt) < 90*24*time.Hour)) && !p.LeaseUntil.After(now) && now.Sub(p.CheckedAt) >= time.Minute
 }
 
 // applyGlobalResult refuses state regression from stale concurrent readbacks.

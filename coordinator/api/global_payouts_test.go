@@ -220,6 +220,21 @@ func TestGlobalPayoutUnknownOutcomeStopsResubmitting(t *testing.T) {
 	if f.creates != 0 || st.GetWithdrawableBalance(u.AccountID) != 10_000_000 {
 		t.Fatal("old unknown outcome was resent or refunded")
 	}
+	parked, err := st.GetGlobalPayout(p.ID)
+	if err != nil || !parked.RequiresManualReconciliation() {
+		t.Fatalf("old unknown outcome was not parked: %+v %v", parked, err)
+	}
+	if err := s.syncGlobalPayout(httptest.NewRequest("GET", "/", nil).Context(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := st.GetGlobalPayout(p.ID)
+	if after.DispatchAttempts != parked.DispatchAttempts || !after.CheckedAt.Equal(parked.CheckedAt) {
+		t.Fatal("manual reconciliation retry wrote or claimed the row again")
+	}
+	rows, err := st.ListGlobalPayoutsToReconcile(time.Now().Add(24*time.Hour), 200)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("manual payout returned to automatic scan: %+v %v", rows, err)
+	}
 }
 
 func TestGlobalPayoutAmbiguousSendThenPermissionLossDoesNotRefund(t *testing.T) {

@@ -31,7 +31,7 @@ func (s *Server) syncGlobalPayout(ctx context.Context, id string) error {
 		if e != nil {
 			return e
 		}
-		if p.Refunded {
+		if p.Refunded || p.RequiresManualReconciliation() {
 			return nil
 		}
 		return errors.New("payout reconciliation is already in progress")
@@ -42,6 +42,15 @@ func (s *Server) syncGlobalPayout(ctx context.Context, id string) error {
 	}
 	if p.Rejection != nil {
 		return repo.ApplyGlobalPayout(id, store.GlobalPayoutResult{Status: "failed", FailureCode: p.Rejection.Code}, time.Now())
+	}
+	// Stop automatic work before the idempotency retention horizon, including
+	// old ambiguous requests whose original funding configuration has changed.
+	if p.ExternalID == "" && time.Since(p.SubmittedAt) > 12*time.Hour {
+		if err := repo.ApplyGlobalPayout(id, store.GlobalPayoutResult{FailureCode: store.GlobalPayoutManualReview}, time.Now()); err != nil {
+			return err
+		}
+		s.logger.Error("global payout outcome requires manual reconciliation", "withdrawal_id", p.ID)
+		return nil
 	}
 	var request globalpayouts.PaymentRequest
 	if err = json.Unmarshal(p.Request, &request); err != nil {
@@ -63,12 +72,6 @@ func (s *Server) syncGlobalPayout(ctx context.Context, id string) error {
 	if p.ExternalID != "" {
 		remote, err = client.Payment(ctx, p.ExternalID)
 	} else {
-		// Never resubmit after the retention horizon of the idempotency key.
-		// Preserve the debit and surface the exception for manual reconciliation.
-		if time.Since(p.SubmittedAt) > 12*time.Hour {
-			s.logger.Error("global payout outcome requires manual reconciliation", "withdrawal_id", p.ID)
-			return repo.ApplyGlobalPayout(id, store.GlobalPayoutResult{FailureCode: "confirmation_pending"}, time.Now())
-		}
 		remote, err = client.Send(ctx, p.Request, "gp-withdraw-"+p.ID)
 	}
 	if err != nil {

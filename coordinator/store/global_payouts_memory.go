@@ -120,7 +120,7 @@ func (s *MemoryStore) ClaimGlobalPayout(id string, now time.Time) (bool, error) 
 	if !ok {
 		return false, ErrNotFound
 	}
-	if p.Status == "quoted" || p.Refunded || p.LeaseUntil.After(now) {
+	if p.Status == "quoted" || p.Refunded || p.RequiresManualReconciliation() || p.LeaseUntil.After(now) {
 		return false, nil
 	}
 	if p.ExternalID == "" && p.Rejection == nil {

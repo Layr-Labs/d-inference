@@ -29,7 +29,7 @@ export function useStripeWithdrawal(opts: StripePayoutsOptions) {
         fetchStripeStatus(refresh),
         fetchStripeWithdrawals(20).catch(() => [] as StripeWithdrawal[]),
       ]);
-      const saved = s.account_id ? loadBankConfirmation(s.account_id) : null;
+      const saved = s.payout_rail === "global" && s.account_id ? loadBankConfirmation(s.account_id) : null;
       if (saved) {
         setWithdrawAmountState(saved.amount_usd);
         setWithdrawQuote(saved);
@@ -71,7 +71,7 @@ export function useStripeWithdrawal(opts: StripePayoutsOptions) {
     const global = status?.payout_rail === "global";
     try {
       if (!enabled || !recoveryLoaded) throw new Error("We are still checking your previous withdrawals. Please refresh your payout details before withdrawing.");
-      const saved = status?.account_id ? loadBankConfirmation(status.account_id) : null;
+      const saved = global && status?.account_id ? loadBankConfirmation(status.account_id) : null;
       if (saved && saved.id !== withdrawQuote?.id) {
         setWithdrawAmountState(saved.amount_usd);
         setWithdrawQuote(saved);

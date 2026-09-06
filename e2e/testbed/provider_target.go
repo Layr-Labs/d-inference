@@ -161,16 +161,20 @@ func validateProviderTargets(targets []ProviderTarget, total int) error {
 // HostObservation records facts separately from the decisions made about them.
 // Hot post-work telemetry never changes the outcome of a completed request.
 type HostObservation struct {
-	HardwareModel       string  `json:"hardware_model"`
-	MemoryBytes         uint64  `json:"memory_bytes"`
-	GPUTemperature      float64 `json:"gpu_temperature_c"`
-	Load1               float64 `json:"load1"`
-	FreeBytes           uint64  `json:"free_bytes"`
-	UnexpectedProcesses []int   `json:"unexpected_processes"`
-	OwnedProcesses      []int   `json:"owned_processes"`
+	MeasurementErrors   map[string]string `json:"measurement_errors,omitempty"`
+	HardwareModel       string            `json:"hardware_model"`
+	MemoryBytes         uint64            `json:"memory_bytes"`
+	GPUTemperature      float64           `json:"gpu_temperature_c"`
+	Load1               float64           `json:"load1"`
+	FreeBytes           uint64            `json:"free_bytes"`
+	UnexpectedProcesses []int             `json:"unexpected_processes"`
+	OwnedProcesses      []int             `json:"owned_processes"`
 }
 
 func (o HostObservation) EntryReady() error {
+	if len(o.MeasurementErrors) != 0 {
+		return fmt.Errorf("invalid host measurements")
+	}
 	if len(o.UnexpectedProcesses) > 0 {
 		return fmt.Errorf("unexpected host processes")
 	}

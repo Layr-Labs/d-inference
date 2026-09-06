@@ -126,15 +126,18 @@ func runConnectedCacheHTTP(t *testing.T, inputEnvironment, outputEnvironment str
 		MTPMode: in.MTPMode, MTPDrafterPath: in.AssistantPath, KVBackend: in.Backend, MaxConcurrent: in.MaxConcurrent, ExpectKVBackend: in.Backend,
 	})
 	suite.Logger = slog.New(routes)
-	require.NoError(t, suite.Start(ctx))
+	started := false
 	defer func() {
 		if in.Providers == nil {
 			suite.Stop()
 			return
 		}
 		var bindingErr error
-		report.Hosts, bindingErr = suite.HostBindings()
+		if started {
+			report.Hosts, bindingErr = suite.HostBindings()
+		}
 		cleanupErr := suite.StopAndWait()
+		report.HostLifecycles = suite.HostLifecycles()
 		for i, p := range suite.Providers {
 			if i < len(report.Hosts) {
 				report.Hosts[i].Cleanup = p.HostCleanup()
@@ -143,6 +146,8 @@ func runConnectedCacheHTTP(t *testing.T, inputEnvironment, outputEnvironment str
 		// Cleanup has run before any assertion can terminate this deferred function.
 		require.NoError(t, errors.Join(bindingErr, cleanupErr), "owned host binding or cleanup failed")
 	}()
+	require.NoError(t, suite.Start(ctx))
+	started = true
 	model := in.Artifact.ModelID
 	providers, err := suite.BoundProviders()
 	require.NoError(t, err)

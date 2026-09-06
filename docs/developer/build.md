@@ -73,6 +73,11 @@ understand what `make` runs.
 
 ### 3. Coordinator (Go)
 
+The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
+its test binary after helper changes. The helper waits within the existing
+five-minute prelaunch bound for GPU ≤42°C and load1 ≤4, under the same control
+lease used after launch. See the [test procedure](test.md#connected-coordinatorprovider-http-cache-gate).
+
 CI checks formatting of tracked Go source while preserving frozen report
 evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).
 

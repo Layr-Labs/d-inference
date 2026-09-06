@@ -53,6 +53,8 @@ func execCommandContext(ctx context.Context, name string, args ...string) *exec.
 }
 
 type Suite struct {
+	providerAttempts []*Provider
+
 	Ctx    context.Context
 	Logger *slog.Logger
 	Config SuiteConfig
@@ -239,8 +241,14 @@ func (s *Suite) Stop() { _ = s.StopAndWait() }
 
 func (s *Suite) StopAndWait() error {
 	var result error
-	for _, p := range s.Providers {
-		result = errors.Join(result, p.StopAndWait())
+	seen := make(map[*Provider]bool)
+	for _, providers := range [][]*Provider{s.Providers, s.providerAttempts} {
+		for _, p := range providers {
+			if !seen[p] {
+				seen[p] = true
+				result = errors.Join(result, p.StopAndWait())
+			}
+		}
 	}
 	if s.Config.ProviderRelay != nil {
 		s.Config.ProviderRelay.Close()
@@ -375,6 +383,9 @@ func (s *Suite) startProviders() error {
 				target := s.Config.ProviderTargets[providerIdx]
 				p.Target = &target
 				p.suiteNonce = s.targetNonce
+			}
+			if p.Target != nil {
+				s.providerAttempts = append(s.providerAttempts, p)
 			}
 			if err := p.Start(s.Ctx, providerURL, ProviderConfig{
 				ModelIDs:                   modelIDs,

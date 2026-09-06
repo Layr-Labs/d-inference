@@ -967,6 +967,16 @@ token IDs are accepted.
 
 ## Connected coordinator/provider HTTP cache gate
 
+Owned two-host startup waits up to five minutes for the existing GPU ≤42°C
+and load1 ≤4 entry thresholds. Identity, disk, nonfinite measurements and
+foreign processes still refuse immediately. Lease pings and cancellation
+cover preparation; EOF, stop, signals or deadlines prevent a later launch.
+Reports retain `host_lifecycles` for failed and unattempted targets, including
+readiness observations, helper/fixture identities, `provider_started`, and
+terminal/cleanup receipts. A started Go/helper fixture is not evidence that
+a provider started, and a refused startup remains a failed correctness run.
+
+
 `TestIntegrationConnectedCacheHTTP` extends the existing real-provider testbed with
 an opt-in ten-case HTTP gate. It starts an isolated in-memory coordinator, two
 normal authenticated provider WebSocket connections, and the real supervised Rust

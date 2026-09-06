@@ -18,20 +18,22 @@ MAX_CONTROL = 1 << 20
 MAX_STATE = 1 << 20
 
 
-def digest(path):
+def digest(path, checkpoint=None):
     value = hashlib.sha256()
     with path.open('rb') as stream:
         for chunk in iter(lambda: stream.read(1 << 20), b''):
+            if checkpoint is not None:
+                checkpoint()
             value.update(chunk)
     return value.hexdigest()
 
 
-def check_file(path, expected):
+def check_file(path, expected, checkpoint=None):
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or path.is_symlink():
         raise ValueError('manifest file must be regular: ' + str(path))
     if (info.st_size != expected['bytes'] or stat.S_IMODE(info.st_mode) != expected['mode']
-            or digest(path) != expected['sha256']):
+            or digest(path, checkpoint) != expected['sha256']):
         raise ValueError('manifest identity differs: ' + str(path))
 
 
@@ -80,19 +82,65 @@ def observe(target, owned=()):
     check_file(Path(target['macmon_path']), target['macmon'])
     raw = subprocess.check_output([target['macmon_path'], 'pipe', '-s', '1', '-i', '200'], text=True, timeout=10)
     temperature = json.loads(raw.splitlines()[0])['temp']['gpu_temp_avg']
-    return {'hardware_model': subprocess.check_output(['sysctl', '-n', 'hw.model'], text=True).strip(),
-            'memory_bytes': int(subprocess.check_output(['sysctl', '-n', 'hw.memsize'], text=True)),
+    return {'hardware_model': subprocess.check_output(['sysctl', '-n', 'hw.model'], text=True, timeout=10).strip(),
+            'memory_bytes': int(subprocess.check_output(['sysctl', '-n', 'hw.memsize'], text=True, timeout=10)),
             'gpu_temperature_c': temperature, 'load1': os.getloadavg()[0],
             'free_bytes': shutil.disk_usage(str(Path.home())).free,
             'unexpected_processes': rows, 'owned_processes': list(owned)}
 
 
+def entry_refusal(value):
+    if value['unexpected_processes'] or value['owned_processes']:
+        return 'foreign or already-owned processes present', False
+    temperature, load = value['gpu_temperature_c'], value['load1']
+    if not math.isfinite(temperature) or temperature < 0 or not math.isfinite(load) or load < 0:
+        return 'invalid temperature or load observation', False
+    if value['free_bytes'] <= 100*(1 << 30):
+        return 'free disk must exceed 100 GiB', False
+    if temperature > 42 or load > 4:
+        return 'GPU temperature exceeds 42 C or load1 exceeds 4', True
+    return None, False
+
+
 def require_entry(value):
-    if (value['unexpected_processes'] or value['owned_processes']
-            or not math.isfinite(value['gpu_temperature_c']) or not 0 <= value['gpu_temperature_c'] <= 42
-            or not math.isfinite(value['load1']) or not 0 <= value['load1'] <= 4
-            or value['free_bytes'] <= 100*(1 << 30)):
-        raise ValueError('host not ready for measured entry')
+    reason, _ = entry_refusal(value)
+    if reason is not None:
+        raise ValueError('host not ready for measured entry: '+reason)
+
+
+def report_observation(value):
+    # JSON cannot encode nonfinite measurements. Keep their exact classification
+    # beside null numeric fields; invalid measurements still refuse entry.
+    result = dict(value)
+    errors = {key: repr(value[key]) for key in ('gpu_temperature_c', 'load1')
+              if not math.isfinite(value[key])}
+    if errors:
+        result['measurement_errors'] = errors
+        for key in errors:
+            result[key] = None
+    return result
+
+
+def wait_for_entry(target, checkpoint, emit, record, interval=2):
+    """Only transient heat/load may wait; ownership/identity/disk fail closed."""
+    while True:
+        checkpoint()
+        observation = observe(target)
+        reason, retryable = entry_refusal(observation)
+        if (observation['hardware_model'] != target['hardware_model']
+                or observation['memory_bytes'] != target['memory_bytes']):
+            reason, retryable = 'host hardware identity differs', False
+        reported = report_observation(observation)
+        record['entry_observation'] = reported
+        record['entry_reason'] = reason
+        emit({'event': 'entry', 'fixture_pid': os.getpid(), 'observation': reported,
+              'entry_ready': reason is None, 'entry_reason': reason, 'retryable': retryable})
+        checkpoint()  # EOF/stop during telemetry must prevent launch even if ready.
+        if reason is None:
+            return observation
+        if not retryable:
+            raise ValueError('host not ready for measured entry: '+reason)
+        checkpoint(interval)
 
 
 def model_file(snapshot, relative):
@@ -112,11 +160,11 @@ def model_file(snapshot, relative):
     return resolved
 
 
-def verify_models(target, home):
+def verify_models(target, home, checkpoint=None):
     for model in target['models']:
         snapshot = Path(model['snapshot']).resolve(strict=True)
         for name, row in model['files'].items():
-            check_file(model_file(snapshot, name), row)
+            check_file(model_file(snapshot, name), row, checkpoint)
         if target.get('assistant_path') and snapshot == Path(target['assistant_path']).resolve(strict=True):
             continue  # The assistant uses this explicit verified path, not HF discovery.
         # Match the provider's current exact-ID, latest-directory resolver. This
@@ -134,14 +182,22 @@ def verify_models(target, home):
             raise ValueError('provider model resolution differs from selected snapshot')
 
 
-def prepare(request):
+def prepare(request, checkpoint=None, emit=lambda value: None, record=None, created=lambda root: None):
     target, spec = request['target'], request['spec']
+    record = {} if record is None else record
+    if checkpoint is None:
+        deadline = time.monotonic()+300
+        def checkpoint(wait=0):
+            if time.monotonic()+wait >= deadline:
+                raise TimeoutError('owned host prelaunch deadline expired')
+            time.sleep(wait)
+    checkpoint()
     home = Path.home()
     root = canonical_owned_root(target['root'], home)
     if spec['root'] != target['root']:
         raise ValueError('launch root differs from target')
     canonical = home/'.config/darkbloom/provider.toml'
-    if digest(canonical) != target['canonical_config_sha256']:
+    if digest(canonical, checkpoint) != target['canonical_config_sha256']:
         raise ValueError('canonical config differs; no repair performed')
     for relative in ('.darkbloom/telemetry-queue.jsonl', '.darkbloom/telemetry-queue.jsonl.tmp'):
         path = home/relative
@@ -151,7 +207,7 @@ def prepare(request):
     if root == runtime or root in runtime.parents or runtime in root.parents:
         raise ValueError('owned root overlaps source runtime')
     for name, row in target['runtime_files'].items():
-        check_file(safe_file(runtime, name), row)
+        check_file(safe_file(runtime, name), row, checkpoint)
     entitlement = subprocess.run(['/usr/bin/codesign', '-d', '--entitlements', ':-', str(runtime/'darkbloom')],
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=15)
     if entitlement.returncode != 0 or b'keychain-access-groups' in entitlement.stdout:
@@ -160,12 +216,8 @@ def prepare(request):
         snapshot = Path(model['snapshot']).resolve(strict=True)
         if root == snapshot or root in snapshot.parents or snapshot in root.parents:
             raise ValueError('owned root overlaps selected model input')
-    verify_models(target, home)
-    observation = observe(target)
-    require_entry(observation)
-    if (observation['hardware_model'] != target['hardware_model']
-            or observation['memory_bytes'] != target['memory_bytes']):
-        raise ValueError('host hardware identity differs')
+    verify_models(target, home, checkpoint)
+    observation = wait_for_entry(target, checkpoint, emit, record)
     # Hash a hardware identifier with a suite-scoped nonce; never export a raw
     # serial/UUID. Two aliases of one machine cannot claim independent hosts.
     hardware = subprocess.check_output(['ioreg', '-rd1', '-c', 'IOPlatformExpertDevice'], text=True, timeout=10)
@@ -176,18 +228,29 @@ def prepare(request):
     token = base64.b64decode(request['auth_token'], validate=True)
     if not token or len(token) > 4096 or b'\0' in token:
         raise ValueError('invalid private provider token')
-    root.mkdir(mode=0o700)
+    checkpoint()
+    old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, (signal.SIGHUP, signal.SIGTERM, signal.SIGINT))
+    try:
+        root.mkdir(mode=0o700)
+        created(root)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
     (root/'runtime').mkdir(mode=0o700)
     for name, row in target['runtime_files'].items():
         destination = root/'runtime'/name
         destination.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint()
         shutil.copy2(runtime/name, destination)
-        check_file(destination, row)
+        check_file(destination, row, checkpoint)
     (root/'tmp').mkdir(mode=0o700)
     for name, raw in (('provider.toml', spec['config'].encode()), ('auth_token', token)):
+        checkpoint()
         descriptor = os.open(root/name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, 'wb') as stream:
             stream.write(raw)
+    observation = wait_for_entry(target, checkpoint, emit, record)
+    if digest(canonical, checkpoint) != target['canonical_config_sha256']:
+        raise ValueError('canonical config differs before launch; no repair performed')
     return root, canonical, host_id, observation
 
 
@@ -236,15 +299,21 @@ def retire_group(process, record):
         record['failure'] = (record['failure'] or '')+' owned process group still present'
 
 
-def run_owner(command, environment, root, control, emit, lease_seconds=30, deadline_seconds=1800, observation=None):
-    """Own one child group until explicit stop, pipe EOF, lease or deadline."""
+def run_owner(command, environment, root, control, emit, lease_seconds=30, deadline_seconds=1800,
+              observation=None, prepare_launch=None, initial_control=b'', prelaunch_seconds=300):
+    """Own preparation and one child group under the same control pipe and lease."""
     selector = selectors.DefaultSelector()
     selector.register(control, selectors.EVENT_READ)
     process = None
-    record = {'event': 'terminal', 'pid': None, 'exit_code': None, 'failure': None, 'stop_requested': False}
+    launch = {'command': command, 'environment': environment, 'root': root}
+    record = {'event': 'terminal', 'fixture_pid': os.getpid(), 'provider_started': False,
+              'pid': None, 'exit_code': None, 'failure': None, 'stop_requested': False,
+              'group_cleanup_complete': True}
     signals = (signal.SIGHUP, signal.SIGTERM, signal.SIGINT)
     old_handlers = {sig: signal.getsignal(sig) for sig in signals}
     class OwnerInterrupted(Exception):
+        pass
+    class OwnerStopped(Exception):
         pass
     def interrupted(signum, _frame):
         for sig in signals:
@@ -253,63 +322,90 @@ def run_owner(command, environment, root, control, emit, lease_seconds=30, deadl
     for sig in signals:
         signal.signal(sig, interrupted)
     start = last_control = time.monotonic()
-    pending = b''
+    provider_start = None
+    pending = initial_control
+
+    def checkpoint(wait=0):
+        nonlocal pending, last_control
+        until = time.monotonic()+wait
+        while True:
+            now = time.monotonic()
+            if process is None and now-start >= prelaunch_seconds:
+                raise TimeoutError('owned host prelaunch deadline expired')
+            if provider_start is not None and now-provider_start >= deadline_seconds:
+                raise TimeoutError('owned process deadline expired')
+            if now-last_control >= lease_seconds:
+                raise TimeoutError('controller lease expired')
+            while b'\n' in pending:
+                line, pending = pending.split(b'\n', 1)
+                message = json.loads(line)
+                last_control = time.monotonic()
+                kind = message.get('command')
+                if kind == 'stop':
+                    raise OwnerStopped()
+                if kind == 'ping':
+                    continue
+                request_id = message.get('id')
+                if not isinstance(request_id, int) or isinstance(request_id, bool) or request_id <= 0:
+                    raise ValueError('positive control request identity required')
+                if kind == 'observe' and observation is not None:
+                    emit({'event': 'observation', 'id': request_id,
+                          'observation': observation(None if process is None else process.pid)})
+                    continue
+                if kind != 'state':
+                    raise ValueError('unknown controller operation')
+                if process is None:
+                    emit({'event': 'state', 'id': request_id, 'error': 'not_ready', 'retryable': True})
+                    continue
+                path = launch['root']/'daemon-state.json'
+                try:
+                    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                except FileNotFoundError:
+                    emit({'event': 'state', 'id': request_id, 'error': 'not_ready', 'retryable': True})
+                    continue
+                with os.fdopen(descriptor, 'rb') as stream:
+                    info = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_STATE:
+                        raise ValueError('invalid bounded state file')
+                    raw = stream.read(MAX_STATE+1)
+                if len(raw) > MAX_STATE:
+                    raise ValueError('state exceeds limit')
+                emit({'event': 'state', 'id': request_id, 'body': base64.b64encode(raw).decode()})
+            if not selector.select(max(0, min(0.25, until-time.monotonic()))):
+                if time.monotonic() >= until:
+                    return
+                continue
+            chunk = os.read(control.fileno(), 4096)
+            if not chunk:
+                raise OwnerInterrupted('controller pipe EOF')
+            pending += chunk
+            if len(pending) > MAX_CONTROL:
+                raise ValueError('control frame exceeds limit')
+
     try:
-        with (root/'provider.log').open('xb') as log:
+        checkpoint()
+        if prepare_launch is not None:
+            prepare_launch(checkpoint, launch, record)
+        checkpoint()
+        while pending:  # Never launch while a pre-start control frame is incomplete.
+            checkpoint(0.25)
+        with (launch['root']/'provider.log').open('xb') as log:
+            checkpoint()
             previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, signals)
             try:
-                process = subprocess.Popen(command, env=environment, stdout=log, stderr=log, start_new_session=True,
-                                           preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask))
+                process = subprocess.Popen(launch['command'], env=launch['environment'], stdout=log,
+                    stderr=log, start_new_session=True,
+                    preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask))
+                record['pid'] = process.pid
+                record['provider_started'] = True
+                provider_start = time.monotonic()
             finally:
                 signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
-            record['pid'] = process.pid
-            emit({'event': 'started', 'pid': process.pid, 'pgid': process.pid})
+            emit({'event': 'started', 'fixture_pid': os.getpid(), 'pid': process.pid, 'pgid': process.pid})
             while process.poll() is None:
-                now = time.monotonic()
-                if now-start >= deadline_seconds:
-                    raise TimeoutError('owned process deadline expired')
-                if now-last_control >= lease_seconds:
-                    raise TimeoutError('controller lease expired')
-                if not selector.select(min(0.25, lease_seconds)):
-                    continue
-                chunk = os.read(control.fileno(), 4096)
-                if not chunk:
-                    raise OwnerInterrupted('controller pipe EOF')
-                pending += chunk
-                if len(pending) > MAX_CONTROL:
-                    raise ValueError('control frame exceeds limit')
-                while b'\n' in pending:
-                    line, pending = pending.split(b'\n', 1)
-                    message = json.loads(line)
-                    last_control = time.monotonic()
-                    kind = message.get('command')
-                    if kind == 'stop':
-                        record['stop_requested'] = True
-                        return record
-                    if kind == 'ping':
-                        continue
-                    request_id = message.get('id')
-                    if not isinstance(request_id, int) or isinstance(request_id, bool) or request_id <= 0:
-                        raise ValueError('positive control request identity required')
-                    if kind == 'observe' and observation is not None:
-                        emit({'event': 'observation', 'id': request_id, 'observation': observation(process.pid)})
-                        continue
-                    if kind != 'state':
-                        raise ValueError('unknown controller operation')
-                    path = root/'daemon-state.json'
-                    try:
-                        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-                    except FileNotFoundError:
-                        emit({'event': 'state', 'id': request_id, 'error': 'not_ready', 'retryable': True})
-                        continue
-                    with os.fdopen(descriptor, 'rb') as stream:
-                        info = os.fstat(stream.fileno())
-                        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_STATE:
-                            raise ValueError('invalid bounded state file')
-                        raw = stream.read(MAX_STATE+1)
-                    if len(raw) > MAX_STATE:
-                        raise ValueError('state exceeds limit')
-                    emit({'event': 'state', 'id': request_id, 'body': base64.b64encode(raw).decode()})
+                checkpoint(0.25)
+    except OwnerStopped:
+        record['stop_requested'] = True
     except Exception as error:
         record['failure'] = type(error).__name__+': '+str(error)
     finally:
@@ -324,7 +420,9 @@ def run_owner(command, environment, root, control, emit, lease_seconds=30, deadl
                     record['group_cleanup_complete'] = False
                     record['failure'] = (record['failure'] or '')+' cleanup '+type(error).__name__+': '+str(error)
             record['seconds'] = time.monotonic()-start
-            (root/'terminal.json').write_text(json.dumps(record, indent=2)+'\n')
+            record['root_created'] = launch['root'] is not None
+            if launch['root'] is not None:
+                (launch['root']/'terminal.json').write_text(json.dumps(record, indent=2, allow_nan=False)+'\n')
             try:
                 emit(record)
             except (BrokenPipeError, OSError):
@@ -336,27 +434,45 @@ def run_owner(command, environment, root, control, emit, lease_seconds=30, deadl
     return record
 
 
+def initial_request(control):
+    pending = b''
+    while b'\n' not in pending:
+        chunk = os.read(control.fileno(), 4096)
+        if not chunk or len(pending)+len(chunk) > MAX_CONTROL:
+            raise ValueError('bounded initial control frame required')
+        pending += chunk
+    first, pending = pending.split(b'\n', 1)
+    return json.loads(first), pending
+
+
 def main():
-    first = sys.stdin.buffer.readline(MAX_CONTROL+1)
-    if len(first) > MAX_CONTROL or not first.endswith(b'\n'):
-        raise ValueError('bounded initial control frame required')
-    request = json.loads(first)
-    root, canonical, host_id, observation = prepare(request)
-    send({'event': 'prepared', 'host_id': host_id, 'observation': observation, 'root': str(root)})
-    spec = request['spec']
-    environment = {'HOME': str(Path.home()), 'PATH': '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'}
-    environment.update(spec['environment'])
-    environment['DARKBLOOM_AUTH_TOKEN_PATH'] = str(root/'auth_token')
-    record = run_owner([str(root/'runtime/darkbloom')]+spec['arguments'], environment, root, sys.stdin.buffer, send, observation=lambda pid: observe(request['target'], (pid,)))
+    request, pending = initial_request(sys.stdin.buffer)
+    owned = {}
+    def prepare_launch(checkpoint, launch, record):
+        def created(root):
+            launch['root'] = owned['root'] = root
+        root, canonical, host_id, observation = prepare(request, checkpoint, send, record, created)
+        send({'event': 'prepared', 'fixture_pid': os.getpid(), 'host_id': host_id,
+              'observation': observation, 'root': str(root)})
+        spec = request['spec']
+        environment = {'HOME': str(Path.home()), 'PATH': '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'}
+        environment.update(spec['environment'])
+        environment['DARKBLOOM_AUTH_TOKEN_PATH'] = str(root/'auth_token')
+        launch.update(command=[str(root/'runtime/darkbloom')]+spec['arguments'], environment=environment)
+    record = run_owner(None, None, None, sys.stdin.buffer, send, prepare_launch=prepare_launch,
+        initial_control=pending, observation=lambda pid: observe(request['target'], () if pid is None else (pid,)))
+    canonical = Path.home()/'.config/darkbloom/provider.toml'
     if digest(canonical) != request['target']['canonical_config_sha256']:
         raise ValueError('canonical config changed; no repair performed')
     cleanup = observe(request['target'])
-    send({'event': 'cleanup', 'observation': cleanup})
+    send({'event': 'cleanup', 'fixture_pid': os.getpid(), 'provider_started': record['provider_started'],
+          'observation': report_observation(cleanup)})
     if cleanup['unexpected_processes'] or cleanup['owned_processes']:
         raise ValueError('process leftovers after owned shutdown')
-    # The model/runtime/cache evidence remains owned and intact. Only the
-    # private fixture auth token is removed after its process has been reaped.
-    (root/'auth_token').unlink()
+    # A refused prelaunch never creates an auth token. A staged token is removed
+    # only after owned process-group retirement and the independent cleanup check.
+    if 'root' in owned and record['group_cleanup_complete']:
+        (owned['root']/'auth_token').unlink(missing_ok=True)
     if record['failure'] is not None or (record['exit_code'] != 0 and not record['stop_requested']):
         raise RuntimeError(record['failure'] or 'provider exited without requested shutdown')
 

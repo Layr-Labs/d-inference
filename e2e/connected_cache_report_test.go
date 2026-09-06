@@ -41,8 +41,9 @@ type connectedSlot struct {
 	Capacity   *protocol.BackendCapacity         `json:"capacity,omitempty"`
 }
 type connectedReport struct {
-	Scope string                        `json:"scope,omitempty"`
-	Hosts []testbed.ProviderHostBinding `json:"hosts,omitempty"`
+	HostLifecycles []testbed.ProviderHostLifecycle `json:"host_lifecycles,omitempty"`
+	Scope          string                          `json:"scope,omitempty"`
+	Hosts          []testbed.ProviderHostBinding   `json:"hosts,omitempty"`
 
 	Schema      int                         `json:"schema"`
 	State       string                      `json:"state"`

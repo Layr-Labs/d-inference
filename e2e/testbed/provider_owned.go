@@ -44,6 +44,16 @@ func ownedHostCommand(target ProviderTarget, relayURL string) (string, []string,
 }
 
 type ownedHostEvent struct {
+	RootCreated          *bool   `json:"root_created"`
+	StopRequested        bool    `json:"stop_requested"`
+	PGID                 int     `json:"pgid"`
+	Seconds              float64 `json:"seconds"`
+	FixturePID           int     `json:"fixture_pid"`
+	ProviderStarted      *bool   `json:"provider_started"`
+	GroupCleanupComplete *bool   `json:"group_cleanup_complete"`
+	EntryReady           bool    `json:"entry_ready"`
+	EntryReason          *string `json:"entry_reason"`
+
 	RequestID   uint64          `json:"id"`
 	Event       string          `json:"event"`
 	PID         int             `json:"pid"`
@@ -69,6 +79,8 @@ type ownedProvider struct {
 	pid             int
 	entry           HostObservation
 	cleanup         *HostObservation
+	entryChecks     []ProviderEntryCheck
+	fixturePID      int
 	terminal        *ownedHostEvent
 	err             error
 	stopOnce        sync.Once
@@ -93,6 +105,9 @@ func (o *ownedProvider) running() bool {
 func (o *ownedProvider) failure() error { o.mu.Lock(); defer o.mu.Unlock(); return o.err }
 
 func startOwnedProvider(ctx context.Context, target ProviderTarget, spec ProviderStartSpec, token []byte, suiteNonce, relay string, factory commandFactory) (*ownedProvider, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	name, args, err := ownedHostCommand(target, relay)
 	if err != nil {
 		return nil, err
@@ -143,12 +158,21 @@ func startOwnedProvider(ctx context.Context, target ProviderTarget, spec Provide
 				break
 			}
 			o.mu.Lock()
+			if event.FixturePID > 0 {
+				o.fixturePID = event.FixturePID
+			}
 			switch event.Event {
+			case "entry":
+				if len(o.entryChecks) >= 256 {
+					scanErr = fmt.Errorf("too many prelaunch readiness observations")
+				} else {
+					o.entryChecks = append(o.entryChecks, ProviderEntryCheck{Observation: event.Observation, Ready: event.EntryReady, Reason: event.EntryReason})
+				}
 			case "prepared":
 				o.hostID = event.HostID
 				o.entry = event.Observation
 			case "started":
-				if o.pid != 0 || o.hostID == "" {
+				if o.pid != 0 || o.hostID == "" || event.PID <= 0 {
 					scanErr = fmt.Errorf("invalid helper start identity")
 				} else {
 					o.pid = event.PID
@@ -188,8 +212,13 @@ func startOwnedProvider(ctx context.Context, target ProviderTarget, spec Provide
 		waitErr := command.Wait()
 		o.mu.Lock()
 		o.err = errors.Join(scanErr, waitErr)
-		if o.terminal == nil || o.terminal.ExitCode == nil {
+		unstarted := o.terminal != nil && o.terminal.ProviderStarted != nil && !*o.terminal.ProviderStarted &&
+			o.pid == 0 && o.terminal.PID == 0 && o.terminal.GroupCleanupComplete != nil && *o.terminal.GroupCleanupComplete
+		if o.terminal == nil || (o.terminal.ExitCode == nil && !unstarted) {
 			o.err = errors.Join(o.err, fmt.Errorf("owned process lacks terminal receipt"))
+		}
+		if o.terminal != nil && o.terminal.GroupCleanupComplete != nil && !*o.terminal.GroupCleanupComplete {
+			o.err = errors.Join(o.err, fmt.Errorf("owned process group cleanup incomplete"))
 		}
 		if o.terminal != nil && o.terminal.Failure != nil {
 			o.err = errors.Join(o.err, fmt.Errorf("owned process failed: %s", *o.terminal.Failure))
@@ -211,17 +240,6 @@ func startOwnedProvider(ctx context.Context, target ProviderTarget, spec Provide
 		stdin.Close()
 		return o, err
 	}
-	select {
-	case <-o.started:
-	case <-o.done:
-		return o, fmt.Errorf("owned helper failed before start: %w", o.failure())
-	case <-ctx.Done():
-		stdin.Close()
-		return o, ctx.Err()
-	case <-time.After(5 * time.Minute):
-		stdin.Close()
-		return o, fmt.Errorf("owned host preflight/start timed out")
-	}
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
@@ -240,6 +258,25 @@ func startOwnedProvider(ctx context.Context, target ProviderTarget, spec Provide
 			}
 		}
 	}()
+	// Lease pings and cancellation own preparation as well as the running child.
+	select {
+	case <-o.started:
+		if err := ctx.Err(); err != nil {
+			return o, errors.Join(err, o.stop())
+		}
+	case <-o.done:
+		if err := ctx.Err(); err != nil {
+			return o, errors.Join(err, o.failure())
+		}
+		if failure := o.failure(); failure != nil {
+			return o, fmt.Errorf("owned helper ended before provider start: %w", failure)
+		}
+		return o, fmt.Errorf("owned helper ended before provider start")
+	case <-ctx.Done():
+		return o, errors.Join(ctx.Err(), o.stop())
+	case <-time.After(5 * time.Minute):
+		return o, errors.Join(fmt.Errorf("owned host preflight/start timed out"), o.stop())
+	}
 	return o, nil
 }
 

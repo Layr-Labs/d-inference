@@ -351,8 +351,14 @@ jobs:
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
           export PATH
           RELEASED_COORDINATOR="$RUNNER_TEMP/d-inference-v0.7.12"
+          # Pin the released coordinator; overlay only its testbed credentials.
+          test "$(git rev-parse 'v0.7.12^{commit}')" = 78701be8c9111fad0926fba3206dc1ab5b59be35
           git worktree add --detach "$RELEASED_COORDINATOR" v0.7.12
           trap 'git worktree remove --force "$RELEASED_COORDINATOR"' EXIT
+          FIXTURE_PATCH="$GITHUB_WORKSPACE/e2e/compat/v0.7.12-provider-credentials.patch"
+          git -C "$RELEASED_COORDINATOR" apply --check "$FIXTURE_PATCH"
+          git -C "$RELEASED_COORDINATOR" apply "$FIXTURE_PATCH"
+          test "$(git -C "$RELEASED_COORDINATOR" diff --name-only)" = e2e/testbed/suite.go
           (
             cd "$RELEASED_COORDINATOR"
             for test_name in NonStreamingInference StreamingInference; do

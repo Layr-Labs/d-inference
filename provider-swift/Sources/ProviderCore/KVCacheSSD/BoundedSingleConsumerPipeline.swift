@@ -177,10 +177,14 @@ final class BoundedSingleConsumerPipeline<Payload: Sendable>: @unchecked Sendabl
         consumer.cancel()
     }
 
-    /// Await all work accepted before this call without shutting down the
-    /// long-lived consumer. Teardown can call this after `shutdown()` too.
+    /// Await all work accepted before this call, leaving an open consumer reusable.
+    /// After `shutdown()`, also await consumer termination so its payload
+    /// references have been released before returning.
     func waitUntilDrained() async {
         await state.waitUntilDrained()
+        if consumer.isCancelled {
+            await consumer.value
+        }
     }
 
     deinit {

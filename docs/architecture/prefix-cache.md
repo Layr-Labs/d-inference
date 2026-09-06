@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-06 · commit `201eff027`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable blocks live (a RAM
@@ -147,6 +147,12 @@ write-rate, low-disk, TTL and box-wide LRU guards
 [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules)). The coordinator learns each slot's state from
 `prefix_cache_statuses` and cumulative `prefix_cache_donation_outcomes`
 ([`cache-aware-routing.md`](cache-aware-routing.md)).
+
+`SSDPrefixCache.closeAndWait` waits for the write consumer to terminate after
+shutdown, including release of its final payload. The reusable
+`BoundedSingleConsumerPipeline.waitUntilDrained` barrier waits for pending work
+while the pipeline is open; after `shutdown` it also joins the consumer task
+(`provider-swift/Sources/ProviderCore/KVCacheSSD/BoundedSingleConsumerPipeline.swift`).
 
 ## Invariants
 

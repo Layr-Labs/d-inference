@@ -59,6 +59,29 @@ func TestBuildStatusCanonicalGoldenBytes(t *testing.T) {
 	}
 }
 
+// TestBuildStatusCanonicalMixedCaseModelIDs pins the bytewise ordering used by
+// Go's encoding/json. The matching Swift test includes the same production
+// model IDs so a case-sensitive ordering drift cannot break status signatures.
+func TestBuildStatusCanonicalMixedCaseModelIDs(t *testing.T) {
+	got, err := BuildStatusCanonical(StatusCanonicalInput{
+		Nonce:     "n",
+		Timestamp: "t",
+		ModelHashes: map[string]string{
+			"Qwen3.5-9B":                   "127de76b4ef82b7a",
+			"gemma-4-26b-qat-4bit":         "2468a0cb3049a871",
+			"qwen3.6-35b-a3b-vl-mtp-mxfp8": "d932e96b00404b05",
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildStatusCanonical: %v", err)
+	}
+
+	expected := []byte(`{"model_hashes":{"Qwen3.5-9B":"127de76b4ef82b7a","gemma-4-26b-qat-4bit":"2468a0cb3049a871","qwen3.6-35b-a3b-vl-mtp-mxfp8":"d932e96b00404b05"},"nonce":"n","timestamp":"t"}`)
+	if !bytes.Equal(got, expected) {
+		t.Fatalf("mixed-case canonical bytes drifted from Swift golden\nwant: %s\ngot:  %s", expected, got)
+	}
+}
+
 // TestBuildStatusCanonicalGoldenBytesLegacyHypervisor pins the OLD-fleet
 // canonical bytes. Legacy fleet compat only: providers < v0.6.31 sign
 // hypervisor_active into the canonical status, so when a challenge

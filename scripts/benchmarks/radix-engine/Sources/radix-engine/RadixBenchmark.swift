@@ -103,6 +103,7 @@ enum RadixBenchmark {
             "schema": reportSchema, "status": "loading", "model": modelID,
             "model_directory": directory.path,
             "input_sha256": inputSHA256,
+            "generation_comparison_policy": options.generationComparisonPolicy.rawValue,
             "cache_requested": cacheEnabled, "cache_mode_requested": options.cacheMode,
             "key_mode_requested": options.requirePersistentKey ? "persistent" : "ephemeral",
             "mtp": options.mtpEnabled ? "on; production configured assistant" : "off; no drafter supplied",
@@ -297,8 +298,12 @@ enum RadixBenchmark {
             try requireCompleted(recovered)
             let expected = cancelDonor["token_ids"] as? [Int]
             let prefix = cancelled["token_ids"] as? [Int] ?? []
-            guard let expected, recovered["token_ids"] as? [Int] == expected,
-                  Array(expected.prefix(prefix.count)) == prefix else {
+            guard let expected, !expected.isEmpty, !prefix.isEmpty,
+                  let recoveredTokens = recovered["token_ids"] as? [Int], !recoveredTokens.isEmpty else {
+                throw Failure.message("cancellation probe has missing generated-token evidence")
+            }
+            let equal = recoveredTokens == expected && Array(expected.prefix(prefix.count)) == prefix
+            if options.generationComparisonPolicy.rejectsTokenDifference(equal) {
                 throw Failure.message("cancellation recovery differs from completed donor tokens")
             }
             #if RADIX_CANDIDATE
@@ -342,7 +347,14 @@ enum RadixBenchmark {
     }
 
     private static func write(_ result: [String: Any], to url: URL) throws {
-        try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
+        var report = result
+        let comparisons = try BenchmarkGenerationComparison.records(report)
+        report["generated_token_comparisons"] = comparisons
+        let equal = !comparisons.isEmpty && comparisons.allSatisfy { $0["tokens_equal"] as? Bool == true }
+        report["generated_token_comparisons_pass"] = equal
+        report["strict_generation_pass"] = report["generation_comparison_policy"] as? String == "strict"
+            && report["status"] as? String == "completed" && equal
+        try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
             .write(to: url, options: .atomic)
     }
 

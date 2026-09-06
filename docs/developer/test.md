@@ -380,7 +380,19 @@ contiguous-to-paged pair with identical cache settings. Legacy report support
 does not establish the current release gates (`compare_radix_engine.py`, `compare`).
 Both runners accept `--mtp on` and `--kv-backend paged`; their defaults are MTP
 off and backend auto. The current direct candidate defaults to `--cache-mode ssd`.
-It uses the normal slot factory, production prompt/tool normalization, normal
+For a separately reviewed generation-variation experiment, pass
+`--generation-comparison-policy record` to `run_radix_engine.py` and a probe
+built with that option. The default is `strict`. Record mode retains raw token
+arrays and every same-prompt comparison, including row identities, token hashes,
+equality outcomes and first differing positions. It continues past generated-token
+differences while structural, authenticated restore, tenant isolation, cancellation
+and cleanup checks remain required. A record-mode report never has
+`strict_generation_pass: true`; review task quality separately. The standard
+`compare_radix_engine.py` stays strict and rejects record-mode reports. A reviewed
+diagnostic consumer must explicitly request `report_errors(report, "record")`
+from `scripts/benchmarks/radix_engine_evidence.py` and retain the comparison
+failures. Preserve prior strict failures as separate evidence.
+The direct candidate uses the normal slot factory, production prompt/tool normalization, normal
 MTP preparation and verified pre/post-load model identity. For an external
 assistant, `--assistant-directory` supplies an exact flat artifact to the normal
 offline verification funnel; it does not bypass target compatibility.

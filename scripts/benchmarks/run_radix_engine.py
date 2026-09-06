@@ -23,6 +23,8 @@ def arguments(argv=None):
     parser.add_argument("--model-directory", required=True)
     parser.add_argument("--input", required=True, help="Retained HTTP report.json")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--generation-comparison-policy", choices=["strict", "record"], default=None,
+                        help="Benchmark only: retain token differences while continuing structural checks; default strict")
     parser.add_argument("--cache", choices=["on", "off"], default="on")
     parser.add_argument("--mtp", choices=["on", "off"], default="off")
     parser.add_argument("--gemma-mtp-verification", choices=["automatic", "serial_target"],
@@ -131,6 +133,8 @@ def probe_command(args, output):
     if args.key_mode:
         command.append(args.key_mode + "-key")
     # Preserve the historical command line for old immutable B1 artifacts.
+    if args.generation_comparison_policy is not None:
+        command.extend(["--generation-comparison-policy", args.generation_comparison_policy])
     if args.concurrency != 1:
         command.extend(["--concurrency", str(args.concurrency)])
     if args.production_kv_grant:
@@ -281,6 +285,10 @@ def main():
             metadata["exit_code"] = probe.returncode
             if probe.returncode:
                 raise RuntimeError("Probe failed; inspect engine.log")
+        if args.generation_comparison_policy is not None:
+            report = json.loads((root / "report.json").read_text())
+            if report.get("generation_comparison_policy") != args.generation_comparison_policy:
+                raise RuntimeError("Native generation comparison policy differs from explicit invocation")
         observed_keys = validate_key_mode(args, root / "report.json")
         if observed_keys is not None:
             metadata["persistent_test_key_namespace"] = observed_keys

@@ -6,6 +6,7 @@ struct BenchmarkOptions: Sendable {
     let modelDirectory: URL
     let inputURL: URL
     let outputURL: URL
+    let generationComparisonPolicy: BenchmarkGenerationComparisonPolicy
     let cacheEnabled: Bool
     let mtpEnabled: Bool
     let backend: EngineV2KVBackendSelection
@@ -26,6 +27,7 @@ struct BenchmarkOptions: Sendable {
 
     init(_ arguments: [String], environment: [String: String] = ProcessInfo.processInfo.environment) throws {
         let positional = Array(arguments.prefix { !$0.hasPrefix("--") })
+        var generationComparisonPolicy = BenchmarkGenerationComparisonPolicy.strict
         var concurrency = 1
         var kvBudgetGiB = 16
         var nativeKVProbeOnly = false
@@ -56,6 +58,11 @@ struct BenchmarkOptions: Sendable {
             }
             let raw = arguments[index + 1]
             switch flag {
+            case "--generation-comparison-policy":
+                guard let policy = BenchmarkGenerationComparisonPolicy(rawValue: raw) else {
+                    throw RadixBenchmark.Failure.message("generation comparison policy must be strict or record")
+                }
+                generationComparisonPolicy = policy
             case "--concurrency" where [1, 2, 4].contains(Int(raw) ?? 0): concurrency = Int(raw)!
             case "--kv-budget-gib" where (1...128).contains(Int(raw) ?? 0): kvBudgetGiB = Int(raw)!
             case "--assistant-directory" where !raw.isEmpty:
@@ -106,7 +113,7 @@ struct BenchmarkOptions: Sendable {
             arguments.count < 9 || ["persistent-key", "ephemeral-key"].contains(arguments[8])
         else {
             throw RadixBenchmark.Failure.message(
-                "usage: radix-engine MODEL_DIRECTORY HTTP_REPORT_JSON OUTPUT_JSON cache-on|cache-off [mtp-on|mtp-off] [auto|paged|contiguous] [ssd|resident] [persistent-key|ephemeral-key] [--concurrency 1|2|4] [--kv-budget-gib 1...128 | --production-kv-grant] [--assistant-directory DIRECTORY] [--expected-model-sha256 SHA256] [--native-kv-probe-only] [--persistent-test-namespace UUID --persistent-test-access-group GROUP]")
+                "usage: radix-engine MODEL_DIRECTORY HTTP_REPORT_JSON OUTPUT_JSON cache-on|cache-off [mtp-on|mtp-off] [auto|paged|contiguous] [ssd|resident] [persistent-key|ephemeral-key] [--concurrency 1|2|4] [--kv-budget-gib 1...128 | --production-kv-grant] [--assistant-directory DIRECTORY] [--expected-model-sha256 SHA256] [--native-kv-probe-only] [--persistent-test-namespace UUID --persistent-test-access-group GROUP] [--generation-comparison-policy strict|record]")
         }
         modelDirectory = URL(fileURLWithPath: arguments[1])
         inputURL = URL(fileURLWithPath: arguments[2])
@@ -116,6 +123,7 @@ struct BenchmarkOptions: Sendable {
         self.backend = backend
         cacheMode = arguments.count < 8 ? "ssd" : arguments[7]
         requirePersistentKey = arguments.count < 9 || arguments[8] == "persistent-key"
+        self.generationComparisonPolicy = generationComparisonPolicy
         self.concurrency = concurrency
         kvBudgetBytes = kvBudgetGiB * 1_073_741_824
         self.nativeKVProbeOnly = nativeKVProbeOnly

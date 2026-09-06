@@ -1,5 +1,7 @@
 """Integrity checks for direct benchmark schema-2/3 evidence."""
 
+from radix_generation_comparison import policy_errors
+
 import math
 from radix_forward_shapes import report_forward_shape_errors
 
@@ -128,8 +130,12 @@ def production_grant_errors(report):
     return []
 
 
-def cancellation_errors(report):
+def cancellation_errors(report, generation_comparison_policy="strict"):
     """Version 2 primes the same scope and proves restored-prefix cancellation."""
+    policy = policy_errors(report, generation_comparison_policy)
+    if policy:
+        return policy
+    errors = []
     version = report.get("cancellation_probe_version", 1)
     if type(version) is not int:
         return ["invalid_cancellation_probe_version"]
@@ -150,32 +156,34 @@ def cancellation_errors(report):
         return ["cancellation_not_observed"]
     tokens = donor.get("token_ids", [])
     prefix = cancelled.get("token_ids", [])
-    if (not tokens or not prefix or recovered.get("outcome") != "completed"
-            or recovered.get("token_ids") != tokens or tokens[:len(prefix)] != prefix):
+    if not tokens or not prefix or not recovered.get("token_ids") or recovered.get("outcome") != "completed":
         return ["cancellation_donor_recovery_token_mismatch"]
+    if recovered.get("token_ids") != tokens or tokens[:len(prefix)] != prefix:
+        if generation_comparison_policy == "strict":
+            errors.append("cancellation_donor_recovery_token_mismatch")
     if report.get("cache_mode_requested") == "ssd" and report.get("cache_requested") and report.get("resolved_backend") == "paged":
         before = cancelled.get("metrics_before", {}).get("ssd_cache", {}).get("stage_read_bytes")
         after = cancelled.get("metrics_after", {}).get("ssd_cache", {}).get("stage_read_bytes")
         if (cancelled.get("cache_outcome") != "hit" or cancelled.get("ssd_stage_disposition") != "staged"
                 or any(type(cancelled.get(key)) is not int or cancelled[key] <= 0 for key in ("saved_tokens", "matched_tokens"))
                 or type(before) is not int or type(after) is not int or before < 0 or after <= before):
-            return ["cancel_after_restore_not_exercised"]
+            errors.append("cancel_after_restore_not_exercised")
     elif report.get("cache_requested") is False and (cancelled.get("saved_tokens", 0) != 0 or cancelled.get("cache_outcome") == "hit"):
-        return ["cache_disabled_cancel_restored_prefix"]
-    return []
+        errors.append("cache_disabled_cancel_restored_prefix")
+    return errors
 
 
-def report_errors(report):
+def report_errors(report, generation_comparison_policy="strict"):
     """Do not promote incomplete cells or legacy reports into final evidence."""
+    errors = [{reason: True} for reason in policy_errors(report, generation_comparison_policy)]
     if report.get("schema", 1) < 2:
-        return []
-    errors = []
+        return errors
     if report.get("status") != "completed":
         errors.append({"incomplete_run": report.get("status"), "error": report.get("error")})
         return errors
     errors.extend({reason: True} for reason in production_grant_errors(report))
     errors.extend({reason: True} for reason in report_forward_shape_errors(report))
-    errors.extend({reason: True} for reason in cancellation_errors(report))
+    errors.extend({reason: True} for reason in cancellation_errors(report, generation_comparison_policy))
     rows = report.get("rows", [])
     if not rows or any(row.get("outcome") != "completed" for row in rows):
         errors.append({"incomplete_request_cells": True})
@@ -201,6 +209,12 @@ def report_errors(report):
             row.get("saved_tokens") != 0 or row.get("cache_outcome") == "hit"
         ):
             errors.append({"id": row.get("id"), "cache_disabled_probe_restored_prefix": True})
+        tokens = row.get("token_ids", [])
+        if generation_comparison_policy == "record" and (not isinstance(tokens, list) or not tokens
+                or any(type(token) is not int or token < 0 for token in tokens)
+                or type(row.get("completion_tokens")) is not int
+                or row["completion_tokens"] != len(tokens)):
+            errors.append({"id": row.get("id"), "generated_token_accounting_inconsistent": True})
         chunks = row.get("chunks", [])
         if [token for chunk in chunks for token in chunk.get("tokens", [])] != row.get("token_ids"):
             errors.append({"id": row.get("id"), "chunk_token_ids_inconsistent": True})
@@ -210,6 +224,25 @@ def report_errors(report):
             errors.append({"id": row.get("id"), "prompt_token_count_inconsistent": True})
         if report.get("cache_mode_requested") == "ssd" and not row.get("prompt_render_date"):
             errors.append({"id": row.get("id"), "missing_request_owned_date": True})
+    if generation_comparison_policy == "record":
+        tenants = report.get("tenant_checks", [])
+        if (len(tenants) != 3 or not tenants[0].get("scope")
+                or tenants[0].get("scope") != tenants[1].get("scope")
+                or not tenants[2].get("scope") or tenants[2]["scope"] == tenants[0]["scope"]
+                or not tenants[0].get("prompt_token_ids")
+                or any(row.get("prompt_token_ids") != tenants[0]["prompt_token_ids"] for row in tenants)):
+            errors.append({"tenant_scope_or_prompt_invalid": True})
+        elif any(row.get("saved_tokens") != 0 or row.get("cache_outcome") == "hit" for row in (tenants[0], tenants[2])):
+            errors.append({"cross_tenant_cache_hit": True})
+        if (len(tenants) == 3 and report.get("cache_requested")
+                and report.get("cache_mode_requested") == "ssd" and report.get("resolved_backend") == "paged"):
+            warm = tenants[1]
+            before = warm.get("metrics_before", {}).get("ssd_cache", {}).get("stage_read_bytes")
+            after = warm.get("metrics_after", {}).get("ssd_cache", {}).get("stage_read_bytes")
+            if (warm.get("cache_outcome") != "hit" or warm.get("ssd_stage_disposition") != "staged"
+                    or any(type(warm.get(k)) is not int or warm[k] <= 0 for k in ("matched_tokens", "saved_tokens"))
+                    or type(before) is not int or type(after) is not int or not 0 <= before < after):
+                errors.append({"tenant_warm_control_did_not_restore": True})
     observations = []
     for row in probes:
         for moment in ("metrics_before", "metrics_after"):

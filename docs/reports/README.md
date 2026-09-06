@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-06 · commit `38b674d53`
+> Last updated: 2026-09-06 · commit `b7e95f890`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,7 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Fixed-context Qwen and Gemma scores](2026-09-06-teacher-context-scores.md) — all four real-model scoring controls run successfully; Qwen differs at two of 83 positions and Gemma at zero of 61, with numerical acceptance still open.
 - [Corrected Gemma QAT backend controls](2026-09-06-gemma-qmv-controls.md) — all three B1 mode pairs match across backends; automatic-versus-ordinary output equality still fails on both.
 - [Recurrent teacher scoring](2026-09-06-recurrent-teacher-scoring.md) — request-owned recurrent state, normal peak admission and failure retirement; 45 functions/59 cases pass, with exact-model reruns pending.
 - [Qwen3.6 dispatch cache comparison](2026-09-06-qwen36-dispatch-cache-comparison.md) — twelve matched cells preserve exact outputs; small MTP-off delivery gains and mixed normal-MTP timing remain fully reported.

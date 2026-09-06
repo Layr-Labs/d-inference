@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — stats request-flow refresh
+
+- Restore Stats refreshes on large usage windows by aggregating request origins before looking up provider locations. Preserve weighted coordinates, request/token counts, and the top-50 flow limit while avoiding large temporary sorts.
+
 ## Unreleased — provider console entry
 
 - Open the provider workspace directly from the console home page, removing the Consumer/Provider selection page. Keep chat and API access in workspace navigation.

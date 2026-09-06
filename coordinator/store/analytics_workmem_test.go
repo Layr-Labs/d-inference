@@ -198,7 +198,7 @@ func TestUsageAnalyticsRunInWorkMemTransaction(t *testing.T) {
 	if len(flows) != 1 || flows[0].Requests != 3 || flows[0].ProviderCity != "San Francisco" {
 		t.Fatalf("flow buckets = %+v, want one NY->SF flow with 3 requests", flows)
 	}
-	assertAnalyticsTx(t, tracer.snapshot(), "JOIN providers p ON p.id = u.provider_id")
+	assertAnalyticsTx(t, tracer.snapshot(), "WITH located_usage AS MATERIALIZED")
 
 	tracer.reset()
 	totals, err := s.NetworkTotals(since)

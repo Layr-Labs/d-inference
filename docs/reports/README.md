@@ -11,6 +11,7 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Gemma QAT retained B2/B4 continuation](2026-09-06-qat-concurrency-validation.md) — both backends pass actual widths, isolation and cleanup; single-request semantic caveat remains explicit.
 - [Current candidate retained model checks](2026-09-06-retained-model-validation.md) — Qwen3.8 backend/SSD and GPT-OSS backend B1/B2/B4 pass; QAT B1 wording drift and unrun widths remain explicit.
 - [Qwen3.6 candidate ordinary control and SSD](2026-09-06-qwen36-candidate-controls.md) — ordinary backend outputs match; normal-MTP SSD reuse preserves all eight completed trajectories, with four authenticated 4,096-token restores.
 - [Qwen3.6 candidate D256 numerical gates](2026-09-06-qwen36-candidate-d256.md) — all 13 existing precision and planted-fault cases pass unchanged limits on the rebuilt candidate.

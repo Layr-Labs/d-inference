@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-06 · commit `dad6a8e47`
+> Last updated: 2026-09-06 · commit `2eebb5412`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -103,8 +103,8 @@ Coordinator deploys are a separate runbook:
 
 The provider and coordinator versions must be identical strings:
 
-- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.8.16"`
-- `coordinator/api/server.go` — `var LatestProviderVersion = "0.8.16"`
+- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.0"`
+- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.0"`
 
 ```bash
 ./scripts/check-release-version.sh          # provider == coordinator, semver
@@ -112,8 +112,8 @@ The provider and coordinator versions must be identical strings:
 ```
 
 `check-release-version.sh` accepts an optional expected version
-(`check-release-version.sh v0.8.17`) and an optional reported string from a
-built binary (`darkbloom 0.8.17` or `0.8.17`); the workflow calls it in all
+(`check-release-version.sh v0.9.0`) and an optional reported string from a
+built binary (`darkbloom 0.9.0` or `0.9.0`); the workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
 push. Do not touch `minProviderVersionForDesiredModels` (`"0.5.17"`, same file)
 for a routine release; it is the floor for desired-model fan-out, not the

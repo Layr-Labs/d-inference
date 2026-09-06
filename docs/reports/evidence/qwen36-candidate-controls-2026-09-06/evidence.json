@@ -1,0 +1,357 @@
+{
+  "artifact_manifest_sha256": "4816dd430cead8b26aaafa6a31d87c49697e3f43f025224bd96a3f7896d7685c",
+  "independent_ssd": {
+    "after_shutdown_cache_status": {
+      "reason": "cache_init_failed",
+      "state": "error"
+    },
+    "after_shutdown_status_explanation": "SSDHybridCheckpointStore capabilityStatus maps closed=true to error/cache_init_failed; live rows stayed ready and proved restoration. This is teardown status, not observed cache initialization failure.",
+    "all_complete_trajectories_exact": true,
+    "backend": "paged",
+    "baseline_binding_sha256": "75b853d7571ed072fb89dfc841f9096a6cf3426db8fa80b2ec34882edffbf95c",
+    "baseline_report_sha256": "eb324f9a7912361d981af08de63eb95ebc0dee63b53425d84d7c8ad71b2779a3",
+    "baseline_rerun": false,
+    "before_after_audit_sha256": "bef9bc7dfe854342178510e36d03d02d5fa00c7097ee02093838de235d141f9b",
+    "cache_mode": "ssd_complete",
+    "cancelled": {
+      "cache_outcome": "hit",
+      "completion_tokens": 5,
+      "outcome": "cancelled",
+      "saved_tokens": 4096
+    },
+    "candidate_binding_sha256": "32279428406e2141e91d28603229eed2ddc5c48509fe5d34b18587bffa836184",
+    "candidate_report_sha256": "080a6ef2d59f1adb9cc68fd3776e88e2f56331af03d8a737b8fa440b8254ec80",
+    "capacity_after_shutdown": {
+      "active_requests": 0,
+      "kv_in_use_bytes": 0,
+      "kv_reserved_bytes": 0,
+      "waiting_requests": 0
+    },
+    "clean_postflight_sha256": "84b4f0904fba3a3c39132a747e92b32d9d54f19d0a4d9d527374ab51a909c01c",
+    "full_archive_transfer": "first local transfer timed out; partial retained; full remote archive and ephemeral SSD payload retained; selected local files verified against full remote manifest",
+    "full_remote_evidence_archive_sha256": "81cb815080712cd2614eecd5cb12e5a6f367a3e08d0169e4181409ccc3fc590a",
+    "idle_observation": {
+      "attempts": 1,
+      "elapsed_s": 4.2834e-05,
+      "pending_retirement": [],
+      "shutdown": true,
+      "status": "ready",
+      "timeout_s": 5
+    },
+    "input_sha256": "4fb1ebf2b8a4b9b29be3388da3613398c8c7b6f768ca8bac11636a8928dd570e",
+    "live_cache_status": {
+      "reason": "ready",
+      "state": "ready"
+    },
+    "matches_retained105_full_audit_bytes": true,
+    "mtp": true,
+    "mtp_counters": {
+      "accepted_tokens": 361,
+      "active": true,
+      "rounds": 222,
+      "verification_mode": "rectangular"
+    },
+    "new_cells_executed": 1,
+    "ownership_retired": true,
+    "passed": true,
+    "release_receipt_sha256": "a115832d14ec879b345f988ed3c4cc51609cf3aab692f8fa499414a18f6e99e7",
+    "resident_cache": false,
+    "rows": [
+      {
+        "cache_outcome": "skippedPolicy",
+        "case": "warmup",
+        "completion_tokens": 8,
+        "finish": "length",
+        "outcome": "completed",
+        "prompt_tokens": 15,
+        "saved_tokens": 0,
+        "trajectory_sha256": "a37520922bfbd989e77203da79a1e777172193cff09ab718d42539576a415b11"
+      },
+      {
+        "cache_outcome": "miss",
+        "case": "main-0",
+        "completion_tokens": 83,
+        "finish": "stop",
+        "outcome": "completed",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "trajectory_sha256": "f5224f12c9c218e5300bf8a226bbcfccb9353c217c3abffdab3806ef5952e1b9"
+      },
+      {
+        "cache_outcome": "hit",
+        "case": "main-1",
+        "completion_tokens": 83,
+        "finish": "stop",
+        "outcome": "completed",
+        "prompt_tokens": 5523,
+        "saved_tokens": 4096,
+        "trajectory_sha256": "f5224f12c9c218e5300bf8a226bbcfccb9353c217c3abffdab3806ef5952e1b9"
+      },
+      {
+        "cache_outcome": "miss",
+        "case": "tenant-0",
+        "completion_tokens": 83,
+        "finish": "stop",
+        "outcome": "completed",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "trajectory_sha256": "f5224f12c9c218e5300bf8a226bbcfccb9353c217c3abffdab3806ef5952e1b9"
+      },
+      {
+        "cache_outcome": "hit",
+        "case": "tenant-1",
+        "completion_tokens": 83,
+        "finish": "stop",
+        "outcome": "completed",
+        "prompt_tokens": 5523,
+        "saved_tokens": 4096,
+        "trajectory_sha256": "f5224f12c9c218e5300bf8a226bbcfccb9353c217c3abffdab3806ef5952e1b9"
+      },
+      {
+        "cache_outcome": "miss",
+        "case": "tenant-2",
+        "completion_tokens": 83,
+        "finish": "stop",
+        "outcome": "completed",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "trajectory_sha256": "f5224f12c9c218e5300bf8a226bbcfccb9353c217c3abffdab3806ef5952e1b9"
+      },
+      {
+        "cache_outcome": "miss",
+        "case": "cancel-donor",
+        "completion_tokens": 83,
+        "finish": "stop",
+        "outcome": "completed",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "trajectory_sha256": "f5224f12c9c218e5300bf8a226bbcfccb9353c217c3abffdab3806ef5952e1b9"
+      },
+      {
+        "cache_outcome": "hit",
+        "case": "recovered",
+        "completion_tokens": 83,
+        "finish": "stop",
+        "outcome": "completed",
+        "prompt_tokens": 5523,
+        "saved_tokens": 4096,
+        "trajectory_sha256": "f5224f12c9c218e5300bf8a226bbcfccb9353c217c3abffdab3806ef5952e1b9"
+      }
+    ],
+    "selected_local_collection_receipt_sha256": "b0b0ca2d8135e70dc1a3de23ff042c70ce893b575f6794f3ff944a450db5af14",
+    "ssd_counters": {
+      "bytes_on_disk": 1119444790,
+      "bytes_read": 660564124,
+      "bytes_written": 1119444790,
+      "consumed_prefix_tokens": 16384,
+      "corrupt_dropped": 0,
+      "donation_read_bytes": 0,
+      "entries": 8,
+      "files_read": 8,
+      "files_written": 8,
+      "maximum_segment_bytes": 4194304,
+      "misses": 4,
+      "peak_staging_reservation_bytes": 20971520,
+      "peak_write_host_bytes": 20971520,
+      "stage_consumptions": 4,
+      "stage_ms": 164.790416,
+      "stage_read_bytes": 660564124,
+      "staged_bytes_in_use": 0,
+      "stages": 4,
+      "write_host_bytes_in_use": 0,
+      "write_host_capacity_refusals": 0,
+      "write_ms": 255.670874,
+      "writes_dropped": 0
+    },
+    "strict_comparison": {
+      "actual_model_batch_width_verified": true,
+      "baseline_decode_tps": null,
+      "cancellation_cache_policy": "completed priming donor remains reusable",
+      "candidate_decode_tps": null,
+      "comparison_axis": "cache",
+      "completed_trajectories_compared": 8,
+      "errors": [],
+      "generated_token_ids_compared": true,
+      "passed": true,
+      "rows": [
+        {
+          "baseline_terminal_tail_s": 6.84170000000428e-05,
+          "baseline_ttft_s": 1.325897709,
+          "cache_outcome": "miss",
+          "candidate_terminal_tail_s": 0.0733694170000001,
+          "candidate_ttft_s": 1.30802175,
+          "id": "long-first",
+          "saved_tokens": 0,
+          "token_ids_equal": true
+        },
+        {
+          "baseline_terminal_tail_s": 8.495899999982903e-05,
+          "baseline_ttft_s": 1.285379167,
+          "cache_outcome": "hit",
+          "candidate_terminal_tail_s": 0.0004376669999999194,
+          "candidate_ttft_s": 0.419669708,
+          "id": "long-repeat",
+          "saved_tokens": 4096,
+          "token_ids_equal": true
+        }
+      ],
+      "warmup_exact_compared": true
+    }
+  },
+  "limitations": [
+    "One Q36 B1 fixture; no other models, B2/B4, HTTP defaults, routing winner selection, broad quality or release-wide acceptance",
+    "Normal MTP can change verification geometry; 83-token MTP-on versus78-token target-only output is not by itself evidence of a quality defect or cache corruption",
+    "The earlier normal-MTP backend comparison remains separately documented; target-only equality and same-paged SSD equality do not rewrite that result"
+  ],
+  "model_aggregate_sha256": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+  "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+  "prompt_contract_id": "68f43b6d035f17d5439eaf4a7f0b4d2bea6a7f999a93e8d6d561a468fc419a60",
+  "runtime_sha256": {
+    "darkbloom": "a98b9a83a69ab90a59010437f2a567341d7f8a98853a83cab8deea1043540433",
+    "mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": "4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149",
+    "mlx.metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb",
+    "radix-engine": "cc86a3328be98a498ea0dad077c7a6fd64add25aabe5ac7d9cba78bc93a11568",
+    "swift-crypto_Crypto.bundle/PrivacyInfo.xcprivacy": "42fb8a30dd8d7ba0900e1bf17fe64ed8c12cfdb8a9c791ab6b4e1eceb0f299c0",
+    "swift-nio_NIOPosix.bundle/PrivacyInfo.xcprivacy": "982f20d820bc4460acc9d4116c3e6c8ec837f717dc82edbb7308f7400515c909",
+    "swift-transformers_Hub.bundle/gpt2_tokenizer_config.json": "551e26ec611d8d0c8edc3ef72e518a38418cb71f40de1347dd486a595e1557d7",
+    "swift-transformers_Hub.bundle/t5_tokenizer_config.json": "e0aff0b1de9071e30d9a60a199303b6abe916a64a19932bd1c46992279b41a1f"
+  },
+  "scope": "Qwen3.6 exact candidate B1 target-only backend control and independent normal-MTP SSD restoration",
+  "serving_profile": {
+    "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "18",
+    "DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY": "1",
+    "DARKBLOOM_GEMMA4_PREFILL_TAIL_MIN_CHUNK": "128",
+    "DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS": "1",
+    "MLX_COMPILED_DECODE": "1",
+    "MLX_GATHER_QMM_EXPERT_SLICES": "trust",
+    "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1"
+  },
+  "source_manifest_sha256": "e7b769e2713e48c53fb62fbe74e449bb409c8fc1b7e5f036b14e808a7c3da3f5",
+  "target_only_backend_control": {
+    "all_complete_trajectories_exact": true,
+    "completed_trajectories_compared": 8,
+    "input_sha256": {
+      "contiguous": "4fb1ebf2b8a4b9b29be3388da3613398c8c7b6f768ca8bac11636a8928dd570e",
+      "paged": "4fb1ebf2b8a4b9b29be3388da3613398c8c7b6f768ca8bac11636a8928dd570e"
+    },
+    "main_completion_tokens": [
+      78,
+      78
+    ],
+    "mtp": false,
+    "pair_comparison_sha256": "6c834455318ceeee4746f4671790432947d1e1beeeba157b016f4402160b423a",
+    "passed": true,
+    "position53": {
+      "argMaxID": 7244,
+      "cacheOffset": 5575,
+      "candidateIDs": [
+        7244,
+        2919
+      ],
+      "infiniteCount": 0,
+      "nanCount": 0,
+      "outputIndex": 53,
+      "valueBits": [
+        1104805888,
+        1104805888,
+        1104740352,
+        1104805888,
+        1104740352
+      ],
+      "verificationWidth": 1
+    },
+    "position53_candidate_logits": [
+      27.25,
+      27.125
+    ],
+    "raw_report_sha256": {
+      "contiguous": "4b32be0a8c75d506b90331b776066a41eccfb07bd1ebb7f8d72e5d246b8d644e",
+      "paged": "ed9ce23fa8504bcb31edd165beac022d91a951887828cb27ad8dedf8e62fd32d"
+    },
+    "release_receipt_sha256": "1474cb78d5c4159748a38ba9178867825321c512a6ac75e7f48cf95702dd9401",
+    "rows": [
+      {
+        "cache_outcome": "disabled",
+        "case": "warmup",
+        "completion_tokens": 8,
+        "finish": "length",
+        "outcome": "completed",
+        "prompt_tokens": 15,
+        "saved_tokens": 0,
+        "trajectory_sha256": "a37520922bfbd989e77203da79a1e777172193cff09ab718d42539576a415b11"
+      },
+      {
+        "cache_outcome": "disabled",
+        "case": "main-0",
+        "completion_tokens": 78,
+        "finish": "stop",
+        "outcome": "completed",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "trajectory_sha256": "3a644ac746997625a6c601401fc3b9bf0efd29c19bf184e6753b861c7d7ebcee"
+      },
+      {
+        "cache_outcome": "disabled",
+        "case": "main-1",
+        "completion_tokens": 78,
+        "finish": "stop",
+        "outcome": "completed",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "trajectory_sha256": "3a644ac746997625a6c601401fc3b9bf0efd29c19bf184e6753b861c7d7ebcee"
+      },
+      {
+        "cache_outcome": "disabled",
+        "case": "tenant-0",
+        "completion_tokens": 78,
+        "finish": "stop",
+        "outcome": "completed",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "trajectory_sha256": "3a644ac746997625a6c601401fc3b9bf0efd29c19bf184e6753b861c7d7ebcee"
+      },
+      {
+        "cache_outcome": "disabled",
+        "case": "tenant-1",
+        "completion_tokens": 78,
+        "finish": "stop",
+        "outcome": "completed",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "trajectory_sha256": "3a644ac746997625a6c601401fc3b9bf0efd29c19bf184e6753b861c7d7ebcee"
+      },
+      {
+        "cache_outcome": "disabled",
+        "case": "tenant-2",
+        "completion_tokens": 78,
+        "finish": "stop",
+        "outcome": "completed",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "trajectory_sha256": "3a644ac746997625a6c601401fc3b9bf0efd29c19bf184e6753b861c7d7ebcee"
+      },
+      {
+        "cache_outcome": "disabled",
+        "case": "cancel-donor",
+        "completion_tokens": 78,
+        "finish": "stop",
+        "outcome": "completed",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "trajectory_sha256": "3a644ac746997625a6c601401fc3b9bf0efd29c19bf184e6753b861c7d7ebcee"
+      },
+      {
+        "cache_outcome": "disabled",
+        "case": "recovered",
+        "completion_tokens": 78,
+        "finish": "stop",
+        "outcome": "completed",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "trajectory_sha256": "3a644ac746997625a6c601401fc3b9bf0efd29c19bf184e6753b861c7d7ebcee"
+      }
+    ],
+    "ssd": false,
+    "timing_excluded": "diagnostic host reductions; no performance claim"
+  }
+}

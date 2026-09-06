@@ -9,7 +9,6 @@ from unittest.mock import patch
 import run_radix_engine
 import unittest
 
-from run_radix_engine import arguments, probe_command
 
 
 class EngineInvocationTests(unittest.TestCase):
@@ -17,16 +16,16 @@ class EngineInvocationTests(unittest.TestCase):
             "--input", "/input.json", "--output", "/evidence"]
 
     def test_default_remains_compatible_with_archived_serial_binary(self):
-        args = arguments(self.base)
-        self.assertEqual(probe_command(args, "/result.json"),
+        args = run_radix_engine.arguments(self.base)
+        self.assertEqual(run_radix_engine.probe_command(args, "/result.json"),
                          ["/binary with spaces", "/model", "/input.json", "/result.json",
                           "cache-on", "mtp-off", "auto"])
 
     def test_concurrent_slot_grant_reaches_binary_after_key_mode(self):
-        args = arguments(self.base + ["--concurrency", "4", "--kv-budget-gib", "24",
+        args = run_radix_engine.arguments(self.base + ["--concurrency", "4", "--kv-budget-gib", "24",
                                      "--cache-mode", "ssd", "--key-mode", "ephemeral",
                                      "--mtp", "on", "--kv-backend", "paged"])
-        self.assertEqual(probe_command(args, "/result.json")[-7:],
+        self.assertEqual(run_radix_engine.probe_command(args, "/result.json")[-7:],
                          ["paged", "ssd", "ephemeral-key", "--concurrency", "4",
                           "--kv-budget-gib", "24"])
 
@@ -35,30 +34,30 @@ class EngineInvocationTests(unittest.TestCase):
                        ["--kv-budget-gib", "0"], ["--kv-budget-gib", "129"]):
             with self.subTest(option=option), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
-                    arguments(self.base + option)
+                    run_radix_engine.arguments(self.base + option)
 
     def test_production_grant_is_explicit_and_mutually_exclusive(self):
-        args = arguments(self.base + ["--production-kv-grant", "--cache-mode", "ssd"])
-        self.assertEqual(probe_command(args, "/report.json")[-1], "--production-kv-grant")
+        args = run_radix_engine.arguments(self.base + ["--production-kv-grant", "--cache-mode", "ssd"])
+        self.assertEqual(run_radix_engine.probe_command(args, "/report.json")[-1], "--production-kv-grant")
         self.assertIsNone(args.kv_budget_gib)  # no fictional 16 GiB in wrapper metadata
         for extra in (["--kv-budget-gib", "16"], ["--cache-mode", "resident"]):
             with self.subTest(extra=extra), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
-                    arguments(self.base + ["--production-kv-grant"] + extra)
+                    run_radix_engine.arguments(self.base + ["--production-kv-grant"] + extra)
 
     def test_ephemeral_key_requires_explicit_ssd_mode(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            arguments(self.base + ["--key-mode", "ephemeral"])
+            run_radix_engine.arguments(self.base + ["--key-mode", "ephemeral"])
 
     def test_gemma_verifier_selection_is_explicit_and_preserves_the_command(self):
         flags = ["--mtp", "on", "--cache", "off", "--cache-mode", "ssd",
                  "--production-kv-grant", "--expected-model-sha256", "a" * 64]
         for backend in ("contiguous", "paged"):
             base = self.base + flags + ["--kv-backend", backend]
-            original = probe_command(arguments(base), "/report.json")
+            original = run_radix_engine.probe_command(run_radix_engine.arguments(base), "/report.json")
             for mode in ("automatic", "serial_target"):
                 selected = ["--gemma-mtp-verification", mode]
-                self.assertEqual(probe_command(arguments(base + selected), "/report.json"),
+                self.assertEqual(run_radix_engine.probe_command(run_radix_engine.arguments(base + selected), "/report.json"),
                                  original + selected)
 
     def test_gemma_verifier_refuses_outside_its_diagnostic_scope(self):
@@ -72,25 +71,25 @@ class EngineInvocationTests(unittest.TestCase):
         for case in cases:
             with self.subTest(case=case), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
-                    arguments(self.base + case)
+                    run_radix_engine.arguments(self.base + case)
 
     def test_projection_only_adds_the_explicit_pair_to_the_verifier_command(self):
         flags = ["--mtp", "on", "--cache", "off", "--cache-mode", "ssd", "--kv-backend", "paged",
                  "--production-kv-grant", "--expected-model-sha256", "a" * 64,
                  "--gemma-mtp-verification", "automatic"]
         pair = ["--gemma-projection-tokens", "529,62203"]
-        self.assertEqual(probe_command(arguments(self.base + flags + pair), "/report.json"),
-                         probe_command(arguments(self.base + flags), "/report.json") + pair)
+        self.assertEqual(run_radix_engine.probe_command(run_radix_engine.arguments(self.base + flags + pair), "/report.json"),
+                         run_radix_engine.probe_command(run_radix_engine.arguments(self.base + flags), "/report.json") + pair)
         for raw in ("", "529", "529,62203,7", "-1,3", "1,", "01,3", "1,2147483648", "١,3"):
             with self.subTest(raw=raw), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                arguments(self.base + flags + ["--gemma-projection-tokens", raw])
+                run_radix_engine.arguments(self.base + flags + ["--gemma-projection-tokens", raw])
         for extra in (["--logit-diagnostic-position", "7", "--logit-diagnostic-candidates", "1,2"],
                       ["--attention-metadata-position", "7"],
                       ["--attention-packet-position", "7", "--attention-packet-layer", "0"]):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                arguments(self.base + flags + pair + extra)
+                run_radix_engine.arguments(self.base + flags + pair + extra)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            arguments(self.base + pair)
+            run_radix_engine.arguments(self.base + pair)
 
     def test_diagnostic_only_appends_capture_flags_to_the_same_serving_command(self):
         flags = ["--cache-mode", "ssd", "--key-mode", "ephemeral",
@@ -101,8 +100,8 @@ class EngineInvocationTests(unittest.TestCase):
             for mtp in ("on", "off"):
                 with self.subTest(backend=backend, mtp=mtp):
                     base = self.base + flags + ["--kv-backend", backend, "--mtp", mtp]
-                    control = probe_command(arguments(base), "/result.json")
-                    observed = probe_command(arguments(base + diagnostic), "/result.json")
+                    control = run_radix_engine.probe_command(run_radix_engine.arguments(base), "/result.json")
+                    observed = run_radix_engine.probe_command(run_radix_engine.arguments(base + diagnostic), "/result.json")
                     self.assertEqual(observed, control + diagnostic)
 
     def test_invalid_diagnostic_is_rejected_before_host_work(self):
@@ -117,14 +116,14 @@ class EngineInvocationTests(unittest.TestCase):
         for flags in cases:
             with self.subTest(flags=flags), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
-                    arguments(self.base + ["--cache-mode", "ssd"] + flags)
+                    run_radix_engine.arguments(self.base + ["--cache-mode", "ssd"] + flags)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            arguments(self.base + valid)
+            run_radix_engine.arguments(self.base + valid)
 
     def test_single_candidate_zero_index_is_not_treated_as_disabled(self):
-        args = arguments(self.base + ["--cache-mode", "ssd", "--logit-diagnostic-position", "0",
+        args = run_radix_engine.arguments(self.base + ["--cache-mode", "ssd", "--logit-diagnostic-position", "0",
                                       "--logit-diagnostic-candidates", "0"])
-        self.assertEqual(probe_command(args, "/result.json")[-4:],
+        self.assertEqual(run_radix_engine.probe_command(args, "/result.json")[-4:],
                          ["--logit-diagnostic-position", "0", "--logit-diagnostic-candidates", "0"])
 
     def test_attention_metadata_preserves_command_and_refuses_unsupported_modes(self):
@@ -132,19 +131,19 @@ class EngineInvocationTests(unittest.TestCase):
         metadata = ["--attention-metadata-position", "62"]
         for backend in ("contiguous", "paged"):
             base = self.base + flags + ["--kv-backend", backend]
-            self.assertEqual(probe_command(arguments(base + metadata), "/result.json"),
-                             probe_command(arguments(base), "/result.json") + metadata)
+            self.assertEqual(run_radix_engine.probe_command(run_radix_engine.arguments(base + metadata), "/result.json"),
+                             run_radix_engine.probe_command(run_radix_engine.arguments(base), "/result.json") + metadata)
         for extra in (["--mtp", "on"], ["--concurrency", "2"], ["--concurrency", "4"],
                       ["--cache-mode", "resident"]):
             with self.subTest(extra=extra), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
-                    arguments(self.base + flags + metadata + extra)
+                    run_radix_engine.arguments(self.base + flags + metadata + extra)
         for position in ("0", "-1", "1000001", "not-an-integer"):
             with self.subTest(position=position), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
-                    arguments(self.base + flags + ["--attention-metadata-position", position])
+                    run_radix_engine.arguments(self.base + flags + ["--attention-metadata-position", position])
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            arguments(self.base + metadata)
+            run_radix_engine.arguments(self.base + metadata)
 
     def test_combined_metadata_and_logits_preserve_the_same_serving_command(self):
         flags = ["--cache-mode", "ssd", "--key-mode", "ephemeral",
@@ -154,8 +153,8 @@ class EngineInvocationTests(unittest.TestCase):
         for backend in ("contiguous", "paged"):
             with self.subTest(backend=backend):
                 base = self.base + flags + ["--kv-backend", backend]
-                control = probe_command(arguments(base), "/result.json")
-                self.assertEqual(probe_command(arguments(base + metadata + logits), "/result.json"),
+                control = run_radix_engine.probe_command(run_radix_engine.arguments(base), "/result.json")
+                self.assertEqual(run_radix_engine.probe_command(run_radix_engine.arguments(base + metadata + logits), "/result.json"),
                                  control + logits + metadata)
 
     def test_packet_flags_coexist_with_independent_metadata_and_logit_positions(self):
@@ -166,9 +165,9 @@ class EngineInvocationTests(unittest.TestCase):
         for backend in ("contiguous", "paged"):
             with self.subTest(backend=backend):
                 base = self.base + flags + ["--kv-backend", backend]
-                control = probe_command(arguments(base), "/result.json")
-                self.assertEqual(probe_command(arguments(base + packet), "/result.json"), control + packet)
-                self.assertEqual(probe_command(arguments(base + packet + metadata + logits), "/result.json"),
+                control = run_radix_engine.probe_command(run_radix_engine.arguments(base), "/result.json")
+                self.assertEqual(run_radix_engine.probe_command(run_radix_engine.arguments(base + packet), "/result.json"), control + packet)
+                self.assertEqual(run_radix_engine.probe_command(run_radix_engine.arguments(base + packet + metadata + logits), "/result.json"),
                                  control + logits + metadata + packet)
 
     def test_packet_refuses_partial_invalid_or_unsupported_selection_before_host_work(self):
@@ -182,7 +181,7 @@ class EngineInvocationTests(unittest.TestCase):
         for flags in invalid:
             with self.subTest(flags=flags), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
-                    arguments(base + flags)
+                    run_radix_engine.arguments(base + flags)
 
     def test_actual_child_environment_overrides_inherited_key_flags_and_records_isolated_root(self):
         for mode in (None, "persistent", "ephemeral"):
@@ -191,7 +190,7 @@ class EngineInvocationTests(unittest.TestCase):
                 binary, input_path = root / "probe", root / "input.json"
                 binary.write_bytes(b"fixture")
                 input_path.write_text("{}")
-                args = arguments(["--binary", str(binary), "--model-directory", "/model",
+                args = run_radix_engine.arguments(["--binary", str(binary), "--model-directory", "/model",
                                   "--input", str(input_path), "--output", str(root / "run"),
                                   "--cache-mode", "ssd"] + (["--key-mode", mode] if mode else []))
                 expected = "ephemeral" if mode == "ephemeral" else "persistent"
@@ -228,7 +227,7 @@ class EngineInvocationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             report = Path(directory) / "report.json"
             for requested in ("persistent", "ephemeral"):
-                args = arguments(self.base + ["--cache-mode", "ssd", "--key-mode", requested])
+                args = run_radix_engine.arguments(self.base + ["--cache-mode", "ssd", "--key-mode", requested])
                 for actual in ("persistent", "ephemeral", None):
                     with self.subTest(requested=requested, actual=actual):
                         report.write_text(json.dumps({"schema": 2, "metrics_loaded": {"key_mode": actual}}))

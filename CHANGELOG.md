@@ -22,7 +22,7 @@
 
 - Stream Qwen answers as they are generated when the rendered prompt already closes its thinking block, including image and video requests that default thinking off. Preserve incremental reasoning, explicit parser overrides, and token usage.
 
-## Unreleased — paged attention foundation
+## Release candidate v0.9.0 — paged attention and Qwen caching (not shipped)
 
 - Prepare automatic paged attention for the three Qwen artifacts, GPT-OSS 20B and Gemma 4 QAT. Scope default SSD caching to Qwen independently of the attention backend; preserve explicit cache opt-in and all backend rollback controls. Model acceptance and operational release validation remain incomplete.
 

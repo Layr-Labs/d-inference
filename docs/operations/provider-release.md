@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-06 · commit `9c107e7b2`
+> Last updated: 2026-09-06 · commit `2feef1249`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -33,11 +33,15 @@ signing and when the final receipt is written.
 The signing job uses repository-scoped `APPLE_CERTIFICATE_P12`,
 `APPLE_CERTIFICATE_PASSWORD`, `PROVISIONING_PROFILE_BASE64`, `APPLE_ID` and
 `APPLE_APP_PASSWORD`. It imports an isolated temporary keychain, validates the
-profile's team/access group/push entitlement/expiry, signs the normal app
-components, then checks the signed CLI's keychain group, APNs entitlement and
-disabled debug-task entitlement. It checks Apple notarization and a stapled
-ticket, and emits post-sign
-file hashes. Keychain material is removed even on failure. Only explicit Actions
+profile's team, keychain group, production APNs grant, expiry and declared
+application identity (`scripts/provider-signing-validation.py`, `profile`). Both
+`com.apple.application-identifier` and `application-identifier` are checked when
+present: each must name the exact provider team/app or a wildcard that covers
+it. Profiles may omit those declarations; conflicting, malformed or unrelated
+declarations fail validation. The job signs the normal app components, then
+checks the signed CLI's keychain group, APNs entitlement and disabled debug-task
+entitlement. It checks Apple notarization and a stapled ticket, and emits
+post-sign file hashes. Keychain material is removed even on failure. Only explicit Actions
 artifacts and non-secret notarization diagnostics are retained for three days.
 
 The normal APNs entitlement retains its required `production` value; this is a

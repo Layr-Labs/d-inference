@@ -108,7 +108,6 @@ jobs:
     runs-on: blacksmith-12vcpu-macos-latest
     timeout-minutes: 35
     env:
-      DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
       APPLE_TEAM_ID: SLDQ2GJ6TL
     steps:
       - name: Checkout reviewed signing tooling only
@@ -140,11 +139,15 @@ jobs:
           umask 077
           test -n "$P12_BASE64" && test -n "$P12_PASSWORD" && test -n "$PROFILE_BASE64"
           keychain="$RUNNER_TEMP/signing-validation.keychain-db"
+          python3 tooling/scripts/provider_signing_identity.py capture \
+            --snapshot "$RUNNER_TEMP/signing-search-list-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" --keychain "$keychain"
           keychain_password=$(openssl rand -hex 24)
           printf '%s' "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/signing-certificate.p12"
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 3600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
+          python3 tooling/scripts/provider_signing_identity.py activate \
+            --snapshot "$RUNNER_TEMP/signing-search-list-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
           security import "$RUNNER_TEMP/signing-certificate.p12" -k "$keychain" \
             -P "$P12_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
@@ -153,27 +156,33 @@ jobs:
           printf '%s' "$PROFILE_BASE64" | base64 --decode > "$app/Contents/embedded.provisionprofile"
           security cms -D -i "$app/Contents/embedded.provisionprofile" > "$RUNNER_TEMP/profile.plist"
           python3 tooling/scripts/provider-signing-validation.py profile --profile "$RUNNER_TEMP/profile.plist"
+      - name: Select unique valid Developer ID Application identity
+        run: |
+          python3 tooling/scripts/provider_signing_identity.py select \
+            --snapshot "$RUNNER_TEMP/signing-search-list-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" --team "$APPLE_TEAM_ID" \
+            --output "$RUNNER_TEMP/signing-identity.json" --github-env "$GITHUB_ENV"
       - name: Sign and statically verify the app
         run: |
           set -euo pipefail
           app="$RUNNER_TEMP/signing-stage/Darkbloom.app"
           keychain="$RUNNER_TEMP/signing-validation.keychain-db"
           codesign --force --options runtime --timestamp --identifier io.darkbloom.fan-helper \
-            --keychain "$keychain" --sign "$DEVELOPER_ID" "$app/Contents/Helpers/darkbloom-fan-helper"
-          codesign --verify --strict -R="anchor apple generic and identifier \"io.darkbloom.fan-helper\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\"" \
+            --keychain "$keychain" --sign "$SIGNING_IDENTITY_SHA1" "$app/Contents/Helpers/darkbloom-fan-helper"
+          codesign --verify --strict -R="$SIGNING_REQUIREMENT and identifier \"io.darkbloom.fan-helper\"" \
             "$app/Contents/Helpers/darkbloom-fan-helper"
           codesign --force --options runtime --timestamp --keychain "$keychain" \
-            --sign "$DEVELOPER_ID" "$app/Contents/MacOS/mlx.metallib"
+            --sign "$SIGNING_IDENTITY_SHA1" "$app/Contents/MacOS/mlx.metallib"
           codesign --force --options runtime --timestamp --keychain "$keychain" \
             --entitlements tooling/provider-swift/entitlements-enclave.plist \
-            --sign "$DEVELOPER_ID" "$app/Contents/MacOS/darkbloom-enclave"
+            --sign "$SIGNING_IDENTITY_SHA1" "$app/Contents/MacOS/darkbloom-enclave"
           codesign --force --options runtime --timestamp --keychain "$keychain" \
             --entitlements tooling/provider-swift/entitlements.plist \
-            --sign "$DEVELOPER_ID" "$app/Contents/MacOS/darkbloom"
+            --sign "$SIGNING_IDENTITY_SHA1" "$app/Contents/MacOS/darkbloom"
           codesign --force --options runtime --timestamp --keychain "$keychain" \
-            --entitlements tooling/provider-swift/entitlements.plist --sign "$DEVELOPER_ID" "$app"
-          codesign --verify --deep --strict --verbose=2 "$app"
-          codesign --verify --strict --verbose=2 "$app/Contents/MacOS/darkbloom"
+            --entitlements tooling/provider-swift/entitlements.plist --sign "$SIGNING_IDENTITY_SHA1" "$app"
+          codesign --verify --deep --strict --verbose=2 \
+            -R="$SIGNING_REQUIREMENT and identifier \"io.darkbloom.provider\"" "$app"
+          codesign --verify --strict --verbose=2 -R="$SIGNING_REQUIREMENT" "$app/Contents/MacOS/darkbloom"
           codesign -d --entitlements - --xml "$app/Contents/MacOS/darkbloom" > "$RUNNER_TEMP/cli-entitlements.plist"
           python3 tooling/scripts/provider-signing-validation.py cli-entitlements --plist "$RUNNER_TEMP/cli-entitlements.plist"
           ditto -c -k --keepParent "$app" "$RUNNER_TEMP/notarization-input.zip"
@@ -192,7 +201,8 @@ jobs:
           xcrun stapler staple "$app"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=4 "$app"
-          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --verify --deep --strict --verbose=2 \
+            -R="$SIGNING_REQUIREMENT and identifier \"io.darkbloom.provider\"" "$app"
           python3 tooling/scripts/provider-signing-validation.py receipt \
             --output "$RUNNER_TEMP/signing-stage" --notary "$RUNNER_TEMP/notary-result.json"
           tar czf "$RUNNER_TEMP/signed-validation.tar.gz" -C "$RUNNER_TEMP/signing-stage" .
@@ -200,8 +210,9 @@ jobs:
       - name: Remove temporary signing material
         if: always()
         run: |
-          security delete-keychain "$RUNNER_TEMP/signing-validation.keychain-db" 2>/dev/null || true
-          rm -f "$RUNNER_TEMP/signing-certificate.p12" "$RUNNER_TEMP/profile.plist"
+          python3 tooling/scripts/provider_signing_identity.py cleanup \
+            --snapshot "$RUNNER_TEMP/signing-search-list-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" \
+            --output "$RUNNER_TEMP/signing-keychain-cleanup.json"
       - name: Retain signing-validation artifact only
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -210,6 +221,8 @@ jobs:
             ${{ runner.temp }}/signed-validation.tar.gz
             ${{ runner.temp }}/signed-validation.sha256
             ${{ runner.temp }}/notary-result.json
+            ${{ runner.temp }}/signing-identity.json
+            ${{ runner.temp }}/signing-keychain-cleanup.json
           retention-days: 3
           if-no-files-found: error
       - name: Retain non-secret notarization diagnostics
@@ -217,6 +230,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: provider-signing-validation-diagnostics
-          path: ${{ runner.temp }}/notary-result.json
+          path: |
+            ${{ runner.temp }}/notary-result.json
+            ${{ runner.temp }}/signing-identity.json
+            ${{ runner.temp }}/signing-keychain-cleanup.json
           retention-days: 3
           if-no-files-found: ignore

@@ -43,6 +43,30 @@ class SigningWorkflowRoutingTests(unittest.TestCase):
         self.assertEqual(set(call["secrets"]), set(SIGNING_SECRETS))
         self.assertEqual(self.ci["jobs"][CALL_JOB]["permissions"], {"contents": "read", "actions": "read"})
 
+    def test_signer_requires_scoped_identity_search_restore_and_code_requirements(self):
+        job = self.signing["jobs"]["signing"]
+        self.assertEqual(job["env"], {"APPLE_TEAM_ID": "SLDQ2GJ6TL"})
+        steps = {step.get("name"): step for step in job["steps"]}
+        imported = steps["Import repository-scoped signing material"]["run"]
+        self.assertLess(imported.index("provider_signing_identity.py capture"), imported.index("security create-keychain"))
+        self.assertLess(imported.index("provider_signing_identity.py activate"), imported.index("security import"))
+        selection = steps["Select unique valid Developer ID Application identity"]["run"]
+        self.assertIn('provider_signing_identity.py select', selection)
+        self.assertIn('--team "$APPLE_TEAM_ID"', selection)
+        sign = steps["Sign and statically verify the app"]["run"]
+        self.assertNotIn("$DEVELOPER_ID", sign)
+        self.assertEqual(sign.count('--sign "$SIGNING_IDENTITY_SHA1"'), 5)
+        self.assertIn('$SIGNING_REQUIREMENT and identifier', sign)
+        self.assertIn('-R="$SIGNING_REQUIREMENT"', sign)
+        cleanup = steps["Remove temporary signing material"]
+        self.assertEqual(cleanup["if"], "always()")
+        self.assertIn("provider_signing_identity.py cleanup", cleanup["run"])
+        self.assertIn("signing-keychain-cleanup.json", cleanup["run"])
+        diagnostic = steps["Retain non-secret notarization diagnostics"]
+        self.assertEqual(diagnostic["if"], "always()")
+        self.assertIn("signing-identity.json", diagnostic["with"]["path"])
+        self.assertIn("signing-keychain-cleanup.json", diagnostic["with"]["path"])
+
     def test_guard_removal_or_runner_command_drift_is_rejected(self):
         for change in ("guard", "runner", "provider-isolation", "cache-condition", "extra-job"):
             ci = copy.deepcopy(self.ci)

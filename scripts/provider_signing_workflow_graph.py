@@ -142,7 +142,8 @@ def snapshot(root=ROOT):
             "status": "validated", "event_job_graphs": graphs,
             "workflow_call_path": CALL_PATH, "secret_names": list(SIGNING_SECRETS),
             "secret_values_read": False, "normal_job_definitions_preserved": True,
-            "signing_job_definitions_preserved": True}
+            "signing_build_job_preserved": True,
+            "signing_identity_revision": baseline["signing"].get("identity_revision")}
 
 
 if __name__ == "__main__":

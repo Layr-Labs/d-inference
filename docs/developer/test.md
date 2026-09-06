@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-06 · commit `f3b2ee6a6`
+> Last updated: 2026-09-06 · commit `8cc56074a`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -21,10 +21,13 @@ signing workflow and its artifact, identity, entitlement and archive checks.
 Run `python3 scripts/test-provider-signing-routing.py` for parsed YAML job-graph
 checks and mutation fixtures. The routing test uses Ruby's standard YAML parser
 and a canonical baseline from the pre-entrypoint PR commit: it verifies that all
-eight ordinary CI job definitions and both signing job definitions are preserved,
+eight ordinary CI job definitions and the unsigned build job are preserved,
 that push/PR routing is unchanged, and that manual CI expands only to the unsigned
-build and dependent signer with exactly five mapped secrets. These CPU fixtures
-do not execute pipeline commands, provider binaries or use signing credentials.
+build and dependent signer with exactly five mapped secrets. The signer contract separately records the bounded identity/search-list revision.
+Run `python3 scripts/test-provider-signing-identity.py` for synthetic public-identity
+parsing, exact-team/kind and ambiguity refusals, mocked keychain lifecycle/cleanup,
+and the platform `csreq` requirement parser. These fixtures never operate on real
+keychains, signing credentials, provider binaries or models.
 See the [signing-validation procedure](../operations/provider-release.md#environment-free-signing-validation)
 for the separate signed artifact validation.
 

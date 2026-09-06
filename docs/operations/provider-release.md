@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-06 · commit `f3b2ee6a6`
+> Last updated: 2026-09-06 · commit `8cc56074a`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -40,17 +40,36 @@ signing and when the final receipt is written.
 
 The signing job uses repository-scoped `APPLE_CERTIFICATE_P12`,
 `APPLE_CERTIFICATE_PASSWORD`, `PROVISIONING_PROFILE_BASE64`, `APPLE_ID` and
-`APPLE_APP_PASSWORD`. It imports an isolated temporary keychain, validates the
+`APPLE_APP_PASSWORD`. Before creating the isolated temporary keychain, it records
+the original user keychain search list. It then activates the temporary keychain
+while preserving all prior entries and their order. After import it validates the
 profile's team, keychain group, production APNs grant, expiry and declared
 application identity (`scripts/provider-signing-validation.py`, `profile`). Both
 `com.apple.application-identifier` and `application-identifier` are checked when
 present: each must name the exact provider team/app or a wildcard that covers
 it. Profiles may omit those declarations; conflicting, malformed or unrelated
-declarations fail validation. The job signs the normal app components, then
-checks the signed CLI's keychain group, APNs entitlement and disabled debug-task
-entitlement. It checks Apple notarization and a stapled ticket, and emits
-post-sign file hashes. Keychain material is removed even on failure. Only explicit Actions
-artifacts and non-secret notarization diagnostics are retained for three days.
+declarations fail validation.
+
+`scripts/provider_signing_identity.py` queries only the isolated keychain with
+`security find-identity -v -p codesigning`. Exactly one valid certificate/private-key
+identity must be present. Its kind must be Developer ID Application and its team
+must equal `SLDQ2GJ6TL`; zero, ambiguous, wrong-kind, wrong-team or malformed results
+fail before signing. The selected public SHA-1 identity fingerprint is passed to
+`codesign`, avoiding dependence on a company's display-name spelling. There is no
+global identity fallback and no new certificate/trust-anchor installation.
+
+Static signed-code requirements retain Apple's generic anchor and the exact team,
+add the Developer ID Application leaf marker, and preserve the helper/app identifiers.
+The marker `1.2.840.113635.100.6.1.13` is documented in Apple's
+[Security policy definitions](https://github.com/apple-oss-distributions/Security/blob/db15acbe6a7f257a859ad9a3bb86097bfe0679d9/trust/headers/SecPolicyPriv.h).
+The job checks the CLI's keychain group, APNs entitlement and disabled debug-task
+entitlement, then Apple notarization, the stapled ticket and post-sign file hashes.
+
+Cleanup always restores and verifies the original user search list, then removes
+the captured temporary keychain and material. Restore failure still attempts
+private-material deletion and fails the job; it is not reported as successful cleanup.
+Only existing Actions artifacts plus non-secret identity, cleanup and notarization
+receipts are retained for three days. No private key or secret value is exported.
 
 The normal APNs entitlement retains its required `production` value; this is a
 static signing entitlement, not a GitHub environment or a provider registration.
@@ -74,11 +93,21 @@ After explicit authorization, the registered entrypoint is selected with
 `gh workflow run ci.yml --ref <reviewed-branch> -f source_sha=<verified-full-sha> -f version=<exact-source-version>`.
 The build rechecks the published signature, exact checkout and existing version;
 secret-name availability alone does not establish credential validity.
+The first authorized signing run, [34030878981](https://github.com/Layr-Labs/d-inference/actions/runs/34030878981),
+built and validated its unsigned artifact but failed its first hard-coded identity
+lookup after importing one identity and validating the profile. No certificate
+subject or valid-identity listing was retained, so a display-name change is unproven.
+The release workflow already added the temporary keychain to the search list; the
+initial isolated workflow omitted that step. The scoped search-list lifecycle and
+strict fingerprint selection address both lookup causes without weakening a gate.
+Any retry requires review of the changed definition; there is no cross-run artifact input.
+
 Source preparation and the CPU helper tests do not claim a completed signing run:
 
 ```bash
 python3 scripts/test-provider-signing-validation.py
 python3 scripts/test-provider-signing-routing.py
+python3 scripts/test-provider-signing-identity.py
 ```
 
 ## When to use

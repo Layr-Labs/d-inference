@@ -73,7 +73,13 @@
     },
     "jobs": {
       "build": "dd03264284f2b0b5cce952e23b3f937e5eda813396731597f5db3039405fc48e",
-      "signing": "42410c40012a6abd9ed3853aceeee4d80c4adcad49a8ca5c3d9c5e59b289001a"
+      "signing": "04744fe53cb51c62cabf9f081ee76fbc534466091b9a2d7b2162146e945f72fa"
+    },
+    "identity_revision": {
+      "parent_workflow_sha": "8cc56074ae7a6dd6553fe3cd3692af1ba58ed9a2",
+      "previous_signing_job_sha256": "42410c40012a6abd9ed3853aceeee4d80c4adcad49a8ca5c3d9c5e59b289001a",
+      "new_signing_job_sha256": "04744fe53cb51c62cabf9f081ee76fbc534466091b9a2d7b2162146e945f72fa",
+      "scope": "Only signer identity lookup/search-list lifecycle, Developer ID requirements and non-secret diagnostics; normal CI and unsigned build unchanged."
     }
   },
   "preserved_files": {

@@ -158,7 +158,8 @@ func TestPostCommitTimeoutAndNoTerminalArePartialSuccess(t *testing.T) {
 }
 
 func TestSpeculativeLoserOutcome(t *testing.T) {
-	pr := &registry.PendingRequest{RequestID: "req-loser", UsedBackup: true}
+	pr := &registry.PendingRequest{RequestID: "req-loser"}
+	pr.MarkBackupUsed()
 	out := speculativeLoserOutcome(pr)
 	if out.FinalStatus != "cancelled" {
 		t.Fatalf("FinalStatus = %q, want cancelled", out.FinalStatus)

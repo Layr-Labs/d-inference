@@ -51,7 +51,7 @@ func TestObserveTTFTCalibrationFeedsRegistry(t *testing.T) {
 
 	// Speculative-race attempt: excluded, prediction left untouched.
 	backup := reserveForCalibration(t, srv, model, "calib-hook-backup")
-	backup.UsedBackup = true
+	backup.MarkBackupUsed()
 	backup.MarkFirstContentArrived()
 	srv.observeTTFTCalibration(backup)
 	if _, ok := registry.RecordTTFTObservation(backup.RequestID, backup.Attempt, 900); !ok {

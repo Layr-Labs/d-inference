@@ -49,7 +49,7 @@ import (
 //     feedback loop converges on the absolute ratio instead of compounding.
 //     Queued requests ARE included: their prediction is made at drain-reserve
 //     time (after the queue wait), so the pair is unbiased. Speculative-race
-//     attempts are EXCLUDED by the API-side hook (pr.UsedBackup): the race
+//     attempts are EXCLUDED by the API-side hook (pr.BackupState): the race
 //     winner is the min of two draws, which would bias actuals downward.
 //   - Kill switch: EIGENINFERENCE_TTFT_CALIBRATION=off returns ratio 1.0 from
 //     the apply path (live-read, no restart). Learning continues while off so

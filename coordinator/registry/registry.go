@@ -228,10 +228,9 @@ type PendingRequest struct {
 	// MetadataDetails is true. Opaque to the registry; writers attach it as
 	// the response "metadata" field. Nil when the caller did not opt in.
 	ResponseMetadata json.RawMessage
-	// Speculative backup telemetry. UsedBackup means a backup race was launched
-	// for this logical request; BackupWon is true only on the serving backup.
-	UsedBackup bool
-	BackupWon  bool
+	// Dispatch can publish the speculative result while provider completion
+	// snapshots telemetry. Keep the monotonic used/won flags in one atomic value.
+	speculativeBackup atomic.Uint32
 
 	// ReservedMicroUSD is the balance atomically debited at pre-flight.
 	// The post-inference charge adjusts for the difference between the

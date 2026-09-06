@@ -138,13 +138,17 @@ func (s *Server) claimSettlement(requestID string) *registry.PendingRequest {
 // (commitFirstContent), which owns pr.Timing, so DispatchedAt is safe to read
 // directly and FirstContentAt has just been stamped.
 //
-// Speculative-race attempts (pr.UsedBackup, set on both racers before the race
+// Speculative-race attempts (marked on both racers before the race
 // starts on this same goroutine) are excluded: the race winner is the faster
 // of two draws, which would bias actuals downward. Requests with no matching
 // pending prediction (cold dispatches, providers without BackendCapacity,
 // retries whose prediction expired) are ignored by the calibrator itself.
 func (s *Server) observeTTFTCalibration(pr *registry.PendingRequest) {
-	if pr == nil || pr.Timing == nil || pr.UsedBackup || pr.CacheRoutingParticipates() {
+	if pr == nil || pr.Timing == nil {
+		return
+	}
+	usedBackup, _ := pr.BackupState()
+	if usedBackup || pr.CacheRoutingParticipates() {
 		return
 	}
 	firstContent := pr.FirstContentAtSafe()

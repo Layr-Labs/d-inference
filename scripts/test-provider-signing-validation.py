@@ -159,6 +159,37 @@ class SigningValidationTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         VALIDATION.profile(argparse.Namespace(profile=path))
 
+    def test_profile_app_identifier_must_authorize_the_exact_team_and_app(self):
+        expected = VALIDATION.TEAM + "." + VALIDATION.APP_ID
+        cases = [
+            ({}, True),  # Developer ID may omit this entitlement.
+            ({"com.apple.application-identifier": expected}, True),
+            ({"application-identifier": expected}, True),
+            ({"com.apple.application-identifier": VALIDATION.TEAM + ".*"}, True),
+            ({"com.apple.application-identifier": VALIDATION.TEAM + ".io.darkbloom.*"}, True),
+            ({"com.apple.application-identifier": VALIDATION.TEAM + ".io.darkbloom.other"}, False),
+            ({"application-identifier": "OTHERTEAM." + VALIDATION.APP_ID}, False),
+            ({"application-identifier": VALIDATION.TEAM + ".unrelated.*"}, False),
+            ({"application-identifier": "*"}, False),
+            ({"application-identifier": ""}, False),
+            ({"application-identifier": [expected]}, False),
+            ({"com.apple.application-identifier": expected,
+              "application-identifier": VALIDATION.TEAM + ".other"}, False),
+        ]
+        for app_ids, valid in cases:
+            with self.subTest(app_ids=app_ids), tempfile.TemporaryDirectory() as temporary:
+                value = {"TeamIdentifier": [VALIDATION.TEAM],
+                    "ExpirationDate": datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=60),
+                    "Entitlements": {"keychain-access-groups": [expected],
+                        "com.apple.developer.aps-environment": "production", **app_ids}}
+                path = Path(temporary) / "profile.plist"
+                path.write_bytes(plistlib.dumps(value))
+                if valid:
+                    VALIDATION.profile(argparse.Namespace(profile=path))
+                else:
+                    with self.assertRaisesRegex(ValueError, "application identifier mismatch"):
+                        VALIDATION.profile(argparse.Namespace(profile=path))
+
 
 if __name__ == "__main__":
     unittest.main()

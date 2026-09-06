@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-06 · commit `6b955ee76`
+> Last updated: 2026-09-06 · commit `7fde576d5`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -74,7 +74,9 @@ understand what `make` runs.
 ### 3. Coordinator (Go)
 
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
-its test binary after helper or lifecycle changes. The helper waits within the existing
+its test binary after helper or lifecycle changes. The CPU-only
+`TestPrepareConnectedInputBindings` check uses the actual fixture input/report
+types to prepare canonical catalog entries before a physical run. The helper waits within the existing
 five-minute prelaunch bound for GPU ≤42°C and load1 ≤4, under the same control
 lease used after launch. See the [test procedure](test.md#connected-coordinatorprovider-http-cache-gate).
 

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-06 · commit `b6759aa4b`
+> Last updated: 2026-09-06 · commit `7fde576d5`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -977,6 +977,19 @@ Owned two-host startup waits up to five minutes for the existing GPU ≤42°C
 and load1 ≤4 entry thresholds. Identity, disk, nonfinite measurements and
 foreign processes still refuse immediately. Lease pings and cancellation
 cover preparation; EOF, stop, signals or deadlines prevent a later launch.
+The owned credential is retired after its provider group is confirmed gone,
+before independent host observation. A foreign-process or telemetry failure
+still fails the run; `auth_token_retired` and the separate owned
+`credential-retirement.json` record keep credential cleanup distinct.
+
+Catalog inputs use `testbed.CatalogModel.Entry` (`store.ModelRegistryEntry`),
+not the public API projection from `catalogModelFromRegistryRecord`. Prepare
+inputs through the opt-in, CPU-only `TestPrepareConnectedInputBindings` check
+with `DARKBLOOM_CONNECTED_INPUT_BINDING_PLAN`. It retains the original public
+metadata, checks the complete input/report roundtrip, and preserves all
+consumed policy fields and the immutable manifest. Catalog comparison remains
+part of the exact input gate; ignored public fields must not be silently lost.
+
 Reports retain `host_lifecycles` for failed and unattempted targets, including
 readiness observations, helper/fixture identities, `provider_started`, and
 terminal/cleanup receipts. A valid terminal can prove provider startup when its

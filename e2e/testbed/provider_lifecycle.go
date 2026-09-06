@@ -12,18 +12,20 @@ type ProviderEntryCheck struct {
 // These identities distinguish the local helper transport, host fixture, and
 // actual provider. A fixture process alone never establishes provider startup.
 type ProviderHostLifecycle struct {
-	Name                 string               `json:"name"`
-	Root                 string               `json:"root"`
-	HelperTransportPID   int                  `json:"helper_transport_pid"`
-	FixturePID           int                  `json:"fixture_pid"`
-	ProviderStarted      *bool                `json:"provider_started"`
-	StartAcknowledged    bool                 `json:"start_acknowledged"`
-	StartupIdentityError string               `json:"startup_identity_error,omitempty"`
-	ControlError         string               `json:"control_error,omitempty"`
-	ProviderPID          int                  `json:"provider_pid"`
-	EntryChecks          []ProviderEntryCheck `json:"entry_checks"`
-	Terminal             *ownedHostEvent      `json:"terminal,omitempty"`
-	Cleanup              *HostObservation     `json:"cleanup,omitempty"`
+	AuthTokenRetired         *bool                `json:"auth_token_retired"`
+	AuthTokenRetirementError *string              `json:"auth_token_retirement_error"`
+	Name                     string               `json:"name"`
+	Root                     string               `json:"root"`
+	HelperTransportPID       int                  `json:"helper_transport_pid"`
+	FixturePID               int                  `json:"fixture_pid"`
+	ProviderStarted          *bool                `json:"provider_started"`
+	StartAcknowledged        bool                 `json:"start_acknowledged"`
+	StartupIdentityError     string               `json:"startup_identity_error,omitempty"`
+	ControlError             string               `json:"control_error,omitempty"`
+	ProviderPID              int                  `json:"provider_pid"`
+	EntryChecks              []ProviderEntryCheck `json:"entry_checks"`
+	Terminal                 *ownedHostEvent      `json:"terminal,omitempty"`
+	Cleanup                  *HostObservation     `json:"cleanup,omitempty"`
 }
 
 func (p *Provider) HostLifecycle() ProviderHostLifecycle {
@@ -41,6 +43,7 @@ func (p *Provider) HostLifecycle() ProviderHostLifecycle {
 		row.HelperTransportPID = o.cmd.Process.Pid
 	}
 	row.FixturePID, row.StartAcknowledged = o.fixturePID, o.pid > 0
+	row.AuthTokenRetired, row.AuthTokenRetirementError = o.credentialRetired, o.credentialError
 	var identityErr error
 	row.ProviderStarted, row.ProviderPID, identityErr = providerStartupIdentity(o.pid, o.terminal)
 	if identityErr != nil {

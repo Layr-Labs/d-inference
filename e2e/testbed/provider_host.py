@@ -445,6 +445,58 @@ def initial_request(control):
     return json.loads(first), pending
 
 
+def retire_owned_credential(root, record):
+    """Retire only this fixture's credential once its own group is confirmed gone."""
+    result = {'auth_token_retired': False, 'error': None,
+              'provider_pid': record.get('pid'),
+              'provider_group_cleanup_complete': record.get('group_cleanup_complete') is True}
+    if root is None:
+        result['auth_token_retired'] = True  # No owned root/token was created.
+        return result
+    if not result['provider_group_cleanup_complete']:
+        result['error'] = 'owned provider group retirement is unconfirmed'
+    else:
+        try:
+            directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                try:
+                    info = os.stat('auth_token', dir_fd=directory, follow_symlinks=False)
+                except FileNotFoundError:
+                    info = None
+                if info is not None:
+                    if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or info.st_uid != os.getuid():
+                        raise ValueError('owned credential identity differs')
+                    os.unlink('auth_token', dir_fd=directory)
+                result['auth_token_retired'] = True
+            finally:
+                os.close(directory)
+        except Exception as error:
+            result['error'] = type(error).__name__+': '+str(error)
+    # This separate receipt survives a later foreign-process/telemetry refusal.
+    descriptor = os.open(root/'credential-retirement.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'w') as stream:
+        stream.write(json.dumps(result, indent=2, allow_nan=False)+'\n')
+    return result
+
+
+def finish_owner(request, owned, record, emit=send):
+    credential = retire_owned_credential(owned.get('root'), record)
+    canonical = Path.home()/'.config/darkbloom/provider.toml'
+    if digest(canonical) != request['target']['canonical_config_sha256']:
+        raise ValueError('canonical config changed; no repair performed')
+    cleanup = observe(request['target'])
+    emit({'event': 'cleanup', 'fixture_pid': os.getpid(), 'provider_started': record['provider_started'],
+          'auth_token_retired': credential['auth_token_retired'],
+          'auth_token_retirement_error': credential['error'],
+          'observation': report_observation(cleanup)})
+    if cleanup['unexpected_processes'] or cleanup['owned_processes']:
+        raise ValueError('process leftovers after owned shutdown')
+    if not credential['auth_token_retired'] or credential['error'] is not None:
+        raise RuntimeError(credential['error'] or 'owned credential retirement unconfirmed')
+    if record['failure'] is not None or (record['exit_code'] != 0 and not record['stop_requested']):
+        raise RuntimeError(record['failure'] or 'provider exited without requested shutdown')
+
+
 def main():
     request, pending = initial_request(sys.stdin.buffer)
     owned = {}
@@ -461,20 +513,7 @@ def main():
         launch.update(command=[str(root/'runtime/darkbloom')]+spec['arguments'], environment=environment)
     record = run_owner(None, None, None, sys.stdin.buffer, send, prepare_launch=prepare_launch,
         initial_control=pending, observation=lambda pid: observe(request['target'], () if pid is None else (pid,)))
-    canonical = Path.home()/'.config/darkbloom/provider.toml'
-    if digest(canonical) != request['target']['canonical_config_sha256']:
-        raise ValueError('canonical config changed; no repair performed')
-    cleanup = observe(request['target'])
-    send({'event': 'cleanup', 'fixture_pid': os.getpid(), 'provider_started': record['provider_started'],
-          'observation': report_observation(cleanup)})
-    if cleanup['unexpected_processes'] or cleanup['owned_processes']:
-        raise ValueError('process leftovers after owned shutdown')
-    # A refused prelaunch never creates an auth token. A staged token is removed
-    # only after owned process-group retirement and the independent cleanup check.
-    if 'root' in owned and record['group_cleanup_complete']:
-        (owned['root']/'auth_token').unlink(missing_ok=True)
-    if record['failure'] is not None or (record['exit_code'] != 0 and not record['stop_requested']):
-        raise RuntimeError(record['failure'] or 'provider exited without requested shutdown')
+    finish_owner(request, owned, record)
 
 
 if __name__ == '__main__':

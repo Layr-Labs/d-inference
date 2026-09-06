@@ -44,15 +44,17 @@ func ownedHostCommand(target ProviderTarget, relayURL string) (string, []string,
 }
 
 type ownedHostEvent struct {
-	RootCreated          *bool   `json:"root_created"`
-	StopRequested        bool    `json:"stop_requested"`
-	PGID                 int     `json:"pgid"`
-	Seconds              float64 `json:"seconds"`
-	FixturePID           int     `json:"fixture_pid"`
-	ProviderStarted      *bool   `json:"provider_started"`
-	GroupCleanupComplete *bool   `json:"group_cleanup_complete"`
-	EntryReady           bool    `json:"entry_ready"`
-	EntryReason          *string `json:"entry_reason"`
+	AuthTokenRetired         *bool   `json:"auth_token_retired"`
+	AuthTokenRetirementError *string `json:"auth_token_retirement_error"`
+	RootCreated              *bool   `json:"root_created"`
+	StopRequested            bool    `json:"stop_requested"`
+	PGID                     int     `json:"pgid"`
+	Seconds                  float64 `json:"seconds"`
+	FixturePID               int     `json:"fixture_pid"`
+	ProviderStarted          *bool   `json:"provider_started"`
+	GroupCleanupComplete     *bool   `json:"group_cleanup_complete"`
+	EntryReady               bool    `json:"entry_ready"`
+	EntryReason              *string `json:"entry_reason"`
 
 	RequestID   uint64          `json:"id"`
 	Event       string          `json:"event"`
@@ -67,25 +69,27 @@ type ownedHostEvent struct {
 }
 
 type ownedProvider struct {
-	mu              sync.Mutex
-	writeMu         sync.Mutex
-	requestMu       sync.Mutex
-	stdin           io.WriteCloser
-	cmd             *exec.Cmd
-	done            chan struct{}
-	started         chan struct{}
-	state           chan ownedHostEvent
-	hostID          string
-	pid             int
-	entry           HostObservation
-	cleanup         *HostObservation
-	entryChecks     []ProviderEntryCheck
-	fixturePID      int
-	terminal        *ownedHostEvent
-	err             error
-	stopOnce        sync.Once
-	nextRequestID   uint64
-	activeRequestID uint64
+	mu                sync.Mutex
+	writeMu           sync.Mutex
+	requestMu         sync.Mutex
+	stdin             io.WriteCloser
+	cmd               *exec.Cmd
+	done              chan struct{}
+	started           chan struct{}
+	state             chan ownedHostEvent
+	hostID            string
+	pid               int
+	entry             HostObservation
+	credentialRetired *bool
+	credentialError   *string
+	cleanup           *HostObservation
+	entryChecks       []ProviderEntryCheck
+	fixturePID        int
+	terminal          *ownedHostEvent
+	err               error
+	stopOnce          sync.Once
+	nextRequestID     uint64
+	activeRequestID   uint64
 }
 
 func (o *ownedProvider) send(command string) error {
@@ -202,6 +206,7 @@ func startOwnedProvider(ctx context.Context, target ProviderTarget, spec Provide
 				_, _, identityErr := providerStartupIdentity(o.pid, o.terminal)
 				scanErr = errors.Join(scanErr, identityErr)
 			case "cleanup":
+				o.credentialRetired, o.credentialError = event.AuthTokenRetired, event.AuthTokenRetirementError
 				copied := event.Observation
 				o.cleanup = &copied
 			default:
@@ -231,6 +236,12 @@ func startOwnedProvider(ctx context.Context, target ProviderTarget, spec Provide
 		}
 		if o.terminal != nil && o.terminal.Failure != nil {
 			o.err = errors.Join(o.err, fmt.Errorf("owned process failed: %s", *o.terminal.Failure))
+		}
+		if o.credentialRetired != nil && !*o.credentialRetired {
+			o.err = errors.Join(o.err, fmt.Errorf("owned credential retirement unconfirmed"))
+		}
+		if o.credentialError != nil {
+			o.err = errors.Join(o.err, fmt.Errorf("owned credential retirement failed: %s", *o.credentialError))
 		}
 		if o.cleanup == nil {
 			o.err = errors.Join(o.err, fmt.Errorf("owned host lacks cleanup receipt"))

@@ -125,7 +125,6 @@ type walkOutcome struct {
 	aliasRoute  bool
 	aliasStruct bool
 	aliasBuild  bool
-	cacheCaps   []string
 }
 
 func runWalks(r *Registry, model string, pr *PendingRequest, traits RequestTraits, vision bool) walkOutcome {
@@ -145,10 +144,6 @@ func runWalks(r *Registry, model string, pr *PendingRequest, traits RequestTrait
 	c, cap_, tl, ttft, has := r.QuickCapacityCheckWithTTFTForRequest(model, 600, 512, traits, vision)
 	out.quick, out.quickTTFT, out.quickHas = [3]int{c, cap_, tl}, int64(ttft), has
 	out.servable = r.PredictServable(model, 600, 600, 512, 128_000, traits, vision)
-	for id := range r.prefixCacheV2CapabilitiesForModel(model) {
-		out.cacheCaps = append(out.cacheCaps, id)
-	}
-	sort.Strings(out.cacheCaps)
 	return out
 }
 

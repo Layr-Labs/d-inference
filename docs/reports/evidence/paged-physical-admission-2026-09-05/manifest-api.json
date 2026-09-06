@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "scope": "Native opt-in dynamic paged grant/physical admission milestone; no shipping default change, five-model paging, throughput or fleet-capacity certification",
+  "native_compiled_base": "28c2635c801a80ca6721142dd2eb2428de764ece",
+  "native_commit": "1236a813f9ac6da47a7028e7baf17fb3ac842f0a",
+  "separate_boolean_parent": "c0c63e251a4d0fad9f1f8b04f4cbb45d4a0dd760",
+  "captured_native_source_and_test_hashes": 437,
+  "verified_commit_paths": 21,
+  "results": {
+    "semantic_seconds": 101.82,
+    "xctest_functions": 163,
+    "xctest_seconds": 53.036,
+    "swift_testing_functions": 47,
+    "swift_testing_actual_cases": 61,
+    "total_actual_cases": 224,
+    "groups": {
+      "admission.log": {
+        "functions": 11,
+        "actual_cases": 12
+      },
+      "segments-grants.log": {
+        "functions": 10,
+        "actual_cases": 23
+      },
+      "resident-prefix.log": {
+        "functions": 26,
+        "actual_cases": 26
+      }
+    },
+    "admission_seconds": 1.827,
+    "segments_grants_seconds": 5.586,
+    "resident_prefix_seconds": 2.787,
+    "skipped": 0
+  },
+  "evidence_notes": [
+    "Admission suite ran alone, serialized, on the sole local GPU lane. The prefill-only terminal case checks actual Memory.activeMemory decrease and last weak wrapper release while the original physical floor remains charged.",
+    "Pure 36/64/128 GiB device-envelope examples assign 8/16/32 GiB slot grants for synthetic Qwen accounting; they are not production sizing recommendations or real model execution.",
+    "The 16 Boolean/server tests in test-commands.json are banked with the separate renderer milestone and excluded from224 floor cases.",
+    "Final compiled source bytes exactly match21 floor commit blobs; no post-test executable or whitespace overlay."
+  ],
+  "files": {
+    "build.log.gz": {
+      "source": "/tmp/darkbloom-090-native-floor1/build.log",
+      "stored_bytes": 18899,
+      "stored_sha256": "a7798adab28f3a06c377c6e969398f4e48032760e90e547bfc6687b0904f735a",
+      "raw_bytes": 492781,
+      "raw_sha256": "352fdb5fe0dac7b98c75e4072280ec4ac6d125989d8f4eaf54ad7b4b2d65d26d",
+      "encoding": "gzip mtime=0"
+    },
+    "setup.log.gz": {
+      "source": "/tmp/darkbloom-090-native-floor1/setup.log",
+      "stored_bytes": 206,
+      "stored_sha256": "5d069f5f014d8fdc00e0dc55455f718d4960347ee7b4079bcb3d077a54de0dd8",
+      "raw_bytes": 322,
+      "raw_sha256": "c08927768f01af57e523be7499cf5ba0d628b4d5be4fbf3af33c2df7d27b0bf7",
+      "encoding": "gzip mtime=0"
+    },
+    "source-manifest.json.gz": {
+      "source": "/tmp/darkbloom-090-native-floor1/source-manifest.json",
+      "stored_bytes": 22276,
+      "stored_sha256": "0cb03a2b91b82a0683042f2f64436aa874198b7a1c48d02875e01f7b73537f19",
+      "raw_bytes": 63797,
+      "raw_sha256": "81aaa93e1cdd6418887e6c85950306184dbd770ae2c40772dc96acaafbd652d9",
+      "encoding": "gzip mtime=0"
+    },
+    "command.txt.gz": {
+      "source": "/tmp/darkbloom-090-native-floor1/command.txt",
+      "stored_bytes": 138,
+      "stored_sha256": "271877133bdcfd12f3332cbb4968b00241fb345acbf78a4dff819ad6cf56cfca",
+      "raw_bytes": 215,
+      "raw_sha256": "b5805e3b4266b0c8e906b8710f9558b527e03cb05d397f29678320418a823b51",
+      "encoding": "gzip mtime=0"
+    },
+    "test-commands.json.gz": {
+      "source": "/tmp/darkbloom-090-native-floor1/test-commands.json",
+      "stored_bytes": 607,
+      "stored_sha256": "635096b433d1a8a369fe7f7fcb9decd9ffc91b883c3f42a12c4dc1a7d3aa023d",
+      "raw_bytes": 1227,
+      "raw_sha256": "de3b2920d3a05e352d6f812cc125a19446b89010bcdb484745977388c1842b1d",
+      "encoding": "gzip mtime=0"
+    },
+    "admission.log.gz": {
+      "source": "/tmp/darkbloom-090-native-floor1/admission.log",
+      "stored_bytes": 896,
+      "stored_sha256": "005f45b312ad12444a59e4857e884d900e4711d51fbca3cd38407e89014684c1",
+      "raw_bytes": 3036,
+      "raw_sha256": "bf8040b173ea7370bedb617eca3b05c24b52508657c6791a43a2acdb0c6c190b",
+      "encoding": "gzip mtime=0"
+    },
+    "segments-grants.log.gz": {
+      "source": "/tmp/darkbloom-090-native-floor1/segments-grants.log",
+      "stored_bytes": 996,
+      "stored_sha256": "697f3b45fa77f34400920e5b5507307ade6b16939d18ac0aaca5c4d86f1c9565",
+      "raw_bytes": 5221,
+      "raw_sha256": "9327144321a766d930f0034dde66787a70d64131156b2c6cd534e19c616ae5b6",
+      "encoding": "gzip mtime=0"
+    },
+    "scheduler-deadline-frozen.log.gz": {
+      "source": "/tmp/darkbloom-090-native-floor1/scheduler-deadline-frozen.log",
+      "stored_bytes": 5457,
+      "stored_sha256": "db09deeddcf9d7a5fab8152c2441fd722983d98438a958547a3a7d4b72ab6700",
+      "raw_bytes": 41637,
+      "raw_sha256": "cf1df88e722e7b24d031b5fe7d6a841d19d1ff1f15afcf104a1d44081112396d",
+      "encoding": "gzip mtime=0"
+    },
+    "resident-prefix.log.gz": {
+      "source": "/tmp/darkbloom-090-native-floor1/resident-prefix.log",
+      "stored_bytes": 1376,
+      "stored_sha256": "d3728c5df559a522d954bcc7ffd160c0d79a5eafd831c076c6bb7baf5362507a",
+      "raw_bytes": 5555,
+      "raw_sha256": "43d040dd8b0ea8f27b07a9d194035b6d7db82148e4e59fad1ce10723d38aae0b",
+      "encoding": "gzip mtime=0"
+    },
+    "native-final-manifest.json.gz": {
+      "source": "/tmp/darkbloom-paged-floor-final-manifest.json",
+      "stored_bytes": 1992,
+      "stored_sha256": "3d36db0a1cd84dad18cc9c425c42d3e5d27fce66bc34733a8cc9bede50e43ccb",
+      "raw_bytes": 5532,
+      "raw_sha256": "54cd1473f6178b5aa2de4cfdac06c739f90cc0d9416a87065a09e18ad612af71",
+      "encoding": "gzip mtime=0"
+    },
+    "prefill-fence-change.patch.gz": {
+      "source": "/tmp/darkbloom-paged-prefill-fence/change.patch",
+      "stored_bytes": 1659,
+      "stored_sha256": "9311fff275e786552bb2b4dfde168992a73130694833b0091924dc0523e51dea",
+      "raw_bytes": 4012,
+      "raw_sha256": "55ef58ea4973507e51e58d2f06408b6290b0a4565dbc9d6752218dd6f9f4accc",
+      "encoding": "gzip mtime=0"
+    },
+    "prefill-fence-manifest.json.gz": {
+      "source": "/tmp/darkbloom-paged-prefill-fence/manifest.json",
+      "stored_bytes": 332,
+      "stored_sha256": "6bae5dd99b43f87c2a551ae30b43cc52834b6c55ae5dbea4e2b67697fc70be21",
+      "raw_bytes": 493,
+      "raw_sha256": "1ffc21e0cf1eed138b3b5fbec36790570e090bd22d2d3268dd92b914a81d0115",
+      "encoding": "gzip mtime=0"
+    },
+    "prefill-fence-native-allocation-test.patch.gz": {
+      "source": "/tmp/darkbloom-paged-prefill-fence/native-allocation-test.patch",
+      "stored_bytes": 655,
+      "stored_sha256": "9b5575e6251b12d29d3393eca709546fa026c8294dd988d1131799bc7bbd003b",
+      "raw_bytes": 1496,
+      "raw_sha256": "42f12b238efb2a9dbe09f48184e94a63093e89746050d6c450c9dd25433788c3",
+      "encoding": "gzip mtime=0"
+    },
+    "prefill-fence-native-allocation-test-manifest.json.gz": {
+      "source": "/tmp/darkbloom-paged-prefill-fence/native-allocation-test-manifest.json",
+      "stored_bytes": 193,
+      "stored_sha256": "d6b95a5558ad94f4a5a80fc9a89e750be34cfbf2a7085e186ef096f10b7daccc",
+      "raw_bytes": 222,
+      "raw_sha256": "709e15b6e221338120781b56444625522deb256df009878a4e670b51578f0106",
+      "encoding": "gzip mtime=0"
+    },
+    "native-commit-verification.json.gz": {
+      "source": "/tmp/darkbloom-paged-floor-api-packaging/native-commit-verification.json",
+      "stored_bytes": 1372,
+      "stored_sha256": "8d5d92c079e2f2e288baa6c1b3d498f7c0a91d14fc68d370555880949893527e",
+      "raw_bytes": 3341,
+      "raw_sha256": "6dae5fef6eff512224bc11900c19fa777a36df60e7de4d4992e179a4b70fd183",
+      "encoding": "gzip mtime=0"
+    },
+    "native-floor.patch.gz": {
+      "source": "/tmp/darkbloom-paged-floor-api-packaging/native-floor.patch",
+      "stored_bytes": 27344,
+      "stored_sha256": "2037d4dbeae3867441b9e3f35221ad032f2f187abe5f9926c1b154dc888e7da5",
+      "raw_bytes": 121076,
+      "raw_sha256": "2a1481e21f908c18485398102bb3e0ac017c650ba9d71f370fb66604afa90231",
+      "encoding": "gzip mtime=0"
+    }
+  }
+}

@@ -34,6 +34,9 @@ struct ProductionPromptParityTests {
                 continue
             }
             #expect(model.ineligibilityReason == nil)
+            let actualContract = try PromptContractIdentity.compute(modelDirectory: modelDirectory)
+            #expect(actualContract == model.promptContractID,
+                    "production cache identity diverged for \(model.modelID)")
             let tokenizer = try await LocalTokenizerLoader().load(
                 from: modelDirectory)
             let detectedModelType = ModelScanner.parseConfigJSON(

@@ -6,6 +6,8 @@ created: "2026-05-14"
 # disk) — see docs/architecture/security/encryption.md and identity-binding.md.
 # Every other entry still reflects the 2026-05-14 review and has not been
 # re-verified.
+# SSD disk-budget values updated 2026-09-05 against commit 30bdf8e7a;
+# this does not re-verify the surrounding cache threat claims.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -501,8 +503,9 @@ trust_boundaries:
 
       MDA verification (provider.go): the coordinator computes
       sha256(SE_public_key_bytes) and sends this as a nonce to Apple via
-      SendDeviceAttestationCommand(). Apple returns a plist containing DER-encoded
-      certificate chain entries. The coordinator parses the chain, verifies it against
+      mdm.Client.RequestDeviceAttestation(), which binds an exclusive waiter before
+      sendDeviceAttestationWithNonce queues the raw MDM command. Apple returns a plist
+      containing DER-encoded certificate chain entries. The coordinator parses the chain, verifies it against
       the embedded Apple Enterprise Attestation Root CA (P-384, valid 2022–2047) using
       Go's standard x509.Verify() with ExtKeyUsageAny. Custom OIDs are extracted from
       the leaf certificate: device serial number (1.2.840.113635.100.8.9.1), UDID
@@ -1692,8 +1695,9 @@ threats:
         (b) The at-rest window is bounded by a 15-MINUTE sliding TTL
             (DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS can only shorten it;
             sliding on hit; opportunistic sweep on write + periodic task);
-            a 20 GiB box-wide LRU disk budget (DARKBLOOM_PREFIX_CACHE_DISK_GB,
-            min'd with free-disk/2) unlinks oldest-by-last-hit.
+            a default 100 GiB box-wide LRU disk budget, limited to half the
+            currently available disk space, unlinks oldest-by-last-hit.
+            DARKBLOOM_PREFIX_CACHE_DISK_GB overrides that default budget.
         (c) File crypto is the reviewed legacy scheme unchanged: per-file
             random DEK wrapped AES-256-GCM under the SE-rooted KEK,
             HKDF-derived per-chunk nonces ("dbkv-chunk-v3"), canonical
@@ -1768,7 +1772,8 @@ threats:
         status: implemented
       - description: >
           SSD tier at-rest window bound: 15-minute sliding TTL (env can only
-          shorten), 20 GiB box-wide LRU disk budget, verified weightHash in
+          shorten), default min(100 GiB, available-disk/2) box-wide LRU disk
+          budget (DARKBLOOM_PREFIX_CACHE_DISK_GB overrides), verified weightHash in
           coordinator mode (model-ID fallback in standalone) + layoutEpoch
           fail-closed bindings, and KEK-wipe purge (files become unreadable AND
           unfindable — K_lookup derives from the KEK).

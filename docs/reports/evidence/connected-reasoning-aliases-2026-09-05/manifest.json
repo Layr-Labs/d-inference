@@ -1,0 +1,98 @@
+{
+  "scope": "Connected HTTP SSE reasoning-alias reader correction with exact failed-stream replay and focused/race tests; original failed HTTP gate remains failed, fresh paired execution pending.",
+  "source_commit": "0a9fb484a",
+  "archive": {
+    "path": "payloads.tar.gz",
+    "bytes": 32597,
+    "sha256": "bb7c16a6b071130bcf18b66bc1076e98668a898a74fba82fbf491cd52dada5e1"
+  },
+  "payload_count": 17,
+  "payload_bytes": 439014,
+  "files": {
+    "root-review.json": {
+      "source": "/tmp/darkbloom-connected-sse-root-review.json",
+      "bytes": 1185,
+      "sha256": "05ca2c7eae3cd9d04987e1180e0221cf82d706fe09a53cba8da24c754bd47abe"
+    },
+    "validation/REVIEW.md": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/REVIEW.md",
+      "bytes": 1247,
+      "sha256": "e9d13ee603f219ebbda5a0464e57deb6ea9f81714b44104b41f20a3603bc4bc5"
+    },
+    "validation/baseline-expected-fail.jsonl": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/baseline-expected-fail.jsonl",
+      "bytes": 34595,
+      "sha256": "f7ed44e39d1e81cdb5a720206b90fdb144b9c27b801eeb6c4d283584e28e33ca"
+    },
+    "validation/commands.json": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/commands.json",
+      "bytes": 539,
+      "sha256": "e7eed31a7e2efd4afb2df3089c3b7108998ab6fffba6b8f24d12a1795cece52d"
+    },
+    "validation/current-race.jsonl": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/current-race.jsonl",
+      "bytes": 29908,
+      "sha256": "4162132f722eed18edbc7bef9792b5118332d8f22d58e1963c4037d0889ef155"
+    },
+    "validation/current-tests.jsonl": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/current-tests.jsonl",
+      "bytes": 29907,
+      "sha256": "d0aa320349bc7c781f9b8cef0e60b6d1e575fb6aeb063d4a41c87a546f1f3e98"
+    },
+    "validation/darkbloom-connected-q38-off-failure1-alias-analysis.json": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/darkbloom-connected-q38-off-failure1-alias-analysis.json",
+      "bytes": 2992,
+      "sha256": "cff7fb934eed6b03ecd20fe3187809a237ce2d4348bfc469aec3363d6ab6063a"
+    },
+    "validation/manifest.json": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/manifest.json",
+      "bytes": 4239,
+      "sha256": "79856f6d433825cbd173c233fa2e08535134f26b4e6973f7b29efecc372bcd35"
+    },
+    "validation/raw-connected-failure/connected.log": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/raw-connected-failure/connected.log",
+      "bytes": 4081,
+      "sha256": "9397649703610bf351aa86dda5a0676d895eee4098d7b6b0fadb4b7a5d0b02c6"
+    },
+    "validation/raw-connected-failure/evidence/report.json": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/raw-connected-failure/evidence/report.json",
+      "bytes": 273462,
+      "sha256": "dd1b4b6ec61e29296696e26231d4555e28d52a52dc65dfd829856ec756b40663"
+    },
+    "validation/raw-connected-failure/launch.json": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/raw-connected-failure/launch.json",
+      "bytes": 3190,
+      "sha256": "9b1c54a90ef363f4dc32b2d88339a788b8cfda94bd58ec239ab8a45b9dbcd945"
+    },
+    "validation/raw-connected-failure/manifest.json": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/raw-connected-failure/manifest.json",
+      "bytes": 690,
+      "sha256": "11c3dd8770f0763e107f5052103e4f8788c969cad132973a7adcd6ef1ff726e2"
+    },
+    "validation/raw-connected-failure/remote-inventory.json": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/raw-connected-failure/remote-inventory.json",
+      "bytes": 429,
+      "sha256": "bd00962d5346e6759aa98201ba8f4a3a595dc5d852df157a2f935ad465e0364b"
+    },
+    "validation/source.patch": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/source.patch",
+      "bytes": 24951,
+      "sha256": "b528820f308a145b4030559601bc721e81c59f958bc7b8b2d38fabc8980a38ef"
+    },
+    "validation/source/e2e/connected_cache_reasoning_test.go": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/source/e2e/connected_cache_reasoning_test.go",
+      "bytes": 3143,
+      "sha256": "e99c124c4a7f534b9b0925e7f014329c2db75ac5ab2eab91f4d4641b0e640261"
+    },
+    "validation/source/e2e/connected_cache_stream_test.go": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/source/e2e/connected_cache_stream_test.go",
+      "bytes": 5107,
+      "sha256": "d7ed7f03231a090b406edc30f66d237ec95cd1b95e38e3eb337be38c808f39c1"
+    },
+    "validation/source/e2e/testdata/connected_reasoning_aliases.json": {
+      "source": "/tmp/darkbloom-connected-sse-aliases-validation1/freeze1/source/e2e/testdata/connected_reasoning_aliases.json",
+      "bytes": 19349,
+      "sha256": "d23cdfe8a1fbba470d1f9a19c9b8e81703b6e1fc04ec5d05a929f28a86863b53"
+    }
+  }
+}

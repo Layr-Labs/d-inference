@@ -1,0 +1,19 @@
+{
+  "started_unix": 1788594389.159591,
+  "arguments": {
+    "binary": "/Users/gaj/autoresearch/radix-prefix-cache/artifacts/candidate-ssd-build2/radix-engine",
+    "model_directory": "/Users/gaj/.cache/huggingface/hub/models--EigenLabs--Qwen3.8-27B-4bit-mtp/snapshots/06d517d395dfc5588090f7f534112bee331f7b4a",
+    "input": "/Users/gaj/autoresearch/radix-prefix-cache/inputs/serial-smoke-input.json",
+    "output": "/Users/gaj/autoresearch/radix-prefix-cache/runs/ssd-build2-ephemeral-smoke",
+    "cache": "on",
+    "mtp": "on",
+    "kv_backend": "auto",
+    "cache_mode": "ssd",
+    "key_mode": "ephemeral",
+    "startup_timeout": 180.0
+  },
+  "entry_gpu_temp_c": 26.8980655670166,
+  "exit_code": -5,
+  "ended_unix": 1788594411.688181,
+  "ranked_job_at_end": false
+}

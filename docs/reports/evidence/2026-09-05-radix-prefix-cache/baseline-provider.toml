@@ -1,0 +1,22 @@
+config_version = 3
+[backend]
+enabled_models = ["EigenLabs/Qwen3.8-27B-4bit-mtp"]
+engine_v2_kv_backend = "auto"
+engine_v2_max_concurrent = 1
+idle_timeout_mins = 60
+max_model_slots = 1
+mtp_mode = "off"
+port = 18120
+preload_models = []
+startup_preload = false
+startup_selftest = false
+startup_selftest_fail_closed = false
+[coordinator]
+heartbeat_interval_secs = 30
+private_only = true
+url = "wss://127.0.0.1:1/ws/provider"
+[provider]
+auto_restart = false
+auto_update = false
+memory_reserve_gb = 2
+name = "isolated-radix-benchmark"

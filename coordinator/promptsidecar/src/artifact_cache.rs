@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CacheAccess {
@@ -41,12 +41,33 @@ pub struct CacheStats {
 pub struct SingleflightLru<T, E> {
     state: Mutex<State<T, E>>,
     capacity: usize,
+    retention: Retention,
 }
 
 struct State<T, E> {
-    entries: HashMap<String, Arc<T>>,
+    entries: HashMap<String, Entry<T>>,
     order: VecDeque<String>,
     loading: HashMap<String, Arc<Flight<T, E>>>,
+}
+
+#[derive(Clone, Copy)]
+enum Retention {
+    Strong,
+    Weak,
+}
+
+enum Entry<T> {
+    Strong(Arc<T>),
+    Weak(Weak<T>),
+}
+
+impl<T> Entry<T> {
+    fn upgrade(&self) -> Option<Arc<T>> {
+        match self {
+            Self::Strong(value) => Some(value.clone()),
+            Self::Weak(value) => value.upgrade(),
+        }
+    }
 }
 
 struct Flight<T, E> {
@@ -85,6 +106,17 @@ impl<T, E> Flight<T, E> {
 
 impl<T, E> SingleflightLru<T, E> {
     pub fn new(capacity: usize) -> Self {
+        Self::with_retention(capacity, Retention::Strong)
+    }
+
+    /// A bounded interner: entries only remember live callers' ownership.
+    /// Flights retain their result until waiting callers receive it, but an
+    /// idle cache never keeps an otherwise unused value alive.
+    pub fn new_weak(capacity: usize) -> Self {
+        Self::with_retention(capacity, Retention::Weak)
+    }
+
+    fn with_retention(capacity: usize, retention: Retention) -> Self {
         Self {
             state: Mutex::new(State {
                 entries: HashMap::new(),
@@ -92,6 +124,7 @@ impl<T, E> SingleflightLru<T, E> {
                 loading: HashMap::new(),
             }),
             capacity: capacity.max(1),
+            retention,
         }
     }
 
@@ -102,9 +135,12 @@ impl<T, E> SingleflightLru<T, E> {
     ) -> Result<(Arc<T>, CacheAccess), CacheFailure<E>> {
         let (flight, owner) = {
             let mut state = self.state.lock().map_err(|_| CacheFailure::Poisoned)?;
-            if let Some(value) = state.entries.get(key).cloned() {
+            if let Some(value) = state.entries.get(key).and_then(Entry::upgrade) {
                 touch(&mut state.order, key);
                 return Ok((value, CacheAccess::Warm));
+            }
+            if state.entries.remove(key).is_some() {
+                state.order.retain(|entry| entry != key);
             }
             if let Some(flight) = state.loading.get(key) {
                 (flight.clone(), false)
@@ -135,7 +171,11 @@ impl<T, E> SingleflightLru<T, E> {
                             state.entries.remove(&oldest);
                         }
                     }
-                    state.entries.insert(key.to_owned(), value.clone());
+                    let entry = match self.retention {
+                        Retention::Strong => Entry::Strong(value.clone()),
+                        Retention::Weak => Entry::Weak(Arc::downgrade(value)),
+                    };
+                    state.entries.insert(key.to_owned(), entry);
                     touch(&mut state.order, key);
                 }
                 state.loading.remove(key);
@@ -152,7 +192,11 @@ impl<T, E> SingleflightLru<T, E> {
             .lock()
             .map(|state| CacheStats {
                 capacity: self.capacity,
-                loaded: state.entries.len(),
+                loaded: state
+                    .entries
+                    .values()
+                    .filter(|entry| entry.upgrade().is_some())
+                    .count(),
                 loading: state.loading.len(),
             })
             .unwrap_or(CacheStats {
@@ -171,78 +215,4 @@ fn touch(order: &mut VecDeque<String>, key: &str) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Barrier;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::thread;
-    use std::time::Duration;
-
-    #[test]
-    fn concurrent_miss_loads_once() {
-        let cache = Arc::new(SingleflightLru::<usize, ()>::new(2));
-        let barrier = Arc::new(Barrier::new(16));
-        let loads = Arc::new(AtomicUsize::new(0));
-        let threads = (0..16)
-            .map(|_| {
-                let cache = cache.clone();
-                let barrier = barrier.clone();
-                let loads = loads.clone();
-                thread::spawn(move || {
-                    barrier.wait();
-                    cache
-                        .get_or_load("contract", || {
-                            loads.fetch_add(1, Ordering::Relaxed);
-                            thread::sleep(Duration::from_millis(30));
-                            Ok(7)
-                        })
-                        .unwrap()
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let accesses = threads
-            .into_iter()
-            .map(|thread| thread.join().unwrap())
-            .map(|(value, access)| {
-                assert_eq!(*value, 7);
-                access
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(loads.load(Ordering::Relaxed), 1);
-        assert_eq!(
-            accesses
-                .iter()
-                .filter(|access| **access == CacheAccess::Cold)
-                .count(),
-            1
-        );
-        assert!(accesses.contains(&CacheAccess::Waited));
-        assert_eq!(
-            cache.stats(),
-            CacheStats {
-                capacity: 2,
-                loaded: 1,
-                loading: 0
-            }
-        );
-    }
-
-    #[test]
-    fn lru_remains_bounded_and_touch_is_stable() {
-        let cache = SingleflightLru::<usize, ()>::new(2);
-        cache.get_or_load("a", || Ok(1)).unwrap();
-        cache.get_or_load("b", || Ok(2)).unwrap();
-        assert_eq!(
-            cache.get_or_load("a", || Ok(9)).unwrap().1,
-            CacheAccess::Warm
-        );
-        cache.get_or_load("c", || Ok(3)).unwrap();
-        let (reloaded, access) = cache.get_or_load("b", || Ok(4)).unwrap();
-
-        assert_eq!(*reloaded, 4);
-        assert_eq!(access, CacheAccess::Cold);
-        assert_eq!(cache.stats().loaded, 2);
-        assert_eq!(cache.stats().loading, 0);
-    }
-}
+mod tests;

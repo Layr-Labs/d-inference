@@ -1227,12 +1227,14 @@ import Testing
         cacheReceiptNonce: "nonce-1",
         cacheScope: "account-route-key",
         prefixCacheProtocol: 2,
+        cacheReceiptBoundaryMode: PrefixCacheV2Capability.checkpointBoundaryMode,
         toolSchemaMetadataProtocol: 1))
     let data = try ProviderProtocolCodec.encodeCoordinatorMessage(scoped)
     let object = try jsonObject(data)
     #expect(object["cache_receipt_nonce"] as? String == "nonce-1")
     #expect(object["cache_scope"] as? String == "account-route-key")
     #expect(object["prefix_cache_protocol"] as? Int == 2)
+    #expect(object["cache_receipt_boundary_mode"] as? String == "checkpoint")
     #expect(object["tool_schema_metadata_protocol"] as? Int == 1)
     #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: data) == scoped)
 
@@ -1243,7 +1245,26 @@ import Testing
     #expect(decoded.cacheReceiptNonce == nil)
     #expect(decoded.cacheScope == nil)
     #expect(decoded.prefixCacheProtocol == nil)
+    #expect(decoded.cacheReceiptBoundaryMode == nil)
     #expect(decoded.toolSchemaMetadataProtocol == nil)
+}
+
+@Test func checkpointCapabilityModeIsOptionalAndRoundTrips() throws {
+    let capability = PrefixCacheV2Capability(
+        modelId: "model", modelAggregateHash: String(repeating: "a", count: 64),
+        promptContractId: String(repeating: "b", count: 64), blockHashVersion: "dbk3",
+        blockSize: 256, cacheEpoch: "11111111-1111-1111-1111-111111111111",
+        enabled: true, ready: true,
+        readyBoundaryMode: PrefixCacheV2Capability.checkpointBoundaryMode)
+    let encoded = try JSONEncoder().encode(capability)
+    #expect(try JSONDecoder().decode(PrefixCacheV2Capability.self, from: encoded) == capability)
+    var object = try jsonObject(encoded)
+    #expect(object.removeValue(forKey: "ready_boundary_mode") as? String == "checkpoint")
+    let legacyData = try JSONSerialization.data(withJSONObject: object)
+    let legacy = try JSONDecoder().decode(PrefixCacheV2Capability.self, from: legacyData)
+    #expect(legacy.readyBoundaryMode == nil)
+    #expect(legacy.modelAggregateHash == capability.modelAggregateHash)
+    #expect(try jsonObject(JSONEncoder().encode(legacy))["ready_boundary_mode"] == nil)
 }
 
 @Test func prefixCacheReceiptMessagesMatchWireContract() throws {

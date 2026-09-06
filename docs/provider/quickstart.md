@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-05 · commit `02f6af71a`
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,
@@ -192,7 +192,7 @@ private_only = false         # true = serve only your own self-route traffic
 - `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
   `"auto"` (default — resolves **CONTIGUOUS** as of v0.8.1, reverting the
   v0.8.0 paged default; grep `case .auto: resolvedKind` in
-  `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift`
+  `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BackendPreparation.swift`
   for the argument). Paged sizes its KV pool from a physical-capacity policy
   rather than the slot's logical grant, which cost the fleet roughly 10x its
   KV and produced widespread admission failures; contiguous gets the whole
@@ -241,15 +241,11 @@ private_only = false         # true = serve only your own self-route traffic
   (survives restarts — it is forwarded into the launchd service
   environment); the kill switch always degrades and never refuses, so
   pulling it on a paged fleet gives you contiguous service, not failed
-  loads. An explicit paged model PLANS a separately capped physical pool
-  derived from useful concurrent context demand, live memory, machine size,
-  and Metal buffer limits, but does not commit it eagerly: slabs become
-  MLX-resident lazily, at first admission
-  (`PagedKVPhysicalCapacityPolicy.slabCommitment = .atFirstAdmission`,
-  `provider-swift/Sources/ProviderCore/Inference/PagedKVPhysicalCapacityPolicy.swift:58`),
-  so an admitted-but-idle pool contributes 0 bytes of idle residency
-  (`PagedKVPhysicalCapacityPolicy.idleResidencyBytes`, same file:101). It
-  never preallocates the full logical admission grant.
+  loads. An explicit paged model starts with empty segmented storage under
+  its admitted KV grant. Pages are reserved and allocated as requests need
+  them; changing the grant does not preallocate or free live backing. See
+  [KV slot grants](../architecture/hardware-support.md#kv-slot-grants) for
+  co-resident shrink/regrow and the unchanged memory admission gates.
 - `coordinator.private_only` — serve only your own self-route traffic; never
   join the public fleet.
 

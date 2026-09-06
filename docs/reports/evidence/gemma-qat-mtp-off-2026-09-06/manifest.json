@@ -1,0 +1,590 @@
+{
+  "scope": "Two Gemma QAT MTP-off controls; both integrity PASS and strict backend token PASS. Normal-MTP failure remains separate. No executables/weights/keys.",
+  "files": {
+    "analysis/analysis.json": {
+      "bytes": 2994,
+      "sha256": "fd1708e4c7c07bdfd5c9b22e43ffc6a4069dac25e394633dea54c25d714aa9cb",
+      "mode": "0o644"
+    },
+    "analysis/analyze.py": {
+      "bytes": 1537,
+      "sha256": "d489628bd8ccda03fa12c60110875db729a9df0c48b8edd6db0d6b0fc03462e1",
+      "mode": "0o644"
+    },
+    "controller/cpu-tests-corrected-label.log": {
+      "bytes": 1495,
+      "sha256": "17fb13cc0e2e997e5637dca3cd3d67c57997135e231e5dcd57c9fe64e8f311a6",
+      "mode": "0o644"
+    },
+    "controller/cpu-tests.log": {
+      "bytes": 1495,
+      "sha256": "51a4d47aaad87535a8553d1f13d555c468293d9d517ff3b14c7ad082160cade0",
+      "mode": "0o644"
+    },
+    "controller/driver-delta.patch": {
+      "bytes": 4550,
+      "sha256": "424cdb7e08c8aa20eb2e6d8953327b0286ebffbb51a27ba13b8496f57be14073",
+      "mode": "0o644"
+    },
+    "controller/label-source-proof.json": {
+      "bytes": 520,
+      "sha256": "4a4369170fa934d251584325be7c20d93914c55c00cc764eb1c4d47b0f937f36",
+      "mode": "0o644"
+    },
+    "controller/plan-manifest.json": {
+      "bytes": 2430,
+      "sha256": "cff10f1a674c260d9a5a76ca0667d0697ae8f8050a42fb22734d5c217e2aa29d",
+      "mode": "0o644"
+    },
+    "controller/preflight.py": {
+      "bytes": 1633,
+      "sha256": "8ba55ca6f113442ee6740ed8ff2a505c80ff4130e2a8d0da412a8165c5fe6516",
+      "mode": "0o644"
+    },
+    "controller/preparation-manifest.json": {
+      "bytes": 2836,
+      "sha256": "f1606f89a5abdc3e1f98c7572bbe0b4534e6ff407fab2f4616eca07719dc0529",
+      "mode": "0o644"
+    },
+    "controller/previous-controller-manifest.json": {
+      "bytes": 1767,
+      "sha256": "f6cdf6afc2d5ac8071aa2bdc0865eea5334b1f0f87c5c507d4762caf225f505c",
+      "mode": "0o644"
+    },
+    "controller/run_cell.py": {
+      "bytes": 8718,
+      "sha256": "cbd83fcde9d535c90da470e640bd46b2f5e30d62eccb207d49839b197d5c8adc",
+      "mode": "0o644"
+    },
+    "controller/run_cell.py.label-correction.patch": {
+      "bytes": 1127,
+      "sha256": "e80e67b67074ba75d86d6f8f57ca02ca8d29b4961eda833bb403e6cb8217697a",
+      "mode": "0o644"
+    },
+    "controller/runtime-binding.json": {
+      "bytes": 7926,
+      "sha256": "799ef0bf52e46d0b5c6e7620c414a1602d41511ffc0ebd93c0fe412bce7c8e1f",
+      "mode": "0o644"
+    },
+    "controller/runtime-root-review.json": {
+      "bytes": 609,
+      "sha256": "8c4a47d7510e5489c59c0218a447cbe1cb481a32c6c85d43ab95ebeba0d81eb2",
+      "mode": "0o644"
+    },
+    "controller/strict-delta.patch": {
+      "bytes": 2276,
+      "sha256": "6351425026a10a2aae45dbe328b76d22a81c301aea907364e026567f4b965333",
+      "mode": "0o644"
+    },
+    "controller/strict_results.py": {
+      "bytes": 8267,
+      "sha256": "e64a8b6f565d2e93eb13655715b490e4cc39f85f53dd2241dca580e49ae61d52",
+      "mode": "0o644"
+    },
+    "controller/strict_results.py.label-correction.patch": {
+      "bytes": 824,
+      "sha256": "5ea3e8db8f98d2abd41d9d529cd4f5c3f1e79a3b4dfe362933457751e16e9db9",
+      "mode": "0o644"
+    },
+    "controller/test_mtp_off.py": {
+      "bytes": 5141,
+      "sha256": "e86aa356f028c467eb157b3907955e2022e77ef129e3c376bba030863a64c013",
+      "mode": "0o644"
+    },
+    "controller/test_mtp_off.py.label-correction.patch": {
+      "bytes": 767,
+      "sha256": "67a6b02dec9491abb81afd976df3717ea347a2e52c978e5eb6730ae9f837ff27",
+      "mode": "0o644"
+    },
+    "freeze.py": {
+      "bytes": 3032,
+      "sha256": "acf0f75ea8da8f246a31da92d83055cb3af6cf3122f6badb2beb896c93203a4e",
+      "mode": "0o644"
+    },
+    "original-label-controller/cpu-tests.log": {
+      "bytes": 1495,
+      "sha256": "51a4d47aaad87535a8553d1f13d555c468293d9d517ff3b14c7ad082160cade0",
+      "mode": "0o644"
+    },
+    "original-label-controller/driver-delta.patch": {
+      "bytes": 4550,
+      "sha256": "424cdb7e08c8aa20eb2e6d8953327b0286ebffbb51a27ba13b8496f57be14073",
+      "mode": "0o644"
+    },
+    "original-label-controller/plan-manifest.json": {
+      "bytes": 2430,
+      "sha256": "cff10f1a674c260d9a5a76ca0667d0697ae8f8050a42fb22734d5c217e2aa29d",
+      "mode": "0o644"
+    },
+    "original-label-controller/preflight.py": {
+      "bytes": 1633,
+      "sha256": "8ba55ca6f113442ee6740ed8ff2a505c80ff4130e2a8d0da412a8165c5fe6516",
+      "mode": "0o644"
+    },
+    "original-label-controller/preparation-manifest.json": {
+      "bytes": 1767,
+      "sha256": "f6cdf6afc2d5ac8071aa2bdc0865eea5334b1f0f87c5c507d4762caf225f505c",
+      "mode": "0o644"
+    },
+    "original-label-controller/run_cell.py": {
+      "bytes": 8718,
+      "sha256": "b4bb90217737ac0ae4f5f4d8a4e742789c4aa377433b5639c0e78c4fa0e02a38",
+      "mode": "0o644"
+    },
+    "original-label-controller/runtime-binding.json": {
+      "bytes": 7926,
+      "sha256": "799ef0bf52e46d0b5c6e7620c414a1602d41511ffc0ebd93c0fe412bce7c8e1f",
+      "mode": "0o644"
+    },
+    "original-label-controller/runtime-root-review.json": {
+      "bytes": 609,
+      "sha256": "8c4a47d7510e5489c59c0218a447cbe1cb481a32c6c85d43ab95ebeba0d81eb2",
+      "mode": "0o644"
+    },
+    "original-label-controller/strict-delta.patch": {
+      "bytes": 2276,
+      "sha256": "6351425026a10a2aae45dbe328b76d22a81c301aea907364e026567f4b965333",
+      "mode": "0o644"
+    },
+    "original-label-controller/strict_results.py": {
+      "bytes": 8246,
+      "sha256": "83c244e05d92109107e2919f134cbaac768187c796400a08e5fb7459dc3f6a02",
+      "mode": "0o644"
+    },
+    "original-label-controller/test_mtp_off.py": {
+      "bytes": 5120,
+      "sha256": "f2e06b890b40ab1ca8b51fa757e8e753a10765fdf58689205f631eda3f5cc96f",
+      "mode": "0o644"
+    },
+    "plan/assistant-files.json": {
+      "bytes": 1537,
+      "sha256": "c137fad64fec8e0a5ca47d6d26f58f7504c383ec626fbdd95262a9f83705f9c2",
+      "mode": "0o644"
+    },
+    "plan/assistant-inventory.json": {
+      "bytes": 661,
+      "sha256": "bd583d92234810790768450eb497f6b2f0a02bf774812cfe21166a9fa1cfecdc",
+      "mode": "0o644"
+    },
+    "plan/inputs/gemma-qat4.json": {
+      "bytes": 72541,
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080",
+      "mode": "0o644"
+    },
+    "plan/manifest.json": {
+      "bytes": 2430,
+      "sha256": "cff10f1a674c260d9a5a76ca0667d0697ae8f8050a42fb22734d5c217e2aa29d",
+      "mode": "0o644"
+    },
+    "plan/model-manifest.json": {
+      "bytes": 1822,
+      "sha256": "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd",
+      "mode": "0o644"
+    },
+    "plan/plan.json": {
+      "bytes": 8905,
+      "sha256": "1070fef1d9dec6f5124adc5d6187bd9af0642035f15ea9a2f4b8d961a6f16cb5",
+      "mode": "0o644"
+    },
+    "plan/prepare.py": {
+      "bytes": 7013,
+      "sha256": "e49e063dc2069611bc821162208b441ddc441a65a3e1fc118dfb6a2fa7b34be8",
+      "mode": "0o644"
+    },
+    "plan/provenance/original-normal-mtp-plan-manifest.json": {
+      "bytes": 4574,
+      "sha256": "fff2feacef42d063a065dea0caa8e69e626a6a396b9d9d37bc994fa68cb6db2a",
+      "mode": "0o644"
+    },
+    "plan/provenance/reviewed-runtime.json": {
+      "bytes": 609,
+      "sha256": "8c4a47d7510e5489c59c0218a447cbe1cb481a32c6c85d43ab95ebeba0d81eb2",
+      "mode": "0o644"
+    },
+    "plan/runner/compare_radix_engine.py": {
+      "bytes": 13154,
+      "sha256": "b33922deda8f21128873a8b71b639a0626005d449e3cc603cb35e2d660a253cc",
+      "mode": "0o644"
+    },
+    "plan/runner/radix_engine_evidence.py": {
+      "bytes": 15658,
+      "sha256": "e0f57723d4be3f1a00068b9870f70a6bc9a0174b76fdea285d33f0f4eb658e4e",
+      "mode": "0o644"
+    },
+    "plan/runner/run_radix_engine.py": {
+      "bytes": 13898,
+      "sha256": "b556fbb63f9045f567b473b2e5114375f60b03a2404ab2cb068ae649a70c4fa7",
+      "mode": "0o644"
+    },
+    "plan/runner/run_radix_http.py": {
+      "bytes": 6998,
+      "sha256": "9608cef72cea2f08cab343fe70d8948338cffab451c8636a9ccc0dc7e83eeefe",
+      "mode": "0o644"
+    },
+    "plan/runner/test_run_radix_engine.py": {
+      "bytes": 9944,
+      "sha256": "c61d9c4ef809d8649b8362eadb38b0fec6de860d36ef54c4a397435fb98426bc",
+      "mode": "0o644"
+    },
+    "previous-banked-runtime/artifact-manifest.json": {
+      "bytes": 1697,
+      "sha256": "7b1d1ff15d7419a4adb7f858d3406df24a66c5b437dd4577c17f6184b99ee142",
+      "mode": "0o644"
+    },
+    "previous-banked-runtime/delta-from-packet-release.json": {
+      "bytes": 5615,
+      "sha256": "ebb47e96e614d052b8c56ffad20b266b084a1b02b1fb027e8326ed0a580c9f67",
+      "mode": "0o644"
+    },
+    "previous-banked-runtime/manifest.json": {
+      "bytes": 15775,
+      "sha256": "61672b2d984cfa5a26fe5febdd3b957122d3899e00394312c249a49482a65eba",
+      "mode": "0o644"
+    },
+    "previous-banked-runtime/source-union.json": {
+      "bytes": 1408,
+      "sha256": "51c44a6a116dd570d6c4baf028bf85c259e35ae9b00ddd81203affd66c150b21",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/command.json": {
+      "bytes": 3465,
+      "sha256": "f7ff672a61598ca82675cd36bedc35cca7141a78f5fa9cfa6427092967c2e2dc",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/engine.log": {
+      "bytes": 752,
+      "sha256": "32d3479e0052dc8a67d17a9fb42edbe284899f98998774bdde99b3d19a65ea44",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/execution.json": {
+      "bytes": 262,
+      "sha256": "e5da62c58d3a39371c199216347914f1e3837a512fa210e345b610f63ccbe861",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/expected-native-command.json": {
+      "bytes": 2263,
+      "sha256": "d473ebe52581400f4ddf9b37e07f03e794ae30c37c3c1657dff9c980039cd720",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/input.json": {
+      "bytes": 72541,
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/manifest.json": {
+      "bytes": 2424,
+      "sha256": "7e6fc941e364504e2e6ab1631df9e49315b43ff7c1173dff2829b087cbfe3897",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/metadata.json": {
+      "bytes": 2699,
+      "sha256": "300324eac37a0e564e8c61bf0ecf803b04bac9624fe8e50105901dadd051a4a7",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/ownership-before.json": {
+      "bytes": 198,
+      "sha256": "3999226a71c7f667f9db0e38a3f635207316d10b37576eb8de26d3984fc06703",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/ownership-before.log": {
+      "bytes": 199,
+      "sha256": "ac887d7f20877ab8f5345ed7e3b2dc34d7a595d73d4e820ad06a4a076c2e4988",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/remote-inventory.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/remote-inventory.stdout": {
+      "bytes": 816,
+      "sha256": "bd9946d432ab56cdc40acd320be5ce990060c37921778790ff488b12c44e5534",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/report.json": {
+      "bytes": 720932,
+      "sha256": "d1a591611f2a0b722b2118b0ce2530d4e3c3584ef259b610537873b516da5b74",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/runtime-precheck.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/runtime-precheck.stdout": {
+      "bytes": 1939,
+      "sha256": "b0f1d1b9a37ef459b5d928f9f9ac32db12dae7d96bdcfcb0586f18026c1f4cc4",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/ssh-run.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/summary.json": {
+      "bytes": 434,
+      "sha256": "7c2a3c3f96f968a1e628434fdad09b4055077f5889de7639e1a1f41cd57cd79c",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-contiguous-cache-off-mtp-off-trace-off/telemetry.jsonl": {
+      "bytes": 104459,
+      "sha256": "ee2d36bbceb25c0749ed75be3d9f1cc74a4994021a8a5d747fc83de227662d8c",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/command.json": {
+      "bytes": 3415,
+      "sha256": "029585c6a3a99115643809565af5b097ac0a5713e93b95160aa975598b68bac2",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/engine.log": {
+      "bytes": 752,
+      "sha256": "286d66d54e83531c0b93ae57fba73473a8059ec89702cc941383af9a53bcd395",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/execution.json": {
+      "bytes": 262,
+      "sha256": "5d6427564648d44a74f84bf70e6a1c53a4c5eabb97fbb1af94293dcbeadc1432",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/expected-native-command.json": {
+      "bytes": 2233,
+      "sha256": "9aa81d8ed34ae55895d5afe09deb84880ff85824faba5d39772f256cf5e558f0",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/input.json": {
+      "bytes": 72541,
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/manifest.json": {
+      "bytes": 2573,
+      "sha256": "fc55b09eed6f01f8d765a48a288af38876f4b6ebc26bfb0aa77d007a359007f6",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/metadata.json": {
+      "bytes": 2659,
+      "sha256": "a872dbcf7bfa8912075d82ea750f8cc17a4236df736e625522ac6224d37224c7",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/ownership-before.json": {
+      "bytes": 189,
+      "sha256": "8a61d55c132701b387f421465e3342951482ff4276fe303db93202395eec3214",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/ownership-before.log": {
+      "bytes": 190,
+      "sha256": "6209c05dcacc43629e40384b101ba712e5f9d44204f325c6265e9ae5afd5b571",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/remote-inventory.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/remote-inventory.stdout": {
+      "bytes": 810,
+      "sha256": "883e15555822ee1f61c52fdd36ca723c7d917b1f9f345c1f5c338bdb0511f328",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/report.json": {
+      "bytes": 729248,
+      "sha256": "148be238626b9336317f771cf79932c36a1317f2a662211f3bd4c14de22e2f84",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/runtime-precheck.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/runtime-precheck.stdout": {
+      "bytes": 1934,
+      "sha256": "b4d3b9ddd38b5ac0f96de89c196dde12151dcee5f47dc982ca740c8319a7f5a5",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/ssh-run.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/strict-backend-comparison.json": {
+      "bytes": 905,
+      "sha256": "1bcbcb946f4295b3b78de95074dc5a24f7f6bdb25f832c4ee8e7eba8398e5fd2",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/summary.json": {
+      "bytes": 429,
+      "sha256": "809600434888b3ab02ecc18d1aeb5dff492ba1ba8ec1baac36032ad8f68cf704",
+      "mode": "0o644"
+    },
+    "raw/gemma-qat4-paged-cache-off-mtp-off-trace-off/telemetry.jsonl": {
+      "bytes": 98481,
+      "sha256": "fb1bc551be21cf798ad2491748929ec70d4cb90456dac1e6ef5e65c3a6df2077",
+      "mode": "0o644"
+    },
+    "reviews/darkbloom-generic-qat-release-probe-root-final-review1.json": {
+      "bytes": 609,
+      "sha256": "8c4a47d7510e5489c59c0218a447cbe1cb481a32c6c85d43ab95ebeba0d81eb2",
+      "mode": "0o644"
+    },
+    "reviews/darkbloom-qat-mtp-off-final-postflight1.json": {
+      "bytes": 194,
+      "sha256": "b8943696f9acf9eb125effe71b06d2506475e0c43e508d9af3518436b6ef2766",
+      "mode": "0o644"
+    },
+    "reviews/darkbloom-qat-mtp-off-remote-helper-tests1.log": {
+      "bytes": 1388,
+      "sha256": "38c5e0306c182a9e1067b4df090d39b5690332a40a3471c4e15efbf8f234ac7d",
+      "mode": "0o644"
+    },
+    "reviews/darkbloom-qat-mtp-off-root-review1.json": {
+      "bytes": 683,
+      "sha256": "6fb5a10620b76a5cdffc21adb65aa43d1382b0b47c6c2135184a93cc29cce716",
+      "mode": "0o644"
+    },
+    "staging/create.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "staging/create.stdout": {
+      "bytes": 99,
+      "sha256": "0f76c0e2f6e96ba43890caf5679fc77f839fdf074596f21cedbe19e20c128f29",
+      "mode": "0o644"
+    },
+    "staging/file-inventory.json": {
+      "bytes": 2165,
+      "sha256": "fdb5f65c9a3bc51b2ee8e666032788276c5d0200d70d126e9fc3d04382ddfb53",
+      "mode": "0o644"
+    },
+    "staging/manifest.json": {
+      "bytes": 1824,
+      "sha256": "02636d34054253eb41a69d821757cde16ad03723cbe6e0fbb98a46768b9d6e5a",
+      "mode": "0o644"
+    },
+    "staging/preflight.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "staging/preflight.stdout": {
+      "bytes": 244,
+      "sha256": "219db73081c1afa4b36d390bf96a3aed483299f55a790b8cec24d7ed2d2b8a43",
+      "mode": "0o644"
+    },
+    "staging/receipt.json": {
+      "bytes": 721,
+      "sha256": "eb0f0bd1a6bb71d2a0e3edc104ced09d92734d707593c434e7188859288a86ff",
+      "mode": "0o644"
+    },
+    "staging/scp.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "staging/scp.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "staging/source-delta.patch": {
+      "bytes": 1162,
+      "sha256": "b6ac75534ce2c0aec6a16aef90004363e29a61a70865bb3d8ab420071d7b14a7",
+      "mode": "0o644"
+    },
+    "staging/stage.py": {
+      "bytes": 5904,
+      "sha256": "77ee8de5418d559cb968d47480b263f206256581fafe4e162d977c8464352c11",
+      "mode": "0o644"
+    },
+    "staging/verify.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "staging/verify.stdout": {
+      "bytes": 203,
+      "sha256": "14e205dd005274484eae10b59577f2d9788e659111f476a0fb699e373a393c03",
+      "mode": "0o644"
+    },
+    "transfer/binding.json": {
+      "bytes": 7926,
+      "sha256": "799ef0bf52e46d0b5c6e7620c414a1602d41511ffc0ebd93c0fe412bce7c8e1f",
+      "mode": "0o644"
+    },
+    "transfer/manifest.json": {
+      "bytes": 2132,
+      "sha256": "6e461b9d1b0760a2dd171e5a0e88bd453485c32364752294fdaf9e50890201ff",
+      "mode": "0o644"
+    },
+    "transfer/preflight-and-resources.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "transfer/preflight-and-resources.stdout": {
+      "bytes": 216,
+      "sha256": "2e256310e612633930ab4ae758d9b06366b86f8393367f89a698d4cf7de6a914",
+      "mode": "0o644"
+    },
+    "transfer/receipt.json": {
+      "bytes": 468,
+      "sha256": "70a81b8c9988f6e91b00401b0bbd790761af6e7860f62a2d2a72915bf67803f4",
+      "mode": "0o644"
+    },
+    "transfer/root-review.json": {
+      "bytes": 609,
+      "sha256": "8c4a47d7510e5489c59c0218a447cbe1cb481a32c6c85d43ab95ebeba0d81eb2",
+      "mode": "0o644"
+    },
+    "transfer/scp-binding.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "transfer/scp-binding.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "transfer/scp-probe.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "transfer/scp-probe.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "transfer/scp-review.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "transfer/scp-review.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "transfer/source-delta.patch": {
+      "bytes": 1924,
+      "sha256": "18bc0633e8e7d1c02e9e297970d54f039b3ae23b7631be4fdc9ca7655167604c",
+      "mode": "0o644"
+    },
+    "transfer/transfer.py": {
+      "bytes": 7420,
+      "sha256": "1e9b37796abce13ce889b1df315843930e86a872329510c4e0cc6fb78e58e718",
+      "mode": "0o644"
+    },
+    "transfer/verify.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    "transfer/verify.stdout": {
+      "bytes": 96,
+      "sha256": "2d73e410f04270e521803d00998ccfe4e89d988d4d37934dd5a42e7b53f7c5eb",
+      "mode": "0o644"
+    }
+  }
+}

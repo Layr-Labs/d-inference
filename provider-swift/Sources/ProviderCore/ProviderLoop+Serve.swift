@@ -30,7 +30,7 @@ extension ProviderLoop {
 
         // Maintain the entire encrypted SSD-cache root even when no model is
         // loaded. This is metadata/file-only work: no weights or KV arrays are
-        // constructed. It closes TTL and 20 GiB budget gaps for unloaded dirs.
+        // constructed. It closes TTL and shared disk-budget gaps for unloaded dirs.
         SSDPrefixCacheFactory.startWholeRootMaintenance()
         defer { SSDPrefixCacheFactory.stopWholeRootMaintenance() }
 
@@ -245,6 +245,7 @@ extension ProviderLoop {
                 case .inferenceRequest(
                     let requestId, let ciphertext, let senderPublicKey,
                     let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
+                    let cacheReceiptBoundaryMode,
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
                     let receivedAt,
                     let profile
@@ -256,6 +257,7 @@ extension ProviderLoop {
                         cacheReceiptNonce: cacheReceiptNonce,
                         authenticatedCacheScope: cacheScope,
                         prefixCacheProtocol: prefixCacheProtocol,
+                        cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
                         toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
                         firstContentDeadline: firstContentDeadline,
                         receivedAt: receivedAt,

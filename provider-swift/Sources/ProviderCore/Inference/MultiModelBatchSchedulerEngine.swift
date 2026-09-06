@@ -220,6 +220,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     public func streamChatCompletion(
         request: OpenAIChatCompletionRequest
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        let templateControls = self.templateControls.resolvingPromptDate()
         try checkFirstContentDeadline()
 
         // I1: prefer the atomic-`acquire` path. The legacy three-closure

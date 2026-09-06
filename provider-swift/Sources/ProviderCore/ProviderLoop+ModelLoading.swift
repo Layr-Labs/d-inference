@@ -316,10 +316,9 @@ extension ProviderLoop {
             }
         }
 
-        // Q6 (serve-while-load): id for the pending-load reservation placed in
-        // kvBudget once the gate passes and released once the weights are
-        // resident. Declared out here so the catch can release it on any path.
+        // The generation handle survives every load phase and catch cleanup.
         let pendingLoadID = "pending-load:\(modelId)"
+        var pendingLoad: PendingModelLoadLease?
         modelsLoading.insert(modelId)
         // The insert happens AFTER the specDecPreparation suspension above —
         // a hard swap during that await can have dropped this model from
@@ -369,26 +368,32 @@ extension ProviderLoop {
             // across that suspension, as across the eviction waits above).
             mtpPreparation = await admitSpecDecIfMemoryAllows(
                 mtpPreparation, targetWeightsGb: targetWeightsGb)
-            let extraWeightBytes = mtpPreparation.artifact?.additionalWeightBytes ?? 0
+            var extraWeightBytes = mtpPreparation.artifact?.additionalWeightBytes ?? 0
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
-            // Q6: reserve this load's weight footprint in the shared KV budget so
-            // a concurrent KV reservation on an already-loaded model can't grant
-            // headroom that, plus these incoming (not-yet-in-mlxUsed) weights,
-            // blows the unified-memory cap. Released once the weights are resident.
-            // Includes `extraWeightBytes` (the drafter): those bytes land in
-            // mlxUsed during this load window just like the target's.
-            // Deliberately the PADDED estimate, not the measured residency:
-            // this reservation guards the LOAD TRANSIENT (allocations during
-            // shard staging can exceed the steady post-load residency), and
-            // the transient is exactly what the measured steady figure does
-            // not cover. The admit gate above may use measured weights; the
-            // in-flight reservation must keep the padding.
-            let pendingLoadBytes = Self.pendingLoadReservationBytes(
+            // The accepted lease is the allocation permit. Advisory eviction and
+            // assistant checks above cannot reserve process memory across awaits.
+            var pendingLoadBytes = Self.pendingLoadReservationBytes(
                 estimatedWeightsGb: modelInfo.estimatedMemoryGb,
                 extraWeightBytes: extraWeightBytes)
-            await kvBudget.reservePendingLoad(requestID: pendingLoadID, bytes: pendingLoadBytes)
+            pendingLoad = await kvBudget.claimPendingLoad(
+                requestID: pendingLoadID, weightBytes: pendingLoadBytes)
+            if pendingLoad == nil, extraWeightBytes > 0 {
+                // A concurrent engine may consume only the assistant's margin.
+                // Retry the independently serveable target once, without eviction.
+                mtpPreparation = mtpPreparation.fallingBack(.assistantMemoryUnavailable)
+                extraWeightBytes = 0
+                pendingLoadBytes = Self.pendingLoadReservationBytes(
+                    estimatedWeightsGb: modelInfo.estimatedMemoryGb, extraWeightBytes: 0)
+                pendingLoad = await kvBudget.claimPendingLoad(
+                    requestID: pendingLoadID, weightBytes: pendingLoadBytes)
+            }
+            guard let acceptedLoad = pendingLoad else {
+                throw InferenceError.modelLoadFailed(
+                    "Insufficient memory for '\(modelId)' at final load admission")
+            }
+            pendingLoadLeases[modelId] = acceptedLoad
 
             logger.info("Loading model: \(modelId) from \(modelPath.path)")
             // Cold-start load timing (slot-level `model_load_time_ms`): from
@@ -414,48 +419,14 @@ extension ProviderLoop {
                 try Task.checkCancellation()
                 if isShuttingDown { throw CancellationError() }
             }
-            // Final authoritative gate, after the LAST suspension before
-            // allocation (pending-load reservation, weight hashing, the
-            // pre-load hook): the serving-set floor can move across any of
-            // them, and the pending reservation only fences competing KV
-            // grants — it never re-checks that THIS load still fits.
-            // Requirement resolved after the sample; refuse before shard
-            // staging begins rather than let the post-load guard unload a
-            // transient that already overcommitted the box. (Advertise-only
-            // raises are additionally serialized behind in-flight loads in
-            // `applyVerifiedPrefetch`, so this is the backstop, not the
-            // primary defense.)
-            do {
-                // `availableMemoryGb()` nets out the shared ledger — INCLUDING
-                // this load's own pending reservation placed above — so the
-                // comparison adds it back (pure helper, unit-tested). Without
-                // that the gate double-counts the target and refuses every
-                // load whose padded weights exceed the headroom.
-                let availableNetOfLedgerGb = await availableMemoryGb()
-                // Same basis as the reservation being added back: the padded
-                // target PLUS the retained assistant's bytes (a separately
-                // staged MTP drafter is allocated after the target, so the
-                // requirement must cover both, or the check passes on a
-                // target that fits while target + assistant no longer does).
-                let requiredAtAllocation = ModelLoadAdmission.requiredToLoadGb(
-                    weightsGb: Self.loadGateWeightsGb(
-                        estimatedWeightsGb: modelInfo.estimatedMemoryGb,
-                        extraWeightBytes: extraWeightBytes),
-                    headroomGb: loadHeadroomGb)
-                if !ModelLoadAdmission.fitsAtAllocation(
-                    availableNetOfLedgerGb: availableNetOfLedgerGb,
-                    ownReservationBytes: pendingLoadBytes,
-                    requiredGb: requiredAtAllocation)
-                {
-                    let available = String(
-                        format: "%.1f",
-                        availableNetOfLedgerGb + Double(pendingLoadBytes) / 1_073_741_824.0)
-                    let required = String(format: "%.1f", requiredAtAllocation)
-                    throw InferenceError.modelLoadFailed(
-                        "Insufficient memory (\(available) GB free, need \(required) GB) at allocation: "
-                            + "the serving-set activation floor moved during admission")
-                }
+            // Hashing and hooks may suspend; recheck this exact held owner with
+            // current policy and coherent usage before shard allocation begins.
+            guard await kvBudget.recheckPendingLoad(acceptedLoad) else {
+                throw InferenceError.modelLoadFailed(
+                    "Insufficient memory for '\(modelId)' at allocation: load headroom changed")
             }
+            try Task.checkCancellation()
+            if isShuttingDown { throw CancellationError() }
             // Ownership box (Codex-review unwind ordering): every later
             // access to the loading container goes through this box so
             // failure paths can drop the LAST strong reference to the
@@ -531,8 +502,12 @@ extension ProviderLoop {
             // off from the pending-load reservation to the live mlxUsed view —
             // concurrent KV reservations see the weights from here on. (Also
             // released in catch for the error paths above.)
-            await kvBudget.replacePendingLoadReservation(
-                requestID: pendingLoadID, bytes: extraWeightBytes)
+            guard await kvBudget.reducePendingLoad(
+                acceptedLoad, remainingWeightBytes: extraWeightBytes)
+            else {
+                newcomer.release()
+                throw InferenceError.modelLoadFailed("Model load ownership changed during setup")
+            }
             if isShuttingDown || Task.isCancelled {
                 newcomer.release()
                 MLX.Memory.clearCache()
@@ -631,7 +606,9 @@ extension ProviderLoop {
             }
             // Assistant construction has completed. Its bytes are now either
             // live and reflected in MLX, or fully released on fallback.
-            await kvBudget.release(requestID: pendingLoadID)
+            // Weight loading has ended, but keep the minimum-KV allowance
+            // through post-build checks and any target-only rebuild.
+            await kvBudget.reducePendingLoad(acceptedLoad, remainingWeightBytes: 0)
             var engineBundle = slotBuild.bundle
             var sizing = slotBuild.sizing
             var engineV2Bridge = engineBundle.bridge
@@ -749,6 +726,12 @@ extension ProviderLoop {
                 modelType: modelInfo.modelType,
                 lastInferenceAt: .now
             )
+            if let pendingLoad {
+                await kvBudget.finishPendingLoad(pendingLoad)
+                if pendingLoadLeases[modelId]?.owner == pendingLoad.owner {
+                    pendingLoadLeases.removeValue(forKey: modelId)
+                }
+            }
             // Newcomer installed — parked regrows now see the full slot set.
             releaseResliceGate()
 
@@ -770,20 +753,14 @@ extension ProviderLoop {
             // re-offered now rather than on their backoff.
             await retryReserveDeferredPrefetches()
         } catch {
-            // ORDER MATTERS: `isLoadingAny` (and the same-id `modelsLoading`
-            // marker) stay held through every await below. Dropping them
-            // first let a new same-id loader start during the cleanup awaits
-            // and place its own `pending-load:<id>` reservation (shared
-            // key, unconditional overwrite) — which the release below then
-            // DELETED, blinding KV admission to the incoming weights; and it
-            // let another model's weights go resident before the regrow,
-            // which sizes from modelSlots only, temporarily overgrowing
-            // grants.
-            //
-            // Release the pending-load reservation first (no-op if never
-            // placed, or already released on the success path), while the
-            // gate still parks every other loader.
-            await kvBudget.release(requestID: pendingLoadID)
+            // Keep the load gate through cleanup and survivor-grant restoration.
+            // Only this generation's lease can retire its pending allocation.
+            if let pendingLoad {
+                await kvBudget.finishPendingLoad(pendingLoad)
+                if pendingLoadLeases[modelId]?.owner == pendingLoad.owner {
+                    pendingLoadLeases.removeValue(forKey: modelId)
+                }
+            }
             // Release pool buffers a failed load left behind (same wedge as unload).
             MLX.Memory.clearCache()
             modelsLoading.remove(modelId)
@@ -935,9 +912,9 @@ extension ProviderLoop {
     ///      (`SystemMemory.availableBytes`), not just `total − MLX.active −
     ///      MLX.cache`, which over-reports whenever the OS/other processes hold
     ///      RAM.
-    ///   2. KV already promised to in-flight requests
-    ///      (`kvBudget.outstandingReservedBytes`) is subtracted, so a concurrent
-    ///      load can't consume memory a mid-decode request is counting on.
+    ///   2. The same process snapshot supplies unmaterialized commitments (C-M),
+    ///      so a concurrent load cannot consume bytes promised to live requests
+    ///      or count their already materialized backing twice.
     ///
     /// `doctor`'s model-fit check shares the SAME arithmetic via
     /// `ModelLoadAdmission`, so the operator-facing verdict can never drift from
@@ -947,19 +924,7 @@ extension ProviderLoop {
     /// preload (`ProviderLoop+StartupPreload`), which must skip — never evict
     /// for — a preload candidate that doesn't fit.
     internal func availableMemoryGb() async -> Double {
-        let outstanding = await kvBudget.outstandingReservedBytes()
-        // Hold back enough to honor the 90% unified cap: max(configured reserve,
-        // physical − cap). Without this the free-memory gate would load models
-        // until only `configReserve` (4 GiB) remained — past the cap on big boxes.
-        let reserve = UnifiedMemoryCap.loadReserveBytes(
-            configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
-        return ModelLoadAdmission.freeForLoadGb(
-            totalBytes: ProcessInfo.processInfo.physicalMemory,
-            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
-            gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
-            gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
-            reserveBytes: reserve,
-            outstandingReservationBytes: outstanding)
+        kvBudget.availableForLoadGb()
     }
 
     /// The activation reserve resolved for the CURRENT serving set —

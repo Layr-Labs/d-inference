@@ -10,20 +10,21 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 )
 
-func TestProductionInventoryCoversFourModelsAndEverySupportedVector(t *testing.T) {
+func TestProductionInventoryCoversSevenModelsAndEverySupportedVector(t *testing.T) {
 	inventory, err := readProductionInventory(filepath.Join(
 		"..", "..", "..", "fixtures", "prompt-contract", "v1", "production_vectors.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inventory.Models != 4 || inventory.EligibleModels != 3 {
-		t.Fatalf("model inventory = %+v", inventory)
+	if inventory.Models != 7 || inventory.EligibleModels != 7 || inventory.ColdOnlyContracts != 0 {
+		t.Fatalf("model inventory: models=%d eligible=%d cold-only=%d, want 7/7/0",
+			inventory.Models, inventory.EligibleModels, inventory.ColdOnlyContracts)
 	}
-	if len(inventory.Contracts) != 3 {
-		t.Fatalf("deduplicated contracts = %d, want 3", len(inventory.Contracts))
+	if len(inventory.Contracts) != 6 {
+		t.Fatalf("deduplicated contracts = %d, want 6", len(inventory.Contracts))
 	}
-	if len(inventory.Vectors) != 42 {
-		t.Fatalf("supported vectors = %d, want 42", len(inventory.Vectors))
+	if len(inventory.Vectors) != 98 {
+		t.Fatalf("supported vectors = %d, want 98", len(inventory.Vectors))
 	}
 	coveredModels := make(map[string]bool)
 	for _, vector := range inventory.Vectors {

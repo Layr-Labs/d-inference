@@ -1,6 +1,6 @@
 # System overview — how a Darkbloom request works
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `7ae06021f`
 
 Darkbloom sells inference on other people's Apple Silicon Macs. A Go
 **coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an
@@ -122,7 +122,7 @@ sequenceDiagram
 ## Trust and privacy in one paragraph
 
 Providers hold one of three trust levels — `none`, `self_signed`, `hardware`
-(`TrustLevel`, `coordinator/registry/registry.go`). Public traffic requires at
+(`TrustLevel`, `coordinator/registry/provider.go`). Public traffic requires at
 least `MinTrustLevel`, configured by
 [`EIGENINFERENCE_MIN_TRUST`](../reference/configuration.md#routing-admission-and-ttft)
 (`coordinator/registry/config.go`); at the `hardware` level that means a Secure
@@ -132,7 +132,7 @@ code-identity attestation additionally proves the running binary is the
 released one. The only backend is `mlx-swift` (`BackendMLXSwift`); providers
 that proxy text to another process, disable anti-debug, or fail the SIP check
 are not routable for private text (`providerSupportsPrivateTextLocked`,
-`coordinator/registry/registry.go`). Consumer bodies are decrypted inside the
+`coordinator/registry/attestation_policy.go`). Consumer bodies are decrypted inside the
 coordinator's confidential-VM memory for routing and billing and are not logged
 or retained; the provider is the plaintext endpoint. Exact conditions:
 [`security/attestation.md`](security/attestation.md); exact crypto and what is

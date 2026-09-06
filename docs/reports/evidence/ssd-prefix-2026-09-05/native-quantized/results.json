@@ -1,0 +1,39 @@
+{
+  "source_manifest": "source-manifest.json",
+  "source_manifest_sha256": "c0262efe8edd972ca70abdf34e525d838ed28121668c60790a395da0fcd8723e",
+  "build_seconds": 85.23,
+  "xctest_passed": 21,
+  "swift_testing_passed": 15,
+  "total_passed": 36,
+  "failures": 0,
+  "skipped": 0,
+  "suites": {
+    "Qwen35CBv2ConfigurationTests": 11,
+    "CBv2CompleteCheckpointTests": 5,
+    "CBv2CompleteCheckpointEngineTests": 5,
+    "Qwen35MTPDraftTrimTests": 15
+  },
+  "command": "cd libs/mlx-swift-lm && ../../scripts/run-nested-suite.sh SUITE --scratch-path ../../provider-swift/.build (one invocation per named suite)",
+  "logs": {
+    "radix-ssd-native-quantized-build.txt.gz": {
+      "sha256": "aa11376e42ab781bac22194ae64ca01e36a235ee9bed19d0f1361e21058eedef",
+      "uncompressed_sha256": "af172cee7d4dbe50060d4f83df4dab9174c6d99f50d5df03b49af45af450cc05"
+    },
+    "radix-ssd-native-quantized-config-tests.txt.gz": {
+      "sha256": "8a7df0a55a68adf9c6d847b353bbeb6bd79e5f8f0f678fd807884903b20d29cf",
+      "uncompressed_sha256": "194eca25a7044e8ced125c2d3316f452827ef57ae85a2a767a61070d0decdef9"
+    },
+    "radix-ssd-native-quantized-codec-tests.txt.gz": {
+      "sha256": "38b0cb4ff8f917178ca2ffaaf54aad38ffbe863ab410a1539c0e3a01039ee1b7",
+      "uncompressed_sha256": "de53a68b15267e74b033b306c51549201d7b54f07b979d877258c148e1f37a22"
+    },
+    "radix-ssd-native-quantized-engine-tests.txt.gz": {
+      "sha256": "abff44a2e2393a9978c1898c8e9f7ab9c602b9bc6ce4687889d00b77c066025c",
+      "uncompressed_sha256": "3e33ddb8237ac893e6b99f4e672c6631c1081a7513019c3ac457ab089bfffd62"
+    },
+    "radix-ssd-native-quantized-mtp-tests.txt.gz": {
+      "sha256": "1a3b9f36b1357368a70325ac26af38520c172d0d843e148486262635992e5c73",
+      "uncompressed_sha256": "c656446183c3a7ae189822ef7c7c5449e5414decab74597b96028d32a68611ee"
+    }
+  }
+}

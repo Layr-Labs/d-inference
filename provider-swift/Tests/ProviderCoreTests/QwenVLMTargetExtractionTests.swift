@@ -3,16 +3,17 @@
 import Foundation
 import MLX
 import MLXLLM
-import MLXLMCommon
+@testable import MLXLMCommon
 import MLXNN
 import MLXVLM
 import Testing
 
-@testable import ProviderCore
+@_spi(Benchmarking) @testable import ProviderCore
 
 private func qwenTargetFixtureJSON(
     mtpLayers: Int = 1,
-    fullAttentionInterval: Int = 1
+    fullAttentionInterval: Int = 1,
+    numExperts: Int = 0
 ) -> Data {
     Data(
         """
@@ -34,8 +35,8 @@ private func qwenTargetFixtureJSON(
             "linear_conv_kernel_dim": 4,
             "vocab_size": 64,
             "full_attention_interval": \(fullAttentionInterval),
-            "num_experts": 0,
-            "num_experts_per_tok": 0,
+            "num_experts": \(numExperts),
+            "num_experts_per_tok": \(numExperts > 0 ? 2 : 0),
             "mtp_num_hidden_layers": \(mtpLayers)
           },
           "vision_config": {
@@ -326,6 +327,38 @@ struct QwenVLMTargetExtractionTests {
         #expect(serving is Qwen35MoEModel)
     }
 
+    @Test("benchmark slot grant observes production headroom and rejects physical-RAM grants", arguments: [false, true])
+    func benchmarkSlotBudgetGuard(oversized: Bool) async throws {
+        let configData = qwenTargetFixtureJSON(mtpLayers: 0)
+        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(configData: configData)
+        let directory = try qwenTargetFixtureDirectory(configData: configData)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tokenizer = StubBridgeTokenizer()
+        let container = ModelContainer(context: ModelContext(
+            configuration: ModelConfiguration(id: "tiny/qwen-benchmark-budget"),
+            model: Qwen35Model(config), processor: QwenExtractionProcessor(), tokenizer: tokenizer))
+        let requested = oversized ? Int(ProcessInfo.processInfo.physicalMemory) : 64 << 20
+        do {
+            let session = try await EngineV2Factory.makeBenchmarkSession(
+                modelId: "tiny/qwen-benchmark-budget", modelDirectory: directory,
+                isVLM: false, container: container, tokenizer: TokenizerHandle(tokenizer),
+                verifiedWeightHash: String(repeating: "a", count: 64),
+                kvBytesCapacity: requested, maxConcurrentRequests: 2,
+                mtpEnabled: false, kvBackendConfig: "contiguous",
+                environment: ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "0"])
+            let snapshot = await session.cacheSnapshot()
+            #expect(oversized == false)
+            #expect(snapshot.engineKVCapacityBytes == requested)
+            #expect(snapshot.physicalMemoryBytes == ProcessInfo.processInfo.physicalMemory)
+            #expect(snapshot.activationReserveBytes > 0)
+            #expect(snapshot.postLoadMaximumKVBytes < snapshot.physicalMemoryBytes)
+            #expect(UInt64(requested) <= snapshot.postLoadMaximumKVBytes)
+            await session.shutdown()
+        } catch EngineV2BenchmarkSession.Failure.invalidCapacity {
+            #expect(oversized)
+        }
+    }
+
     @Test("Qwen3-VL MoE stays the direct serving model in production and benchmarks")
     func qwen3VLDirectServingResolution() throws {
         let wrapper = try qwen3VLMoEFixture()
@@ -380,7 +413,6 @@ struct QwenVLMTargetExtractionTests {
             kvBackend: .contiguous)
         #expect(build.kvBackendKind == .contiguous)
         #expect(EngineV2Factory.cbv2LayerKinds(model: wrapper)?.count == 1)
-        #expect(EngineV2Factory.adoptionBoundTokens(model: wrapper) == 0)
 
         var preflightCalled = false
         let paged = try EngineV2Factory.prepareProductionBackend(
@@ -415,7 +447,6 @@ struct QwenVLMTargetExtractionTests {
         #expect(prepared.layerKinds.count == 1)
         #expect(prepared.layerKinds.first?.modelLayerIndex == 1)
         #expect(prepared.modelCapabilities.supportsPrefixReuse == false)
-        #expect(EngineV2Factory.adoptionBoundTokens(model: target) == 0)
 
         let dense = try EngineV2Factory.prepareProductionBackend(
             model: Qwen35Model(config),
@@ -428,25 +459,33 @@ struct QwenVLMTargetExtractionTests {
         #expect(dense.modelCapabilities.supportsPrefixReuse == false)
     }
 
-    @Test("Qwen core capability veto forces paged selection to contiguous before preflight")
-    func pagedCapabilityVeto() throws {
+    @Test("Qwen paged preparation requires segmented storage and observed native types")
+    func pagedNativePreparation() throws {
         let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
             configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
         var preflightCalled = false
+        let target = Qwen35MoEModel(config)
         let prepared = try EngineV2Factory.prepareProductionBackend(
-            model: Qwen35MoEModel(config),
+            model: target,
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
             kvBackend: EngineV2KVBackendSelection.paged,
             pagedPreflightOverride: { _ in preflightCalled = true })
 
-        #expect(prepared.kind == EngineV2KVBackendKind.contiguous)
-        #expect(prepared.fallbackReason == "model_capability")
-        #expect(preflightCalled == false)
+        #expect(prepared.kind == EngineV2KVBackendKind.paged)
+        #expect(prepared.fallbackReason == nil)
+        #expect(preflightCalled)
+        #expect(prepared.modelCapabilities.requiresNativePagedKV)
+        let (backend, _) = try prepared.consume(model: target, maxConcurrentRequests: 2)
+        let paged = try #require(backend as? PagedKVBackend)
+        #expect(paged.pool.config.segmentSizeBytes == 64 << 20)
+        #expect(paged.pool.config.layerDTypes == [.float32])
+        #expect(EngineV2.backendCapabilityViolation(
+            capabilities: prepared.modelCapabilities, backend: backend) == nil)
     }
 
-    @Test("Qwen recurrent target never constructs or retains an SSD prefix cache")
-    func recurrentTargetSkipsPrefixCacheConstruction() async throws {
+    @Test("Qwen rejects attention-only SSD and requires verified identity for complete checkpoints")
+    func recurrentTargetRequiresCompleteCheckpointIdentity() async throws {
         let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
             configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
         let target = Qwen35MoEModel(config)
@@ -496,11 +535,332 @@ struct QwenVLMTargetExtractionTests {
 
         #expect(probe.calls == 0)
         #expect(bundle.bridge.ssdPrefixCache == nil)
+        #expect(bundle.bridge.ssdHybridCheckpointStore == nil)
         let status = bundle.bridge.prefixCacheModelStatus()
         #expect(status.state == .disabled)
-        #expect(status.reason == .unsupportedLayout)
+        #expect(status.reason == .runtimeIdentityUnavailable)
         await bundle.bridge.shutdown()
     }
+
+
+    @Test("slot factory preserves hybrid bank, memory capability, and unique receipts",
+          arguments: [true, false])
+    func hybridSlotBridgeWiring(hybridEnabled: Bool) async throws {
+        let modelID = "tiny-qwen-hybrid"
+        let modelHash = String(repeating: "a", count: 64)
+        let contract = String(repeating: "b", count: 64)
+        let slotBytes = 8 << 20
+        let bankBytes = 1 << 20
+        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
+            configData: qwenTargetFixtureJSON(mtpLayers: 0, fullAttentionInterval: 2))
+        let target = Qwen35Model(config)
+        let tokenizer = StubBridgeTokenizer()
+        let container = ModelContainer(
+            context: ModelContext(
+                configuration: ModelConfiguration(id: modelID),
+                model: target,
+                processor: QwenExtractionProcessor(),
+                tokenizer: tokenizer))
+        let prepared = EngineV2PreparedModel(
+            snapshot: EngineV2ModelSnapshot(
+                model: target, eosTokenIds: [], extraEOSTokens: []),
+            servingModel: target,
+            assistant: nil,
+            mtpStatus: .disabled(.configDisabled, configured: false),
+            mtpArtifact: nil)
+
+        // Keep the real slot -> preparation -> assembly -> bridge path.
+        // Only model loading and prompt-contract disk IO use existing fixtures.
+        let bundle = try await EngineV2SlotFactory.makeProductionBundle(
+            modelId: modelID,
+            modelType: "qwen3_5",
+            isVLM: false,
+            modelDirectory: nil,
+            container: container,
+            tokenizer: TokenizerHandle(tokenizer),
+            sizing: SlotSizingSnapshot(
+                weightsBytes: 1, fp16KVBytesPerToken: 256,
+                maxContextLength: 2_048, defaultMaxTokens: 1),
+            kvBytesCapacity: slotBytes,
+            maxConcurrentRequests: 2,
+            kvBudget: nil,
+            activationReserveBytes: 0,
+            kvBackendConfig: "contiguous",
+            weightHash: modelHash,
+            specDecPreparation: .init(
+                artifact: nil, status: .disabled(.configDisabled, configured: false)),
+            preparedModel: prepared,
+            assemblyOverrides: .init(promptContractID: contract),
+            environment: [
+                "DARKBLOOM_PREFIX_CACHE": "1",
+                "DARKBLOOM_PREFIX_CACHE_MEMORY": "1",
+                "DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE": hybridEnabled ? "1" : "0",
+                "DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": String(bankBytes),
+                KVBackendGuardStore.pathEnvKey: "/dev/null",
+            ],
+            emitTelemetry: { _ in })
+        let bridge = bundle.bridge
+        let evidence = bridge.residentPrefixCacheEvidence
+        do {
+            let ownedEngine = await bridge.ownedEngine
+            let engine = try #require(ownedEngine as? EngineV2)
+            let backendKind = await bridge.kvBackendKind
+            #expect(backendKind == .contiguous)
+            #expect(bridge.ssdPrefixCache == nil)
+            #expect(engine.capacity().kvBytesCapacity == slotBytes - (hybridEnabled ? bankBytes : 0))
+            if hybridEnabled {
+                let bank = try #require(engine.hybridPrefixCache)
+                #expect(bank.config.maximumBytes == bankBytes)
+                #expect(bank.config.modelID == modelID)
+                #expect(bank.config.promptContractID == contract)
+                let capability = try #require(evidence?.capability())
+                #expect(capability.modelId == modelID)
+                #expect(capability.modelAggregateHash == modelHash)
+                #expect(capability.promptContractId == contract)
+                #expect(capability.enabled && capability.ready)
+                #expect(!capability.cacheEpoch.isEmpty)
+            } else {
+                #expect(engine.hybridPrefixCache == nil)
+                #expect(evidence == nil)
+            }
+
+            // Observe requests after actual enqueue, but before a model forward.
+            // Native cache/MTP tests own checkpoint publication and token parity.
+            let loop = engine.loopForTesting
+            loop.onEngineQueueSync {
+                loop.suspendStepExecutionAtCountForTesting = 0
+            }
+            defer {
+                loop.onEngineQueueSync {
+                    loop.suspendStepExecutionAtCountForTesting = nil
+                }
+            }
+            let prompt = Array(repeating: 7, count: 257)
+            let request = ChatCompletionRequest(
+                model: modelID,
+                messages: [ChatMessage(role: "user", content: "fixture")],
+                max_tokens: 1, seed: 42)
+            var engineIDs: [CBv2RequestID] = []
+            var receipts: [CBv2RequestID] = []
+            for index in 0..<2 {
+                let providerID = "hybrid-seam-\(index)"
+                let signal = EngineV2RequestUsageSignal()
+                let stream = await bridge.submitTokenized(
+                    promptTokens: prompt, request: request, requestId: providerID,
+                    cacheScope: "tenant-fixture", usageSignal: signal)
+                let mappedID = await bridge._testEngineRequestId(for: providerID)
+                let engineID = try #require(mappedID)
+                let queued = loop.onEngineQueueSync {
+                    let request = loop.scheduler.record(for: engineID)?.request
+                    // No step is in flight. Retire through the engine's real
+                    // cancellation cleanup so the stable ID can be reused.
+                    loop.finishRequest(engineID, reason: .cancelled)
+                    return request
+                }
+                let submitted = try #require(queued)
+                #expect(submitted.id == engineID)
+                engineIDs.append(engineID)
+                if hybridEnabled {
+                    receipts.append(try #require(submitted.prefixCacheReceiptID))
+                } else {
+                    #expect(submitted.prefixCacheReceiptID == nil)
+                }
+                var cancelled = false
+                for await event in stream {
+                    if case .error("request cancelled") = event { cancelled = true }
+                }
+                #expect(cancelled)
+            }
+            #expect(engineIDs[0] == engineIDs[1])
+            if hybridEnabled {
+                #expect(receipts[0] != receipts[1])
+                #expect(receipts.allSatisfy { $0 != engineIDs[0] })
+            }
+            #expect((engine.hybridPrefixCache?.stats.entries ?? 0) == 0)
+        } catch {
+            await bridge.shutdown()
+            throw error
+        }
+        await bridge.shutdown()
+        #expect(evidence?.capability() == nil)
+    }
+    @Test("SSD defaults preserve the complete store, capability and unique receipts without a RAM bank",
+          arguments: [true, false], [0, 4])
+    func completeCheckpointSlotBridgeWiring(cacheEnabled: Bool, numExperts: Int) async throws {
+        try await checkCompleteCheckpointSlotBridgeWiring(cacheEnabled: cacheEnabled, numExperts: numExperts)
+    }
+
+    @Test("Complete SSD suppresses unused resident evidence even with the memory opt-in")
+    func completeCheckpointPrecedesResidentEvidence() async throws {
+        try await checkCompleteCheckpointSlotBridgeWiring(
+            cacheEnabled: true, numExperts: 0, memoryEnabled: true)
+    }
+
+    private func checkCompleteCheckpointSlotBridgeWiring(
+        cacheEnabled: Bool, numExperts: Int, memoryEnabled: Bool = false
+    ) async throws {
+        let modelID = "tiny-qwen-complete-\(numExperts)"
+        let modelHash = String(repeating: "a", count: 64)
+        let contract = String(repeating: "b", count: 64)
+        let slotBytes = 8 << 20
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("complete-checkpoint-seam-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            SSDWholeRootMaintainer.shared.stopPeriodicMaintenance(root: root)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let identity = CBv2CompleteCheckpointIdentity(
+            modelAggregateHash: modelHash, promptContractID: contract,
+            buildID: String(repeating: "c", count: 64), numericsFingerprint: String(repeating: "d", count: 64))
+        var environment = [
+            "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1",
+            SSDPrefixCacheFactory.testRootEnvironmentKey: root.path,
+            "DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS": "0",
+            KVBackendGuardStore.pathEnvKey: "/dev/null",
+        ]
+        let residentBytes = 1 << 20
+        if memoryEnabled {
+            environment[PrefixCachePolicy.memoryEnvironmentFlag] = "1"
+            environment["DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES"] = String(residentBytes)
+        }
+        if !cacheEnabled { environment[PrefixCachePolicy.environmentFlag] = "0" }
+        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
+            configData: qwenTargetFixtureJSON(mtpLayers: 0, fullAttentionInterval: 2, numExperts: numExperts))
+        let target: any LanguageModel = numExperts > 0 ? Qwen35MoEModel(config) : Qwen35Model(config)
+        let tokenizer = StubBridgeTokenizer()
+        let container = ModelContainer(
+            context: ModelContext(
+                configuration: ModelConfiguration(id: modelID),
+                model: target,
+                processor: QwenExtractionProcessor(),
+                tokenizer: tokenizer))
+        let prepared = EngineV2PreparedModel(
+            snapshot: EngineV2ModelSnapshot(
+                model: target, eosTokenIds: [], extraEOSTokens: []),
+            servingModel: target,
+            assistant: nil,
+            mtpStatus: .disabled(.configDisabled, configured: false),
+            mtpArtifact: nil)
+
+        // Keep the real slot -> preparation -> assembly -> bridge path.
+        // Model loading and artifact hashes use fixtures; cache construction is real.
+        let bundle = try await EngineV2SlotFactory.makeProductionBundle(
+            modelId: modelID,
+            modelType: "qwen3_5",
+            isVLM: false,
+            modelDirectory: nil,
+            container: container,
+            tokenizer: TokenizerHandle(tokenizer),
+            sizing: SlotSizingSnapshot(
+                weightsBytes: 1, fp16KVBytesPerToken: 256,
+                maxContextLength: 2_048, defaultMaxTokens: 1),
+            kvBytesCapacity: slotBytes,
+            maxConcurrentRequests: 2,
+            kvBudget: nil,
+            activationReserveBytes: 0,
+            kvBackendConfig: "contiguous",
+            weightHash: modelHash,
+            specDecPreparation: .init(
+                artifact: nil, status: .disabled(.configDisabled, configured: false)),
+            preparedModel: prepared,
+            assemblyOverrides: .init(
+                promptContractID: contract, completeCheckpointIdentity: identity),
+            environment: environment,
+            emitTelemetry: { _ in })
+        let bridge = bundle.bridge
+        let evidence = bridge.durablePrefixCacheEvidenceSource
+        do {
+            let ownedEngine = await bridge.ownedEngine
+            let engine = try #require(ownedEngine as? EngineV2)
+            let kind = await bridge.kvBackendKind
+            #expect(kind == .contiguous)
+            #expect(bridge.ssdPrefixCache == nil)
+            let hasResidentBank = cacheEnabled && memoryEnabled
+            #expect(engine.capacity().kvBytesCapacity == slotBytes - (hasResidentBank ? residentBytes : 0))
+            #expect((engine.hybridPrefixCache != nil) == hasResidentBank)
+            // The bank can exist for the explicit opt-in, but the actual engine
+            // selector only adopts complete SSD. It must have no resident wire
+            // producer even if durable readiness temporarily disappears.
+            #expect(bridge.residentPrefixCacheEvidence == nil)
+            #expect(bridge.residentPrefixCacheEvidenceSequencer == nil)
+            if cacheEnabled {
+                let store = try #require(bridge.ssdHybridCheckpointStore)
+                let engineStore = try #require(engine.completePrefixCache)
+                #expect(engineStore === store)
+                #expect(store.identity == identity)
+                let capability = try #require(evidence?.prefixCacheV2Capability())
+                #expect(capability.modelId == modelID)
+                #expect(capability.modelAggregateHash == modelHash)
+                #expect(capability.promptContractId == contract)
+                #expect(capability.readyBoundaryMode == PrefixCacheV2Capability.checkpointBoundaryMode)
+                #expect(capability.enabled && capability.ready)
+                #expect(!capability.cacheEpoch.isEmpty)
+            } else {
+                #expect(engine.completePrefixCache == nil)
+                #expect(bridge.ssdHybridCheckpointStore == nil)
+                #expect(evidence == nil)
+            }
+
+            // Observe requests after actual enqueue, but before a model forward.
+            // Native cache/MTP tests own checkpoint publication and token parity.
+            let loop = engine.loopForTesting
+            loop.onEngineQueueSync {
+                loop.suspendStepExecutionAtCountForTesting = 0
+            }
+            defer {
+                loop.onEngineQueueSync {
+                    loop.suspendStepExecutionAtCountForTesting = nil
+                }
+            }
+            let prompt = Array(repeating: 7, count: 257)
+            let request = ChatCompletionRequest(
+                model: modelID,
+                messages: [ChatMessage(role: "user", content: "fixture")],
+                max_tokens: 1, seed: 42)
+            var engineIDs: [CBv2RequestID] = []
+            var receipts: [CBv2RequestID] = []
+            for index in 0..<2 {
+                let providerID = "complete-seam-\(index)"
+                let signal = EngineV2RequestUsageSignal()
+                let stream = await bridge.submitTokenized(
+                    promptTokens: prompt, request: request, requestId: providerID,
+                    cacheScope: "tenant-fixture", usageSignal: signal)
+                let mappedID = await bridge._testEngineRequestId(for: providerID)
+                let engineID = try #require(mappedID)
+                let queued = loop.onEngineQueueSync {
+                    let request = loop.scheduler.record(for: engineID)?.request
+                    // No step is in flight. Retire through the engine's real
+                    // cancellation cleanup so the stable ID can be reused.
+                    loop.finishRequest(engineID, reason: .cancelled)
+                    return request
+                }
+                let submitted = try #require(queued)
+                #expect(submitted.id == engineID)
+                engineIDs.append(engineID)
+                if cacheEnabled {
+                    receipts.append(try #require(submitted.prefixCacheReceiptID))
+                } else {
+                    #expect(submitted.prefixCacheReceiptID == nil)
+                }
+                var cancelled = false
+                for await event in stream {
+                    if case .error("request cancelled") = event { cancelled = true }
+                }
+                #expect(cancelled)
+            }
+            #expect(engineIDs[0] == engineIDs[1])
+            if cacheEnabled {
+                #expect(receipts[0] != receipts[1])
+                #expect(receipts.allSatisfy { $0 != engineIDs[0] })
+            }
+        } catch {
+            await bridge.shutdown()
+            throw error
+        }
+        await bridge.shutdown()
+        #expect(evidence?.prefixCacheV2Capability() == nil)
+    }
+
 
     @Test("Qwen VLM sizing counts only full-attention KV rows")
     func qwenSizingUsesCompactAttentionLayout() throws {

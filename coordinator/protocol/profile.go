@@ -321,11 +321,12 @@ func (t *SlotTelemetry) Clone() *SlotTelemetry {
 // CapacityTelemetry is the optional machine-level sub-object on
 // BackendCapacity. Same rules as SlotTelemetry.
 type CapacityTelemetry struct {
-	LowPowerMode        *bool               `json:"low_power_mode,omitempty"`
-	MemoryPressureLevel MemoryPressureLevel `json:"memory_pressure_level,omitempty"`
-	MLXNumResources     *int64              `json:"mlx_num_resources,omitempty"`
-	InAdmission         *int64              `json:"in_admission,omitempty"`
-	InflightTasks       *int64              `json:"inflight_tasks,omitempty"`
+	LowPowerMode        *bool                   `json:"low_power_mode,omitempty"`
+	MemoryPressureLevel MemoryPressureLevel     `json:"memory_pressure_level,omitempty"`
+	MLXNumResources     *int64                  `json:"mlx_num_resources,omitempty"`
+	InAdmission         *int64                  `json:"in_admission,omitempty"`
+	InflightTasks       *int64                  `json:"inflight_tasks,omitempty"`
+	ProcessMemory       *ProcessMemoryTelemetry `json:"process_memory,omitempty"`
 }
 
 // Clone returns a detached deep copy (nil-safe).
@@ -339,6 +340,7 @@ func (t *CapacityTelemetry) Clone() *CapacityTelemetry {
 		MLXNumResources:     clonePtr(t.MLXNumResources),
 		InAdmission:         clonePtr(t.InAdmission),
 		InflightTasks:       clonePtr(t.InflightTasks),
+		ProcessMemory:       t.ProcessMemory.Clone(),
 	}
 }
 

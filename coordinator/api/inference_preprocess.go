@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -140,8 +141,9 @@ type inferencePrelude struct {
 // OpenAI-compatible error response and returns ok=false; the caller must then
 // return immediately.
 func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (inferencePrelude, bool) {
-	// Read the raw request body so we can forward it as-is to the provider.
-	// We only parse minimally to extract model/stream/messages for routing.
+	receivedAt := time.Now()
+	// Retain the caller's body while decoding routing and request-owned fields.
+	// Provider serialization is deferred until endpoint/model rewrites finish.
 	// Cap it first: io.ReadAll would otherwise buffer an unbounded body and a
 	// multi-GB POST would OOM the coordinator.
 	r.Body = http.MaxBytesReader(w, r.Body, maxInferenceBodyBytes)
@@ -189,6 +191,11 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 			fmt.Sprintf("this API key is not permitted to use model %q", model), withParam("model")))
 		return inferencePrelude{}, false
 	}
+
+	// Own the template date before any model fallback or endpoint lowering.
+	// Always overwrite the reserved field; originalRawBody remains untouched.
+	promptcontract.SetRequestDate(parsed, receivedAt)
+	dirty = true
 
 	return inferencePrelude{
 		body:            forwardBody{parsed: parsed, bytes: rawBody, dirty: dirty},

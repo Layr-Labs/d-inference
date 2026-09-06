@@ -1,0 +1,524 @@
+[
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.int(9223372036854775807)])",
+    "id" : "number_0",
+    "inputJSON" : "{\"v\":9223372036854775807}",
+    "jinjaType" : "object{v:int(9223372036854775807)}",
+    "output" : "{\"v\":9223372036854775807}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:q,cfbool:false,value:9223372036854775807)}",
+    "id" : "number_0",
+    "inputJSON" : "{\"v\":9223372036854775807}",
+    "jinjaType" : "object{v:int(9223372036854775807)}",
+    "output" : "{\"v\":9223372036854775807}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:q,cfbool:false,value:9223372036854775807)}",
+    "id" : "number_0",
+    "inputJSON" : "{\"v\":9223372036854775807}",
+    "jinjaType" : "object{v:int(9223372036854775807)}",
+    "output" : "{\"v\":9223372036854775807}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.double(9.223372036854776e+18)])",
+    "id" : "number_1",
+    "inputJSON" : "{\"v\":9223372036854775808}",
+    "jinjaType" : "object{v:double(9.223372036854776e+18,bits:43e0000000000000)}",
+    "output" : "{\"v\":9.223372036854776e+18}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:Q,cfbool:false,value:9223372036854775808)}",
+    "id" : "number_1",
+    "inputJSON" : "{\"v\":9223372036854775808}",
+    "jinjaType" : "object{v:double(9.223372036854776e+18,bits:43e0000000000000)}",
+    "output" : "{\"v\":9.223372036854776e+18}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:Q,cfbool:false,value:9223372036854775808)}",
+    "id" : "number_1",
+    "inputJSON" : "{\"v\":9223372036854775808}",
+    "jinjaType" : "object{v:double(9.223372036854776e+18,bits:43e0000000000000)}",
+    "output" : "{\"v\":9.223372036854776e+18}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.double(1.8446744073709552e+19)])",
+    "id" : "number_2",
+    "inputJSON" : "{\"v\":18446744073709551615}",
+    "jinjaType" : "object{v:double(1.8446744073709552e+19,bits:43f0000000000000)}",
+    "output" : "{\"v\":1.8446744073709552e+19}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:Q,cfbool:false,value:18446744073709551615)}",
+    "error" : "runtime(\"Cannot convert value of type Optional<Any> to Jinja Value\")",
+    "id" : "number_2",
+    "inputJSON" : "{\"v\":18446744073709551615}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:Q,cfbool:false,value:18446744073709551615)}",
+    "error" : "runtime(\"Cannot convert value of type Optional<Any> to Jinja Value\")",
+    "id" : "number_2",
+    "inputJSON" : "{\"v\":18446744073709551615}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.int(-9223372036854775808)])",
+    "id" : "number_3",
+    "inputJSON" : "{\"v\":-9223372036854775808}",
+    "jinjaType" : "object{v:int(-9223372036854775808)}",
+    "output" : "{\"v\":-9223372036854775808}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:q,cfbool:false,value:-9223372036854775808)}",
+    "id" : "number_3",
+    "inputJSON" : "{\"v\":-9223372036854775808}",
+    "jinjaType" : "object{v:int(-9223372036854775808)}",
+    "output" : "{\"v\":-9223372036854775808}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:q,cfbool:false,value:-9223372036854775808)}",
+    "id" : "number_3",
+    "inputJSON" : "{\"v\":-9223372036854775808}",
+    "jinjaType" : "object{v:int(-9223372036854775808)}",
+    "output" : "{\"v\":-9223372036854775808}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.double(-9.223372036854776e+18)])",
+    "id" : "number_4",
+    "inputJSON" : "{\"v\":-9223372036854775809}",
+    "jinjaType" : "object{v:double(-9.223372036854776e+18,bits:c3e0000000000000)}",
+    "output" : "{\"v\":-9.223372036854776e+18}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:NSDecimalNumber(objc:d,cfbool:false,value:-9223372036854775809)}",
+    "id" : "number_4",
+    "inputJSON" : "{\"v\":-9223372036854775809}",
+    "jinjaType" : "object{v:double(-9.223372036854776e+18,bits:c3e0000000000000)}",
+    "output" : "{\"v\":-9.223372036854776e+18}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:NSDecimalNumber(objc:d,cfbool:false,value:-9223372036854775809)}",
+    "id" : "number_4",
+    "inputJSON" : "{\"v\":-9223372036854775809}",
+    "jinjaType" : "object{v:double(-9.223372036854776e+18,bits:c3e0000000000000)}",
+    "output" : "{\"v\":-9.223372036854776e+18}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.int(0)])",
+    "id" : "number_5",
+    "inputJSON" : "{\"v\":-0}",
+    "jinjaType" : "object{v:int(0)}",
+    "output" : "{\"v\":0}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:q,cfbool:false,value:0)}",
+    "id" : "number_5",
+    "inputJSON" : "{\"v\":-0}",
+    "jinjaType" : "object{v:int(0)}",
+    "output" : "{\"v\":0}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:q,cfbool:false,value:0)}",
+    "id" : "number_5",
+    "inputJSON" : "{\"v\":-0}",
+    "jinjaType" : "object{v:int(0)}",
+    "output" : "{\"v\":0}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.int(0)])",
+    "id" : "number_6",
+    "inputJSON" : "{\"v\":0}",
+    "jinjaType" : "object{v:int(0)}",
+    "output" : "{\"v\":0}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:q,cfbool:false,value:0)}",
+    "id" : "number_6",
+    "inputJSON" : "{\"v\":0}",
+    "jinjaType" : "object{v:int(0)}",
+    "output" : "{\"v\":0}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:q,cfbool:false,value:0)}",
+    "id" : "number_6",
+    "inputJSON" : "{\"v\":0}",
+    "jinjaType" : "object{v:int(0)}",
+    "output" : "{\"v\":0}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.int(1)])",
+    "id" : "number_7",
+    "inputJSON" : "{\"v\":1}",
+    "jinjaType" : "object{v:int(1)}",
+    "output" : "{\"v\":1}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:q,cfbool:false,value:1)}",
+    "id" : "number_7",
+    "inputJSON" : "{\"v\":1}",
+    "jinjaType" : "object{v:int(1)}",
+    "output" : "{\"v\":1}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:q,cfbool:false,value:1)}",
+    "id" : "number_7",
+    "inputJSON" : "{\"v\":1}",
+    "jinjaType" : "object{v:int(1)}",
+    "output" : "{\"v\":1}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.int(1)])",
+    "id" : "number_8",
+    "inputJSON" : "{\"v\":1.0}",
+    "jinjaType" : "object{v:int(1)}",
+    "output" : "{\"v\":1}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:d,cfbool:false,value:1)}",
+    "id" : "number_8",
+    "inputJSON" : "{\"v\":1.0}",
+    "jinjaType" : "object{v:int(1)}",
+    "output" : "{\"v\":1}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:d,cfbool:false,value:1)}",
+    "id" : "number_8",
+    "inputJSON" : "{\"v\":1.0}",
+    "jinjaType" : "object{v:int(1)}",
+    "output" : "{\"v\":1}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.int(0)])",
+    "id" : "number_9",
+    "inputJSON" : "{\"v\":-0.0}",
+    "jinjaType" : "object{v:int(0)}",
+    "output" : "{\"v\":0}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:d,cfbool:false,value:-0)}",
+    "id" : "number_9",
+    "inputJSON" : "{\"v\":-0.0}",
+    "jinjaType" : "object{v:int(0)}",
+    "output" : "{\"v\":0}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:d,cfbool:false,value:-0)}",
+    "id" : "number_9",
+    "inputJSON" : "{\"v\":-0.0}",
+    "jinjaType" : "object{v:int(0)}",
+    "output" : "{\"v\":0}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.int(1000000000000000)])",
+    "id" : "number_10",
+    "inputJSON" : "{\"v\":1e15}",
+    "jinjaType" : "object{v:int(1000000000000000)}",
+    "output" : "{\"v\":1000000000000000}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:d,cfbool:false,value:1000000000000000)}",
+    "id" : "number_10",
+    "inputJSON" : "{\"v\":1e15}",
+    "jinjaType" : "object{v:int(1000000000000000)}",
+    "output" : "{\"v\":1000000000000000}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:d,cfbool:false,value:1000000000000000)}",
+    "id" : "number_10",
+    "inputJSON" : "{\"v\":1e15}",
+    "jinjaType" : "object{v:int(1000000000000000)}",
+    "output" : "{\"v\":1000000000000000}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.int(10000000000000000)])",
+    "id" : "number_11",
+    "inputJSON" : "{\"v\":1e16}",
+    "jinjaType" : "object{v:int(10000000000000000)}",
+    "output" : "{\"v\":10000000000000000}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:d,cfbool:false,value:1e+16)}",
+    "id" : "number_11",
+    "inputJSON" : "{\"v\":1e16}",
+    "jinjaType" : "object{v:int(10000000000000000)}",
+    "output" : "{\"v\":10000000000000000}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:d,cfbool:false,value:1e+16)}",
+    "id" : "number_11",
+    "inputJSON" : "{\"v\":1e16}",
+    "jinjaType" : "object{v:int(10000000000000000)}",
+    "output" : "{\"v\":10000000000000000}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.int(9007199254740993)])",
+    "id" : "number_12",
+    "inputJSON" : "{\"v\":9007199254740993}",
+    "jinjaType" : "object{v:int(9007199254740993)}",
+    "output" : "{\"v\":9007199254740993}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:q,cfbool:false,value:9007199254740993)}",
+    "id" : "number_12",
+    "inputJSON" : "{\"v\":9007199254740993}",
+    "jinjaType" : "object{v:int(9007199254740993)}",
+    "output" : "{\"v\":9007199254740993}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:q,cfbool:false,value:9007199254740993)}",
+    "id" : "number_12",
+    "inputJSON" : "{\"v\":9007199254740993}",
+    "jinjaType" : "object{v:int(9007199254740993)}",
+    "output" : "{\"v\":9007199254740993}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.double(1e-07)])",
+    "id" : "number_13",
+    "inputJSON" : "{\"v\":1e-7}",
+    "jinjaType" : "object{v:double(1e-07,bits:3e7ad7f29abcaf48)}",
+    "output" : "{\"v\":1e-07}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:d,cfbool:false,value:1e-07)}",
+    "id" : "number_13",
+    "inputJSON" : "{\"v\":1e-7}",
+    "jinjaType" : "object{v:double(1e-07,bits:3e7ad7f29abcaf48)}",
+    "output" : "{\"v\":1e-07}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFNumber(objc:d,cfbool:false,value:1e-07)}",
+    "id" : "number_13",
+    "inputJSON" : "{\"v\":1e-7}",
+    "jinjaType" : "object{v:double(1e-07,bits:3e7ad7f29abcaf48)}",
+    "output" : "{\"v\":1e-07}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.bool(true)])",
+    "id" : "number_14",
+    "inputJSON" : "{\"v\":true}",
+    "jinjaType" : "object{v:bool(true)}",
+    "output" : "{\"v\":true}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFBoolean(objc:c,cfbool:true,value:1)}",
+    "id" : "number_14",
+    "inputJSON" : "{\"v\":true}",
+    "jinjaType" : "object{v:int(1)}",
+    "output" : "{\"v\":1}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:Bool(objc:c,cfbool:true,value:1)}",
+    "id" : "number_14",
+    "inputJSON" : "{\"v\":true}",
+    "jinjaType" : "object{v:bool(true)}",
+    "output" : "{\"v\":true}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"v\": probe.JSONValue.bool(false)])",
+    "id" : "number_15",
+    "inputJSON" : "{\"v\":false}",
+    "jinjaType" : "object{v:bool(false)}",
+    "output" : "{\"v\":false}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{v:__NSCFBoolean(objc:c,cfbool:true,value:0)}",
+    "id" : "number_15",
+    "inputJSON" : "{\"v\":false}",
+    "jinjaType" : "object{v:int(0)}",
+    "output" : "{\"v\":0}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{v:Bool(objc:c,cfbool:true,value:0)}",
+    "id" : "number_15",
+    "inputJSON" : "{\"v\":false}",
+    "jinjaType" : "object{v:bool(false)}",
+    "output" : "{\"v\":false}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object([\"c\": probe.JSONValue.array([probe.JSONValue.bool(true), probe.JSONValue.bool(false), probe.JSONValue.int(0), probe.JSONValue.int(1), probe.JSONValue.int(0), probe.JSONValue.int(1)]), \"n\": probe.JSONValue.object([\"x\": probe.JSONValue.bool(false)]), \"a\": probe.JSONValue.bool(true), \"b\": probe.JSONValue.bool(false)])",
+    "id" : "nested",
+    "inputJSON" : "{\"a\":true,\"b\":false,\"c\":[true,false,0,1,-0.0,1.0],\"n\":{\"x\":false}}",
+    "jinjaType" : "object{a:bool(true),b:bool(false),c:array[bool(true),bool(false),int(0),int(1),int(0),int(1)],n:object{x:bool(false)}}",
+    "output" : "{\"a\":true,\"b\":false,\"c\":[true,false,0,1,0,1],\"n\":{\"x\":false}}",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "object{a:__NSCFBoolean(objc:c,cfbool:true,value:1),b:__NSCFBoolean(objc:c,cfbool:true,value:0),c:array[__NSCFBoolean(objc:c,cfbool:true,value:1),__NSCFBoolean(objc:c,cfbool:true,value:0),__NSCFNumber(objc:q,cfbool:false,value:0),__NSCFNumber(objc:q,cfbool:false,value:1),__NSCFNumber(objc:d,cfbool:false,value:-0),__NSCFNumber(objc:d,cfbool:false,value:1)],n:object{x:__NSCFBoolean(objc:c,cfbool:true,value:0)}}",
+    "id" : "nested",
+    "inputJSON" : "{\"a\":true,\"b\":false,\"c\":[true,false,0,1,-0.0,1.0],\"n\":{\"x\":false}}",
+    "jinjaType" : "object{a:int(1),b:int(0),c:array[int(1),int(0),int(0),int(1),int(0),int(1)],n:object{x:int(0)}}",
+    "output" : "{\"a\":1,\"b\":0,\"c\":[1,0,0,1,0,1],\"n\":{\"x\":0}}",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "object{a:Bool(objc:c,cfbool:true,value:1),b:Bool(objc:c,cfbool:true,value:0),c:array[Bool(objc:c,cfbool:true,value:1),Bool(objc:c,cfbool:true,value:0),__NSCFNumber(objc:q,cfbool:false,value:0),__NSCFNumber(objc:q,cfbool:false,value:1),__NSCFNumber(objc:d,cfbool:false,value:-0),__NSCFNumber(objc:d,cfbool:false,value:1)],n:object{x:Bool(objc:c,cfbool:true,value:0)}}",
+    "id" : "nested",
+    "inputJSON" : "{\"a\":true,\"b\":false,\"c\":[true,false,0,1,-0.0,1.0],\"n\":{\"x\":false}}",
+    "jinjaType" : "object{a:bool(true),b:bool(false),c:array[bool(true),bool(false),int(0),int(1),int(0),int(1)],n:object{x:bool(false)}}",
+    "output" : "{\"a\":true,\"b\":false,\"c\":[true,false,0,1,0,1],\"n\":{\"x\":false}}",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "array([probe.JSONValue.bool(true), probe.JSONValue.bool(false), probe.JSONValue.int(0), probe.JSONValue.int(1)])",
+    "id" : "array",
+    "inputJSON" : "[true,false,-0.0,1.0]",
+    "jinjaType" : "array[bool(true),bool(false),int(0),int(1)]",
+    "output" : "[true,false,0,1]",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "array[__NSCFBoolean(objc:c,cfbool:true,value:1),__NSCFBoolean(objc:c,cfbool:true,value:0),__NSCFNumber(objc:d,cfbool:false,value:-0),__NSCFNumber(objc:d,cfbool:false,value:1)]",
+    "id" : "array",
+    "inputJSON" : "[true,false,-0.0,1.0]",
+    "jinjaType" : "array[int(1),int(0),int(0),int(1)]",
+    "output" : "[1,0,0,1]",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "String([true,false,-0.0,1.0])",
+    "id" : "array",
+    "inputJSON" : "[true,false,-0.0,1.0]",
+    "jinjaType" : "string([true,false,-0.0,1.0])",
+    "output" : "\"[true,false,-0.0,1.0]\"",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "int(1)",
+    "id" : "scalar",
+    "inputJSON" : "1.0",
+    "jinjaType" : "int(1)",
+    "output" : "1",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "__NSCFNumber(objc:d,cfbool:false,value:1)",
+    "id" : "scalar",
+    "inputJSON" : "1.0",
+    "jinjaType" : "int(1)",
+    "output" : "1",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "String(1.0)",
+    "id" : "scalar",
+    "inputJSON" : "1.0",
+    "jinjaType" : "string(1.0)",
+    "output" : "\"1.0\"",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "string(\"hello\")",
+    "id" : "string",
+    "inputJSON" : "\"hello\"",
+    "jinjaType" : "string(hello)",
+    "output" : "\"hello\"",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "NSTaggedPointerString(hello)",
+    "id" : "string",
+    "inputJSON" : "\"hello\"",
+    "jinjaType" : "string(hello)",
+    "output" : "\"hello\"",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "String(\"hello\")",
+    "id" : "string",
+    "inputJSON" : "\"hello\"",
+    "jinjaType" : "string(\"hello\")",
+    "output" : "\"\\\"hello\\\"\"",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "null",
+    "error" : "runtime(\"Cannot convert value of type Optional<Any> to Jinja Value\")",
+    "id" : "null",
+    "inputJSON" : "null",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "NSNull(<null>)",
+    "error" : "runtime(\"Cannot convert value of type Optional<Any> to Jinja Value\")",
+    "id" : "null",
+    "inputJSON" : "null",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "String(null)",
+    "id" : "null",
+    "inputJSON" : "null",
+    "jinjaType" : "string(null)",
+    "output" : "\"null\"",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  },
+  {
+    "bridgedType" : "not decoded",
+    "error" : "DecodingError.dataCorrupted: Data was corrupted. Debug description: The given data was not valid JSON.. Underlying error: Error Domain=NSCocoaErrorDomain Code=3840 \"Unexpected end of file\" UserInfo={NSDebugDescription=Unexpected end of file}",
+    "id" : "blank",
+    "inputJSON" : " ",
+    "path" : "JSONValue\/sendableValue"
+  },
+  {
+    "bridgedType" : "not decoded",
+    "error" : "Error Domain=NSCocoaErrorDomain Code=3840 \"JSON text did not have any content around line 1, column 1.\" UserInfo={NSDebugDescription=JSON text did not have any content around line 1, column 1., NSJSONSerializationErrorIndex=1}",
+    "id" : "blank",
+    "inputJSON" : " ",
+    "path" : "JSONSerialization\/Value(any:)"
+  },
+  {
+    "bridgedType" : "String( )",
+    "id" : "blank",
+    "inputJSON" : " ",
+    "jinjaType" : "string( )",
+    "output" : "\" \"",
+    "path" : "decodeToolCallArguments\/Value(any:)"
+  }
+]

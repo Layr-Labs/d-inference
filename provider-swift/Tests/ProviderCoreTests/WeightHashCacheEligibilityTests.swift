@@ -24,7 +24,10 @@ private struct CacheHashStubProcessor: UserInputProcessor {
 
 @Suite("SSD cache weight-hash eligibility")
 struct WeightHashCacheEligibilityTests {
-    private func makeLoop() throws -> ProviderLoop {
+    private func makeLoop(
+        modelHash: String = "stale-observable-hash",
+        fingerprint: String = "old-fingerprint"
+    ) throws -> ProviderLoop {
         let modelID = "test/cache-hash-model"
         let config = ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/ignored",
@@ -43,13 +46,13 @@ struct WeightHashCacheEligibilityTests {
                 modelType: "gpt_oss",
                 sizeBytes: 1,
                 estimatedMemoryGb: 1,
-                weightHash: "stale-observable-hash")],
+                weightHash: modelHash)],
             config: ProviderConfig(
                 provider: ProviderSettings(name: "cache-hash-test", memoryReserveGB: 1),
                 backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1),
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)),
-            modelHashes: [modelID: "stale-observable-hash"],
-            modelHashFingerprints: [modelID: "old-fingerprint"])
+            modelHashes: [modelID: modelHash],
+            modelHashFingerprints: [modelID: fingerprint])
         return try ProviderLoop(
             config: config,
             purgeLegacyFiles: false,
@@ -103,6 +106,46 @@ struct WeightHashCacheEligibilityTests {
         #expect(accepted == pre.hash)
         #expect(accepted == post.hash)
         #expect(newcomer.container != nil)
+        #expect(await loop.liveModelHashForTesting(modelID) == accepted)
+    }
+
+    @Test("connected Qwen retains fresh bracketing despite an existing metadata hash cache")
+    func recurrentRuntimeAttestationStillHashes() async throws {
+        let modelID = "test/cache-hash-model"
+        let path = try makeSnapshot("qwen-attestation")
+        defer { try? FileManager.default.removeItem(at: path) }
+        try Data(#"{"model_type":"qwen3_5"}"#.utf8)
+            .write(to: path.appendingPathComponent("config.json"))
+        let weights = path.appendingPathComponent("model.safetensors")
+        // A whole-second timestamp survives Foundation's stat/set round trip.
+        let originalDate = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: originalDate], ofItemAtPath: weights.path)
+        let initialLoop = try makeLoop()
+        let initial = try await initialLoop.captureWeightHashForTesting(
+            modelId: modelID, modelPath: path)
+        let priorHash = try #require(initial.hash)
+        let loop = try makeLoop(
+            modelHash: priorHash, fingerprint: try #require(initial.fingerprint))
+        try Data("weights-after!".utf8).write(to: weights)
+        try FileManager.default.setAttributes([.modificationDate: originalDate], ofItemAtPath: weights.path)
+
+        // Confirm this mutation really defeats the ordinary metadata cache.
+        let cached = try await loop.captureWeightHashForTesting(modelId: modelID, modelPath: path)
+        #expect(cached.hash == priorHash)
+        #expect(!cached.recomputed)
+        // Connected loading deliberately keeps the original global SSD flag,
+        // fresh reads, and delayed publication, independent of the local probe.
+        let connectedRequiresFresh = PrefixCachePolicy.isEnabled(environment: [:])
+        let pre = try await loop.captureWeightHashForTesting(
+            modelId: modelID, modelPath: path, requireFreshCryptographicHash: connectedRequiresFresh)
+        let post = try await loop.captureWeightHashForTesting(
+            modelId: modelID, modelPath: path, requireFreshCryptographicHash: connectedRequiresFresh)
+        #expect(pre.recomputed && post.recomputed)
+        #expect(pre.hash != priorHash && pre.hash == post.hash)
+        #expect(await loop.liveModelHashForTesting(modelID) == priorHash)
+        let accepted = try await loop.finalizeReusableSSDLoadForTesting(
+            modelId: modelID, preLoad: pre, postLoad: post, newcomer: makeNewcomer())
+        #expect(accepted == post.hash)
         #expect(await loop.liveModelHashForTesting(modelID) == accepted)
     }
 

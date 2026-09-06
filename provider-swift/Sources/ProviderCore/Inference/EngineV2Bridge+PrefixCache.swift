@@ -31,7 +31,17 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     private var _stageResult: SSDPrefixCacheStageResult?
     private var _lookupResult: PrefixCacheLookupResult?
     private var _cacheDisabled = false
+    /// A positive, advisory resident probe caused the bridge to skip SSD
+    /// staging. If the page claim later races with allocator reuse, classify
+    /// the cold fallback as memory rather than inventing an SSD miss.
+    private var _residentCandidateSeen = false
     private var didEmitLookup = false
+    /// Armed before the pump task can run; only the pump may resolve it.
+    /// Waiters exist only on canceled settlement, never on ordinary decode.
+    private var terminalObservationStarted = false
+    private var terminalObservationPending = false
+    private var terminalWaiters: [CheckedContinuation<Void, Never>] = []
+    private var residentProof: ResidentPrefixCachePromptProof?
     private let onLookupResolved: (@Sendable (PrefixCacheLookupResult) -> Void)?
     let onCacheReady: (@Sendable (PrefixCacheReadyResult) -> Void)?
 
@@ -41,6 +51,41 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     ) {
         self.onLookupResolved = onLookupResolved
         self.onCacheReady = onCacheReady
+    }
+
+    func beginTerminalObservation() {
+        lock.withLock {
+            precondition(!terminalObservationStarted, "usage signal belongs to one request")
+            terminalObservationStarted = true
+            terminalObservationPending = true
+        }
+    }
+
+    /// Called after lookup delivery and the pump's resource cleanup, including
+    /// teardown without a native terminal. Resume outside the signal lock.
+    func completeTerminalObservation() {
+        let waiters = lock.withLock {
+            terminalObservationPending = false
+            let pending = terminalWaiters
+            terminalWaiters.removeAll(keepingCapacity: false)
+            return pending
+        }
+        for waiter in waiters { waiter.resume() }
+    }
+
+    /// Cancellation of the consumer must not skip native settlement. The
+    /// owning pump is independent of that task and resolves on native finish
+    /// or shutdown/stream teardown. A request that never reached a pump has
+    /// no observation to await. First content cannot precede pump registration.
+    func waitForTerminalObservation() async {
+        await withCheckedContinuation { continuation in
+            let waiting = lock.withLock {
+                guard terminalObservationPending else { return false }
+                terminalWaiters.append(continuation)
+                return true
+            }
+            if !waiting { continuation.resume() }
+        }
     }
 
     /// Record the engine-reported prefix-cache hit tokens for this request.
@@ -57,19 +102,38 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
             let engineOutcome: CBv2PrefixCacheOutcome =
                 usage.prefixCacheOutcome == .disabled && usage.prefixCacheHitTokens > 0
                 ? .hit : usage.prefixCacheOutcome
+            // EngineV2 reports the tier that ACTUALLY won adoption. This is
+            // essential when resident L1 and staged SSD L2 both match: SSD
+            // may have completed its pre-submit read, but a zero-copy L1 win
+            // must be billed/telemetried as memory and must not mint a durable
+            // holder receipt. nil preserves scripted/older-engine fallback.
+            let engineTier: PrefixCacheTier? = switch usage.prefixCacheTier {
+            case .resident: .memory
+            case .snapshot: .ssd
+            case nil: nil
+            }
             _prefixCacheHitTokens = matched
             _prefixCachePrefillTokensSaved = saved
             if _cacheDisabled { return nil }
+            let unresolvedTier: PrefixCacheTier =
+                _residentCandidateSeen ? .memory : fallbackTier
             switch engineOutcome {
             case .hit:
-                if let stage = _stageResult {
+                if engineTier == .memory {
+                    _lookupResult = PrefixCacheLookupResult(
+                        outcome: .hit,
+                        tier: .memory,
+                        cachedTokens: matched,
+                        prefillTokensSaved: saved,
+                        requiredRecomputeTokens: max(0, matched - saved))
+                } else if let stage = _stageResult {
                     _lookupResult = stage.resolved(
                         actualCachedTokens: matched,
                         actualPrefillTokensSaved: saved)
                 } else {
                     _lookupResult = PrefixCacheLookupResult(
                         outcome: .hit,
-                        tier: fallbackTier,
+                        tier: engineTier ?? unresolvedTier,
                         cachedTokens: matched,
                         prefillTokensSaved: saved)
                 }
@@ -78,16 +142,19 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
                     _lookupResult = stage.resolved(actualCachedTokens: 0)
                 } else {
                     _lookupResult = PrefixCacheLookupResult(
-                        outcome: .missAbsent, tier: fallbackTier)
+                        outcome: .missAbsent, tier: unresolvedTier)
                 }
             case .skippedCapacity:
                 _lookupResult = _stageResult?.resolved(failure: .capacity)
                     ?? PrefixCacheLookupResult(
-                        outcome: .skippedCapacity, tier: fallbackTier)
+                        outcome: .skippedCapacity, tier: unresolvedTier)
             case .skippedPolicy, .disabled, .adoptionFailed:
                 _lookupResult = _stageResult?.resolved(failure: .policy)
                     ?? PrefixCacheLookupResult(
-                        outcome: .skippedPolicy, tier: fallbackTier)
+                        outcome: .skippedPolicy, tier: unresolvedTier)
+            }
+            if let result = _lookupResult, result.tier == .memory, let residentProof {
+                _lookupResult = residentProof.resolve(result)
             }
             guard !didEmitLookup, let result = _lookupResult else { return nil }
             didEmitLookup = true
@@ -114,19 +181,38 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
         lock.withLock { _stageResult = stageResult }
     }
 
+    func recordResidentPrompt(_ proof: ResidentPrefixCachePromptProof) {
+        lock.withLock { residentProof = proof }
+    }
+
+    func recordResidentPublication(checkpointTokens: [Int]) {
+        let proof = lock.withLock { residentProof }
+        if let ready = proof?.publication(checkpointTokens: checkpointTokens) {
+            onCacheReady?(ready)
+        }
+    }
+
+    func recordResidentPrefixCandidate() {
+        lock.withLock { _residentCandidateSeen = true }
+    }
+
     func finalizeLookup(
         failure: PrefixCacheLookupFailureClass,
         fallbackTier: PrefixCacheTier
     ) {
         let resolved: PrefixCacheLookupResult? = lock.withLock {
             guard !didEmitLookup else { return nil }
+            let unresolvedTier: PrefixCacheTier =
+                _residentCandidateSeen ? .memory : fallbackTier
             let result = _stageResult?.resolved(failure: failure)
                 ?? PrefixCacheLookupResult(
                     outcome: failure == .capacity ? .skippedCapacity : .skippedPolicy,
-                    tier: fallbackTier)
-            _lookupResult = result
+                    tier: unresolvedTier)
+            let resolved = result.tier == .memory
+                ? (residentProof?.resolve(result) ?? result) : result
+            _lookupResult = resolved
             didEmitLookup = true
-            return result
+            return resolved
         }
         if let resolved { onLookupResolved?(resolved) }
     }
@@ -171,9 +257,35 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
 
 extension EngineV2Bridge {
 
+    nonisolated func prefixCacheEvidenceCallbacks(
+        requestID: String, nonce: String, send: SendHandle,
+        readyBoundaryMode: String? = nil
+    ) -> PrefixCacheV2EvidenceCallbacks? {
+        let ssd = prefixCacheEvidenceSequencer?.callbacks(
+            requestID: requestID, nonce: nonce, send: send,
+            readyBoundaryMode: readyBoundaryMode)
+        let memory = residentPrefixCacheEvidenceSequencer?.callbacks(
+            requestID: requestID, nonce: nonce, send: send,
+            forwardTerminal: ssd == nil)
+        guard ssd != nil || memory != nil else { return nil }
+        return PrefixCacheV2EvidenceCallbacks(
+            lookup: { result in
+                ssd?.lookup(result)
+                memory?.lookup(result)
+            },
+            ready: { result in
+                ssd?.ready(result)
+                memory?.ready(result)
+            },
+            terminal: { message in
+                memory?.terminal(message)
+                ssd?.terminal(message)
+            })
+    }
+
     nonisolated func prefixCacheModelStatus() -> PrefixCacheModelStatus {
-        guard let ssdPrefixCache else { return prefixCacheBaseStatus }
-        return ssdPrefixCache.prefixCacheModelStatus(base: prefixCacheBaseStatus)
+        guard let durablePrefixCacheEvidenceSource else { return prefixCacheBaseStatus }
+        return durablePrefixCacheEvidenceSource.prefixCacheAdvertisement(base: prefixCacheBaseStatus).status
     }
 
     func emitPrefixCacheColdFallback(
@@ -275,8 +387,9 @@ extension EngineV2Bridge {
         emit(event)
     }
 
-    /// The slot's TOTAL KV byte claim: for contiguous, the engine admission
-    /// ceiling; for paged, the immutable PHYSICAL backend capacity.
+    /// Slot KV grant for contiguous/segmented storage; physical capacity for
+    /// an explicit fixed-reference paged pool. Actual segmented ownership is
+    /// tracked by native Admission and the shared process ledger.
     /// Fleet sizing (`makeEngineV2BridgeForSlot`) and the heartbeat clamp
     /// (`EngineV2Runtime.capacitySummary`) subtract THIS — not the bare
     /// engine capacity — for co-resident slots.
@@ -291,7 +404,7 @@ extension EngineV2Bridge {
 
     /// Current logical admission target. Re-slice rollback uses this exact
     /// value; unlike `slotKVBytesClaim()`, it does
-    /// not replace a shrunk paged ledger with the larger immutable pool.
+    /// not replace a shrunk fixed-reference ledger with its larger physical pool.
     func resliceAdmissionBytesClaim() -> Int {
         engine.capacity().kvBytesCapacity
     }

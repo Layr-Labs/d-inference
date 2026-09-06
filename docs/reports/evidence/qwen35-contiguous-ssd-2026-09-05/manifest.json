@@ -1,0 +1,115 @@
+{
+  "schema": 1,
+  "scope": "One normal-MTP B1 ordered cache-off/ephemeral-SSD pair; contiguous old-renderer reference, no paged/HTTP/production-key process restart validation",
+  "parent_commit": "ac1dc301c7b15b7d8f0b7bb18cf3d70e93157f75",
+  "native_commit": "b5d6c922bd7eec682eb1997c4868befe4efd02ee",
+  "shared_artifact_evidence": {
+    "path": "../qwen36-contiguous-ssd-2026-09-05/manifest.json",
+    "sha256": "b65278142b30a4bb3091507f5f7ae708baaa1e4d17a6a889696ac63120c69814",
+    "scope": "Identical engine/CLI/metallib/source/harness artifact archived once with Qwen3.6; artifact-verification.json rehashes all14 exact remote files after Qwen3.5 run"
+  },
+  "files": {
+    "off/engine.log.gz": {
+      "bytes": 321,
+      "sha256": "147eb1a19911cc529a8146757e3df5600d7edaa9d930330c7f990c4d6c9451dd",
+      "uncompressed_bytes": 790,
+      "uncompressed_sha256": "4c56717325113f2c6546bccc491928bb5b3e3f7d9ce7b1fc0b27b499375b9275"
+    },
+    "off/metadata.json.gz": {
+      "bytes": 394,
+      "sha256": "f8301dde9392a4b13ac812873a3469ae2c81711a2dfa2af88934ccc897f77902",
+      "uncompressed_bytes": 795,
+      "uncompressed_sha256": "88aa0b64cf086df5d692d08f71773fd7f0e4c835e6daefe4584933734d93b9bb"
+    },
+    "off/report.json.gz": {
+      "bytes": 20836,
+      "sha256": "57f876ef5c5a9113610facde203d8c7606d025b307063b1459c3a0543dd7f586",
+      "uncompressed_bytes": 602973,
+      "uncompressed_sha256": "50504b60baf9fb5dce7123565d3947f1fd2537962fe6cb1f13e2664c133b7bad"
+    },
+    "off/telemetry.jsonl.gz": {
+      "bytes": 19289,
+      "sha256": "d658ba343349f984f210cc2f0523c6a3b6dabae2e00c5f2d6abe1119aa38f83b",
+      "uncompressed_bytes": 122538,
+      "uncompressed_sha256": "952dd31cf0f4bd95e297000a2a409d527e90b924f37c9fbaaa05c429edc1ea2a"
+    },
+    "on/engine.log.gz": {
+      "bytes": 324,
+      "sha256": "d34e63e51582315ec72c64170fb0c78b396b8caa1af5494b36c4edaf55f21cf2",
+      "uncompressed_bytes": 779,
+      "uncompressed_sha256": "7de4747365c87d6383008cdbc603ee2f286621bec06dbe51c74a00b3792d0351"
+    },
+    "on/metadata.json.gz": {
+      "bytes": 389,
+      "sha256": "a84275a052f0889e86318b6f0d31e615ed3397257b29acb58f3febc89043864a",
+      "uncompressed_bytes": 793,
+      "uncompressed_sha256": "53b25d81ff8f056034ae5e302fdbe43bae2053d1c5afef0fc6f55ddf006a9975"
+    },
+    "on/report.json.gz": {
+      "bytes": 23243,
+      "sha256": "3cb84cbe141b32cc203840699ce211baccfffcf7275d84067953a167221a57a5",
+      "uncompressed_bytes": 617057,
+      "uncompressed_sha256": "5616de1b2880053c142183ea6c96e747a1e19e8ff7838be5e43e100282c1e55c"
+    },
+    "on/telemetry.jsonl.gz": {
+      "bytes": 18277,
+      "sha256": "a31dced0e36631939b63407e94332baaabfda323d65def2501b4997b5a438b14",
+      "uncompressed_bytes": 116048,
+      "uncompressed_sha256": "4942ba422af9056aa034c3f66783aa69ebd1b7cd06860bf5316cbb143b36276c"
+    },
+    "comparator-verdict.json": {
+      "bytes": 1216,
+      "sha256": "7de459a8969d16687ed79aeb4ec3f0cf96e1c6b34a7a3fb696ab8c4d6281a249",
+      "uncompressed_bytes": 1216,
+      "uncompressed_sha256": "7de459a8969d16687ed79aeb4ec3f0cf96e1c6b34a7a3fb696ab8c4d6281a249"
+    },
+    "artifact-verification.json": {
+      "bytes": 2247,
+      "sha256": "4e94464ae676c49750d61728ecf0fe64e804156edd863bee2192ff0b2851db27",
+      "uncompressed_bytes": 2247,
+      "uncompressed_sha256": "4e94464ae676c49750d61728ecf0fe64e804156edd863bee2192ff0b2851db27"
+    },
+    "inventory/qwen35-fleet-manifest.json.gz": {
+      "bytes": 1051,
+      "sha256": "5789671aef55915a92102a97f75b7e28c887fc9ee6da9619e40752b89bdb877e",
+      "uncompressed_bytes": 2401,
+      "uncompressed_sha256": "db0a8dd2902473c4b6dcd4eab9511212b52fe7bf9cb8e043aebfc47a900d21ff"
+    },
+    "inventory/qwen35-download-verification.json.gz": {
+      "bytes": 1382,
+      "sha256": "910b6c84182657c21c0af0598ceec477028c63e6cd9eb40bd88aa7a8c8472625",
+      "uncompressed_bytes": 5581,
+      "uncompressed_sha256": "051ffc2ecfbfe354c3891688978dace6ea3f4bfde81faf5bf7bbcccca59e5b8f"
+    },
+    "inventory/qwen35-fleet-hub-comparison.json.gz": {
+      "bytes": 329,
+      "sha256": "412e4736a33d8917b5ecc5b79666add13a35c84532699fb239c1b3cfef4e20aa",
+      "uncompressed_bytes": 2015,
+      "uncompressed_sha256": "57576d890cae19d4676df3f9f4d03e74b645db6a93990a5e45c482d4e67e4059"
+    },
+    "inventory/reference35-download-boundary.json.gz": {
+      "bytes": 168,
+      "sha256": "1c3682de87fa77399decade341a85a854f6cae1eaf7490a05e05646922b3e933",
+      "uncompressed_bytes": 190,
+      "uncompressed_sha256": "8920d66afaf3fd40fb0ce0b0e35e848bcbde49b577d668786813c180e81e9ded"
+    },
+    "input.json.gz": {
+      "bytes": 1509,
+      "sha256": "ac5c990efb5a771a06af82d2150ad9109802535e62b665ef7378afceb6761759",
+      "uncompressed_bytes": 72824,
+      "uncompressed_sha256": "142bcc22315ac1ea942e17dc1ee822be94e6a20582057d7cc7f286b8d6269235"
+    },
+    "comparison-tool.py.gz": {
+      "bytes": 2807,
+      "sha256": "d1b02319f14a2ab78d4502debbbe711033c962f09520e06b5f7a46d02dc6a16d",
+      "uncompressed_bytes": 9797,
+      "uncompressed_sha256": "c016042a8049e0353a0df7c3711d257f9d89e58f69abc564a8cc17c110b4ba53"
+    },
+    "verification.json": {
+      "bytes": 3546,
+      "sha256": "e3b93ce4b2bccb3614bb300e7b1c70f04f22d441f17999e132ecdaab32e5475b",
+      "uncompressed_bytes": 3546,
+      "uncompressed_sha256": "e3b93ce4b2bccb3614bb300e7b1c70f04f22d441f17999e132ecdaab32e5475b"
+    }
+  }
+}

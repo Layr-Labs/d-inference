@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-04 · commit `ac60c5ada`
+> Last updated: 2026-09-06 · commit `25f0775cc`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -15,6 +15,8 @@ lands fully or not at all.
   `api.darkbloom.dev`).
 - Publishing a dev build to the dev coordinator for testing
   (`workflow_dispatch` with `environment=dev`).
+- Building a signed, notarized validation bundle for isolated tests
+  (`environment=dev`, `validation_only=true`).
 
 Coordinator deploys are a separate runbook:
 [`coordinator-deploy.md`](coordinator-deploy.md).
@@ -101,8 +103,8 @@ Accepted tag patterns (`on.push.tags`): `v*.*.*`, `v*-swift`, `v*-swift.*`.
 Tags containing `-dev.` are rejected by `resolve-env` ("`-dev` tags are
 unsupported by the exact-version release contract"); use step 5 for dev.
 The version is derived from the tag (`v` stripped, `-swift*` suffix stripped)
-and must equal the source constants, or `resolve-env` fails **before** the
-environment approval is requested ("Fail before approval on version drift").
+and must equal the source constants. `scripts/resolve-provider-release.sh` checks
+this before writing job outputs or requesting environment approval.
 
 ### 5. Dev release (manual dispatch)
 
@@ -116,6 +118,29 @@ Without a tag the version is read from `ProviderCore.swift` (or
 without a tag is refused ("Production publication requires a source-matching
 release tag"). Dev releases use `DEV_*` secrets, register with the dev
 coordinator, and create no GitHub Release.
+
+### Signed validation bundle
+
+To test a source revision before release registration, dispatch the same signing,
+notarization and final-bundle smoke pipeline in validation mode:
+
+```bash
+gh workflow run release-swift.yml --ref <branch> -f environment=dev -f validation_only=true
+gh run download <run-id> --name darkbloom-signed-validation-<commit>-<attempt> --dir <new-directory>
+```
+
+The branch and recursive submodule commits must be available to CI. Source version
+checks and the dev environment's approval rules still apply. This mode needs the
+Apple signing/profile/notarization secrets; it skips publication-secret resolution,
+R2 uploads, release registration and GitHub Release creation. The default remains
+`validation_only=false` for ordinary releases.
+
+The Actions artifact contains the final signed tarball and
+`darkbloom-validation-identity.json`, with source/submodule revisions and final
+bundle, executable and metallib hashes. Retention is 14 days. Verify those hashes
+before an isolated model or persistent-cache restart test, and retain the artifact
+with that test's evidence. A successful artifact build does not establish restart
+durability or authorize rollout.
 
 ### 6. Approve the environment deployment
 

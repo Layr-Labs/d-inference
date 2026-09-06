@@ -598,6 +598,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			replaceCacheCapabilities :=
 				hbMsg.PrefixCacheProtocol != 0 || hbMsg.PrefixCacheV2Models != nil
 			if replaceCacheCapabilities ||
+				hbMsg.PrefixCacheMemoryModels != nil ||
 				hbMsg.PrefixCacheStatuses != nil ||
 				hbMsg.PrefixCacheDonationOutcomes != nil {
 				var capabilities []protocol.PrefixCacheV2Capability
@@ -609,10 +610,11 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					replaceCacheCapabilities,
 					hbMsg.PrefixCacheProtocol,
 					capabilities,
+					hbMsg.PrefixCacheMemoryModels,
 					hbMsg.PrefixCacheStatuses,
 					hbMsg.PrefixCacheDonationOutcomes,
 				)
-				if err != nil && replaceCacheCapabilities {
+				if err != nil && (replaceCacheCapabilities || hbMsg.PrefixCacheMemoryModels != nil) {
 					s.logger.Warn("rejecting malformed heartbeat cache capabilities",
 						"provider_id", providerID)
 					s.ddIncr("routing.cache_capability_rejected", []string{"source:heartbeat"})
@@ -621,6 +623,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 						providerID,
 						true,
 						1,
+						nil,
 						nil,
 						hbMsg.PrefixCacheStatuses,
 						hbMsg.PrefixCacheDonationOutcomes,
@@ -705,7 +708,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					"outcome:" + lookupMsg.Outcome,
 					"tier:" + lowCardinalityCacheTier(lookupMsg.Tier),
 				})
-				s.emitExactCacheSSDLookup("v2", lookupMsg.Outcome, lookupMsg.StageMs)
+				if lookupMsg.Tier == "ssd" {
+					s.emitExactCacheSSDLookup("v2", lookupMsg.Outcome, lookupMsg.StageMs)
+				}
 			} else {
 				s.ddIncr("routing.cache_receipt_rejected", []string{"type:lookup_v2"})
 			}
@@ -717,11 +722,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					"protocol:v2",
 					"tier:" + lowCardinalityCacheTier(readyMsg.Tier),
 				})
-				donatedTokens := 0
-				if len(readyMsg.ReadyAnchors) > 0 {
-					donatedTokens = readyMsg.ReadyAnchors[len(readyMsg.ReadyAnchors)-1].TokenCount
+				if readyMsg.Tier == "ssd" {
+					donatedTokens := 0
+					if len(readyMsg.ReadyAnchors) > 0 {
+						donatedTokens = readyMsg.ReadyAnchors[len(readyMsg.ReadyAnchors)-1].TokenCount
+					}
+					s.emitExactCacheSSDDonation("v2", readyMsg.StageMs, donatedTokens)
 				}
-				s.emitExactCacheSSDDonation("v2", readyMsg.StageMs, donatedTokens)
 			} else {
 				s.ddIncr("routing.cache_receipt_rejected", []string{"type:ready_v2"})
 			}

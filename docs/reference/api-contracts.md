@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-05 · commit `4d9811f7c`
+> Last updated: 2026-09-06 · commit `32b28b0a7`
 
 The complete public HTTP surface of the coordinator, derived from the 105 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -220,6 +220,55 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 
 Total: 4 + 9 + 10 + 3 + 13 + 11 + 6 + 5 + 5 + 3 + 1 + 34 + 1 = **105 registrations**, matching `routes()`.
 
+## Exact cache status
+
+`GET /v1/cache/status` returns aggregate operational state, with no provider,
+model, tenant, prompt, token, hash, scope, or epoch identifiers
+(`ExactCacheStatus`, `coordinator/api/exact_cache_status.go`). Readiness counts
+are advertised provider/model pairs, not unique models or guaranteed cache hits.
+
+| JSON field | Meaning | Code |
+|---|---|---|
+| `artifact_allowlist.configured` | Whether the optional exact-artifact list is configured; `false` is unrestricted, `true` plus zero count denies all participation | `coordinator/api/exact_cache_status.go` (`ExactCacheArtifactAllowlistStatus`) |
+| `artifact_allowlist.count` | Number of configured exact tuples; never returns their model IDs or hashes | Same |
+| `providers.v2_ready_models` | Ready durable SSD capabilities; preserves the existing meaning | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
+| `providers.memory_ready_models` | Ready resident capabilities, counted separately from SSD readiness | `coordinator/registry/cache_status.go` (`PrefixCacheProtocolStatus`) |
+
+The artifact-list fields have Prometheus gauges
+`exact_cache_artifact_allowlist_configured`, `exact_cache_artifact_allowlist_count`
+and Datadog gauges `exact_cache.artifact_allowlist.configured`,
+`exact_cache.artifact_allowlist.count`; mode `off` remains authoritative
+(`coordinator/api/exact_cache_metrics.go`).
+
+The additive resident count has Prometheus gauge
+`exact_cache_memory_ready_models` and Datadog gauge
+`exact_cache.memory_ready_models` (`coordinator/api/exact_cache_metrics.go`).
+The existing `prefix_cache_statuses` state/reason aggregates retain their SSD
+meaning; resident routing uses the separate memory capability and bounded holder
+receipts described in [cache-aware routing](../architecture/cache-aware-routing.md).
+
+## Provider capacity observations
+
+`GET /v1/me/providers` exposes the accepted backend slot snapshot through
+`backend_capacity.slots` (`handleMyProviders`, `coordinator/api/me_handlers.go`). The
+optional `paged_storage` object carries bounded allocator observations; omitted
+fields mean uninstrumented. Its exact fields and sample-age rules live in the
+[wire reference](protocol-messages.md#slotspaged_storage). The coordinator
+consumer is implemented; provider emission is pending. These observations do
+not grant admission or assert cache readiness.
+
+## Provider-bound request normalization
+
+`_darkbloom_prompt_date` is reserved internal body context. The coordinator
+overwrites caller input once with the request's UTC Gregorian `YYYY-MM-DD`
+before lowering, cache planning, fallback and retries (`parseInferencePrelude`,
+`coordinator/api/inference_preprocess.go`; `SetRequestDate`,
+`coordinator/promptcontract/request_date.go`). Local provider HTTP captures its
+own date; callers cannot override it (`LocalChatRequest`,
+`provider-swift/Sources/ProviderCore/Server/LocalChatRequest.swift`). It is not a
+new envelope or canonical signature field. The renderer semantic version and
+contract behavior are defined in [prompt-contract sidecar](../architecture/prompt-contract-sidecar.md).
+
 ## Headers
 
 ### Read by the coordinator
@@ -269,7 +318,7 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 }
 ```
 
-`code` mirrors `type` unless a handler overrides it (`withCode`, e.g. `payload_too_large`, `model_capability_unsupported`); `param` is present only when a handler names the offending field (`withParam`, e.g. `"model"` on `model_not_found`). Errors raised *after* a stream has committed cannot change the status line; they surface as a terminal SSE `error` event followed by `data: [DONE]` (`writeChatStreamTerminalError`, `coordinator/api/chat_metadata_stream.go`; `writeChatStreamProviderError`, `coordinator/api/consumer.go`).
+`code` mirrors `type` unless a handler overrides it (`withCode`, e.g. `payload_too_large`, `model_capability_unsupported`); `param` is present only when a handler names the offending field (`withParam`, e.g. `"model"` on `model_not_found`). Errors raised *after* a stream has committed cannot change the status line; they surface as a terminal SSE `error` event followed by `data: [DONE]` (`writeChatStreamTerminalError`, `coordinator/api/chat_metadata_stream.go`; `writeChatStreamProviderError`, `coordinator/api/consumer_stream.go`).
 
 | Status | `type` values | Raised by |
 |---|---|---|
@@ -340,7 +389,7 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 }
 ```
 
-`model` echoes the requested string, alias included (`buildNonStreamingResponse`, `coordinator/api/consumer.go`). `se_signature` and `response_hash` are present when the provider signed the response; verification is described in [`../consumer/verification.md`](../consumer/verification.md). `metadata` is `ChatCompletionMetadata`:
+`model` echoes the requested string, alias included (`buildNonStreamingResponse`, `coordinator/api/chat_response.go`). `se_signature` and `response_hash` are present when the provider signed the response; verification is described in [`../consumer/verification.md`](../consumer/verification.md). `metadata` is `ChatCompletionMetadata`:
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -364,11 +413,11 @@ Bodies are lowered into the chat pipeline (`coordinator/promptcontract/endpoint_
 
 ## SSE framing
 
-Built by `handleStreamingResponseWithFirstChunk` (`coordinator/api/consumer.go`), `coordinator/api/sse_response.go`, and `coordinator/api/chat_metadata_stream.go`; ordering guarantees come from the dispatch state machine in `coordinator/api/dispatch.go`.
+Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_stream.go`), `coordinator/api/sse_response.go`, and `coordinator/api/chat_metadata_stream.go`; ordering guarantees come from the dispatch state machine in `coordinator/api/dispatch.go`.
 
 1. **Deferred commit.** No status line, headers, or bytes are written until the first *content* chunk arrives from a provider (`commitFirstContent`). Until then the coordinator can still fail over to another provider or return a JSON error with a real status code (`preContentTerminal`, `coordinator/api/dispatch_terminal_write.go`). Clients see a delayed 200, never a 200 that turns into an error mid-preamble.
 2. **Headers at commit**: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Inference-Job-ID` (`writeSSEResponseHeader`), plus `X-Timing` and the `X-Provider-*` headers.
-3. **Each provider chunk** is forwarded as one `data: <json>\n\n` event after `normalizeSSEChunk` (`coordinator/api/consumer.go`); the coordinator does not re-tokenise or coalesce content. Chunks that arrive before commit are buffered (`chunkBufferSize` = 256).
+3. **Each provider chunk** is forwarded as one `data: <json>\n\n` event after `normalizeSSEChunk` (`coordinator/api/sse_normalize.go`); the coordinator does not re-tokenise or coalesce content. Chunks that arrive before commit are buffered (`chunkBufferSize` = 256).
 4. **Usage and finish chunks are held.** A chunk that only carries `usage` (`parseUsageOnlyStreamChunk`) is held so the reasoning-token breakdown can be spliced in; the chunk carrying the terminal `finish_reason` (`parseFinishStreamChunk`) is held so it can be corrected to `length` against the authoritative token counts. Both are written after every content delta. `se_signature`, `response_hash` and opt-in `metadata` ride on the held usage chunk; when there is none they are emitted as one additional fully-shaped `chat.completion.chunk` (`newChatCompletionExtrasEvent`) immediately before termination. Every chunk's `model` is rewritten to the alias you sent (`rewriteChunkModel`).
 5. **Termination**: exactly one `data: [DONE]\n\n`, written by the coordinator after every coordinator-appended event. Any `[DONE]` from the provider is stripped first (`stripSSEDoneEvents`). Responses streams end with `response.completed` / `response.incomplete` instead.
 6. **No keepalives.** The coordinator never writes comment frames or pings; a silent stream means the provider has not produced a token. Before commit the first-content deadline bounds the silence (a miss is answered with 429 + `Retry-After`, see the status table); after commit `inferenceTimeout` bounds it (a terminal `error` event of type `timeout`).

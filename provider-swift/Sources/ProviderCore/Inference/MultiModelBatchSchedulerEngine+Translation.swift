@@ -11,6 +11,7 @@
 import Foundation
 import MLXLMCommon
 import MLXLMServer
+import ProviderCoreFoundation
 
 /// Template-only controls recovered from the sealed OpenAI body. They remain
 /// out-of-band because the upstream request type does not model the top-level
@@ -21,15 +22,27 @@ public struct ChatTemplateControls: Sendable, Equatable {
     public let reasoningEffort: String?
     public let enableThinking: Bool?
     public let preserveThinking: Bool?
+    public let promptDate: PromptRenderDate?
 
     public init(
         reasoningEffort: String? = nil,
         enableThinking: Bool? = nil,
-        preserveThinking: Bool? = nil
+        preserveThinking: Bool? = nil,
+        promptDate: PromptRenderDate? = nil
     ) {
         self.reasoningEffort = reasoningEffort
         self.enableThinking = enableThinking
         self.preserveThinking = preserveThinking
+        self.promptDate = promptDate
+    }
+
+    func withPromptDate(_ date: PromptRenderDate) -> Self {
+        .init(reasoningEffort: reasoningEffort, enableThinking: enableThinking,
+              preserveThinking: preserveThinking, promptDate: date)
+    }
+
+    func resolvingPromptDate(at now: Date = Date()) -> Self {
+        promptDate == nil ? withPromptDate(.capture(at: now)) : self
     }
 
     var effortDisablesThinking: Bool {
@@ -55,6 +68,9 @@ extension MultiModelBatchSchedulerEngine {
         requiresToolCall: Bool = false
     ) -> [String: any Sendable]? {
         var context: [String: any Sendable] = [:]
+        if let date = controls.promptDate {
+            context.merge(date.templateContext()) { _, pinned in pinned }
+        }
         let fixContext = ChatTemplateFixContext(
             modelId: request.model,
             modelType: modelType)

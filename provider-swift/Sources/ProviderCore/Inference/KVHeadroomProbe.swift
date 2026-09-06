@@ -57,11 +57,12 @@ public enum KVHeadroomProbe {
     ///
     ///   * CONTIGUOUS: KV allocates lazily from free headroom, so measure
     ///     live headroom (the classic guard).
-    ///   * PAGED: require BOTH a serveable committed pool and the same
-    ///     minimum residual whole-machine headroom. Physical sizing uses
-    ///     only a conservative fraction of the pre-build live headroom, so
-    ///     the residual check catches unaccounted engine/JIT residency or
-    ///     concurrent OS pressure without rejecting every valid pool.
+    ///   * PAGED: require both a serveable backend ceiling and the same
+    ///     minimum residual whole-machine headroom. Segmented storage reports
+    ///     its mutable admitted grant; an explicit fixed-reference pool reports
+    ///     physical capacity. An empty segmented pool need not commit pages to
+    ///     pass this guard. Live headroom still catches engine/JIT residency and
+    ///     concurrent OS pressure before the newly built slot is advertised.
     ///
     /// Pure over its inputs (the live measurement is a defaulted
     /// autoclosure) so the matrix is unit-testable without touching MLX

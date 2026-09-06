@@ -23,6 +23,10 @@ func ValidatePrefixCacheRegistration(msg *protocol.RegisterMessage) error {
 	}
 	_, err = validatePrefixCacheCapabilities(
 		msg.PrefixCacheProtocol, msg.PrefixCacheV2Models, models)
+	if err == nil {
+		_, err = validateMemoryPrefixCacheCapabilities(
+			msg.PrefixCacheProtocol, msg.PrefixCacheMemoryModels, models)
+	}
 	return err
 }
 
@@ -69,6 +73,19 @@ func validatePrefixCacheCapabilities(
 	return result, nil
 }
 
+func validateMemoryPrefixCacheCapabilities(
+	version int,
+	capabilities []protocol.PrefixCacheV2Capability,
+	models map[string]protocol.ModelInfo,
+) (map[string]protocol.PrefixCacheV2Capability, error) {
+	for _, capability := range capabilities {
+		if capability.ReadyBoundaryMode != "" {
+			return nil, fmt.Errorf("%w: durable boundary mode on resident capability", errInvalidPrefixCacheCapability)
+		}
+	}
+	return validatePrefixCacheCapabilities(version, capabilities, models)
+}
+
 func validatePrefixCacheCapability(
 	capability protocol.PrefixCacheV2Capability,
 	models map[string]protocol.ModelInfo,
@@ -99,6 +116,10 @@ func validatePrefixCacheCapability(
 	if !capability.Enabled || !capability.Ready {
 		return fmt.Errorf(
 			"%w: advertised v2 model %q is not enabled and ready", errInvalidPrefixCacheCapability, capability.ModelID)
+	}
+	if capability.ReadyBoundaryMode != "" &&
+		capability.ReadyBoundaryMode != protocol.PrefixCacheReadyBoundaryCheckpoint {
+		return fmt.Errorf("%w: unsupported ready boundary mode", errInvalidPrefixCacheCapability)
 	}
 	return nil
 }
@@ -173,6 +194,7 @@ func (r *Registry) UpdatePrefixCacheCapabilities(
 		true,
 		version,
 		capabilities,
+		nil,
 		nil,
 		nil,
 	)

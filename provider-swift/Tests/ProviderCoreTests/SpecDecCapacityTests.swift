@@ -210,21 +210,23 @@ struct SpecDecLoadGateTests {
     }
 
     @Test("pending reservation atomically transfers from target+assistant to assistant only")
-    func pendingReservationTransfer() async {
+    func pendingReservationTransfer() async throws {
         let budget = GlobalKVCacheBudget(
+            capFraction: 1, activationReserveBytes: 0,
             memorySnapshot: {
-                .init(total: 10_000, active: 0, cache: 0, systemAvailable: 10_000)
+                .init(total: 8 << 30, active: 0, cache: 0, systemAvailable: .max)
             })
-        await budget.reservePendingLoad(requestID: "load", bytes: 1_200)
+        let load = try #require(await budget.claimPendingLoad(
+            requestID: "load", weightBytes: 1_200, minimumKVBytes: 0))
         #expect(await budget.outstandingReservedBytes() == 1_200)
-        await budget.replacePendingLoadReservation(requestID: "load", bytes: 200)
+        #expect(await budget.reducePendingLoad(load, remainingWeightBytes: 200))
         #expect(await budget.outstandingReservedBytes() == 200)
-        await budget.replacePendingLoadReservation(requestID: "load", bytes: 0)
+        #expect(await budget.finishPendingLoad(load))
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
     @Test("pending reservation shrink and removal reset rejection audit progress")
-    func pendingReservationProgressResetsAuditStreak() async {
+    func pendingReservationProgressResetsAuditStreak() async throws {
         let unit: UInt64 = 1_073_741_824
         let budget = GlobalKVCacheBudget(
             capFraction: 1.0,
@@ -232,16 +234,17 @@ struct SpecDecLoadGateTests {
             memorySnapshot: {
                 .init(total: 8 * unit, active: 0, cache: 0, systemAvailable: .max)
             })
-        await budget.reservePendingLoad(requestID: "load", bytes: 6 * unit)
+        let load = try #require(await budget.claimPendingLoad(
+            requestID: "load", weightBytes: 6 * unit, minimumKVBytes: 0))
         #expect(!(await budget.reserveBytes(requestID: "rejected-1", bytes: unit)))
         #expect(await budget.rejectionStreakArmedForTesting())
 
-        await budget.replacePendingLoadReservation(requestID: "load", bytes: 5 * unit)
+        #expect(await budget.reducePendingLoad(load, remainingWeightBytes: 5 * unit))
         #expect(!(await budget.rejectionStreakArmedForTesting()))
         #expect(!(await budget.reserveBytes(requestID: "rejected-2", bytes: 2 * unit)))
         #expect(await budget.rejectionStreakArmedForTesting())
 
-        await budget.replacePendingLoadReservation(requestID: "load", bytes: 0)
+        #expect(await budget.finishPendingLoad(load))
         #expect(!(await budget.rejectionStreakArmedForTesting()))
         #expect(await budget.outstandingReservedBytes() == 0)
     }

@@ -10,6 +10,7 @@ pub struct NormalizedRequest {
     pub tools: Option<Vec<Value>>,
     pub additional_context: Map<String, Value>,
     pub body: Value,
+    pub prompt_date: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -44,7 +45,8 @@ pub fn normalize(
     tools = tools.map(sanitize_array);
     validate_tool_history(&messages)?;
 
-    if is_harmony(Some(&model_id), model_type) {
+    let harmony = is_harmony(Some(&model_id), model_type);
+    if harmony {
         messages = harmony_messages(messages)?;
         tools = tools.map(harmony_tools);
     } else if crate::gemma4::applies(&model_id, model_type) {
@@ -61,7 +63,21 @@ pub fn normalize(
                     .replace('-', "_")
                     .starts_with("qwen3_5")
             }));
-    let additional_context = template_additional_context(&body, forced_qwen_tool)?;
+    let mut additional_context = template_additional_context(&body, forced_qwen_tool)?;
+    // Match the provider's existing GPTOSSHarmonyTemplateFix serving policy.
+    if harmony
+        && additional_context
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            == Some("high")
+    {
+        additional_context.insert("reasoning_effort".into(), Value::String("medium".into()));
+    }
+    let prompt_date = body
+        .get(crate::request_date::BODY_FIELD)
+        .and_then(Value::as_str)
+        .filter(|value| crate::request_date::valid_date(value))
+        .map(str::to_owned);
 
     let mut normalized_body = Map::new();
     normalized_body.insert("model".into(), Value::String(model_id.clone()));
@@ -75,12 +91,19 @@ pub fn normalize(
             Value::Object(additional_context.clone()),
         );
     }
+    if let Some(date) = &prompt_date {
+        normalized_body.insert(
+            crate::request_date::BODY_FIELD.into(),
+            Value::String(date.clone()),
+        );
+    }
 
     Ok(NormalizedRequest {
         messages,
         tools,
         additional_context,
         body: Value::Object(normalized_body),
+        prompt_date,
     })
 }
 
@@ -1062,7 +1085,7 @@ fn split_harmony_tool_calls(messages: Vec<Value>) -> Result<Vec<Value>, Normaliz
             next += 1;
         }
         if let Some(thinking) = thinking {
-            output.push(json!({"role": "assistant", "thinking": thinking}));
+            output.push(json!({"role": "assistant", "content": "", "thinking": thinking}));
         }
         let mut consumed = std::collections::HashSet::new();
         for (call_index, call) in calls.iter().enumerate() {
@@ -1229,6 +1252,22 @@ mod tests {
     }
 
     #[test]
+    fn harmony_effort_matches_existing_provider_policy() {
+        for (model, requested, expected) in [
+            ("gpt-oss-20b", "high", "medium"),
+            ("openai/gpt-oss-20b", " high ", "medium"),
+            ("gpt-oss-20b", "low", "low"),
+            ("qwen3.5-35b-a3b", "high", "high"),
+        ] {
+            let context = normalize_context(json!({
+                "model": model, "messages": [{"role":"user", "content":"hello"}],
+                "reasoning_effort": requested,
+            }));
+            assert_eq!(context["reasoning_effort"], expected, "{model}/{requested}");
+        }
+    }
+
+    #[test]
     fn qwen_thinking_controls_match_reviewed_precedence() {
         let nested = normalize_context(json!({
             "model":"EigenLabs/Qwen3.8-27B-4bit",
@@ -1349,7 +1388,7 @@ mod tests {
         let body = json!({
             "model":"gpt-oss-20b",
             "messages":[
-                {"role":"assistant","content":"","tool_calls":[
+                {"role":"assistant","content":"","reasoning_content":"Plan both calls", "tool_calls":[
                     {"id":"a","type":"function","function":{"name":"f","arguments":"{}"}},
                     {"id":"b","type":"function","function":{"name":"g","arguments":"{}"}}
                 ]},
@@ -1361,8 +1400,10 @@ mod tests {
         .unwrap()
         .clone();
         let normalized = normalize(body, Some("gpt_oss")).unwrap();
-        assert_eq!(normalized.messages[1]["tool_call_id"], "a");
-        assert_eq!(normalized.messages[3]["tool_call_id"], "b");
+        assert_eq!(normalized.messages[0]["thinking"], "Plan both calls");
+        assert_eq!(normalized.messages[0]["content"], "");
+        assert_eq!(normalized.messages[2]["tool_call_id"], "a");
+        assert_eq!(normalized.messages[4]["tool_call_id"], "b");
     }
 
     #[test]

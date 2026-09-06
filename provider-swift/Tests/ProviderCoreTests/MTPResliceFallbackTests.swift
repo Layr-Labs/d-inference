@@ -332,8 +332,8 @@ struct MTPResliceFallbackTests {
             engineV2: existingBridge,
             sizing: existingSizing,
             modelType: "gemma4")
-        await loop.reservePendingLoadForTesting(
-            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes)
+        #expect(await loop.reservePendingLoadForTesting(
+            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes))
 
         let newcomer = EngineV2NewcomerBox(mtpFloorContainer())
         let build = try await loop.resliceAndBuildEngineV2BundleForTesting(
@@ -395,8 +395,8 @@ struct MTPResliceFallbackTests {
             tokenizer: TokenizerHandle(MTPFloorTokenizer()),
             sizing: existingSizing,
             modelType: "gemma4")
-        await server.reservePendingLoadForTesting(
-            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes)
+        #expect(await server.reservePendingLoadForTesting(
+            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes))
 
         let newcomer = EngineV2NewcomerBox(mtpFloorContainer())
         let build = try await server.resliceAndBuildMTPBundleForTesting(
@@ -437,8 +437,8 @@ struct MTPResliceFallbackTests {
 
         // The load path charged the drafter's bytes at admission; the
         // assistant then fail-opens INSIDE the bundle build (load failure).
-        await loop.reservePendingLoadForTesting(
-            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes)
+        #expect(await loop.reservePendingLoadForTesting(
+            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes))
 
         // Small weights: the re-slice floor must NOT trigger — this test
         // isolates the prepare-stage fail-open, whose fallback previously
@@ -476,8 +476,8 @@ struct MTPResliceFallbackTests {
             physicalMemoryBytes: mtpFloorPhysical,
             assistantLoader: MTPFloorFailingAssistantLoader(),
             makeEngine: { _, grant in MTPFloorEngine(capacityBytes: grant) }))
-        await server.reservePendingLoadForTesting(
-            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes)
+        #expect(await server.reservePendingLoadForTesting(
+            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes))
 
         let newcomer = EngineV2NewcomerBox(mtpFloorContainer())
         let build = try await server.resliceAndBuildMTPBundleForTesting(

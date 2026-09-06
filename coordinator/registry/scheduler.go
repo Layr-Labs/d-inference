@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"math"
-	"math/rand"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
@@ -205,12 +204,15 @@ type routingSnapshot struct {
 }
 
 type routingCandidate struct {
-	provider       *Provider
-	snapshot       routingSnapshot
-	costMs         float64
-	effectiveQueue int
-	breakdown      costBreakdown
-	effectiveTPS   float64 // Phase 4 load-scaled TPS used in this candidate's cost
+	// Exact base-score work eligible for a cache credit; never includes load or decode.
+	pricedPromptTokens int
+	prefillCostMs      float64
+	provider           *Provider
+	snapshot           routingSnapshot
+	costMs             float64
+	effectiveQueue     int
+	breakdown          costBreakdown
+	effectiveTPS       float64 // Phase 4 load-scaled TPS used in this candidate's cost
 	// capacityRejectRate is the pair's windowed capacity-503 rate
 	// (capacity_rate.go), captured at candidate build so the winning
 	// RoutingDecision can expose it. 0 when no rejects are in the window.
@@ -311,7 +313,7 @@ type RoutingDecision struct {
 	QueueMs    float64 // pendingForModel × queueDepthPenaltyMs
 	PendingMs  float64 // totalPending × totalPendingPenaltyMs
 	BacklogMs  float64 // tokens-ahead / decodeTPS contribution
-	ThisReqMs  float64 // this request's prefill+decode contribution
+	ThisReqMs  float64 // prefill+decode, including long-prompt and excess restore costs
 	HealthMs   float64 // memory/CPU/thermal/GPU-util contribution
 	// CapacityRateMs is the gray-box capacity-503 rate penalty added to the
 	// winner's cost (capacity_rate.go); 0 for healthy pairs. In-memory
@@ -353,9 +355,9 @@ type RoutingDecision struct {
 	RawTTFTMs       float64
 	CacheTier       string
 	CacheDiscountMs float64
-	// CacheEstimatedTTFTSavedMs is the uncapped estimated prefill-time benefit
-	// net of SSD stage time. CacheDiscountMs remains separately bounded by the
-	// routing cost safety caps.
+	// CacheEstimatedTTFTSavedMs is the signed, uncapped prefill-time saving
+	// net of stage time. Negative values mean restore overhead, charged in
+	// ThisReqMs. Positive CacheDiscountMs remains bounded by the safety caps.
 	CacheEstimatedTTFTSavedMs float64
 
 	// Phase-0 shadow TTFT admission/spread evaluation (see ttft_shadow.go).
@@ -587,11 +589,9 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 	// The tracker has its own mutex and must never be nested under r.mu.
 	r.mu.RLock()
 	cacheTracker, cacheMode := r.cacheRouting, r.cacheRoutingMode
-	// cacheRoutingTracker.hints returns nil unless ALL of these hold, so the
-	// capability walk (a second full-fleet pass that takes p.mu on every
-	// provider) and the route-key copy are skipped exactly when they could not
-	// influence selection: cache routing off, no plan on the request, or no
-	// route key configured. Same predicate as hints(); keep them in sync.
+	// Skip digest derivation and holder lookup unless the request can use them.
+	// Only matching holders need a capability snapshot; cold providers are
+	// visited once, by the ordinary eligibility scan below.
 	wantHints := cacheTracker != nil && cacheMode == CacheRoutingOn &&
 		pr.CachePlan.present() && len(r.cacheRouteKeys.route) > 0
 	var cacheRouteKey []byte
@@ -601,9 +601,8 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 	r.mu.RUnlock()
 	pr.cacheRoutingHints = nil
 	if wantHints {
-		cacheCapabilities := r.prefixCacheV2CapabilitiesForModel(model)
-		pr.cacheRoutingHints = cacheTracker.hints(
-			pr.CachePlan, cacheCapabilities, cacheRouteKey, cacheMode, time.Now())
+		pr.cacheRoutingHints = r.cacheRoutingHints(
+			model, pr.CachePlan, cacheTracker, cacheRouteKey, cacheMode, time.Now())
 	}
 	pr.CacheSelectionMode = ""
 	pr.CacheSelectionTier = ""
@@ -747,7 +746,7 @@ func (r *Registry) commitProviderReservation(
 		return nil, nil, reservationCandidateRejected,
 			routingDecisionForCommitRejection(model, rejectNone, true)
 	}
-	r.applyCacheRoutingDiscountPLocked(p, model, pr, candidate)
+	r.applyCacheRoutingCostPLocked(p, model, pr, candidate)
 
 	// Another reservation changed this winner after the shared scan. Re-scan the
 	// fleet so cost ranking observes that debit instead of herding the whole scan
@@ -906,46 +905,22 @@ func routingDecisionForCandidate(model string, provider *Provider, candidate *ro
 	return decision
 }
 
-// applyCacheRoutingDiscount reads the candidate's own snapshot (the scan
+// applyCacheRoutingCost reads the candidate's own snapshot (the scan
 // builds it in place; no copy is taken). The caller does NOT hold p.mu (the
 // scan): the hint currency check takes it.
-func (r *Registry) applyCacheRoutingDiscount(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate) {
-	hint, ok := pr.cacheRoutingHints[p.ID]
-	if !ok || !hint.currentForProvider(p, model) {
+func (r *Registry) applyCacheRoutingCost(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate) {
+	hint, present := pr.cacheRoutingHints[p.ID]
+	if !present {
 		return
 	}
-	r.applyCacheHintDiscount(hint, candidate)
+	p.mu.Lock()
+	r.applyCacheHintLocked(hint, model, candidate)
+	p.mu.Unlock()
 }
 
-// applyCacheRoutingDiscountPLocked is applyCacheRoutingDiscount for a caller
-// that already holds p.mu (the reservation commit).
-func (r *Registry) applyCacheRoutingDiscountPLocked(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate) {
-	hint, ok := pr.cacheRoutingHints[p.ID]
-	if !ok || !hint.currentForProviderLocked(p, model) {
-		return
-	}
-	r.applyCacheHintDiscount(hint, candidate)
-}
-
-func (r *Registry) applyCacheHintDiscount(hint cacheRoutingHint, candidate *routingCandidate) {
-	prefillTPS := resolvePrefillTPS(&candidate.snapshot)
-	if prefillTPS <= 0 || math.IsNaN(prefillTPS) || math.IsInf(prefillTPS, 0) {
-		return
-	}
-	netSavedMs := float64(hint.PrefillTokensSaved)/prefillTPS*1000 - hint.StageMs
-	if netSavedMs <= 0 || math.IsNaN(netSavedMs) || math.IsInf(netSavedMs, 0) {
-		return
-	}
-	capMs := math.Min(r.cacheRoutingMaxDiscountMs, candidate.costMs*r.cacheRoutingMaxCostFraction)
-	discount := math.Min(netSavedMs, capMs)
-	if discount <= 0 {
-		return
-	}
-	candidate.breakdown.CacheDiscountMs = discount
-	candidate.cacheTier = "ssd"
-	candidate.cacheEstimatedTTFTSavedMs = netSavedMs
-	candidate.costMs -= discount
-	candidate.breakdown.Total = candidate.costMs
+// applyCacheRoutingCostPLocked is the reservation path, already holding p.mu.
+func (r *Registry) applyCacheRoutingCostPLocked(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate) {
+	r.applyCacheHintLocked(pr.cacheRoutingHints[p.ID], model, candidate)
 }
 
 // selectBestCandidateLockedFull is the full-fidelity selection that
@@ -1160,16 +1135,6 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	// candidates instead of one per candidate, and each snapshot is written
 	// straight into its slot (candidate_arena.go).
 	var arena candidateArena
-	candidateCount := 0
-	capacityRejections := 0
-	tooLargeRejections := 0
-	visionRejections := 0
-	ttftRejections := 0
-	bestTTFTMs := 0.0
-	breakerRejected := 0
-	// scan carries the fixed-size system-profiler context (gate-reason tallies,
-	// best-idle, top-4) filled inside this loop with zero heap allocation; the
-	// legacy counters above are assigned into it at the end, unchanged.
 	var scan candidateScan
 	now := time.Now()
 	// Vision preparation is absent from the token-prefill projection, so media
@@ -1215,10 +1180,10 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 			breaker, capacity := r.classifyRejectedProvider(
 				r.gateViewOf(p), model, pr.Traits, relaxTrust, ignoreProviderBreaker, now)
 			if breaker {
-				breakerRejected++
+				scan.breakerRejected++
 			}
 			if capacity {
-				capacityRejections++
+				scan.capacityRejections++
 			}
 			continue
 		}
@@ -1234,7 +1199,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 			p.mu.Unlock()
 			if !servesVision {
 				arena.release(c)
-				visionRejections++
+				scan.visionRejections++
 				scan.tallyGate(GateVision)
 				continue
 			}
@@ -1244,11 +1209,11 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 			arena.release(c)
 			switch reason {
 			case rejectCapacity:
-				capacityRejections++
+				scan.capacityRejections++
 			case rejectModelTooLarge:
-				tooLargeRejections++
+				scan.tooLargeRejections++
 			case rejectVisionUnsupported:
-				visionRejections++
+				scan.visionRejections++
 			}
 			scan.tallyGate(gateReason)
 			continue
@@ -1259,8 +1224,8 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 		// ceiling, the value is used for Retry-After on the TTFT 429 path.
 		// Providers without BackendCapacity do not contribute a reliable TTFT
 		// estimate, so they are skipped here.
-		if c.snapshot.hasBackendCapacity && (c.breakdown.TTFTMs < bestTTFTMs || bestTTFTMs == 0) {
-			bestTTFTMs = c.breakdown.TTFTMs
+		if c.snapshot.hasBackendCapacity && (c.breakdown.TTFTMs < scan.bestTTFTMs || scan.bestTTFTMs == 0) {
+			scan.bestTTFTMs = c.breakdown.TTFTMs
 		}
 
 		// Enforce the per-request TTFT ceiling for public inference routes.
@@ -1271,18 +1236,18 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 		// not enforced on them (matching the preflight behavior).
 		if enforceTTFT && c.snapshot.hasBackendCapacity && c.breakdown.TTFTMs > pr.MaxTTFTMs {
 			arena.release(c)
-			ttftRejections++
+			scan.ttftRejections++
 			scan.tallyGate(GateTTFTCeiling)
 			continue
 		}
 
-		r.applyCacheRoutingDiscount(p, model, pr, c)
+		r.applyCacheRoutingCost(p, model, pr, c)
 		// Best-idle is computed UNCONDITIONALLY over every routable candidate
 		// (before pool narrowing) so the record can answer "was an idle warm box
 		// available?" whether or not the shadow evaluator is on.
 		scan.noteBestIdle(c)
 		candidates = append(candidates, c)
-		candidateCount++
+		scan.candidateCount++
 	}
 	// With the per-model index scan.scanned counts the providers advertising
 	// the model (the index members), not the whole fleet, and the
@@ -1296,15 +1261,9 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	// normally). Exclusive self-route already filtered to owned above.
 	pool := candidates
 	if pr.PreferOwner {
-		owned := make([]*routingCandidate, 0, len(candidates))
-		for _, c := range candidates {
-			if providerOwnedBy(c.provider, pr.OwnerAccountID) {
-				owned = append(owned, c)
-			}
-		}
-		if len(owned) > 0 {
-			pool = owned
-		}
+		pool = preferRoutingCandidates(pool, func(c *routingCandidate) bool {
+			return providerOwnedBy(c.provider, pr.OwnerAccountID)
+		})
 	}
 
 	// Version-diverse retry (SOFT): when a previous attempt failed on a given
@@ -1314,15 +1273,9 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	// when every candidate runs the avoided version, keep the full pool rather
 	// than failing the request.
 	if pr.Traits.AvoidVersion != "" {
-		diverse := make([]*routingCandidate, 0, len(pool))
-		for _, c := range pool {
-			if providerVersion(c.provider) != pr.Traits.AvoidVersion {
-				diverse = append(diverse, c)
-			}
-		}
-		if len(diverse) > 0 {
-			pool = diverse
-		}
+		pool = preferRoutingCandidates(pool, func(c *routingCandidate) bool {
+			return providerVersion(c.provider) != pr.Traits.AvoidVersion
+		})
 	}
 
 	// Decode-floor quality preference (SOFT, Routing v2 W2): when a per-request
@@ -1333,15 +1286,9 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	// served (growing warm capacity / queueing to protect quality is handled
 	// upstream, not by dropping the request here).
 	if pr.MinDecodeTPS > 0 {
-		quality := make([]*routingCandidate, 0, len(pool))
-		for _, c := range pool {
-			if projectedPerRequestDecodeTPS(&c.snapshot) >= pr.MinDecodeTPS {
-				quality = append(quality, c)
-			}
-		}
-		if len(quality) > 0 {
-			pool = quality
-		}
+		pool = preferRoutingCandidates(pool, func(c *routingCandidate) bool {
+			return projectedPerRequestDecodeTPS(&c.snapshot) >= pr.MinDecodeTPS
+		})
 	}
 
 	// Top-4 by cost over the NARROWED pool (the set the selector ranks); the
@@ -1352,13 +1299,6 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	}
 
 	scan.pool = pool
-	scan.candidateCount = candidateCount
-	scan.capacityRejections = capacityRejections
-	scan.tooLargeRejections = tooLargeRejections
-	scan.visionRejections = visionRejections
-	scan.ttftRejections = ttftRejections
-	scan.bestTTFTMs = bestTTFTMs
-	scan.breakerRejected = breakerRejected
 	scan.ignoreProviderBreaker = ignoreProviderBreaker
 	return scan
 }
@@ -1377,137 +1317,13 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 		return nil, scan
 	}
 
-	winner, runnerUp, nearTieSize, path := selectRoutingCandidate(scan.pool, func(candidate *routingCandidate) float64 {
-		return candidate.costMs
-	})
+	winner, runnerUp, nearTieSize, path := selectRoutingCandidate(scan.pool)
 	scan.runnerUp = candidateSummaryOf(runnerUp)
 	scan.nearTieSize = clampInt32(nearTieSize)
 	scan.path = path
 	scan.promoteWinnerTop(winner)
 	r.logRoutingDecision(model, pr, winner, scan.candidateCount)
 	return winner, scan
-}
-
-// selectRoutingCandidate centralizes cost ranking, near-tie admission, and
-// queue-depth tie-breaking. Besides the winner it reports the runner-up (the
-// lowest-cost candidate other than the winner — "what we would have chosen
-// instead"; nil for a single-candidate pool), the size of the near-tie pool,
-// and WHICH branch chose the winner (SelectionPath). The selection itself is
-// byte-for-byte the pre-profiler algorithm; the extra outputs are derived from
-// state the algorithm already computes and add no heap allocation.
-func selectRoutingCandidate(
-	pool []*routingCandidate,
-	cost func(*routingCandidate) float64,
-) (winner, runnerUp *routingCandidate, nearTieSize int, path SelectionPath) {
-	if len(pool) == 0 {
-		return nil, nil, 0, SelectionNone
-	}
-	best := pool[0]
-	for _, candidate := range pool[1:] {
-		if cost(candidate) < cost(best) {
-			best = candidate
-		}
-	}
-	nearTies := make([]*routingCandidate, 0, len(pool))
-	for _, candidate := range pool {
-		if math.Abs(cost(candidate)-cost(best)) <= nearTieCostWindowMs {
-			nearTies = append(nearTies, candidate)
-		}
-	}
-	winner = nearTies[0]
-	for _, candidate := range nearTies[1:] {
-		if candidate.effectiveQueue < winner.effectiveQueue ||
-			(candidate.effectiveQueue == winner.effectiveQueue && candidate.snapshot.totalPending < winner.snapshot.totalPending) {
-			winner = candidate
-		}
-	}
-	equivalent := make([]*routingCandidate, 0, len(nearTies))
-	for _, candidate := range nearTies {
-		if candidate.effectiveQueue == winner.effectiveQueue &&
-			candidate.snapshot.totalPending == winner.snapshot.totalPending &&
-			math.Abs(cost(candidate)-cost(winner)) <= nearTieCostWindowMs {
-			equivalent = append(equivalent, candidate)
-		}
-	}
-	nearTieSize = len(nearTies)
-	// Normal near-tie spreading must not erase a bounded exact-cache discount
-	// (the default 1s cap is intentionally smaller than the 3s spread window).
-	// Once queue/backlog equivalence is established, exact evidence resolves the
-	// tie by adjusted cost. A busier holder never reaches this set, and a holder
-	// whose adjusted cost is still worse loses to the lower-cost cold provider.
-	hasCacheDiscount := false
-	for _, candidate := range equivalent {
-		if candidate.breakdown.CacheDiscountMs > 0 {
-			hasCacheDiscount = true
-			break
-		}
-	}
-	switch {
-	case hasCacheDiscount:
-		bestCost := cost(equivalent[0])
-		best := equivalent[:1]
-		for _, candidate := range equivalent[1:] {
-			candidateCost := cost(candidate)
-			switch {
-			case candidateCost < bestCost:
-				bestCost = candidateCost
-				best = []*routingCandidate{candidate}
-			case candidateCost == bestCost:
-				best = append(best, candidate)
-			}
-		}
-		switch {
-		case len(best) > 1:
-			winner = best[rand.Intn(len(best))]
-			path = SelectionRandom
-		case len(equivalent) > 1:
-			winner = best[0]
-			path = SelectionCacheTiebreak
-		default:
-			// A single equivalent candidate that happens to carry a discount:
-			// the discount did not break any tie; the queue/pending tie-break
-			// (or unique minimum) did.
-			winner = best[0]
-			path = tieBreakPath(nearTies, winner)
-		}
-	case len(equivalent) > 1:
-		winner = equivalent[rand.Intn(len(equivalent))]
-		path = SelectionRandom
-	default:
-		path = tieBreakPath(nearTies, winner)
-	}
-	runnerUp = lowestCostOther(pool, winner, cost)
-	return winner, runnerUp, nearTieSize, path
-}
-
-// tieBreakPath names the deterministic branch that produced winner from the
-// near-tie pool: unique minimum, lowest effectiveQueue, or (queue tied with
-// another near-tie) lowest totalPending.
-func tieBreakPath(nearTies []*routingCandidate, winner *routingCandidate) SelectionPath {
-	if len(nearTies) <= 1 {
-		return SelectionUniqueMin
-	}
-	for _, c := range nearTies {
-		if c != winner && c.effectiveQueue == winner.effectiveQueue {
-			return SelectionTiePending
-		}
-	}
-	return SelectionTieQueue
-}
-
-// lowestCostOther returns the lowest-cost candidate in pool other than winner
-// (nil when the pool has no other candidate). One pass, no allocation.
-func lowestCostOther(pool []*routingCandidate, winner *routingCandidate, cost func(*routingCandidate) float64) *routingCandidate {
-	var other *routingCandidate
-	for _, c := range pool {
-		if c == winner {
-			continue
-		}
-		if other == nil || cost(c) < cost(other) {
-			other = c
-		}
-	}
-	return other
 }
 
 func providerMatchesAllowedSerial(p *Provider, allowed map[string]struct{}) bool {
@@ -1634,6 +1450,7 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 		"health_ms", bd.HealthMs,
 		"cache_tier", winner.cacheTier,
 		"cache_discount_ms", bd.CacheDiscountMs,
+		"cache_estimated_ttft_saved_ms", winner.cacheEstimatedTTFTSavedMs,
 		"effective_tps", winner.effectiveTPS,
 		"effective_queue", winner.effectiveQueue,
 		"candidates", candidates,
@@ -1967,13 +1784,8 @@ func backendFreeForLoadGB(bc *protocol.BackendCapacity) *float64 {
 // mirrors the provider's ADMIT gate, which deliberately charges the
 // disk×1.2 load-transient figure (shard staging exceeds steady residency).
 // Measured post-load residency (servabilityMeasuredResidentGiB) informs
-// only coldTokenBudgetEstimate — the POST-load arithmetic. binaryVersion
-// and modelID are accepted for parity with that estimate's selection and
-// for future load-peak measurements; today they are deliberately unused.
-func reportedFreeForLoadAdmits(
-	catalogSizeGB float64, freeForLoadGB *float64, binaryVersion, modelID string,
-) (admit bool, reported bool) {
-	_, _ = binaryVersion, modelID
+// only coldTokenBudgetEstimate — the POST-load arithmetic.
+func reportedFreeForLoadAdmits(catalogSizeGB float64, freeForLoadGB *float64) (admit bool, reported bool) {
 	if freeForLoadGB == nil || catalogSizeGB <= 0 {
 		return false, false
 	}
@@ -2082,7 +1894,7 @@ func freeMemoryAdmits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) 
 		// provider's padded-GiB load basis so it exactly mirrors the provider's own
 		// ModelLoadAdmission gate (no over-admit → OOM, no under-admit on evictable
 		// weights).
-		if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB, snap.binaryVersion, snap.model); reported {
+		if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB); reported {
 			return admit
 		}
 		// Fallback for legacy providers that don't report freeForLoadGB: the old
@@ -2274,6 +2086,8 @@ func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, n
 	// invariant (sum of terms == Total) holds. Returns 0 — and so leaves the cost
 	// byte-for-byte unchanged — for short prompts and when the knob is off.
 	prefillMs := float64(reqPrompt) / prefillTPS * 1000.0
+	c.pricedPromptTokens = reqPrompt
+	c.prefillCostMs = prefillMs + longPromptPenalty(reqPrompt, prefillMs)
 	ttftBlockMs := prefillMs
 	if !snap.modelLoaded {
 		// A cold provider must load before it can prefill; amplify its full

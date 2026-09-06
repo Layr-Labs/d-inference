@@ -1,0 +1,42 @@
+{
+  "base_lm": "28297d87d3811bd2b1f5f3c9fcef7abe6380960a",
+  "patch_sha256": "58b254460dec272b9d5e45d6471a71a2cf2b8063499e27a1e3d88ec96a0fc299",
+  "build_log": "/tmp/radix-aux-native-build.log",
+  "suites": [
+    {
+      "suite": "CBv2SchedulerAdmissionTests",
+      "xctest": 25,
+      "swift_testing": 0,
+      "log": "CBv2SchedulerAdmissionTests.txt.gz",
+      "sha256": "b2cbe2b84c22bd4d3f0204b808667dfb26e9631e426603b2824d15f28a761431"
+    },
+    {
+      "suite": "CBv2RecurrentStateTests",
+      "xctest": 15,
+      "swift_testing": 0,
+      "log": "CBv2RecurrentStateTests.txt.gz",
+      "sha256": "ae8b2740bbf88e1b56c41e2b8988285ba6d7c9218c3c4c65053fce072d57be98"
+    },
+    {
+      "suite": "CBv2QwenMTPIntegrationTests",
+      "xctest": 0,
+      "swift_testing": 29,
+      "log": "CBv2QwenMTPIntegrationTests.txt.gz",
+      "sha256": "238eb895a3def28d3e12d7ee1adef888f17c9fc90f626a379e9eb597853cf23b"
+    },
+    {
+      "suite": "CBv2FirstTokenDeadlineEngineTests",
+      "xctest": 16,
+      "swift_testing": 0,
+      "log": "CBv2FirstTokenDeadlineEngineTests.txt.gz",
+      "sha256": "b251c42e2d42cdcb2b3bbb2f64211fb8d3fd811ba86c41d9ef6aedede13e4e58"
+    },
+    {
+      "suite": "CBv2FrozenReplayPlanTests",
+      "xctest": 10,
+      "swift_testing": 0,
+      "log": "CBv2FrozenReplayPlanTests.txt.gz",
+      "sha256": "2637a98437a0ff293fc8d5f46f5861e17958697e88ebd73c203f964691d206cb"
+    }
+  ]
+}

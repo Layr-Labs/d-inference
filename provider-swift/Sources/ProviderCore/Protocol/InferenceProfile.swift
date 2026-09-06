@@ -509,6 +509,7 @@ public struct CapacityTelemetry: Codable, Sendable, Equatable {
     public var inAdmission: Int64?
     /// Detached inference tasks registered (`inflightTasks`).
     public var inflightTasks: Int64?
+    public var processMemory: ProcessMemoryTelemetry?
 
     enum CodingKeys: String, CodingKey {
         case lowPowerMode = "low_power_mode"
@@ -516,6 +517,7 @@ public struct CapacityTelemetry: Codable, Sendable, Equatable {
         case mlxNumResources = "mlx_num_resources"
         case inAdmission = "in_admission"
         case inflightTasks = "inflight_tasks"
+        case processMemory = "process_memory"
     }
 
     public init(
@@ -523,12 +525,14 @@ public struct CapacityTelemetry: Codable, Sendable, Equatable {
         memoryPressureLevel: MemoryPressureLevelWire? = nil,
         mlxNumResources: Int64? = nil,
         inAdmission: Int64? = nil,
-        inflightTasks: Int64? = nil
+        inflightTasks: Int64? = nil,
+        processMemory: ProcessMemoryTelemetry? = nil
     ) {
         self.lowPowerMode = lowPowerMode
         self.memoryPressureLevel = memoryPressureLevel
         self.mlxNumResources = mlxNumResources
         self.inAdmission = inAdmission
         self.inflightTasks = inflightTasks
+        self.processMemory = processMemory
     }
 }

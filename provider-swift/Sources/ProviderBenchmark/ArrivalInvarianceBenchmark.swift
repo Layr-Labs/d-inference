@@ -463,6 +463,7 @@ public enum ArrivalInvarianceBenchmark {
                 tokenizer: context.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: maxConcurrentRequests,
+                kvBudget: BenchmarkMemoryBudget.shared,
                 kvBackend: kvBackend
             )
             return EngineParts(

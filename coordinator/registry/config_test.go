@@ -93,7 +93,7 @@ func TestReadConfigWarmPoolCanBeDisabled(t *testing.T) {
 func TestCacheRoutingConfigFailsClosedUnlessOff(t *testing.T) {
 	base := CacheRoutingConfig{
 		ActivationPct: 100, TTL: 10 * time.Minute, MaxHolders: 4,
-		MaxDiscountMs: 1000, MaxCostFraction: .35,
+		MaxDiscountMs: f64(1000), MaxCostFraction: f64(.35),
 	}
 	base.Mode = CacheRoutingOff
 	if err := base.Check(); err != nil {
@@ -128,7 +128,7 @@ func TestReadConfigCacheRoutingDefaultsOff(t *testing.T) {
 	cfg := ReadConfig().CacheRouting
 	if cfg.Mode != "" || cfg.ActivationPct != 100 || cfg.MaxPlanQPS != 0 ||
 		cfg.TTL != 10*time.Minute || cfg.MaxHolders != 4 ||
-		cfg.MaxDiscountMs != 1000 || cfg.MaxCostFraction != .35 {
+		cfg.MaxDiscountMs != nil || cfg.MaxCostFraction != nil {
 		t.Fatalf("cache routing defaults = %+v", cfg)
 	}
 }
@@ -163,7 +163,7 @@ func TestReadConfigCacheRoutingRejectsMalformedActivationLimits(t *testing.T) {
 func TestCacheRoutingConfigRejectsNonFiniteDiscounts(t *testing.T) {
 	base := CacheRoutingConfig{
 		Mode: CacheRoutingOff, ActivationPct: 100, TTL: time.Minute, MaxHolders: 4,
-		MaxDiscountMs: 1000, MaxCostFraction: .35,
+		MaxDiscountMs: f64(1000), MaxCostFraction: f64(.35),
 	}
 	for _, tc := range []struct {
 		name       string
@@ -179,8 +179,8 @@ func TestCacheRoutingConfigRejectsNonFiniteDiscounts(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := base
-			cfg.MaxDiscountMs = tc.discountMs
-			cfg.MaxCostFraction = tc.fraction
+			cfg.MaxDiscountMs = f64(tc.discountMs)
+			cfg.MaxCostFraction = f64(tc.fraction)
 			if err := cfg.Check(); err == nil {
 				t.Fatalf("accepted non-finite cache routing config: %+v", cfg)
 			}
@@ -191,7 +191,7 @@ func TestCacheRoutingConfigRejectsNonFiniteDiscounts(t *testing.T) {
 func TestCacheRoutingConfigValidatesOperationalActivation(t *testing.T) {
 	base := CacheRoutingConfig{
 		Mode: CacheRoutingOff, ActivationPct: 100, TTL: time.Minute,
-		MaxHolders: 4, MaxDiscountMs: 1000, MaxCostFraction: .35,
+		MaxHolders: 4, MaxDiscountMs: f64(1000), MaxCostFraction: f64(.35),
 	}
 	for _, tc := range []struct {
 		name    string
@@ -227,7 +227,7 @@ func TestConfigureCacheRoutingRejectsExplicitZeroPercent(t *testing.T) {
 	err := reg.ConfigureCacheRouting(CacheRoutingConfig{
 		Mode: CacheRoutingOff, ActivationPct: 0,
 		TTL: time.Minute, MaxHolders: 4,
-		MaxDiscountMs: 1000, MaxCostFraction: .35,
+		MaxDiscountMs: f64(1000), MaxCostFraction: f64(.35),
 	})
 	if err == nil {
 		t.Fatal("ConfigureCacheRouting rewrote explicit zero percent instead of rejecting it")

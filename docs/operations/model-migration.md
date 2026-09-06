@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-09-05 · commit `4d9811f7c`
+> Last updated: 2026-09-06 · commit `32b28b0a7`
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever
@@ -69,7 +69,7 @@ the alias; the provider (`ProviderLoop+Prefetch.swift`) downloads and
 hash-verifies the desired build with no GPU load, then sends an authoritative
 `models_update` advertising the new build and dropping the old one; the
 coordinator logs `provider now advertises build (models_update)` and
-`models_update hard-swap: dropping retired build` (`coordinator/registry/registry.go`).
+`models_update hard-swap: dropping retired build` (`coordinator/registry/provider_models.go`).
 `Registry.ResolveModel` maps the alias to the desired build, falls back to
 `previous_build` until the desired one is routable, and otherwise queues
 against the desired build — capacity never black-holes. There are no weights,

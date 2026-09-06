@@ -1,0 +1,237 @@
+{
+  "schema_version": 1,
+  "scope": "Final renderer-v3 Rust validation and genuine Swift-Jinja oracle provenance; outputs duplicated in source goldens where tests consume them. Initial136/512 float parser failure retained. No model execution by this lane.",
+  "files": {
+    "../rust-renderer-v3-final-depth-source-manifest.json": {
+      "sha256": "5c0b71dc11f381e0a0f488dc7cf664b3bea02a52e36e6124d67a3117b558a870",
+      "bytes": 6355,
+      "uncompressed_sha256": "5c0b71dc11f381e0a0f488dc7cf664b3bea02a52e36e6124d67a3117b558a870",
+      "uncompressed_bytes": 6355
+    },
+    "../rust-renderer-v3-final-verification.json": {
+      "sha256": "7a913f6959ee313e80b93b1c963ff232e01bdcb5b6e302557cd0b24390cace76",
+      "bytes": 1842,
+      "uncompressed_sha256": "7a913f6959ee313e80b93b1c963ff232e01bdcb5b6e302557cd0b24390cace76",
+      "uncompressed_bytes": 1842
+    },
+    "../rust-rust-v3-final-depth-all.log.gz": {
+      "sha256": "d1dff6050e578b1f399882c3d622681abf24786fdc6f7de8decfd3877a987949",
+      "bytes": 2923,
+      "uncompressed_sha256": "414fff5a457d82bfa9d300c7314cbb4eb1548954e7facdc826b402d1a870984b",
+      "uncompressed_bytes": 9785
+    },
+    "../rust-rust-v3-final-depth-clippy.log.gz": {
+      "sha256": "b56b9da2b5d55b4796484109b0418681e1e3c23649ef8f8b8e35c06342265a2f",
+      "bytes": 171,
+      "uncompressed_sha256": "cbf17ea82e1f109332df5ec3900037af7097c87c17fd8144d9c50732676347d7",
+      "uncompressed_bytes": 196
+    },
+    "../rust-rust-v3-final-depth-generator-build.log.gz": {
+      "sha256": "df8923deb20b518e11c772b98286ce59f9cdb1e89ef3ad41a9e53494c2fbabd6",
+      "bytes": 171,
+      "uncompressed_sha256": "44e79240a38ec73b463ea2852031162ebf6733625591fc6be16187680b05a717",
+      "uncompressed_bytes": 196
+    },
+    "../rust-rust-v3-final-depth-common-generator.log.gz": {
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "bytes": 20,
+      "uncompressed_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0
+    },
+    "../rust-rust-v3-final-release-build.log.gz": {
+      "sha256": "21b98070a844a52401d5517195f0d0ae3a430bd54f43d65291fc7d865fed8d0c",
+      "bytes": 1292,
+      "uncompressed_sha256": "a35829fa93e3091f347262cc209ab177357e29ea36444a386e33abd1682c0c04",
+      "uncompressed_bytes": 4057
+    },
+    "../rust-floatparse.log.gz": {
+      "sha256": "dfea83a5d640c0aaf0a15ffa3377f4e8cc2baae29ddf52417e31888ed7584f7c",
+      "bytes": 303,
+      "uncompressed_sha256": "b83c92aea79ab90280f9d9f25da7ef690ab4e191bba235ac4b70656df63fa0c2",
+      "uncompressed_bytes": 575
+    },
+    "../rust-floatparse.rs": {
+      "sha256": "55c393807a0e3c2dd52a759aa90dfa8c92999986742b716c1ee473d6f233337e",
+      "bytes": 629,
+      "uncompressed_sha256": "55c393807a0e3c2dd52a759aa90dfa8c92999986742b716c1ee473d6f233337e",
+      "uncompressed_bytes": 629
+    },
+    "../json-104-main.swift.gz": {
+      "sha256": "55ff1db16890906aa297e5a2c7eb639b67aadbc41430133a49586402d7d10981",
+      "bytes": 948,
+      "uncompressed_sha256": "96853aea8fb3092bf23e18dc4081ba52fc27e0443053a78b5b7a1be1c6a254cf",
+      "uncompressed_bytes": 2481
+    },
+    "../json-104-manifest.json.gz": {
+      "sha256": "a1efbf033b7c96fa8d0200b6632bfebbd72d383a7e3dab949bb4c57e90146728",
+      "bytes": 1134,
+      "uncompressed_sha256": "de353e357cfefbd57b5d50455da6201dfd71d831774f48485dd5d944794ba0e5",
+      "uncompressed_bytes": 2093
+    },
+    "../json-104-output.json.gz": {
+      "sha256": "8fbae13680666f09d44fe684766f478f522ccc15b551d25c7c234008d0b0bf3e",
+      "bytes": 1741,
+      "uncompressed_sha256": "ef05fde3be627726b7e117b2b4255052b092cfbf16fbece116317c6820e61276",
+      "uncompressed_bytes": 21235
+    },
+    "../json-edge-530-main.swift.gz": {
+      "sha256": "8aca4cc36152427c87d6951580fdd367540292013a6de880bd6287aff4505fee",
+      "bytes": 847,
+      "uncompressed_sha256": "bee129396b95eb30fe8e039057ad7562f734654e31b08a6fd56f2745c2401dd6",
+      "uncompressed_bytes": 1715
+    },
+    "../json-edge-530-manifest-keys.json.gz": {
+      "sha256": "81738fe12a63779225deea2ee938c09201395d45a2e21f3bca6af2c6bf657f8a",
+      "bytes": 1131,
+      "uncompressed_sha256": "33b7d56d5034ee542b60c0319960a04a72b83f6da5cb885562140ed11a899cda",
+      "uncompressed_bytes": 2111
+    },
+    "../json-edge-530-output-keys.json.gz": {
+      "sha256": "b1827ddc0c882b37d56bb6d6bc87d0ccfb7ef66986481f0bd7870a848f5a677e",
+      "bytes": 15134,
+      "uncompressed_sha256": "20da6f35de900b5280948090e35ff670bb0a2c8d140df2ddcffc0e7d5c4dabb7",
+      "uncompressed_bytes": 78119
+    },
+    "../raw-bridge-before-main.swift.gz": {
+      "sha256": "db4ee3b4ab885c678bac064a2b30e5a9fee14a11fcfe0ba5ebfd885ab8376489",
+      "bytes": 1352,
+      "uncompressed_sha256": "a934c86dedc123361027f4b43a19383e1c8001e057a07cb9975923aaa94a7b64",
+      "uncompressed_bytes": 3420
+    },
+    "../raw-bridge-before-manifest.json.gz": {
+      "sha256": "a53efdb42ac269aef468c5dc566ae136e1fd9506d8b340b2de2e62ffc3cdb051",
+      "bytes": 1649,
+      "uncompressed_sha256": "38ff95fe8641f7cc5c04c674b100f06824c58b940e81a6d2c090fb803b55ecc0",
+      "uncompressed_bytes": 15290
+    },
+    "../raw-bridge-before-output.json.gz": {
+      "sha256": "623088d5372888576548c7fda92dbe47a0446e4b6ae02b735cc94826f347eb3f",
+      "bytes": 1614,
+      "uncompressed_sha256": "dfaf524b3b43dc596071467fac2e6956789308dcb835cb2383d1622311ff58e3",
+      "uncompressed_bytes": 19999
+    },
+    "../raw-bridge-after-manifest.json.gz": {
+      "sha256": "08116119c5cc0d46fe18052544f11c0c4357fe496abc682776e10169c8f365ef",
+      "bytes": 1946,
+      "uncompressed_sha256": "3cb31fcd1f0d4c2cd87f7cc8b8fde611d6f2818c06602befed64b6f3aadf93b1",
+      "uncompressed_bytes": 16293
+    },
+    "../raw-bridge-after-output.json.gz": {
+      "sha256": "6b5c67c355b73d96416164d8b325daa6a7ab4a5594735b0698c5d2658d28c7a2",
+      "bytes": 1643,
+      "uncompressed_sha256": "628ecd501fa0179ca82b9059bcbfab14999d1367a2d00edba3dd605273e39f25",
+      "uncompressed_bytes": 19993
+    },
+    "../explicit-none-oracle-output.json.gz": {
+      "sha256": "4529db8148657da9cbebfa941e4f335e7cf19e114d6a2641f1e9c08b40aa2844",
+      "bytes": 198,
+      "uncompressed_sha256": "680091c55d375b5e3b3b8251a04b2e1feaefa022f227ea76281420b8f4329f17",
+      "uncompressed_bytes": 422
+    },
+    "review.txt": {
+      "sha256": "aff43bd63c716553496639a30d216cb616738d07011e6edd1b8ad03c2566d116",
+      "bytes": 3468,
+      "uncompressed_sha256": "aff43bd63c716553496639a30d216cb616738d07011e6edd1b8ad03c2566d116",
+      "uncompressed_bytes": 3468
+    }
+  },
+  "inputs": {
+    "source-manifest.json": {
+      "path": "../rust-renderer-v3-final-depth-source-manifest.json",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/renderer-v3-final-depth-source-manifest.json"
+    },
+    "verification.json": {
+      "path": "../rust-renderer-v3-final-verification.json",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/renderer-v3-final-verification.json"
+    },
+    "review.md": {
+      "path": "review.txt",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/renderer-v3-review.md"
+    },
+    "rust-v3-final-depth-all.log.gz": {
+      "path": "../rust-rust-v3-final-depth-all.log.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/rust-v3-final-depth-all.log"
+    },
+    "rust-v3-final-depth-clippy.log.gz": {
+      "path": "../rust-rust-v3-final-depth-clippy.log.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/rust-v3-final-depth-clippy.log"
+    },
+    "rust-v3-final-depth-generator-build.log.gz": {
+      "path": "../rust-rust-v3-final-depth-generator-build.log.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/rust-v3-final-depth-generator-build.log"
+    },
+    "rust-v3-final-depth-common-generator.log.gz": {
+      "path": "../rust-rust-v3-final-depth-common-generator.log.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/rust-v3-final-depth-common-generator.log"
+    },
+    "rust-v3-final-depth-original-generator.log.gz": {
+      "path": "../rust-rust-v3-final-depth-common-generator.log.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/rust-v3-final-depth-original-generator.log"
+    },
+    "rust-v3-final-release-build.log.gz": {
+      "path": "../rust-rust-v3-final-release-build.log.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/rust-v3-final-release-build.log"
+    },
+    "floatparse.log.gz": {
+      "path": "../rust-floatparse.log.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/floatparse.log"
+    },
+    "floatparse.rs.gz": {
+      "path": "../rust-floatparse.rs",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/floatparse.rs"
+    },
+    "oracles/json236/main.swift.gz": {
+      "path": "../json-104-main.swift.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/json236/main.swift"
+    },
+    "oracles/json236/manifest.json.gz": {
+      "path": "../json-104-manifest.json.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/json236/manifest.json"
+    },
+    "oracles/json236/output.json.gz": {
+      "path": "../json-104-output.json.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/json236/output.json"
+    },
+    "oracles/edge236/main.swift.gz": {
+      "path": "../json-edge-530-main.swift.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/edge236/main.swift"
+    },
+    "oracles/edge236/manifest-keys.json.gz": {
+      "path": "../json-edge-530-manifest-keys.json.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/edge236/manifest-keys.json"
+    },
+    "oracles/edge236/output-keys.json.gz": {
+      "path": "../json-edge-530-output-keys.json.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/edge236/output-keys.json"
+    },
+    "oracles/rawbridge236/main.swift.gz": {
+      "path": "../raw-bridge-before-main.swift.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236/main.swift"
+    },
+    "oracles/rawbridge236/manifest.json.gz": {
+      "path": "../raw-bridge-before-manifest.json.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236/manifest.json"
+    },
+    "oracles/rawbridge236/output.json.gz": {
+      "path": "../raw-bridge-before-output.json.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236/output.json"
+    },
+    "oracles/rawbridge236-fixed/main.swift.gz": {
+      "path": "../raw-bridge-before-main.swift.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236-fixed/main.swift"
+    },
+    "oracles/rawbridge236-fixed/manifest.json.gz": {
+      "path": "../raw-bridge-after-manifest.json.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236-fixed/manifest.json"
+    },
+    "oracles/rawbridge236-fixed/output.json.gz": {
+      "path": "../raw-bridge-after-output.json.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236-fixed/output.json"
+    },
+    "oracles/template236/output.json.gz": {
+      "path": "../explicit-none-oracle-output.json.gz",
+      "original_source": "/tmp/darkbloom-090-qwen-jinja-probe/template236/output.json"
+    }
+  },
+  "deduplication": "Raw-identical payloads reference existing root/API evidence via parent-relative paths; original duplicate bytes retained outside repository."
+}

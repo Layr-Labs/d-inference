@@ -206,7 +206,7 @@ func BuildProviderTOML(cfg ProviderConfig, providerIndex int) (string, error) {
 	}
 
 	var b strings.Builder
-	b.WriteString(testbedConfigMarker + "\n")
+	b.WriteString(testbedConfigMarker + "\nconfig_version = 3\n")
 	b.WriteString("[provider]\n")
 	fmt.Fprintf(&b, "name = \"darkbloom-testbed-%d\"\n", providerIndex)
 	b.WriteString("auto_update = false\n")
@@ -220,6 +220,12 @@ func BuildProviderTOML(cfg ProviderConfig, providerIndex int) (string, error) {
 	}
 	if cfg.MTPDrafterPath != "" {
 		fmt.Fprintf(&b, "mtp_drafter_path = %q\n", cfg.MTPDrafterPath)
+	}
+	if cfg.MTPMode != "" {
+		if cfg.MTPMode != "on" && cfg.MTPMode != "off" {
+			return "", fmt.Errorf("invalid explicit MTP mode %q", cfg.MTPMode)
+		}
+		fmt.Fprintf(&b, "mtp_mode = %q\n", cfg.MTPMode)
 	}
 	return b.String(), nil
 }

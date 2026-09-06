@@ -14,6 +14,7 @@ jobs:
       - name: Check source, fallback, and installer parity
         run: |
           ./scripts/check-release-version.sh
+          python3 scripts/test-provider-release-resolution.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
 
@@ -174,9 +175,9 @@ jobs:
           )
       - name: Run Swift tests
         working-directory: provider-swift
-        # NOTE: do NOT pass --build-tests-relinking flags; the bundle is already
-        # built above, so `swift test` reuses it (and our colocated metallib).
-        run: swift test
+        # Reuse the built bundle and matched metallib. The exact allocator
+        # suite runs in its own process even if the general suite fails.
+        run: ../scripts/run-provider-tests.sh
       - name: Verify production prompt parity
         run: ./scripts/verify-prompt-parity.sh
       # FLAKE-ORDERING GUARD (audit fix, v0.8.0): every nested step below runs

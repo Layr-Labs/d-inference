@@ -1,13 +1,14 @@
 package registry
 
 // PrefixCacheProtocolStatus is an aggregate, identity-free view of connected
-// provider cache capability. V2ReadyModels counts advertised ready
-// provider/model pairs, not unique models.
+// provider cache capability. Ready counts are advertised provider/model pairs,
+// not unique models. V2ReadyModels preserves the durable SSD meaning.
 type PrefixCacheProtocolStatus struct {
 	V0                     int            `json:"v0"`
 	V1                     int            `json:"v1"`
 	V2                     int            `json:"v2"`
 	V2ReadyModels          int            `json:"v2_ready_models"`
+	MemoryReadyModels      int            `json:"memory_ready_models"`
 	LoadedModels           int            `json:"loaded_models"`
 	ReportedLoadedModels   int            `json:"reported_loaded_models"`
 	UnreportedLoadedModels int            `json:"unreported_loaded_models"`
@@ -41,6 +42,11 @@ func (r *Registry) PrefixCacheProtocolStatus() PrefixCacheProtocolStatus {
 			for _, capability := range provider.PrefixCacheV2Models {
 				if capability.Enabled && capability.Ready {
 					status.V2ReadyModels++
+				}
+			}
+			for _, capability := range provider.PrefixCacheMemoryModels {
+				if capability.Enabled && capability.Ready {
+					status.MemoryReadyModels++
 				}
 			}
 		}

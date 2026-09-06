@@ -423,7 +423,7 @@ func TestSoloResolverChipClassKeying(t *testing.T) {
 }
 
 // TestSoloClassKeyingEndToEndNoCrossTierOverCap drives the REAL heartbeat
-// ingest so both the ingest key (registry.go) and the resolver key
+// ingest so both the ingest key (heartbeat.go) and the resolver key
 // (concurrency_cap.go) are exercised: two same-family boxes of different tiers
 // (M4 Max fast, M4 Pro slow) serving gemma solo. With chip-CLASS keying the
 // slow box's cap comes from its OWN 14 tok/s (→ cap 2) while the fast box keeps

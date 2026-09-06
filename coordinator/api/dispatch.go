@@ -654,20 +654,6 @@ func (d *dispatchState) errorRoutingOutcomeFor(pr *registry.PendingRequest, stat
 	return out
 }
 
-func (d *dispatchState) recordProviderBodyTooLargeRoute(
-	provider *registry.Provider,
-	pr *registry.PendingRequest,
-	decision registry.RoutingDecision,
-) {
-	if provider == nil || pr == nil {
-		return
-	}
-	d.recordRoutingDecisionFor(
-		provider, pr, pr.RequestID, pr.Attempt, decision, "", "")
-	d.s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(
-		pr, errorClassClientError, http.StatusRequestEntityTooLarge))
-}
-
 func routeOutcomeUsesProviderErrorText(class string) bool {
 	class = strings.ToLower(strings.TrimSpace(class))
 	return class == errorReasonProviderError ||

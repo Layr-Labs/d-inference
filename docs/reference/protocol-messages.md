@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-04 · commit `aa87a0ebd`
+> Last updated: 2026-09-05 · commit `055a76364`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -81,6 +81,7 @@ connection, first.
 | `private_only` | `bool` | `Bool` | opt | owner self-route only; Swift encodes only when `true` |
 | `prefix_cache_protocol` | `int` | `Int?` | opt | Swift omits nil/0 |
 | `prefix_cache_v2_models` | `[]PrefixCacheV2Capability` | `[PrefixCacheV2Capability]?` | opt | [prefix-cache objects](#prefix-cache-objects) |
+| `prefix_cache_memory_models` | `[]PrefixCacheV2Capability` | `[PrefixCacheV2Capability]?` | opt | additive resident-slot capabilities; independent epoch and no SSD durability claim; older coordinators ignore it |
 | `prefix_cache_statuses` | `*[]PrefixCacheModelStatus` | `[PrefixCacheModelStatus]?` | ptr | omitted (legacy provider) ≠ `[]` (authoritative empty set) |
 | `prefix_cache_donation_outcomes` | `*[]PrefixCacheDonationOutcomeCount` | `[PrefixCacheDonationOutcomeCount]?` | ptr | same pointer rule |
 | `tool_constraint_protocol` | `int` | `Int?` | opt | forced-tool grammar protocol version; Swift omits nil/0 |
@@ -135,7 +136,7 @@ booleans: `text_backend_inprocess`, `text_proxy_disabled`,
 
 | Object | Fields |
 |---|---|
-| `PrefixCacheV2Capability` | `model_id`, `model_aggregate_hash`, `prompt_contract_id`, `block_hash_version` (`string`); `block_size` (`uint32`); `cache_epoch` (`string`); `enabled`, `ready` (`bool`). All required |
+| `PrefixCacheV2Capability` | Required: `model_id`, `model_aggregate_hash`, `prompt_contract_id`, `block_hash_version` (`string`); `block_size` (`uint32`); `cache_epoch` (`string`); `enabled`, `ready` (`bool`). Optional `ready_boundary_mode` (`string`): absent/empty retains legacy SSD coverage; `checkpoint` permits only explicitly committed input endpoints. Unknown values are rejected; the field is invalid on resident capabilities. `coordinator/registry/cache_capabilities_v2.go`, `validatePrefixCacheCapability` / `validateMemoryPrefixCacheCapabilities` |
 | `PrefixCacheModelStatus` | `model_id`; `backend` ∈ {`contiguous`, `paged`, `unknown`}; `replay_strategy` ∈ {`direct`, `frozen_full`, `tail_replay`, `none`, `unknown`}; `state` ∈ {`ready`, `pending`, `disabled`, `error`}; `reason` ∈ {`ready`, `config_disabled`, `weight_hash_unavailable`, `runtime_identity_unavailable`, `unsupported_layout`, `unsupported_backend`, `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`, `disk_unavailable`, `cache_init_failed`}. Enums validated at the coordinator boundary; Swift `PrefixCacheStatusBackend` / `ReplayStrategy` / `State` / `Reason` (`Messages.swift`) |
 | `PrefixCacheDonationOutcomeCount` | `outcome` ∈ {`donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot` (pre-0.8.0 compat), `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`}; `count` (`uint64`, monotonic per process) |
 | `PrefixCacheAnchor` | `chain_hash` (lowercase SHA-256 hex), `token_count` (block-aligned `int`) |
@@ -144,7 +145,7 @@ booleans: `text_backend_inprocess`, `text_proxy_disabled`,
 
 Go `HeartbeatMessage` · Swift `ProviderMessage.Heartbeat`. Built by
 `buildHeartbeatJSON` (`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift`);
-consumed by `Registry.Heartbeat` (`coordinator/registry/registry.go`). The
+consumed by `Registry.Heartbeat` (`coordinator/registry/heartbeat.go`). The
 default cadence is the `heartbeat_interval_secs` row of
 [`cli-reference.md` → `provider.toml` keys](../provider/cli-reference.md#providertoml-keys-read-by-the-cli);
 the liveness timeout and what happens when heartbeats stop (stale → evicted,
@@ -162,6 +163,7 @@ the sinks of each field are in [`telemetry-inventory.md`](telemetry-inventory.md
 | `backend_capacity` | `*BackendCapacity` | `BackendCapacity?` | opt | nil on old providers; [`backend_capacity`](#backend_capacity) |
 | `prefix_cache_protocol` | `int` | `Int?` | opt | Swift omits nil/0 |
 | `prefix_cache_v2_models` | `*[]PrefixCacheV2Capability` | `[…]?` | ptr | omitted (old provider) vs authoritative `[]` (v2 provider clearing its live set) |
+| `prefix_cache_memory_models` | `*[]PrefixCacheV2Capability` | `[…]?` | ptr | omitted preserves resident inventory; `[]` clears it; protocol downgrade clears it; `UpdatePrefixCacheSnapshot`, `coordinator/registry/cache_snapshot.go` |
 | `prefix_cache_statuses`, `prefix_cache_donation_outcomes` | `*[]…` | `[…]?` | ptr | same pointer rule |
 | `apns_device_token`, `apns_environment` | `string` | `String?` | opt | late or rotated APNs token so the coordinator can re-arm a code challenge without a reconnect; the token alone never grants `CodeAttested` |
 
@@ -191,6 +193,7 @@ and how the scheduler reads them: [`../architecture/scheduling.md`](../architect
 | `mlx_cache_reclaimer` | `*MLXCacheReclaimerTelemetry` | `MLXCacheReclaimerTelemetry?` | opt | cumulative allocator-reclaim counters (`uint64`, reset on restart): `cache_limit_bytes`, `sweep_signals`, `reclaims`, `reclaimed_bytes`, `last_reclaimed_bytes`, `last_reclaim_duration_ms` |
 | `capacity_seq` | `uint64` | `UInt64` | opt | per-connection monotonic snapshot sequence; the coordinator discards stale or reordered snapshots, and any `seq > 0` marks the connection quote-capable (`capacity_probe`). 0/omitted = legacy last-write-wins |
 | `telemetry` | `*CapacityTelemetry` | `CapacityTelemetry?` | opt | [`backend_capacity.telemetry`](#backend_capacitytelemetry) |
+| `prefix_cache_maintenance` | `*PrefixCacheMaintenanceTelemetry` | `PrefixCacheMaintenanceTelemetry?` | opt | Process-lifetime whole-root removal counters: `ttl_expired_total`, `budget_evicted_total`, `temp_removed_total`; includes unloaded models, separate from active-store evictions |
 
 #### `slots[]`
 
@@ -219,6 +222,86 @@ routing on them.
 | `wedge_suspected` | `bool` | `Bool` | opt | provider-computed: ≥ N consecutive admits, 0 first tokens, ≥ T s |
 | `eval_in_flight_ms`, `idle_clear_in_flight_ms` | `int64` | `Int64` | opt | ms the current blocking eval / idle clear has run. `eval_in_flight_ms` comes from `EvalProbe.currentEvalElapsedMs`; `idle_clear_in_flight_ms` is never set by v0.8.16 |
 | `telemetry` | `*SlotTelemetry` | `SlotTelemetry?` | opt | [`slots[].telemetry`](#slotstelemetry); **presence is the "profiler-aware provider" sentinel** — omission ≠ empty object |
+| `prefix_cache` | `*PrefixCacheTelemetry` | `PrefixCacheTelemetry?` | opt | [Durable cache observation](#slotsprefix_cache); no store or disabled stats tick means absent |
+| `paged_storage` | `*PagedStorageTelemetry` | `PagedStorageTelemetry?` | opt | [Paged storage observation](#slotspaged_storage); absent means uninstrumented, never zero ownership |
+
+#### `slots[].prefix_cache`
+
+Optional `PrefixCacheTelemetry` (`coordinator/protocol/prefix_cache_telemetry.go`,
+`provider-swift/Sources/ProviderCore/Protocol/PrefixCacheTelemetry.swift`). Absence
+means uninstrumented; all numbers are unsigned 64-bit integers. The console
+mirror is `PrefixCacheTelemetry` in `console-ui/src/app/providers/types.ts`.
+These heartbeat-only additions do not change canonical registration signatures.
+
+| JSON fields | Meaning |
+|---|---|
+| `kind` | Closed `attention_blocks` or `complete_checkpoint` |
+| `generation`, `sample_seq`, `sample_age_ms` | Loaded-cache generation, observation sequence, monotonic observation age; generation/sequence must be positive. Only the stats tick increments `sample_seq`; every capacity refresh advances age |
+| `entries`, `disk_bytes`, `staging_bytes` | Current index entries, indexed on-disk bytes, live staging bytes at the observation |
+| `stages_total`, `files_written_total`, `written_bytes_total` | Store-lifetime successful stages, writes and bytes; attention writes include sidecars |
+| `donation_drops_total`, `corrupt_drops_total`, `evictions_total` | Existing store drop counters and active-store disk-budget removals. For complete checkpoints, `donation_drops_total` is queued-write `writesDropped`; prequeue refusals appear only in the separate donation outcome snapshot, which classifies every exported endpoint attempt |
+| `ttl_expired_total` | Optional attention-store TTL removal counter; whole-root TTL maintenance uses the process counters above |
+| `io` | Optional complete-store `PrefixCacheIOTelemetry`; absent for attention stores whose read/duration counters are not instrumented |
+| `io.staging_peak_bytes` | Peak charged staging reservation over this store's lifetime |
+| `io.files_read_total`, `read_bytes_total`, `stage_read_bytes_total`, `donation_read_bytes_total` | Store-lifetime read attempts/bytes, with stage and donor-authentication byte components |
+| `io.stage_us_total`, `write_us_total` | Cumulative wall time in microseconds; stage includes refused attempts, write includes donor authentication and maintenance. These are not latency samples |
+
+`clampPrefixCacheTelemetry` (`coordinator/registry/prefix_cache_telemetry.go`)
+and `reconcileCapacitySamples` (`coordinator/registry/capacity_sample_freshness.go`)
+drop unknown kinds/zero sequence,
+cap entries at `1 << 32`, gauge bytes at `1 << 50` and other measurements at
+`1 << 60`, and prevent repeated/reordered observations rolling back a live
+baseline. Samples older than `capacitySampleFreshMS = 5 * 60 * 1000`
+remain visible with age but do not produce current gauges or counter deltas
+(`coordinator/api/provider_prefix_cache_telemetry.go`). None of these values
+change routing or memory admission.
+
+#### `slots[].paged_storage`
+
+Optional `PagedStorageTelemetry` (`coordinator/protocol/paged_storage_telemetry.go`),
+mirrored in `provider-swift/Sources/ProviderCore/Protocol/PagedStorageTelemetry.swift`
+and `console-ui/src/app/providers/types.ts`. `PagedStorageTelemetryAdapter` reads
+the immutable native queue capture through `EngineV2Bridge.backendSlotCapacity`. The object is observational, outside canonical registration signature
+inputs. Older peers can omit or ignore it. All numeric fields are unsigned
+64-bit integers; the optional fields distinguish missing instrumentation from
+an observed zero.
+
+| JSON fields | Meaning in `PagedStorageTelemetry` |
+|---|---|
+| `kind` | Closed value `segmented`; other values are dropped |
+| `generation`, `sample_seq`, `sample_age_ms` | Pool generation, actual capture sequence, and monotonic capture age in milliseconds. Generation and sequence must be positive; a heartbeat must not create a new capture |
+| `grant_bytes`, `committed_bytes` | Pool grant and actual allocated native segment bytes at capture time |
+| `reserved_page_bytes`, `live_page_bytes` | Worst-case page bytes promised to admitted requests, window-capped where applicable; pages with live references. These overlap committed ownership and must not be added to it |
+| `poison_bytes`, `slack_bytes`, `over_grant_bytes` | Segment guard-page ownership; usable logical slack `max(committed − allocator_padding − poison − reserved_page, 0)`; `max(committed − grant, 0)` |
+| `allocator_padding_bytes` | Optional retained allocator bytes beyond logical segment storage. These bytes cannot hold KV pages and are excluded from slack |
+| `last_allocation_allowance_bytes` | Optional unused conservative allowance released after the latest successful preparation. This is a last-operation gauge, not retained memory or a cumulative counter |
+| `segment_count`, `address_pages` | Segment and logical address-page counts |
+| `nominal_kv_bytes`, `physical_floor_overhead_bytes` | Optional Admission nominal KV accounting, including safely detached retiring owners; `max(physical_floor − nominal_kv, 0)`. These overlap other ownership gauges |
+| `allocation_failures_total`, `admission_refusals_total` | Optional cumulative native preparation/evaluation failures and preallocation physical-floor ledger refusals, respectively |
+| `grant_refusals_total`, `grant_epoch_retries_total` | Optional cumulative grant-policy refusals and discarded preparations after grant-epoch changes |
+
+`PagedKVPool.segmentStorageSnapshot` assigns the pool UUID, sequence and
+monotonic capture time. The provider maps pool UUIDs to positive numeric
+generations below `1 << 53`; it does not send UUID metric labels. Repeated or
+regressed captures retain their values and age from their original capture.
+Off-queue grant changes update the separate slot capacity fields immediately
+and leave the entire `paged_storage` observation unchanged until a queue capture.
+Missing instrumentation is omitted; it does not manufacture zero ownership.
+
+`clampPagedStorageTelemetry` (`coordinator/registry/paged_storage_telemetry.go`)
+caps byte gauges at `1 << 50`, segment/address counts at `1 << 32`, and age and
+counters at `1 << 60`. `reconcileCapacitySamples` uses the same freshness policy
+as prefix-cache observations: repeated or regressed sequences retain the old
+sample and advance its age by coordinator elapsed time. Missing samples clear
+the baseline; a changed generation seeds a new one. No unbounded pool history
+is retained. `reconcileCapacitySamplesLocked` keeps a separate accepted-sample
+clock: rejected capacity frames update liveness without resetting sample age.
+`recordPagedStorageTelemetry`
+(`coordinator/api/provider_paged_storage_telemetry.go`) emits age/freshness even
+for repeated samples, but emits ownership gauges and positive counter deltas
+only for new samples within the existing five-minute freshness limit. The
+first observation, reload, missing optional counter, or decreasing counter
+contributes no delta. These values do not affect routing or admission.
 
 #### `slots[].telemetry`
 
@@ -253,6 +336,35 @@ Go `CapacityTelemetry` · Swift `CapacityTelemetry`. Same presence rules as
 | `mlx_num_resources` | `*int64` | live MLX buffers |
 | `in_admission` | `*int64` | requests accepted but not finished |
 | `inflight_tasks` | `*int64` | detached inference tasks |
+| `process_memory` | `*ProcessMemoryTelemetry` | Optional coherent process admission observation; absence differs from measured zero |
+
+#### `backend_capacity.telemetry.process_memory`
+
+Go `ProcessMemoryTelemetry` (`coordinator/protocol/process_memory_telemetry.go`)
+and the Swift/TypeScript mirrors report the same scalar snapshot. This object
+is diagnostic and does not authorize admission, routing, or prefix reuse.
+
+| JSON keys | Type | Meaning |
+|---|---|---|
+| `generation`, `sample_seq` | `uint64` | Nonzero JavaScript-exact producer identity and actual capture sequence |
+| `sample_age_ms` | `uint64` | Elapsed monotonic age; another heartbeat preserves the capture sequence |
+| `policy_epoch` | `uint64` | Process ledger policy revision at capture |
+| `cap_bytes`, `activation_reserve_bytes` | `uint64` | Capacity policy and activation allowance |
+| `active_bytes`, `cache_bytes` | `uint64` | One coherent MLX allocator observation; their sum is U |
+| `charged_bytes`, `materialized_bytes`, `unmaterialized_bytes` | `uint64` | C, covered backing M, and C−M; admission projects U+(C−M) |
+| `remaining_bytes`, `commitment_debt_bytes` | `uint64` | Available runtime capacity or existing commitment debt under that policy |
+| `owner_count`, `closing_owner_count` | `uint64` | Live ledger owners and the subset retiring existing resources |
+| `system_available_bytes` | `*uint64` | Optional OS free-memory observation; omitted when unavailable |
+
+`validProcessMemoryTelemetry` (`coordinator/registry/process_memory_telemetry.go`)
+discards inconsistent ownership identities and oversized samples instead of
+clamping C and M independently. `reconcileCapacitySamples`
+(`coordinator/registry/capacity_sample_freshness.go`) retains and ages repeated
+or regressed samples within a generation, including providers with no loaded
+slots. Only accepted capacity replacements advance the reconciliation clock.
+New fresh captures emit gauges; repeated or stale captures emit only age and
+freshness (`coordinator/api/provider_process_memory_telemetry.go`,
+`recordProcessMemoryTelemetry`).
 
 ### `inference_accepted`
 
@@ -377,7 +489,11 @@ Go `PrefixCacheReadyMessage` · Swift `PrefixCacheReady`. May arrive after
 
 ### `prefix_cache_lookup_v2`
 
-Go `PrefixCacheLookupV2Message` · Swift `PrefixCacheLookupV2`.
+Go `PrefixCacheLookupV2Message` · Swift `PrefixCacheLookupV2`. Accepted only
+for `tier = ssd` or `memory` with that tier's separately advertised capability.
+Both require the exact nonce-bound prompt proof; memory cannot borrow an SSD
+lookup or sequence. Acceptance: `applyLookupV2Result`,
+`coordinator/registry/cache_receipts_v2.go`.
 
 | JSON key | Go | Presence |
 |---|---|---|
@@ -392,8 +508,22 @@ Go `PrefixCacheLookupV2Message` · Swift `PrefixCacheLookupV2`.
 
 ### `prefix_cache_ready_v2`
 
-Go `PrefixCacheReadyV2Message` · Swift `PrefixCacheReadyV2`. Emitted only after
-durable SSD settlement.
+Go `PrefixCacheReadyV2Message` · Swift `PrefixCacheReadyV2`. SSD requires durable
+settlement. Without `ready_boundary_mode`, the first SSD anchor must be the
+input-prompt floor. With `ready_boundary_mode=checkpoint`, only supplied committed
+input checkpoints are accepted, with zero recompute and positive `stage_ms`.
+Memory requires a published resident checkpoint and its own live
+capability. Every explicit checkpoint must match an input boundary in the nonce-bound
+coordinator plan; a shorter actual checkpoint is valid even when the longest
+prompt boundary is not reusable. Acceptance: `applyReadyV2Result`,
+`coordinator/registry/cache_receipts_v2.go`.
+
+For a complete-checkpoint slot, a pre-v2 coordinator's legacy attempt is settled
+with `skipped_policy`; no count-only HIT/READY is emitted. Protocol v2 without
+the matching echo emits no checkpoint receipt. Local cache reuse and normal
+inference responses continue in both cases (`ProviderLoop+InferenceHandler.swift`,
+`PrefixCacheReceiptEmitter.suppressLegacyCheckpointReceipts`,
+`PrefixCacheEvidenceSequencer.callbacks`).
 
 | JSON key | Go | Presence |
 |---|---|---|
@@ -401,9 +531,17 @@ durable SSD settlement.
 | `cache_seq` | `uint64` | req |
 | `outcome` | `string` | req (Swift default `"ready"`) |
 | `tier` | `string` | req |
-| `ready_anchors` | `[]PrefixCacheAnchor` | req; Swift caps at 2 (prompt anchor + final continuation) |
+| `ready_anchors` | `[]PrefixCacheAnchor` | req; legacy SSD caps at 2 (prompt + continuation); checkpoint-mode SSD and memory cap at 16 actual input checkpoints |
 | `required_recompute_tokens`, `expected_prefill_tokens_saved` | `int` | opt |
 | `stage_ms` | `float64` | opt |
+
+Memory holder lifetime is `min(configured TTL, 30s)` (`receiptTTL`,
+`coordinator/registry/cache_tiers.go`). `stage_ms = 0` means no external disk
+staging for resident KV. Sequences increase independently per tier/model/epoch;
+nonce, connection, model/hash/contract, epoch, order, and replay checks still
+apply. Repeated ready anchors cannot refresh expired evidence. Resident LRU
+removal uses bounded TTL and exact-miss invalidation; there is no per-anchor
+eviction frame. Unload/reconnect replaces the capability snapshot.
 
 ### `capacity_quote`
 
@@ -437,6 +575,7 @@ Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
 | `cache_receipt_nonce` | `string` | `String?` | opt | binds the prefix-cache receipts to this attempt |
 | `cache_scope` | `string` | `String?` | opt | |
 | `prefix_cache_protocol` | `int` | `Int?` | opt | |
+| `cache_receipt_boundary_mode` | `string` | `String?` | opt | `checkpoint` echoes support for the selected SSD capability. A provider emits checkpoint-mode receipts only with this echo; an older coordinator omits it and remains cold for this format. Copied from the prepared attempt and cleared on retry/fallback; `coordinator/api/provider_wire.go`, `snapshotProviderInferenceFrame` / `wireMessage`; `coordinator/registry/cache_receipts.go`, `ForgetCacheAttempt` |
 | `tool_schema_metadata_protocol` | `int` | `Int?` | opt | `1` = the coordinator rejected client-forged reserved keys before normalisation |
 
 ### `cancel`

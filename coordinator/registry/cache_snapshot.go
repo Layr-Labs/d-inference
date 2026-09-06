@@ -38,6 +38,7 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	replaceCapabilities bool,
 	version int,
 	capabilities []protocol.PrefixCacheV2Capability,
+	memoryCapabilities *[]protocol.PrefixCacheV2Capability,
 	statuses *[]protocol.PrefixCacheModelStatus,
 	outcomes *[]protocol.PrefixCacheDonationOutcomeCount,
 ) (bool, error) {
@@ -60,6 +61,7 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 
 	resultVersion := provider.PrefixCacheProtocol
 	resultCapabilities := clonePrefixCacheCapabilities(provider.PrefixCacheV2Models)
+	resultMemoryCapabilities := clonePrefixCacheCapabilities(provider.PrefixCacheMemoryModels)
 	if replaceCapabilities {
 		resultCapabilities, err = validatePrefixCacheCapabilities(
 			version, capabilities, models)
@@ -68,6 +70,16 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 			return false, err
 		}
 		resultVersion = version
+	}
+	if memoryCapabilities != nil {
+		resultMemoryCapabilities, err = validateMemoryPrefixCacheCapabilities(
+			resultVersion, *memoryCapabilities, models)
+		if err != nil {
+			provider.mu.Unlock()
+			return false, err
+		}
+	} else if resultVersion < 2 {
+		resultMemoryCapabilities = nil
 	}
 
 	resultStatuses := clonePrefixCacheStatuses(provider.PrefixCacheStatuses)
@@ -106,12 +118,14 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	}
 
 	capabilitiesChanged := provider.PrefixCacheProtocol != resultVersion ||
-		!equalPrefixCacheCapabilities(provider.PrefixCacheV2Models, resultCapabilities)
+		!equalPrefixCacheCapabilities(provider.PrefixCacheV2Models, resultCapabilities) ||
+		!equalPrefixCacheCapabilities(provider.PrefixCacheMemoryModels, resultMemoryCapabilities)
 	removalReason := prefixCacheCapabilityRemovalReason(
 		provider.PrefixCacheV2Models, resultCapabilities)
 	if capabilitiesChanged {
 		provider.PrefixCacheProtocol = resultVersion
 		provider.PrefixCacheV2Models = resultCapabilities
+		provider.PrefixCacheMemoryModels = resultMemoryCapabilities
 		provider.prefixCacheRevision++
 	}
 	provider.PrefixCacheStatuses = resultStatuses

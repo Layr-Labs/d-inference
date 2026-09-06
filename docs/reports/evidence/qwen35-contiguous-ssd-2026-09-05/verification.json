@@ -1,0 +1,140 @@
+{
+  "passed": true,
+  "pairs": 8,
+  "generated_token_ids": 645,
+  "requested_backend": "contiguous",
+  "resolved_backend": "contiguous",
+  "backend_fallback": null,
+  "mtp": "on; normal Qwen inline assistant",
+  "verified_model_hash": "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c",
+  "checks": [
+    {
+      "row": "rows/0",
+      "id": "p8192-r0-first",
+      "scope": "tenant-A",
+      "matches": {
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "text": true,
+        "prompt_tokens": true,
+        "completion_tokens": true,
+        "finish": true
+      },
+      "generated_ids": 64,
+      "saved_tokens": 0,
+      "idle_staging_bytes": 0
+    },
+    {
+      "row": "rows/1",
+      "id": "p8192-r0-repeat",
+      "scope": "tenant-A",
+      "matches": {
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "text": true,
+        "prompt_tokens": true,
+        "completion_tokens": true,
+        "finish": true
+      },
+      "generated_ids": 64,
+      "saved_tokens": 4096,
+      "idle_staging_bytes": 0
+    },
+    {
+      "row": "rows/2",
+      "id": "decode-0",
+      "scope": "tenant-A",
+      "matches": {
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "text": true,
+        "prompt_tokens": true,
+        "completion_tokens": true,
+        "finish": true
+      },
+      "generated_ids": 256,
+      "saved_tokens": 0,
+      "idle_staging_bytes": 0
+    },
+    {
+      "row": "tenant_checks/0",
+      "id": "p8192-r0-first",
+      "scope": "probe-B8AD8A00-782A-4CA6-BDF7-C9FC4635A675-A",
+      "matches": {
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "text": true,
+        "prompt_tokens": true,
+        "completion_tokens": true,
+        "finish": true
+      },
+      "generated_ids": 64,
+      "saved_tokens": 0,
+      "idle_staging_bytes": 0
+    },
+    {
+      "row": "tenant_checks/1",
+      "id": "p8192-r0-first",
+      "scope": "probe-B8AD8A00-782A-4CA6-BDF7-C9FC4635A675-A",
+      "matches": {
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "text": true,
+        "prompt_tokens": true,
+        "completion_tokens": true,
+        "finish": true
+      },
+      "generated_ids": 64,
+      "saved_tokens": 4096,
+      "idle_staging_bytes": 0
+    },
+    {
+      "row": "tenant_checks/2",
+      "id": "p8192-r0-first",
+      "scope": "probe-B8AD8A00-782A-4CA6-BDF7-C9FC4635A675-B",
+      "matches": {
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "text": true,
+        "prompt_tokens": true,
+        "completion_tokens": true,
+        "finish": true
+      },
+      "generated_ids": 64,
+      "saved_tokens": 0,
+      "idle_staging_bytes": 0
+    },
+    {
+      "row": "cancelled",
+      "id": "p8192-r0-first",
+      "scope": "probe-B8AD8A00-782A-4CA6-BDF7-C9FC4635A675-cancel",
+      "matches": {
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "text": true,
+        "prompt_tokens": true,
+        "completion_tokens": true,
+        "finish": true
+      },
+      "generated_ids": 5,
+      "saved_tokens": 0,
+      "idle_staging_bytes": 0
+    },
+    {
+      "row": "recovered",
+      "id": "p8192-r0-first",
+      "scope": "probe-B8AD8A00-782A-4CA6-BDF7-C9FC4635A675-cancel",
+      "matches": {
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "text": true,
+        "prompt_tokens": true,
+        "completion_tokens": true,
+        "finish": true
+      },
+      "generated_ids": 64,
+      "saved_tokens": 0,
+      "idle_staging_bytes": 0
+    }
+  ]
+}

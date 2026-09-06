@@ -116,3 +116,24 @@ func TestAttachChatCompletionMetadataReservesProviderField(t *testing.T) {
 		t.Fatalf("expected one coordinator metadata field, got %#v", optedIn)
 	}
 }
+
+func TestStripProviderChatMetadataAfterQuotedSSEComment(t *testing.T) {
+	// Every casing is reserved, and SSE comments can have any quote parity.
+	// A scanner that pairs quotes globally can miss a later JSON key.
+	for casing := range 1 << len(chatCompletionMetadataField) {
+		key := []byte(chatCompletionMetadataField)
+		for i := range key {
+			if casing&(1<<i) != 0 {
+				key[i] -= 'a' - 'A'
+			}
+		}
+		for quotes := range 4 {
+			input := ": " + strings.Repeat(`"`, quotes) + strings.Repeat("x", 64) + "\n" +
+				`data: {"choices":[],"` + string(key) + `":{"provider_id":"forged"}}`
+			got := stripProviderChatMetadata(input)
+			if strings.Contains(got, "forged") || !strings.Contains(got, `"choices":[]`) {
+				t.Fatalf("key %q after %d comment quotes was not sanitized: %s", key, quotes, got)
+			}
+		}
+	}
+}

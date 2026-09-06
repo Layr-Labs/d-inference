@@ -5,7 +5,7 @@
 // v0.7.5 serves EVERYTHING through ContinuousBatchingV2 — there is no
 // legacy fallback — so a model is advertised to the coordinator ONLY when
 // its family has a CBv2 adapter. This predicate is the scan/advertise-time
-// mirror of the `EngineV2Factory.makeProductionEngine` switch, keyed on the
+// mirror of the `EngineV2Factory.ProductionModelAdapter` family dispatch, keyed on the
 // `model_type` string config.json declares (the value
 // `ModelScanner.parseModelInfo` stamps on `ModelInfo`):
 //
@@ -23,7 +23,7 @@
 // (WARN log), so the coordinator never routes to it. A load request for an
 // unsupported id (stale catalog) then fails the advertised-set guard in
 // `ensureModelLoaded` → 404 via `loadErrorStatusCode`, never a silent
-// degrade. Any change to the `makeProductionEngine` switch MUST be
+// degrade. Any change to the `ProductionModelAdapter` family dispatch MUST be
 // reflected here.
 
 import Foundation

@@ -103,6 +103,7 @@ public enum CoordinatorEvent: Sendable {
         cacheReceiptNonce: String?,
         cacheScope: String?,
         prefixCacheProtocol: Int?,
+        cacheReceiptBoundaryMode: String? = nil,
         toolSchemaMetadataProtocol: Int?,
         firstContentDeadline: FirstContentDeadline?,
         receivedAt: ContinuousClock.Instant,

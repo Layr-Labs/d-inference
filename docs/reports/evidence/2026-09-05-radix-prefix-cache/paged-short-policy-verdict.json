@@ -1,0 +1,49 @@
+{
+  "passed": true,
+  "errors": [],
+  "rows": [
+    {
+      "id": "p2048-r0-first",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 1.504816458,
+      "candidate_ttft_s": 0.847678209,
+      "saved_tokens": 0,
+      "cache_outcome": "miss",
+      "baseline_terminal_tail_s": 0.002615500000000104,
+      "candidate_terminal_tail_s": 0.0027617499999998962
+    },
+    {
+      "id": "p2048-r0-repeat",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 0.419654791,
+      "candidate_ttft_s": 0.42215575,
+      "saved_tokens": 0,
+      "cache_outcome": "skippedPolicy",
+      "baseline_terminal_tail_s": 0.0024688329999998926,
+      "candidate_terminal_tail_s": 0.0027863750000000076
+    },
+    {
+      "id": "p2048-r0-branch",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 0.422560875,
+      "candidate_ttft_s": 0.424192625,
+      "saved_tokens": 0,
+      "cache_outcome": "skippedPolicy",
+      "baseline_terminal_tail_s": 0.0025659590000000065,
+      "candidate_terminal_tail_s": 0.0026869579999999615
+    },
+    {
+      "id": "p2048-r0-branch-repeat",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 0.419548,
+      "candidate_ttft_s": 0.419493667,
+      "saved_tokens": 0,
+      "cache_outcome": "skippedPolicy",
+      "baseline_terminal_tail_s": 0.002658749999999932,
+      "candidate_terminal_tail_s": 0.002744165999999937
+    }
+  ],
+  "generated_token_ids_compared": true,
+  "baseline_decode_tps": null,
+  "candidate_decode_tps": null
+}

@@ -1,0 +1,71 @@
+{
+  "parent": "ac1dc301c7b15b7d8f0b7bb18cf3d70e93157f75",
+  "scope": "holder index only; scoring unchanged; Swift not changed by this milestone",
+  "files": [
+    {
+      "path": "coordinator/registry/cache_route_keys.go",
+      "sha256": "eeea7787fb7964e06269775775c5be7ad27f98aaac60aa019ae12e0927fecf14",
+      "size": 8829
+    },
+    {
+      "path": "coordinator/registry/cache_tiers.go",
+      "sha256": "cfbf4553a7c69fffd15f542900299b45ac1053717a99c14f16a18ae1bd48c840",
+      "size": 2725
+    },
+    {
+      "path": "coordinator/registry/cache_receipts_v2.go",
+      "sha256": "acf02a952e84c41b91a2c0f3e4909f67739f68ee1bcf0ad7dbfddfa00ae34408",
+      "size": 14636
+    },
+    {
+      "path": "coordinator/registry/cache_routing_hints.go",
+      "sha256": "f5d0b45e5a3a4834484b0bd75718227231257e40f663bada7883bd1177d3f87e",
+      "size": 6515
+    },
+    {
+      "path": "coordinator/registry/cache_routing_exact_test.go",
+      "sha256": "c90cd8c06c224194c0026238bf7c0bb6117a1129d823166f79f61f4c923d6143",
+      "size": 30112
+    },
+    {
+      "path": "coordinator/registry/model_index.go",
+      "sha256": "5e7a506cc60266039fbdc5e447b5fe55dc87c233c1568808ced4efa54d4717a4",
+      "size": 6538
+    },
+    {
+      "path": "coordinator/registry/model_index_test.go",
+      "sha256": "b5d44d267434f8eb07ef29b5b739fc123881090e6adbbc0e0e0e4161ed097e4f",
+      "size": 13914
+    },
+    {
+      "path": "coordinator/registry/cache_routing_hint_skip_test.go",
+      "sha256": "53d2034bbbd8570d1d47f6813344acd3174839fbfa50bc52fc6b2e837099d05c",
+      "size": 2225
+    },
+    {
+      "path": "coordinator/registry/scheduler.go",
+      "sha256": "5ab31411fcf661929da8ba3bfa46c9eef7fbcb6384a925d69984d9812226bf1e",
+      "size": 146694
+    },
+    {
+      "path": "coordinator/registry/cache_memory_test.go",
+      "sha256": "58d5630ab71dddd43fb6f43ea3c9f72bfce22128e729b663ea048f0722760069",
+      "size": 12629
+    },
+    {
+      "path": "coordinator/registry/cache_holder_index_test.go",
+      "sha256": "00d261a54d5cc45bf5111132cfb8051c857cfa9876a9c8ed58d7ac57b85ece6c",
+      "size": 7265
+    },
+    {
+      "path": "coordinator/registry/cache_holder_index_benchmark_test.go",
+      "sha256": "2fe301bbaf5d33cbf0733efdc8c82a3a310f4ea290700792514dd29b6f1dcdac",
+      "size": 3711
+    },
+    {
+      "path": "docs/architecture/cache-aware-routing.md",
+      "sha256": "a44a14aed9a73b7125fec5b0c4c9850f601ab3bea772033d618daa81d20660f7",
+      "size": 33552
+    }
+  ]
+}

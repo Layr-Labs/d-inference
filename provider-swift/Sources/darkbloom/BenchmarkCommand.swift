@@ -155,9 +155,16 @@ struct Benchmark: AsyncParsableCommand {
         """)
     var parityPrefixTokens = 28672
 
+    @Option(name: .long, help: "Score bounded exact token contexts from JSON with an explicit --model and --kv-backend; ordinary target only, cache and MTP off.")
+    var teacherForcedInput: String?
+
     mutating func run() async throws {
         if let conflict = benchmarkModeConflict() {
             printError(conflict)
+            throw ExitCode(2)
+        }
+        if let error = teacherForcedOptionError() {
+            printError(error)
             throw ExitCode(2)
         }
         if schedulerPrefillDecision {
@@ -227,6 +234,17 @@ struct Benchmark: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
+        if let teacherForcedInput {
+            let result = try await TeacherForcedBenchmark.run(
+                modelID: selectedModel.id, modelDirectory: modelPath,
+                inputURL: URL(fileURLWithPath: teacherForcedInput), backend: kvBackend,
+                gemmaOptimizations: gemmaSettings)
+            // Preserve nonfinite/neutrality evidence even when inconclusive.
+            print(result.json)
+            if !result.controlsPassed { throw ExitCode(2) }
+            return
+        }
+
         if parity {
             try await runBackendParity(
                 modelID: selectedModel.id,
@@ -285,10 +303,24 @@ struct Benchmark: AsyncParsableCommand {
             (schedulerPrefill, "--scheduler-prefill"),
             (arrivalInvariance, "--arrival-invariance"),
             (parity, "--parity"),
+            (teacherForcedInput != nil, "--teacher-forced-input"),
         ].compactMap { $0.0 ? $0.1 : nil }
         guard selected.count <= 1 else {
             return "benchmark modes are mutually exclusive: \(selected.joined(separator: ", "))"
         }
+        return nil
+    }
+
+    func teacherForcedOptionError() -> String? {
+        guard let teacherForcedInput else { return nil }
+        guard !teacherForcedInput.isEmpty, let model, !model.isEmpty else {
+            return "--teacher-forced-input requires a file and explicit --model"
+        }
+        guard assistantModel == nil, output == nil else {
+            return "--teacher-forced-input uses ordinary target scoring and JSON stdout; assistant and signed-decision output options do not apply"
+        }
+        do { try TeacherForcedBenchmark.validateBackend(kvBackend) }
+        catch { return "--teacher-forced-input requires --kv-backend contiguous or paged" }
         return nil
     }
 }

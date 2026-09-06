@@ -589,6 +589,8 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     /// sparse — and a legacy provider omits the key entirely. Mirrors Go
     /// `Telemetry *SlotTelemetry \`json:"telemetry,omitempty"\``.
     public var telemetry: SlotTelemetry?
+    public var prefixCache: PrefixCacheTelemetry?
+    public var pagedStorage: PagedStorageTelemetry?
 
     enum CodingKeys: String, CodingKey {
         case model
@@ -616,6 +618,8 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case evalInFlightMs = "eval_in_flight_ms"
         case idleClearInFlightMs = "idle_clear_in_flight_ms"
         case telemetry
+        case prefixCache = "prefix_cache"
+        case pagedStorage = "paged_storage"
     }
 
     public init(
@@ -643,7 +647,9 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         wedgeSuspected: Bool = false,
         evalInFlightMs: Int64 = 0,
         idleClearInFlightMs: Int64 = 0,
-        telemetry: SlotTelemetry? = nil
+        telemetry: SlotTelemetry? = nil,
+        prefixCache: PrefixCacheTelemetry? = nil,
+        pagedStorage: PagedStorageTelemetry? = nil
     ) {
         self.model = model
         self.state = state
@@ -670,6 +676,8 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.evalInFlightMs = evalInFlightMs
         self.idleClearInFlightMs = idleClearInFlightMs
         self.telemetry = telemetry
+        self.prefixCache = prefixCache
+        self.pagedStorage = pagedStorage
     }
 
     public init(from decoder: Decoder) throws {
@@ -707,6 +715,8 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         // Absent stays absent (legacy provider); never synthesize an empty
         // object, which would forge the "new provider" sentinel.
         telemetry = try container.decodeIfPresent(SlotTelemetry.self, forKey: .telemetry)
+        prefixCache = try container.decodeIfPresent(PrefixCacheTelemetry.self, forKey: .prefixCache)
+        pagedStorage = try container.decodeIfPresent(PagedStorageTelemetry.self, forKey: .pagedStorage)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -741,6 +751,8 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         try encodeIfNonZero(evalInFlightMs, forKey: .evalInFlightMs, into: &container)
         try encodeIfNonZero(idleClearInFlightMs, forKey: .idleClearInFlightMs, into: &container)
         try container.encodeIfPresent(telemetry, forKey: .telemetry)
+        try container.encodeIfPresent(prefixCache, forKey: .prefixCache)
+        try container.encodeIfPresent(pagedStorage, forKey: .pagedStorage)
     }
 
     private func encodeIfNonZero<T: BinaryInteger & Encodable>(
@@ -829,6 +841,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     /// sub-object: present (possibly sparse) from a producing provider,
     /// absent from a legacy one. Mirrors Go `Telemetry *CapacityTelemetry`.
     public var telemetry: CapacityTelemetry?
+    public var prefixCacheMaintenance: PrefixCacheMaintenanceTelemetry?
 
     enum CodingKeys: String, CodingKey {
         case slots
@@ -840,6 +853,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         case mlxCacheReclaimer = "mlx_cache_reclaimer"
         case capacitySeq = "capacity_seq"
         case telemetry
+        case prefixCacheMaintenance = "prefix_cache_maintenance"
     }
 
     public init(
@@ -851,7 +865,8 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         freeForLoadGb: Double = 0,
         mlxCacheReclaimer: MLXCacheReclaimerTelemetry? = nil,
         capacitySeq: UInt64 = 0,
-        telemetry: CapacityTelemetry? = nil
+        telemetry: CapacityTelemetry? = nil,
+        prefixCacheMaintenance: PrefixCacheMaintenanceTelemetry? = nil
     ) {
         self.slots = slots
         self.gpuMemoryActiveGb = gpuMemoryActiveGb
@@ -862,6 +877,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.mlxCacheReclaimer = mlxCacheReclaimer
         self.capacitySeq = capacitySeq
         self.telemetry = telemetry
+        self.prefixCacheMaintenance = prefixCacheMaintenance
     }
 
     // Explicit decode so older payloads without `free_for_load_gb`,
@@ -877,6 +893,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.mlxCacheReclaimer = try c.decodeIfPresent(
             MLXCacheReclaimerTelemetry.self, forKey: .mlxCacheReclaimer)
         self.telemetry = try c.decodeIfPresent(CapacityTelemetry.self, forKey: .telemetry)
+        self.prefixCacheMaintenance = try c.decodeIfPresent(PrefixCacheMaintenanceTelemetry.self, forKey: .prefixCacheMaintenance)
         self.capacitySeq = try c.decodeIfPresent(UInt64.self, forKey: .capacitySeq) ?? 0
     }
 
@@ -896,6 +913,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
             try c.encode(capacitySeq, forKey: .capacitySeq)
         }
         try c.encodeIfPresent(telemetry, forKey: .telemetry)
+        try c.encodeIfPresent(prefixCacheMaintenance, forKey: .prefixCacheMaintenance)
     }
 }
 

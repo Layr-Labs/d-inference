@@ -464,6 +464,7 @@ public enum ThroughputSweep {
                     tokenizer: ctx.tokenizer,
                     kvBytesCapacity: kvCapacity,
                     maxConcurrentRequests: max(batchSize, 1),
+                    kvBudget: BenchmarkMemoryBudget.shared,
                     kvBackend: kvBackend)
                 return EngineParts(
                     engine: build.engine,

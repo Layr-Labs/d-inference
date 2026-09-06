@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-05 · commit `4d9811f7c`
+> Last updated: 2026-09-06 · commit `32b28b0a7`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -303,7 +303,7 @@ fans out `desired_models`), and returns `{"status":"ok","alias": <ModelAlias>}`.
 
 ### Resolution precedence
 
-`ResolveModelConstrainedWithTraits` (`coordinator/registry/registry.go`),
+`ResolveModelConstrainedWithTraits` (`coordinator/registry/model_aliases.go`),
 called from `resolveRequestedModel` (`coordinator/api/consumer.go`):
 
 1. Not an alias → the id is used as a concrete build.
@@ -347,7 +347,7 @@ Defined in `coordinator/protocol/messages.go`; full field tables in
 |---|---|---|
 | `desired_models` | coordinator → provider | `{"type","models":[{"model_name","desired_build","previous_build"}]}` (`DesiredModelsMessage`); only to Swift providers ≥ `minProviderVersionForDesiredModels = "0.5.17"` (`coordinator/api/server.go`) |
 | `prefetch_model_status` | provider → coordinator | `status` ∈ `started`, `downloading`, `verified`, `failed`; `bytes_done`, `bytes_total`, `error` |
-| `models_update` | provider → coordinator | full `ModelInfo` (with `weight_hash`) for newly verified builds; merged only when the hash matches the catalog (`mergeProviderModels`, `coordinator/registry/registry.go`) |
+| `models_update` | provider → coordinator | full `ModelInfo` (with `weight_hash`) for newly verified builds; merged only when the hash matches the catalog (`mergeProviderModels`, `coordinator/registry/provider_models.go`) |
 
 ## Authentication
 

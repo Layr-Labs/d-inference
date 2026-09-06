@@ -1,0 +1,119 @@
+{
+  "schema": 1,
+  "scope": "Explicit segmented paged storage foundation; defaults unchanged; no final paged recurrent/model/capacity claim",
+  "validation": {
+    "final_build_seconds": 85.46,
+    "test_functions": 6,
+    "test_cases": 19,
+    "test_seconds": 7.239,
+    "passed": true
+  },
+  "earlier_attempts": {
+    "run1": "Failed gather checks and fatal small direct-merge metadata address-space mismatch",
+    "run2": "Test diagnostics retained;56issues across transfer/window snapshot checks",
+    "run3": "Gather witness corrected;6functions/12cases passed",
+    "run4": "Final merge fence and small-head padding plus second-group rollback;6functions/19cases passed"
+  },
+  "source_files_verified": 431,
+  "owned_files_verified": 13,
+  "files": {
+    "run1/build.log.gz": {
+      "bytes": 19327,
+      "sha256": "ca9a42b8a46708119c364e003e8920f8df09c0fd363e48415c3c46d2c4f7f018",
+      "uncompressed_bytes": 505806,
+      "uncompressed_sha256": "e239b868c8d5923c8758f6b5d11a8769046d42f2f588c1256eba145becfa263d"
+    },
+    "run1/setup.log.gz": {
+      "bytes": 849,
+      "sha256": "e87e1c30d55c99c0c082df44f9f47c7fd9703d91d3e88ad3a6a3813647d1a4a3",
+      "uncompressed_bytes": 5059,
+      "uncompressed_sha256": "13d3ddb980869b76f63eba7c813b49b87b306cb7605d35671609ab649b0816db"
+    },
+    "run1/source-manifest.json.gz": {
+      "bytes": 21741,
+      "sha256": "e7066207943dc002c2cc97bbc4691a4e9544603b7f5c336c1b5899185de9ac95",
+      "uncompressed_bytes": 54880,
+      "uncompressed_sha256": "f6b1713b39ec4fd22202437efe04529417ea0639a7253f9b84d7f4005478c669"
+    },
+    "run1/tests.log.gz": {
+      "bytes": 19684,
+      "sha256": "818b3206c0e0ff6fe3dfcb779e2ab327b45f4d0a901da4d2d9674c3bd843d6b1",
+      "uncompressed_bytes": 103074,
+      "uncompressed_sha256": "1a0889c497f06284d68a0aae376933de18cbbe494795f80709ad063b888be021"
+    },
+    "run2/build.log.gz": {
+      "bytes": 2857,
+      "sha256": "a0b5bfb89ead4729240776e20a3d6447d484f145ff193f9725e50b59f228a36b",
+      "uncompressed_bytes": 50003,
+      "uncompressed_sha256": "efb7336d362ea796bf31fb185ffe037d550b9f8d43420e2b68e549e33fad6982"
+    },
+    "run2/source-manifest.json.gz": {
+      "bytes": 21741,
+      "sha256": "25ad894b2c8c55c2b508424f90f773b94748feb0a9525541e866048b8b5a7ded",
+      "uncompressed_bytes": 54880,
+      "uncompressed_sha256": "3c85e37fdc3d340ff7d523bfea26ac8dc3831604c525f8ea9f1af0317211e5e1"
+    },
+    "run2/tests.log.gz": {
+      "bytes": 23225,
+      "sha256": "d6508c202b1bf80a0ed66d3fa3473e0f47f4e8075e9f305cad735a6b6bb89290",
+      "uncompressed_bytes": 525799,
+      "uncompressed_sha256": "90c69021bcc1d026549bcccfdf36c2efea460c0646423b4f979c38ac529bd956"
+    },
+    "run3/build.log.gz": {
+      "bytes": 3514,
+      "sha256": "0c64ad1922b1aee73808f8b23e47beee44c746d7df928e741ddd8d2e85ace1e1",
+      "uncompressed_bytes": 52032,
+      "uncompressed_sha256": "e511efa21ae19c64c7e4f2b844f66fa1a6c95de70b61f6eac249a5634b7e17e5"
+    },
+    "run3/source-manifest.json.gz": {
+      "bytes": 21746,
+      "sha256": "50543a63c14fd45f28c721c6985e368d9ece395d4d50ce61741684923f14c0c5",
+      "uncompressed_bytes": 54880,
+      "uncompressed_sha256": "9b0b009a77c29e9f992d259a877562acd50d03aa28fdbf848f0a7b5981841f0f"
+    },
+    "run3/tests.log.gz": {
+      "bytes": 778,
+      "sha256": "9844d9f16725b94b343c531abbe152996dc227ae30fde400e6bce9de72503627",
+      "uncompressed_bytes": 3334,
+      "uncompressed_sha256": "1e832b0de79aeacfa16acd66288879a966134ca0180ffbf4998dbc630af9344e"
+    },
+    "run4/build.log.gz": {
+      "bytes": 19183,
+      "sha256": "2d504d62efeb303d871ea065ad62c5d8a57c11e4ffaf22976c2296a0cb67a26a",
+      "uncompressed_bytes": 505443,
+      "uncompressed_sha256": "5ac1af03b2c585e1dc46781066ecdd7c9d991e481b4beb1320c3d00932665378"
+    },
+    "run4/setup.log.gz": {
+      "bytes": 206,
+      "sha256": "5d069f5f014d8fdc00e0dc55455f718d4960347ee7b4079bcb3d077a54de0dd8",
+      "uncompressed_bytes": 322,
+      "uncompressed_sha256": "c08927768f01af57e523be7499cf5ba0d628b4d5be4fbf3af33c2df7d27b0bf7"
+    },
+    "run4/source-manifest.json.gz": {
+      "bytes": 21760,
+      "sha256": "16986bd302f1051dbd450674f7936594c04772ffd115fd942b7025d4ff719d16",
+      "uncompressed_bytes": 55011,
+      "uncompressed_sha256": "cdb73521cd30219df648d9d011662ce310c2a89302c7271208dd8cdb9c9c4c9f"
+    },
+    "run4/tests.log.gz": {
+      "bytes": 792,
+      "sha256": "390aca8d55903b39b6c818c28c69e2743f23547ad671af4e10e4e72580c251d5",
+      "uncompressed_bytes": 4449,
+      "uncompressed_sha256": "e20f862bbc41067d846b33b27c122c005a591aa22cdb6c69a12dd0d47d06d0ab"
+    },
+    "final-owned-source-manifest.json.gz": {
+      "bytes": 1023,
+      "sha256": "dd8fc86a512a09e848547a3c623f58f724a821c5e8a625b6ba15ae1910469f11",
+      "uncompressed_bytes": 2715,
+      "uncompressed_sha256": "ab9539d0916db700b5a9568d3ad38897b6a1f270b411a979c0eea7229f266995"
+    },
+    "post-test-eof-overlay.json.gz": {
+      "bytes": 272,
+      "sha256": "c501fa06d6cc740dbf271f574a75fa0fb26359f3538c54b9e594067ad8b296ae",
+      "uncompressed_bytes": 336,
+      "uncompressed_sha256": "021ff60a9413571814f2015fc2e5d3411e6a8d8cc891cfed29a894bed17f726f"
+    }
+  },
+  "native_commit": "28c2635c801a80ca6721142dd2eb2428de764ece",
+  "post_test_overlay": "One blank EOF line removed from PagedKVGroup.swift; explicit old/new hash record retained; no executable change"
+}

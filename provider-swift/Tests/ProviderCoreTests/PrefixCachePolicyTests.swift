@@ -29,6 +29,48 @@ struct PrefixCachePolicyTests {
         #expect(PrefixCachePolicy.isEnabled(environment: ["DARKBLOOM_PREFIX_CACHE": ""]))
     }
 
+    @Test("hybrid budget is carved from the slot and persistent assistants require exact restore")
+    func hybridBudgetAndAssistantGate() {
+        func config(
+            mtp: Bool = false, exact: Bool = false, template: String? = "template",
+            environment: [String: String] = [:]
+        ) -> CBv2HybridPrefixCacheConfig? {
+            PrefixCachePolicy.hybridConfig(
+                modelId: "qwen", promptContractID: template, kvBytesCapacity: 4 << 30,
+                hasMTPDrafter: mtp, supportsMTPPrefixCheckpoint: exact,
+                environment: [PrefixCachePolicy.memoryEnvironmentFlag: "1"].merging(environment) { _, new in new })
+        }
+        #expect(config()?.maximumBytes == 512 << 20)
+        #expect(config(mtp: true) == nil)
+        #expect(config(mtp: true, exact: true)?.maximumBytes == 512 << 20)
+        #expect(config(template: nil) == nil)
+        #expect(config(environment: ["DARKBLOOM_PREFIX_CACHE": "0"]) == nil)
+        #expect(config(environment: ["DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE": "0"]) == nil)
+        #expect(config(environment: ["DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": "0"]) == nil)
+        #expect(config(environment: ["DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": "4294967296"]) == nil)
+        #expect(config(environment: ["DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": "268435456"])?.maximumBytes == 256 << 20)
+    }
+
+    @Test("resident payloads require a shared explicit opt-in; the global disable wins")
+    func memoryOptIn() {
+        for value in [nil, "", "0", "false", "junk"] as [String?] {
+            let environment = value.map { [PrefixCachePolicy.memoryEnvironmentFlag: $0] } ?? [:]
+            #expect(!PrefixCachePolicy.isMemoryEnabled(environment: environment))
+            #expect(PrefixCachePolicy.hybridConfig(
+                modelId: "qwen", promptContractID: "contract", kvBytesCapacity: 4 << 30,
+                hasMTPDrafter: false,
+                environment: environment.merging(["DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": "268435456"]) { _, new in new }) == nil)
+            #expect(PrefixCachePolicy.residentConfig(
+                modelId: "paged", promptContractID: "contract", environment: environment) == nil)
+        }
+        for value in ["1", "true", "YES", " on "] {
+            let environment = [PrefixCachePolicy.memoryEnvironmentFlag: value]
+            #expect(PrefixCachePolicy.isMemoryEnabled(environment: environment))
+            #expect(!PrefixCachePolicy.isMemoryEnabled(environment:
+                environment.merging([PrefixCachePolicy.environmentFlag: "0"]) { _, new in new }))
+        }
+    }
+
     // MARK: - Backend adoption-exactness gate (v0.8.1)
 
     @Test("adoptionIsExact: paged yes, contiguous NO — the whole gate, as a table")

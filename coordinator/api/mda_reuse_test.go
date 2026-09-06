@@ -150,7 +150,7 @@ func TestVerifyAppleDeviceAttestation_CachedShortCircuit(t *testing.T) {
 
 	ar := p.GetAttestationResult()
 	// udid is non-empty: if the cache path did NOT short-circuit, execution would
-	// fall through to s.mdmClient.SendDeviceAttestationCommand and panic on nil.
+	// fall through to s.mdmClient.RequestDeviceAttestation and panic on nil.
 	srv.verifyAppleDeviceAttestation(context.Background(), "prov-mda", p, *ar, "some-udid")
 
 	if !mdaVerified(p) {

@@ -126,20 +126,26 @@ func (r *Registry) PlanCacheRouteWithResult(
 
 	r.mu.RLock()
 	mode := r.cacheRoutingMode
+	tracker := r.cacheRouting
 	keys := cacheRouteKeys{
 		route:      append([]byte(nil), r.cacheRouteKeys.route...),
 		scope:      append([]byte(nil), r.cacheRouteKeys.scope...),
 		activation: append([]byte(nil), r.cacheRouteKeys.activation...),
 	}
 	activation := r.cacheActivation
+	artifacts := r.cacheRoutingAllowedArtifacts
 	catalog, ok := r.modelCatalog[input.Model]
 	r.mu.RUnlock()
-	if mode != CacheRoutingOn {
+	if mode != CacheRoutingOn || tracker == nil || tracker.generation.revoked.Load() {
 		return CachePlanResult{Outcome: CachePlanOff}
 	}
 	aggregateHash := strings.ToLower(strings.TrimSpace(catalog.WeightHash))
 	if !ok || len(keys.route) == 0 || len(keys.activation) == 0 ||
 		!validLowerHex256(aggregateHash) || aggregateHash != input.ModelAggregateSHA256 {
+		return CachePlanResult{Outcome: CachePlanIneligible}
+	}
+
+	if !artifacts.allows(input) {
 		return CachePlanResult{Outcome: CachePlanIneligible}
 	}
 
@@ -172,6 +178,17 @@ func (r *Registry) PlanCacheRouteWithResult(
 		Body:             input.Body,
 	})
 	latency := time.Since(started)
+	r.mu.RLock()
+	currentMode := r.cacheRoutingMode
+	current := r.cacheRouting == tracker && currentMode == CacheRoutingOn
+	r.mu.RUnlock()
+	if !current {
+		outcome := CachePlanIneligible
+		if currentMode == CacheRoutingOff {
+			outcome = CachePlanOff
+		}
+		return CachePlanResult{Outcome: outcome, PlanLatency: latency, SidecarCalled: true}
+	}
 	if err != nil {
 		outcome := CachePlanSidecarError
 		if errors.Is(err, promptcontract.ErrDynamicContract) {
@@ -214,6 +231,7 @@ func (r *Registry) PlanCacheRouteWithResult(
 	activation.recordPlan(CachePlanPlanned)
 	return CachePlanResult{
 		Plan: CachePlan{
+			generation:         tracker.generation,
 			ModelAggregateHash: aggregateHash,
 			PromptContractID:   input.PromptContractID,
 			CacheScope:         scope,
@@ -248,23 +266,24 @@ func providerCacheScope(
 	)
 }
 
+// cacheBoundaryKey identifies reusable content, independent of which provider
+// holds it. Epochs are validated holder metadata: putting one in this key would
+// split identical prefixes into separate buckets and bypass the holder bound.
 func cacheBoundaryKey(
 	routeKey []byte,
 	plan CachePlan,
-	cacheEpoch string,
 	anchor protocol.PrefixCacheAnchor,
 ) string {
-	if len(routeKey) == 0 || !plan.present() || !validCacheEpoch(cacheEpoch) ||
+	if len(routeKey) == 0 || !plan.present() ||
 		!validV2Anchor(anchor, promptcontract.BlockSize) {
 		return ""
 	}
 	return opaqueHMAC(
 		routeKey,
-		"prefix-v3",
+		"prefix-v4",
 		plan.CacheScope,
 		plan.ModelAggregateHash,
 		plan.PromptContractID,
-		cacheEpoch,
 		strconv.Itoa(anchor.TokenCount),
 		anchor.ChainHash,
 	)

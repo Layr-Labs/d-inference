@@ -1,8 +1,7 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Production prefix-cache policy. The provider has one local kill switch
-// and one production tier: encrypted SSD. In-memory prefix caching remains
-// an upstream engine capability, but it is never selected or funded here.
+// Production prefix-cache policy. Encrypted SSD storage is the default;
+// retaining resident KV between requests requires an explicit local opt-in.
 
 import Foundation
 import MLXLMCommon
@@ -10,8 +9,10 @@ import MLXLMCommon
 enum PrefixCachePolicy {
 
     /// Local cache kill switch. Unset defaults to enabled. Any explicitly
-    /// non-affirmative value disables the encrypted SSD cache.
+    /// non-affirmative value disables resident L1 and encrypted SSD L2.
     static let environmentFlag = "DARKBLOOM_PREFIX_CACHE"
+
+    static let memoryEnvironmentFlag = "DARKBLOOM_PREFIX_CACHE_MEMORY"
 
     /// Stats-logger cadence override (seconds). Shared semantics with the
     /// legacy checkpoint-tier logger: unset/malformed ⇒ default 120s;
@@ -22,65 +23,67 @@ enum PrefixCachePolicy {
     /// `CBv2BlockHasher.defaultBlockSize` (and the legacy block tier's 256).
     static let blockSize = CBv2BlockHasher.defaultBlockSize
 
+    /// Resident L1 indexes one physical page per hash block, matching vLLM's
+    /// allocator/index identity. SSD keeps the coarser durable format above.
+    static let residentBlockSize = CBv2PagedDefaults.pageSize
+
     // MARK: - Gate
 
-    /// Encrypted SSD is on by default. Explicit affirmative values keep it
-    /// enabled; any other non-empty value disables it.
+    /// SSD prefix reuse is on by default. Explicit affirmative values keep it
+    /// enabled; any other non-empty value disables all local tiers.
     static func isEnabled(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        guard let raw = environment[environmentFlag]?
-            .trimmingCharacters(in: .whitespaces).lowercased(),
-            !raw.isEmpty
-        else {
-            return true
-        }
-        return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
+        environmentEnabled(environment[environmentFlag], defaultValue: true)
     }
 
-    /// Is prefix ADOPTION bit-exact on the backend a slot actually built?
+    /// One explicit opt-in covers both resident tiers. A byte-budget override
+    /// alone cannot keep prompt state in RAM between requests.
+    static func isMemoryEnabled(environment: [String: String]) -> Bool {
+        isEnabled(environment: environment)
+            && environmentEnabled(environment[memoryEnvironmentFlag], defaultValue: false)
+    }
+
+    private static func environmentEnabled(_ value: String?, defaultValue: Bool) -> Bool {
+        guard let raw = value?.trimmingCharacters(in: .whitespaces).lowercased(),
+            !raw.isEmpty else { return defaultValue }
+        return ["1", "true", "yes", "on"].contains(raw)
+    }
+
+    /// Configuration for the paged backend's copy-free resident L1. The
+    /// backend is model-local, so `modelId` scopes unscoped/standalone calls;
+    /// authenticated remote requests replace that base scope with their
+    /// coordinator-authored `cacheSalt` inside the engine hasher.
     ///
-    /// NO for contiguous, and that is a measured property of the shipping
-    /// checkpoints, not a theory. v0.8.0's six-arm gate ran cold vs adopted
-    /// output for the same prompt on the real slot path: on
-    /// `gemma-4-26B-A4B-it-qat-4bit` (diverges at byte 4) and
-    /// `gpt-oss-20b-MXFP4-Q8` (diverges) — the entire production catalog —
-    /// a contiguous slot that adopts a cached prefix answers DIFFERENTLY
-    /// from its own cold run, which in production means a silently
-    /// truncated completion rather than an error. The split followed the
-    /// RESOLVED backend on 6/6 arms, including an arm that requested paged,
-    /// degraded to contiguous under the kill switch, and diverged with the
-    /// contiguous rows. So this must be asked of the CONSTRUCTED backend,
-    /// never the requested one. (`gemma-4-e2b-it-4bit` inverts — exact on
-    /// contiguous, inexact on paged — but it is an e2e fixture and appears
-    /// zero times in the catalog; it is why the e2b exact-cache lane is
-    /// expected red on paged.)
+    /// There is deliberately no separate memory budget: indexed zero-ref
+    /// pages remain allocator-visible and are invalidated immediately before
+    /// reuse, so the paged pool itself is the natural hard bound (vLLM's
+    /// unified-pool posture). SSD keeps its independent disk budget.
+    static func residentConfig(
+        modelId: String,
+        promptContractID: String?,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> CBv2PagedPrefixCacheConfig? {
+        guard isMemoryEnabled(environment: environment),
+            let promptContractID = promptContractID?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !promptContractID.isEmpty
+        else { return nil }
+        return CBv2PagedPrefixCacheConfig(
+            blockSize: residentBlockSize,
+            promptContractID: promptContractID,
+            scopeID: modelId)
+    }
+
+    /// Attention-only SSD adoption is enabled only for the resolved paged
+    /// backend. The original contiguous block path diverged from cold output
+    /// on the v0.8.0 Gemma/GPT-OSS model gate, including paged→contiguous fallback.
+    /// Refusing construction closes every lookup/staging path and avoids writing
+    /// snapshots that this slot cannot safely consume.
     ///
-    /// CONSTRUCTION is what this gates, not lookup, and that is the narrow
-    /// choice rather than the broad one:
-    ///
-    ///   * There is no `adopt` entry point to disable. Adoption IS a
-    ///     non-nil `CBv2PrefixCache.lookup`, which has three overloads plus
-    ///     a bridge-side `stage` that rehydrates blocks from disk so the
-    ///     engine's synchronous lookup can find them. Suppressing "only
-    ///     adoption" means a flag threaded through all four, where one
-    ///     missed path leaves the wrong-answer class alive. A slot with no
-    ///     cache OBJECT has no such path: `EngineV2SlotFactory` feeds the
-    ///     same nil to the engine and the bridge.
-    ///   * Donation without adoption has no consumer. Donated blocks are
-    ///     keyed to this box, and nothing in the product writes
-    ///     `engine_v2_kv_backend`, so a contiguous slot cannot become a
-    ///     paged one that would read them. They would be written to be
-    ///     evicted.
-    ///   * Donation is not free. It reserves staging bytes in the shared
-    ///     `GlobalKVCacheBudget` — RAM taken from the KV pool this release
-    ///     exists to enlarge — plus disk against the 20 GiB box-wide LRU,
-    ///     SSD write budget, and engine-thread snapshot work.
-    ///
-    /// So a contiguous slot gets no cache at all, reported as
-    /// `.disabled` / `.unsupportedBackend` — the same shape as the
-    /// `DARKBLOOM_PREFIX_CACHE=0` path, not a new one. Paged is untouched
-    /// and keeps the full tier.
+    /// Complete recurrent checkpoints use a separate codec and eligibility gate
+    /// in `prepareCompletePrefixCache`; this attention-only rule does not apply
+    /// to their native contiguous restoration.
     static func adoptionIsExact(onResolvedBackend kind: EngineV2KVBackendKind) -> Bool {
         switch kind {
         case .paged: return true
@@ -110,13 +113,13 @@ enum PrefixCachePolicy {
     /// retired `BatchScheduler+PrefixCacheSizing` resolver).
     static let diskBudgetEnvironmentFlag = "DARKBLOOM_PREFIX_CACHE_DISK_GB"
 
-    /// Box-wide SSD default: 20 GiB across ALL models (Gaj, 2026-07-07),
-    /// clamped to half the volume's free space on a tight disk.
-    static let defaultSSDDiskBudgetBytes = 20 * 1_073_741_824
+    /// Box-wide SSD ceiling across all models, clamped to half the volume's
+    /// currently available space.
+    static let defaultSSDDiskBudgetBytes = 100 * 1_073_741_824
 
     /// Resolved box-wide SSD disk budget (bytes). A valid positive env
-    /// override wins verbatim; otherwise `min(20 GiB, free/2)` — like the
-    /// legacy default derivation, re-evaluated per enforcement so the
+    /// override wins verbatim; otherwise `min(100 GiB, free/2)`,
+    /// re-evaluated per enforcement so the
     /// ceiling shrinks as the volume fills. Unknown free space ⇒ the
     /// fixed default.
     static func ssdDiskBudgetBytes(

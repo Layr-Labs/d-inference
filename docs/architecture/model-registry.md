@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-09-05 · commit `4d9811f7c`
+> Last updated: 2026-09-06 · commit `32b28b0a7`
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
@@ -27,7 +27,7 @@ database and one hash:
 |---|---|---|
 | Is this build real? | A `model_registry` row with an `active`/`beta` status **and** a `ready` version pointed to by `model_active_versions` | `coordinator/store/postgres_model_registry.go` (`activeModelRegistryQuery`) |
 | Are these the right bytes? | The version's `aggregate_sha256` — a SHA-256 over the sorted per-file digests — must match what the provider computed after download | `coordinator/api/model_registry_handlers.go` (`aggregateManifestFileHashes`); `provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift` |
-| What does `gemma-4-26b` mean today? | A `model_aliases` row: `desired_build`, optional `previous_build`, lineage in `retired_builds` | `coordinator/registry/registry.go` (`ResolveModel`) |
+| What does `gemma-4-26b` mean today? | A `model_aliases` row: `desired_build`, optional `previous_build`, lineage in `retired_builds` | `coordinator/registry/model_aliases.go` (`ResolveModel`) |
 
 ## Mechanism
 
@@ -113,7 +113,7 @@ It also reconciles prompt-contract artifacts for the new hashes, fans out
 ### 4. The catalog gates what a provider may advertise
 
 A provider's advertised inventory only counts when the catalog agrees.
-`coordinator/registry/registry.go` (`modelAllowedByCatalogLocked`) requires the
+`coordinator/registry/model_catalog.go` (`modelAllowedByCatalogLocked`) requires the
 build id to be in the catalog and, when both sides carry a hash, the provider's
 `WeightHash` to equal the catalog's. The `models_update` merge path
 (`mergeProviderModels`) is stricter: a build the catalog has never heard of is
@@ -167,7 +167,7 @@ routable on that provider without a re-register.
 ### 6. Aliases turn a public name into a build at request time
 
 `coordinator/api/consumer.go` (`resolveRequestedModel`) calls
-`coordinator/registry/registry.go` (`ResolveModelConstrainedWithTraits`):
+`coordinator/registry/model_aliases.go` (`ResolveModelConstrainedWithTraits`):
 
 1. Not an alias → the id is used unchanged (raw build ids keep working).
 2. An alias → `Desired` if at least one eligible provider can route it;
@@ -181,7 +181,7 @@ build, and `PublicNameForBuild` maps back for consumer-facing surfaces.
 
 ### 7. `desired_models` converges the fleet declaratively
 
-`coordinator/registry/registry.go` (`DesiredModelsForProvider`) emits, for each
+`coordinator/registry/model_commands.go` (`DesiredModelsForProvider`) emits, for each
 alias, `{model_name, desired_build, previous_build}` — but only to providers
 that already advertise the desired, previous, or a retired member of that alias
 and that could acquire the desired build (`providerCanAcquireCatalogModelLocked`).
@@ -259,7 +259,7 @@ the budget.
 | OpenRouter-only aliases | `coordinator/api/openrouter_alias_handlers.go`, `coordinator/api/openrouter_alias_invariants.go` |
 | Public catalog endpoints | `coordinator/api/billing_handlers.go` (`handleModelCatalog`); `coordinator/api/model_registry_handlers.go` (`handleModelCatalogItem`, `handleModelCatalogManifest`) |
 | Catalog → registry handoff | `coordinator/api/server.go` (`SyncModelCatalog`, `syncModelAliases`) |
-| In-memory catalog, alias resolution, `desired_models` computation, models_update merge | `coordinator/registry/registry.go` (`SetModelCatalog`, `SetModelAliases`, `ResolveModel`, `ResolveModelConstrainedWithTraits`, `PublicNameForBuild`, `DesiredModelsForProvider`, `SendDesiredModels`, `mergeProviderModels`, `modelAllowedByCatalogLocked`) |
+| In-memory catalog, alias resolution, `desired_models` computation, models_update merge | `coordinator/registry/model_catalog.go` (`SetModelCatalog`, `modelAllowedByCatalogLocked`); `coordinator/registry/model_aliases.go` (`SetModelAliases`, `ResolveModel`, `ResolveModelConstrainedWithTraits`, `PublicNameForBuild`); `coordinator/registry/model_commands.go` (`DesiredModelsForProvider`, `SendDesiredModels`); `coordinator/registry/provider_models.go` (`mergeProviderModels`) |
 | Capability requirements per model | `coordinator/registry/provider_capabilities.go` (`providerCanAcquireCatalogModelLocked`, `ProviderCapabilityAppleM5`, `ProviderCapabilityMLXNAX`) |
 | Wire messages | `coordinator/protocol/messages.go` (`DesiredModelsMessage`, `DesiredModelEntry`, `ModelsUpdateMessage`, `PrefetchModelStatusMessage`) |
 | Manifest schema and builder (publisher side) | `provider-swift/Sources/ProviderCoreFoundation/Manifest.swift`, `provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift`, `provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift` |

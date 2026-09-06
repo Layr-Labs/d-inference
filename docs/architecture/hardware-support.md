@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-05 · commit `02f6af71a`
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -142,10 +142,17 @@ flowchart TD
     D -- yes --> E[evict idle slot, re-check]
     C -- no, nothing evictable --> F[drop reclaimable cache, re-measure once]
     F --> C
-    C -- yes --> G[load weights, build slot]
+    C -- yes --> P{claimPendingLoad: atomic target + assistant + setup allowance}
+    P -- optional assistant cannot fit --> T[retry target-only claim once]
+    P -- accepted --> Q[hash and prepare; recheckPendingLoad before allocation]
+    T -- accepted --> Q
+    P -- refused --> R1
+    T -- refused --> R1
+    Q -- refused --> R1
+    Q -- accepted --> G[load weights; reduce typed claim as phases finish; build slot]
     G --> H{KVHeadroomProbe.hasServeableKVHeadroom ≥ minimumLoadKVBytes?}
     H -- no --> R2[unload, refuse: modelLoadFailed]
-    H -- yes --> I[EngineV2Reslice grants; slot serving]
+    H -- yes --> I[EngineV2Reslice grants; install slot; finishPendingLoad]
 ```
 
 (`provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift`; the
@@ -158,20 +165,133 @@ standalone server runs the same sequence in
   buffer cache) must satisfy `loadIsServeable` (≥ `minimumLoadKVBytes`) or the model is
   unloaded and the load rejected
   (`provider-swift/Sources/ProviderCore/Inference/KVHeadroomProbe.swift`).
-- `EngineV2KVSizing` derives each slot's KV ceiling from `kvBudgetBytes`, clamped
-  to physical RAM; `EngineV2Reslice` re-slices grants across co-resident slots
-  on every load/unload with `resliceContextCap = 131_072` tokens and never
-  below `minimumServiceableGrantBytes` (= `minimumLoadKVBytes`); a paged pool
-  is construction-fixed, so its un-honourable part is reported as
-  `pagedPoolResizeShortfall()`
-  (`provider-swift/Sources/ProviderCore/Inference/EngineV2KVSizing.swift`,
-  `provider-swift/Sources/ProviderCore/Inference/EngineV2Reslice.swift`).
-- Per request, the bridge reserves `prompt + maxTokens` bytes in
+- `EngineV2KVSizing` and `EngineV2Reslice` assign the admitted
+  [KV slot grants](#kv-slot-grants). A paged build must also expose a backend
+  ceiling at least `minimumLoadKVBytes`; empty segmented storage can satisfy
+  this without allocating pages (`KVHeadroomProbe.postBuildServeable`).
+- For contiguous slots, the bridge reserves `prompt + maxTokens` bytes in
   `GlobalKVCacheBudget` before submit ([`inference.md`](inference.md)).
+- Reservation age is diagnostic only. `GlobalKVCacheBudget.recordCommitRejection`
+  logs sustained rejection and keeps every owner's charge until the caller
+  releases it after its resources retire. The asynchronous allocator-cache
+  reclaimer remains separate; it cannot refund live request or load ownership.
 - `MLXMemoryGuard.recommendedLimits`: `limit = max(minimumLimitBytes, physical −
   reserve)`, `cacheLimit = min(max(minimumLimitBytes / 2, min(limit × 0.75,
   cacheCap)), limit)` — soft MLX guidelines only; the cap above is what
   refuses work.
+
+### KV slot grants
+
+The fleet KV budget is the effective unified-memory cap minus all resident
+`SlotSizingSnapshot.weightsBytes`, the resolved serving-set activation reserve,
+and any explicit RAM prefix allowance. `weightsBytes` sums loaded target
+parameter bytes and retained assistant weights; the scanner's disk-size padding
+belongs to load admission, not this runtime grant. Default SSD streaming has no
+resident prefix-bank carve (`UnifiedMemoryCap.kvBudgetBytes`,
+`provider-swift/Sources/ProviderCore/Inference/SlotSizingSnapshot.swift`).
+
+One model slot receives the full fleet KV budget. With multiple slots,
+`EngineV2KVSizing.resliceGrants` divides it in proportion to each model's fp16
+owning-full-attention marginal byte rate times context, capped by
+`resliceContextCap = 131_072`. If any rate is unknown, all slots receive an equal split. Those fairness
+weights do not choose KV precision: native admission separately accounts for the
+observed per-layer dtype, window rings, recurrent state and configured MTP state
+(`provider-swift/Sources/ProviderCore/Inference/EngineV2Reslice.swift`).
+
+The production paged factory passes that admitted grant to empty segmented
+storage. `makeSegmentedPagedBackend` retains the native dtype/owner map,
+scheduler chunk geometry and context. Its `segmentSizeBytes = 64 << 20` is an
+allocation target, not a slot-capacity ceiling. Native checks still bound each
+Metal buffer, kernel page indices and arithmetic. The former provider eager-pool
+limits do not cap this path
+(`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+SegmentedBackend.swift`;
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool.swift`).
+
+A co-resident load shrinks existing grants before building the newcomer. Live
+pages, request promises and staging owners remain charged until their real
+retirement; shrink does not free them. Existing physical capacity can be reused,
+but a slot already above its grant cannot increase its native charge. Unload or
+rollback restores the surviving slots' shares, and segmented storage can grow
+under the new grant without rebuilding the engine. New backing is reserved
+through [process ownership](#process-ownership) before allocation. The bridge
+forwards a resize when native `capacity.pagedStorage` is present; only explicit
+fixed-reference native fixtures retain a construction-capacity clamp and
+`pagedPoolResizeShortfall()`
+(`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Resizing.swift`;
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift`,
+`updateKVBytesCapacity`).
+
+| Native capacity field | Meaning |
+|---|---|
+| `kvBytesCapacity` | Runtime admission ceiling, including target and auxiliary request state |
+| `kvBytesBackendCapacity` | Mutable backend grant for segmented/contiguous storage; physical capacity only for a fixed-reference pool |
+| `pagedStorage.committedBytes` | Allocator-backed segmented residency, which can temporarily exceed a shrunk grant |
+| `pagedStorage.overGrantBytes` | Committed backing above the current grant; ownership still has to retire |
+
+These fields are defined by
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift`
+(`CBv2CapacitySnapshot`) and `Paged/PagedKVGrant.swift`
+(`PagedKVStorageSnapshot`). A logical grant does not waive the post-load
+serviceability floor or later shared OS/activation headroom checks.
+
+### Process ownership
+
+`GlobalKVCacheBudget` keeps policy, request/load correlation and diagnostics.
+`ProcessMemoryLedger` serializes byte admission; typed pending-load handles
+prevent delayed cleanup from releasing a newer load with the same string ID.
+A load retains its setup allowance through final slot installation. Completed
+weight phases reduce their promise because the coherent allocator reading now
+includes those weights; process-wide before/after differences never create
+materialization credit.
+
+For each native engine connected through `EngineProcessMemoryOwner`, Admission
+publishes `C = max(P, N) + A + X`: native segment commitments, active target KV
+promises, auxiliary state and temporary stages. New promises are accepted before
+allocation or native metadata changes. Only evaluated backing with an explicit
+owner earns materialized coverage `M`, with `0 ≤ M ≤ C`. The process projects
+`U + Σ(C − M)`, where `U` is one coherent active-plus-cache reading, under the
+existing cap, OS-availability and activation-reserve policy. It never subtracts
+one engine's pages from another engine's promise.
+
+A paged segment's shared backing carries one coverage handle through checkpoint
+rebasing. Withdrawal precedes buffer/alias retirement and charge reduction;
+retained raw aliases remain charged through `U`. Closing blocks new growth while
+allowing already reserved allocations and mandatory cleanup. No destructor or
+age threshold returns live byte promises. Allocator initialization runs before
+the ledger lock and before a native Admission can call the provider adapter.
+
+The production factory binds an empty segmented paged pool to this owner before
+constructing EngineV2. Its bridge skips duplicate per-request reservations;
+contiguous slots retain their existing provider reservation path. Recurrent and
+MTP auxiliary state stays charged without materialization credit. Current load
+and provider headroom readers use the same shared ledger.
+Native segmented allocation reserves an allocator-owned upper bound for each
+new backing before construction, including rounding and permitted cached-buffer
+reuse. After evaluating and draining the captured allocation stream, the fresh
+full-buffer owner records actual allocator bytes. Growth and staged adoption
+settle their provisional charge downward to that footprint while preserving the
+full request promise and rollback identity. Logical page counts, offsets and
+usable slack remain separate from allocator padding. Metadata read through a
+view never creates another materialization credit.
+
+The bound covers one buffer. Complete checkpoint capture/import separately
+prices zero-fill intermediates, retained recurrent backing, MTP state and
+metadata. Shared SSD reads and writes claim bounded host buffers before I/O or
+encoding; native destinations remain under Admission. Host buffers drain before
+their permit returns. Native owners retain completion and retirement barriers;
+allocator-active aliases remain visible in U after their coverage retires. Physical
+backing is measured once per owned buffer, while logical page geometry remains distinct
+from allocator padding. Exact-model capacity and latency remain separate from
+[allocator foundation tests](../reports/2026-09-05-allocator-footprint.md).
+Implementation: `libs/mlx-swift/Source/MLX/AllocationFootprint.swift`
+(`allocationFootprintUpperBound`, `evaluatedBufferInfo`) and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSegments.swift`
+(`PagedKVSegmentLayout.allocationBytes`, `PagedKVSegmentBacking`).
+Implementation: `provider-swift/Sources/ProviderCore/Inference/ProcessMemoryLedger.swift`
+(`replaceCharge`, `recordMaterialization`, `withdrawCoverage`),
+`GlobalKVCacheBudget+PendingLoads.swift` (`claimPendingLoad`, `recheckPendingLoad`),
+`EngineProcessMemoryOwner.swift`, and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionV2.swift`.
 
 ### Coordinator mirror
 
@@ -188,9 +308,9 @@ its use in admission are described once, in
 
 ## Invariants
 
-1. `Σ resident weights + KV + activations ≤ hardCapBytes` — every KV budget
-   and headroom path derives from `UnifiedMemoryCap.hardCapBytes`
-   (`kvBudgetBytes`, `liveKVHeadroomBytes`, `loadReserveBytes`).
+1. New KV charges must fit the current unified cap, OS availability and activation
+   reserve. Existing owners survive later pressure until retirement; debt blocks
+   new growth — `UnifiedMemoryCap.liveKVHeadroomBytes`, `ProcessMemoryLedger.replaceCharge`.
 2. The cap never leaves the OS less than `minimumReserveBytes` — `hardCapBytes`
    takes `min(fraction × physical, physical − minimumReserveBytes)`.
 3. The activation reserve is raise-only from the environment —
@@ -201,8 +321,9 @@ its use in admission are described once, in
    minimumLoadKVBytes ≤ freeForLoadGb` and, after loading, measured live KV
    headroom is ≥ `minimumLoadKVBytes` — `canLoad`, `loadIsServeable`,
    `KVHeadroomProbe.hasServeableKVHeadroom`.
-6. No slot's KV grant is re-sliced below `minimumServiceableGrantBytes` —
-   `EngineV2Reslice`.
+6. Load-time re-slicing refuses a newcomer if any resulting engine share falls
+   below `minimumServiceableGrantBytes`; shrink preserves existing ownership —
+   `EngineV2KVSizing.resliceMeetsServiceabilityFloor`, `AdmissionV2.updateBytesCapacity`.
 7. `freeForLoadGb` applies no multiplicative discount; the only padding is the
    scanner's `memoryOverheadFactor` on weights — `ModelLoadAdmission.swift`,
    `ModelScanner+Discovery.swift`.
@@ -216,7 +337,7 @@ its use in admission are described once, in
 | Load refused: "… need N GB to serve — unloaded" | Post-load `hasServeableKVHeadroom` false (live KV headroom below `minimumLoadKVBytes`) | `ProviderLoop+ModelLoading.swift`, `KVHeadroomProbe.swift` |
 | Load refused with `no_kv_headroom` | Slot KV sizing overflowed or no serviceable grant during construction | `EngineV2Config.swift` (`EngineV2RefusalReason.noKVHeadroom`), `EngineV2SlotFactory.swift` |
 | Catalog says the tier fits, provider refuses | Static cap arithmetic passes but `freeForLoadGb` (real free minus `loadReserveBytes` and in-flight reservations) is below `requiredToLoadGb` | `ModelLoadAdmission.swift`, `ProviderLoop+ModelLoading.swift` |
-| Model loads but every request is refused | Grant re-sliced to the floor, or paged pool shortfall | `EngineV2Reslice.swift` |
+| New request cannot fit | Its complete request promise exceeds the slot grant, or live ownership/OS pressure leaves no process headroom | `AdmissionV2.swift`, `ProcessMemoryLedger.swift` |
 | Raising `DARKBLOOM_ACTIVATION_RESERVE_GB` shrinks KV, lowering it does nothing | Raise-only semantics | `UnifiedMemoryCap.swift` (`resolvedActivationReserveBytes`) |
 | `darkbloom doctor` warns about macOS | Below `recommendedMacOSMajorVersion` ([Constants](#constants)); warning only | `BootSecurity.swift` |
 

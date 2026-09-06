@@ -1,0 +1,3164 @@
+[
+  {
+    "id" : "numeric_keys_0",
+    "output" : "{\"01\":1,\"1\":3,\"10\":10,\"2\":2}",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "numeric_keys_1",
+    "output" : "{\n  \"01\" : 1,\n  \"1\" : 3,\n  \"10\" : 10,\n  \"2\" : 2\n}",
+    "template" : "{{ value | tojson(2, false) }}"
+  },
+  {
+    "id" : "unicode_keys_0",
+    "output" : "{\"e\":1,\"e\\u0300\":2,\"e\\u0302\":3,\"\\u00e9\":4,\"\\u00eax\":5}",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "unicode_keys_1",
+    "output" : "{\n  \"e\" : 1,\n  \"è\" : 2,\n  \"ê\" : 3,\n  \"é\" : 4,\n  \"êx\" : 5\n}",
+    "template" : "{{ value | tojson(2, false) }}"
+  },
+  {
+    "id" : "canonical_collision_last_assignment_0",
+    "output" : "{\"\\u00e9\":2}",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "canonical_collision_last_assignment_1",
+    "output" : "{\n  \"é\" : 2\n}",
+    "template" : "{{ value | tojson(2, false) }}"
+  },
+  {
+    "id" : "infinity_array_0",
+    "output" : "null",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "infinity_array_1",
+    "output" : "null",
+    "template" : "{{ value | tojson(2, false) }}"
+  },
+  {
+    "id" : "nan_0",
+    "output" : "null",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "nan_1",
+    "output" : "null",
+    "template" : "{{ value | tojson(2, false) }}"
+  },
+  {
+    "id" : "minus_infinity_0",
+    "output" : "null",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "minus_infinity_1",
+    "output" : "null",
+    "template" : "{{ value | tojson(2, false) }}"
+  },
+  {
+    "id" : "nan_object_0",
+    "output" : "null",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "nan_object_1",
+    "output" : "null",
+    "template" : "{{ value | tojson(2, false) }}"
+  },
+  {
+    "id" : "minus_infinity_array_0",
+    "output" : "null",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "minus_infinity_array_1",
+    "output" : "null",
+    "template" : "{{ value | tojson(2, false) }}"
+  },
+  {
+    "id" : "positional_unicode_0",
+    "output" : "{\"\\u732b\":\"\\u96ea \\ud83d\\udc31 \\\/\"}",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "positional_unicode_1",
+    "output" : "{\n  \"猫\" : \"雪 🐱 \\\/\"\n}",
+    "template" : "{{ value | tojson(2, false) }}"
+  },
+  {
+    "bits" : "bc57f3be38799230",
+    "id" : "finite_0",
+    "output" : "-5.193788386802461e-18",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b5c61a8b8a3c03bf",
+    "id" : "finite_1",
+    "output" : "-1.1815593433633838e-49",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "86d25a37ebfaeae2",
+    "id" : "finite_2",
+    "output" : "-8.282419445931856e-276",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "e2d89de4ba92e909",
+    "id" : "finite_3",
+    "output" : "-1.4516057841885949e+168",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ddba7487f312eee4",
+    "id" : "finite_4",
+    "output" : "-3.226034392690556e+143",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "790ecfffd0f29b63",
+    "id" : "finite_5",
+    "output" : "1.3334998023369795e+275",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "dfcf43dbe1c1eeb6",
+    "id" : "finite_6",
+    "output" : "-3.2749695743121534e+153",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a250e4e0d3d8c14d",
+    "id" : "finite_7",
+    "output" : "-2.164691399515468e-143",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2a3d45311a37aed8",
+    "id" : "finite_8",
+    "output" : "3.1905709784692804e-105",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "42676b16a66547",
+    "id" : "finite_9",
+    "output" : "2.0475104937065267e-307",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "144bd7f3853887ca",
+    "id" : "finite_10",
+    "output" : "6.6166445357728135e-211",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "f50bf91d6e4695d1",
+    "id" : "finite_11",
+    "output" : "-6.562767468831131e+255",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "bae88cac9cc7860c",
+    "id" : "finite_12",
+    "output" : "-6.345899304310765e-25",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b05453a616f6056b",
+    "id" : "finite_13",
+    "output" : "-7.02181063022642e-76",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ec17ebb0f89d8a1e",
+    "id" : "finite_14",
+    "output" : "-5.033038816141496e+212",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8ca0ce91e13aa95",
+    "id" : "finite_15",
+    "output" : "2.524694170446868e-266",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "cdbdbeac87356880",
+    "id" : "finite_16",
+    "output" : "-3.132495166922828e+66",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4f0382820d225fcf",
+    "id" : "finite_17",
+    "output" : "4.308853429017418e+72",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d1d4edb58b7509b2",
+    "id" : "finite_18",
+    "output" : "-1.6262898308072188e+86",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2a939ae107638399",
+    "id" : "finite_19",
+    "output" : "1.367691859502835e-103",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1e4d2599a63b8a34",
+    "id" : "finite_20",
+    "output" : "1.0122886421882337e-162",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "bfa899cb99b29873",
+    "id" : "finite_21",
+    "output" : "-0.048048365127486024",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "602b67f4745c5a86",
+    "id" : "finite_22",
+    "output" : "1.8372768701439153e+155",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c6f5cd5fb489e4dd",
+    "id" : "finite_23",
+    "output" : "-7.075231909214013e+33",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7cb6f2eeeccf5f28",
+    "id" : "finite_24",
+    "output" : "5.725306981363778e+292",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "38ddf5f3ba581357",
+    "id" : "finite_25",
+    "output" : "9.015985320116833e-35",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "6cac8e14801e109a",
+    "id" : "finite_26",
+    "output" : "3.076161173725203e+215",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "eea3d227c88ed261",
+    "id" : "finite_27",
+    "output" : "-9.170870841349801e+224",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b715b99e51559b5c",
+    "id" : "finite_28",
+    "output" : "-2.435464800971253e-43",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "bf7366cb7812747b",
+    "id" : "finite_29",
+    "output" : "-0.004736704636482898",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c8e90c58a05ffee",
+    "id" : "finite_30",
+    "output" : "3.4152719582053997e-248",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b024dfffd1f29025",
+    "id" : "finite_31",
+    "output" : "-9.013999744090655e-77",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "14959418161632d0",
+    "id" : "finite_32",
+    "output" : "1.6409076062887522e-209",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "dd8117412f939fdf",
+    "id" : "finite_33",
+    "output" : "-2.605141602587078e+142",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "40331323d1753c82",
+    "id" : "finite_34",
+    "output" : "19.074765292284162",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ddefdfc0c1b1a229",
+    "id" : "finite_35",
+    "output" : "-3.1094600781097542e+144",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4da37e34b0f05984",
+    "id" : "finite_36",
+    "output" : "1.0264258033498841e+66",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d0e6b13497e3b983",
+    "id" : "finite_37",
+    "output" : "-5.381280280106406e+81",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "797b33bc80b61a56",
+    "id" : "finite_38",
+    "output" : "1.506879006373232e+277",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b697aa68ca88cc6d",
+    "id" : "finite_39",
+    "output" : "-1.0363329718010977e-45",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d8b7bddcc64e8378",
+    "id" : "finite_40",
+    "output" : "-2.3947997198188313e+119",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "e9f49880eb452567",
+    "id" : "finite_41",
+    "output" : "-2.5224003752072852e+202",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "14f27453f9102d6a",
+    "id" : "finite_42",
+    "output" : "8.981380153623163e-208",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "aed55e58ac7912f1",
+    "id" : "finite_43",
+    "output" : "-4.399831724106943e-83",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "73bc6b19eb5a64ac",
+    "id" : "finite_44",
+    "output" : "3.1791828250578617e+249",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "6e7e9e8ad658878b",
+    "id" : "finite_45",
+    "output" : "1.7708922371809933e+224",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "891a936fb81c49be",
+    "id" : "finite_46",
+    "output" : "-8.241991997520701e-265",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4fe46f39b08bb9b5",
+    "id" : "finite_47",
+    "output" : "7.39422012405033e+76",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7f2d0c7e2370f120",
+    "id" : "finite_48",
+    "output" : "3.984132982820132e+304",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "abe04c321180c3ef",
+    "id" : "finite_49",
+    "output" : "-2.3843834707086074e-97",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "bb975e1aea588352",
+    "id" : "finite_50",
+    "output" : "-1.2370703481706074e-21",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "34384a66d8d644b9",
+    "id" : "finite_51",
+    "output" : "3.869720907029327e-57",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b2c2cec74cd65cd4",
+    "id" : "finite_52",
+    "output" : "-3.571801217293612e-64",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "bae4713cc886fe93",
+    "id" : "finite_53",
+    "output" : "-5.284219417671749e-25",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "352530a5fefc2e26",
+    "id" : "finite_54",
+    "output" : "1.10617133079644e-52",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4f57fd5408be77fd",
+    "id" : "finite_55",
+    "output" : "1.6954355948805403e+74",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1490918ef0aa1bc8",
+    "id" : "finite_56",
+    "output" : "1.2599360665104465e-209",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8bf3106d347e9b77",
+    "id" : "finite_57",
+    "output" : "-4.160460887224524e-251",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "3d206f7ed10bde3a",
+    "id" : "finite_58",
+    "output" : "2.9195364024225306e-14",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c4278892297e5781",
+    "id" : "finite_59",
+    "output" : "-2.1705804372684417e+20",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "cb89fdf62a1ae1fc",
+    "id" : "finite_60",
+    "output" : "-7.966536289374401e+55",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "5be4a4b00be93e9b",
+    "id" : "finite_61",
+    "output" : "4.688861880985415e+134",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "45a0aef039ad678e",
+    "id" : "finite_62",
+    "output" : "2.5816238408349397e+27",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "291b00f78ee82745",
+    "id" : "finite_63",
+    "output" : "1.122861326786845e-110",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4ad43ad098daa370",
+    "id" : "finite_64",
+    "output" : "3.027538542775644e+52",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "25f0a874ad1acbff",
+    "id" : "finite_65",
+    "output" : "6.152129516775983e-126",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "fe0596dd1fbbde22",
+    "id" : "finite_66",
+    "output" : "-1.1295475188154745e+299",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "91786560206a6b49",
+    "id" : "finite_67",
+    "output" : "-1.6477140042904182e-224",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "161be31892d29424",
+    "id" : "finite_68",
+    "output" : "3.5578380755132307e-202",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "913ea8626dd67a3",
+    "id" : "finite_69",
+    "output" : "6.176583680556266e-265",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8fc22fa4589b95f6",
+    "id" : "finite_70",
+    "output" : "-9.151514462933813e-233",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "14ddfaa90a53e78d",
+    "id" : "finite_71",
+    "output" : "3.6475579992048663e-208",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "76e76ab209172818",
+    "id" : "finite_72",
+    "output" : "5.898931664783033e+264",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "57d4a5e683557587",
+    "id" : "finite_73",
+    "output" : "1.2712102169758012e+115",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "229d2487ee4e230a",
+    "id" : "finite_74",
+    "output" : "5.9746411824584184e-142",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9feced3ffb57a011",
+    "id" : "finite_75",
+    "output" : "-6.742050435748053e-155",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ff9191f0d41c134c",
+    "id" : "finite_76",
+    "output" : "-3.084532616840203e+306",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ee863a7bf92599ab",
+    "id" : "finite_77",
+    "output" : "-2.5712011218404502e+224",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "79ee6f739ec6595e",
+    "id" : "finite_78",
+    "output" : "2.1580644571110197e+279",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8a7108163250d8d5",
+    "id" : "finite_79",
+    "output" : "-2.215434372204384e-258",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8308553a5b2849c0",
+    "id" : "finite_80",
+    "output" : "-4.762428883205515e-294",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "eeeb6511e6d2b80f",
+    "id" : "finite_81",
+    "output" : "-2.0280327547908577e+226",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "cdb3af13a87c4cf2",
+    "id" : "finite_82",
+    "output" : "-2.072955955509163e+66",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "bcae2843e04715d9",
+    "id" : "finite_83",
+    "output" : "-2.0925820594970878e-16",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "e9ad8ab1cb09ff74",
+    "id" : "finite_84",
+    "output" : "-1.1306383633760885e+201",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ad07ac85bc67f4b3",
+    "id" : "finite_85",
+    "output" : "-9.0794894226285e-92",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "92de4c16384151c6",
+    "id" : "finite_86",
+    "output" : "-8.582737759635334e-218",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "238c1b68a2b21b1d",
+    "id" : "finite_87",
+    "output" : "1.888197828457363e-137",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c0c62f69500aa868",
+    "id" : "finite_88",
+    "output" : "-11358.822755176763",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "67ba8a32375ab397",
+    "id" : "finite_89",
+    "output" : "4.7299372118265505e+191",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1aec526f0c53fbda",
+    "id" : "finite_90",
+    "output" : "5.4603013754751754e-179",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d589391a19fdeca1",
+    "id" : "finite_91",
+    "output" : "-1.1298640752039817e+104",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7a7e07520722f89c",
+    "id" : "finite_92",
+    "output" : "1.0901618430616719e+282",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9e21630994ae98bb",
+    "id" : "finite_93",
+    "output" : "-1.509640866181934e-163",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "142b18c620b41f2e",
+    "id" : "finite_94",
+    "output" : "1.609795218262842e-211",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "58d8f5b9e04ece65",
+    "id" : "finite_95",
+    "output" : "1.0070721062188414e+120",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "185e62579a6ee410",
+    "id" : "finite_96",
+    "output" : "2.663850492845894e-191",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ee295f919d59881f",
+    "id" : "finite_97",
+    "output" : "-4.5858942453321925e+222",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a75281f78b6cfc2",
+    "id" : "finite_98",
+    "output" : "2.7520243809293396e-258",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9e361b1864854469",
+    "id" : "finite_99",
+    "output" : "-3.838746202479751e-163",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2bdd84fbbce19ec4",
+    "id" : "finite_100",
+    "output" : "2.1593841715380079e-97",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ac86615ab0e7a5c3",
+    "id" : "finite_101",
+    "output" : "-3.352872796922189e-94",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "5a7518359da6196",
+    "id" : "finite_102",
+    "output" : "2.007210898465701e-281",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "e4db399a6d8212ad",
+    "id" : "finite_103",
+    "output" : "-6.895179063360587e+177",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9edbea0f9399cb8",
+    "id" : "finite_104",
+    "output" : "7.556880244848067e-261",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "10c7eed5325f55a7",
+    "id" : "finite_105",
+    "output" : "7.892768310084368e-228",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "bded143b8bda68aa",
+    "id" : "finite_106",
+    "output" : "-2.1157781596741248e-10",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d6d93f6b49aa3d31",
+    "id" : "finite_107",
+    "output" : "-2.3718148390199273e+110",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "cbbcbac3883491ec",
+    "id" : "finite_108",
+    "output" : "-7.044464201965641e+56",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9d15c8d6fb653bcb",
+    "id" : "finite_109",
+    "output" : "-1.4430807671744116e-168",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9842ce5b7203b8fe",
+    "id" : "finite_110",
+    "output" : "-8.243869639842935e-192",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ac8d32ddeeab07f5",
+    "id" : "finite_111",
+    "output" : "-4.3743634660060843e-94",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a7451fe222037260",
+    "id" : "finite_112",
+    "output" : "-1.6361347864087375e-119",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "eab2b1f4b9a03c2f",
+    "id" : "finite_113",
+    "output" : "-9.37833590615156e+205",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c3a927fe11c86692",
+    "id" : "finite_114",
+    "output" : "-9.063483636849892e+17",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ddef95bb8d7df6f9",
+    "id" : "finite_115",
+    "output" : "-3.0812529429825416e+144",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "71e8560ffefe7214",
+    "id" : "finite_116",
+    "output" : "5.071062813156731e+240",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "835a9d495a5d7ad3",
+    "id" : "finite_117",
+    "output" : "-1.666866858074747e-292",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d1c2912e5a93c566",
+    "id" : "finite_118",
+    "output" : "-7.213950783614001e+85",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "582811e5eacce3d",
+    "id" : "finite_119",
+    "output" : "3.982065204772489e-282",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "870c0b547b990508",
+    "id" : "finite_120",
+    "output" : "-1.0125067311130985e-274",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "61d9429fe8745bb7",
+    "id" : "finite_121",
+    "output" : "2.2728739687725502e+163",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1de80b42de697a",
+    "id" : "finite_122",
+    "output" : "4.1589998387935503e-308",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "6307a0dbaad591c1",
+    "id" : "finite_123",
+    "output" : "1.1146564008748395e+169",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2843245c1395df3c",
+    "id" : "finite_124",
+    "output" : "9.716271745436357e-115",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "825ddf72806a82db",
+    "id" : "finite_125",
+    "output" : "-2.8548337253418456e-297",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "62e0a9aa8e8226ce",
+    "id" : "finite_126",
+    "output" : "1.9651445428820016e+168",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7d4daaa8536e8585",
+    "id" : "finite_127",
+    "output" : "3.7894309054121026e+295",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "e7d897d1a87af4b0",
+    "id" : "finite_128",
+    "output" : "-1.7531921522286206e+192",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9df981133ed7d43f",
+    "id" : "finite_129",
+    "output" : "-2.7680509523750553e-164",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8f0b9c2524e1162",
+    "id" : "finite_130",
+    "output" : "1.2967793731786675e-265",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "f153144f5fca2d89",
+    "id" : "finite_131",
+    "output" : "-7.764971242898e+237",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "239fc93e47457964",
+    "id" : "finite_132",
+    "output" : "4.27070251395971e-137",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c1e782da4d0a73e3",
+    "id" : "finite_133",
+    "output" : "-3155612264.3266463",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2fad747a88da7d36",
+    "id" : "finite_134",
+    "output" : "4.968326157660994e-79",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2a13bdc2525b4dcd",
+    "id" : "finite_135",
+    "output" : "5.379675789393087e-106",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "fd3f58c8e15de158",
+    "id" : "finite_136",
+    "output" : "-2.0020235946613064e+295",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "fa27459e6feac5c7",
+    "id" : "finite_137",
+    "output" : "-2.6402115915589223e+280",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "83a498354c9cfe4a",
+    "id" : "finite_138",
+    "output" : "-4.127497211864065e-291",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "489c1bbf4a38ea51",
+    "id" : "finite_139",
+    "output" : "6.121464744819235e+41",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8090bedeaccbe08c",
+    "id" : "finite_140",
+    "output" : "-5.961626237856317e-306",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8d36824bbd1f6deb",
+    "id" : "finite_141",
+    "output" : "-5.1508526407297524e-245",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "61dabdd8b3c689e",
+    "id" : "finite_142",
+    "output" : "3.26919877777497e-279",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "241a8e8134e24715",
+    "id" : "finite_143",
+    "output" : "9.134302475989954e-135",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "937518f01faa6b00",
+    "id" : "finite_144",
+    "output" : "-6.120012789909243e-215",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "be13d25e5a71504f",
+    "id" : "finite_145",
+    "output" : "-1.153777831756324e-09",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "3e17f6a14624d032",
+    "id" : "finite_146",
+    "output" : "1.3948533652545566e-09",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c900d9aa9442e819",
+    "id" : "finite_147",
+    "output" : "-4.697166678740012e+43",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "6572645badbb4b4",
+    "id" : "finite_148",
+    "output" : "4.080991201284951e-278",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b5311c9d6b6f90f3",
+    "id" : "finite_149",
+    "output" : "-1.786552882119303e-52",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4c055925b45b8906",
+    "id" : "finite_150",
+    "output" : "1.6750627683628242e+58",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8a43cf9b9cf6915d",
+    "id" : "finite_151",
+    "output" : "-3.221213000848479e-259",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9e6becbb17fd31a8",
+    "id" : "finite_152",
+    "output" : "-3.8793710963748597e-162",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "cc70e4ec915393d7",
+    "id" : "finite_153",
+    "output" : "-1.6967492829053257e+60",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "61e56380d993271a",
+    "id" : "finite_154",
+    "output" : "3.849033971576892e+163",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "fa7dee8b0cd46e1",
+    "id" : "finite_155",
+    "output" : "3.0030268592932333e-233",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "6edddc2dee9b95dc",
+    "id" : "finite_156",
+    "output" : "1.1052681928153103e+226",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b19d11a8a124fcfb",
+    "id" : "finite_157",
+    "output" : "-1.0529573919012503e-69",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "776bb7d5667f7e6e",
+    "id" : "finite_158",
+    "output" : "1.7875147257886098e+267",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "35823cee798f4ca5",
+    "id" : "finite_159",
+    "output" : "6.093239970821385e-51",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "467a87e204a6d550",
+    "id" : "finite_160",
+    "output" : "3.3631775054383736e+31",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "43da7a06741db05f",
+    "id" : "finite_161",
+    "output" : "7.631377951715589e+18",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7f921492f669a302",
+    "id" : "finite_162",
+    "output" : "3.1741164528886594e+306",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d72a58cd280126a9",
+    "id" : "finite_163",
+    "output" : "-7.920226640344801e+111",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "f4535e423e262404",
+    "id" : "finite_164",
+    "output" : "-2.2187358789689306e+252",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "f5bd8d90f64dd203",
+    "id" : "finite_165",
+    "output" : "-1.4199654000907123e+259",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b0dc8455fe03e8d6",
+    "id" : "finite_166",
+    "output" : "-2.5218772561408368e-73",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ba374ea49b2798ed",
+    "id" : "finite_167",
+    "output" : "-2.9417821201077853e-28",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c254cc82402bf5f8",
+    "id" : "finite_168",
+    "output" : "-357321736367.84326",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "42e10f6dd77fc5e7",
+    "id" : "finite_169",
+    "output" : "150063720169007.22",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c352016fff7de3ea",
+    "id" : "finite_170",
+    "output" : "-2.0272520480919464e+16",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a19577ff73cba771",
+    "id" : "finite_171",
+    "output" : "-6.71596948728564e-147",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "99074bf35b09ff2c",
+    "id" : "finite_172",
+    "output" : "-4.182989663811217e-188",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "718a4ebe825c300b",
+    "id" : "finite_173",
+    "output" : "8.565401338877044e+238",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "cd750181d7d8683e",
+    "id" : "finite_174",
+    "output" : "-1.3826113444186892e+65",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2a007433583e9635",
+    "id" : "finite_175",
+    "output" : "2.2419226056138413e-106",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "78c43da2afc533a0",
+    "id" : "finite_176",
+    "output" : "5.474859388210207e+273",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "57572853dcdf46f",
+    "id" : "finite_177",
+    "output" : "2.3076908385378106e-282",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2cad9787397989d2",
+    "id" : "finite_178",
+    "output" : "1.7733085672683196e-93",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "20a51e58ec5de939",
+    "id" : "finite_179",
+    "output" : "2.016119034864075e-151",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "3cdcb54dc4c9c754",
+    "id" : "finite_180",
+    "output" : "1.5936262257736608e-15",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "bc7a792c9ca63713",
+    "id" : "finite_181",
+    "output" : "-2.2961959567898662e-17",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a7db397ba8009ca6",
+    "id" : "finite_182",
+    "output" : "-1.0795985456568536e-116",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "3fdba69e41d7647d",
+    "id" : "finite_183",
+    "output" : "0.43204456739255886",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "dd235a25fddf2e48",
+    "id" : "finite_184",
+    "output" : "-4.6091096405509005e+140",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "f98ff4699f805bf7",
+    "id" : "finite_185",
+    "output" : "-3.5403097978927862e+277",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "5bc65f9e895a34ba",
+    "id" : "finite_186",
+    "output" : "1.2704637125082623e+134",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1557365ac4ad0c01",
+    "id" : "finite_187",
+    "output" : "7.230054492592544e-206",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "53b5f97aab5c1c7c",
+    "id" : "finite_188",
+    "output" : "1.8334885549063842e+95",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "3e9e77ef2ce6071b",
+    "id" : "finite_189",
+    "output" : "4.540159296504828e-07",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2da99f8d2014260e",
+    "id" : "finite_190",
+    "output" : "1.0062953212011518e-88",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b5e539b3e7f923c5",
+    "id" : "finite_191",
+    "output" : "-4.538440305540346e-49",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9bce874a49a85f0",
+    "id" : "finite_192",
+    "output" : "9.180414182236914e-262",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "86102e8bc3b31c7f",
+    "id" : "finite_193",
+    "output" : "-1.7829181336232535e-279",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b3b222e82f184a2",
+    "id" : "finite_194",
+    "output" : "1.4456722683605913e-254",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "f572330e16f22fc9",
+    "id" : "finite_195",
+    "output" : "-5.465302203332125e+257",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "db26add5a1ab9ea4",
+    "id" : "finite_196",
+    "output" : "-1.2576297939129706e+131",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "f3a844108bb9c023",
+    "id" : "finite_197",
+    "output" : "-1.3573205729098804e+249",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "57554206e5bea476",
+    "id" : "finite_198",
+    "output" : "5.112332805013447e+112",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "e4953435ae2ef40d",
+    "id" : "finite_199",
+    "output" : "-3.356403204199603e+176",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a914e668c84bda98",
+    "id" : "finite_200",
+    "output" : "-8.690577680107914e-111",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4d395d0b28a65607",
+    "id" : "finite_201",
+    "output" : "1.0433918766221687e+64",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "e3463534c765198a",
+    "id" : "finite_202",
+    "output" : "-1.6762308166877483e+170",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "6c731b60012a7491",
+    "id" : "finite_203",
+    "output" : "2.572929733901044e+214",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1380e5c12016edcc",
+    "id" : "finite_204",
+    "output" : "9.80336093891352e-215",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "5ed16629f323822b",
+    "id" : "finite_205",
+    "output" : "5.561911836937087e+148",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "18062c5bd93fb7de",
+    "id" : "finite_206",
+    "output" : "6.074949341040464e-193",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "dbc21f1cb007f555",
+    "id" : "finite_207",
+    "output" : "-1.029018033537913e+134",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1a92445e1fbcc40",
+    "id" : "finite_208",
+    "output" : "1.1731912911151305e-300",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7bb2b6547c3e288f",
+    "id" : "finite_209",
+    "output" : "7.12330173811056e+287",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c1c6a356b3ae9372",
+    "id" : "finite_210",
+    "output" : "-759606631.3638747",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4f11304bd196fa59",
+    "id" : "finite_211",
+    "output" : "7.592431998564047e+72",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "abaa3aa3d6f0a9f4",
+    "id" : "finite_212",
+    "output" : "-2.3983590172678692e-98",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "49b30e587f096d33",
+    "id" : "finite_213",
+    "output" : "1.0879074418798502e+47",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "e1b572f1abeb0046",
+    "id" : "finite_214",
+    "output" : "-4.8248601248881884e+162",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c55b2c6db597479d",
+    "id" : "finite_215",
+    "output" : "-1.3140322013980507e+26",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2a608cc639e6fae8",
+    "id" : "finite_216",
+    "output" : "1.4432011928059535e-104",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ad8c11c5a482b417",
+    "id" : "finite_217",
+    "output" : "-2.7559083259342264e-89",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "793bc96e5f1b925a",
+    "id" : "finite_218",
+    "output" : "9.620446126592873e+275",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4bbfb165433ce121",
+    "id" : "finite_219",
+    "output" : "7.771089070448143e+56",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "395722b8d0ff731c",
+    "id" : "finite_220",
+    "output" : "1.7823043022974288e-32",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b8a7ac70bdb5a13b",
+    "id" : "finite_221",
+    "output" : "-8.905016809385838e-36",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "503fa360c6a81dae",
+    "id" : "finite_222",
+    "output" : "3.6634527490722665e+78",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ef74ce4e37f40ae5",
+    "id" : "finite_223",
+    "output" : "-7.886110036809821e+228",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4c6bf8831fe0690",
+    "id" : "finite_224",
+    "output" : "1.1951450730083085e-285",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "e88ea1595820189f",
+    "id" : "finite_225",
+    "output" : "-4.471961147352999e+195",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "adb7dcdbe9cdb642",
+    "id" : "finite_226",
+    "output" : "-1.8743099984731658e-88",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2f127f94ca6548e9",
+    "id" : "finite_227",
+    "output" : "6.094169253782161e-82",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "3c457c9c65fde944",
+    "id" : "finite_228",
+    "output" : "2.3295993444072642e-18",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "38d78892d0563e43",
+    "id" : "finite_229",
+    "output" : "7.081852105335069e-35",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9fa9fd1d8072b016",
+    "id" : "finite_230",
+    "output" : "-3.7857971491159325e-156",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b8ba574c75b95f2d",
+    "id" : "finite_231",
+    "output" : "-1.9816773735131812e-35",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7612ee6560658f38",
+    "id" : "finite_232",
+    "output" : "5.821503927227466e+260",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "62507c9c46e67627",
+    "id" : "finite_233",
+    "output" : "3.797632521144776e+165",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1f758a351b3a9f2a",
+    "id" : "finite_234",
+    "output" : "3.9221609115833794e-157",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "95896217f11d51b1",
+    "id" : "finite_235",
+    "output" : "-6.324977046178418e-205",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "bd5eb4bffd1aac6c",
+    "id" : "finite_236",
+    "output" : "-4.363592795882664e-13",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "246bfa811b7d644b",
+    "id" : "finite_237",
+    "output" : "3.079476267522652e-133",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9f1e7c4a4da577e",
+    "id" : "finite_238",
+    "output" : "9.098010633034694e-261",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "308e050c97866475",
+    "id" : "finite_239",
+    "output" : "8.296172516734964e-75",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7a31e17d79f634e0",
+    "id" : "finite_240",
+    "output" : "4.057172083794514e+280",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a1713d6dd249ecaf",
+    "id" : "finite_241",
+    "output" : "-1.3482744709280288e-147",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "75b4812d50abed12",
+    "id" : "finite_242",
+    "output" : "9.852071189117914e+258",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "33087e17c3b61b79",
+    "id" : "finite_243",
+    "output" : "7.442261405014551e-63",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "f77b912e9f785c94",
+    "id" : "finite_244",
+    "output" : "-3.5555560299476936e+267",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2478045b87a13353",
+    "id" : "finite_245",
+    "output" : "5.28689973853322e-133",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "fe5595854a82b3e6",
+    "id" : "finite_246",
+    "output" : "-3.613673678681728e+300",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7f27e6cce47e3abd",
+    "id" : "finite_247",
+    "output" : "3.2781736265157236e+304",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "6a98a0ff0cbc9788",
+    "id" : "finite_248",
+    "output" : "3.088744108951206e+205",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a48ef94e55e29c37",
+    "id" : "finite_249",
+    "output" : "-1.3636632400276505e-132",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b60d4fcfbbbf3ffa",
+    "id" : "finite_250",
+    "output" : "-2.5069903071973763e-48",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "464c25674d44c641",
+    "id" : "finite_251",
+    "output" : "4.45992876002619e+30",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "daa47f4c5aad99bc",
+    "id" : "finite_252",
+    "output" : "-4.440010027386369e+128",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8bfa43a1519bcb5b",
+    "id" : "finite_253",
+    "output" : "-5.731753115022753e-251",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8dafa161f9a3654e",
+    "id" : "finite_254",
+    "output" : "-9.264846083999905e-243",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9d0c697306c80205",
+    "id" : "finite_255",
+    "output" : "-9.410504205100005e-169",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8c2486f80a795730",
+    "id" : "finite_256",
+    "output" : "-3.5838002673600295e-250",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9b7e743cffeca4bf",
+    "id" : "finite_257",
+    "output" : "-3.006129520684725e-176",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "3a736465f0e637e2",
+    "id" : "finite_258",
+    "output" : "3.916219663515844e-27",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "70337d3c24227209",
+    "id" : "finite_259",
+    "output" : "3.025733394502839e+232",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7286367a734503e4",
+    "id" : "finite_260",
+    "output" : "4.739689939897837e+243",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "801c619b6b2b4c63",
+    "id" : "finite_261",
+    "output" : "-3.946902449546342e-308",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ef72c24322880bb6",
+    "id" : "finite_262",
+    "output" : "-7.110213299137445e+228",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1a8df314600eda4d",
+    "id" : "finite_263",
+    "output" : "9.021995807140044e-181",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "46fb66b8232113d8",
+    "id" : "finite_264",
+    "output" : "8.89221311336744e+33",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "f4d8846739c82647",
+    "id" : "finite_265",
+    "output" : "-7.189972357068781e+254",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ae216aa4c5e674ca",
+    "id" : "finite_266",
+    "output" : "-1.7510318704299942e-86",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1531a1f3066c3ed1",
+    "id" : "finite_267",
+    "output" : "1.3730289562825738e-206",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "da78a1ca673d3b0c",
+    "id" : "finite_268",
+    "output" : "-6.669568862500161e+127",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "e5c86a916b71d66b",
+    "id" : "finite_269",
+    "output" : "-2.026314798444433e+182",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1ae35d14e410471e",
+    "id" : "finite_270",
+    "output" : "3.73317794773852e-179",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "652ae02b6e01e395",
+    "id" : "finite_271",
+    "output" : "2.1781441549786188e+179",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "dd180a8eef5c6d80",
+    "id" : "finite_272",
+    "output" : "-2.862957652701772e+140",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "43da402ba07940cf",
+    "id" : "finite_273",
+    "output" : "7.566239246898642e+18",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4d57df9805996b2",
+    "id" : "finite_274",
+    "output" : "2.258305728590676e-285",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d10d93286834c99",
+    "id" : "finite_275",
+    "output" : "9.638798752425902e-246",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c4924a29c088df34",
+    "id" : "finite_276",
+    "output" : "-2.159266607703786e+22",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "903db96b0f758973",
+    "id" : "finite_277",
+    "output" : "-1.9145857307090386e-230",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "85cfd96a222fb786",
+    "id" : "finite_278",
+    "output" : "-1.0966135674259945e-280",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "620b64ec3ed43ddd",
+    "id" : "finite_279",
+    "output" : "1.9719084547862308e+164",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b87183efeb080428",
+    "id" : "finite_280",
+    "output" : "-8.235691913410688e-37",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d9deba328d281457",
+    "id" : "finite_281",
+    "output" : "-8.124994979425041e+124",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9ad4d811542d3d9a",
+    "id" : "finite_282",
+    "output" : "-2.0092961764554767e-179",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "221817fdc78cbb61",
+    "id" : "finite_283",
+    "output" : "1.92950486957742e-144",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2c21e9b0b78e905c",
+    "id" : "finite_284",
+    "output" : "4.193108955362945e-96",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "960673a04aa0857b",
+    "id" : "finite_285",
+    "output" : "-1.4321927557657143e-202",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2a531d5eec6dfcee",
+    "id" : "finite_286",
+    "output" : "8.334310531172942e-105",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "425a4d69f5bd0925",
+    "id" : "finite_287",
+    "output" : "451871758068.1429",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "993ad463fb477d0",
+    "id" : "finite_288",
+    "output" : "1.5622100752931046e-262",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "5878c19e2da0c0df",
+    "id" : "finite_289",
+    "output" : "1.560717869531237e+118",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1b8eb7f532230982",
+    "id" : "finite_290",
+    "output" : "6.064482595705805e-176",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7d519e8949f1ab29",
+    "id" : "finite_291",
+    "output" : "4.501155067158109e+295",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "377767fda5a8ee84",
+    "id" : "finite_292",
+    "output" : "1.6793135037854353e-41",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "de34e799e740ea83",
+    "id" : "finite_293",
+    "output" : "-6.525919234699057e+145",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a0d37eb43466b756",
+    "id" : "finite_294",
+    "output" : "-1.488894814322048e-150",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "3281577f5f77656d",
+    "id" : "finite_295",
+    "output" : "2.058376452512069e-65",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c9c8025f266878",
+    "id" : "finite_296",
+    "output" : "7.342754040032256e-305",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "12a256942cd36667",
+    "id" : "finite_297",
+    "output" : "6.493664245552958e-219",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "72693b53e6509a6a",
+    "id" : "finite_298",
+    "output" : "1.3459653297140813e+243",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "700aafe3c7df3bf1",
+    "id" : "finite_299",
+    "output" : "5.179019760881569e+231",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c8b23ec747a699ac",
+    "id" : "finite_300",
+    "output" : "-1.589383541924076e+42",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9dee7de4b708d88b",
+    "id" : "finite_301",
+    "output" : "-1.654683865752536e-164",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "3ac8c85ed44986be",
+    "id" : "finite_302",
+    "output" : "1.601544255328033e-25",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2266e9ac96c272b5",
+    "id" : "finite_303",
+    "output" : "5.871783554218584e-143",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c50654ab6dd67620",
+    "id" : "finite_304",
+    "output" : "-3.3745261404953464e+24",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1def45a2eb5424ef",
+    "id" : "finite_305",
+    "output" : "1.6970251427364182e-164",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "58edc8d4869f9052",
+    "id" : "finite_306",
+    "output" : "2.4034688477347194e+120",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "41a977c521c68db9",
+    "id" : "finite_307",
+    "output" : "213639824.8878",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8b822d0fd04a31d4",
+    "id" : "finite_308",
+    "output" : "-3.098935292524214e-253",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "12e953d9538e6f93",
+    "id" : "finite_309",
+    "output" : "1.4349807193820543e-217",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c1d2ad03e55a0b26",
+    "id" : "finite_310",
+    "output" : "-1253314453.4069304",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "3fb83a5bb8e150fd",
+    "id" : "finite_311",
+    "output" : "0.09464047683406203",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b77a1dfe7d7140c8",
+    "id" : "finite_312",
+    "output" : "-1.8738146534111041e-41",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "29a9a6c447db1c77",
+    "id" : "finite_313",
+    "output" : "5.461138472376612e-108",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4872778b314d8b3a",
+    "id" : "finite_314",
+    "output" : "1.0054373544512578e+41",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "10c805155adcc081",
+    "id" : "finite_315",
+    "output" : "7.921432218012227e-228",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2f352ea2caca56fc",
+    "id" : "finite_316",
+    "output" : "2.7913330617154374e-81",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "e1ab049a6ecbcf9b",
+    "id" : "finite_317",
+    "output" : "-3.038789236994225e+162",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d0e3201c666fe48e",
+    "id" : "finite_318",
+    "output" : "-4.535447317250534e+81",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "6041933eaa1b2045",
+    "id" : "finite_319",
+    "output" : "4.712891397011582e+155",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "84ecf36597576870",
+    "id" : "finite_320",
+    "output" : "-6.0840702162021824e-285",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "46d2cefff7c46cff",
+    "id" : "finite_321",
+    "output" : "1.5259343702137795e+33",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7e6794ea1b6c2b22",
+    "id" : "finite_322",
+    "output" : "7.896247347618278e+300",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1c62dbfda59af449",
+    "id" : "finite_323",
+    "output" : "6.100128081999048e-172",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a47fe4c7cd51a924",
+    "id" : "finite_324",
+    "output" : "-7.020797912031446e-133",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "bb339b8bb39f18a3",
+    "id" : "finite_325",
+    "output" : "-1.621902693268965e-23",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a1ea98ba3276b2f6",
+    "id" : "finite_326",
+    "output" : "-2.6624292758082707e-145",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "48a73cb7ea3b008d",
+    "id" : "finite_327",
+    "output" : "1.0121219916815707e+42",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "cea1ba50971d8d18",
+    "id" : "finite_328",
+    "output" : "-6.11763625620735e+70",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9eea9def6f903687",
+    "id" : "finite_329",
+    "output" : "-9.466083936104866e-160",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "222107c8ef61100a",
+    "id" : "finite_330",
+    "output" : "2.7277036413131184e-144",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c0380695803e4911",
+    "id" : "finite_331",
+    "output" : "-24.025718703466797",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "bf30fc53fb7ec84c",
+    "id" : "finite_332",
+    "output" : "-0.00025918054916041345",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "549829a3364a6aab",
+    "id" : "finite_333",
+    "output" : "3.303110402409945e+99",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2064322846ee165e",
+    "id" : "finite_334",
+    "output" : "1.2050248443204323e-152",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "69edc580791011d5",
+    "id" : "finite_335",
+    "output" : "1.8230882911006587e+202",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "34ba5139d50c4ec0",
+    "id" : "finite_336",
+    "output" : "1.0733020096082028e-54",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "51f2f2a55b62990f",
+    "id" : "finite_337",
+    "output" : "5.889499341883496e+86",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "f36fd45c7b65d9f2",
+    "id" : "finite_338",
+    "output" : "-1.1127478368667382e+248",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "51b1b77de147ded9",
+    "id" : "finite_339",
+    "output" : "3.4417807316348e+85",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "fa21a48458e45474",
+    "id" : "finite_340",
+    "output" : "-2.0015648361276083e+280",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a14dfd3774f3e5b3",
+    "id" : "finite_341",
+    "output" : "-2.9316760310348378e-148",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "32c9f7e05a69aec6",
+    "id" : "finite_342",
+    "output" : "4.931668791237116e-64",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "fb8cafccaed741d",
+    "id" : "finite_343",
+    "output" : "6.238081442602777e-233",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "692b3a60a0a04d68",
+    "id" : "finite_344",
+    "output" : "4.070647449910067e+198",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "f05e7dbaa783b497",
+    "id" : "finite_345",
+    "output" : "-1.8935212000273954e+233",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d26d7238b00828da",
+    "id" : "finite_346",
+    "output" : "-1.1715414629192726e+89",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "418685fc73fcd5a1",
+    "id" : "finite_347",
+    "output" : "47234958.49845434",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9281d94aeb88ed9c",
+    "id" : "finite_348",
+    "output" : "-1.5800912903001156e-219",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ae130a2be825a9bb",
+    "id" : "finite_349",
+    "output" : "-9.57110540542285e-87",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c4736b8fc3111c2e",
+    "id" : "finite_350",
+    "output" : "-5.731820245799424e+21",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7aad1ef2cd2a4765",
+    "id" : "finite_351",
+    "output" : "8.457667836515697e+282",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4a7827838b0a2910",
+    "id" : "finite_352",
+    "output" : "5.648259751310393e+50",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7192188318dfa91f",
+    "id" : "finite_353",
+    "output" : "1.178346921230415e+239",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "6bddfab6eea99cc2",
+    "id" : "finite_354",
+    "output" : "3.9423868840033616e+211",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4b5a0768e4e64d69",
+    "id" : "finite_355",
+    "output" : "9.972310271189037e+54",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c5041af8ae6733c4",
+    "id" : "finite_356",
+    "output" : "-3.0382356600559595e+24",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c22a69e234dd6c3",
+    "id" : "finite_357",
+    "output" : "3.25620885248441e-250",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b45e7d25ad1ffe96",
+    "id" : "finite_358",
+    "output" : "-1.942862004123308e-56",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b9c72792faa1abad",
+    "id" : "finite_359",
+    "output" : "-2.2832185055406247e-30",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "23664b2481ae81b8",
+    "id" : "finite_360",
+    "output" : "3.7441286074655095e-138",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "98f43ab758696a7",
+    "id" : "finite_361",
+    "output" : "1.2410891808736094e-262",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "218c735aa7ffd5aa",
+    "id" : "finite_362",
+    "output" : "4.450036673532114e-147",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1efc0dfe3e516631",
+    "id" : "finite_363",
+    "output" : "1.9954797608891296e-159",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "e7f62c6e53edc6ec",
+    "id" : "finite_364",
+    "output" : "-6.32284648735978e+192",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a885e75853e8ccb",
+    "id" : "finite_365",
+    "output" : "6.339734769121654e-258",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d13abe24a165f5fe",
+    "id" : "finite_366",
+    "output" : "-2.0293867810490916e+83",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "3da99f068032c0f5",
+    "id" : "finite_367",
+    "output" : "1.165116961781038e-11",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "bbecc720b8a5f760",
+    "id" : "finite_368",
+    "output" : "-4.8751562406752e-20",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1a9e71c33d2c9d2f",
+    "id" : "finite_369",
+    "output" : "1.8342132265061012e-180",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b3a29d0e4a947392",
+    "id" : "finite_370",
+    "output" : "-5.791604531628942e-60",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "566c216254cf3ff9",
+    "id" : "finite_371",
+    "output" : "2.0645455602100163e+108",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d030983dd87f4714",
+    "id" : "finite_372",
+    "output" : "-1.9215342526612766e+78",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7bce467778adebd3",
+    "id" : "finite_373",
+    "output" : "2.3050150018886652e+288",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c8b492b15bc6a266",
+    "id" : "finite_374",
+    "output" : "-1.7921626940887136e+42",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "dffc67f47140a73d",
+    "id" : "finite_375",
+    "output" : "-2.3803948717171832e+154",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "27ebaba6653d2a08",
+    "id" : "finite_376",
+    "output" : "2.194566851921046e-116",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "74d94c73f1a9dcb7",
+    "id" : "finite_377",
+    "output" : "7.419140500576548e+254",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7580be528145167a",
+    "id" : "finite_378",
+    "output" : "1.00561364651035e+258",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7da2d97543b4fac1",
+    "id" : "finite_379",
+    "output" : "1.5409349946961885e+297",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "69c20c66e4f2543c",
+    "id" : "finite_380",
+    "output" : "2.76303831885368e+201",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "3101e5c244b613db",
+    "id" : "finite_381",
+    "output" : "1.266202937662865e-72",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "38078418f1b9a3ce",
+    "id" : "finite_382",
+    "output" : "8.638416174655647e-39",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "41804b00c327e85",
+    "id" : "finite_383",
+    "output" : "6.1615026580443915e-289",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ba33bcd24874b9b0",
+    "id" : "finite_384",
+    "output" : "-2.4912332986217125e-28",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "be13567ef7a753f",
+    "id" : "finite_385",
+    "output" : "1.8777579211265474e-251",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "65e6d3b9c1c35e62",
+    "id" : "finite_386",
+    "output" : "7.57769700336033e+182",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b394a03af99bb689",
+    "id" : "finite_387",
+    "output" : "-3.2088822530006424e-60",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "48c3139801118e64",
+    "id" : "finite_388",
+    "output" : "3.323601691757362e+42",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "864382d06d5524e3",
+    "id" : "finite_389",
+    "output" : "-1.7197819605015605e-278",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4280a1c848ca9a36",
+    "id" : "finite_390",
+    "output" : "2285879499091.2764",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "75c15f020ef366cd",
+    "id" : "finite_391",
+    "output" : "1.669299385143319e+259",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "3b69a07f09814658",
+    "id" : "finite_392",
+    "output" : "1.6958485304529936e-22",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7195de22d63e86c7",
+    "id" : "finite_393",
+    "output" : "1.4239674449686356e+239",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "54dc6f4a2b14eb4a",
+    "id" : "finite_394",
+    "output" : "6.219387388945975e+100",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8a4a03f0d4e09351",
+    "id" : "finite_395",
+    "output" : "-4.230036765301362e-259",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d1df521e961b958c",
+    "id" : "finite_396",
+    "output" : "-2.4338361381229623e+86",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c1105f66a3ed3eeb",
+    "id" : "finite_397",
+    "output" : "-268249.6600847083",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c3a90eeedd19259e",
+    "id" : "finite_398",
+    "output" : "-9.028215669996132e+17",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "fe13f6bf1b728015",
+    "id" : "finite_399",
+    "output" : "-2.0890079030446782e+299",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b22b2910604b7000",
+    "id" : "finite_400",
+    "output" : "-5.0371772736718115e-67",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d61bf44d813a314f",
+    "id" : "finite_401",
+    "output" : "-6.4113165858774035e+106",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b8d4549fb4135d32",
+    "id" : "finite_402",
+    "output" : "-6.118005923822042e-35",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "5aca2ea15024b119",
+    "id" : "finite_403",
+    "output" : "2.2685765905722547e+129",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "e8833efc14309b4",
+    "id" : "finite_404",
+    "output" : "1.161503286521849e-238",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "6ba2350e47c481f3",
+    "id" : "finite_405",
+    "output" : "2.992893903943411e+210",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "25c27446d7d8e606",
+    "id" : "finite_406",
+    "output" : "8.51936446141636e-127",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "68773d9d2c22ea5d",
+    "id" : "finite_407",
+    "output" : "1.6965475228860319e+195",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "47122d440fefd6a8",
+    "id" : "finite_408",
+    "output" : "2.3594861083266074e+34",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "34ed8a378fd594d7",
+    "id" : "finite_409",
+    "output" : "9.637845435393675e-54",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4d18ce8a9ec541a",
+    "id" : "finite_410",
+    "output" : "1.844130969024028e-285",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a28d4cc7becd2fe1",
+    "id" : "finite_411",
+    "output" : "-3.003437069903809e-142",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "56bee873f62e8adc",
+    "id" : "finite_412",
+    "output" : "7.258879979070479e+109",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "f39e11fe76850dfb",
+    "id" : "finite_413",
+    "output" : "-8.40996209775995e+248",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b1280ebc75d17b6e",
+    "id" : "finite_414",
+    "output" : "-6.808049110316912e-72",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "db4fdefa187bc5a5",
+    "id" : "finite_415",
+    "output" : "-7.069421276788376e+131",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "cedac052b13f1a50",
+    "id" : "finite_416",
+    "output" : "-7.385216931981733e+71",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "931e15907e1cd15f",
+    "id" : "finite_417",
+    "output" : "-1.3635846948589464e-216",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d93a43167ea17002",
+    "id" : "finite_418",
+    "output" : "-6.781520637491201e+121",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "25ffa8d619832fa9",
+    "id" : "finite_419",
+    "output" : "1.1692465704046284e-125",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1cdd9fff7178b904",
+    "id" : "finite_420",
+    "output" : "1.2265370985561605e-169",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "fb8b8c95acbd0303",
+    "id" : "finite_421",
+    "output" : "-1.3109140810426678e+287",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "48bc7ceebdde85d6",
+    "id" : "finite_422",
+    "output" : "2.481656361707885e+42",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "56d7f285297831ed",
+    "id" : "finite_423",
+    "output" : "2.249654321838319e+110",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "46cfa8ea4d3ddaf8",
+    "id" : "finite_424",
+    "output" : "1.2842750837745762e+33",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7bab989a4d4006e7",
+    "id" : "finite_425",
+    "output" : "5.252591863953465e+287",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c48e35dce78850ea",
+    "id" : "finite_426",
+    "output" : "-1.7833073720410629e+22",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c62c05aedab3d071",
+    "id" : "finite_427",
+    "output" : "-1.1100736806670007e+30",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "984f3e217b30342c",
+    "id" : "finite_428",
+    "output" : "-1.3695607680661247e-191",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7ef421c5f65e810b",
+    "id" : "finite_429",
+    "output" : "3.451445275191031e+303",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ed233ec3876fa53e",
+    "id" : "finite_430",
+    "output" : "-5.3074835590596915e+217",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a41aa0fdbe174f35",
+    "id" : "finite_431",
+    "output" : "-9.159140437154406e-135",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "140ca8ccc7a4b8a0",
+    "id" : "finite_432",
+    "output" : "4.256569962771932e-212",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "6efecc57bc13556f",
+    "id" : "finite_433",
+    "output" : "4.559973146279519e+226",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a607f2594bca96d2",
+    "id" : "finite_434",
+    "output" : "-1.7687931096107874e-125",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "17ed4e64eb103239",
+    "id" : "finite_435",
+    "output" : "2.0073019742831641e-193",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d6e61b3479579c54",
+    "id" : "finite_436",
+    "output" : "-4.1534012100122385e+110",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "97827915af3fa813",
+    "id" : "finite_437",
+    "output" : "-1.9770149363327043e-195",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8a121388d10879a6",
+    "id" : "finite_438",
+    "output" : "-3.673951757250828e-260",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ad899278ffdc3d7d",
+    "id" : "finite_439",
+    "output" : "-2.510722353678409e-89",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "521f821c19605348",
+    "id" : "finite_440",
+    "output" : "3.9174451290814747e+87",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9615ec780f8edcf7",
+    "id" : "finite_441",
+    "output" : "-2.797028627718824e-202",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "558e577c82e5e1ba",
+    "id" : "finite_442",
+    "output" : "1.3591552158122312e+104",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "172e05d39e0d7501",
+    "id" : "finite_443",
+    "output" : "5.0204594920449977e-197",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2c4afed8d265917c",
+    "id" : "finite_444",
+    "output" : "2.5276835004218337e-95",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "370b3716d39a981b",
+    "id" : "finite_445",
+    "output" : "1.5254642733713931e-43",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1c1f045d66c0a30e",
+    "id" : "finite_446",
+    "output" : "3.135183746839271e-173",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c03595e0a74e1cc5",
+    "id" : "finite_447",
+    "output" : "-21.585459190912633",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "eb3aa9e5b114af0",
+    "id" : "finite_448",
+    "output" : "7.550401439227428e-238",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "cfda18026b4ebd7f",
+    "id" : "finite_449",
+    "output" : "-4.721022035687563e+76",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "72c1790e32bd1a2",
+    "id" : "finite_450",
+    "output" : "4.0569295112901377e-274",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a7fffce0be64b8c9",
+    "id" : "finite_451",
+    "output" : "-5.073949178762043e-116",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "893a34449fc4b3a4",
+    "id" : "finite_452",
+    "output" : "-3.250680298362157e-264",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a63dfd76e08d7123",
+    "id" : "finite_453",
+    "output" : "-1.7721466077673658e-124",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "fb48f1dad8c3c176",
+    "id" : "finite_454",
+    "output" : "-7.418651692870245e+285",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a1b1519cd0780d0d",
+    "id" : "finite_455",
+    "output" : "-2.1671046750308954e-146",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "307e48839f8c3f98",
+    "id" : "finite_456",
+    "output" : "4.1845011845801267e-75",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9f871402ba131707",
+    "id" : "finite_457",
+    "output" : "-8.404532715698314e-157",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2f0a0a76a042068a",
+    "id" : "finite_458",
+    "output" : "4.2895005226571744e-82",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "3e19ba7aaa931d91",
+    "id" : "finite_459",
+    "output" : "1.4975919760360983e-09",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1d0278923053a2cc",
+    "id" : "finite_460",
+    "output" : "6.117900294334712e-169",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "d31e3609449a532b",
+    "id" : "finite_461",
+    "output" : "-2.4616421856059916e+92",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9fe6ed3ac1d174de",
+    "id" : "finite_462",
+    "output" : "-5.3435929674393364e-155",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "437d759adf692e55",
+    "id" : "finite_463",
+    "output" : "1.3267331773175534e+17",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "26d67779e59d140",
+    "id" : "finite_464",
+    "output" : "5.6200890665798685e-297",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "29b19fba2640098f",
+    "id" : "finite_465",
+    "output" : "7.504200389603573e-108",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b1cc287079a22072",
+    "id" : "finite_466",
+    "output" : "-8.159664183363983e-69",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "e709aca48159c359",
+    "id" : "finite_467",
+    "output" : "-2.2342273263319053e+188",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "81a58a775ae4fef4",
+    "id" : "finite_468",
+    "output" : "-1.0051661540171436e-300",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ccb94c6e60275e33",
+    "id" : "finite_469",
+    "output" : "-4.065321724021862e+61",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1237e715dbd5d46",
+    "id" : "finite_470",
+    "output" : "3.553313247392936e-303",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ad22d72374b4a09d",
+    "id" : "finite_471",
+    "output" : "-2.8902878039913203e-91",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ab50092e369fe8",
+    "id" : "finite_472",
+    "output" : "1.9447245266210838e-305",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "6527415225db517",
+    "id" : "finite_473",
+    "output" : "3.253130821438618e-278",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7df4f29ab919bf5a",
+    "id" : "finite_474",
+    "output" : "5.479885823735802e+298",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "6ed2ae225e3dca21",
+    "id" : "finite_475",
+    "output" : "6.914464704437456e+225",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "6361520fa0bf681c",
+    "id" : "finite_476",
+    "output" : "5.229368680969094e+170",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7c64083915feb23b",
+    "id" : "finite_477",
+    "output" : "1.5617544805066225e+291",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "99c139f76fef1aae",
+    "id" : "finite_478",
+    "output" : "-1.2669165131386405e-184",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "fc81173171f183e5",
+    "id" : "finite_479",
+    "output" : "-5.329703882183003e+291",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "5b728eb18f934b90",
+    "id" : "finite_480",
+    "output" : "3.293026040639096e+132",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c9647a690198399f",
+    "id" : "finite_481",
+    "output" : "-3.653426676979518e+45",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "fce366814a8342",
+    "id" : "finite_482",
+    "output" : "6.5821248504831186e-304",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "756aa897a60851e9",
+    "id" : "finite_483",
+    "output" : "4.0027923532498443e+257",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "e737eea3201d7e44",
+    "id" : "finite_484",
+    "output" : "-1.6660939723739173e+189",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "dfc3cfb4ebce6f43",
+    "id" : "finite_485",
+    "output" : "-2.0752096441830465e+153",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "9952b23d79e24d16",
+    "id" : "finite_486",
+    "output" : "-1.0742298509063408e-186",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "1e28f43c0e3af82d",
+    "id" : "finite_487",
+    "output" : "2.166672414159813e-163",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "60b5830587147438",
+    "id" : "finite_488",
+    "output" : "7.383708777702193e+157",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4954c0bb203fb727",
+    "id" : "finite_489",
+    "output" : "1.851216554153e+45",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "7f203eb36c2a0c2a",
+    "id" : "finite_490",
+    "output" : "2.2280418880333234e+304",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "8e9c1f2963467ab1",
+    "id" : "finite_491",
+    "output" : "-2.6991399552061845e-238",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4fd1779456ade16c",
+    "id" : "finite_492",
+    "output" : "3.160238808780262e+76",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "13d3b9aebaa8b54b",
+    "id" : "finite_493",
+    "output" : "3.6620746158864114e-213",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "4ca5e20241a6947e",
+    "id" : "finite_494",
+    "output" : "1.7582189624790812e+61",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "aac930a5fab01d75",
+    "id" : "finite_495",
+    "output" : "-1.4058539890726617e-102",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "f69a42da4812b9e0",
+    "id" : "finite_496",
+    "output" : "-2.0673302322957783e+263",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "ff1334139c484daf",
+    "id" : "finite_497",
+    "output" : "-1.3169045985407604e+304",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "b22a3e617981fa12",
+    "id" : "finite_498",
+    "output" : "-4.8671600075790004e-67",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "271739f6b2c96479",
+    "id" : "finite_499",
+    "output" : "2.2486612126238207e-120",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "35f8e4deb4133194",
+    "id" : "finite_500",
+    "output" : "1.0645738665549848e-48",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "dfd97ae1ef83a453",
+    "id" : "finite_501",
+    "output" : "-5.337985627853405e+153",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "2d7a606a85f90e6",
+    "id" : "finite_502",
+    "output" : "5.785602270719994e-295",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "c2d5074396f413bd",
+    "id" : "finite_503",
+    "output" : "-92483771682894.95",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "afbe38682f1abc88",
+    "id" : "finite_504",
+    "output" : "-1.019484170425265e-78",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "437d339d9dca1d37",
+    "id" : "finite_505",
+    "output" : "1.3151242199615576e+17",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "69fe25754d6fecfa",
+    "id" : "finite_506",
+    "output" : "3.692082738243823e+202",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a02f7ef940262f41",
+    "id" : "finite_507",
+    "output" : "-1.1745391538510506e-153",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "a9cb62cffc640ebc",
+    "id" : "finite_508",
+    "output" : "-2.332168580963744e-107",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "19e469ec5bb95c5b",
+    "id" : "finite_509",
+    "output" : "6.005314022520846e-184",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "febbdd8d0c4e24e",
+    "id" : "finite_510",
+    "output" : "5.583990802108263e-232",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "bits" : "75cc7faa35adfb05",
+    "id" : "finite_511",
+    "output" : "2.738616343791268e+259",
+    "template" : "{{ value | tojson }}"
+  }
+]

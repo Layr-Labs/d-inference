@@ -205,6 +205,7 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
             tokenizer: tokenizer,
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: batchSize,
+            kvBudget: BenchmarkMemoryBudget.shared,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
             environment: [

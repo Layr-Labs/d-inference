@@ -1,0 +1,25 @@
+{
+  "cause": "Engine diagnostic configuration requires the MTP-policy top-two provider. Adapter availability delegates to the underlying model; only Qwen provides it, so Gemma rejects before main inference.",
+  "common_reducer_inspection": "No current common top-two reducer. Existing Qwen35MTPTopTwoRows is a generic lazy two-stage MLX kernel with deterministic ties and NaNs last; extraction can be considered separately without changing its algorithm or Gemma policy eligibility.",
+  "control": {
+    "historical_all7_trajectories_exact": true,
+    "index7": 42392,
+    "output_tokens": 61,
+    "prompt_tokens": 5418
+  },
+  "engineering_limit": "Adding Gemma MTP-policy conformance could change marginal-policy eligibility. Any diagnostic support must preserve existing normal policy and pass a meaningful non-Qwen engine regression and same-build model controls.",
+  "preserved": "Original pre-extraction template SyntaxError, its negative-control fix tests, source1/source2 preparations, strict failed report and all raw evidence retained. No failed model stage was retried.",
+  "remaining_cells": "paged trace-off and trace-on unrun; no further QAT launch authorized after this failure.",
+  "scope": "Normal-MTP QAT c153 same-build four-cell attempt stopped at contiguous trace installation. No actual selected logits, no numerical or performance acceptance.",
+  "status": "ONE_CONTROL_PASS_ONE_DIAGNOSTIC_CAPABILITY_FAILURE_TWO_UNRUN",
+  "trace": {
+    "error": "topTwoUnavailable",
+    "main_rows": "both not_run",
+    "selected_capture": null,
+    "shutdown_active_requests": 0,
+    "shutdown_kv_in_use": 0,
+    "shutdown_kv_reserved": 0,
+    "shutdown_waiting_requests": 0,
+    "warmup_completed_tokens": 8
+  }
+}

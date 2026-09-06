@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-05 · commit `94c7c31eb`
+> Last updated: 2026-09-06 · commit `06b071fed`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -155,6 +155,7 @@ Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 | Group | Flags (type = default) |
 |---|---|
 | Throughput | `--model <id>` (`String?`), `--prompt <text>` (`ModelBenchmark.defaultPrompt`), `--iterations <n>` (`ModelBenchmark.defaultIterations`), `--max-tokens <n>` (`ModelBenchmark.defaultMaxTokens`) |
+| Ordinary token scores | `--teacher-forced-input <json>` (`String?`, unset), explicit `--model <id>` and `--kv-backend contiguous\|paged` (`BenchmarkCommand.swift`, `teacherForcedOptionError`) |
 | Scheduler prefill decision | `--scheduler-prefill-decision`, `--expected-model-aggregate-sha256`, `--expected-registered-binary-sha256`, `--expected-version`, `--source-sha`, `--decision-iterations` (`SchedulerPrefillDecisionReport.minimumLiveIterations`), `--output <path>` (`BenchmarkCommand+SchedulerPrefillDecision.swift`) |
 | Sweep | `--sweep`, `--prefill-lengths` (`"128,512,2048"`), `--max-batch` (`6`), `--batch-sizes` (`String?`), `--decode-tokens`, `--decode-prompt-tokens`, `--decode-iterations` (`ThroughputSweep` defaults), `--kv-backend` (`"auto"`) (`BenchmarkCommand+Sweep.swift`) |
 | Scheduler prefill | `--scheduler-prefill`, `--prefill-iterations` (`2`) |
@@ -471,6 +472,36 @@ darkbloom benchmark [--model <id>] [--prompt <text>] [--iterations <n>] [--max-t
 | `--iterations <n>` | Number of iterations (default from `ModelBenchmark`) |
 | `--max-tokens <n>` | Maximum tokens to generate per iteration |
 
+### Teacher-forced scores
+
+`--teacher-forced-input <json>` selects bounded ordinary target scoring with an
+explicit model and backend. The UTF-8 JSON input is at most 1 MiB; fields are
+defined by `provider-swift/Sources/ProviderBenchmark/TeacherForcedBenchmarkInput.swift`
+(`TeacherForcedBenchmarkInput`):
+
+| Field | Required value |
+|---|---|
+| `modelID` | Exact selected model ID |
+| `expectedModelAggregateSHA256` | Verified model aggregate hash, 64 lowercase hexadecimal characters |
+| `promptTokens` | Exact nonempty token-ID array, at most 32,768 IDs |
+| `continuation` | Exact nonempty token-ID array, at most 256 IDs |
+
+IDs must fit the model's declared vocabulary; the native request bounds and
+actual logit geometry are checked by
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2TeacherForcedScores.swift`.
+This mode disables prefix caching and MTP, uses a production single-slot KV
+grant, and refuses backend fallback. It is mutually exclusive with the other
+benchmark modes and rejects `--assistant-model` and `--output`; JSON goes to
+stdout (`BenchmarkCommand.swift`, `teacherForcedOptionError`).
+
+The report includes plain top-1 IDs, two diagnostic observations, forward
+counts, runtime/input/model hashes and the production grant. `observed` means
+finite scores and matching ordinary-forward controls; `inconclusive` preserves
+evidence and exits 2. Neither status certifies free generation, model quality
+or speculative verification
+(`provider-swift/Sources/ProviderBenchmark/TeacherForcedBenchmark.swift`).
+See the [developer test procedure](../developer/test.md#ordinary-teacher-forced-score-diagnostics).
+
 ## `darkbloom update`
 
 Check for and apply provider updates.
@@ -720,12 +751,30 @@ provider plist's `EnvironmentVariables`
 (`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`,
 `passthroughEnvKeys` + `inferencePassthroughEnvKeys`,
 `passthroughEnvironment`). Every other variable — including `PATH` and all the
-media, prefix-cache-SSD and memory-cap tunables — reaches the engine only under
-`darkbloom start --foreground` or `--local`. Effects and defaults are specified
+media, SSD-prefix and memory-cap tunables — reaches the engine only under
+`darkbloom start --foreground` or `--local`. The `DARKBLOOM_PREFIX_CACHE` switch
+defaults to enabled for eligible SSD caching. Resident payload retention requires
+`DARKBLOOM_PREFIX_CACHE_MEMORY=1`; both switches are forwarded to the daemon,
+and the global disable wins (`PrefixCachePolicy.isEnabled`, `isMemoryEnabled`). Coordinator cache preference separately requires
+`EIGENINFERENCE_CACHE_ROUTING_MODE=on`; its default is `off`, and no provider CLI
+cache setting enables it (`coordinator/registry/config.go`, `ReadConfig`). Resident
+routing also requires the separate live capability described in
+[`cache-aware-routing.md`](../architecture/cache-aware-routing.md). Effects and defaults are specified
 once in [`reference/configuration.md`](../reference/configuration.md).
+
+`DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE` and `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`
+control the explicitly opted-in recurrent checkpoint bank in foreground/local processes; they are
+not forwarded into the LaunchAgent. Their defaults and budget semantics are
+listed in the
+[`resident cache configuration`](../reference/configuration.md#resident-recurrent-prefix-cache)
+table (`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Hybrid.swift`,
+`hybridConfig`). They do not change `mtp_mode`; eligible persistent assistants
+must support the checkpoint contract described in
+[`prefix caching`](../architecture/prefix-cache.md#resident-tiers).
 
 | Variable | Read by |
 |---|---|
+| `DARKBLOOM_PREFIX_CACHE_MEMORY` | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` (`memoryEnvironmentFlag`) |
 | `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` (`environmentFlag`) |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift` |
@@ -734,7 +783,7 @@ once in [`reference/configuration.md`](../reference/configuration.md).
 | `DARKBLOOM_KV_BACKEND_GUARD` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | `DARKBLOOM_MLX_CACHE_LIMIT_GB` | `provider-swift/Sources/ProviderCore/Inference/MLXMemoryGuard.swift` (`defaultCacheLimitGB`) |
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/MLXMemoryGuard.swift` |
-| `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift` (`maxPartialPrefillsKey`) |
+| `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Configuration.swift` (`maxPartialPrefillsKey`) |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/PrefillDeadlineMode.swift` (`environmentKey`) |
 | `MLX_GATHER_QMM_EXPERT_SLICES` | only when the shell value is exactly `1` (`GemmaOptimizationEnvironment.daemonDrainPassthrough`, `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`) |
 

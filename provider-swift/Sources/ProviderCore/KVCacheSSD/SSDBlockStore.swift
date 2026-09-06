@@ -237,25 +237,11 @@ enum SSDBlockStore {
             throw SSDBlockStoreError.malformedHeader(
                 "chunk[\(i)] plaintext size \(c.count) ≠ metadata \(metadata.chunkPlaintextSizes[i])")
         }
-        let metadataJSON = try canonicalEncode(metadata)
-        let fileIV = randomBytes(fileIVLength)
-        let dek = SymmetricKey(size: .bits256)
-        let wrappedDEK = try wrapDEK(dek: dek, kekKey: kekKey, aad: metadataJSON)
-        let header = try assembleHeader(
-            fileIV: fileIV, wrappedDEK: wrappedDEK, metadataJSON: metadataJSON)
-
-        do {
-            return try SSDNoFollowIO.writeAtomically(
-                to: url,
-                strictFsync: strictFsync,
-                beforeOperation: beforeOperation
-            ) { handle in
-            try handle.write(contentsOf: header)
-            try writeEncryptedBody(handle, chunks: chunks, dek: dek, fileIV: fileIV, aad: metadataJSON)
-            }
-        } catch {
-            throw SSDBlockStoreError.ioFailure("descriptor-relative write: \(error)")
-        }
+        return try writeStreaming(
+            to: url, metadata: metadata, kekKey: kekKey,
+            maximumChunkBytes: Int(UInt32.max) - gcmTagLength,
+            strictFsync: strictFsync, beforeOperation: beforeOperation,
+            chunk: { chunks[$0] })
     }
 
     // MARK: Read
@@ -267,17 +253,15 @@ enum SSDBlockStore {
         kekKey: SymmetricKey,
         beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil
     ) throws -> (SSDBlockMetadata, [Data]) {
-        guard isSafeBlockURL(url), isRealRegularFile(url) else {
-            throw SSDBlockStoreError.ioFailure("unsafe block path")
-        }
-        let handle = try SSDNoFollowIO.openRegularFileForReading(
-            at: url, beforeOperation: beforeOperation)
-        defer { try? handle.close() }
-        let header = try readHeader(from: handle)
-        let dek = try unwrapDEK(
-            wrapped: header.wrappedDEK, kekKey: kekKey, aad: header.metadataBytes)
-        let plaintexts = try decryptChunks(from: handle, header: header, dek: dek)
-        return (header.metadata, plaintexts)
+        var plaintexts: [Data] = []
+        let metadata = try readStreaming(
+            from: url, kekKey: kekKey,
+            maximumChunkBytes: Int(UInt32.max) - gcmTagLength,
+            maximumPlaintextBytes: Int.max,
+            beforeOperation: beforeOperation,
+            validateMetadata: { _ in },
+            consumeChunk: { _, bytes in plaintexts.append(bytes) })
+        return (metadata, plaintexts)
     }
 
     /// Header-only metadata read (startup index scan) — no DEK unwrap, no
@@ -286,6 +270,8 @@ enum SSDBlockStore {
     /// re-verified at adoption time by the full authenticated `read`.
     static func readMetadataOnly(
         from url: URL,
+        maximumMetadataBytes: Int = maxHeaderFieldBytes,
+        maximumWrappedDEKBytes: Int = maxHeaderFieldBytes,
         beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil
     ) throws -> SSDBlockMetadata {
         guard isSafeBlockURL(url), isRealRegularFile(url) else {
@@ -294,7 +280,8 @@ enum SSDBlockStore {
         let handle = try SSDNoFollowIO.openRegularFileForReading(
             at: url, beforeOperation: beforeOperation)
         defer { try? handle.close() }
-        return try readHeader(from: handle).metadata
+        return try readHeader(from: handle, maximumMetadataBytes: maximumMetadataBytes,
+                              maximumWrappedDEKBytes: maximumWrappedDEKBytes).metadata
     }
 
     // MARK: Temp sweep
@@ -393,7 +380,7 @@ enum SSDBlockStore {
 
     // MARK: - DEK wrap/unwrap (verbatim legacy scheme)
 
-    private static func wrapDEK(dek: SymmetricKey, kekKey: SymmetricKey, aad: Data) throws -> Data {
+    static func wrapDEK(dek: SymmetricKey, kekKey: SymmetricKey, aad: Data) throws -> Data {
         let dekBytes = dek.withUnsafeBytes { Data($0) }
         let sealed = try AES.GCM.seal(dekBytes, using: kekKey, authenticating: aad)
         guard let combined = sealed.combined else {
@@ -402,7 +389,7 @@ enum SSDBlockStore {
         return combined
     }
 
-    private static func unwrapDEK(wrapped: Data, kekKey: SymmetricKey, aad: Data) throws -> SymmetricKey {
+    static func unwrapDEK(wrapped: Data, kekKey: SymmetricKey, aad: Data) throws -> SymmetricKey {
         do {
             let box = try AES.GCM.SealedBox(combined: wrapped)
             let raw = try AES.GCM.open(box, using: kekKey, authenticating: aad)
@@ -418,85 +405,9 @@ enum SSDBlockStore {
         }
     }
 
-    // MARK: - Body
-
-    private static func writeEncryptedBody(
-        _ handle: FileHandle, chunks: [Data], dek: SymmetricKey, fileIV: Data, aad: Data
-    ) throws {
-        guard chunks.count <= UInt32.max else {
-            throw SSDBlockStoreError.sizeOverflow("too many chunks: \(chunks.count)")
-        }
-        try handle.write(contentsOf: uint32LE(UInt32(chunks.count)))
-        for (i, plaintext) in chunks.enumerated() {
-            guard plaintext.count <= Int(UInt32.max) - gcmTagLength else {
-                throw SSDBlockStoreError.sizeOverflow("chunk \(i) too large")
-            }
-            let nonce = try deriveChunkNonce(dek: dek, fileIV: fileIV, chunkIndex: UInt32(i))
-            let sealed: AES.GCM.SealedBox
-            do {
-                sealed = try AES.GCM.seal(
-                    plaintext, using: dek, nonce: AES.GCM.Nonce(data: nonce), authenticating: aad)
-            } catch {
-                throw SSDBlockStoreError.ioFailure("AES.GCM.seal chunk \(i): \(error)")
-            }
-            let sealedLen = plaintext.count + gcmTagLength
-            try handle.write(contentsOf: uint32LE(UInt32(sealedLen)))
-            try handle.write(contentsOf: sealed.ciphertext)
-            try handle.write(contentsOf: sealed.tag)
-        }
-    }
-
-    private static func decryptChunks(
-        from handle: FileHandle, header: ParsedHeader, dek: SymmetricKey
-    ) throws -> [Data] {
-        do {
-            try handle.seek(toOffset: header.bodyOffset)
-        } catch {
-            throw SSDBlockStoreError.ioFailure("seek encrypted body: \(error)")
-        }
-
-        let countBytes = try readExactly(4, from: handle, what: "chunk count")
-        let chunkCount = readUInt32LE(countBytes, at: 0)
-        guard Int(chunkCount) == header.metadata.chunkPlaintextSizes.count else {
-            throw SSDBlockStoreError.malformedHeader(
-                "chunk_count \(chunkCount) ≠ metadata \(header.metadata.chunkPlaintextSizes.count)")
-        }
-        var plaintexts: [Data] = []
-        plaintexts.reserveCapacity(Int(chunkCount))
-        for i in 0..<Int(chunkCount) {
-            let ctLenBytes = try readExactly(4, from: handle, what: "chunk \(i) length")
-            let ctLen = Int(readUInt32LE(ctLenBytes, at: 0))
-            let expectedPlaintext = header.metadata.chunkPlaintextSizes[i]
-            guard ctLen >= gcmTagLength, expectedPlaintext >= 0,
-                ctLen == expectedPlaintext + gcmTagLength
-            else {
-                throw SSDBlockStoreError.malformedHeader(
-                    "chunk \(i) ciphertext size \(ctLen) inconsistent with plaintext \(expectedPlaintext)")
-            }
-            let ciphertext = try readExactly(ctLen - gcmTagLength, from: handle, what: "chunk \(i) ct")
-            let tag = try readExactly(gcmTagLength, from: handle, what: "chunk \(i) tag")
-            let nonce = try deriveChunkNonce(dek: dek, fileIV: header.fileIV, chunkIndex: UInt32(i))
-            do {
-                let box = try AES.GCM.SealedBox(
-                    nonce: AES.GCM.Nonce(data: nonce), ciphertext: ciphertext, tag: tag)
-                let pt = try AES.GCM.open(box, using: dek, authenticating: header.metadataBytes)
-                guard pt.count == expectedPlaintext else {
-                    throw SSDBlockStoreError.authenticationFailed(
-                        "chunk \(i) decrypted size \(pt.count) ≠ metadata \(expectedPlaintext)")
-                }
-                plaintexts.append(pt)
-            } catch let e as SSDBlockStoreError {
-                throw e
-            } catch {
-                throw SSDBlockStoreError.authenticationFailed("AES.GCM.open chunk \(i): \(error)")
-            }
-        }
-        return plaintexts
-    }
-
     // MARK: - Header
 
-    private struct ParsedHeader {
+    struct ParsedHeader {
         let fileIV: Data
         let wrappedDEK: Data
         let metadataBytes: Data
@@ -504,7 +415,10 @@ enum SSDBlockStore {
         let bodyOffset: UInt64
     }
 
-    private static func readHeader(from handle: FileHandle) throws -> ParsedHeader {
+    static func readHeader(
+        from handle: FileHandle, maximumMetadataBytes: Int = maxHeaderFieldBytes,
+        maximumWrappedDEKBytes: Int = maxHeaderFieldBytes
+    ) throws -> ParsedHeader {
         try handle.seek(toOffset: 0)
         let prefix = try readExactly(24, from: handle, what: "header prefix")
         guard Array(prefix.prefix(4)) == magic else {
@@ -519,13 +433,13 @@ enum SSDBlockStore {
         }
         let fileIV = prefix.subdata(in: 8..<20)
         let wrappedLen = Int(readUInt32LE(prefix, at: 20))
-        guard wrappedLen >= 0, wrappedLen <= maxHeaderFieldBytes else {
+        guard wrappedLen >= 0, wrappedLen <= min(maxHeaderFieldBytes, maximumWrappedDEKBytes) else {
             throw SSDBlockStoreError.malformedHeader("wrapped DEK length \(wrappedLen) out of bounds")
         }
         let wrappedDEK = try readExactly(wrappedLen, from: handle, what: "wrapped DEK")
         let metadataLenBytes = try readExactly(4, from: handle, what: "metadata length")
         let metadataLen = Int(readUInt32LE(metadataLenBytes, at: 0))
-        guard metadataLen >= 0, metadataLen <= maxHeaderFieldBytes else {
+        guard metadataLen >= 0, metadataLen <= min(maxHeaderFieldBytes, maximumMetadataBytes) else {
             throw SSDBlockStoreError.malformedHeader("metadata length \(metadataLen) out of bounds")
         }
         let metadataBytes = try readExactly(metadataLen, from: handle, what: "metadata")
@@ -543,7 +457,7 @@ enum SSDBlockStore {
             metadata: metadata, bodyOffset: UInt64(24 + wrappedLen + 4 + metadataLen))
     }
 
-    private static func readExactly(_ count: Int, from handle: FileHandle, what: String) throws -> Data {
+    static func readExactly(_ count: Int, from handle: FileHandle, what: String) throws -> Data {
         guard count > 0 else { return Data() }
         var out = Data()
         out.reserveCapacity(count)
@@ -589,7 +503,7 @@ enum SSDBlockStore {
 
     // MARK: - Byte helpers
 
-    private static func assembleHeader(fileIV: Data, wrappedDEK: Data, metadataJSON: Data) throws -> Data {
+    static func assembleHeader(fileIV: Data, wrappedDEK: Data, metadataJSON: Data) throws -> Data {
         var header = Data()
         header.reserveCapacity(28 + wrappedDEK.count + metadataJSON.count)
         header.append(contentsOf: magic)
@@ -614,7 +528,7 @@ enum SSDBlockStore {
         return Data(bytes: &le, count: 2)
     }
 
-    private static func uint32LE(_ v: UInt32) -> Data {
+    static func uint32LE(_ v: UInt32) -> Data {
         var le = v.littleEndian
         return Data(bytes: &le, count: 4)
     }
@@ -631,7 +545,7 @@ enum SSDBlockStore {
         return UInt16(b[base]) | (UInt16(b[base + 1]) << 8)
     }
 
-    private static func readUInt32LE(_ data: Data, at offset: Int) -> UInt32 {
+    static func readUInt32LE(_ data: Data, at offset: Int) -> UInt32 {
         let b = data.subdata(in: offset..<(offset + 4))
         let base = b.startIndex
         return UInt32(b[base])
@@ -640,7 +554,7 @@ enum SSDBlockStore {
             | (UInt32(b[base + 3]) << 24)
     }
 
-    private static func randomBytes(_ n: Int) -> Data {
+    static func randomBytes(_ n: Int) -> Data {
         var buf = [UInt8](repeating: 0, count: n)
         let status = SecRandomCopyBytes(kSecRandomDefault, n, &buf)
         precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")

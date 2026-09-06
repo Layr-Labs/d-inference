@@ -2,13 +2,9 @@ package registry
 
 import "testing"
 
-// TestScanProviderReservationSkipsHintsExactlyWhenTrackerWould pins the
-// predicate scanProviderReservation uses to skip the capability walk against
-// cacheRoutingTracker.hints' own early return: hints are produced (a non-nil
-// map, possibly empty) only when the tracker exists, cache routing is ON, the
-// request carries a plan, and a route key is configured; in every other state
-// the walk is skipped and the request carries nil hints — exactly what the
-// former unconditional walk + hints() call produced.
+// The scan's early guard matches the holder index's eligibility predicate.
+// Off/missing-plan/missing-key paths do no content lookup and return nil hints;
+// an ordinary holder miss also returns nil, while selection stays active.
 func TestScanProviderReservationSkipsHintsExactlyWhenTrackerWould(t *testing.T) {
 	plan := exactTestPlan(exactTestAnchor(1, "c"))
 	newPR := func(with bool) *PendingRequest {
@@ -44,8 +40,8 @@ func TestScanProviderReservationSkipsHintsExactlyWhenTrackerWould(t *testing.T) 
 		r, _, _ := exactTestRegistry(t)
 		pr := newPR(true)
 		r.scanProviderReservation("model", pr)
-		if pr.cacheRoutingHints == nil {
-			t.Fatal("tracker on + plan + route key must compute hints (non-nil map)")
+		if pr.cacheRoutingHints != nil {
+			t.Fatal("active plan without holders must skip capability work and leave hints nil")
 		}
 		if pr.CacheSelectionMode != "active" {
 			t.Fatalf("selection mode = %q, want active", pr.CacheSelectionMode)
@@ -60,7 +56,7 @@ func TestScanProviderReservationSkipsHintsExactlyWhenTrackerWould(t *testing.T) 
 		pr := newPR(true)
 		r.scanProviderReservation("model", pr)
 		if pr.cacheRoutingHints != nil {
-			t.Fatal("no route key must leave hints nil (hints() would return nil)")
+			t.Fatal("no route key must leave hints nil (matchingHolders would return nil)")
 		}
 	})
 

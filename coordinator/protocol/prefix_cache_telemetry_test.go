@@ -63,3 +63,32 @@ func TestPrefixCacheTelemetryOptionalWireCompatibility(t *testing.T) {
 		t.Fatalf("authoritative empty snapshots were omitted: %s", empty)
 	}
 }
+
+func TestPrefixCacheTelemetryOptionalWire(t *testing.T) {
+	legacy := BackendSlotCapacity{Model: "model", State: "idle"}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "prefix_cache") {
+		t.Fatal("legacy wire shape changed")
+	}
+	const wire = `{"kind":"complete_checkpoint","generation":7,"sample_seq":2,"sample_age_ms":3,"entries":2,"disk_bytes":4096,"staging_bytes":0,"stages_total":1,"files_written_total":2,"written_bytes_total":8192,"donation_drops_total":0,"corrupt_drops_total":0,"evictions_total":0,"io":{"staging_peak_bytes":1024,"files_read_total":1,"read_bytes_total":4096,"stage_read_bytes_total":4096,"donation_read_bytes_total":0,"stage_us_total":125125,"write_us_total":250500}}`
+	var sample PrefixCacheTelemetry
+	if err := json.Unmarshal([]byte(wire), &sample); err != nil {
+		t.Fatal(err)
+	}
+	if sample.IO.StageUSTotal != 125125 || sample.SampleAgeMS != 3 {
+		t.Fatalf("wire units: %+v", sample)
+	}
+	data, err = json.Marshal(sample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != wire {
+		t.Fatalf("Swift-mirrored field shape changed: %s", data)
+	}
+	if sample.TTLExpiredTotal != nil {
+		t.Fatal("missing optional measurement invented")
+	}
+}

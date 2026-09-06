@@ -1,0 +1,90 @@
+{
+  "parent_base": "676df63e7460396993bbffe7b8b94015493973e5",
+  "lm_base": "c9cdb9c190959f8b6d5e88a1d7ff5b0e3113e1f0",
+  "mlx_native_base": "6b0505cc790f512ae49d740b21e13f80802946bd",
+  "build_seconds": 85.68,
+  "actual_passing_xctest": 77,
+  "actual_passing_swift_testing": 44,
+  "actual_passing_suites": 8,
+  "zero_test_filter_attempts": 2,
+  "source_manifest_sha256": "911db55da72332deeb018f581496cd0bfecc29d6b1bf22a0ba564c0f8dfe0121",
+  "commands": [
+    "swift package --scratch-path ../../provider-swift/.build --skip-update edit --path ../mlx-swift mlx-swift",
+    "swift build --scratch-path ../../provider-swift/.build --build-tests --jobs 4 --disable-automatic-resolution",
+    "../../scripts/run-nested-suite.sh <actual-suite-name> --scratch-path ../../provider-swift/.build"
+  ],
+  "logs": [
+    {
+      "path": "radix-ssd-native-build1.log.gz",
+      "sha256": "5632a01be86561f34560c10aa6131c8f861414289106f3e30370b9da668e5107",
+      "uncompressed_bytes": 492045,
+      "uncompressed_sha256": "cf48f90f9db3636e99f1b32fa0b180ad73009316eb2d9f16c277630b5da05170"
+    },
+    {
+      "path": "radix-ssd-native-setup.log.gz",
+      "sha256": "5d069f5f014d8fdc00e0dc55455f718d4960347ee7b4079bcb3d077a54de0dd8",
+      "uncompressed_bytes": 322,
+      "uncompressed_sha256": "c08927768f01af57e523be7499cf5ba0d628b4d5be4fbf3af33c2df7d27b0bf7"
+    },
+    {
+      "path": "CBv2CompleteCheckpointEngineTests.log.gz",
+      "sha256": "a5f588216bb39b7ab863eface9d1cf590178352d402c1c94af2692d8e32c92c4",
+      "uncompressed_bytes": 2014,
+      "uncompressed_sha256": "9c3a9ee2f478071b362c936b4988f899faabe57fb30adbcd6bd5ece39eae86ea"
+    },
+    {
+      "path": "CBv2CompleteCheckpointTests.log.gz",
+      "sha256": "5b9db66f797a64643f5e5081f31b36f9e92f94f19e095da482874fb91f270b84",
+      "uncompressed_bytes": 2147,
+      "uncompressed_sha256": "c16af38389ac92b4ae974dd0068ed03187c6e566069888edd3a0d0cf7c6f2bab"
+    },
+    {
+      "path": "CBv2FirstTokenDeadlineAdmissionTests.log.gz",
+      "sha256": "f65c6f9b354bd35a3c7a263dc041a8ebc516739ff9489ed216dbc583103c98ea",
+      "uncompressed_bytes": 738,
+      "uncompressed_sha256": "6b59baca7e2fd63e5effa6f2bd69e5720f635f7fe4667c97adcc4dc2edbcbc97"
+    },
+    {
+      "path": "CBv2FirstTokenDeadlineEngineTests.log.gz",
+      "sha256": "c892e43a1488b0a2ae069bf4088905681c6e4f09ffab1a3499df4b1badb15de3",
+      "uncompressed_bytes": 5186,
+      "uncompressed_sha256": "40a46bbc1da2920489035d0de9940ff63b3af002435be41f8fac128c108dc027"
+    },
+    {
+      "path": "CBv2FirstTokenWorkProjectionTests.log.gz",
+      "sha256": "f2fde8dacf32ae646f9716c9c925ac24ec422fc432f45778f0b67e89123d0ba6",
+      "uncompressed_bytes": 3998,
+      "uncompressed_sha256": "d4345c670fa22c4bf89d8caea68ae4339f9277a07527c07a899d3545504dce48"
+    },
+    {
+      "path": "CBv2QwenMTPIntegrationTests.log.gz",
+      "sha256": "e70c8ad941c1a2d34d6cd6273d1ebc281d4fa6e718f370938f37dccd7f7ec97f",
+      "uncompressed_bytes": 6684,
+      "uncompressed_sha256": "2e3ece65a73b498afbcef2738453cc70fceeadcde2f3ce9a75c65c82a915b39c"
+    },
+    {
+      "path": "CBv2RecurrentStateTests.log.gz",
+      "sha256": "75accd2e5656af8698b2906e6eb60aeac7a0f5165c077ab7c099e72ded177eed",
+      "uncompressed_bytes": 4645,
+      "uncompressed_sha256": "128b6e952254931649a2ba333865c00d0b854d77be100eb2a38c19c886905815"
+    },
+    {
+      "path": "CBv2SchedulerAdmissionTests.log.gz",
+      "sha256": "8e2cfdfb00f1a7734dec62d23739270e48647c4b3052a8034672e54db4ff0f64",
+      "uncompressed_bytes": 6681,
+      "uncompressed_sha256": "c6cfbc6cac1cd40f2b3db2a236b174444c809c19b9f206f315c4ed82b4c49ddf"
+    },
+    {
+      "path": "FirstTokenDeadlineAdmissionTests.log.gz",
+      "sha256": "265fe841af019dcb63440542e6226c87f30d6e5ae6fb7bc89800cd412988330e",
+      "uncompressed_bytes": 755,
+      "uncompressed_sha256": "dd728fb359c2329b66df3b88f0323136360cfc34fc8bbdf3bfc4c101214c144e"
+    },
+    {
+      "path": "Qwen35MTPDraftTrimTests.log.gz",
+      "sha256": "2e7bf40b8cc2124e5916d4c2cb0a0a07a74a045d14a55eb671b1b867efbc25ec",
+      "uncompressed_bytes": 3506,
+      "uncompressed_sha256": "4683cab6f78ecbe84d173632681e8ebbff19f33c99348463a15c38ae7c660826"
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+{
+  "native_pass": {
+    "XCTest": 23,
+    "SwiftTesting": 15,
+    "total": 38,
+    "skipped": 0
+  },
+  "provider_pass": {
+    "SwiftTesting": 35,
+    "suites": 3
+  },
+  "initial_failure": "First tiny MoE fixture used unsupported 16-wide linear heads and trapped in Metal. Test-only 64-wide correction passed both actual MoE cases; production source unchanged. The failing log is retained.",
+  "source_manifest": "source-manifest.json",
+  "files": {
+    "qwen35b-ssd-native-CBv2CompleteCheckpointEngineTests.txt.gz": {
+      "stored_bytes": 707,
+      "stored_sha256": "d9ef4e672cf44487370df2fe8abadadd0a245aa4691493a5fb24d9a3c30866c8",
+      "uncompressed_bytes": 2447,
+      "uncompressed_sha256": "c09ccad697e7b6d8740cb3a5d7101d9a51bdadf476b2b68bce27445870bdc3c9"
+    },
+    "qwen35b-ssd-native-CBv2CompleteCheckpointTests.txt.gz": {
+      "stored_bytes": 690,
+      "stored_sha256": "280b723a71575e795ed3ee83c23a64a00e5df6c00de6861318eb3a71c09d847b",
+      "uncompressed_bytes": 2307,
+      "uncompressed_sha256": "aeeb91d3f77897a8d5fb8b10675c825957407623744fbbcd713786c11b97d769"
+    },
+    "qwen35b-ssd-native-Qwen35CBv2ConfigurationTests.txt.gz": {
+      "stored_bytes": 844,
+      "stored_sha256": "7d23122fc2244ba3f536150c6c6f73b9a8ae8c4221e53611d91aa6eb725a4c3c",
+      "uncompressed_bytes": 3654,
+      "uncompressed_sha256": "485bb3de1b961a23e9158a2b26331c9d2768ee2b2957a02fa58c12376c7b8331"
+    },
+    "qwen35b-ssd-native-Qwen35MTPDraftTrimTests.txt.gz": {
+      "stored_bytes": 1137,
+      "stored_sha256": "67745feed85e73026d3a5f92f44e92e9de2be55646f97e5516929b2f5e0251e6",
+      "uncompressed_bytes": 4251,
+      "uncompressed_sha256": "254a89c466306784cd9d19f2091b2427fd5903b0c6896a119dee1600fad981f9"
+    },
+    "qwen35b-ssd-native-Qwen35MoECompleteCheckpointTests-rerun.txt.gz": {
+      "stored_bytes": 577,
+      "stored_sha256": "e78cab39385eed29c3f3874f06324a7eff8cfe0d90b629eab2734312c0bfc792",
+      "uncompressed_bytes": 1574,
+      "uncompressed_sha256": "136ceea99fcb12cf6662a101f2dcc6ff29c400442cb8f06e0a83650d03d03cb6"
+    },
+    "qwen35b-ssd-native-Qwen35MoECompleteCheckpointTests.txt.gz": {
+      "stored_bytes": 915,
+      "stored_sha256": "af84dd418faaea5c9bfa26aac1a8b94a8430ca5fad38704611c3b98457874d1d",
+      "uncompressed_bytes": 2544,
+      "uncompressed_sha256": "4140a0e46f2053a6619ece4a6951c8504aa910a11ef0930c28718ef553080ce0"
+    },
+    "qwen35b-ssd-native-build1.txt.gz": {
+      "stored_bytes": 11237,
+      "stored_sha256": "d7f40bddbad8c598f57dc075d1c386ed740b53d7c5767d66aab6db7256bb3567",
+      "uncompressed_bytes": 305053,
+      "uncompressed_sha256": "0648adbbbf306e0bb9c0cc2e2df2fe7ad5479077ed5e612cd7331b3c2cd6b87b"
+    },
+    "qwen35b-ssd-native-build2.txt.gz": {
+      "stored_bytes": 2895,
+      "stored_sha256": "929ff5665e0c0c0062ae89f1b755cd84ddf3c95276c9db0291f112bb13252f43",
+      "uncompressed_bytes": 50174,
+      "uncompressed_sha256": "f23cc05b90dd86172c39173ffb74deedc1cd4ed9648d7e6d6e5d28bca26d9b26"
+    },
+    "qwen35b-ssd-native-setup1.txt.gz": {
+      "stored_bytes": 914,
+      "stored_sha256": "d29ef702bfeac6ebc86e5c5ecdf6bd13cbc0d4ecca3a7e6c851fda5a5ab125f6",
+      "uncompressed_bytes": 5192,
+      "uncompressed_sha256": "d5653903f3b2d84e60892e19f523368c634485d9f5875d31487fb57a9ce4774d"
+    },
+    "qwen35b-ssd-provider-build1.txt.gz": {
+      "stored_bytes": 853,
+      "stored_sha256": "96be788443b2914fca17de0422bd714879998a7c856a41b7718b37c6b191e162",
+      "uncompressed_bytes": 2072,
+      "uncompressed_sha256": "2e7f691ce27189ca9697dbef295604ebad0df6b6e7dbb80ecb78a3d4332fdbee"
+    },
+    "qwen35b-ssd-provider-tests1.txt.gz": {
+      "stored_bytes": 2387,
+      "stored_sha256": "5a4caecf7643f572b9ffe41c74bd4ce0549fb2a7eae00be85c1fa39bb44d9772",
+      "uncompressed_bytes": 10205,
+      "uncompressed_sha256": "472ea1ed8ae5e004808d1b313ccd00374d278154f66a9813e2b24e30622a6d6e"
+    },
+    "source-manifest.json": {
+      "stored_bytes": 153617,
+      "stored_sha256": "6a6e4ff602de0504162955ceb2d7e25ac707eb7032a48cd95e70f34ff2b7bd06"
+    },
+    "provider-paths.json": {
+      "stored_bytes": 293,
+      "stored_sha256": "b4498421c5d7623995b4eb96c89a84ebcf211e2704fb3537d69acd6d22b646c1"
+    },
+    "native-paths.json": {
+      "stored_bytes": 761,
+      "stored_sha256": "4bbc4e2b475b1b2bc6546bf6df06f41a244e2479397f0fe96889dfb128df2ee5"
+    },
+    "commands.json": {
+      "stored_bytes": 1322,
+      "stored_sha256": "9b69fbc9cb2c79bbbb2fab00eb0380e4120e7b284d1225369dd89bd20b212f73"
+    }
+  }
+}

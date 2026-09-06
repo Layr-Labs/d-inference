@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-04 · commit `ac60c5ada`
+> Last updated: 2026-09-06 · commit `8cc56074a`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -8,6 +8,107 @@ environment, and let [`.github/workflows/release-swift.yml`](../../.github/workf
 build, sign, notarize, hash, upload, and register the bundle. The coordinator
 verifies every registered artifact by re-downloading it, so a release either
 lands fully or not at all.
+
+## Environment-free signing validation
+
+[`provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml)
+accepts a reviewed full `source_sha` and its existing `version` through both
+`workflow_dispatch` and `workflow_call`. The registered [CI workflow](../../.github/workflows/ci.yml)
+provides the signing-validation manual entrypoint: its manual event skips the
+ordinary CI jobs and calls this reusable workflow with a relative path at the
+same commit. Push/PR triggers and all ordinary job definitions remain unchanged,
+including the push-only Swift cache job and provider test isolation.
+
+The CI caller maps exactly the five signing secrets named below; it does not
+inherit the repository's entire secret set. Both caller and reusable workflow
+keep only `contents: read` and `actions: read`. The standalone manual entrypoint
+is retained. This path has no GitHub `environment` field or environment selector and no
+coordinator registration, R2 upload, GitHub Release, tag or deployment step.
+
+The build job has no signing secrets. It checks the source's verified commit
+signature and version parity, builds the exact provider and metallib, then stages
+an unsigned app with the existing SwiftPM resource helper. A new runner downloads
+that same run's artifact, verifies its inventory/source/version, rejects unsafe
+archive paths and links, and checks the candidate entitlements against the
+reviewed workflow tooling (`scripts/provider-signing-validation.py`).
+
+Unpacking limits the compressed archive and total declared member bytes to
+2 GiB, each member to 512 MiB, and the archive to 16,384 members. Normalized
+duplicate paths, including case aliases, are refused. The app's bundle ID,
+executable name and both version fields must match the expected source before
+signing and when the final receipt is written.
+
+The signing job uses repository-scoped `APPLE_CERTIFICATE_P12`,
+`APPLE_CERTIFICATE_PASSWORD`, `PROVISIONING_PROFILE_BASE64`, `APPLE_ID` and
+`APPLE_APP_PASSWORD`. Before creating the isolated temporary keychain, it records
+the original user keychain search list. It then activates the temporary keychain
+while preserving all prior entries and their order. After import it validates the
+profile's team, keychain group, production APNs grant, expiry and declared
+application identity (`scripts/provider-signing-validation.py`, `profile`). Both
+`com.apple.application-identifier` and `application-identifier` are checked when
+present: each must name the exact provider team/app or a wildcard that covers
+it. Profiles may omit those declarations; conflicting, malformed or unrelated
+declarations fail validation.
+
+`scripts/provider_signing_identity.py` queries only the isolated keychain with
+`security find-identity -v -p codesigning`. Exactly one valid certificate/private-key
+identity must be present. Its kind must be Developer ID Application and its team
+must equal `SLDQ2GJ6TL`; zero, ambiguous, wrong-kind, wrong-team or malformed results
+fail before signing. The selected public SHA-1 identity fingerprint is passed to
+`codesign`, avoiding dependence on a company's display-name spelling. There is no
+global identity fallback and no new certificate/trust-anchor installation.
+
+Static signed-code requirements retain Apple's generic anchor and the exact team,
+add the Developer ID Application leaf marker, and preserve the helper/app identifiers.
+The marker `1.2.840.113635.100.6.1.13` is documented in Apple's
+[Security policy definitions](https://github.com/apple-oss-distributions/Security/blob/db15acbe6a7f257a859ad9a3bb86097bfe0679d9/trust/headers/SecPolicyPriv.h).
+The job checks the CLI's keychain group, APNs entitlement and disabled debug-task
+entitlement, then Apple notarization, the stapled ticket and post-sign file hashes.
+
+Cleanup always restores and verifies the original user search list, then removes
+the captured temporary keychain and material. Restore failure still attempts
+private-material deletion and fails the job; it is not reported as successful cleanup.
+Only existing Actions artifacts plus non-secret identity, cleanup and notarization
+receipts are retained for three days. No private key or secret value is exported.
+
+The normal APNs entitlement retains its required `production` value; this is a
+static signing entitlement, not a GitHub environment or a provider registration.
+The workflow never executes the candidate CLI, helper, model or inference server.
+Signed runtime smoke, installation, model correctness and release approval remain
+separate gates. The original release workflow's `validation_only` option still
+selects a deployment environment and is not this isolated path.
+
+Review the exact caller/reusable workflow commit, expanded build/signing job
+graph, source SHA and version before separately authorizing a real dispatch.
+The registered CI path can select the reviewed branch before a master merge:
+[harmless probe run 34029318546](https://github.com/Layr-Labs/d-inference/actions/runs/34029318546)
+executed one identity-only Ubuntu job from that branch while master CI lacked
+`workflow_dispatch`. That probe did not exercise signing or reusable jobs. Its
+branch creation used an existing account exception to restricted ref creation;
+normal repository access and source-review rules still apply.
+
+GitHub documents [branch selection for a manual workflow](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+and [same-commit relative reusable calls](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow).
+After explicit authorization, the registered entrypoint is selected with
+`gh workflow run ci.yml --ref <reviewed-branch> -f source_sha=<verified-full-sha> -f version=<exact-source-version>`.
+The build rechecks the published signature, exact checkout and existing version;
+secret-name availability alone does not establish credential validity.
+The first authorized signing run, [34030878981](https://github.com/Layr-Labs/d-inference/actions/runs/34030878981),
+built and validated its unsigned artifact but failed its first hard-coded identity
+lookup after importing one identity and validating the profile. No certificate
+subject or valid-identity listing was retained, so a display-name change is unproven.
+The release workflow already added the temporary keychain to the search list; the
+initial isolated workflow omitted that step. The scoped search-list lifecycle and
+strict fingerprint selection address both lookup causes without weakening a gate.
+Any retry requires review of the changed definition; there is no cross-run artifact input.
+
+Source preparation and the CPU helper tests do not claim a completed signing run:
+
+```bash
+python3 scripts/test-provider-signing-validation.py
+python3 scripts/test-provider-signing-routing.py
+python3 scripts/test-provider-signing-identity.py
+```
 
 ## When to use
 

@@ -1,0 +1,98 @@
+{
+  "source_commit": "f3b2ee6a69cc83a03ffc70ae860dfb6a903799a7",
+  "canonical_hash": "SHA256 of UTF-8 json.dumps(value, sort_keys=True, separators=(comma, colon))",
+  "ci": {
+    "top": {
+      "name": "CI"
+    },
+    "events": {
+      "push": {
+        "branches": [
+          "master",
+          "main"
+        ]
+      },
+      "pull_request": null
+    },
+    "jobs": {
+      "release-integrity": {
+        "sha256": "c64c6bc9065aaf9b80891d6a5a2b64b2e7eaebcfa53869201b703b697df91878",
+        "if": null
+      },
+      "docs": {
+        "sha256": "44f693c77ade7327dff38e91240f37d18dbcd98401927fd242c0a7184be0b008",
+        "if": null
+      },
+      "test-coordinator": {
+        "sha256": "c93838458ef79504df0b3fc7ba2a09cd0a45b419819630796fca8c985c9b508b",
+        "if": null
+      },
+      "lint-coordinator": {
+        "sha256": "aae791c29939f40e9e401afa24994bafa3f43ed8bdcbfcb3f02e68b10de0cb12",
+        "if": null
+      },
+      "test-prompt-sidecar": {
+        "sha256": "e221aa285798e7d992800f3ce6e51acf29b1a791ef1ac80378e161856728536f",
+        "if": null
+      },
+      "test-provider": {
+        "sha256": "9fe8ff598c04f196ee46211ca090a1d1aff751c11a9f8feaf1d71b324efcbdbf",
+        "if": null
+      },
+      "cache-swift": {
+        "sha256": "bf405c85b593d47e11462b31786354bcf04b146319fa27efae75dc9b5bf30373",
+        "if": "github.event_name == 'push'"
+      },
+      "lint-console": {
+        "sha256": "7caac2b5c8dd633dda47a243d042a33ff37edc6a448c5eabd2e7d3a47517f34c",
+        "if": null
+      }
+    }
+  },
+  "signing": {
+    "top": {
+      "name": "Provider Signing Validation",
+      "permissions": {
+        "contents": "read",
+        "actions": "read"
+      }
+    },
+    "manual_event": {
+      "inputs": {
+        "source_sha": {
+          "description": "Reviewed full commit SHA to build",
+          "required": true,
+          "type": "string"
+        },
+        "version": {
+          "description": "Exact existing source version; does not change source",
+          "required": true,
+          "type": "string"
+        }
+      }
+    },
+    "jobs": {
+      "build": "dd03264284f2b0b5cce952e23b3f937e5eda813396731597f5db3039405fc48e",
+      "signing": "04744fe53cb51c62cabf9f081ee76fbc534466091b9a2d7b2162146e945f72fa"
+    },
+    "identity_revision": {
+      "parent_workflow_sha": "8cc56074ae7a6dd6553fe3cd3692af1ba58ed9a2",
+      "previous_signing_job_sha256": "42410c40012a6abd9ed3853aceeee4d80c4adcad49a8ca5c3d9c5e59b289001a",
+      "new_signing_job_sha256": "04744fe53cb51c62cabf9f081ee76fbc534466091b9a2d7b2162146e945f72fa",
+      "scope": "Only signer identity lookup/search-list lifecycle, Developer ID requirements and non-secret diagnostics; normal CI and unsigned build unchanged."
+    }
+  },
+  "preserved_files": {
+    "scripts/run-provider-tests.sh": "fe00e82ef515fee3caae91ae53593927e1a13f3be0ca8ec89bbd4df8043b077c",
+    "scripts/run-nested-suite.sh": "14ecf2a47a07c07b2bdc535ac1a6fdd64c674763963a2fa9b86cb07d8feeda48",
+    "scripts/provider-signing-validation.py": "e8bbead2713264ef53eb8917ddf8b2f25f79a5105b7966daef44d92c81a315c4",
+    "scripts/test-provider-signing-validation.py": "fe96f0fb8769aa8033fae0908a2cf5224faddb5d0f590bfdec3cfb54b57ac281",
+    "scripts/stage-swiftpm-resource-bundles.sh": "1151d2a1ea15096b81425a163b911831134ac0aaef58a0e10d22c316b13de0b1",
+    "provider-swift/entitlements.plist": "3da35936c7b5bde0a37436771f8cbe54b0ea5273ce66082e0c0b0cf541677d11",
+    "provider-swift/entitlements-enclave.plist": "526f1d7d729bc609f4b6c06a57a69ff74c6c5c2f08fc7d1269c6815dc9abed28",
+    ".github/workflows/release-swift.yml": "7dd094b6e975344d7ff665fe5163232d9c4ae431cac1bab1933a4ef4dfc1fd69",
+    ".github/workflows/register-model.yml": "b908ab2cabb5136ff940fa5cab84a6cb88b588b66707abf77bae3a1c1eae5596",
+    "vercel.json": "e2ac0c0120a7ef800398c5ee3de046482346fe79dfe8d406d46f6ff472e36caf",
+    "console-ui/vercel.json": "e2ac0c0120a7ef800398c5ee3de046482346fe79dfe8d406d46f6ff472e36caf"
+  }
+}

@@ -72,7 +72,7 @@ provider-test: ## Build and run Swift provider tests with source-matched metalli
 	    done; \
 	    [ "$$found" -eq 1 ] || { echo "provider test runner bundle not found in $$bin_path" >&2; exit 1; }; \
 	    trap - EXIT HUP INT TERM
-	cd provider-swift && swift test --skip-build
+	cd provider-swift && ../scripts/run-provider-tests.sh
 
 provider: provider-build provider-test ## Build + test provider
 

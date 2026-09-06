@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-05 · commit `efc4e301b`
+> Last updated: 2026-09-06 · commit `8cc56074a`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -15,6 +15,21 @@ checksum rejection, fallback, and cancellation. `scripts/test-publish-model.sh`
 checks the artifact workflow payload. `TestHuggingFaceArtifactPostgresAndCache`
 in `coordinator/store/hugging_face_artifact_test.go` uses a disposable
 `DATABASE_URL` to check storage and cache invalidation.
+
+Run `python3 scripts/test-provider-signing-validation.py` to verify the manual
+signing workflow and its artifact, identity, entitlement and archive checks.
+Run `python3 scripts/test-provider-signing-routing.py` for parsed YAML job-graph
+checks and mutation fixtures. The routing test uses Ruby's standard YAML parser
+and a canonical baseline from the pre-entrypoint PR commit: it verifies that all
+eight ordinary CI job definitions and the unsigned build job are preserved,
+that push/PR routing is unchanged, and that manual CI expands only to the unsigned
+build and dependent signer with exactly five mapped secrets. The signer contract separately records the bounded identity/search-list revision.
+Run `python3 scripts/test-provider-signing-identity.py` for synthetic public-identity
+parsing, exact-team/kind and ambiguity refusals, mocked keychain lifecycle/cleanup,
+and the platform `csreq` requirement parser. These fixtures never operate on real
+keychains, signing credentials, provider binaries or models.
+See the [signing-validation procedure](../operations/provider-release.md#environment-free-signing-validation)
+for the separate signed artifact validation.
 
 ## Prerequisites
 
@@ -76,13 +91,25 @@ production prompt vectors against it with
 
 ### 4. Provider (Swift) — unit tests with a source-matched metallib
 
+`scripts/run-provider-tests.sh` passes `--no-parallel` explicitly for the general
+suite because unrelated Swift Testing cases share process-wide MLX state and
+executor capacity. Concurrency tests retain their own tasks and interleavings.
+The real process-environment projection case (`defaultApplyProjectsSettings`)
+and bounded SSD stage-deadline case (`stageDelta`) run in separate processes
+through `scripts/run-nested-suite.sh`, including its nonempty/no-skips guards.
+A failure in the general suite does not silence either isolated gate. No test
+assertion, timeout or inference-concurrency setting changes.
+
 ```bash
 make provider-test
 # = cd provider-swift && swift build --build-tests
 #   ./scripts/fetch-metallib.sh <bin-path>            (build mlx.metallib from libs/mlx-swift source)
 #   cp mlx.metallib into every <bin-path>/*PackageTests.xctest/Contents/MacOS/
-#   cd provider-swift && swift test --skip-build
+#   cd provider-swift && ../scripts/run-provider-tests.sh
 ```
+
+Run `python3 scripts/test-run-provider-tests.py` to check this shell routing with
+a fake Swift command. These CPU tests do not build or run Swift, MLX or a model.
 
 The metallib staging is not optional: MLX loads `mlx.metallib` from beside the
 running executable, and for tests the executable is the `.xctest` runner.
@@ -345,7 +372,7 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt -l .` · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR; explicit manual signing validation | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt -l .` · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` · **Manual only:** relative reusable signing workflow, unsigned build → signer; all ordinary CI jobs skipped |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 120 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) → current coordinator vs released v0.7.12 provider (`scripts/fetch-v0712-provider.sh`, `DARKBLOOM_MIXED_VERSION_EXPECT=artifact`, fails unless `MIXED_VERSION_TIER_ARTIFACT_OK` appears) → released v0.7.12 coordinator (`git worktree add … v0.7.12`) vs candidate provider (`NonStreamingInference`, `StreamingInference`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

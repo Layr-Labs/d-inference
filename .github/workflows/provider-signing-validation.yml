@@ -1,0 +1,238 @@
+name: Provider Signing Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Reviewed full commit SHA to build
+        required: true
+        type: string
+      version:
+        description: Exact existing source version; does not change source
+        required: true
+        type: string
+
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Reviewed full commit SHA to build
+        required: true
+        type: string
+      version:
+        description: Exact existing source version; does not change source
+        required: true
+        type: string
+    secrets:
+      APPLE_CERTIFICATE_P12:
+        required: true
+      APPLE_CERTIFICATE_PASSWORD:
+        required: true
+      PROVISIONING_PROFILE_BASE64:
+        required: true
+      APPLE_ID:
+        required: true
+      APPLE_APP_PASSWORD:
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    name: Build unsigned validation input
+    runs-on: blacksmith-12vcpu-macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Validate explicit source identity
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$SOURCE_SHA" --jq .commit.verification.verified)" = true
+      - name: Checkout reviewed workflow tooling
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          path: tooling
+          persist-credentials: false
+      - name: Checkout candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: candidate
+          submodules: recursive
+          persist-credentials: false
+      - name: Validate packaging and workflow isolation guards
+        run: python3 tooling/scripts/test-provider-signing-validation.py
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34
+        with:
+          go-version-file: candidate/go.mod
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build exact source and stage unsigned app
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+          EXPECTED_SOURCE: ${{ inputs.source_sha }}
+          RUSTUP_TOOLCHAIN: 1.88.0
+          MLX_METALLIB_DEPLOYMENT_TARGET: '26.2'
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          candidate/scripts/check-release-version.sh "$EXPECTED_VERSION"
+          command -v cmake >/dev/null 2>&1 || brew install cmake
+          cd candidate/provider-swift
+          swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom
+          swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom-enclave
+          swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --product darkbloom-fan-helper
+          bin_dir=$(swift build -c release --scratch-path "$RUNNER_TEMP/provider-build" --show-bin-path)
+          cd "$GITHUB_WORKSPACE"
+          METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" candidate/scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"
+          python3 tooling/scripts/provider-signing-validation.py stage \
+            --source "$GITHUB_WORKSPACE/candidate" --bin "$bin_dir" \
+            --metallib "$RUNNER_TEMP/metallib/mlx.metallib" \
+            --output "$RUNNER_TEMP/unsigned-stage" --version "$EXPECTED_VERSION"
+          tar czf "$RUNNER_TEMP/unsigned-validation.tar.gz" -C "$RUNNER_TEMP/unsigned-stage" .
+      - name: Retain unsigned input for the separate signing job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: provider-signing-input
+          path: ${{ runner.temp }}/unsigned-validation.tar.gz
+          retention-days: 3
+          if-no-files-found: error
+
+  signing:
+    name: Validate signing and notarization without publication
+    needs: build
+    runs-on: blacksmith-12vcpu-macos-latest
+    timeout-minutes: 35
+    env:
+      APPLE_TEAM_ID: SLDQ2GJ6TL
+    steps:
+      - name: Checkout reviewed signing tooling only
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          path: tooling
+          persist-credentials: false
+      - name: Read this run's unsigned artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SOURCE: ${{ inputs.source_sha }}
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name provider-signing-input --dir "$RUNNER_TEMP/incoming"
+          python3 tooling/scripts/provider-signing-validation.py unpack \
+            --archive "$RUNNER_TEMP/incoming/unsigned-validation.tar.gz" \
+            --output "$RUNNER_TEMP/signing-stage" \
+            --source-sha "$EXPECTED_SOURCE" --version "$EXPECTED_VERSION"
+      - name: Import repository-scoped signing material
+        env:
+          P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$P12_BASE64" && test -n "$P12_PASSWORD" && test -n "$PROFILE_BASE64"
+          keychain="$RUNNER_TEMP/signing-validation.keychain-db"
+          python3 tooling/scripts/provider_signing_identity.py capture \
+            --snapshot "$RUNNER_TEMP/signing-search-list-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" --keychain "$keychain"
+          keychain_password=$(openssl rand -hex 24)
+          printf '%s' "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/signing-certificate.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          python3 tooling/scripts/provider_signing_identity.py activate \
+            --snapshot "$RUNNER_TEMP/signing-search-list-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json"
+          security import "$RUNNER_TEMP/signing-certificate.p12" -k "$keychain" \
+            -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          rm -f "$RUNNER_TEMP/signing-certificate.p12"
+          app="$RUNNER_TEMP/signing-stage/Darkbloom.app"
+          printf '%s' "$PROFILE_BASE64" | base64 --decode > "$app/Contents/embedded.provisionprofile"
+          security cms -D -i "$app/Contents/embedded.provisionprofile" > "$RUNNER_TEMP/profile.plist"
+          python3 tooling/scripts/provider-signing-validation.py profile --profile "$RUNNER_TEMP/profile.plist"
+      - name: Select unique valid Developer ID Application identity
+        run: |
+          python3 tooling/scripts/provider_signing_identity.py select \
+            --snapshot "$RUNNER_TEMP/signing-search-list-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" --team "$APPLE_TEAM_ID" \
+            --output "$RUNNER_TEMP/signing-identity.json" --github-env "$GITHUB_ENV"
+      - name: Sign and statically verify the app
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/signing-stage/Darkbloom.app"
+          keychain="$RUNNER_TEMP/signing-validation.keychain-db"
+          codesign --force --options runtime --timestamp --identifier io.darkbloom.fan-helper \
+            --keychain "$keychain" --sign "$SIGNING_IDENTITY_SHA1" "$app/Contents/Helpers/darkbloom-fan-helper"
+          codesign --verify --strict -R="$SIGNING_REQUIREMENT and identifier \"io.darkbloom.fan-helper\"" \
+            "$app/Contents/Helpers/darkbloom-fan-helper"
+          codesign --force --options runtime --timestamp --keychain "$keychain" \
+            --sign "$SIGNING_IDENTITY_SHA1" "$app/Contents/MacOS/mlx.metallib"
+          codesign --force --options runtime --timestamp --keychain "$keychain" \
+            --entitlements tooling/provider-swift/entitlements-enclave.plist \
+            --sign "$SIGNING_IDENTITY_SHA1" "$app/Contents/MacOS/darkbloom-enclave"
+          codesign --force --options runtime --timestamp --keychain "$keychain" \
+            --entitlements tooling/provider-swift/entitlements.plist \
+            --sign "$SIGNING_IDENTITY_SHA1" "$app/Contents/MacOS/darkbloom"
+          codesign --force --options runtime --timestamp --keychain "$keychain" \
+            --entitlements tooling/provider-swift/entitlements.plist --sign "$SIGNING_IDENTITY_SHA1" "$app"
+          codesign --verify --deep --strict --verbose=2 \
+            -R="$SIGNING_REQUIREMENT and identifier \"io.darkbloom.provider\"" "$app"
+          codesign --verify --strict --verbose=2 -R="$SIGNING_REQUIREMENT" "$app/Contents/MacOS/darkbloom"
+          codesign -d --entitlements - --xml "$app/Contents/MacOS/darkbloom" > "$RUNNER_TEMP/cli-entitlements.plist"
+          python3 tooling/scripts/provider-signing-validation.py cli-entitlements --plist "$RUNNER_TEMP/cli-entitlements.plist"
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/notarization-input.zip"
+      - name: Validate Apple notarization and stapled ticket
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_ID" && test -n "$APPLE_APP_PASSWORD"
+          xcrun notarytool submit "$RUNNER_TEMP/notarization-input.zip" \
+            --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 15m --output-format json > "$RUNNER_TEMP/notary-result.json"
+          python3 -c 'import json,sys; result=json.load(open(sys.argv[1])); assert result.get("status")=="Accepted" and result.get("id")' "$RUNNER_TEMP/notary-result.json"
+          app="$RUNNER_TEMP/signing-stage/Darkbloom.app"
+          xcrun stapler staple "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+          codesign --verify --deep --strict --verbose=2 \
+            -R="$SIGNING_REQUIREMENT and identifier \"io.darkbloom.provider\"" "$app"
+          python3 tooling/scripts/provider-signing-validation.py receipt \
+            --output "$RUNNER_TEMP/signing-stage" --notary "$RUNNER_TEMP/notary-result.json"
+          tar czf "$RUNNER_TEMP/signed-validation.tar.gz" -C "$RUNNER_TEMP/signing-stage" .
+          shasum -a 256 "$RUNNER_TEMP/signed-validation.tar.gz" > "$RUNNER_TEMP/signed-validation.sha256"
+      - name: Remove temporary signing material
+        if: always()
+        run: |
+          python3 tooling/scripts/provider_signing_identity.py cleanup \
+            --snapshot "$RUNNER_TEMP/signing-search-list-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.json" \
+            --output "$RUNNER_TEMP/signing-keychain-cleanup.json"
+      - name: Retain signing-validation artifact only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: provider-signing-validation
+          path: |
+            ${{ runner.temp }}/signed-validation.tar.gz
+            ${{ runner.temp }}/signed-validation.sha256
+            ${{ runner.temp }}/notary-result.json
+            ${{ runner.temp }}/signing-identity.json
+            ${{ runner.temp }}/signing-keychain-cleanup.json
+          retention-days: 3
+          if-no-files-found: error
+      - name: Retain non-secret notarization diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: provider-signing-validation-diagnostics
+          path: |
+            ${{ runner.temp }}/notary-result.json
+            ${{ runner.temp }}/signing-identity.json
+            ${{ runner.temp }}/signing-keychain-cleanup.json
+          retention-days: 3
+          if-no-files-found: ignore

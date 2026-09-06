@@ -1029,8 +1029,23 @@ run the corresponding native and connected gates separately. CPU helper checks:
 
 ```bash
 go test -short ./e2e ./e2e/testbed \
-  -run 'TestReleaseDefault|TestProviderLaunchDefaultCache' -count=1
+  -run 'TestReleaseDefault|TestReleaseCapability|TestProviderLaunchDefaultCache' -count=1
 ```
+
+For the remaining release tools and image paths, use
+`e2e/release_capabilities_http_test.go` (`TestIntegrationReleaseCapabilitiesHTTP`)
+with the same exact connected input schema. Set
+`DARKBLOOM_RELEASE_CAPABILITIES_INPUT` and
+`DARKBLOOM_RELEASE_CAPABILITIES_OUTPUT` to the frozen input and a fresh output
+directory, then select that test explicitly. It runs one original tool request
+for each selected model and one hash-bound image request for Qwen 3.5, Qwen 3.6
+or Gemma QAT; GPT-OSS has no image case. Run each model separately on the owned
+host. The shared setup preserves automatic backend/MTP and model-scoped cache
+defaults. The test validates complete tool arguments, image-path handling,
+stream termination and token accounting. Qwen 3.8 is excluded from this bounded
+supplement because its full connected routing fixture already includes tools
+and vision. Neither test's process success constitutes broad answer-quality
+acceptance; apply the [release acceptance criteria](../design/release-090-acceptance.md).
 
 Owned two-host startup waits up to five minutes for the existing GPU ≤42°C
 and load1 ≤4 entry thresholds. Identity, disk, nonfinite measurements and

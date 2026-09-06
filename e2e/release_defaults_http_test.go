@@ -19,12 +19,20 @@ import (
 
 // A bounded two-request smoke. It does not replace connected lifecycle or B2/B4 gates.
 func TestIntegrationReleaseDefaultsHTTP(t *testing.T) {
-	inputPath := os.Getenv("DARKBLOOM_RELEASE_DEFAULT_INPUT")
+	runReleaseDefaultHTTP(t, false)
+}
+
+func runReleaseDefaultHTTP(t *testing.T, capabilities bool) {
+	inputKey, outputKey := "DARKBLOOM_RELEASE_DEFAULT_INPUT", "DARKBLOOM_RELEASE_DEFAULT_OUTPUT"
+	if capabilities {
+		inputKey, outputKey = "DARKBLOOM_RELEASE_CAPABILITIES_INPUT", "DARKBLOOM_RELEASE_CAPABILITIES_OUTPUT"
+	}
+	inputPath := os.Getenv(inputKey)
 	if testing.Short() || inputPath == "" {
 		t.Skip("explicit final-candidate default smoke input required")
 	}
 	require.NoError(t, releaseDefaultEnvironment(os.Environ()))
-	root := os.Getenv("DARKBLOOM_RELEASE_DEFAULT_OUTPUT")
+	root := os.Getenv(outputKey)
 	require.NotEmpty(t, root)
 	require.NoError(t, os.Mkdir(root, 0700))
 	report := connectedReport{Schema: 4, Scope: "release_defaults_b1_text", State: "running", Cases: []connectedCase{{Name: "cold", Status: "not_run"}, {Name: "repeat", Status: "not_run"}}, Limits: []string{"One local provider, two text requests, default backend/cache/MTP selection only; no B2/B4, tools, vision, cancellation, restart or two-host claim.", "Cache keys are explicitly ephemeral; cache enablement and model allowlist remain production defaults.", "Raw generated token IDs unavailable through HTTP; content/reasoning/finish/count comparison retained."}}
@@ -41,6 +49,12 @@ func TestIntegrationReleaseDefaultsHTTP(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal(raw, &report.Input))
 	in := report.Input
+	if capabilities {
+		report.Scope = "release_defaults_b1_capabilities"
+		report.Limits = []string{"One local provider; one original tools request and, for the three vision targets, one original image request. No text repeat, cache restoration, cancellation, concurrency or routing winner claim.", "Backend/cache/MTP remain production defaults. Original tool and vision semantics are validated; broad model quality requires separate review."}
+		report.Cases, err = releaseCapabilityCases(in)
+		require.NoError(t, err)
+	}
 	expected, err := releaseDefaultSelection(in)
 	require.NoError(t, err)
 	require.NoError(t, validateConnectedTargetBindings(in))
@@ -97,13 +111,15 @@ func TestIntegrationReleaseDefaultsHTTP(t *testing.T) {
 	for index := range report.Cases {
 		row := &report.Cases[index]
 		row.Status = "running"
-		row.Request = body
+		if !capabilities {
+			row.Request = body
+		}
 		row.RequestDateUTC = time.Now().UTC().Format(time.DateOnly)
 		row.Before = suite.Coordinator.Server.ExactCacheStatusSnapshot()
 		row.SlotsBefore = connectedSlots(suite, in.Artifact.ModelID)
 		before, _ := relay.Snapshot()
 		saveConnectedReport(t, root, &report)
-		row.HTTP, err = postConnectedStream(ctx, suite.Coordinator.BaseURL(), suite.Users[0].APIKey, body, false)
+		row.HTTP, err = postConnectedStream(ctx, suite.Coordinator.BaseURL(), suite.Users[0].APIKey, row.Request, false)
 		require.NoError(t, err)
 		require.Eventually(t, func() bool {
 			wire, _ := relay.Snapshot()
@@ -125,16 +141,24 @@ func TestIntegrationReleaseDefaultsHTTP(t *testing.T) {
 		row.SlotsAfter = connectedSlots(suite, in.Artifact.ModelID)
 		require.NoError(t, validateReleaseDefaultSlots(row.SlotsAfter, in, expected))
 		expectation := "cold"
-		if index == 1 && expected.cache == "ssd" {
+		if capabilities {
+			expectation = row.Name
+		} else if index == 1 && expected.cache == "ssd" {
 			expectation = "hit"
 		}
 		require.NoError(t, validateConnectedCase(*row, expected.cache, expected.mtp, expectation))
+		if capabilities {
+			// Reuse the accounting validator without asserting a nonexistent repeat.
+			require.NoError(t, validateReleaseDefaultRepeat(row.HTTP, row.HTTP))
+		}
 		require.Equal(t, row.RequestDateUTC, time.Now().UTC().Format(time.DateOnly), "request date rollover")
-		if index == 0 && expected.cache == "ssd" {
+		if !capabilities && index == 0 && expected.cache == "ssd" {
 			require.Greater(t, row.After.Lifecycle.SSDDonations, row.Before.Lifecycle.SSDDonations)
 		}
 		row.Status = "passed"
 		saveConnectedReport(t, root, &report)
 	}
-	require.NoError(t, validateReleaseDefaultRepeat(report.Cases[0].HTTP, report.Cases[1].HTTP))
+	if !capabilities {
+		require.NoError(t, validateReleaseDefaultRepeat(report.Cases[0].HTTP, report.Cases[1].HTTP))
+	}
 }

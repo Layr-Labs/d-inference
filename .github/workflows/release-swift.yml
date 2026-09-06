@@ -143,9 +143,6 @@ jobs:
             echo "::error::Production publication requires a source-matching release tag"
             exit 1
           fi
-          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
-          echo "publish_release=$PUBLISH_RELEASE" >> "$GITHUB_OUTPUT"
-
           if [ -n "$INPUT_VERSION_OVERRIDE" ]; then
             VERSION="$INPUT_VERSION_OVERRIDE"
           elif [ "$REF_TYPE" != "tag" ]; then
@@ -155,7 +152,20 @@ jobs:
             REF="${REF_NAME#v}"
             VERSION="${REF%-swift*}"
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # Validate before writing ANY output. A newline in an untrusted
+          # version must not inject a different environment or publication mode.
+          case "$VERSION" in
+            *$'\n'*|*$'\r'*) echo "::error::Release version must be a single line"; exit 1 ;;
+          esac
+          if ! bash scripts/install.sh --semver-test "$VERSION" >/dev/null 2>&1; then
+            echo "::error::Release version must be canonical SemVer"
+            exit 1
+          fi
+          {
+            echo "environment=$ENV"
+            echo "publish_release=$PUBLISH_RELEASE"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
           echo "Resolved env=$ENV version=$VERSION publish_release=$PUBLISH_RELEASE"
 
       - name: Fail before approval on version drift
@@ -542,7 +552,7 @@ jobs:
             "$PROVIDER_APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT"
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
-            | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
+            | grep -Fx 'gemma-optimizations-runtime-smoke: ok' >/dev/null
 
           # Hardened-runtime sign each binary and resource, then the bundle.
           # mlx.metallib must be signed before the bundle or codesign rejects
@@ -942,7 +952,7 @@ jobs:
             "$FINAL_PROVIDER_BIN/$CLI_NAME" runtime-smoke)
           printf '%s\n' "$FINAL_SMOKE_OUTPUT"
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
-            | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
+            | grep -Fx 'gemma-optimizations-runtime-smoke: ok' >/dev/null
           REPORTED=$("$FINAL_PROVIDER_BIN/$CLI_NAME" --version)
           ./scripts/check-release-version.sh "$VERSION" "$REPORTED"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
@@ -1036,7 +1046,7 @@ jobs:
             "$ZIP_PROVIDER_APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
           printf '%s\n' "$ZIP_SMOKE_OUTPUT"
           printf '%s\n' "$ZIP_SMOKE_OUTPUT" \
-            | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
+            | grep -Fx 'gemma-optimizations-runtime-smoke: ok' >/dev/null
 
           BINARY_HASH=$(shasum -a 256 "$SMOKE_ROOT/bin/$CLI_NAME" | cut -d' ' -f1)
           BUNDLE_HASH=$(shasum -a 256 "$LEGACY_BUNDLE" | cut -d' ' -f1)

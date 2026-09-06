@@ -122,6 +122,23 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(outputs, {})
 
+    def test_version_cannot_inject_workflow_outputs(self):
+        for suffix in ("\npublish_release=true", "\renvironment=prod",
+                       "\r\npublish_release=true", "\nversion=" + self.version):
+            with self.subTest(suffix=suffix):
+                result, outputs = self.resolve("workflow_dispatch", "dev", "false", "branch",
+                                               override=self.version + suffix)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(outputs, {})
+                self.assertIn("single line", result.stdout)
+        for version in ("v" + self.version, "not-a-version", self.version + " extra"):
+            with self.subTest(version=version):
+                result, outputs = self.resolve("workflow_dispatch", "dev", "false", "branch",
+                                               override=version)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(outputs, {})
+                self.assertIn("canonical SemVer", result.stdout)
+
     def test_dispatch_defaults_and_output_wiring(self):
         inputs = self.workflow["on"]["workflow_dispatch"]["inputs"]
         self.assertEqual(inputs["publish_release"]["type"], "boolean")

@@ -21,6 +21,7 @@ jobs:
         run: |
           python3 -m pip install --quiet --target "$RUNNER_TEMP/release-qualification-python" PyYAML==6.0.3
           PYTHONPATH="$RUNNER_TEMP/release-qualification-python" python3 scripts/test-release-swift-workflow.py
+          python3 -B scripts/test-signature-stream-checks.py
 
   docs:
     name: Docs Lint

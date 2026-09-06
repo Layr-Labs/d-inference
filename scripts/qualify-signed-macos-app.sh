@@ -132,8 +132,10 @@ PROVIDER_INFO="$PROVIDER_APP/Contents/Info.plist"
 /usr/bin/codesign --verify --strict --verbose=2 \
     "-R=$FAN_REQUIREMENT" "$FAN_HELPER"
 for signed_code in "$APP" "$PROVIDER_APP" "$APP_BINARY" "$CLI" "$ENCLAVE" "$FAN_HELPER"; do
+    # Drain all diagnostics: grep -q can close early and SIGPIPE codesign,
+    # turning a valid runtime flag into a false rejection under pipefail.
     /usr/bin/codesign -dvvv "$signed_code" 2>&1 \
-        | /usr/bin/grep -Eq '^CodeDirectory .*flags=.*runtime' \
+        | /usr/bin/grep -E '^CodeDirectory .*flags=.*runtime' >/dev/null \
         || fail "hardened runtime flag is missing: $signed_code"
 done
 /usr/bin/xcrun stapler validate "$APP"

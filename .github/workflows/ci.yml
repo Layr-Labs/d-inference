@@ -17,6 +17,10 @@ jobs:
           ./scripts/sync-install-embed.sh check
           ./scripts/test-release-archive-safety.sh
           ./scripts/test-prod-env-refresh.sh
+      - name: Test release qualification and publication policy
+        run: |
+          python3 -m pip install --quiet --target "$RUNNER_TEMP/release-qualification-python" PyYAML==6.0.3
+          PYTHONPATH="$RUNNER_TEMP/release-qualification-python" python3 scripts/test-release-swift-workflow.py
 
   docs:
     name: Docs Lint

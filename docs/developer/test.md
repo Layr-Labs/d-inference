@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-06 · commit `7fde576d5`
+> Last updated: 2026-09-06 · commit `2d1e48206`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -63,6 +63,18 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 `postgres:16` service with user/password/db `testbed`. The pre-push hook runs
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
+
+#### Provider config cleanup
+
+The CPU-only `e2e/testbed/provider_config_cleanup_test.go` tests retain a fixed
+unstamped legacy fixture to exercise schema-stamped cleanup. Current configs
+come from `BuildProviderTOML` and already include `config_version = 3`. Both
+current and migrated pre-existing files must remain byte-identical; an owned
+file created during a test must be removed after shutdown.
+
+```bash
+go test ./e2e/testbed -run '^TestCleanup' -count=1
+```
 
 ### 3. Prompt-contract sidecar (Rust)
 

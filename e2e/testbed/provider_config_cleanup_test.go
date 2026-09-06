@@ -13,20 +13,19 @@ import (
 // stamped config on the host and the `.auto` default-posture smoke that runs
 // after it loads paged/B=8 instead of exercising the defaults it exists for.
 
-// migrateConfigSchema, mirrored from provider-swift/Sources/darkbloom/Darkbloom.swift.
-// The real one runs at provider startup, over the canonical copy. On a file
-// carrying no `config_version` it now ONLY dates the file: v0.8.1 retired the
-// value migration for unstamped files because its default (4) is exactly what
-// the pre-v0.8.0 releases generated, so there is nothing left to change. The
-// 8 -> 4 step keys on `config_version = 1` instead, which the testbed never
-// writes.
-func stampLikeProvider(t *testing.T, toml string) string {
-	t.Helper()
-	if strings.Contains(toml, "config_version") {
-		t.Fatalf("generated config is already stamped, nothing for the migration to do:\n%s", toml)
-	}
-	return "config_version = 2\n" + toml
-}
+// Frozen pre-schema fixture from BuildProviderTOML before it began emitting
+// config_version = 3. Keeping it explicit preserves the migration regression
+// without making today's generated config pretend to be an unstamped file.
+const legacyUnstampedTestbedConfig = testbedConfigMarker + `
+[provider]
+name = "darkbloom-testbed-0"
+auto_update = false
+auto_restart = false
+
+[backend]
+engine_v2_kv_backend = "paged"
+engine_v2_max_concurrent = 4
+`
 
 // canonicalConfigForTest points canonicalProviderConfigPath at a temp HOME and
 // seats `content` there. Returns the path.
@@ -61,26 +60,21 @@ func exists(t *testing.T, path string) bool {
 // first start made the comparison permanently false and the file permanently
 // leaked.
 func TestCleanupRemovesConfigAfterProviderStampedIt(t *testing.T) {
-	t.Setenv("DARKBLOOM_TESTBED_KV_BACKEND", KVBackendPaged)
-	t.Setenv("DARKBLOOM_TESTBED_MAX_CONCURRENT", "4")
+	for _, version := range []string{"2", "3"} {
+		t.Run("schema_"+version, func(t *testing.T) {
+			generated := legacyUnstampedTestbedConfig
+			stamped := "config_version = " + version + "\n" + generated
+			if stamped == generated {
+				t.Fatal("stamp left the bytes unchanged; this test would pass vacuously")
+			}
+			path := canonicalConfigForTest(t, stamped)
 
-	generated, err := BuildProviderTOML(DefaultProviderConfig(), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if generated == "" {
-		t.Fatal("pinned posture generated no config")
-	}
-	stamped := stampLikeProvider(t, generated)
-	if stamped == generated {
-		t.Fatal("stamp left the bytes unchanged; this test would pass vacuously")
-	}
-	path := canonicalConfigForTest(t, stamped)
+			removeMigratedTestbedConfig(generated, false)
 
-	removeMigratedTestbedConfig(generated, false)
-
-	if exists(t, path) {
-		t.Fatalf("stamped testbed config survived cleanup at %s", path)
+			if exists(t, path) {
+				t.Fatalf("stamped testbed config survived cleanup at %s", path)
+			}
+		})
 	}
 }
 
@@ -143,12 +137,22 @@ func TestCleanupRefusesPreExistingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := canonicalConfigForTest(t, stampLikeProvider(t, generated))
+	for _, fixture := range []struct{ name, content string }{
+		{"current", generated},
+		{"migrated_legacy", "config_version = 2\n" + legacyUnstampedTestbedConfig},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			path := canonicalConfigForTest(t, fixture.content)
+			removeMigratedTestbedConfig(generated, true)
 
-	removeMigratedTestbedConfig(generated, true)
-
-	if !exists(t, path) {
-		t.Fatalf("cleanup deleted a pre-existing config at %s", path)
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("pre-existing config was removed or became unreadable: %v", err)
+			}
+			if string(got) != fixture.content {
+				t.Fatal("pre-existing config was rewritten")
+			}
+		})
 	}
 }
 

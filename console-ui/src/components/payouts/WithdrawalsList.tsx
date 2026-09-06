@@ -6,11 +6,18 @@ import { formatUsd, microToUsd } from "@/lib/format";
 import { withdrawalStatusPresentation } from "./payout-copy";
 
 // Recent-withdrawals list shown at the bottom of the payouts card. Identical in
-// billing + earnings before this extraction (proposal F3).
-export function WithdrawalsList({ withdrawals }: { withdrawals: StripeWithdrawal[] }) {
+// billing + earnings before this extraction (proposal F3). `flush` drops the
+// embedded-in-a-card top spacing for hosts that render it as its own card.
+export function WithdrawalsList({
+  withdrawals,
+  flush = false,
+}: {
+  withdrawals: StripeWithdrawal[];
+  flush?: boolean;
+}) {
   if (withdrawals.length === 0) return null;
   return (
-    <div className="mt-5 pt-5 border-t border-border-subtle">
+    <div className={flush ? "" : "mt-5 pt-5 border-t border-border-subtle"}>
       <p className="text-xs font-mono text-text-tertiary uppercase tracking-wider mb-3">
         Recent withdrawals
       </p>

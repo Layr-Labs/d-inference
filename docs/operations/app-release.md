@@ -1,6 +1,6 @@
 # Darkbloom App Release Runbook
 
-> Last updated: 2026-09-06 · commit `ab992bef4`
+> Last updated: 2026-09-06 · commit `528b5a1ec`
 
 Use this runbook to package and qualify the SwiftUI **Darkbloom** macOS app
 (`DarkbloomApp`) with its provider CLI. The public app zip and the legacy
@@ -8,7 +8,7 @@ verifier/self-update tar share one provider version and release approval gate.
 
 ## When to use
 
-Use for a combined GUI/CLI release or its rollback. For checkout-local debug
+Use for a combined GUI/CLI release, dev candidate qualification, or rollback. For checkout-local debug
 builds and fixture previews, follow [Build](../developer/build.md#6-native-macos-app);
 for automated checks, follow [Test](../developer/test.md#native-macos-app).
 Production releases require explicit human approval for the specific operation
@@ -312,6 +312,49 @@ does not contain the app branch's strict `ReleaseArchivePreflight.swift`.
 Deployed legacy readers must be qualified separately; absence of that file is
 not an upgrade test. Record each starting version and reader revision, then
 verify update, launch, and rollback with the final signed artifact.
+
+## Qualify a dev candidate
+
+Use the reviewed branch and its checked-in provider version. A manual dispatch
+with `publish_release=false` runs the existing build, signing, notarization,
+stapling, Gatekeeper, archive, and runtime checks and retains the final
+artifacts in GitHub Actions:
+
+```bash
+gh workflow run release-swift.yml \
+  --ref "$CANDIDATE_REF" \
+  -f environment=dev \
+  -f publish_release=false \
+  -f version_override="$PROVIDER_VERSION"
+```
+
+Set `CANDIDATE_REF` and `PROVIDER_VERSION` before invoking the command. The
+version must match the source constants; a qualification-only run targeting
+prod is rejected before entering the release job. Manual publication still
+defaults to true, and production tags retain their existing publication path
+and environment approval gate.
+
+After the job succeeds:
+
+1. Confirm the resolved environment is `dev`, `publish_release` is `false`,
+   and the R2 upload, coordinator registration, and GitHub release steps were
+   skipped.
+2. Download `darkbloom-dev-qualification-<run-id>-<attempt>` from that run. It
+   contains only the final app ZIP, updater tar, and
+   `darkbloom-qualification-manifest.json`. Artifacts are retained for 30 days.
+3. Verify the manifest's source SHA, version, archive hashes, and accepted
+   notarization ID against the reviewed revision and downloaded files. The
+   manifest contains a fixed public-provenance allowlist, not signing
+   credentials or raw notary logs.
+4. Run `scripts/qualify-signed-macos-app.sh --expected-version` with the source
+   version and downloaded app ZIP. Then complete the applicable live product,
+   clean-install, and identity checks below. A notarization result does not
+   establish live inference or hardware attestation.
+
+This mode skips release-storage credentials and publication. It uses the same
+Apple signing credentials and validators as a published build. The
+`Release Integrity` CI job runs the policy matrix and manifest tests in
+`scripts/test-release-swift-workflow.py`.
 
 ## Steps (human-approved release operator)
 

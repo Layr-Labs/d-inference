@@ -19,7 +19,7 @@ const ACCOUNT_ITEMS: NavigationItem[] = [
 ];
 export function navigationGroups(mode: Workspace, account: ProviderAccount) {
   if (mode === "consumer") return CONSUMER_GROUPS;
-  const existing = account.status !== "new" && account.status !== "guest";
+  const existing = account.status === "linked";
   return [
     { label: "Provider workspace", items: [
       { href: "/providers", icon: Server, label: "Your fleet" },

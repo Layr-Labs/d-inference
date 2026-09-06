@@ -20,4 +20,14 @@ describe("Workspace routing", () => {
     expect(accountItems("provider").some((item) => item.href === "/billing")).toBe(false);
     expect(accountItems("consumer").some((item) => item.href === "/billing")).toBe(true);
   });
+  it.each(["loading", "guest", "new", "error"] as const)("hides earnings for %s accounts while keeping setup and the calculator available", (status) => {
+    const items = navigationGroups("provider", { status, total: 0, online: 0 }).flatMap((group) => group.items);
+    expect(items.some((item) => item.href === "/providers/earnings")).toBe(false);
+    expect(items.some((item) => item.href === "/providers/setup")).toBe(true);
+    expect(items.some((item) => item.href === "/earn")).toBe(true);
+  });
+  it("keeps earnings available when a linked Mac is offline", () => {
+    const items = navigationGroups("provider", { status: "linked", total: 1, online: 0 }).flatMap((group) => group.items);
+    expect(items.some((item) => item.href === "/providers/earnings")).toBe(true);
+  });
 });

@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-05 · commit `301d757f3`
+> Last updated: 2026-09-06 · commit `9588be79f`
 
 The complete public HTTP surface of the coordinator, derived from the 107 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 

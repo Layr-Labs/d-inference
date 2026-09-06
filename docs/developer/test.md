@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-06 · commit `8e284e3f5`
+> Last updated: 2026-09-06 · commit `b5e76a4fc`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -44,6 +44,10 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 ```
 
 ### 2. Coordinator (Go)
+
+The CI formatting step checks tracked Go files with `gofmt`. It excludes
+`docs/reports/evidence/`, whose captured source bytes are immutable and bound
+by evidence manifests. Live Go source remains subject to the formatting gate.
 
 ```bash
 make coordinator-test                      # cd coordinator && go test ./...
@@ -129,6 +133,8 @@ input/CLI controls; the shared runner rejects empty or skipped suites:
 (
   cd libs/mlx-swift-lm
   for suite in CBv2TeacherForcedScoreDiagnosticTests CBv2TeacherForcedScoringTests \
+               CBv2TeacherForcedRecurrentTests CBv2TeacherForcedCapacityTests \
+               CBv2PagedRuntimeDTypeEngineTests \
                CBv2TopTwoTests CBv2LogitDiagnosticTests CBv2GemmaLogitDiagnosticTests; do
     ../../scripts/run-nested-suite.sh "$suite"
   done
@@ -160,6 +166,12 @@ verification passed. The controls compare ordinary forwards only
 (`provider-swift/Sources/ProviderBenchmark/TeacherForcedBenchmark.swift`,
 `controlReasons`).
 
+Recurrent targets use fresh request-owned state for each scoring call. The
+scorer reserves the normal admission peak before forwarding, commits evaluated
+state after each chunk or forced token, and retires state and KV before refunding
+the reservation. The [recurrent scoring validation](../reports/2026-09-06-recurrent-teacher-scoring.md)
+covers tight capacity and open-binding failure recovery on both backends.
+
 #### Quantized bias accumulation regression
 
 `QuantizedBiasAccumulatorTests` covers 216 exact affine-bias cases across
@@ -174,6 +186,8 @@ cd provider-swift
 ```
 
 The provider test target links the canonical test from `libs/mlx-swift`.
+The test scopes GPU selection with public `MLX.Device.withDefaultDevice`, so
+both targets compile the same test without depending on target-local helpers.
 Passing these operator cases does not replace full-model trajectory, cache,
 batching or performance validation.
 
@@ -915,7 +929,7 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt -l .` · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 120 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) → current coordinator vs released v0.7.12 provider (`scripts/fetch-v0712-provider.sh`, `DARKBLOOM_MIXED_VERSION_EXPECT=artifact`, fails unless `MIXED_VERSION_TIER_ARTIFACT_OK` appears) → released v0.7.12 coordinator (`git worktree add … v0.7.12`) vs candidate provider (`NonStreamingInference`, `StreamingInference`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

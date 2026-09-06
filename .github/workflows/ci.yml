@@ -58,7 +58,10 @@ jobs:
           go test -race $(go list ./... | grep -v /e2e)
       - name: Check formatting
         run: |
-          UNFORMATTED=$(gofmt -l .)
+          set -o pipefail
+          # Dated report evidence preserves the exact captured source bytes.
+          # Check tracked Go source outside that immutable archive.
+          UNFORMATTED=$(git ls-files -z -- '*.go' ':!:docs/reports/evidence/**' | xargs -0 gofmt -l --)
           if [ -n "$UNFORMATTED" ]; then
             echo "Unformatted files:"
             echo "$UNFORMATTED"

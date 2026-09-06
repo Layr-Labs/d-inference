@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-06 · commit `8e284e3f5`
+> Last updated: 2026-09-06 · commit `b07e34fd6`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -72,6 +72,9 @@ Continue with the per-component steps when you need one piece or want to
 understand what `make` runs.
 
 ### 3. Coordinator (Go)
+
+CI checks formatting of tracked Go source while preserving frozen report
+evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).
 
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator

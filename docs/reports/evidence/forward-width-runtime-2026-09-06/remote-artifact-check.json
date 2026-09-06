@@ -1,0 +1,27 @@
+{
+  "status": "PASS",
+  "artifact_manifest_sha256": "77e029d8e05cf5a34ad7300b19b6a7db8e506a93ae1854162765a73f7781c351",
+  "files_verified": 8,
+  "source": {
+    "c": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+    "core": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+    "native": "ff1aab108da0d575258ba9425d5b763c0045ba66",
+    "parent": "682e268ed3ab54f85371d079204f8091f911afd8",
+    "swift": "9561227d55a07db29f70a78aadc5d6b5aaeb10bf",
+    "unused_top_level_mlx": "0a725e3000edabc4911cde345270ca950bfa152f"
+  },
+  "signatures": {
+    "darkbloom": {
+      "exit_code": 0,
+      "result": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/artifact/darkbloom: valid on disk\n/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/artifact/darkbloom: satisfies its Designated Requirement"
+    },
+    "radix-engine": {
+      "exit_code": 0,
+      "result": "/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/artifact/radix-engine: valid on disk\n/Users/gaj/autoresearch/radix-prefix-cache/091-forward-width-lock-repair1/artifact/radix-engine: satisfies its Designated Requirement"
+    }
+  },
+  "hardware_model": "Mac17,6",
+  "physical_memory": 137438953472,
+  "checked_at_utc": "2026-09-06T11:20:29.609701+00:00",
+  "model_or_GPU_execution": false
+}

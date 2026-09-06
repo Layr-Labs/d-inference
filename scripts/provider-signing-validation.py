@@ -155,9 +155,18 @@ def profile(arguments):
         raise ValueError("Provisioning profile does not authorize the provider access group")
     if entitlements.get("aps-environment", entitlements.get("com.apple.developer.aps-environment")) != "production":
         raise ValueError("Provisioning profile lacks the required APNs entitlement")
-    app_id = entitlements.get("application-identifier", "")
-    if app_id and not (app_id.endswith(APP_ID) or app_id.endswith("*")):
-        raise ValueError("Provisioning profile application identifier mismatch")
+    expected_app_id = TEAM + "." + APP_ID
+    # macOS uses the long key; other profiles may use the short spelling.
+    # Developer ID profiles may omit it, but every declared value must cover
+    # this exact team/app. A wildcard grants only its own prefix, not any app.
+    for key in ["com.apple.application-identifier", "application-identifier"]:
+        if key not in entitlements:
+            continue
+        app_id = entitlements[key]
+        if not isinstance(app_id, str) or not (app_id == expected_app_id or (
+                app_id.startswith(TEAM + ".") and app_id.endswith("*")
+                and app_id.count("*") == 1 and expected_app_id.startswith(app_id[:-1]))):
+            raise ValueError("Provisioning profile application identifier mismatch: " + key)
     expiration = value.get("ExpirationDate")
     if expiration is None or (expiration.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)).days < 30:
         raise ValueError("Provisioning profile expires in fewer than 30 days")

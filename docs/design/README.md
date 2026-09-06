@@ -33,6 +33,7 @@ below repeats the vocabulary word only; the file's line 5 carries the evidence.
 
 | Record | Status | Date | One line |
 |---|---|---|---|
+| [release-090-acceptance.md](release-090-acceptance.md) | In progress | 2026-09-06 | Numerical, quality, cache and serving acceptance; backend wording differences and functional routing scope |
 | [release-090-paged-qwen-cache.md](release-090-paged-qwen-cache.md) | In progress | 2026-09-06 | Five-artifact paged migration with Qwen-only default caching, scoped acceptance and independent rollback controls |
 | [qwen-first-paged-ssd-rollout.md](qwen-first-paged-ssd-rollout.md) | Superseded | 2026-09-06 | Earlier three-Qwen paging scope, corrected by the five-artifact release decision |
 | [gptoss20b-prefill-decode-optimization.md](gptoss20b-prefill-decode-optimization.md) | Superseded by [results](../reports/2026-09-05-gptoss20b-optimization-results.md) | 2026-09-05 | Fresh-prompt output pruning, expert kernels and decode constant reuse with paired local controls |

@@ -2,7 +2,7 @@
 
 > Last updated: 2026-09-06 · commit `2eebb5412`
 
-Status: **In progress** — 2026-09-06 — source activation policy corrected; model acceptance and release validation remain incomplete.
+Status: **In progress** — 2026-09-06 — source activation policy corrected; [acceptance criteria clarified](release-090-acceptance.md), with model and release validation incomplete.
 
 The release migrates five exact artifacts to paged attention. Only the three Qwen artifacts default to SSD prefix caching and belong in the initial cache-routing cohort. Gemma 8-bit (`gemma-4-26b`) remains supported but is outside this release's activation and validation matrix. This supersedes the earlier [Qwen-first paging scope](qwen-first-paged-ssd-rollout.md).
 

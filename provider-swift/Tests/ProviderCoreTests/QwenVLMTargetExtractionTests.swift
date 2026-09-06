@@ -699,7 +699,10 @@ struct QwenVLMTargetExtractionTests {
     private func checkCompleteCheckpointSlotBridgeWiring(
         cacheEnabled: Bool, numExperts: Int, memoryEnabled: Bool = false
     ) async throws {
-        let modelID = "tiny-qwen-complete-\(numExperts)"
+        // Tiny tensors exercise the default policy under the release catalog IDs.
+        // A synthetic model ID requires an explicit cache opt-in.
+        let modelID = numExperts > 0
+            ? "qwen3.5-35b-a3b" : "EigenLabs/Qwen3.8-27B-4bit-mtp"
         let modelHash = String(repeating: "a", count: 64)
         let contract = String(repeating: "b", count: 64)
         let slotBytes = 8 << 20

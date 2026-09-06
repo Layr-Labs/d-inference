@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-05 · commit `02f6af71a`
+> Last updated: 2026-09-06 · commit `615d96328`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -35,21 +35,36 @@ SSD snapshots survive beyond a request without retaining their KV in resident me
 | | Contiguous | Paged |
 |---|---|---|
 | Type | `CBv2ContiguousKVBackend`, `EngineV2KVBackendKind.contiguous` | `PagedKVBackend`, `EngineV2KVBackendKind.paged`; `PagedKVPool.pageSize = 16` tokens |
-| Selected by | `engine_v2_kv_backend = "auto"` (default) or `"contiguous"`; every degrade target | `engine_v2_kv_backend = "paged"` (global or `engine_v2_kv_backend_by_model`) only |
+| Selected by | Explicit `"contiguous"`, `"auto"` outside the exact candidate allowlist, or fallback | Explicit `"paged"` (global or `engine_v2_kv_backend_by_model`), or candidate `"auto"` for the exact IDs below, subject to policy gates |
 | Memory | Per-request grant reserved at admission in `GlobalKVCacheBudget` | Production starts with empty segmented storage under the admitted slot grant; native admission reserves growth before allocation and retains live owners across grant changes. Actual committed backing is reported separately. |
 | On failure | — | Under `auto`: degrade to contiguous with a `fallback:<why>` reason; under explicit `paged`: refuse the load with `EngineV2ProductionError.pagedUnavailable` (503) |
 | Prefix-reuse backend | `.contiguousUnquantized` | `.pagedFP16` |
 
-`auto` resolves contiguous since v0.8.1 (`case .auto: resolvedKind =
-.contiguous` in `prepareProductionBackend`,
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BackendPreparation.swift`). Slot policy can force contiguous when a VLM cache lacks span-mask support
+The default setting remains `"auto"`. In the candidate, it prefers paged only
+for these exact fleet model IDs, not family names, aliases or substrings:
+
+- `qwen3.5-35b-a3b`
+- `qwen3.6-35b-a3b-vl-mtp-mxfp8`
+- `EigenLabs/Qwen3.8-27B-4bit-mtp`
+
+Every other ID, including unlisted Qwen artifacts, GPT-OSS, Gemma and unknown
+models, resolves contiguous under `auto`. Per-model configuration still overrides
+the global setting, and explicit `"contiguous"` keeps a cohort model contiguous
+(`provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift`,
+`parseSelection`, `preferredBackend`; called by `prepareProductionBackend` in
+`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BackendPreparation.swift`).
+
+Slot policy can force contiguous when a VLM cache lacks span-mask support
 (`EngineV2KVBackendPolicy.applySlotVetoes`). The factory then applies model
 capability (`supportsPagedKV == false`, reason `model_capability`), the
 negative-only `DARKBLOOM_CBV2_PAGED_KV` kill switch, and the version-scoped
-crash-loop guard in that order. The crash-loop guard applies only to `auto`
-and is dormant while `auto` selects contiguous. These policy vetoes can
-change an explicit selection; subsequent paged construction failures refuse
-an explicit `paged` load. Paged construction runs
+crash-loop guard in that order. The crash-loop guard applies only to `auto`,
+returning eligible cohort models to contiguous while its version matches.
+Clearing it restores automatic selection on the next model load, not guaranteed
+paged service. Capability/span-mask vetoes and the kill switch can also override
+an explicit `paged` selection; the crash-loop guard cannot. Automatic paged
+construction failures fall back to contiguous with a reason; the same failures
+refuse an explicit `paged` load. Paged construction runs
 `PagedKernelPreflight` in a child process (`defaultChildTimeout = 120 s`,
 `DARKBLOOM_NO_UPDATE_CHECK=1` injected), then constructs an empty segmented
 backend with the already admitted slot grant. There is no separate eager-pool
@@ -68,7 +83,15 @@ Complete Qwen checkpoints support native contiguous and segmented paged storage.
 Historical attention checkpoints require the resolved paged backend and an exact
 loaded layer/owner/type map; ordinary attention snapshots remain a separate codec.
 
-Default `auto` remains contiguous while real-model and capacity gates run.
+**The candidate rollout is not yet validated.** Retained Qwen 3.5/3.6
+cross-backend equality failures and the remaining concurrency, capacity,
+persistent-restart and final-runtime gates are tracked in the
+[Qwen-first rollout decision](../design/qwen-first-paged-ssd-rollout.md).
+This selection change is not a release or deployment claim. SSD prefix reuse
+remains enabled by default for eligible checkpoints, and resident retention
+still requires explicit opt-in; neither default changes with this cohort
+(`PrefixCachePolicy.isEnabled`, `PrefixCachePolicy.isMemoryEnabled`).
+
 The production paged factory binds its empty segmented pool to the shared
 process memory owner before constructing the engine. Its native admission owns
 full request promises and actual paged backing; the bridge does not duplicate
@@ -376,8 +399,8 @@ are separate from the SSD results.
 ## Invariants
 
 1. **Default caching retains no idle payload RAM.** Both resident tiers require
-   `DARKBLOOM_PREFIX_CACHE_MEMORY=1`; the global disable wins. Dense Qwen may
-   construct a complete SSD store on default contiguous, while attention-only
+   `DARKBLOOM_PREFIX_CACHE_MEMORY=1`; the global disable wins. Dense and MoE Qwen may
+   construct a complete SSD store on resolved contiguous or paged, while attention-only
    SSD remains restricted to exact resolved paged backends —
    `PrefixCachePolicy.swift`, `EngineV2SlotFactory+CompletePrefixCache.swift`.
 2. Complete SSD identity binds verified model/template and loaded build/numerics;
@@ -419,7 +442,7 @@ are separate from the SSD results.
 
 | Concern | File / symbol |
 |---|---|
-| Backend selection, kill switch, vetoes | `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift` (`applySlotVetoes`, `degradesPagedFailure`) |
+| Backend selection, kill switch, vetoes | `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift` (`parseSelection`, `preferredBackend`, `applySlotVetoes`, `degradesPagedFailure`) |
 | `auto` resolution, paged fallback | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BackendPreparation.swift` (`prepareProductionBackend`) |
 | Prefix-cache gate, exactness, capability | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` (`isEnabled`, `adoptionIsExact`, `prefixReuseCapability`, `ssdDiskBudgetBytes`) |
 | Construction-skip logic | `provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift` (`PrefixCacheConstructionStatus`) |

@@ -312,7 +312,7 @@ enum EngineV2SlotFactory {
         // ASK rather than assume. A veto is policy, so it is silent even
         // for an explicit paged request. kv_quant is gone from the product
         // entirely — it is no longer a veto, no longer a parameter, and no
-        // longer warned about. `auto` resolves CONTIGUOUS as of v0.8.1;
+        // longer warned about. `auto` uses the exact candidate model ID;
         // that resolution, the fleet kill switch, physical-capacity
         // planning, and the degrade-or-REFUSE decision for an explicit
         // paged request all live in
@@ -422,6 +422,7 @@ enum EngineV2SlotFactory {
             do {
                 preparedBackend = try EngineV2Factory.prepareProductionBackend(
                     model: servingModel,
+                    modelID: modelId,
                     kvBytesCapacity: engineKVBytesCapacity,
                     maxConcurrentRequests: maxConcurrentRequests,
                     kvBackend: kvBackendSelection,

@@ -64,15 +64,19 @@ extension SSDHybridCheckpointStore {
             return result(.skippedCapacity)
         }
         let generation = UUID()
+        let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: Data(candidate.tag.prefix(16)).hexString)
+        let access = fileCoordinator.makeAccess(to: url)
         let accepted = lock.withLock {
             guard !closed, !destructiveChange, reading[requestID] == nil, stages[requestID] == nil else { return false }
-            reading[requestID] = generation
+            reading[requestID] = access
+            activity.begin()
             return true
         }
         guard accepted else { return result(.skippedPolicy) }
-        activity.begin()
         defer {
-            lock.withLock { if reading[requestID] == generation { reading.removeValue(forKey: requestID) } }
+            lock.withLock { if reading[requestID] === access { reading.removeValue(forKey: requestID) } }
+            access.release()
+            readScratch.close()
             activity.end()
         }
         let epoch = config.epochStore?.current
@@ -87,10 +91,9 @@ extension SSDHybridCheckpointStore {
             lease.finishIO()
             if !transferred { lease.release() }
         }
-        let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: Data(candidate.tag.prefix(16)).hexString)
         let check: () throws -> Void = {
             guard !Task.isCancelled, self.epochMatches(epoch), self.lock.withLock({
-                !self.closed && !self.destructiveChange && self.reading[requestID] == generation
+                !self.closed && !self.destructiveChange && self.reading[requestID] === access
             }) else { throw CancellationError() }
         }
         let countRead: (Int) -> Void = { count in self.statsBox.update { $0.bytesRead += count; $0.stageReadBytes += count } }
@@ -104,6 +107,13 @@ extension SSDHybridCheckpointStore {
             else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
         }
         do {
+            try await access.acquire()
+            try check()
+            guard index.freshFileBytes(tag16: Data(candidate.tag.prefix(16)), now: config.nowSeconds(),
+                                       ttlSeconds: config.ttlSeconds) != nil else {
+                statsBox.update { $0.misses += 1 }
+                return result(.missAbsent)
+            }
             let loaded = try await readCheckpoint(
                 candidate: candidate, request: request, url: url, lease: lease,
                 readScratch: readScratch, check: check, countRead: countRead,
@@ -118,7 +128,8 @@ extension SSDHybridCheckpointStore {
                 return result(.skippedCapacity)
             }
             let installed = lock.withLock {
-                guard !closed, !destructiveChange, reading[requestID] == generation, epochMatches(epoch) else { return false }
+                guard !Task.isCancelled, !closed, !destructiveChange, reading[requestID] === access,
+                    epochMatches(epoch) else { return false }
                 stages[requestID] = staged
                 if !loaded.usesProcessMemoryOwner { stageReservations[requestID] = lease }
                 authenticatedReceipts[requestID] = (epoch, [Data(candidate.tag.prefix(16)): loaded.file])
@@ -137,7 +148,6 @@ extension SSDHybridCheckpointStore {
         } catch is CancellationError {
             return result(.skippedPolicy)
         } catch is SSDAuthenticatedFileChange {
-            // Another valid hit may touch mtime while this read authenticates.
             // Fail cold without deleting good ciphertext or rotating its epoch.
             return result(.skippedPolicy)
         } catch CBv2CompleteCheckpointError.allocationFailed {

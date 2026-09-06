@@ -1,0 +1,123 @@
+{
+  "banked_archive": {
+    "bytes": 3858232,
+    "mode": 420,
+    "path": "/private/tmp/darkbloom-qwen-first-runtime3/parent/docs/reports/evidence/forward-width-runtime-2026-09-06/build-and-test-evidence.tar.gz",
+    "sha256": "8d5a94d4b8bb021b6932d0f59a9178941bd3ee8cd3f663fd823d886f2548056e"
+  },
+  "current_source": {
+    "c": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+    "core": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+    "native": "f2d79145e040bbc28c6e0e355a19bc8923a70434",
+    "parent": "35fea6d0e3b05ff65d60d9675ab480159913ac62",
+    "swift": "9561227d55a07db29f70a78aadc5d6b5aaeb10bf",
+    "unused_top_level_mlx": "0a725e3000edabc4911cde345270ca950bfa152f"
+  },
+  "expanded_cases": 24,
+  "inherited": true,
+  "limitation": "Not fresh native tests on the new parent. Native Libraries and exact suite source/dependency inputs are verified unchanged; native7 final fixture matches f2d79145.",
+  "passed": true,
+  "prior_fixture_failures_preserved_and_superseded": [
+    "zero-layer row storage anchor absent",
+    "one-layer fixture without updates rollback(1) exceeds retained 0"
+  ],
+  "source_binding": {
+    "bytes": 3465,
+    "mode": 420,
+    "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-banked/source-binding.json",
+    "sha256": "c69346b148f7b732b6e920eb9dc6d3e4a8eb04cbe6a71657d02d0f1fbbf4ce44"
+  },
+  "suites": {
+    "CBv2ForwardShapeEngineTests": {
+      "expanded_cases": 5,
+      "failed": 0,
+      "graph": {
+        "bytes": 280828,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/graphs/native7-inherited.json",
+        "sha256": "2819f9aeffdc98cce9039eba2b8359160edbfaf8615b42be69d2398c3d439a41"
+      },
+      "inherited": true,
+      "log": {
+        "bytes": 1952,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-banked/logs/native7-test-CBv2ForwardShapeEngineTests.log",
+        "sha256": "98c24ef9416b960169262e8b48f379df58e49543f2e1aa730e64eb2cde1fb588"
+      },
+      "origin_generation": "native7",
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "suite_source_sha256": "1e61a7861ad7a07d299129549679ffba90cf58e2fc8ccd971543db1faa0d372c",
+      "swift_testing_functions": 3,
+      "terminal": {
+        "bytes": 311,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-banked/steps/native7-test-CBv2ForwardShapeEngineTests/terminal.json",
+        "sha256": "3864b03d02263430b5318589b91374fcf32db88b28117c0c76461a40658d4c51"
+      },
+      "test_functions": 3,
+      "xctest_functions": 0
+    },
+    "CBv2ForwardShapeTests": {
+      "expanded_cases": 8,
+      "failed": 0,
+      "graph": {
+        "bytes": 280828,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/graphs/native5-inherited.json",
+        "sha256": "035deb7fa6ba59956314d6b310da22eb4dc39326c77f5c7db765df829d61653f"
+      },
+      "inherited": true,
+      "log": {
+        "bytes": 3022,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-banked/logs/native5-test-CBv2ForwardShapeTests.log",
+        "sha256": "17c4e623be5dc07752a0886090e059fed7a023857553f4288782bf206a37be93"
+      },
+      "origin_generation": "native5",
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "suite_source_sha256": "fbeb59b3f8ceada5c617844882b6c09a01722188dd6de2176164ef7cae4b7b70",
+      "swift_testing_functions": 0,
+      "terminal": {
+        "bytes": 311,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-banked/steps/native5-test-CBv2ForwardShapeTests/terminal.json",
+        "sha256": "873403f2497b1644633b9053cf1c2d61f2df557f811f334413ecfdd59d582fe2"
+      },
+      "test_functions": 8,
+      "xctest_functions": 8
+    },
+    "CBv2MTPRoundSmokeTests": {
+      "expanded_cases": 11,
+      "failed": 0,
+      "graph": {
+        "bytes": 280828,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/graphs/native7-inherited.json",
+        "sha256": "2819f9aeffdc98cce9039eba2b8359160edbfaf8615b42be69d2398c3d439a41"
+      },
+      "inherited": true,
+      "log": {
+        "bytes": 2345,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-banked/logs/native7-test-CBv2MTPRoundSmokeTests.log",
+        "sha256": "4e2cbb7249fc2e549f12697169c208e38ae896820009c85ddf12a60dc30eb52a"
+      },
+      "origin_generation": "native7",
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "suite_source_sha256": "0382aecaa2db487ee6d0aeb7f6c898533f91f3adeedc0744fdc6e8612cf44186",
+      "swift_testing_functions": 11,
+      "terminal": {
+        "bytes": 310,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-banked/steps/native7-test-CBv2MTPRoundSmokeTests/terminal.json",
+        "sha256": "ff3ca8ab56a0ed5e86fe22a4c586b62e22674110fe41690adc24f3d1ac890da6"
+      },
+      "test_functions": 11,
+      "xctest_functions": 0
+    }
+  },
+  "test_functions": 22
+}

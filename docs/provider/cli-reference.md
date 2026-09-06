@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-06 · commit `06b071fed`
+> Last updated: 2026-09-06 · commit `615d96328`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -106,6 +106,12 @@ and how to read the line in [attestation → Verify](./attestation.md#verify).
 | `--support` | flag | `false` | Append coordinator URL, token presence, MDM state, PID-file path |
 | `--clear-backend-guard` | flag | `false` | Delete `~/.darkbloom/kv-backend-guard.json`, reset the crash-loop counter in `watchdog-state.json`, exit |
 
+Clearing restores model-aware `auto` on the next model load, not guaranteed
+paged service. It preserves explicit settings, the kill switch and capability
+vetoes (`provider-swift/Sources/darkbloom/DoctorCommand.swift`,
+`runClearBackendGuard`). See
+[guard recovery](./troubleshooting.md#kv-backend-crash-loop-guard).
+
 Exit 1 when any detailed check or diagnosis line is FAIL (or WARN with
 `--strict`). The check names are listed in
 [troubleshooting](./troubleshooting.md#doctor-checks).
@@ -161,6 +167,18 @@ Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 | Scheduler prefill | `--scheduler-prefill`, `--prefill-iterations` (`2`) |
 | Arrival invariance | `--arrival-invariance`, `--arrival-prompt-tokens` (`512`), `--arrival-prompt-lengths` (`String?`; exactly four comma-separated positive lengths, overrides the uniform prompt length), `--arrival-decode-tokens` (`64`), `--arrival-iterations` (`3`) (`BenchmarkCommand.swift`, `Benchmark.arrivalPromptLengths`) |
 | Backend parity | `--parity`, `--assistant-model <id>` (`String?`), `--parity-max-tokens` (`48`), `--parity-prefix-tokens` (`28672`) (`BenchmarkCommand+Parity.swift`) |
+
+`--kv-backend auto` uses the candidate's
+[exact Qwen allowlist](../architecture/prefix-cache.md#kv-layouts): eligible
+cohort models try paged, all other IDs use contiguous, and automatic paged
+failures or the version-bound crash-loop guard fall back to contiguous.
+Explicit `--kv-backend paged` refuses construction failures rather than measuring
+a fallback; the kill switch and capability/span-mask vetoes can still force
+contiguous. Inspect the measured engine's `resolvedKVBackend` and report
+`kvBackend` block (`provider-swift/Sources/darkbloom/BenchmarkCommand.swift`,
+`Benchmark.kvBackend`). The
+[Qwen-first rollout](../design/qwen-first-paged-ssd-rollout.md) is **not yet
+validated**; benchmark selection alone is not release evidence.
 
 Environment inputs for the harnesses are in
 [`reference/configuration.md`](../reference/configuration.md).
@@ -375,7 +393,7 @@ four write cycles: a value from before a reload is worse than no value.
 Run local diagnostics and fetch the coordinator's trust view.
 
 ```bash
-darkbloom doctor [--strict] [--coordinator <url>] [--support]
+darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-guard]
 ```
 
 | Flag | Description |
@@ -383,9 +401,11 @@ darkbloom doctor [--strict] [--coordinator <url>] [--support]
 | `--strict` | Treat warnings as failures |
 | `--coordinator <url>` | Override coordinator URL for remote checks |
 | `--support` | Print local identifiers useful for support |
+| `--clear-backend-guard` | Remove the crash-loop KV guard, reset its restart chain and exit; normal selection resumes on the next load |
 
 `darkbloom doctor` is read-only except for the subprocess calls used by public
-ProviderCore checks.
+ProviderCore checks and the explicit `--clear-backend-guard` action
+(`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `runClearBackendGuard`).
 
 Two of the detailed checks cover the KV-backend rollout:
 
@@ -395,10 +415,12 @@ Two of the detailed checks cover the KV-backend rollout:
 | `kv backend posture` | An EXPLICIT `paged` or `contiguous` request was not honoured: refused (no engine built, the box serves nothing for that model) or silently degraded to another backend. |
 
 `auto` never fails this check — it promises nothing, so whichever backend it
-lands on is honoured by definition. It resolves contiguous as of v0.8.1, so an
-`auto` slot reporting contiguous is expected output, not a finding. Explicit
-`paged` remains available and refuses a load it cannot serve instead of
-silently changing backends. When
+lands on is honoured by definition. Candidate `auto` can report paged for the
+[exact Qwen cohort](../architecture/prefix-cache.md#kv-layouts), or contiguous
+after fallback; non-cohort `auto` remains contiguous. None is a posture fault
+or validation of the candidate rollout. Explicit `paged` construction failures
+refuse the load; a policy veto that serves contiguous instead still fails the
+explicit-request posture check. When
 the state file is past the wedge bar the backend verdict is WITHHELD rather
 than asserted from a snapshot that may predate a reload.
 
@@ -734,7 +756,7 @@ override `provider.toml` for one process, are in
 | `[backend] idle_timeout_mins` | `60` | Unload a model idle this long; `0` disables |
 | `[backend] max_model_slots` | `3` | Resident models |
 | `[backend] engine_v2_max_concurrent` | `4` (clamped to `[1, 8]`) | Concurrent requests per engine |
-| `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` |
+| `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Candidate `auto` tries paged only for the [exact Qwen allowlist](../architecture/prefix-cache.md#kv-layouts), with contiguous fallback; all other IDs remain contiguous (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
 | `[backend] startup_preload` | `true` | Load advertised models at start |
 | `[coordinator] url` | `"wss://api.darkbloom.dev/ws/provider"` | |

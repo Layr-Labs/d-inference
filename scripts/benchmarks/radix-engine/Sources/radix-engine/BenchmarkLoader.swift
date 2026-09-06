@@ -108,14 +108,14 @@ enum BenchmarkLoader {
                     ? MTPAutomaticVerificationPolicy.maxRectangularTokens() : 0)
             let input = try inputs(report, context: context, modelType: modelType)
             #if RADIX_CANDIDATE
-            let hybrid = cacheEnabled && options.backend != .paged ? CBv2HybridPrefixCacheConfig(
+            let hybrid = cacheEnabled ? CBv2HybridPrefixCacheConfig(
                 maximumBytes: 1_073_741_824, maximumEntries: 32, maximumCheckpointsPerRequest: 2,
                 modelID: modelID, promptContractID: "radix-benchmark-thinking-off-v1",
                 buildID: "radix-benchmark-v1") : nil
-            let resident = cacheEnabled && options.backend == .paged ? CBv2PagedPrefixCacheConfig(
+            let resident = cacheEnabled ? CBv2PagedPrefixCacheConfig(
                 promptContractID: "radix-benchmark-thinking-off-v1", scopeID: modelID) : nil
             let build = try EngineV2Factory.makeProductionBuild(
-                model: model, tokenizer: context.tokenizer,
+                model: model, modelID: modelID, tokenizer: context.tokenizer,
                 kvBytesCapacity: options.kvBudgetBytes, maxConcurrentRequests: options.concurrency,
                 residentPrefixCache: resident, hybridPrefixCache: hybrid,
                 mtpDrafter: assistant, mtpConfig: mtpConfig, kvBackend: options.backend)

@@ -56,6 +56,7 @@ enum SchedulerPrefillDecisionLiveRunner {
 
     static func makeEngine(
         container: ModelContainer,
+        modelID: String,
         isVLM: Bool,
         modelDirectory: URL,
         weightBytes: Int,
@@ -83,6 +84,7 @@ enum SchedulerPrefillDecisionLiveRunner {
                 modelDirectory: modelDirectory)
             let build = try EngineV2Factory.makeProductionBuild(
                 model: servingModel,
+                modelID: modelID,
                 tokenizer: context.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: configuration.maxConcurrentRequests,

@@ -54,10 +54,9 @@ public enum ThroughputSweep {
     /// per-batch medians.
     ///
     /// `kvBackend` is the operator-facing selection handed to the production
-    /// factory. `.auto` resolves CONTIGUOUS as of v0.8.1 (see
-    /// `EngineV2Factory.prepareProductionBackend`), so measuring paged
-    /// requires naming it; an explicit `.paged`
-    /// REFUSES rather than degrading. Either way the selection is not the
+    /// factory. `.auto` follows exact-model eligibility and may fall back;
+    /// an explicit `.paged` construction failure REFUSES rather than
+    /// degrading. Either way the selection is not the
     /// outcome, so the report carries the backend each cell ACTUALLY built
     /// with — per cell in `decode[].resolvedKVBackend`, and de-duplicated in
     /// the `kvBackend` block.
@@ -461,6 +460,7 @@ public enum ThroughputSweep {
                 // paged gate run has to record.
                 let build = try EngineV2Factory.makeProductionBuild(
                     model: servingModel,
+                    modelID: modelID,
                     tokenizer: ctx.tokenizer,
                     kvBytesCapacity: kvCapacity,
                     maxConcurrentRequests: max(batchSize, 1),

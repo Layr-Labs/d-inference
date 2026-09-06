@@ -89,6 +89,7 @@ extension EngineV2Factory {
     /// vetoes may override explicit paged intent; construction failures may not.
     static func prepareProductionBackend(
         model: any LanguageModel,
+        modelID: String? = nil,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         kvBackend: EngineV2KVBackendSelection = .auto,
@@ -101,7 +102,7 @@ extension EngineV2Factory {
         guard kvBytesCapacity > 0 else {
             throw EngineV2ProductionError.noKVHeadroom
         }
-        var cappedCapacity = clampKVBytesCapacity(kvBytesCapacity)
+        let cappedCapacity = clampKVBytesCapacity(kvBytesCapacity)
 
         guard let adapter = ProductionModelAdapter(model: model) else {
             throw EngineV2ProductionError.unsupportedModel(
@@ -109,13 +110,8 @@ extension EngineV2Factory {
         }
         let layerKinds = adapter.layerKinds
         let modelCapabilities = adapter.modelCapabilities
-        var resolvedKind: EngineV2KVBackendKind
-        switch kvBackend {
-        case .contiguous: resolvedKind = .contiguous
-        case .paged: resolvedKind = .paged
-        // Preserve the rollout default until the full model gate is complete.
-        case .auto: resolvedKind = .contiguous
-        }
+        var resolvedKind = EngineV2KVBackendPolicy.preferredBackend(
+            selection: kvBackend, modelID: modelID)
         var fallbackReason: String?
         // Preserve precedence: model capability, operator kill switch, then
         // the version-scoped automatic crash guard. The first veto owns the reason.
@@ -130,7 +126,7 @@ extension EngineV2Factory {
             fallbackReason = "kill_switch"
         }
 
-        // Dormant while auto chooses contiguous; explicit paged ignores this guard.
+        // Explicit paged ignores the automatic guard.
         if resolvedKind == .paged, kvBackend == .auto,
             EngineV2KVBackendPolicy.crashLoopGuardForcesContiguous(
                 record: KVBackendGuardStore.read(environment: environment),
@@ -168,23 +164,24 @@ extension EngineV2Factory {
             model: model,
             environment: environment)
 
-        let configuredHybridCache: CBv2HybridPrefixCacheConfig?
-        if modelCapabilities.supportsRecurrentCheckpointReuse,
-            let hybridPrefixCache, hybridPrefixCache.maximumBytes > 0,
-            !hybridPrefixCache.modelID.isEmpty, !hybridPrefixCache.promptContractID.isEmpty,
-            !hybridPrefixCache.buildID.isEmpty
-        {
-            guard hybridPrefixCache.maximumBytes < cappedCapacity else {
-                throw EngineV2ProductionError.noKVHeadroom
-            }
-            configuredHybridCache = hybridPrefixCache
-            cappedCapacity -= hybridPrefixCache.maximumBytes
-        } else {
-            configuredHybridCache = nil
-        }
         func contiguousPreparation() throws -> ProductionBackendPreparation {
+            var contiguousCapacity = cappedCapacity
+            let configuredHybridCache: CBv2HybridPrefixCacheConfig?
+            if modelCapabilities.supportsRecurrentCheckpointReuse,
+                let hybridPrefixCache, hybridPrefixCache.maximumBytes > 0,
+                !hybridPrefixCache.modelID.isEmpty, !hybridPrefixCache.promptContractID.isEmpty,
+                !hybridPrefixCache.buildID.isEmpty
+            {
+                guard hybridPrefixCache.maximumBytes < contiguousCapacity else {
+                    throw EngineV2ProductionError.noKVHeadroom
+                }
+                configuredHybridCache = hybridPrefixCache
+                contiguousCapacity -= hybridPrefixCache.maximumBytes
+            } else {
+                configuredHybridCache = nil
+            }
             let backend = CBv2ContiguousKVBackend(
-                config: CBv2ContiguousBackendConfig(bytesCapacity: cappedCapacity))
+                config: CBv2ContiguousBackendConfig(bytesCapacity: contiguousCapacity))
             let caches = try adapter.newCaches { index, kind in
                 CBv2LayerCache(layerIndex: index, kind: kind)
             }

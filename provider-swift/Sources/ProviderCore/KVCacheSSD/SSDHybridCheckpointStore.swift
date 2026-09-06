@@ -37,13 +37,14 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, @unchecked
     let lock = NSLock()
     let statsBox = SSDHybridCheckpointStatsBox()
     let activity = SSDCheckpointActivity()
+    let fileCoordinator = SSDCheckpointFileCoordinator.shared
     let namespace = UUID().uuidString
     var closed = false
     var scanReady = false
     var destructiveChange = false
     var stages: [CBv2RequestID: CBv2StagedCompleteCheckpoint] = [:]
     var stageReservations: [CBv2RequestID: SSDCheckpointStageReservation] = [:]
-    var reading: [CBv2RequestID: UUID] = [:]
+    var reading: [CBv2RequestID: SSDCheckpointFileCoordinator.Access] = [:]
     var writing: Set<Data> = []
     var readyReceipts: [CBv2RequestID: ReadyReceipt] = [:]
     var authenticatedReceipts: [CBv2RequestID: (epoch: String?, files: [Data: SSDAuthenticatedFileIdentity])] = [:]
@@ -114,21 +115,23 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, @unchecked
     }
 
     func completeStaging(requestID: CBv2RequestID) {
-        let staged = lock.withLock {
-            reading.removeValue(forKey: requestID)
+        let (staged, access) = lock.withLock {
+            let access = reading.removeValue(forKey: requestID)
             authenticatedReceipts.removeValue(forKey: requestID)
             stageReservations.removeValue(forKey: requestID)
-            return stages.removeValue(forKey: requestID)
+            return (stages.removeValue(forKey: requestID), access)
         }
+        access?.cancel()
         staged?.close()
     }
 
     func abandonStaging(requestID: CBv2RequestID) async {
-        let (stage, reservation) = lock.withLock {
-            reading.removeValue(forKey: requestID)
+        let (stage, reservation, access) = lock.withLock {
+            let access = reading.removeValue(forKey: requestID)
             authenticatedReceipts.removeValue(forKey: requestID)
-            return (stages.removeValue(forKey: requestID), stageReservations.removeValue(forKey: requestID))
+            return (stages.removeValue(forKey: requestID), stageReservations.removeValue(forKey: requestID), access)
         }
+        access?.cancel()
         stage?.close()
         await reservation?.waitForRefund()
     }
@@ -137,20 +140,22 @@ public final class SSDHybridCheckpointStore: CBv2CompletePrefixCache, @unchecked
     var hasSafeRoot: Bool { SSDBlockStore.isSafeModelRoot(config.root, dedicatedRoot: config.dedicatedRoot) }
 
     public func close() {
-        let retiring = lock.withLock { () -> [CBv2StagedCompleteCheckpoint]? in
+        let retiring = lock.withLock { () -> (stages: [CBv2StagedCompleteCheckpoint], reads: [SSDCheckpointFileCoordinator.Access])? in
             guard !closed else { return nil }
             closed = true
+            let accesses = Array(reading.values)
             reading.removeAll()
             readyReceipts.removeAll()
             authenticatedReceipts.removeAll()
             let retiring = Array(stages.values)
             stages.removeAll()
             stageReservations.removeAll()
-            return retiring
+            return (retiring, accesses)
         }
         guard let retiring else { return }
+        for access in retiring.reads { access.cancel() }
         pipeline.shutdown()
-        for stage in retiring { stage.close() }
+        for stage in retiring.stages { stage.close() }
         diskBudget.deregister(self)
     }
 

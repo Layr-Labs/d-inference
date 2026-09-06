@@ -17,6 +17,53 @@ import Testing
 @Suite("EngineV2KVBackendPolicy")
 struct EngineV2KVBackendPolicyTests {
 
+    @Test(arguments: [
+        "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+        "EigenLabs/Qwen3.8-27B-4bit-mtp",
+    ])
+    func exactQwenAutoPolicy(modelID: String) {
+        let parsed = EngineV2KVBackendPolicy.parseSelection(
+            global: "auto", byModel: [:], modelID: modelID)
+        #expect(parsed.selection == .auto)
+        #expect(EngineV2KVBackendPolicy.preferredBackend(
+            selection: parsed.selection, modelID: modelID) == .paged)
+        #expect(EngineV2KVBackendPolicy.degradesPagedFailure(selection: parsed.selection))
+        for selection in [EngineV2KVBackendSelection.contiguous, .paged] {
+            let override = EngineV2KVBackendPolicy.parseSelection(
+                global: "auto", byModel: [modelID: selection.rawValue], modelID: modelID)
+            #expect(override.selection == selection)
+            #expect(EngineV2KVBackendPolicy.preferredBackend(
+                selection: override.selection, modelID: modelID).rawValue == selection.rawValue)
+        }
+        let automaticOverride = EngineV2KVBackendPolicy.parseSelection(
+            global: "contiguous", byModel: [modelID: "auto"], modelID: modelID)
+        #expect(automaticOverride.selection == .auto)
+        #expect(EngineV2KVBackendPolicy.preferredBackend(
+            selection: automaticOverride.selection, modelID: modelID) == .paged)
+        #expect(PrefixCachePolicy.isEnabled(environment: [:]))
+        #expect(!PrefixCachePolicy.isMemoryEnabled(environment: [:]))
+        #expect(PrefixCachePolicy.residentConfig(
+            modelId: modelID, promptContractID: "contract", environment: [:]) == nil)
+    }
+
+    @Test(arguments: [
+        nil, "", "unknown", "gpt-oss-20b", "gemma-4-26b", "gemma-4-31b",
+        "qwen3.5-9b", "qwen3.5-27b", "qwen3.6-35b-a3b",
+        "EigenLabs/Qwen3.8-27B-4bit", "Qwen3.8-27B-4bit-mtp",
+        "eigenlabs/qwen3.8-27b-4bit-mtp", "QWEN3.5-35B-A3B",
+        " qwen3.5-35b-a3b", "qwen3.5-35b-a3b ", "org/qwen3.5-35b-a3b",
+        "qwen3.5-35b-a3b-other", "qwen3.6-35b-a3b-vl-mtp-mxfp8-other",
+        "EigenLabs/Qwen3.8-27B-4bit-mtp-other",
+    ] as [String?])
+    func otherIDsRemainContiguous(modelID: String?) {
+        #expect(EngineV2KVBackendPolicy.preferredBackend(
+            selection: .auto, modelID: modelID) == .contiguous)
+        #expect(EngineV2KVBackendPolicy.preferredBackend(
+            selection: .contiguous, modelID: modelID) == .contiguous)
+        #expect(EngineV2KVBackendPolicy.preferredBackend(
+            selection: .paged, modelID: modelID) == .paged)
+    }
+
     // MARK: parseSelection
 
     @Test("global value parses; per-model override wins")

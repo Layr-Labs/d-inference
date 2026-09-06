@@ -33,6 +33,7 @@ extension EngineV2Factory {
     /// Use `makeProductionBuild` when the resolved backend metadata is needed.
     public static func makeProductionEngine(
         model: any LanguageModel,
+        modelID: String? = nil,
         tokenizer: any MLXLMCommon.Tokenizer,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
@@ -50,6 +51,7 @@ extension EngineV2Factory {
     ) throws -> any CBv2Engine {
         try makeProductionBuild(
             model: model,
+            modelID: modelID,
             tokenizer: tokenizer,
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: maxConcurrentRequests,
@@ -107,6 +109,7 @@ extension EngineV2Factory {
     /// these phases separately to construct a prefix cache for the resolved backend.
     public static func makeProductionBuild(
         model: any LanguageModel,
+        modelID: String? = nil,
         tokenizer: any MLXLMCommon.Tokenizer,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
@@ -125,6 +128,7 @@ extension EngineV2Factory {
     ) throws -> ProductionBuild {
         let preparedBackend = try prepareProductionBackend(
             model: model,
+            modelID: modelID,
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: maxConcurrentRequests,
             kvBackend: kvBackend,

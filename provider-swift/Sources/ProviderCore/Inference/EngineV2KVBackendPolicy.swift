@@ -1,7 +1,7 @@
 // Copyright © 2026 Eigen Labs.
 // Backend policy: per-model config wins, slot/model capabilities may veto it,
-// and the fleet kill switch overrides every caller. Auto currently selects
-// contiguous. Explicit paged construction failures refuse the load; automatic
+// and the fleet kill switch overrides every caller. Auto selects paged only
+// for exact candidate fleet Qwen IDs. Explicit paged failures refuse the load; automatic
 // failures may degrade. The crash-loop guard applies only to automatic selection.
 
 import Foundation
@@ -12,7 +12,7 @@ public enum EngineV2KVBackendKind: String, Sendable, Equatable {
     case paged
 }
 
-/// Operator configuration; auto currently chooses contiguous for capacity.
+/// Operator configuration, preserved separately from the resolved backend.
 public enum EngineV2KVBackendSelection: String, Sendable, Equatable, CaseIterable {
     case auto
     case paged
@@ -20,6 +20,24 @@ public enum EngineV2KVBackendSelection: String, Sendable, Equatable, CaseIterabl
 }
 
 public enum EngineV2KVBackendPolicy {
+    public static func preferredBackend(
+        selection: EngineV2KVBackendSelection,
+        modelID: String?
+    ) -> EngineV2KVBackendKind {
+        switch selection {
+        case .contiguous: return .contiguous
+        case .paged: return .paged
+        case .auto:
+            switch modelID {
+            case "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+                "EigenLabs/Qwen3.8-27B-4bit-mtp":
+                return .paged
+            default:
+                return .contiguous
+            }
+        }
+    }
+
     /// Only negative values disable paged; this switch cannot select paged.
     public static let killSwitchEnvKey = "DARKBLOOM_CBV2_PAGED_KV"
 

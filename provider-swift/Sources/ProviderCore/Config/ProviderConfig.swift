@@ -148,14 +148,12 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// `engineV2MaxConcurrent`.
     public var engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
-    /// `[backend]`): "auto" (default — resolves CONTIGUOUS as of v0.8.1,
-    /// reverting v0.8.0's paged default; see
-    /// `EngineV2Factory.prepareProductionBackend`), "paged", or
-    /// "contiguous". Setting "paged" explicitly is the ONLY way to put a
-    /// box on paged — the `DARKBLOOM_CBV2_PAGED_KV` env var is a
-    /// negative-polarity kill switch and cannot turn paged on. Note the
-    /// consequence of an explicit "paged" under a contiguous default: a
-    /// box that cannot serve paged now REFUSES the load
+    /// `[backend]`): "auto" follows the exact-model policy in
+    /// `EngineV2KVBackendPolicy.preferredBackend`; "paged" and "contiguous"
+    /// are explicit selections. `DARKBLOOM_CBV2_PAGED_KV` is a
+    /// negative-polarity kill switch and cannot turn paged on.
+    /// Automatic paged failures may fall back, but a box that cannot
+    /// construct an explicitly requested paged backend REFUSES the load
     /// (`EngineV2ProductionError.pagedUnavailable` ⇒ 503, the coordinator
     /// reroutes) rather than degrading, because refusal is reserved for a
     /// selection someone asked for by name.

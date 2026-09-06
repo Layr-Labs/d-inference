@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-06 · commit `ffe365029`
+> Last updated: 2026-09-06 · commit `35fea6d0e`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,12 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Qwen3.8 B2 coordinated reads](2026-09-06-qwen38-b2-coordinated-reads.md) — both strict comparisons pass on the fresh coordinated-read runtime; both warm requests restore 5,120 tokens with unchanged outputs.
+- [SSD read coordination runtime](2026-09-06-ssd-read-coordination-runtime.md) — same-file coordination and final alias repair; 324 fresh provider/CLI cases, original CPU regressions and exact artifact audit pass; real-model retest pending.
+- [Qwen3.8 B2 staging policy](2026-09-06-qwen38-b2-staging-policy.md) — exact backend outputs and actual B2 pass, but one warm request skips authenticated SSD restore; failed gate and full raw evidence preserved.
+- [Isolated signing validation](2026-09-06-isolated-signing-validation.md) — old `f91fe843`/`0.8.16` app passes Developer ID/notarization and cleanup; preserve signature metadata, exclude flat-export equivalence and Qwen56fa/production acceptance.
+- [Qwen-first candidate runtime](2026-09-06-qwen-first-candidate-runtime.md) — both release builds and 266 fresh provider/CLI cases pass; exact-source audit and preserved rollback/capacity, with real-model release gates still open.
+- [GPT-OSS B2 cache divergence](2026-09-06-gptoss-b2-cache-divergence.md) — retained three-arm pilot passes strict cache-off backend comparison but fails strict cache parity; cross-row equality does not prove restoration correctness.
 - [Fixed-context Qwen and Gemma scores](2026-09-06-teacher-context-scores.md) — all four real-model scoring controls run successfully; Qwen differs at two of 83 positions and Gemma at zero of 61, with numerical acceptance still open.
 - [Corrected Gemma QAT backend controls](2026-09-06-gemma-qmv-controls.md) — all three B1 mode pairs match across backends; automatic-versus-ordinary output equality still fails on both.
 - [Recurrent teacher scoring](2026-09-06-recurrent-teacher-scoring.md) — request-owned recurrent state, normal peak admission and failure retirement; 45 functions/59 cases pass, with exact-model reruns pending.

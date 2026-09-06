@@ -130,6 +130,7 @@ public enum ArrivalInvarianceBenchmark {
 
         let engineParts = try await makeEngine(
             container: container,
+            modelID: modelID,
             isVLM: isVLM,
             modelDirectory: modelDirectory,
             weightBytes: facts.weightBytes,
@@ -434,6 +435,7 @@ public enum ArrivalInvarianceBenchmark {
 
     private static func makeEngine(
         container: ModelContainer,
+        modelID: String,
         isVLM: Bool,
         modelDirectory: URL,
         weightBytes: Int,
@@ -460,6 +462,7 @@ public enum ArrivalInvarianceBenchmark {
             )
             let build = try EngineV2Factory.makeProductionBuild(
                 model: servingModel,
+                modelID: modelID,
                 tokenizer: context.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: maxConcurrentRequests,

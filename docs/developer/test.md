@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-06 · commit `2d1e48206`
+> Last updated: 2026-09-06 · commit `72719e35e`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -410,6 +410,22 @@ continuous memory peak. It checks staged-memory release after the whole batch dr
 another active request may still own staging when an individual row ends.
 These raw-engine batches exercise shared native admission for segmented storage;
 they do not cover bridge dispatch, contiguous bridge reservations or HTTP framing.
+
+Candidate builds with `RADIX_CANDIDATE` emit report schema 3 and bounded
+`forward_shapes` telemetry. After warmup, the benchmark opens a fresh observation
+scope and records before/after snapshots around each measured cohort. B2/B4
+acceptance requires a completed target decode or MTP-verification call with the
+requested live row count in every cohort. Four B1 calls, speculative columns,
+prefill rows and padded compiled components cannot satisfy that gate.
+
+`submitted_calls` counts entry into model dispatch, including lazy graph
+construction; it is not a GPU submission count. `completed_calls` records the
+existing readback and MTP-finalization boundary. Counter retirement follows the
+adaptive MTP cost sample. Snapshot/delta inconsistencies, pending or unconfirmed
+work, unknown dispatches and dropped records reject the measured interval.
+Component rows and sequence width remain separate axes. An observed full-width
+call proves neither constant width for the whole request nor kernel launch
+geometry; the existing concurrency, lifecycle and output gates still apply.
 When the native engine exposes `paged_storage`, before/after metrics and batch
 samples retain its queue-captured grant, committed backing, reserved/live pages,
 poison, slack, and over-grant bytes, plus segment and address-page counts.

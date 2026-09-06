@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-06 · commit `2d1e48206`
+> Last updated: 2026-09-06 · commit `72719e35e`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -159,6 +159,14 @@ includes the MLX tree SHA, toolchain hash and deployment target) and
 compiled at SDK/deployment target ≥ 26.2). The script fails if required kernel
 symbols (`_nax`, `gemv`, the `affine_qmv_wide_*` variants) are missing from the
 produced library.
+
+#### Instrumented candidate benchmarks
+
+Build `radix-engine` with its matching native dependency and `RADIX_CANDIDATE`
+define to emit schema-3 actual-forward-width evidence. The scalar observer and
+benchmark validator must come from the same reviewed source cut. See the
+[prefix-cache benchmark checks](test.md#prefix-cache-benchmark-validation) for
+scope, completion and B2/B4 acceptance requirements.
 
 #### Restored SwiftPM runtime resources
 

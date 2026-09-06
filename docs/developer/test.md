@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-05 · commit `efc4e301b`
+> Last updated: 2026-09-06 · commit `9c107e7b2`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -15,6 +15,12 @@ checksum rejection, fallback, and cancellation. `scripts/test-publish-model.sh`
 checks the artifact workflow payload. `TestHuggingFaceArtifactPostgresAndCache`
 in `coordinator/store/hugging_face_artifact_test.go` uses a disposable
 `DATABASE_URL` to check storage and cache invalidation.
+
+Run `python3 scripts/test-provider-signing-validation.py` to verify the manual
+signing workflow and its artifact, identity, entitlement and archive checks.
+These CPU fixtures do not execute provider binaries or use signing credentials.
+See the [signing-validation procedure](../operations/provider-release.md#environment-free-signing-validation)
+for the separate signed artifact validation.
 
 ## Prerequisites
 

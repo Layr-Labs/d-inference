@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-05 · commit `4d9811f7c`
+> Last updated: 2026-09-06 · commit `9c107e7b2`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -10,6 +10,11 @@ of it; the per-component steps below explain what each target runs.
 Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the
 [model publishing procedure](../operations/model-migration.md).
+
+The [manual signing-validation workflow](../operations/provider-release.md#environment-free-signing-validation)
+builds a reviewed, signed source revision and packages its existing version for
+Apple signing and notarization checks. It retains an Actions artifact for isolated
+validation; the unsigned build and signing run in separate jobs.
 
 ## Prerequisites
 

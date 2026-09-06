@@ -11,6 +11,9 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Qwen3.6 uniform-prefill control](2026-09-06-qwen36-uniform-prefill.md) — strict per-index repeats pass with uniform 512-token prefill; distinct batch positions still produce different trajectories.
+- [Three-model shared-memory lifecycle](2026-09-06-coresidency-lifecycle.md) — active Qwen SSD generation survives GPT/Gemma QAT loads, grant shrink, cancellation, recovery and clean unload.
+- [Qwen3.6 sustained trajectory diagnosis](2026-09-06-qwen36-sustained-diagnosis.md) — failed strict donor/recovery comparison after 22K-token prefill, actual SSD restores and source-proven timing-dependent MTP depth.
 - [Qwen3.6 B2 repeatability diagnosis](2026-09-06-qwen36-concurrency-diagnosis.md) — failed strict repeat comparison, observed prefill geometry and preserved evidence.
 - [Five-model short quality probe](2026-09-06-five-model-quality-probe.md) — all native integrity checks pass; 58 capped responses and seven substantive code failures require separate budget and backend controls.
 - [Qwen3.5 native B1 validation](2026-09-06-qwen35-b1-validation.md) — exact 79-token backend and paged SSD outputs, four actual 4,096-token hits, and complete native integrity/retirement checks.

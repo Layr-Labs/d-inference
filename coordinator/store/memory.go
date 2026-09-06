@@ -142,6 +142,7 @@ type MemoryStore struct {
 
 	// Rejected inbound inference requests (4xx/5xx) with servability snapshot.
 	inferenceRejections []RejectionRecord
+	requestOutcomes     map[string]json.RawMessage
 
 	// System profiler: per-attempt request profiles (write-once per
 	// request_id/attempt, mirroring the Postgres UNIQUE + DO NOTHING) and

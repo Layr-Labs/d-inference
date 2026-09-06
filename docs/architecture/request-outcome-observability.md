@@ -1,10 +1,15 @@
 # Request Outcome Observability
 
-> Last updated: 2026-09-04 · commit `6f364e64b`
+> Last updated: 2026-09-05 · commit `bbf6f83d4`
 
-Every inference request the coordinator dispatches ends in exactly one terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the taxonomy as the code implements it, where each value is decided, and what is still not modelled.
+`inference_routes`, sampled `request_profiles` and the established Datadog
+counters describe provider attempts and legacy outcome semantics. They are not
+a complete incoming-request denominator. The unsampled [incoming request
+accounting ledger](request-accounting.md) separately records request identity,
+final classification, provider progress and local response egress with explicit
+coverage limits. This page describes the preserved legacy taxonomy.
 
-Scope: `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`. All four flow through `dispatchState` (`coordinator/api/dispatch.go`, `coordinator/api/consumer.go`), so all four write route rows and profile rows.
+Scope: `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`. All four share `dispatchState` (`coordinator/api/dispatch.go`, `coordinator/api/consumer.go`); route and sampled profile coverage depends on how far a request progresses.
 
 ## Context
 
@@ -13,7 +18,7 @@ A single success flag cannot describe a streamed inference request. The client c
 Two design rules follow from that:
 
 - Outcome strings are closed enums chosen in Go. Raw provider error text stays in logs; the route row and every metric tag carry only a value from the tables below.
-- The commit point (first content-bearing chunk written to the client) is a transition, not a terminal. Anything that happens after commit is reported as `partial_success` with an `_after_commit` class, never left as `success`.
+- The commit point (selection of a winning provider attempt) is a transition, not proof of content delivery or a terminal. Abnormal post-commit outcomes use `partial_success` with an `_after_commit` class; normal provider completion can remain `success` without proving complete response egress.
 
 ## Mechanism
 
@@ -107,7 +112,14 @@ The profiler keeps the two dimensions the route row folds together. Both are clo
 | `provider_outcome` | `completed`, `error`, `not_dispatched`, `no_terminal` | `handleComplete` / `handleInferenceError` (`coordinator/api/provider.go`), `closeUndispatchedAttempt`, and the 31 s fallback timer in `coordinator/registry/attempt_profile_finalize.go` |
 | `terminal_cause` | the `inference_error.terminal_cause` enum, verbatim | `handleInferenceError` |
 
-The full column list, retention and export rules are in [system-profiler.md](./system-profiler.md); the `terminal_cause` vocabulary is in [protocol-messages.md](../reference/protocol-messages.md).
+`client_outcome = completed` is the legacy dispatch-finalization label, not
+proof that the full body or stream reached the response writer. Likewise,
+`success` and `partial_success` route labels do not establish completed
+incoming requests. The [accounting ledger](request-accounting.md) records
+provider ingress, response terminal, complete local egress and departure
+separately. The full profile column list, retention and export rules are in
+[system-profiler.md](./system-profiler.md); the `terminal_cause` vocabulary is in
+[protocol-messages.md](../reference/protocol-messages.md).
 
 ### Pre-dispatch rejections
 
@@ -215,8 +227,8 @@ All admin reads require the admin key (`requireAdminKey`).
 
 ## Not modelled at this commit
 
-- `inference_routes` has no `client_outcome`, `provider_outcome`, `billing_outcome`, `response_committed`, `terminal_source` or client-request correlation columns; the client/provider split exists only in `request_profiles`, and billing settlement is visible through `cost_micro_usd` and the `error_class` rather than a dedicated column.
-- `request_rejections` receives no `auth` or `rate_limit` rows; those exits return before `recordRejection` runs.
+- `inference_routes` has no `client_outcome`, `provider_outcome`, `billing_outcome`, `response_committed`, `terminal_source` or client-request correlation columns; its client/provider split is available through linked `request_profiles` and `request_outcomes`. Billing settlement is visible through `cost_micro_usd` and the `error_class` rather than a dedicated column.
+- `request_rejections` receives no `auth` or `rate_limit` rows; those exits return before `recordRejection` runs. The separate receipt middleware records them in `request_outcomes` without changing this legacy table.
 - Per-provider aggregate counters for cancellations, disconnects and no-terminal drops are not exported; `RecordJobSuccess`/`RecordJobFailure` remain the only provider aggregates.
 - No `request_events` timeline table exists; point-in-time reconstruction uses the microsecond stamps in `request_profiles`.
 

@@ -205,6 +205,9 @@ func (s *Server) updateInferenceRouteOutcomeForPending(pr *registry.PendingReque
 	if pr == nil {
 		return
 	}
+	if outcome != nil && outcome.ErrorClass != "" {
+		pr.Accounting.Observe("route_terminal", profileErrorReason(outcome), outcome.ErrorCode)
+	}
 	terminal := outcome != nil && outcome.FinalStatus != ""
 	if terminal {
 		if !pr.MarkRouteOutcomeFinalized() {

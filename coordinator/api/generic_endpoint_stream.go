@@ -164,7 +164,7 @@ func newGenericEndpointStreamEmitter(
 	if pr.ConsumerEndpoint == messagesEndpoint {
 		return newMessagesStreamEmitter(w, flusher, pr)
 	}
-	return &completionsStreamEmitter{w: w, flusher: flusher, pr: pr, stamps: newRelayStamps(pr.Profile.Parent())}
+	return &completionsStreamEmitter{w: w, flusher: flusher, pr: pr, stamps: newRelayStamps(pr.Profile.Parent(), pr.Accounting.Parent())}
 }
 
 type completionsStreamEmitter struct {
@@ -198,7 +198,7 @@ func (e *completionsStreamEmitter) handleChunk(chunk string) {
 				"logprobs":      nil,
 				"finish_reason": nil,
 			}},
-		})
+		}, true)
 	}
 }
 
@@ -224,17 +224,27 @@ func (e *completionsStreamEmitter) finish(usage protocol.UsageInfo) {
 }
 
 func (e *completionsStreamEmitter) emitError(kind, message string) {
-	e.emit(map[string]any{"error": map[string]any{"type": kind, "message": message}})
+	if e.emit(map[string]any{"error": map[string]any{"type": kind, "message": message}}) {
+		e.stamps.accounting.Egress(true, false, "error")
+	}
 }
 
-func (e *completionsStreamEmitter) emit(value any) {
+func (e *completionsStreamEmitter) emit(value any, content ...bool) bool {
 	encoded, err := json.Marshal(value)
 	if err != nil {
-		return
+		return false
 	}
 	n, werr := fmt.Fprintf(e.w, "data: %s\n\n", encoded)
+	accepted := werr == nil && n == len(encoded)+8
+	if len(content) > 0 && content[0] && accepted {
+		e.stamps.content()
+	}
+	if n != len(encoded)+8 {
+		e.stamps.writeErr()
+	}
 	e.flusher.Flush()
 	e.stamps.wrote(n, werr)
+	return accepted
 }
 
 type messagesStreamEmitter struct {
@@ -257,7 +267,7 @@ func newMessagesStreamEmitter(
 	pr *registry.PendingRequest,
 ) *messagesStreamEmitter {
 	return &messagesStreamEmitter{
-		stamps:    newRelayStamps(pr.Profile.Parent()),
+		stamps:    newRelayStamps(pr.Profile.Parent(), pr.Accounting.Parent()),
 		w:         w,
 		flusher:   flusher,
 		pr:        pr,
@@ -377,18 +387,28 @@ func (e *messagesStreamEmitter) emitError(kind, message string) {
 	default:
 		kind = "api_error"
 	}
-	e.emit("error", map[string]any{
+	if e.emit("error", map[string]any{
 		"error": map[string]any{"type": kind, "message": message},
-	})
+	}) {
+		e.stamps.accounting.Egress(true, false, "error")
+	}
 }
 
-func (e *messagesStreamEmitter) emit(eventType string, fields map[string]any) {
+func (e *messagesStreamEmitter) emit(eventType string, fields map[string]any) bool {
 	fields["type"] = eventType
 	encoded, err := json.Marshal(fields)
 	if err != nil {
-		return
+		return false
 	}
 	n, werr := fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, encoded)
+	accepted := werr == nil && n == len(eventType)+len(encoded)+16
+	if !e.stamps.contentWritten && accepted && accountingValueHasContent(fields, 0) {
+		e.stamps.content()
+	}
+	if n != len(eventType)+len(encoded)+16 {
+		e.stamps.writeErr()
+	}
 	e.flusher.Flush()
 	e.stamps.wrote(n, werr)
+	return accepted
 }

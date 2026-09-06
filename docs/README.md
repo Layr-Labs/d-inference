@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-05 · commit `bbf6f83d4`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -43,6 +43,7 @@
 - [`architecture/billing.md`](architecture/billing.md): pricing, reservations, ledger, the platform fee (stated only here), Stripe deposits and payouts, referrals, base rewards.
 - [`architecture/telemetry.md`](architecture/telemetry.md): what telemetry exists, how the Go/Swift/TS mirrors stay symmetric, where it goes.
 - [`architecture/request-outcome-observability.md`](architecture/request-outcome-observability.md): the closed outcome taxonomy for client, provider, and billing dimensions.
+- [`architecture/request-accounting.md`](architecture/request-accounting.md): incoming request identities, linked attempts, response egress evidence and observed coverage.
 - [`architecture/system-profiler.md`](architecture/system-profiler.md): per-attempt request profiles and fleet snapshots — schema, clocks, validation.
 - [`architecture/hardware-support.md`](architecture/hardware-support.md): the memory model — unified-memory cap, activation floors, load gate, KV budget and re-slice; platform and hardware gates.
 

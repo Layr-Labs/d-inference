@@ -65,6 +65,14 @@ type rejectionInfo struct {
 // request path when the caller did not already do so. Best-effort: it never
 // blocks or fails the request.
 func (s *Server) recordRejection(info rejectionInfo) {
+	if info.r != nil {
+		// Routing records its proven exhaustion classification before this hook.
+		// Other rejection paths carry no such evidence.
+		requestOutcomeFromContext(info.r.Context()).Rejection(info.reasonCode, false)
+		if info.resolvedModel != "" {
+			requestOutcomeFromContext(info.r.Context()).Shape(info.resolvedModel, info.stream)
+		}
+	}
 	if s == nil || s.store == nil {
 		return
 	}

@@ -166,7 +166,7 @@ func newResponsesStreamEmitter(w http.ResponseWriter, flusher http.Flusher, pr *
 		w:               w,
 		flusher:         flusher,
 		pr:              pr,
-		stamps:          newRelayStamps(pr.Profile.Parent()),
+		stamps:          newRelayStamps(pr.Profile.Parent(), pr.Accounting.Parent()),
 		responseID:      responseID,
 		createdAt:       createdAt,
 		model:           consumerModel(pr),
@@ -175,17 +175,25 @@ func newResponsesStreamEmitter(w http.ResponseWriter, flusher http.Flusher, pr *
 }
 
 // emit writes one SSE event with an `event:` line and a sequence_number.
-func (e *responsesStreamEmitter) emit(eventType string, fields map[string]any) {
+func (e *responsesStreamEmitter) emit(eventType string, fields map[string]any) bool {
 	fields["type"] = eventType
 	fields["sequence_number"] = e.seq
 	e.seq++
 	data, err := json.Marshal(fields)
 	if err != nil {
-		return
+		return false
 	}
 	n, werr := fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, data)
+	accepted := werr == nil && n == len(eventType)+len(data)+16
+	if !e.stamps.contentWritten && accepted && accountingValueHasContent(fields, 0) {
+		e.stamps.content()
+	}
+	if n != len(eventType)+len(data)+16 {
+		e.stamps.writeErr()
+	}
 	e.flusher.Flush()
 	e.stamps.wrote(n, werr)
+	return accepted
 }
 
 // start emits response.created and response.in_progress.
@@ -493,17 +501,19 @@ func (e *responsesStreamEmitter) finish(usage protocol.UsageInfo) {
 		snap["response_hash"] = e.pr.ResponseHash
 	}
 	e.emit(eventType, map[string]any{"response": snap})
-	e.stamps.done()
+	e.stamps.done(status)
 }
 
 // emitError emits a Responses-API error event.
 func (e *responsesStreamEmitter) emitError(errType, message string) {
-	e.emit("error", map[string]any{
+	if e.emit("error", map[string]any{
 		"error": map[string]any{
 			"type":    errType,
 			"code":    errType,
 			"message": message,
 			"param":   nil,
 		},
-	})
+	}) {
+		e.stamps.accounting.Egress(true, false, "error")
+	}
 }

@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-05 · commit `4d9811f7c`
+> Last updated: 2026-09-05 · commit `bbf6f83d4`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -37,7 +37,7 @@ on the narrow slice they need; both implementations satisfy all twelve.
 |---|---|
 | `APIKeyStore` | Consumer API keys: create, seed, validate, per-key limits and counts. |
 | `UsageStore` | Usage events and settled payments plus the totals, time-series, geo and leaderboard aggregations behind `/v1/stats`. |
-| `TelemetryStore` | Routing-decision snapshots (`inference_routes`), rejection records and the profiler's `request_profiles`/`fleet_snapshots`; prompt-free by construction. |
+| `TelemetryStore` | Routing-decision snapshots (`inference_routes`), rejection records, unsampled `request_outcomes`, and the profiler's `request_profiles`/`fleet_snapshots`; prompt-free by construction. |
 | `LedgerStore` | The double-entry balance ledger; every amount is micro-USD. |
 | `BillingStore` | Referrals, deposit sessions, per-account model prices and Stripe Connect withdrawals. |
 | `ModelRegistryStore` | The manifest-backed model catalog and the public aliases that resolve to concrete builds. |
@@ -50,6 +50,20 @@ on the narrow slice they need; both implementations satisfy all twelve.
 
 Telemetry *events* are not in the store at all: `TelemetryEventRecord` goes to
 Datadog only (see [`telemetry.md`](telemetry.md)).
+
+### Incoming-request outcome ledger
+
+`RequestOutcomeStore` is embedded in `TelemetryStore` and therefore delegated
+through `CachedStore` without a new cache domain. The `request_outcomes` table
+has a coordinator UUID primary key and a `(received_at, coord_request_id)` index.
+Its versioned snapshots are upserted with monotonic revision and sticky conflict
+checks; both memory and Postgres enforce equivalent replay semantics.
+`coordinator/store/postgres_request_outcomes.go` owns the additive startup DDL
+and bounded reads/deletes; `coordinator/api/request_outcome_sink.go` owns
+unsampled persistence and retention independently of the profiler. See the
+[accounting contract](request-accounting.md) for coverage, lifecycle evidence,
+retention and loss semantics. This schema writes neither users nor model data,
+so it does not invalidate their read-through caches.
 
 ### Two implementations and when each runs
 
@@ -117,7 +131,7 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 |---|---|---|
 | Identity and access | `api_keys`, `users`, `device_codes`, `provider_tokens`, `publishing_api_keys`, `invite_codes`, `invite_redemptions` | Keys are stored as hashes with a display prefix; `users` carries the Stripe Connect fields. |
 | Money | `balances`, `ledger_entries`, `billing_sessions`, `model_prices`, `referrers`, `referrals`, `stripe_withdrawals`, `provider_earnings`, `earnings_summary`, `provider_payouts`, `provider_floor_draws`, `payments` (legacy) | The ledger is append-only; `balances` is the materialised view of it. Semantics in [`billing.md`](billing.md). |
-| Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter kept by `migrateUsageTotals`. |
+| Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_outcomes`, `request_profiles`, `fleet_snapshots` | Billed usage, internal route attempts, rejection observations, incoming request snapshots, sampled profiles and fleet samples; `usage_totals` is a single-row counter kept by `migrateUsageTotals`. |
 | Provider fleet and trust | `providers`, `provider_reputation`, `provider_sessions`, `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets`, `provider_log_reports` | Trust reuse and code attestations are durable so a redeploy does not re-challenge the whole fleet; see [`security/attestation.md`](security/attestation.md). `provider_log_reports.serial_number` is kept empty by trigger. |
 | Models and releases | `model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `releases` | The catalog the registry syncs at boot; see [`model-registry.md`](model-registry.md). |
 | Bookkeeping | `schema_migrations` | Markers for one-shot data migrations. |
@@ -129,6 +143,7 @@ The store keeps most business rows forever; the loops that exist are narrow.
 | Loop | Where | What it bounds |
 |---|---|---|
 | Profiler retention sweep, hourly | `coordinator/api/profiler_fleet.go` (`StartProfilerLoops` → `PruneTelemetry`) | `request_profiles` and `fleet_snapshots` older than their retention windows ([telemetry-inventory](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres)), in batches; runs even when the profiler is off. |
+| Request accounting retention sweep, every minute | `coordinator/api/request_outcome_sink.go` (`pruneLoop` → `PruneRequestOutcomes`) | `request_outcomes` by receipt time; bounded batches on a separate worker ([accounting contract](request-accounting.md#persistence-and-coverage)). |
 | Memory-store pruner, every 15 minutes | `coordinator/cmd/coordinator/main.go` (`memory_store_pruner`, `MemoryStore.Prune`) | Append-only history slices to `DefaultPruneMaxEntries` (100 000); memory store only. |
 | Session reconciliation, once at boot | `coordinator/cmd/coordinator/main.go` (`CloseOpenProviderSessions`) | Closes `provider_sessions` rows whose last heartbeat is more than 3 minutes old, so a blue-green cutover does not truncate live sessions. |
 | Read-cache janitor, every minute | `coordinator/api/server.go` (`StartReadCacheJanitor`) | In-process response cache, not a table. |

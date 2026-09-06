@@ -32,6 +32,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
+	"github.com/eigeninference/d-inference/coordinator/outcomes"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -267,8 +268,9 @@ type PendingRequest struct {
 	Timing *RequestTiming
 	// Profile is this attempt's profiler record (system profiler). Nil when the
 	// profiler is off. Stamped lock-free from any goroutine; see request_profile.go.
-	Profile  *AttemptProfile
-	timingMu sync.Mutex
+	Accounting *outcomes.Attempt
+	Profile    *AttemptProfile
+	timingMu   sync.Mutex
 	// contentCommitted marks THIS attempt as the one that delivered its first
 	// content chunk to the client (set by commitFirstContent / the generic
 	// first-content stamp, in the dispatch/handler goroutine). It distinguishes the

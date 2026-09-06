@@ -43,6 +43,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
+	"github.com/eigeninference/d-inference/coordinator/outcomes"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
@@ -53,6 +54,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
+	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
 	"golang.org/x/sync/singleflight"
 )
@@ -500,7 +502,8 @@ type Server struct {
 
 	// profiler owns the per-request profile records and their dedicated sink
 	// (system profiler). Nil on a Server built without NewServer.
-	profiler *profiler
+	profiler        *profiler
+	requestOutcomes *requestOutcomeSink
 	// unknownRequestFrames counts provider frames for requests the coordinator
 	// no longer tracks (zombie streams); exported on the fleet coordinator row.
 	unknownRequestFrames atomic.Int64
@@ -877,6 +880,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		s.ddHistogram("registry.gate.wait_ms", float64(wait.Microseconds())/1000, []string{"site:" + site})
 	})
 	s.profiler = newProfilerFromEnv(s)
+	s.requestOutcomes = newRequestOutcomeSink(s, defaultTelemetrySinkCapacity)
 	s.registerDefaultGauges()
 	s.routes()
 
@@ -981,6 +985,7 @@ func (s *Server) Close() {
 		s.trustAuthority = nil
 	}
 	s.trustAuthorityMu.Unlock()
+	s.requestOutcomes.close()
 	if s.profiler != nil {
 		s.profiler.close()
 	}
@@ -3611,16 +3616,29 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), ctxKeyRequestID, reqID)
 		// Profiler correlation id is ALWAYS coordinator-minted (the client-supplied
 		// X-Request-ID above is echoed and logged but never persisted).
-		if s.profilerEnabled() {
+		if s.profilerEnabled() || s.requestOutcomes != nil && inferenceOutcomeEndpoint(r) {
 			meta := &requestMeta{coordID: reqID, start: start}
 			if r.Header.Get("X-Request-ID") != "" {
 				meta.coordID = newRequestID()
+			}
+			if s.requestOutcomes != nil && inferenceOutcomeEndpoint(r) {
+				meta.coordID = uuid.NewString()
+				meta.outcome = outcomes.New(meta.coordID, r.URL.Path, start, s.requestOutcomes.submit)
 			}
 			ctx = context.WithValue(ctx, requestMetaKey{}, meta)
 		}
 		r = r.WithContext(ctx)
 
+		returned := false
+		defer func() {
+			status := sw.status
+			if !returned {
+				status = 0
+			} // Outer recovery writes after this defer.
+			requestOutcomeFromContext(ctx).Finish(status, r.Context().Err() != nil, sw.writeError)
+		}()
 		next.ServeHTTP(sw, r)
+		returned = true
 
 		dur := time.Since(start)
 
@@ -3717,6 +3735,13 @@ type statusWriter struct {
 	http.ResponseWriter
 	status      int
 	wroteHeader bool
+	writeError  bool
+}
+
+func (sw *statusWriter) Write(body []byte) (int, error) {
+	n, err := sw.ResponseWriter.Write(body)
+	sw.writeError = sw.writeError || err != nil || n != len(body)
+	return n, err
 }
 
 func (sw *statusWriter) WriteHeader(code int) {

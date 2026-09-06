@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-05 · commit `94c7c31eb`
+> Last updated: 2026-09-06 · commit `bbf6f83d4`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -27,6 +27,7 @@ freshness stamp carries its own date, not the current one.
 
 | Date | Report | One line |
 |---|---|---|
+| 2026-09-06 | [admission-calibration-baseline](2026-09-06-admission-calibration-baseline.md) | Coordinator/provider timing audit, pending-prompt correction, synthetic comparison and remaining evidence gaps for #846 |
 | 2026-09-05 | [gptoss20b-improvement-estimate](2026-09-05-gptoss20b-improvement-estimate.md) | Estimated optimization upside and corrected compiled-operation attribution |
 | 2026-09-05 | [gptoss20b-quick-profile](2026-09-05-gptoss20b-quick-profile.md) | Approximate M4 Max prefill/decode measurements and targeted GPU dispatch findings |
 | 2026-06-15 | [metal-resource-count-fix-handoff](2026-06-15-metal-resource-count-fix-handoff.md) | How the Metal resource-count crash fix was landed through the `Layr-Labs/mlx*` forks |

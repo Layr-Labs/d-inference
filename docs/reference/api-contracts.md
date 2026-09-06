@@ -2,7 +2,7 @@
 
 > Last updated: 2026-09-05 · commit `301d757f3`
 
-The complete public HTTP surface of the coordinator, derived from the 105 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from the 107 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -111,7 +111,7 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 
 The four `/v1/me/*` routes are wrapped in `requirePrivyAuth`, so they are Privy-JWT only.
 
-### Stripe, payouts and MDM (11)
+### Stripe, payouts and MDM (13)
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
@@ -119,11 +119,11 @@ The four `/v1/me/*` routes are wrapped in `requirePrivyAuth`, so they are Privy-
 | POST | `/v1/billing/stripe/webhook` | `handleStripeWebhook` (`coordinator/api/billing_handlers.go`) | `stripe-sig` | — | Checkout events |
 | GET | `/v1/billing/stripe/session` | `handleStripeSessionStatus` (`coordinator/api/billing_handlers.go`) | `key` | — | Poll a checkout session |
 | POST | `/v1/billing/stripe/onboard` | `handleStripeOnboard` (`coordinator/api/stripe_payouts.go`) | `user` (Privy-only wrapper) | `fin` | Country-aware Connect or Global Payouts onboarding link |
-| GET | `/v1/billing/stripe/status` | `handleStripeStatus` (`coordinator/api/stripe_payouts.go`) | `user` | — | Payout readiness; additive `account_id` scopes browser confirmation recovery, plus `payout_rail`, `payout_currency`, `countries`, `payouts_available` |
+| GET | `/v1/billing/stripe/status` | `handleStripeStatus` (`coordinator/api/stripe_payouts.go`) | `user` | — | Payout readiness; additive `account_id` scopes browser confirmation recovery, plus `payout_rail`, `payout_currency`, `countries`, `payouts_available`, `recipient_limits` (currency, exponent, published minimum/maximum minor units) |
 | POST | `/v1/billing/withdraw/stripe` | `handleStripeWithdraw` (`coordinator/api/stripe_withdraw.go`) | `user` (Privy-only wrapper) | `fin` | Global Payouts confirms a persisted `quote_id`; 409 `stripe_account_gone` / `stripe_account_recreate_required`; 502 `stripe_error` |
 | GET | `/v1/billing/stripe/withdrawals` | `handleStripeWithdrawals` (`coordinator/api/stripe_payouts.go`) | `user` | — | Withdrawal history |
 | POST | `/v1/billing/stripe/dashboard` | `handleStripeDashboardLink` (`coordinator/api/stripe_payouts.go`) | `user` (Privy-only wrapper) | `fin` | Express dashboard link |
-| DELETE | `/v1/billing/stripe/account` | `handleStripeUnlink` (`coordinator/api/stripe_payouts.go`) | `user` (Privy-only wrapper) | — | Disconnect the Connect account |
+| DELETE | `/v1/billing/stripe/account` | `handleStripeUnlink` (`coordinator/api/stripe_payouts.go`) | `user` (Privy-only wrapper) | — | Removes the Global Payouts mapping when present; otherwise removes the stored Connect mapping. Does not close Stripe accounts or cancel withdrawals. |
 | POST | `/v1/billing/stripe/connect/webhook` | `handleStripeConnectWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) | `stripe-sig` | — | Connect events |
 | POST | `/v1/billing/stripe/quote` | `handleGlobalPayoutQuote` (`coordinator/api/global_payouts_withdraw.go`) | `user` (Privy-only wrapper) | `fin` | `{amount_usd}` returns quote ID, local amount/currency/exponent, expiry and fee; no ledger debit. |
 | POST | `/v1/billing/stripe/global/webhook` | `handleGlobalPayoutWebhook` (`coordinator/api/global_payouts_reconcile.go`) | `stripe-sig` (separate secret) | — | Reconciles the current outbound-payment state; does not consume Connect sweep events. |
@@ -220,7 +220,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 |---|---|---|
 | `/v1/` | `handleUnimplementedEndpoint` | Any `/v1/*` request matching no registered method+path — including a wrong method on a real path — gets 404 `invalid_request_error` with message `endpoint <METHOD> <path> is not implemented` |
 
-Total: 4 + 9 + 10 + 3 + 13 + 11 + 6 + 5 + 5 + 3 + 1 + 34 + 1 = **105 registrations**, matching `routes()`.
+Total: 4 + 9 + 10 + 3 + 13 + 13 + 6 + 5 + 5 + 3 + 1 + 34 + 1 = **107 registrations**, matching `routes()`.
 
 ## Headers
 
@@ -451,6 +451,14 @@ Sealed mode hides request and response bodies from TLS-terminating intermediarie
 
 See the [Device-code flow](#device-code-flow-3) table for the three bodies. `verification_uri` is `<console>/link` when `EIGENINFERENCE_CONSOLE_URL` is set, else `<scheme>://<request host>/link` (`handleDeviceCode`).
 
+### International withdrawal confirmation
+
+For `payout_rail=global`, submit `{amount_usd, method:"standard", quote_id}` to the existing withdrawal endpoint. A confirmed quote returns its original withdrawal on retry. The response/history include `payout_rail`, `destination_amount`, `payout_currency` and `refunded`. Global states are `pending`, `processing`, `posted`, `failed`, `canceled` and `returned`; `posted` does not establish bank receipt. Quotes expire before first confirmation; an already-submitted withdrawal can still be checked with the same ID (`coordinator/api/global_payouts_withdraw.go`, `maybeGlobalWithdraw`).
+
+`DELETE /v1/billing/stripe/account` removes a Global Payouts recipient mapping first, when present, and preserves any stored Connect destination; that older destination may become visible again. Otherwise it clears the Connect mapping. Responses are `{unlinked:true}` when a mapping was removed and `{unlinked:false}` when neither exists. Stripe accounts remain open and submitted withdrawals keep their recorded destination (`coordinator/api/stripe_payouts.go`, `handleStripeUnlink`).
+
+An unsubmitted confirmation invalidated by paused admissions returns 409 `quote_paused`; changed payout settings return 409 `payout_changed`. The browser releases that saved confirmation. Invalidation is atomic with `BeginGlobalPayout`; if another confirmation has already debited, the endpoint returns/reconciles the existing withdrawal instead. A recipient minimum/maximum violation returns 400 `recipient_amount_limit` with the threshold in local currency (`coordinator/api/global_payouts_withdraw.go`, `maybeGlobalWithdraw`, `handleGlobalPayoutQuote`).
+
 ## Code map
 
 | Concern | Files |
@@ -468,7 +476,3 @@ See the [Device-code flow](#device-code-flow-3) table for the three bodies. `ver
 | Release, enrollment, provider WS, log reports | `coordinator/api/release_handlers.go`, `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
 | Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |
 | Shared types and helpers | `coordinator/api/types/types.go`, `coordinator/api/httputil.go`, `coordinator/ratelimit/ratelimit.go`, `coordinator/modelpolicy/first_content_deadline.go` |
-
-### International withdrawal confirmation
-
-For `payout_rail=global`, submit `{amount_usd, method:"standard", quote_id}` to the existing withdrawal endpoint. A confirmed quote returns its original withdrawal on retry. The response/history include `payout_rail`, `destination_amount`, `payout_currency` and `refunded`. Global states are `pending`, `processing`, `posted`, `failed`, `canceled` and `returned`; `posted` does not establish bank receipt. Quotes expire before first confirmation; an already-submitted withdrawal can still be checked with the same ID (`coordinator/api/global_payouts_withdraw.go`, `maybeGlobalWithdraw`).

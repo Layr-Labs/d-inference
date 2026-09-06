@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { ArrowRight, Building2, Loader2 } from "lucide-react";
 import { formatBankAmount, validBankAmount, bankConfirmationLabel } from "./bank-withdrawal-format";
 import type { BankWithdrawalQuote, StripeStatus } from "@/lib/api";
+import { RecipientLimitNotice } from "./RecipientLimitNotice";
 
 // Providers review the bank deposit and exchange estimate without choosing
 // between Stripe products. The quote ID also identifies retries of a withdrawal.
@@ -24,9 +25,12 @@ export function GlobalWithdrawModal({ status, balanceMicroUsd, amount, loading, 
     return () => window.clearInterval(timer);
   }, []);
   const balance = balanceMicroUsd / 1_000_000;
-  const minimum = (status.min_withdraw_micro_usd ?? 1_000_000) / 1_000_000;
+  const limits = status.recipient_limits;
+  const usdDestination = limits?.currency === "usd";
+  const minimum = Math.max((status.min_withdraw_micro_usd ?? 1_000_000) / 1_000_000, usdDestination ? (limits.minimum ?? 0) / 100 : 0);
+  const maximum = usdDestination && limits.maximum ? Math.min(balance, limits.maximum / 100) : balance;
   const value = Number(amount);
-  const valid = validBankAmount(amount) && value >= minimum && value <= balance;
+  const valid = validBankAmount(amount) && value >= minimum && value <= maximum;
   const matches = quote && Number(quote.amount_usd) === value;
   const expired = matches && Date.parse(quote.expires_at) <= now;
   const reviewing = Boolean(matches && (!expired || confirmationPending));
@@ -41,10 +45,11 @@ export function GlobalWithdrawModal({ status, balanceMicroUsd, amount, loading, 
         {destinationLast4 ? `Bank account ending in ${destinationLast4}` : "Your verified bank account"}
       </p>
       <label htmlFor="bank-withdrawal-amount" className="block text-xs font-mono text-text-tertiary uppercase tracking-wider mb-2">Amount (USD)</label>
-      <input id="bank-withdrawal-amount" type="number" inputMode="decimal" value={amount} min={minimum} max={balance} step="0.01" disabled={loading || confirmationPending}
+      <input id="bank-withdrawal-amount" type="number" inputMode="decimal" value={amount} min={minimum} max={maximum} step="0.01" disabled={loading || confirmationPending}
         onChange={e => onAmountChange(e.target.value)}
         className="w-full bg-bg-primary border border-border-dim rounded-lg px-4 py-3 font-mono outline-none focus:border-teal disabled:opacity-60" />
       <p className="text-xs text-text-tertiary mt-2 mb-5">Available: ${balance.toFixed(2)} · Minimum: ${minimum.toFixed(2)}</p>
+      {!confirmationPending && <RecipientLimitNotice limits={limits} />}
       {!confirmationPending && value > balance && <p role="alert" className="text-sm text-coral mb-4">This amount exceeds your available earnings.</p>}
 
       {reviewing && quote ? (

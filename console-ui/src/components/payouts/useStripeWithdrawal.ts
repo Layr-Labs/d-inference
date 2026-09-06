@@ -106,7 +106,7 @@ export function useStripeWithdrawal(opts: StripePayoutsOptions) {
       onWithdrawError?.();
       const p = classifyWithdrawError(e);
       addToast(p.message);
-      if (["quote_expired", "payout_changed", "quote_required", "insufficient_withdrawable"].includes(p.code)) {
+      if (["quote_expired", "quote_paused", "payout_changed", "quote_required", "insufficient_withdrawable"].includes(p.code)) {
         try {
           if (global && withdrawQuote) clearBankConfirmation(status?.account_id ?? "", withdrawQuote.id);
           setWithdrawQuote(null);

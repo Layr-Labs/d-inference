@@ -16,6 +16,14 @@ Enable bank withdrawals for supported destinations outside the current Connect r
 - Read back the key's account identity and financial account. Verify the chosen financial account is open, belongs to the expected business, and has usable funding. The ordinary Payments balance is not the Global Payouts funding balance.
 - Configure a signed event destination for Global Payouts outbound-payment events at `POST /v1/billing/stripe/global/webhook`. The signing secret is separate from Connect. The minute-based reconciler is a backstop, not a reason to omit event delivery.
 
+### Review fees before activation
+
+Stripe's published schedule treats cross-border Standard payouts as local or wire capability depending on destination. The separate $25 wire price is US-only; it is not an extra charge inferred from an international recipient's `wire` capability. See [Stripe's payout methods](https://docs.stripe.com/global-payouts/send-money#payout-methods) and [pricing](https://docs.stripe.com/global-payouts/pricing).
+
+For US senders, the published cross-border cost is $1.50 plus the country fee (0.25–1.25%), plus FX when converting: 0.50% between USD/EUR/GBP, otherwise 1%. Taiwan's country fee is 1%, so a $1,000 USD-to-TWD payout is approximately $21.50 in fees under this schedule. This is a published-price calculation, not an account-specific Taiwan quote or delivery test. [Stripe pricing](https://docs.stripe.com/global-payouts/pricing)
+
+Before activation, review the cost of covering these fees. Before confirming the first withdrawal for a destination, inspect its actual Stripe `estimated_fees` and reconcile any contract or quote differences. The quote row retains the estimate as `data.estimated_stripe_fees`; provider withdrawal fees remain zero. The earlier domestic $1 quote with a $1.50 fee does not establish international costs.
+
 ## Steps
 
 1. Configure the restricted key (or use the existing restricted Stripe key), base Connect key, financial-account ID and event signing secret using the [configuration reference](../reference/configuration.md#billing-stripe-and-base-rewards). Keep keys out of logs, shell command arguments and review artifacts. Key permission expansion and production configuration changes require their applicable approval.
@@ -25,7 +33,7 @@ Enable bank withdrawals for supported destinations outside the current Connect r
 5. Verify `GET /v1/billing/stripe/status?refresh=1` returns `payout_rail=global`, country `IN`, a bank destination, `status=ready`, and local currency `inr`. Readiness includes active recipient capability and an eligible bank payout method, not merely a submitted form.
 6. Review an explicitly authorized withdrawal. Confirm that the quoted local amount, USD debit, withdrawal fee and destination match. Quotes do not debit the ledger. Confirm once and retain the internal withdrawal ID for reconciliation.
 7. Verify the resulting outbound-payment ID and bank arrival independently. `posted` is displayed as **Sent to bank**, because it does not prove the bank has released funds. Confirm the ledger debit once and actual bank credit before declaring the route verified.
-8. Review international payout fees and rejection/return patterns as other supported countries onboard. The implementation keeps the user-facing standard withdrawal fee at zero; Darkbloom pays Stripe's payout charges. Corridor limits and bank eligibility are checked by Stripe when generating the quote. Additional country-specific capabilities or verifications must be resolved before treating that route as verified.
+8. Verify the quoted fee schedule before a destination's first confirmed withdrawal, then monitor actual charges, rejection and return patterns. The implementation keeps the user-facing standard withdrawal fee at zero; Darkbloom pays Stripe's payout charges. Published local-currency limits are shown before review and enforced against Stripe's credited quote amount; USD destination limits are rejected before a quote request. Stripe can impose additional bank limits. Additional country-specific capabilities or verifications must be resolved before treating that route as verified.
 
 ## Verify
 
@@ -33,7 +41,7 @@ The source-of-truth payout row is `global_payout_withdrawals` and its `data` obj
 
 Expired unconfirmed quotes are pruned according to the [retention policy](../reference/pricing-model.md#global-payouts-withdrawals); confirmed payout records are preserved.
 
-Each internal quote ID identifies at most one confirmed withdrawal. Retries use its persisted Stripe idempotency key and immutable request. Pending withdrawals with no outbound-payment ID stop resubmitting after 12 hours. A definitive first-send rejection is persisted before the refund transaction and reused if the refund write fails. After an ambiguous first attempt, subsequent API errors do not automatically refund: changed permissions or funding configuration must not cause a refund when money may already have moved (`coordinator/api/global_payouts_reconcile.go`, `syncGlobalPayout`).
+Each internal quote ID identifies at most one confirmed withdrawal. Retries use its persisted Stripe idempotency key and immutable request. Pending withdrawals with no outbound-payment ID stop resubmitting after 12 hours. A definitive first-send rejection is persisted before the refund transaction and reused if the refund write fails. Known external payouts continue to reconcile against their original funding account after configuration changes. An obsolete unconfirmed quote is invalidated before debit. A debited intent that has never reached a send is refunded; prior ambiguous attempts stay held. After an ambiguous first attempt, subsequent API errors do not automatically refund: changed permissions or funding configuration must not cause a refund when money may already have moved (`coordinator/api/global_payouts_reconcile.go`, `syncGlobalPayout`).
 
 Inspect without exposing the stored request or recipient information:
 
@@ -41,7 +49,8 @@ Inspect without exposing the stored request or recipient information:
 SELECT id, status, external_id, submitted_at, checked_at,
        data->>'failure_code' AS failure_code,
        data->>'refunded' AS refunded,
-       data->>'dispatch_attempts' AS dispatch_attempts
+       data->>'dispatch_attempts' AS dispatch_attempts,
+       data->'estimated_stripe_fees' AS estimated_stripe_fees
 FROM global_payout_withdrawals
 WHERE status <> 'quoted'
 ORDER BY submitted_at DESC
@@ -52,14 +61,14 @@ LIMIT 50;
 
 - **403 from Stripe:** inspect exact key permissions. Do not rotate unrelated credentials or substitute a broad secret key.
 - **Country absent:** reconcile the live account's menu and API capability with `Countries`. Public documentation alone does not establish account entitlement.
-- **Quote rejected:** no withdrawal is submitted. Check destination requirements, bank eligibility, currency, limits, required payee verification and funding access.
+- **Quote rejected:** no withdrawal is submitted. `recipient_amount_limit` names the local deposit threshold; adjust the USD amount and review again. Check destination requirements, bank eligibility, currency, limits, required payee verification and funding access.
 - **Unknown send result:** use the internal ID and `gp-withdraw-<id>` to find the original Stripe request. Do not independently pay from the Dashboard or credit the ledger before establishing the outcome.
 - **Posted but no bank credit:** use the Stripe payout detail and bank trace. Posted is not a guaranteed delivery receipt.
 - **Returned:** confirm Stripe's current state. The signed webhook or reconciler restores earnings once. Do not add a second manual refund.
 
 ## Rollback
 
-Set `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=false` to stop new international onboarding, quotes and confirmations while retaining the configured API key, financial account and event secret. The reconciler, event handler and retries of already-submitted withdrawals continue. Do not drop the new tables, erase withdrawal records, rotate the original idempotency keys, or unlink funded Connect accounts. Code rollback to a build without Global Payouts likewise requires continued reconciliation of already-submitted payouts.
+Set `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=false` to stop new international onboarding, quotes and confirmations while retaining the configured API key, financial account and event secret. The reconciler, event handler and retries of already-submitted withdrawals continue. A saved confirmation that has not debited is atomically invalidated and released with `quote_paused`. Do not drop the new tables, erase withdrawal records, rotate the original idempotency keys, or unlink funded Connect accounts. Code rollback to a build without Global Payouts likewise requires continued reconciliation of already-submitted payouts.
 
 ## Related
 

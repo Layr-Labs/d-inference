@@ -47,7 +47,15 @@ func (s *Server) syncGlobalPayout(ctx context.Context, id string) error {
 	if err = json.Unmarshal(p.Request, &request); err != nil {
 		return err
 	}
-	if request.From["financial_account"] != s.billing.GlobalPayouts().FinancialAccount {
+	if p.ExternalID == "" && request.From["financial_account"] != s.billing.GlobalPayouts().FinancialAccount {
+		// This claim reserved the first attempt; no Send has run yet. Persist
+		// that rejection before refunding. Prior ambiguous attempts stay held.
+		if p.DispatchAttempts == 1 {
+			if err := recordGlobalPayoutRejection(ctx, repo, p.ID, p.DispatchAttempts, "funding_account_changed"); err != nil {
+				return err
+			}
+			return repo.ApplyGlobalPayout(id, store.GlobalPayoutResult{Status: "failed", FailureCode: "funding_account_changed"}, time.Now())
+		}
 		return repo.ApplyGlobalPayout(id, store.GlobalPayoutResult{FailureCode: "funding_account_changed"}, time.Now())
 	}
 	var remote *globalpayouts.Payment

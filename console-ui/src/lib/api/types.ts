@@ -138,7 +138,15 @@ export interface BankWithdrawalQuote {
   id: string; amount_usd: string; fee_usd: string; destination_amount: number; currency: string; currency_exponent: number; expires_at: string; destination_last4: string; eta: string;
 }
 
+export interface RecipientAmountLimits {
+  currency: string;
+  currency_exponent: number;
+  minimum?: number;
+  maximum?: number;
+}
+
 export interface StripeStatus {
+  recipient_limits?: RecipientAmountLimits;
   account_id?: string;
   payout_rail?: "connect" | "global";
   payout_currency?: string;

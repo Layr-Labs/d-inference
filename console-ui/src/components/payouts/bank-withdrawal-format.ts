@@ -1,5 +1,5 @@
 export function formatBankAmount(amount: number, currency: string, exponent: number) {
-  return new Intl.NumberFormat(undefined, { style: "currency", currency: currency.toUpperCase() }).format(amount / 10 ** exponent);
+  return new Intl.NumberFormat(undefined, { style: "currency", currency: currency.toUpperCase(), minimumFractionDigits: exponent, maximumFractionDigits: exponent }).format(amount / 10 ** exponent);
 }
 
 export function validBankAmount(amount: string): boolean {

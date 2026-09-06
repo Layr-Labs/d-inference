@@ -19,6 +19,7 @@ type GlobalPayoutStore interface {
 	CreateGlobalPayoutQuote(GlobalPayout) error
 	GetGlobalPayout(id string) (*GlobalPayout, error)
 	GetGlobalPayoutByExternalID(id string) (*GlobalPayout, error)
+	ExpireGlobalPayoutQuote(accountID, id string, now time.Time) (*GlobalPayout, error)
 	BeginGlobalPayout(accountID, id string, now time.Time) (*GlobalPayout, error)
 	ClaimGlobalPayout(id string, now time.Time) (bool, error)
 	RecordGlobalPayoutRejection(id string, attempt int, code string) error
@@ -39,6 +40,8 @@ type GlobalRecipient struct {
 }
 
 type GlobalPayout struct {
+	QuoteInvalidated    bool                   `json:"quote_invalidated,omitempty"`
+	EstimatedStripeFees json.RawMessage        `json:"estimated_stripe_fees,omitempty"`
 	DispatchAttempts    int                    `json:"dispatch_attempts"`
 	Rejection           *GlobalPayoutRejection `json:"rejection,omitempty"`
 	ID                  string                 `json:"id"`
@@ -80,6 +83,7 @@ type GlobalPayoutResult struct {
 
 func cloneGlobalPayout(p GlobalPayout) GlobalPayout {
 	p.Request = append(json.RawMessage(nil), p.Request...)
+	p.EstimatedStripeFees = append(json.RawMessage(nil), p.EstimatedStripeFees...)
 	if p.Rejection != nil {
 		r := *p.Rejection
 		p.Rejection = &r

@@ -105,7 +105,7 @@ func (s *PostgresStore) BeginGlobalPayout(accountID, id string, now time.Time) (
 	if p.Status != "quoted" {
 		return &p, nil
 	}
-	if !p.ExpiresAt.After(now) {
+	if p.QuoteInvalidated || !p.ExpiresAt.After(now) {
 		return nil, ErrPayoutQuoteExpired
 	}
 	var r GlobalRecipient

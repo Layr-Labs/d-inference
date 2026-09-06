@@ -90,7 +90,7 @@ func (s *MemoryStore) BeginGlobalPayout(accountID, id string, now time.Time) (*G
 		p = cloneGlobalPayout(p)
 		return &p, nil
 	} // repeat confirm: same withdrawal, no debit
-	if !p.ExpiresAt.After(now) {
+	if p.QuoteInvalidated || !p.ExpiresAt.After(now) {
 		return nil, ErrPayoutQuoteExpired
 	}
 	r := s.globalRecipients[accountID]

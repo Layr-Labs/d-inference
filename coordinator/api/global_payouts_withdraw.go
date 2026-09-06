@@ -35,16 +35,7 @@ func payoutUSDCents(amount string) (int64, error) {
 	}
 	return total, nil
 }
-func payoutCurrencyExponent(currency string) int {
-	switch strings.ToLower(currency) {
-	case "bif", "clp", "djf", "gnf", "jpy", "kmf", "krw", "mga", "pyg", "rwf", "ugx", "vnd", "vuv", "xaf", "xof", "xpf":
-		return 0
-	case "bhd", "jod", "kwd", "omr", "tnd":
-		return 3
-	default:
-		return 2
-	}
-}
+func payoutCurrencyExponent(currency string) int { return globalpayouts.CurrencyExponent(currency) }
 
 func (s *Server) handleGlobalPayoutQuote(w http.ResponseWriter, r *http.Request) {
 	user := s.requirePrivyUser(w, r)
@@ -82,14 +73,38 @@ func (s *Server) handleGlobalPayoutQuote(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	policy, _ := globalpayouts.Lookup(local.Country)
+	// The input is USD. Only USD destination bounds can be compared before FX.
+	if policy.Currency == "usd" {
+		if err := policy.ValidateRecipientAmount(globalpayouts.Amount{Value: cents, Currency: "usd"}); err != nil {
+			globalPayoutError(w, err)
+			return
+		}
+	}
 	request := globalpayouts.NewRequest(s.billing.GlobalPayouts().FinancialAccount, local.RecipientID, local.PayoutMethodID, policy.Currency, cents)
 	quote, err := s.billing.GlobalPayouts().Quote(r.Context(), request)
 	if err != nil {
 		s.logger.Warn("global payout quote failed", "error", err)
+		var stripeErr *globalpayouts.Error
+		if errors.As(err, &stripeErr) {
+			var limitErr error
+			if strings.HasPrefix(stripeErr.Code, "amount_too_small") {
+				limitErr = policy.LimitError(true)
+			}
+			if strings.HasPrefix(stripeErr.Code, "amount_too_large") {
+				limitErr = policy.LimitError(false)
+			}
+			if limitErr != nil {
+				err = limitErr
+			}
+		}
 		globalPayoutError(w, err)
 		return
 	}
 	if err = quote.Validate(request); err != nil {
+		globalPayoutError(w, err)
+		return
+	}
+	if err := policy.ValidateRecipientAmount(quote.To.Credited); err != nil {
 		globalPayoutError(w, err)
 		return
 	}
@@ -111,7 +126,12 @@ func (s *Server) handleGlobalPayoutQuote(w http.ResponseWriter, r *http.Request)
 		globalPayoutError(w, err)
 		return
 	}
-	p := store.GlobalPayout{ID: id, AccountID: user.AccountID, RecipientID: local.RecipientID, RecipientGeneration: local.ID, PayoutMethodID: local.PayoutMethodID, Country: local.Country, AmountMicroUSD: cents * 10_000, DestinationAmount: quote.To.Credited.Value, Currency: quote.To.Credited.Currency, Request: payload, Status: "quoted", ExpiresAt: expires, CreatedAt: now}
+	fees, err := json.Marshal(quote.EstimatedFees)
+	if err != nil {
+		globalPayoutError(w, err)
+		return
+	}
+	p := store.GlobalPayout{EstimatedStripeFees: fees, ID: id, AccountID: user.AccountID, RecipientID: local.RecipientID, RecipientGeneration: local.ID, PayoutMethodID: local.PayoutMethodID, Country: local.Country, AmountMicroUSD: cents * 10_000, DestinationAmount: quote.To.Credited.Value, Currency: quote.To.Credited.Currency, Request: payload, Status: "quoted", ExpiresAt: expires, CreatedAt: now}
 	if err = repo.CreateGlobalPayoutQuote(p); err != nil {
 		globalPayoutError(w, err)
 		return
@@ -165,10 +185,32 @@ func (s *Server) maybeGlobalWithdraw(w http.ResponseWriter, r *http.Request, use
 		return true
 	}
 	if p.Status == "quoted" {
-		if !s.billing.GlobalPayoutsEnabled() {
-			globalPayoutError(w, errors.New("new bank withdrawals are paused"))
+		var original globalpayouts.PaymentRequest
+		if err := json.Unmarshal(p.Request, &original); err != nil {
+			globalPayoutError(w, err)
 			return true
 		}
+		paused := !s.billing.GlobalPayoutsEnabled()
+		changed := original.From["financial_account"] != s.billing.GlobalPayouts().FinancialAccount
+		if paused || changed {
+			// Serialize invalidation with Begin: never clear a saved client
+			// identity based on a stale "quoted" snapshot after another debit.
+			p, err = repo.ExpireGlobalPayoutQuote(user.AccountID, p.ID, time.Now())
+			if err != nil {
+				globalPayoutError(w, err)
+				return true
+			}
+			if p.Status == "quoted" {
+				code, message := "payout_changed", "Payout settings changed. Review a new withdrawal."
+				if paused {
+					code, message = "quote_paused", "New bank withdrawals are paused. Your unsubmitted confirmation has been released."
+				}
+				writeJSON(w, http.StatusConflict, errorResponse(code, message))
+				return true
+			}
+		}
+	}
+	if p.Status == "quoted" {
 		if local == nil {
 			globalPayoutError(w, store.ErrPayoutConflict)
 			return true

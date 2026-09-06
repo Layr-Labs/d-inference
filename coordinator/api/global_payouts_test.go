@@ -15,14 +15,17 @@ import (
 )
 
 type fakeGlobalStripe struct {
-	mu             sync.Mutex
-	payments       map[string]globalpayouts.Payment
-	creates        int
-	failFirst      bool
-	state          string
-	rejectRequests bool
-	bankStatus     int
-	emptyBanks     bool
+	mu                            sync.Mutex
+	payments                      map[string]globalpayouts.Payment
+	creates                       int
+	failFirst                     bool
+	state                         string
+	rejectRequests                bool
+	bankStatus                    int
+	emptyBanks                    bool
+	country, currency, quoteError string
+	rate                          int64
+	quoteCalls                    int
 }
 
 func (f *fakeGlobalStripe) serve(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +33,7 @@ func (f *fakeGlobalStripe) serve(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	switch {
 	case r.URL.Path == "/v2/core/accounts" || strings.HasPrefix(r.URL.Path, "/v2/core/accounts/"):
-		_, _ = w.Write([]byte(`{"id":"acct_gp","identity":{"country":"in"},"defaults":{"payout_methods":{"inr":"pm_gp"}},"configuration":{"recipient":{"capabilities":{"bank_accounts":{"local":{"status":"active"}}}}}}`))
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "acct_gp", "identity": map[string]string{"country": f.country}, "defaults": map[string]any{"payout_methods": map[string]string{f.currency: "pm_gp"}}, "configuration": map[string]any{"recipient": map[string]any{"capabilities": map[string]any{"bank_accounts": map[string]any{"local": map[string]string{"status": "active"}, "wire": map[string]string{"status": "active"}}}}}})
 	case r.URL.Path == "/v2/core/account_links":
 		_, _ = w.Write([]byte(`{"url":"https://accounts.stripe.com/test-onboarding"}`))
 	case r.URL.Path == "/v2/money_management/payout_methods":
@@ -43,11 +46,23 @@ func (f *fakeGlobalStripe) serve(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`{"data":[]}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"data":[{"id":"pm_gp","type":"bank_account","bank_account":{"country":"IN","last4":"1234","supported_currencies":["inr"],"enabled_delivery_options":["local"]},"usage_status":{"payments":"eligible"}}]}`))
+		m := globalpayouts.BankMethod{ID: "pm_gp", Type: "bank_account"}
+		m.BankAccount.Country = strings.ToUpper(f.country)
+		m.BankAccount.Last4 = "1234"
+		m.BankAccount.SupportedCurrencies = []string{f.currency}
+		m.BankAccount.EnabledDeliveryOptions = []string{"local", "wire"}
+		m.UsageStatus.Payments = "eligible"
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []globalpayouts.BankMethod{m}})
 	case r.URL.Path == "/v2/money_management/outbound_payment_quotes":
+		f.quoteCalls++
+		if f.quoteError != "" {
+			w.WriteHeader(400)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": f.quoteError}})
+			return
+		}
 		var req globalpayouts.PaymentRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		q := globalpayouts.Quote{ID: "obpq_gp", Amount: req.Amount, From: globalpayouts.Source{FinancialAccount: req.From["financial_account"], Debited: req.Amount}, To: globalpayouts.Destination{Recipient: req.To["recipient"], PayoutMethod: req.To["payout_method"], Credited: globalpayouts.Amount{Value: req.Amount.Value * 80, Currency: "inr"}}}
+		q := globalpayouts.Quote{EstimatedFees: []globalpayouts.EstimatedFee{{Type: "standard_payout_fee", Amount: globalpayouts.EstimatedFeeAmount{Currency: "usd", Value: json.Number("150")}}}, ID: "obpq_gp", Amount: req.Amount, From: globalpayouts.Source{FinancialAccount: req.From["financial_account"], Debited: req.Amount}, To: globalpayouts.Destination{Recipient: req.To["recipient"], PayoutMethod: req.To["payout_method"], Credited: globalpayouts.Amount{Value: req.Amount.Value * f.rate, Currency: f.currency}}}
 		_ = json.NewEncoder(w).Encode(q)
 	case r.URL.Path == "/v2/money_management/outbound_payments":
 		if f.rejectRequests {
@@ -60,7 +75,7 @@ func (f *fakeGlobalStripe) serve(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			var req globalpayouts.PaymentRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
-			p = globalpayouts.Payment{ID: "obp_gp", Amount: req.Amount, From: globalpayouts.Source{FinancialAccount: req.From["financial_account"], Debited: req.Amount}, To: globalpayouts.Destination{Recipient: req.To["recipient"], PayoutMethod: req.To["payout_method"], Credited: globalpayouts.Amount{Value: req.Amount.Value * 80, Currency: "inr"}}, Status: "processing"}
+			p = globalpayouts.Payment{ID: "obp_gp", Amount: req.Amount, From: globalpayouts.Source{FinancialAccount: req.From["financial_account"], Debited: req.Amount}, To: globalpayouts.Destination{Recipient: req.To["recipient"], PayoutMethod: req.To["payout_method"], Credited: globalpayouts.Amount{Value: req.Amount.Value * f.rate, Currency: f.currency}}, Status: "processing"}
 			f.payments[key] = p
 			f.creates++
 			if f.failFirst {
@@ -86,7 +101,7 @@ func globalPayoutAPIFixture(t *testing.T, failFirst bool) (*Server, *store.Memor
 	t.Helper()
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	srv.SetBilling(billing.NewService(st, srv.billing.Ledger(), srv.logger, billing.Config{MockMode: true, StripeConnectReturnURL: "https://app.test/billing", StripeGlobalPayoutsEnabled: true, StripeGlobalPayoutsFinancialAccount: "fa_gp", StripeGlobalPayoutsSecretKey: "rk_test_gp", StripeGlobalPayoutsWebhookSecret: "whsec_test"}))
-	f := &fakeGlobalStripe{payments: map[string]globalpayouts.Payment{}, failFirst: failFirst, state: "posted"}
+	f := &fakeGlobalStripe{payments: map[string]globalpayouts.Payment{}, failFirst: failFirst, state: "posted", country: "in", currency: "inr", rate: 80}
 	remote := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(remote.Close)
 	srv.billing.GlobalPayouts().BaseURL = remote.URL

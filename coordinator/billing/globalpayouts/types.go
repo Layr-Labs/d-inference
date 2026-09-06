@@ -1,6 +1,7 @@
 package globalpayouts
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -79,12 +80,23 @@ func NewRequest(financialAccount, recipient, method, currency string, cents int6
 	return PaymentRequest{From: map[string]string{"financial_account": financialAccount, "currency": "usd"}, To: map[string]string{"recipient": recipient, "payout_method": method, "currency": strings.ToLower(currency)}, Amount: Amount{Value: cents, Currency: "usd"}}
 }
 
+type EstimatedFeeAmount struct {
+	Currency string      `json:"currency"`
+	Value    json.Number `json:"value"`
+}
+
+type EstimatedFee struct {
+	Amount EstimatedFeeAmount `json:"amount"`
+	Type   string             `json:"type"`
+}
+
 type Quote struct {
-	ID      string      `json:"id"`
-	Amount  Amount      `json:"amount"`
-	From    Source      `json:"from"`
-	To      Destination `json:"to"`
-	FXQuote *struct {
+	EstimatedFees []EstimatedFee `json:"estimated_fees"`
+	ID            string         `json:"id"`
+	Amount        Amount         `json:"amount"`
+	From          Source         `json:"from"`
+	To            Destination    `json:"to"`
+	FXQuote       *struct {
 		LockExpiresAt time.Time `json:"lock_expires_at"`
 		LockStatus    string    `json:"lock_status"`
 	} `json:"fx_quote"`

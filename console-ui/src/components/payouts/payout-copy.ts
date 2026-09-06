@@ -29,6 +29,11 @@ const ACCOUNT_CLOSED_MESSAGE =
 // Copy for withdraw-path error codes. Codes absent here fall through to the
 // raw backend message.
 const WITHDRAW_ERROR_COPY = new Map<string, Omit<PayoutErrorPresentation, "code">>([
+  ["quote_paused", {
+    message: "Bank withdrawals are paused. Your unsubmitted confirmation has been released.",
+    refreshStatus: true,
+    closeModal: true,
+  }],
   ["stripe_account_gone", {
     message: ACCOUNT_CLOSED_MESSAGE,
     refreshStatus: true,

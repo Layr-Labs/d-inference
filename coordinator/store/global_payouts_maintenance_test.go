@@ -97,3 +97,30 @@ func TestGlobalPayoutRejectionFencesFutureDispatch(t *testing.T) {
 		})
 	}
 }
+
+func TestGlobalPayoutQuoteInvalidationSerializesWithDebit(t *testing.T) {
+	for name, s := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			g, _ := As[GlobalPayoutStore](s)
+			p := payoutFixture(t, s, g, "expire-quote", "expire-quote")
+			now := time.Now()
+			if _, err := g.ExpireGlobalPayoutQuote("other", p.ID, now); !errors.Is(err, ErrNotFound) {
+				t.Fatal("wrong account invalidated quote")
+			}
+			if _, err := g.ExpireGlobalPayoutQuote(p.AccountID, p.ID, now); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := g.BeginGlobalPayout(p.AccountID, p.ID, now.Add(-time.Second)); !errors.Is(err, ErrPayoutQuoteExpired) {
+				t.Fatalf("stale admission time bypassed invalidation: %v", err)
+			}
+			p = payoutFixture(t, s, g, "already-confirmed", "already-confirmed")
+			if _, err := g.BeginGlobalPayout(p.AccountID, p.ID, now); err != nil {
+				t.Fatal(err)
+			}
+			got, err := g.ExpireGlobalPayoutQuote(p.AccountID, p.ID, now)
+			if err != nil || got.Status != "pending" || got.QuoteInvalidated || s.GetWithdrawableBalance(p.AccountID) != 2_000_000 {
+				t.Fatalf("invalidation discarded an existing debit: %+v %v", got, err)
+			}
+		})
+	}
+}

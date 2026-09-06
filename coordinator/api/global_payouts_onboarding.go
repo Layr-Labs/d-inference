@@ -48,6 +48,10 @@ func globalPayoutError(w http.ResponseWriter, err error) {
 	if errors.Is(err, store.ErrPayoutConflict) {
 		code, message, status = "payout_changed", "Your payout details changed. Review your withdrawal again.", http.StatusConflict
 	}
+	var limitErr *globalpayouts.RecipientLimitError
+	if errors.As(err, &limitErr) {
+		code, message, status = "recipient_amount_limit", limitErr.Error(), http.StatusBadRequest
+	}
 	writeJSON(w, status, errorResponse(code, message))
 }
 
@@ -180,6 +184,6 @@ func (s *Server) maybeGlobalStatus(w http.ResponseWriter, r *http.Request, user 
 		status = "ready"
 	}
 	policy, _ := globalpayouts.Lookup(local.Country)
-	writeJSON(w, http.StatusOK, map[string]any{"account_id": user.AccountID, "configured": true, "has_account": true, "stripe_account_id": local.RecipientID, "stripe_account_country": local.Country, "status": status, "destination_type": "bank", "destination_last4": local.Last4, "instant_eligible": false, "min_withdraw_micro_usd": billing.MinWithdrawMicroUSD, "payout_rail": "global", "payout_currency": policy.Currency, "countries": s.payoutCountries(), "payouts_available": configured})
+	writeJSON(w, http.StatusOK, map[string]any{"account_id": user.AccountID, "configured": true, "has_account": true, "stripe_account_id": local.RecipientID, "stripe_account_country": local.Country, "status": status, "destination_type": "bank", "destination_last4": local.Last4, "instant_eligible": false, "min_withdraw_micro_usd": billing.MinWithdrawMicroUSD, "payout_rail": "global", "payout_currency": policy.Currency, "recipient_limits": policy.Limits(), "countries": s.payoutCountries(), "payouts_available": configured})
 	return true
 }

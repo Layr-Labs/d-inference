@@ -133,37 +133,6 @@ func (c *Client) recipientLink(ctx context.Context, id, returnURL, refreshURL, u
 	return result.URL, err
 }
 
-func (c *Client) BankMethod(ctx context.Context, r *Recipient, country, currency, capability string) (*BankMethod, error) {
-	var page struct {
-		Data        []BankMethod `json:"data"`
-		NextPageURL string       `json:"next_page_url"`
-	}
-	err := c.do(ctx, "GET", "/v2/money_management/payout_methods?limit=100", r.ID, "", nil, &page)
-	if err != nil {
-		return nil, err
-	}
-	var eligible []BankMethod
-	for _, m := range page.Data {
-		if m.Eligible(country, currency, capability) {
-			eligible = append(eligible, m)
-		}
-	}
-	preferred := r.Defaults.PayoutMethods[strings.ToLower(currency)]
-	if preferred == "" {
-		preferred = r.Configuration.Recipient.DefaultOutboundDestination
-	}
-	for _, m := range eligible {
-		if m.ID == preferred {
-			return &m, nil
-		}
-	}
-	// Never silently choose a different bank when multiple destinations exist.
-	if len(eligible) == 1 && preferred == "" && page.NextPageURL == "" {
-		return &eligible[0], nil
-	}
-	return nil, ErrNoEligibleBankMethod
-}
-
 func (c *Client) Quote(ctx context.Context, request PaymentRequest) (*Quote, error) {
 	var quote Quote
 	err := c.do(ctx, "POST", "/v2/money_management/outbound_payment_quotes", "", "", request, &quote)

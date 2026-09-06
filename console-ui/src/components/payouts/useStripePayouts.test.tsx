@@ -109,3 +109,17 @@ it("blocks new quotes if saved confirmation recovery cannot be read", async () =
   expect(api.fetchBankWithdrawalQuote).not.toHaveBeenCalled();
   expect(api.withdrawStripe).not.toHaveBeenCalled();
 });
+
+it("releases a saved confirmation when the server atomically pauses its unsubmitted quote", async () => {
+  api.fetchBankWithdrawalQuote.mockResolvedValue(completeQuote);
+  api.withdrawStripe.mockRejectedValueOnce(new ApiError("New withdrawals paused", "quote_paused", 409));
+  const {result}=renderHook(() => useStripePayouts({addToast:testToast}));
+  await waitFor(() => expect(result.current.status?.status).toBe("ready"));
+  await act(() => result.current.withdraw());
+  await act(() => result.current.withdraw());
+  expect(result.current.withdrawConfirmationPending).toBe(false);
+  expect(result.current.withdrawQuote).toBeNull();
+  expect(localStorage.length).toBe(0);
+  act(() => result.current.setWithdrawAmount("5"));
+  expect(result.current.withdrawAmount).toBe("5");
+});

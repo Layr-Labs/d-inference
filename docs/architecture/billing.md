@@ -187,6 +187,18 @@ Withdrawal row state machine: `pending → transferred → paid | failed`
 (`handleStripeWithdraw` comment block). There is no coordinator-side payout
 schedule or threshold beyond `MinWithdrawMicroUSD`.
 
+### International bank withdrawals
+
+When Global Payouts is enabled, the server returns its explicit country policy in the existing payout status response. New destinations outside the configured Connect transfer region use Stripe-hosted recipient onboarding. Existing ready Connect destinations remain on Connect (`coordinator/api/global_payouts_onboarding.go`, `maybeGlobalOnboard`). With the feature disabled, users without a Global Payouts recipient retain the legacy Connect onboarding and country menu, even when Global Payouts credentials are staged. Transient Stripe bank-lookup failures preserve the last verified destination and return a temporary error. The UI presents bank setup and withdrawal without asking users to select payment infrastructure.
+
+`handleGlobalPayoutQuote` (`coordinator/api/global_payouts_withdraw.go`) verifies recipient and bank eligibility and stores an immutable request plus local-currency estimate without moving earnings. Confirming the quote calls `BeginGlobalPayout` (`coordinator/store/global_payouts_postgres.go`), which locks the payout and recipient, guards both balance columns, and records the debit in one transaction. Connect withdrawals contend on the same balance row.
+
+`syncGlobalPayout` (`coordinator/api/global_payouts_reconcile.go`) uses a persistent idempotency key and reconciles current Stripe state after webhook notifications. Leases bound concurrent sends. Ambiguous results retain the debit; repeated confirmations retain the original identity even after unlinking. A definitive rejection of the first send is recorded with `RecordGlobalPayoutRejection` before the refund transaction; subsequent workers apply that saved rejection without another send if the refund write fails. A bank return refunds once in the same transaction as its state change. Known external payments continue to reconcile against their immutable source even when the configured funding account changes. Old unsubmitted quotes are invalidated before debit; a confirmed intent with no previous dispatch is refunded if its funding source changed. Ambiguous attempts retain their debit. The UI labels `posted` as sent, not paid. The [rollout runbook](../operations/global-payouts.md) defines live validation and rollback obligations.
+
+`useStripeWithdrawal` (`console-ui/src/components/payouts/useStripeWithdrawal.ts`) saves the confirmation identity in account-scoped browser storage before sending it. Status loading restores that identity before enabling another withdrawal. Recovery remains available after remounts, zero remaining balance, or paused admissions. Storage failures stop submission; credentials and full bank details are not stored.
+
+Recipient limits are stored in API minor units and shown before review. USD destination bounds are checked before requesting a quote; foreign-currency bounds are checked against Stripe's credited quote amount and its amount-limit errors. A USD input is never compared directly with a foreign-currency floor (`coordinator/billing/globalpayouts/recipient_limits.go`, `Country.Limits`).
+
 ### Consumer referral
 
 `coordinator/billing/referral.go`: `POST /v1/referral/register` creates one
@@ -495,13 +507,3 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 - [`architecture/request-outcome-observability.md`](request-outcome-observability.md) — how billing outcomes join the request outcome taxonomy
 - [`reference/api-contracts.md`](../reference/api-contracts.md) — error envelope and status codes
 - [`storage.md`](storage.md) — which store backend holds the ledger and what survives a restart
-
-## International bank withdrawal route
-
-When Global Payouts is enabled, the server returns its explicit country policy in the existing payout status response. New destinations outside the configured Connect transfer region use Stripe-hosted recipient onboarding. Existing ready Connect destinations remain on Connect (`coordinator/api/global_payouts_onboarding.go`, `maybeGlobalOnboard`). With the feature disabled, users without a Global Payouts recipient retain the legacy Connect onboarding and country menu, even when Global Payouts credentials are staged. Transient Stripe bank-lookup failures preserve the last verified destination and return a temporary error. The UI presents bank setup and withdrawal without asking users to select payment infrastructure.
-
-`handleGlobalPayoutQuote` (`coordinator/api/global_payouts_withdraw.go`) verifies recipient and bank eligibility and stores an immutable request plus local-currency estimate without moving earnings. Confirming the quote calls `BeginGlobalPayout` (`coordinator/store/global_payouts_postgres.go`), which locks the payout and recipient, guards both balance columns, and records the debit in one transaction. Connect withdrawals contend on the same balance row.
-
-`syncGlobalPayout` (`coordinator/api/global_payouts_reconcile.go`) uses a persistent idempotency key and reconciles current Stripe state after webhook notifications. Leases bound concurrent sends. Ambiguous results retain the debit; repeated confirmations retain the original identity even after unlinking. A definitive rejection of the first send is recorded with `RecordGlobalPayoutRejection` before the refund transaction; subsequent workers apply that saved rejection without another send if the refund write fails. A bank return refunds once in the same transaction as its state change. The UI labels `posted` as sent, not paid. The [rollout runbook](../operations/global-payouts.md) defines live validation and rollback obligations.
-
-`useStripeWithdrawal` (`console-ui/src/components/payouts/useStripeWithdrawal.ts`) saves the confirmation identity in account-scoped browser storage before sending it. Status loading restores that identity before enabling another withdrawal. Recovery remains available after remounts, zero remaining balance, or paused admissions. Storage failures stop submission; credentials and full bank details are not stored.

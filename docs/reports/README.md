@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-06 · commit `2f7e4dd06`
+> Last updated: 2026-09-06 · commit `ffe365029`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -176,3 +176,5 @@ Machine-generated; kept as evidence for the reports above.
 - [Gemma position-30 raw evidence capsule](2026-09-06-gemma-contiguous-logit30-traces/README.md) — All 137 manifested payloads and CPU reproduction of the original analysis.
 
 - [Actual forward-width runtime build and native validation](2026-09-06-forward-width-runtime.md) — source-bound M5 build, engine/compiler tests and retained setup failures; real-model batching remains separate.
+
+- [Representative quality cohort preparation](2026-09-06-representative-quality-cohort.md) — six-artifact prose/code/reasoning inputs with CPU checks; model execution and quality conclusions remain pending.

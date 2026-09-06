@@ -1,0 +1,399 @@
+{
+  "schema_version": 1,
+  "scope": "API-owned provider/native Boolean and renderer compatibility validation; CPU prompt-only tests, no final paged model throughput/default-promotion claim",
+  "parent_at_provider_capture": "e3f3fd160745143aa5edbd9fec182a84e71d3373",
+  "native_compiled_base": "28c2635c801a80ca6721142dd2eb2428de764ece",
+  "native_boolean_commit": "c0c63e251a4d0fad9f1f8b04f4cbb45d4a0dd760",
+  "compiled_source_note": "1102 source/dependency hashes include then-uncommitted dynamic paged floor/fence code, whose separate native ownership/regression milestone is outside this renderer evidence. Boolean commit changes exactly two native parser/test paths; final live source hashes match build7.",
+  "results": {
+    "provider_semantic_seconds": 33.86,
+    "provider_xctest": 26,
+    "provider_swift_testing_functions": 61,
+    "provider_swift_testing_suites": 10,
+    "provider_seconds": 18.183,
+    "common_manifest_entries": 7,
+    "common_unique_contracts": 6,
+    "common_token_cases": 98,
+    "original_replay_token_cases": 56,
+    "original_replay_swift_testing_functions": 1,
+    "original_replay_seconds": 12.323,
+    "native_semantic_seconds": 101.82,
+    "boolean_parser_functions": 6,
+    "server_translation_history_functions": 10,
+    "boolean_total_functions": 16,
+    "boolean_suites": 3,
+    "boolean_seconds": 0.001,
+    "loop_probe_functions": 4,
+    "loop_probe_cases": 5,
+    "raw_bridge_cases": 66,
+    "raw_bridge_rendered_changes": 3,
+    "final_skipped_tests": 0
+  },
+  "preserved_attempts": [
+    "Initial Qwen probe:21 issues in12token-array/9count checks before Jinja loop-neighbor/tojson fixes; all7production identities already accepted.",
+    "First build7 intended filter exceeded existing helper mktemp filename length before tests ran.",
+    "First shortened filter also selected optional live-GPT suite; actual intended cases passed but no-skips tripwire failed. Exact intended regex rerun passed without skips."
+  ],
+  "files": {
+    "swift-build7-build.log.gz": {
+      "source": "/tmp/darkbloom-090-provider-build7/build.log",
+      "stored_bytes": 15257,
+      "stored_sha256": "5e4980c9ce521a7abb233a93858d7d72db256b53ce39ca655ab73221335cfe89",
+      "raw_bytes": 501282,
+      "raw_sha256": "adb3dac8f5215a7968071bf480ec1cdfa99ad311cfbb0678688f42a3c04e6a4b",
+      "encoding": "gzip mtime=0"
+    },
+    "swift-build7-source-manifest.json.gz": {
+      "source": "/tmp/darkbloom-090-provider-build7/source-manifest.json",
+      "stored_bytes": 56351,
+      "stored_sha256": "e4b970d34d4dfbd48f33af0e8ea450ffa4a3d06c0f8f66df8d0f619ef82a28a6",
+      "raw_bytes": 160813,
+      "raw_sha256": "d31d561fd8fa12891fff12f3f57c300f77f6b40ff568d261e55b6816d86fed53",
+      "encoding": "gzip mtime=0"
+    },
+    "swift-build7-runtime-fixture-manifest.json.gz": {
+      "source": "/tmp/darkbloom-090-provider-build7/runtime-fixture-manifest.json",
+      "stored_bytes": 2907,
+      "stored_sha256": "2f5dd09650d817c70441d42c4f17b6b50b5a74f25b8701dc1c337f67a64f2c04",
+      "raw_bytes": 8791,
+      "raw_sha256": "fde1cd1045dfccc26b23230497d57ef9d387cceb5f351448a73e240dd530b86a",
+      "encoding": "gzip mtime=0"
+    },
+    "swift-build7-test-commands.json.gz": {
+      "source": "/tmp/darkbloom-090-provider-build7/test-commands.json",
+      "stored_bytes": 771,
+      "stored_sha256": "16e4f8a4aec19d05f938620bb9042f4e8ec9639f2c3b0e36c41c290bb1efcfde",
+      "raw_bytes": 1553,
+      "raw_sha256": "d6805b70bc5f45e87daafcbb7160c0b59528241e51b213f877157d89d5fe2df9",
+      "encoding": "gzip mtime=0"
+    },
+    "swift-build7-focused-common98.log.gz": {
+      "source": "/tmp/darkbloom-090-provider-build7/focused-common98.log",
+      "stored_bytes": 4042,
+      "stored_sha256": "41a678abf51ca36c077285a03853d73b3fb129b9887c07cefd8dde3a940bd92b",
+      "raw_bytes": 24795,
+      "raw_sha256": "bb1be70842ce3cfe8593c9caf4643d81163f43c0a0e53e161ec1923adf26413a",
+      "encoding": "gzip mtime=0"
+    },
+    "swift-build7-original56.log.gz": {
+      "source": "/tmp/darkbloom-090-provider-build7/original56.log",
+      "stored_bytes": 836,
+      "stored_sha256": "310255976e51966bba0a16e9c0271220f2be1079bc7d1162499a8e092549cbf6",
+      "raw_bytes": 2164,
+      "raw_sha256": "46333e8656904c6a81cdaa70f7e2652f6643b31d1122efd4c6eebeb721fec276",
+      "encoding": "gzip mtime=0"
+    },
+    "swift-build7-focused-filter-setup-failure.log.gz": {
+      "source": "/tmp/darkbloom-090-provider-build7/focused-filter-setup-failure.log",
+      "stored_bytes": 293,
+      "stored_sha256": "acb2911b7564e3939f6dee36d3e5472168dfc17f89cae3b108f879603bf479a1",
+      "raw_bytes": 420,
+      "raw_sha256": "443367858ba0a3a6731999a253374049d3510f7c353a9c4171238e26f4701071",
+      "encoding": "gzip mtime=0"
+    },
+    "swift-build7-focused-common98-unintended-live-skip.log.gz": {
+      "source": "/tmp/darkbloom-090-provider-build7/focused-common98-unintended-live-skip.log",
+      "stored_bytes": 4735,
+      "stored_sha256": "929273f370bb33576053e813010674c89a90c07468049613267b6636e533752d",
+      "raw_bytes": 26727,
+      "raw_sha256": "806a40f8635ede30c6ce25330f4ecb876a53a3b58cb7d7268efda43af81e887b",
+      "encoding": "gzip mtime=0"
+    },
+    "native-boolean-build.log.gz": {
+      "source": "/tmp/darkbloom-090-native-floor1/build.log",
+      "stored_bytes": 18899,
+      "stored_sha256": "a7798adab28f3a06c377c6e969398f4e48032760e90e547bfc6687b0904f735a",
+      "raw_bytes": 492781,
+      "raw_sha256": "352fdb5fe0dac7b98c75e4072280ec4ac6d125989d8f4eaf54ad7b4b2d65d26d",
+      "encoding": "gzip mtime=0"
+    },
+    "native-boolean-setup.log.gz": {
+      "source": "/tmp/darkbloom-090-native-floor1/setup.log",
+      "stored_bytes": 206,
+      "stored_sha256": "5d069f5f014d8fdc00e0dc55455f718d4960347ee7b4079bcb3d077a54de0dd8",
+      "raw_bytes": 322,
+      "raw_sha256": "c08927768f01af57e523be7499cf5ba0d628b4d5be4fbf3af33c2df7d27b0bf7",
+      "encoding": "gzip mtime=0"
+    },
+    "native-boolean-source-manifest.json.gz": {
+      "source": "/tmp/darkbloom-090-native-floor1/source-manifest.json",
+      "stored_bytes": 22276,
+      "stored_sha256": "0cb03a2b91b82a0683042f2f64436aa874198b7a1c48d02875e01f7b73537f19",
+      "raw_bytes": 63797,
+      "raw_sha256": "81aaa93e1cdd6418887e6c85950306184dbd770ae2c40772dc96acaafbd652d9",
+      "encoding": "gzip mtime=0"
+    },
+    "native-boolean-boolean-bridge.log.gz": {
+      "source": "/tmp/darkbloom-090-native-floor1/boolean-bridge.log",
+      "stored_bytes": 913,
+      "stored_sha256": "b3129c68b7e680acd04b2b136622fb8e9f7fb64f1a633a805816cdd16e32d14c",
+      "raw_bytes": 3875,
+      "raw_sha256": "ef352376ee80c7740f615fe8ed4d3f7c55dd80751f3ad94234c39c359040fb45",
+      "encoding": "gzip mtime=0"
+    },
+    "initial-qwen-parity-tests.log.gz": {
+      "source": "/tmp/darkbloom-090-qwen-prompt-parity1/tests.log",
+      "stored_bytes": 3290,
+      "stored_sha256": "faf255e9efdbd94aa14e8515e933b313c252bc3ad44c7244bcb4b9de4bf7e0ed",
+      "raw_bytes": 60914,
+      "raw_sha256": "dbe554f9631f0fba0ec7fb33f108c4ce63a59a1f07d0f8fae8ae2aadb9d63069",
+      "encoding": "gzip mtime=0"
+    },
+    "initial-qwen-parity-provenance.json.gz": {
+      "source": "/tmp/darkbloom-090-qwen-prompt-parity1/provenance.json",
+      "stored_bytes": 350,
+      "stored_sha256": "a38b8c2e24433ca5759aff0349194fec2f72d8d8b5753dcfeec4ad5b5f503496",
+      "raw_bytes": 544,
+      "raw_sha256": "0d030f71891cd26adffb629b5f65a5db7588d6cb9a0eba5aca55987df4004683",
+      "encoding": "gzip mtime=0"
+    },
+    "initial-qwen-parity-failure-summary.json.gz": {
+      "source": "/tmp/darkbloom-090-qwen-prompt-parity1/failure-summary.json",
+      "stored_bytes": 4230,
+      "stored_sha256": "8b6569c0f0b3f7cae307b594ec274a42179363cf374fe7491e49454ba9a003bb",
+      "raw_bytes": 124251,
+      "raw_sha256": "0a80c3450510f9ddcddef36982b75aaca9efc897e934a7ccb5b2acd70a1e7ab1",
+      "encoding": "gzip mtime=0"
+    },
+    "initial-qwen-parity-production_vectors.json.gz": {
+      "source": "/tmp/darkbloom-090-qwen-prompt-parity1/production_vectors.json",
+      "stored_bytes": 34056,
+      "stored_sha256": "960b70d85d7890522a8078b6318ce8af6fb7d986611308e4e57b7a3448a00b7c",
+      "raw_bytes": 830781,
+      "raw_sha256": "1cd2a5d0dd0df96d928138b0d49bf45c1b8ba0e246c3ba1b13ecd99a53fa884f",
+      "encoding": "gzip mtime=0"
+    },
+    "loop-tests.log.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/loop-tests.log",
+      "stored_bytes": 1811,
+      "stored_sha256": "f475eb22bcd3a620db69708147460939ecd0b5bcafc61e388bcef1d756427aa1",
+      "raw_bytes": 8726,
+      "raw_sha256": "1e594651e88113c5f033cab80ebd8551909799b8e1737d48ced1987bbc755004",
+      "encoding": "gzip mtime=0"
+    },
+    "loop-tests-manifest.json.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/loop-tests-manifest.json",
+      "stored_bytes": 1079,
+      "stored_sha256": "7db183294bd7bb2d429966e3e30a56acaf6faaf10eb49115bb944e11dc2c9ae4",
+      "raw_bytes": 2044,
+      "raw_sha256": "c215dd9ffd2dd75723bd5a7f0cfc39c9aa69b39bc9d274f89cd36191bcc0d68e",
+      "encoding": "gzip mtime=0"
+    },
+    "SwiftJinjaLoopContextTests.swift.gz": {
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Tests/ProviderCoreTests/SwiftJinjaLoopContextTests.swift",
+      "stored_bytes": 1361,
+      "stored_sha256": "812f75f8a2399c94120b1e12ffcc08557339149184e7c942b695d7633717983f",
+      "raw_bytes": 4376,
+      "raw_sha256": "4f589a40261b644c03eaa00b41e6b23e02e6ff8a06fb448755adb43851099e8e",
+      "encoding": "gzip mtime=0"
+    },
+    "json-104-output.json.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/json236/output.json",
+      "stored_bytes": 1741,
+      "stored_sha256": "8fbae13680666f09d44fe684766f478f522ccc15b551d25c7c234008d0b0bf3e",
+      "raw_bytes": 21235,
+      "raw_sha256": "ef05fde3be627726b7e117b2b4255052b092cfbf16fbece116317c6820e61276",
+      "encoding": "gzip mtime=0"
+    },
+    "json-104-manifest.json.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/json236/manifest.json",
+      "stored_bytes": 1134,
+      "stored_sha256": "a1efbf033b7c96fa8d0200b6632bfebbd72d383a7e3dab949bb4c57e90146728",
+      "raw_bytes": 2093,
+      "raw_sha256": "de353e357cfefbd57b5d50455da6201dfd71d831774f48485dd5d944794ba0e5",
+      "encoding": "gzip mtime=0"
+    },
+    "json-104-main.swift.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/json236/main.swift",
+      "stored_bytes": 948,
+      "stored_sha256": "55ff1db16890906aa297e5a2c7eb639b67aadbc41430133a49586402d7d10981",
+      "raw_bytes": 2481,
+      "raw_sha256": "96853aea8fb3092bf23e18dc4081ba52fc27e0443053a78b5b7a1be1c6a254cf",
+      "encoding": "gzip mtime=0"
+    },
+    "json-104-build.log.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/json236/build.log",
+      "stored_bytes": 20,
+      "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "encoding": "gzip mtime=0"
+    },
+    "json-edge-530-output-keys.json.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/edge236/output-keys.json",
+      "stored_bytes": 15134,
+      "stored_sha256": "b1827ddc0c882b37d56bb6d6bc87d0ccfb7ef66986481f0bd7870a848f5a677e",
+      "raw_bytes": 78119,
+      "raw_sha256": "20da6f35de900b5280948090e35ff670bb0a2c8d140df2ddcffc0e7d5c4dabb7",
+      "encoding": "gzip mtime=0"
+    },
+    "json-edge-530-manifest-keys.json.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/edge236/manifest-keys.json",
+      "stored_bytes": 1131,
+      "stored_sha256": "81738fe12a63779225deea2ee938c09201395d45a2e21f3bca6af2c6bf657f8a",
+      "raw_bytes": 2111,
+      "raw_sha256": "33b7d56d5034ee542b60c0319960a04a72b83f6da5cb885562140ed11a899cda",
+      "encoding": "gzip mtime=0"
+    },
+    "json-edge-530-main.swift.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/edge236/main.swift",
+      "stored_bytes": 847,
+      "stored_sha256": "8aca4cc36152427c87d6951580fdd367540292013a6de880bd6287aff4505fee",
+      "raw_bytes": 1715,
+      "raw_sha256": "bee129396b95eb30fe8e039057ad7562f734654e31b08a6fd56f2745c2401dd6",
+      "encoding": "gzip mtime=0"
+    },
+    "raw-bridge-before-output.json.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236/output.json",
+      "stored_bytes": 1614,
+      "stored_sha256": "623088d5372888576548c7fda92dbe47a0446e4b6ae02b735cc94826f347eb3f",
+      "raw_bytes": 19999,
+      "raw_sha256": "dfaf524b3b43dc596071467fac2e6956789308dcb835cb2383d1622311ff58e3",
+      "encoding": "gzip mtime=0"
+    },
+    "raw-bridge-before-manifest.json.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236/manifest.json",
+      "stored_bytes": 1649,
+      "stored_sha256": "a53efdb42ac269aef468c5dc566ae136e1fd9506d8b340b2de2e62ffc3cdb051",
+      "raw_bytes": 15290,
+      "raw_sha256": "38ff95fe8641f7cc5c04c674b100f06824c58b940e81a6d2c090fb803b55ecc0",
+      "encoding": "gzip mtime=0"
+    },
+    "raw-bridge-before-main.swift.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236/main.swift",
+      "stored_bytes": 1352,
+      "stored_sha256": "db4ee3b4ab885c678bac064a2b30e5a9fee14a11fcfe0ba5ebfd885ab8376489",
+      "raw_bytes": 3420,
+      "raw_sha256": "a934c86dedc123361027f4b43a19383e1c8001e057a07cb9975923aaa94a7b64",
+      "encoding": "gzip mtime=0"
+    },
+    "raw-bridge-before-ParserBridge.swift.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236/ParserBridge.swift",
+      "stored_bytes": 1075,
+      "stored_sha256": "84df6b43bb121ccd2ba1a5e35d448f1ae74a6e7b8ffd1da08e51fed66e09ba8e",
+      "raw_bytes": 2221,
+      "raw_sha256": "0fa6d87eac35a67f78e3f1132ccd47b3746e1782c2ec1b2d7d20c77bb6f618c1",
+      "encoding": "gzip mtime=0"
+    },
+    "raw-bridge-before-JSONValue.swift.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236/JSONValue.swift",
+      "stored_bytes": 1358,
+      "stored_sha256": "d4167b531ad8bb725cb75b71c2e3feee84bf94e0bce245cef633b9f7860536c9",
+      "raw_bytes": 4906,
+      "raw_sha256": "425be31fa79829c10335efe4497f12d77c07540c9a322811fc65f49c9856ac24",
+      "encoding": "gzip mtime=0"
+    },
+    "raw-bridge-before-build.log.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236/build.log",
+      "stored_bytes": 20,
+      "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "encoding": "gzip mtime=0"
+    },
+    "raw-bridge-after-output.json.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236-fixed/output.json",
+      "stored_bytes": 1643,
+      "stored_sha256": "6b5c67c355b73d96416164d8b325daa6a7ab4a5594735b0698c5d2658d28c7a2",
+      "raw_bytes": 19993,
+      "raw_sha256": "628ecd501fa0179ca82b9059bcbfab14999d1367a2d00edba3dd605273e39f25",
+      "encoding": "gzip mtime=0"
+    },
+    "raw-bridge-after-manifest.json.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236-fixed/manifest.json",
+      "stored_bytes": 1946,
+      "stored_sha256": "08116119c5cc0d46fe18052544f11c0c4357fe496abc682776e10169c8f365ef",
+      "raw_bytes": 16293,
+      "raw_sha256": "3cb31fcd1f0d4c2cd87f7cc8b8fde611d6f2818c06602befed64b6f3aadf93b1",
+      "encoding": "gzip mtime=0"
+    },
+    "raw-bridge-after-main.swift.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236-fixed/main.swift",
+      "stored_bytes": 1352,
+      "stored_sha256": "db4ee3b4ab885c678bac064a2b30e5a9fee14a11fcfe0ba5ebfd885ab8376489",
+      "raw_bytes": 3420,
+      "raw_sha256": "a934c86dedc123361027f4b43a19383e1c8001e057a07cb9975923aaa94a7b64",
+      "encoding": "gzip mtime=0"
+    },
+    "raw-bridge-after-ParserBridge.swift.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236-fixed/ParserBridge.swift",
+      "stored_bytes": 1198,
+      "stored_sha256": "1ce78c1a79272e80a1860659bdea6a55a80fa7182b030514ce8f05bb3f2b9990",
+      "raw_bytes": 2484,
+      "raw_sha256": "adc0c76cc32d675638f72423454418fb35e70df8a2d135d2bde30418eba3cdb1",
+      "encoding": "gzip mtime=0"
+    },
+    "raw-bridge-after-JSONValue.swift.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236-fixed/JSONValue.swift",
+      "stored_bytes": 1358,
+      "stored_sha256": "d4167b531ad8bb725cb75b71c2e3feee84bf94e0bce245cef633b9f7860536c9",
+      "raw_bytes": 4906,
+      "raw_sha256": "425be31fa79829c10335efe4497f12d77c07540c9a322811fc65f49c9856ac24",
+      "encoding": "gzip mtime=0"
+    },
+    "raw-bridge-after-build.log.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/rawbridge236-fixed/build.log",
+      "stored_bytes": 20,
+      "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "encoding": "gzip mtime=0"
+    },
+    "explicit-none-oracle-main.swift.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/template236/main.swift",
+      "stored_bytes": 321,
+      "stored_sha256": "f48c84a8552feaac0b06218ead7779ef9d115a9cb6f9bc46d466c8b81cce9c3a",
+      "raw_bytes": 537,
+      "raw_sha256": "41da787096363a4e7895409dd53baa781cddfc000fa8a2351149b0a11a56de59",
+      "encoding": "gzip mtime=0"
+    },
+    "explicit-none-oracle-output.json.gz": {
+      "source": "/tmp/darkbloom-090-qwen-jinja-probe/template236/output.json",
+      "stored_bytes": 198,
+      "stored_sha256": "4529db8148657da9cbebfa941e4f335e7cf19e114d6a2641f1e9c08b40aa2844",
+      "raw_bytes": 422,
+      "raw_sha256": "680091c55d375b5e3b3b8251a04b2e1feaefa022f227ea76281420b8f4329f17",
+      "encoding": "gzip mtime=0"
+    },
+    "boolean-source-manifest.json.gz": {
+      "source": "/tmp/darkbloom-json-boolean-bridge/manifest.json",
+      "stored_bytes": 324,
+      "stored_sha256": "d357e10ee7f3afc806f5e2e3cdd00f80e1d3676e873f89f9abe3c459360a0447",
+      "raw_bytes": 488,
+      "raw_sha256": "68c86c1bc810f17c668c546c9eafed3c90e3dcade0fe79675cd846e0068d4a8b",
+      "encoding": "gzip mtime=0"
+    },
+    "native-boolean.patch.gz": {
+      "source": "/tmp/darkbloom-qwen-renderer-api-packaging/native-boolean.patch",
+      "stored_bytes": 1204,
+      "stored_sha256": "6f03b07819a9bf8470572a59f9caf174ca698d58ae2b980f35d377371d6f30ec",
+      "raw_bytes": 3311,
+      "raw_sha256": "084517d7ae1840e4652c291fa90a2d3b0f8cfdf06a32cd9333ede97623642062",
+      "encoding": "gzip mtime=0"
+    },
+    "raw-bridge-comparison.json.gz": {
+      "source": "/tmp/darkbloom-qwen-renderer-api-packaging/raw-bridge-comparison.json",
+      "stored_bytes": 483,
+      "stored_sha256": "55b1fa6151a281b5b978af1f7dbf69c5c72719e9f0b4136566ab067880229b12",
+      "raw_bytes": 1195,
+      "raw_sha256": "99060ed40dbb6619bd3b2f279bd5489509bec24cf4e19aef9221eeff562a8ab1",
+      "encoding": "gzip mtime=0"
+    },
+    "upstream-jinja-2.3.5-to-2.3.6.patch.gz": {
+      "source": "/tmp/darkbloom-qwen-renderer-api-packaging/upstream-jinja-2.3.5-to-2.3.6.patch",
+      "stored_bytes": 1198,
+      "stored_sha256": "b64b07f9bc922316c9cdb3f9504e164e07ac6156966c0cad36a8750b0229523d",
+      "raw_bytes": 4484,
+      "raw_sha256": "fdbc66550b646152d4078996e1303f31fbca0ed3e4f9cdcb73075be669008635",
+      "encoding": "gzip mtime=0"
+    },
+    "upstream-pin-metadata.json.gz": {
+      "source": "/tmp/darkbloom-qwen-renderer-api-packaging/upstream-pin-metadata.json",
+      "stored_bytes": 2238,
+      "stored_sha256": "ed736a00e9ba3249a0cacb0db8dfa8f9cd11628f25ee70fac8a5cce76e50dc81",
+      "raw_bytes": 11318,
+      "raw_sha256": "1fdd7c8173bd03c5dbef323e8fbebcc6f5dba1afeea5c84acfc92012fd80167c",
+      "encoding": "gzip mtime=0"
+    }
+  }
+}

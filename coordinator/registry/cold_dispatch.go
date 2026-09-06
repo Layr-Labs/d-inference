@@ -13,7 +13,7 @@ import "time"
 //
 // The cold-dispatch win W3 actually delivers is therefore in the QUEUE: the
 // proven cold-load path, `TriggerModelSwaps`, only loads a cold provider for a
-// model that has QUEUED demand (registry.go). When the preflight sheds a
+// model that has QUEUED demand (model_loading.go). When the preflight sheds a
 // capacity-rejected request with an immediate 429 instead of queueing it, that
 // demand is never recorded, so no cold provider is ever warmed. Queue-before-shed
 // (api side) fixes that; `ColdSpillProviders` is the conservative predicate the
@@ -132,7 +132,7 @@ func (r *Registry) coldSpillProviderEligibleLocked(p *Provider, model string, tr
 		// the request into its queue — the planner (modelLoadCandidatePendingLocked)
 		// would refuse the load and the request would wait out the 120s queue timeout
 		// instead of failing fast (#390).
-		if admit, reported := reportedFreeForLoadAdmits(entry.SizeGB, backendFreeForLoadGB(p.BackendCapacity), p.Version, model); reported && !admit {
+		if admit, reported := reportedFreeForLoadAdmits(entry.SizeGB, backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
 			return false
 		}
 	}

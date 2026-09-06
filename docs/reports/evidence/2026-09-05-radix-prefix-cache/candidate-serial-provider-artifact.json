@@ -1,0 +1,7 @@
+{
+  "source_manifest_sha256": "cb99c92fc0c0be585c3584a41cc0eac5cb0ea6a83425b6d5ac5ca105e5af84a9",
+  "provider_sha256": "ab745567e27aedf56252d47f9df0ecdc1067fb94aa20b47a8c32e531c14e7d29",
+  "metallib_sha256": "4ffbbac48a99b495916c3fa0921ce813eb554de1a09aff408d9b5a5a8053e6b0",
+  "source_head": "788ce9f067f90128af1b71424023574b9d5d21c5",
+  "candidate_harness_define": true
+}

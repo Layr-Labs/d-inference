@@ -1,0 +1,52 @@
+{
+  "actual_model_batch_width_verified": true,
+  "baseline_decode_tps": null,
+  "cancellation_cache_policy": "completed priming donor remains reusable",
+  "candidate_decode_tps": null,
+  "comparison_axis": "cache",
+  "errors": [],
+  "generated_token_ids_compared": true,
+  "passed": true,
+  "rows": [
+    {
+      "baseline_terminal_tail_s": 0.00036016700000018886,
+      "baseline_ttft_s": 6.712933292,
+      "cache_outcome": "miss",
+      "candidate_terminal_tail_s": 0.22353766700000044,
+      "candidate_ttft_s": 13.449320875,
+      "id": "long-first-b0",
+      "saved_tokens": 0,
+      "token_ids_equal": true
+    },
+    {
+      "baseline_terminal_tail_s": 0.0003256250000003291,
+      "baseline_ttft_s": 13.411085042,
+      "cache_outcome": "miss",
+      "candidate_terminal_tail_s": 0.5830115409999994,
+      "candidate_ttft_s": 6.778108584,
+      "id": "long-first-b1",
+      "saved_tokens": 0,
+      "token_ids_equal": true
+    },
+    {
+      "baseline_terminal_tail_s": 0.00032591700000139667,
+      "baseline_ttft_s": 7.284435541,
+      "cache_outcome": "hit",
+      "candidate_terminal_tail_s": 0.0003327500000001038,
+      "candidate_ttft_s": 0.713489042,
+      "id": "long-repeat-b0",
+      "saved_tokens": 5120,
+      "token_ids_equal": true
+    },
+    {
+      "baseline_terminal_tail_s": 0.00035708299999726023,
+      "baseline_ttft_s": 14.156686292,
+      "cache_outcome": "hit",
+      "candidate_terminal_tail_s": 0.0005378340000001813,
+      "candidate_ttft_s": 1.310516917,
+      "id": "long-repeat-b1",
+      "saved_tokens": 5120,
+      "token_ids_equal": true
+    }
+  ]
+}

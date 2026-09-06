@@ -84,21 +84,26 @@ struct Benchmark: AsyncParsableCommand {
     var decodeIterations = ThroughputSweep.defaultDecodeIterations
 
     @Option(name: .long, help: """
-        KV backend EVERY engine this command builds is built with — \
-        auto|contiguous|paged (default auto, which resolves to CONTIGUOUS as \
-        of v0.8.1 — pass --kv-backend paged to measure the paged arm). \
+        KV-backend selection passed to every engine this command builds — \
+        auto|contiguous|paged (default auto). Candidate auto selects paged only \
+        for exact model IDs qwen3.5-35b-a3b, qwen3.6-35b-a3b-vl-mtp-mxfp8, \
+        and EigenLabs/Qwen3.8-27B-4bit-mtp; all other models use contiguous. \
+        Automatic paged failures and the version-bound crash-loop guard \
+        still fall back to contiguous. Pass --kv-backend paged to require \
+        the paged arm rather than automatic fallback. \
         Applies to --sweep, --scheduler-prefill, \
-        --scheduler-prefill-decision, and --arrival-invariance alike, so \
-        benchmark phases can \
-        never measure different arms. An explicit paged selection FAILS the \
+        --scheduler-prefill-decision, and --arrival-invariance alike. Each \
+        engine receives the same requested selection; automatic fallback \
+        can produce different resolved backends. An explicit paged selection FAILS the \
         run rather than degrading: if paged cannot be served, engine \
         construction throws, the cell records no samples, and the command \
-        exits non-zero naming the reason — so a paged benchmark can never \
-        measure contiguous. Only DARKBLOOM_CBV2_PAGED_KV=0 still degrades an \
+        exits non-zero naming the reason. DARKBLOOM_CBV2_PAGED_KV=0 and \
+        capability/span-mask vetoes can still force contiguous, even for an \
         explicit selection. The backend that actually served is recorded per \
         measured engine (decode[].resolvedKVBackend, \
         samples[].resolvedKVBackend) and de-duplicated in each report's \
-        kvBackend block.
+        kvBackend block. Candidate rollout is not yet validated; see \
+        docs/design/qwen-first-paged-ssd-rollout.md.
         """)
     var kvBackend = "auto"
 
@@ -155,9 +160,16 @@ struct Benchmark: AsyncParsableCommand {
         """)
     var parityPrefixTokens = 28672
 
+    @Option(name: .long, help: "Score bounded exact token contexts from JSON with an explicit --model and --kv-backend; ordinary target only, cache and MTP off.")
+    var teacherForcedInput: String?
+
     mutating func run() async throws {
         if let conflict = benchmarkModeConflict() {
             printError(conflict)
+            throw ExitCode(2)
+        }
+        if let error = teacherForcedOptionError() {
+            printError(error)
             throw ExitCode(2)
         }
         if schedulerPrefillDecision {
@@ -227,6 +239,17 @@ struct Benchmark: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
+        if let teacherForcedInput {
+            let result = try await TeacherForcedBenchmark.run(
+                modelID: selectedModel.id, modelDirectory: modelPath,
+                inputURL: URL(fileURLWithPath: teacherForcedInput), backend: kvBackend,
+                gemmaOptimizations: gemmaSettings)
+            // Preserve nonfinite/neutrality evidence even when inconclusive.
+            print(result.json)
+            if !result.controlsPassed { throw ExitCode(2) }
+            return
+        }
+
         if parity {
             try await runBackendParity(
                 modelID: selectedModel.id,
@@ -285,10 +308,24 @@ struct Benchmark: AsyncParsableCommand {
             (schedulerPrefill, "--scheduler-prefill"),
             (arrivalInvariance, "--arrival-invariance"),
             (parity, "--parity"),
+            (teacherForcedInput != nil, "--teacher-forced-input"),
         ].compactMap { $0.0 ? $0.1 : nil }
         guard selected.count <= 1 else {
             return "benchmark modes are mutually exclusive: \(selected.joined(separator: ", "))"
         }
+        return nil
+    }
+
+    func teacherForcedOptionError() -> String? {
+        guard let teacherForcedInput else { return nil }
+        guard !teacherForcedInput.isEmpty, let model, !model.isEmpty else {
+            return "--teacher-forced-input requires a file and explicit --model"
+        }
+        guard assistantModel == nil, output == nil else {
+            return "--teacher-forced-input uses ordinary target scoring and JSON stdout; assistant and signed-decision output options do not apply"
+        }
+        do { try TeacherForcedBenchmark.validateBackend(kvBackend) }
+        catch { return "--teacher-forced-input requires --kv-backend contiguous or paged" }
         return nil
     }
 }

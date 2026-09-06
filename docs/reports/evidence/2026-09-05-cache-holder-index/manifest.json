@@ -1,0 +1,74 @@
+{
+  "scope": "Local coordinator holder-index tests and microbenchmark, before service-cost scoring. Changed-source manifests identify the frozen index blobs; tests ran in the shared integration worktree alongside date/telemetry work, not a captured complete clean-tree build. No provider/model/live fleet measurement.",
+  "files": [
+    {
+      "path": "index-benchmark.log.gz",
+      "sha256": "485f3078d9041fde1a453b1ca9c8936cf061ab4b2e5ded2d7ca757d73eb44b99",
+      "raw_sha256": "d5149b905e2a35212b7fc012042360dc7e8703d885e168487e8217381bf86038",
+      "raw_bytes": 2921
+    },
+    {
+      "path": "registry-tests.log.gz",
+      "sha256": "e2389e8e7603ec6f3e0a0bfa7871ed2987a80a0174ecad45c94eda05edad36ed",
+      "raw_sha256": "5d7f1422083d77f8fcab7a8799688f29f7b4d6c1b0519471ca615da968ce54b7",
+      "raw_bytes": 154
+    },
+    {
+      "path": "registry-races.log.gz",
+      "sha256": "a3b9ab4a7840118e2744900da4037f1aa3e24fca6cc35de783df31abda9efab7",
+      "raw_sha256": "cafee2b5b29d6401e3a23375a2460ecb68f12a8c18536be8ba8eaaab23afe59a",
+      "raw_bytes": 154
+    },
+    {
+      "path": "registry-races-final.log.gz",
+      "sha256": "3944e562c9e684ea44920470894305279bce86d151930f39d8fd66f5208016bc",
+      "raw_sha256": "5cac306730e592f3839e3334e70667abef5f270810a386d6ef703eb37bb39cb4",
+      "raw_bytes": 154
+    },
+    {
+      "path": "index-empty-miss-races.log.gz",
+      "sha256": "fbac54b8d9595ac8d9de4cb09b3e1ce0d20a437e8b0e16fdfec089ac297e32d6",
+      "raw_sha256": "c807cf2f368dcd46c285194392dfb2e687bd95f2fe5ddbec7712a99d3a68f05a",
+      "raw_bytes": 71
+    },
+    {
+      "path": "docs-check.log.gz",
+      "sha256": "003c638ff337f43a0360ce1b702d2183148bc09f885973e08e38d30a3632eaa0",
+      "raw_sha256": "0eb5e669aab7b602c687a29c4e89dde00d8b1a8c245e433d9961a51d68ee1578",
+      "raw_bytes": 27
+    },
+    {
+      "path": "index-source-manifest.json",
+      "sha256": "cfee1e7aa40276c37c8d9ceab4ff1af2d7ef8782670c8fdf889cb3f8c53cffbd",
+      "bytes": 2465
+    },
+    {
+      "path": "index-final-blobs.json",
+      "sha256": "8efb58df8719e94805a13ae31d2bb6eea86d689a0f539345bca3696650ffb44e",
+      "bytes": 2947
+    },
+    {
+      "path": "index-isolated-go-source-manifest.json.gz",
+      "sha256": "c5d4877e0c3f75bf1ee993e22b29b273bd10ecd2bb1186b4afb9f3904b4766f2",
+      "raw_sha256": "1348f1746e8bae84421ba746dc0d9bd49f7ad4922ef151db79c796c43b709b06",
+      "raw_bytes": 103954
+    },
+    {
+      "path": "index-isolated-go-races.log.gz",
+      "sha256": "a95a147b44bb3d7f2344837e36d31755be6005eb37d13addfbf1b2d1781ae6fc",
+      "raw_sha256": "e8e3a2715cc70656ce5096e5750960daca48290b2b82e4b659e45675779e7a08",
+      "raw_bytes": 154
+    }
+  ],
+  "isolated_validation": {
+    "baseline": "363588e64",
+    "overlay": "13 exact final index blobs; no date or service scoring changes",
+    "go_version": "1.25.0",
+    "command": "go test -race ./coordinator/registry ./coordinator/registry/routingsim -count=1",
+    "result": "pass",
+    "package_seconds": [
+      23.479,
+      3.757
+    ]
+  }
+}

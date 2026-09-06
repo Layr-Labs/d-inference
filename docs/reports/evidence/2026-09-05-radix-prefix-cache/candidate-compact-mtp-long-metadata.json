@@ -1,0 +1,16 @@
+{
+  "started_unix": 1788590420.928977,
+  "arguments": {
+    "binary": "/Users/gaj/autoresearch/radix-prefix-cache/artifacts/candidate-compact-build4/radix-engine",
+    "model_directory": "/Users/gaj/.cache/huggingface/hub/models--EigenLabs--Qwen3.8-27B-4bit-mtp/snapshots/06d517d395dfc5588090f7f534112bee331f7b4a",
+    "input": "/Users/gaj/autoresearch/radix-prefix-cache/inputs/long-checkpoints-input.json",
+    "output": "/Users/gaj/autoresearch/radix-prefix-cache/runs/candidate-compact-mtp-long",
+    "cache": "on",
+    "mtp": "on",
+    "kv_backend": "auto"
+  },
+  "entry_gpu_temp_c": 25.027530670166016,
+  "exit_code": 0,
+  "ended_unix": 1788590518.168562,
+  "ranked_job_at_end": false
+}

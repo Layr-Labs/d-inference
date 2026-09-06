@@ -1,0 +1,395 @@
+{
+  "scope": "Isolated benchmark root/key mode fix and diagnostic-only SPI; first failed SSD attempt retained, no corrected-run result in this record",
+  "parent_base": "3aa73029ef22a6292aefff005b2267856f665a3c",
+  "source_paths": 3,
+  "python_functions": 42,
+  "diagnostic_build_seconds": 248.0211873743683,
+  "diagnostic_probe_model_runs": 0,
+  "archive": {
+    "path": "payloads.tar.gz",
+    "sha256": "eb9cda05c66e34963873cc70db39f3711409aff348404940f8a5ea21a3b9c633",
+    "bytes": 529598
+  },
+  "payloads": {
+    "diagnostic/actual-source-proof.json": {
+      "sha256": "0ddef08e8e88198637294caec0d6cd0f9cff9e3549f6005d39f1f053a232a05f",
+      "bytes": 2067
+    },
+    "diagnostic/artifact-manifest.json": {
+      "sha256": "7198ff065f86e7bcea9a16d9a73ad04d74a0eef10fd5b27f7b37ae064e4800f0",
+      "bytes": 319
+    },
+    "diagnostic/build.log": {
+      "sha256": "5c6f51b231f07a61b2269fa704fb0bd877b3a8f7a96234824612996a67f00fc5",
+      "bytes": 32885
+    },
+    "diagnostic/compile-source-manifest.json": {
+      "sha256": "b109c4b0d054385603cdd2f1229b558bb11405870d32657976fdaaa1540f89d1",
+      "bytes": 3125
+    },
+    "diagnostic/diagnostic-after-final-harness.patch": {
+      "sha256": "fe6f571a5f6009cdfbf6564e99eceee4deb54bb65e057c478f61d322206decf4",
+      "bytes": 1739
+    },
+    "diagnostic/execution.json": {
+      "sha256": "571a1cef9e3bc0b7e6b99a3e78e0edbca42d1e7f434fdaec8bc3ed8d4e7c8022",
+      "bytes": 353
+    },
+    "diagnostic/integration.json": {
+      "sha256": "5ae7f4103b847f999c52ea8a2069b6ee7fdca6fd4dd488d698dd981e1d070afe",
+      "bytes": 1653
+    },
+    "diagnostic/manifest.json": {
+      "sha256": "f9fc9f3febca5f213e1d38eef52297a3ad72e9ac13d7808a6f739628ed8ef9ed",
+      "bytes": 5764
+    },
+    "diagnostic/owned/source/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift": {
+      "sha256": "ec28f11cd44b2b9ddec9ade3fc24700b246ff03ccedf738c1a88bf366844355b",
+      "bytes": 18100
+    },
+    "diagnostic/package-state.json": {
+      "sha256": "67525de06a6aadaef019cf2320fc820a7dc7d0497873f15b01d5ef39e7c59eca",
+      "bytes": 21160
+    },
+    "diagnostic/provider-source-manifest.json": {
+      "sha256": "7d6179be5f808131e8331ca83ef7daed25edbe2efd0d98d9bf5fe62568dc2d32",
+      "bytes": 98976
+    },
+    "diagnostic/radix-engine/Package.resolved": {
+      "sha256": "b2b12d24d48bbedc4583d8831e0b81fe68b96d641804e0ebc56715cd2d88a7ea",
+      "bytes": 10156
+    },
+    "diagnostic/radix-engine/Package.swift": {
+      "sha256": "84ce3d3a6b8bacbc104c110780773f59e17b7aeb764b599c81f983439ecd4724",
+      "bytes": 1229
+    },
+    "diagnostic/radix-engine/Sources/radix-engine/BenchmarkBatches.swift": {
+      "sha256": "e40ce1e77199d40afdcd3b32deec59517bbbf0831e5d56fb54dd9bb5ceabc9df",
+      "bytes": 6413
+    },
+    "diagnostic/radix-engine/Sources/radix-engine/BenchmarkGeneration.swift": {
+      "sha256": "ec4eaddbe648e2dff0258e68d6c27ba3e56725ef1dfd2e426d957e2612d5f63e",
+      "bytes": 6058
+    },
+    "diagnostic/radix-engine/Sources/radix-engine/BenchmarkLoader.swift": {
+      "sha256": "6a872cced28a6bcd3558c20a5e8a8f129893d40f6efa17db90cc750b4f8e6420",
+      "bytes": 9447
+    },
+    "diagnostic/radix-engine/Sources/radix-engine/BenchmarkMetrics.swift": {
+      "sha256": "d96a58e49eddc8fbd517a1bf317d5f21c3af2513d7aca2dd12697c63f112c5e3",
+      "bytes": 10132
+    },
+    "diagnostic/radix-engine/Sources/radix-engine/BenchmarkNativeKVProbe.swift": {
+      "sha256": "1bfa1ce5bdb26125901e3a41712ab37012ac33112c9ae5c434d67dc96ff79c6d",
+      "bytes": 4786
+    },
+    "diagnostic/radix-engine/Sources/radix-engine/BenchmarkOptions.swift": {
+      "sha256": "6295e2c316f2026ee6af4b16bd55f389db3f408c8814a1a0236d993c1065b638",
+      "bytes": 4439
+    },
+    "diagnostic/radix-engine/Sources/radix-engine/BenchmarkResidentMemory.swift": {
+      "sha256": "3bddcf8379b668ab676c2ef07275828ad5e721450f6a3d1fb78b847caa761063",
+      "bytes": 761
+    },
+    "diagnostic/radix-engine/Sources/radix-engine/RadixBenchmark.swift": {
+      "sha256": "7ea86333a7929b6f2a43d90e7dc2bc57463d41c67e0499df5f06119e05890cfd",
+      "bytes": 15177
+    },
+    "diagnostic/release-graph.yaml.gz": {
+      "sha256": "d03b69ad1e21104ebd1a6870e4bb87f38b2ffbc2a93094c8742eff8b36843db5",
+      "bytes": 353720
+    },
+    "diagnostic/run.py": {
+      "sha256": "d0f4641c6e55d392f6d6c28aa0db04bc4bfceadff929b17185edd1e4046f4ac5",
+      "bytes": 3642
+    },
+    "diagnostic/scripts/compare_radix_engine.py": {
+      "sha256": "b91dd7683a9fcb31ed15ea2d469f8efbc446495aac94ab56a41cb7940bff625e",
+      "bytes": 12640
+    },
+    "diagnostic/scripts/radix_engine_evidence.py": {
+      "sha256": "5c15857906c6ed6f7f7d293e339fddb699e55e8fbb004210c3b63e4cd9669e24",
+      "bytes": 12838
+    },
+    "diagnostic/scripts/radix_prefix_cache.py": {
+      "sha256": "17924ee6129a15cd1a142145f31d6e7e6b0eab64903e4a995780cd32e0737eaa",
+      "bytes": 11960
+    },
+    "diagnostic/scripts/run_radix_engine.py": {
+      "sha256": "697583a9d186d8ea2b7ed6ae6c7cf7cd3a20ef8edbccd449cf4f759bc528243d",
+      "bytes": 10534
+    },
+    "diagnostic/scripts/run_radix_http.py": {
+      "sha256": "9608cef72cea2f08cab343fe70d8948338cffab451c8636a9ccc0dc7e83eeefe",
+      "bytes": 6998
+    },
+    "diagnostic/scripts/test_compare_radix_engine.py": {
+      "sha256": "94e891d7088f45116d1864eb72562ac5e0fd20e62106461f14faf6646be07286",
+      "bytes": 8941
+    },
+    "diagnostic/scripts/test_radix_engine_evidence.py": {
+      "sha256": "fc62afcfa4c0a80c7eb3daed537a9d06547d2dd2bd247dc0a62c20ca897c9a6c",
+      "bytes": 18335
+    },
+    "diagnostic/scripts/test_radix_prefix_cache.py": {
+      "sha256": "b2d9aefe69c09b777a1e197738d00f8f54f7ddf002c27075ed0d471cacef2c99",
+      "bytes": 3095
+    },
+    "diagnostic/scripts/test_run_radix_engine.py": {
+      "sha256": "900f5393500ccd86366f8db28a83f97a0e3267b464ddf4baab1c62dda736052f",
+      "bytes": 2451
+    },
+    "diagnostic/source-verified-after.json": {
+      "sha256": "1220bb986bbbd572c6b609a43790b70f037d426afd40d8f84d1f8dc684a4440c",
+      "bytes": 613
+    },
+    "diagnostic/source-verified-before.json": {
+      "sha256": "1220bb986bbbd572c6b609a43790b70f037d426afd40d8f84d1f8dc684a4440c",
+      "bytes": 613
+    },
+    "diagnostic/verdict.json": {
+      "sha256": "53e437e6d582d4440db82b9375ffb474ce43d6c4393ea3da5a50e6c0661044fc",
+      "bytes": 1938
+    },
+    "first-ssd-failure/cache-file-summary.json": {
+      "sha256": "4e3696189ea31d79393dcfbbcb54ce8eff66dc3550ed6c9b62e12bc6bcdf9b90",
+      "bytes": 36
+    },
+    "first-ssd-failure/command.json": {
+      "sha256": "1025d2d3958c59f8da2026efd11c26b4ce34579e322fe05a16dafaac5398db44",
+      "bytes": 1613
+    },
+    "first-ssd-failure/engine.log": {
+      "sha256": "ab3e6840d3f00621de70089732baba21c1bae6bb47cee49d97e1f711f1a20011",
+      "bytes": 789
+    },
+    "first-ssd-failure/execution.json": {
+      "sha256": "8cfaf295f259f53d0801eb8884fa5110f847903c4276dd12b69e04c31e5c892a",
+      "bytes": 54
+    },
+    "first-ssd-failure/input.json": {
+      "sha256": "1cc178a99fc8fc75e2e88251ad5342b6d72e624d014e76e4575dff1cf8549f32",
+      "bytes": 22403
+    },
+    "first-ssd-failure/integrity-verdict.json": {
+      "sha256": "5e90b9144b86192bdbcff63712a23cc64efff05e95b5f206fecd5c0fd4464f69",
+      "bytes": 119
+    },
+    "first-ssd-failure/manifest.json": {
+      "sha256": "7ad10180eae5cbbe7f8db2d95e147b9b540eb9b885ba2f25d00ac993c3af7f8c",
+      "bytes": 1717
+    },
+    "first-ssd-failure/metadata.json": {
+      "sha256": "b4438465bbdf864f9ecc2675f50df2a7ebbff1f2dcc0c0193e61c3788d5b1d07",
+      "bytes": 2319
+    },
+    "first-ssd-failure/remote-files.json": {
+      "sha256": "7535f3c7447e9bd10efa14cbe4e391ac188a93f843e2a5b175dcd76028f6a96a",
+      "bytes": 703
+    },
+    "first-ssd-failure/report.json": {
+      "sha256": "890e2eee5f6c7f93d8793644a0d07adfcb3448f1c6345a75142524288396d967",
+      "bytes": 1854
+    },
+    "first-ssd-failure/ssh-run.log": {
+      "sha256": "adefd98f07770df3947fe695aeb9eb58889dbcae1d491b3b99bb6293dad5c993",
+      "bytes": 420
+    },
+    "first-ssd-failure/summary.json": {
+      "sha256": "b6199ee93372b3b9f72ce9fc3f8e67d7a21961cd6f4a2781ceb42a672f13b4fb",
+      "bytes": 1086
+    },
+    "first-ssd-failure/telemetry.jsonl": {
+      "sha256": "f9dae2f9563157abfea453098aea4e04ddf5b8e152322c219cbb9bc281814c99",
+      "bytes": 80431
+    },
+    "identity-audit/REVIEW.md": {
+      "sha256": "8a7c22bdf2656e07c202b8cea08b49ba644a4084024f71c80d25bfa957956da8",
+      "bytes": 5113
+    },
+    "identity-audit/audited-model-manifest.json": {
+      "sha256": "54ba4df3022077a69974cfd4de91196622c865b45ae361e1051c1cda405bc7cc",
+      "bytes": 2286
+    },
+    "identity-audit/build3-artifact-manifest.json": {
+      "sha256": "dc855bebca6bbc5c16d7e5946281dd9be6ecebac7c55f0b3e6cf8029f39922ec",
+      "bytes": 1451
+    },
+    "identity-audit/build3-radix-release-actual-source-proof.json": {
+      "sha256": "a16d3b31d1be35a4c85a34f393b569dadcc95defbff94c62e5ffe5078c101a66",
+      "bytes": 2304
+    },
+    "identity-audit/built-harness-source/radix-engine/Sources/radix-engine/BenchmarkLoader.swift": {
+      "sha256": "6a872cced28a6bcd3558c20a5e8a8f129893d40f6efa17db90cc750b4f8e6420",
+      "bytes": 9447
+    },
+    "identity-audit/built-harness-source/radix-engine/Sources/radix-engine/BenchmarkMetrics.swift": {
+      "sha256": "d96a58e49eddc8fbd517a1bf317d5f21c3af2513d7aca2dd12697c63f112c5e3",
+      "bytes": 10132
+    },
+    "identity-audit/built-harness-source/radix-engine/Sources/radix-engine/BenchmarkOptions.swift": {
+      "sha256": "6295e2c316f2026ee6af4b16bd55f389db3f408c8814a1a0236d993c1065b638",
+      "bytes": 4439
+    },
+    "identity-audit/built-harness-source/scripts/run_radix_engine.py": {
+      "sha256": "697583a9d186d8ea2b7ed6ae6c7cf7cd3a20ef8edbccd449cf4f759bc528243d",
+      "bytes": 10534
+    },
+    "identity-audit/failed-run/cache-file-summary.json": {
+      "sha256": "4e3696189ea31d79393dcfbbcb54ce8eff66dc3550ed6c9b62e12bc6bcdf9b90",
+      "bytes": 36
+    },
+    "identity-audit/failed-run/command.json": {
+      "sha256": "1025d2d3958c59f8da2026efd11c26b4ce34579e322fe05a16dafaac5398db44",
+      "bytes": 1613
+    },
+    "identity-audit/failed-run/engine.log": {
+      "sha256": "ab3e6840d3f00621de70089732baba21c1bae6bb47cee49d97e1f711f1a20011",
+      "bytes": 789
+    },
+    "identity-audit/failed-run/metadata.json": {
+      "sha256": "b4438465bbdf864f9ecc2675f50df2a7ebbff1f2dcc0c0193e61c3788d5b1d07",
+      "bytes": 2319
+    },
+    "identity-audit/failed-run/report.json": {
+      "sha256": "890e2eee5f6c7f93d8793644a0d07adfcb3448f1c6345a75142524288396d967",
+      "bytes": 1854
+    },
+    "identity-audit/identity-comparison.json": {
+      "sha256": "58a948668963a67db3754161d6794068dac2da0caed102a2d5513808f48d01f9",
+      "bytes": 471
+    },
+    "identity-audit/manifest.json": {
+      "sha256": "66db75139a4ef4d795a5c317f42011b4f139e46bb614689addb14d1b2af3d8eb",
+      "bytes": 4035
+    },
+    "identity-audit/remote-metadata.json": {
+      "sha256": "09d0d67a68787eb35703200b4dff972ae9f97dcccbb4f0886191292e6c07fdec",
+      "bytes": 9996
+    },
+    "identity-audit/remote-path-environment.json": {
+      "sha256": "d313adbe30587265ed16baf1adfc9f3d435f95416e6c96bfbb3111c18ef8633a",
+      "bytes": 868
+    },
+    "identity-audit/source-provenance.json": {
+      "sha256": "b0fd4aaca516aac19d79adf8ba3f75cf8f9252dcd7bbec4f82b8936c8c1a06c0",
+      "bytes": 7692
+    },
+    "identity-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift": {
+      "sha256": "756fe86331486bf61c3ebd1fce118b3c1acfccd07a59a7ed726c99ae61942fa3",
+      "bytes": 17871
+    },
+    "identity-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+CompletePrefixCache.swift": {
+      "sha256": "f57b492b64fe64e136b1b9af77942ac0abdd1da5b985c2661196e4a6e90e1362",
+      "bytes": 5756
+    },
+    "identity-audit/sources/provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+CheckpointIdentity.swift": {
+      "sha256": "34a7baa9c613cc75fcede7ac4e715efb9c679fb282b05805d4d9bfb51880a95b",
+      "bytes": 3861
+    },
+    "identity-audit/sources/provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCacheKeyMaterial.swift": {
+      "sha256": "706f8c6b60d7a1a4ccd10044ceeec01c99ab46460a036fa243fffc8245c64b3b",
+      "bytes": 1345
+    },
+    "identity-audit/sources/provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStoreFactory.swift": {
+      "sha256": "c345662919ed8639a3c89c65ef023733fea55ca5b725a29953e9d9b69b1d25e1",
+      "bytes": 4541
+    },
+    "identity-audit/sources/provider-swift/Sources/ProviderCore/KVCacheSSD/SSDNoFollowIO.swift": {
+      "sha256": "4c17b1e7e3f2f0ee305816977a9a6df9d30e22f403f659b03535ea79bcf2ce38",
+      "bytes": 22028
+    },
+    "identity-audit/sources/provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift": {
+      "sha256": "321912ce20f6c32ad1e9efd7a7c6556d79bb659e2193e18864163ced42745961",
+      "bytes": 15279
+    },
+    "identity-audit/sources/provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift": {
+      "sha256": "74af04da18ddf008a4886488cfc3f0c01ef2145f836240d64adbee732aaf6e3b",
+      "bytes": 11736
+    },
+    "identity-audit/sources/provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift": {
+      "sha256": "210ea7bbfc3a4b268a0e8fca2cba305bce91eb7a1c65697fbaede399a4cd38b1",
+      "bytes": 11113
+    },
+    "identity-audit/sources/provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift": {
+      "sha256": "f3d14a2f79338866513e48001351584c41edee487a5f4791a7ffccb451efe381",
+      "bytes": 5876
+    },
+    "identity-audit/sources/provider-swift/Sources/ProviderCoreFoundation/PromptRenderDate.swift": {
+      "sha256": "84af6eb17be6e93e3911c75739ef140bfd11f0c82f2382dc1d0488b2e6a43835",
+      "bytes": 2635
+    },
+    "identity-audit/sources/provider-swift/Sources/ProviderCoreFoundation/SwiftJinjaCompatibility.swift": {
+      "sha256": "b894b66749fa50323fae150693b569ac769e38deffbcab5b5e472b600e75e9c0",
+      "bytes": 2101
+    },
+    "identity-audit/sources/provider-swift/Sources/ProviderCoreFoundation/TemplateRenderCheck.swift": {
+      "sha256": "11ed0eb1cfd22b2501427fc1cc9f1be6822203fe70ed788fcd1d3d88469e3ed6",
+      "bytes": 22113
+    },
+    "remote/transfer-and-python39.json": {
+      "sha256": "67b6d359f20616309e0d91c465c907bdcd9ef53e2d69499c6775cab6b787e153",
+      "bytes": 6004
+    },
+    "root/darkbloom-isolated-cache-wrapper-root-build-review.json": {
+      "sha256": "aae757070160372fec386eb113b53085760b926ce634ca330a7366bf36a9610b",
+      "bytes": 1128
+    },
+    "root/darkbloom-isolated-cache-wrapper-root-integration.json": {
+      "sha256": "d9f9a09ba1fcd116ec3b964611295f10cd1f196efa7268d4d4b6b814f97b8053",
+      "bytes": 380
+    },
+    "root/darkbloom-isolated-cache-wrapper-root-review1.json": {
+      "sha256": "2bff82544372c2c7cd7c41861907f9d327eeca48540011ad379240bb0ff75c2d",
+      "bytes": 736
+    },
+    "root/darkbloom-q36-wrapper-review.json": {
+      "sha256": "617fb0b09d7057970b5c8d0366b927d5a0e9368fb8a6c0da473ddbfd3f230545",
+      "bytes": 1148
+    },
+    "root/report.json": {
+      "sha256": "dc788223e14eb875e8b7fa66778904f8fb47d33c71ccb74fcc70f52f2d797b0f",
+      "bytes": 5777
+    },
+    "wrapper/failed-attempt1/manifest.json": {
+      "sha256": "c6f8c4e10e5e1c6e4ad83e7809dd292a7b3c26564a655f1200776659eb9f5351",
+      "bytes": 484
+    },
+    "wrapper/failed-attempt1/python-tests.log": {
+      "sha256": "e88030a0b60aa91f86afc86d8ca6b4462ed50f2f037541980be96f7570d8eb00",
+      "bytes": 11460
+    },
+    "wrapper/failed-attempt1/run_radix_engine.py": {
+      "sha256": "b5166c413e72f871ff8ebe17493b4628a8f0479e9eba376b0090eb65e3db29a1",
+      "bytes": 11663
+    },
+    "wrapper/failed-attempt1/test_run_radix_engine.py": {
+      "sha256": "9bc74dad81142d6323f17a1fc77125457c4be5063fa75823fc58fd7c1aa52fb0",
+      "bytes": 6373
+    },
+    "wrapper/manifest.json": {
+      "sha256": "ec965e943bf8519d17aeddb4da632cfa71efb308814e65523305a5d89a80642b",
+      "bytes": 2176
+    },
+    "wrapper/python-tests.log": {
+      "sha256": "b1424a4c42482b237039526196102e371d01ae58eea341b0220f80f3b34b99fd",
+      "bytes": 7380
+    },
+    "wrapper/source.patch": {
+      "sha256": "885d6dfec8ef4d222e1783a0bb3d78891aecddbf029a9f17a4e11395af1b629d",
+      "bytes": 7028
+    },
+    "wrapper/source/scripts/benchmarks/run_radix_engine.py": {
+      "sha256": "b5166c413e72f871ff8ebe17493b4628a8f0479e9eba376b0090eb65e3db29a1",
+      "bytes": 11663
+    },
+    "wrapper/source/scripts/benchmarks/test_run_radix_engine.py": {
+      "sha256": "3052afdee4b4a0ca6be83d540cce597768b78819485a01422e62e23da01bfb1c",
+      "bytes": 6385
+    },
+    "wrapper/validation.md": {
+      "sha256": "b9354e0729f142958701a68b884ba64f72170cddaa965d5eb3ce3c839533a096",
+      "bytes": 838
+    }
+  }
+}

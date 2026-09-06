@@ -1,6 +1,6 @@
 # MLX stack: the three pinned submodules and the metallib
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-05 · commit `2dcec3574`
 
 What the provider links from `libs/`, at which commits, what each submodule
 contributes, how the Metal kernel library (`mlx.metallib`) is built from the
@@ -28,16 +28,62 @@ package's path dependency of the same identity.
 `.gitmodules` declares three submodules, all Layr-Labs forks. The pin is the
 gitlink in the superproject tree; read it with `git ls-tree HEAD libs/`:
 
-| Submodule | Fork | Pinned commit (`5d400cf75`) | What the provider gets from it |
+| Submodule | Fork | Pinned commit | What the provider gets from it |
 |---|---|---|---|
-| `libs/mlx-swift` | `Layr-Labs/mlx-swift` | `6b0505cc790f512ae49d740b21e13f80802946bd` | `MLX` (arrays, lazy evaluation, Metal device) and `MLXNN`; its `Cmlx` target compiles the C++ core from the **nested** submodules `libs/mlx-swift/Source/Cmlx/mlx` (`734241bb`) and `libs/mlx-swift/Source/Cmlx/mlx-c` (`9ff12fab`) — the tree the metallib is built from |
-| `libs/mlx-swift-lm` | `Layr-Labs/mlx-swift-lm` | `c4089870a24b082a9d70f31dc853380e9cff92ca` | `MLXLMCommon` (model loading, tokenizer integration, ContinuousBatchingV2 engine, tool-call formats), `MLXLLM` and `MLXVLM` (model implementations), `MLXLMServer` (OpenAI request types, tool and reasoning parsers, local HTTP router) |
+| `libs/mlx-swift` | `Layr-Labs/mlx-swift` | `67153a874b6d8dd0e1ad04c256298eaae8249cd7` | `MLX` (arrays, lazy evaluation, Metal device) and `MLXNN`; its `Cmlx` target compiles the C++ core from the **nested** submodules `libs/mlx-swift/Source/Cmlx/mlx` (`30ae6560`) and `libs/mlx-swift/Source/Cmlx/mlx-c` (`3ccef14`) — the tree the metallib is built from |
+| `libs/mlx-swift-lm` | `Layr-Labs/mlx-swift-lm` | `a486a55d032deae001190bf9795ece1cb3d9a609` | `MLXLMCommon` (model loading, tokenizer integration, ContinuousBatchingV2 engine, tool-call formats), `MLXLLM` and `MLXVLM` (model implementations), `MLXLMServer` (OpenAI request types, tool and reasoning parsers, local HTTP router) |
 | `libs/mlx` | `Layr-Labs/mlx` (`branch = main`) | `0a725e3000edabc4911cde345270ca950bfa152f` | A separate checkout of the C++ core. Neither `provider-swift/Package.swift`, `Makefile`, `scripts/`, nor `.github/` reads it; bumping it alone changes no provider bytes (`CLAUDE.md`) |
 
 A bump is a superproject commit that moves a gitlink (check out the new commit
 inside the submodule, `git add libs/<name>`); the checkout procedure is step 1
 of [`../../developer/build.md`](../../developer/build.md). Engine facts in the
 architecture pages are read at the pinned `libs/mlx-swift-lm` commit.
+
+### Coherent allocator accounting
+
+`Memory.snapshot()` captures active, cached and peak allocator bytes under one
+native allocator lock through `mlx_get_memory_snapshot`. It does not synchronize
+streams or measure process RSS. Allocations enter the counters at their existing
+registration step, so admission must keep provisional promises until the owning
+allocation is evaluated and accounted. The call can wait behind allocator work;
+initialize the allocator before taking a process admission lock.
+
+Implementation: `libs/mlx-swift/Source/MLX/Memory.swift` (`snapshot`),
+`libs/mlx-swift/Source/Cmlx/mlx/mlx/memory.h` (`get_memory_snapshot`). CPU, Metal,
+C-bridge checks and limits are recorded in
+[`../../reports/2026-09-05-coherent-memory-snapshot.md`](../../reports/2026-09-05-coherent-memory-snapshot.md).
+
+### Allocator footprint and backing ownership
+
+`Memory.allocationFootprintUpperBound(byteCount:)` computes a checked upper
+bound for one backing under the existing allocator rounding and cache-reuse
+rules. It does not allocate, inspect the cache or submit stream work.
+`MLXArray.evaluatedBufferInfo()` observes available allocator bytes, offset,
+elements, contiguity and instantaneous uniqueness without evaluating or waiting.
+Neither API grants ownership or prices an entire graph.
+
+`Memory.allocationFootprintPolicy()` returns the backend's immutable sizing
+parameters. The value's `upperBound(byteCount:)` and `maximumExtraBytes` perform
+checked arithmetic without allocator access, locks, allocation or callbacks;
+invalid or overflowing projections return nil. Admission can price independent
+future buffers with this value. It does not inspect available cache entries or
+reserve memory. The throwing prediction API uses the same arithmetic. See the
+[policy validation](../../reports/2026-09-05-allocator-policy.md).
+
+Native paged construction holds its provisional charge before allocation and
+drains the captured stream after successful or throwing evaluation. Completion
+handlers can retain data references after `eval` returns. Only a fresh exclusive
+full backing earns materialization coverage; its shared owner survives rebasing,
+and staged/growth charges settle to actual backing bytes. Metadata observation
+itself never synchronizes a stream or credits an alias.
+
+Implementation: `libs/mlx-swift/Source/MLX/AllocationFootprint.swift`,
+`libs/mlx-swift/Source/Cmlx/mlx/mlx/memory.h`
+(`get_allocation_size_upper_bound`) and
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSegments.swift`
+(`PagedKVSegmentBacking`). CPU, Metal, Swift and native validation, including
+failure corrections and pending provider/whole-graph work, are recorded in
+[the allocator report](../../reports/2026-09-05-allocator-footprint.md).
 
 ### What `ProviderCore` links
 
@@ -46,7 +92,7 @@ architecture pages are read at the pinned `libs/mlx-swift-lm` commit.
 | `MLX`, `MLXNN` | `mlx-swift` (path) | Arrays, Metal backend, layers |
 | `MLXLLM`, `MLXVLM`, `MLXLMCommon`, `MLXLMServer` | `mlx-swift-lm` (path) | Models, CBv2 engine, request types and parsers |
 | `Transformers` | `swift-transformers` `from: "1.3.0"` | First release whose `TokenizerModel.knownTokenizers` includes `TokenizersBackend`, the tokenizer class of Qwen 3.5 / Qwen3-VL checkpoints |
-| `Jinja` | `swift-jinja` `from: "2.3.5"` (also linked by `ProviderCoreFoundation`) | `TemplateRenderCheck` compiles chat templates with the exact engine the runtime tokenizer uses |
+| `Jinja` | `swift-jinja` `exact: "2.3.6"` (also linked by `ProviderCoreFoundation`) | `TemplateRenderCheck` compiles chat templates with the exact engine the runtime tokenizer uses |
 | `Hummingbird` | `hummingbird` `exact: "2.23.0"` | Matches the `from: "2.23.0"` that `MLXLMServer` declares |
 
 Platform floor: `provider-swift/Package.swift` and `libs/mlx-swift-lm/Package.swift`

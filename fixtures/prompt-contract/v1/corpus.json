@@ -39,7 +39,8 @@
           "function": {
             "name": "weather"
           }
-        }
+        },
+        "_darkbloom_prompt_date": "2028-02-29"
       }
     },
     {
@@ -56,7 +57,8 @@
             "tool_calls": null
           }
         ],
-        "parallel_tool_calls": null
+        "parallel_tool_calls": null,
+        "_darkbloom_prompt_date": "2028-02-29"
       }
     },
     {
@@ -66,6 +68,10 @@
       "body": {
         "model": "{{MODEL_ID}}",
         "messages": [
+          {
+            "role": "user",
+            "content": "Call both tools and compare their results."
+          },
           {
             "role": "assistant",
             "content": "Calling two tools",
@@ -99,7 +105,8 @@
             "tool_call_id": "call_b",
             "content": "two"
           }
-        ]
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
       }
     },
     {
@@ -117,7 +124,8 @@
             "role": "user",
             "content": "Respond briefly."
           }
-        ]
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
       }
     },
     {
@@ -127,6 +135,10 @@
       "body": {
         "model": "{{MODEL_ID}}",
         "messages": [
+          {
+            "role": "user",
+            "content": "Check the current weather and forecast."
+          },
           {
             "role": "assistant",
             "content": "I will check both sources.",
@@ -141,7 +153,7 @@
                 "type": "function",
                 "function": {
                   "name": "weather",
-                  "arguments": " "
+                  "arguments": "{}"
                 }
               }
             ]
@@ -218,7 +230,8 @@
               }
             }
           }
-        ]
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
       },
       "repeat": {
         "text": " summarize",
@@ -238,7 +251,8 @@
             "content": "Reason carefully."
           }
         ],
-        "reasoning_effort": "high"
+        "reasoning_effort": "medium",
+        "_darkbloom_prompt_date": "2028-02-29"
       }
     },
     {
@@ -252,7 +266,8 @@
             "role": "user",
             "content": "Café 東京 مرحبا 👩🏽‍💻 é"
           }
-        ]
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
       }
     },
     {
@@ -266,7 +281,8 @@
             "role": "user",
             "content": "Chat endpoint"
           }
-        ]
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
       }
     },
     {
@@ -275,7 +291,8 @@
       "scope_id": "fixture-scope",
       "body": {
         "model": "{{MODEL_ID}}",
-        "prompt": "Completion endpoint"
+        "prompt": "Completion endpoint",
+        "_darkbloom_prompt_date": "2028-02-29"
       }
     },
     {
@@ -295,7 +312,8 @@
               }
             ]
           }
-        ]
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
       }
     },
     {
@@ -316,7 +334,8 @@
             ]
           }
         ],
-        "max_tokens": 32
+        "max_tokens": 32,
+        "_darkbloom_prompt_date": "2028-02-29"
       }
     },
     {
@@ -385,7 +404,8 @@
             }
           }
         ],
-        "max_tokens": 32
+        "max_tokens": 32,
+        "_darkbloom_prompt_date": "2028-02-29"
       }
     },
     {
@@ -399,7 +419,8 @@
             "role": "user",
             "content": "{{REPEAT}}"
           }
-        ]
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
       },
       "repeat": {
         "text": " x",
@@ -418,7 +439,8 @@
             "role": "user",
             "content": "{{REPEAT}}"
           }
-        ]
+        ],
+        "_darkbloom_prompt_date": "2028-02-29"
       },
       "repeat": {
         "text": " cache",
@@ -427,5 +449,6 @@
       }
     }
   ],
-  "artifact_gate": "scripts/verify-prompt-parity.sh snapshots the public manifest-backed production catalog, provisions every declared prompt-role artifact by immutable hash, regenerates vectors, and fails on any catalog/vector mismatch."
+  "artifact_gate": "scripts/verify-prompt-parity.sh snapshots the public manifest-backed production catalog, provisions every declared prompt-role artifact by immutable hash, regenerates vectors, and fails on any catalog/vector mismatch.",
+  "coverage": "All14cases must render for every inventoried model. Common tool histories include an initiating user and valid JSON arguments; medium effort is supported across the exact fleet. Family-specific whitespace argument/high-effort regressions remain in the provider and Rust suites; the pre-extension4model corpus is also replayed in the dated validation evidence."
 }

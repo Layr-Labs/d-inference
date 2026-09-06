@@ -376,6 +376,23 @@ struct ProviderMTPFactoryTests {
         #expect(automatic.automaticRectangularTokens == 8)
     }
 
+    @Test("Gemma QAT production verification preserves drafting with serial target scoring")
+    func gemmaQATProductionVerification() {
+        let drafter = MTPFactoryDrafter()
+        let qat = providerMTPVerificationPolicy(for: drafter,
+            modelID: "gemma-4-26b-qat-4bit", automaticRectangularTokens: 8)
+        #expect(qat.mode == .serialTarget && qat.automaticRectangularTokens == 0)
+        for modelID in ["gemma-4-26b-8bit", "gemma-4-26b-qat-4bit-other", "gpt-oss-20b",
+            "EigenLabs/Qwen3.8-27B-4bit-mtp"] {
+            let other = providerMTPVerificationPolicy(for: drafter,
+                modelID: modelID, automaticRectangularTokens: 8)
+            #expect(other.mode == .automatic && other.automaticRectangularTokens == 8)
+        }
+        let absent = providerMTPVerificationPolicy(for: nil,
+            modelID: "gemma-4-26b-qat-4bit", automaticRectangularTokens: 8)
+        #expect(absent.mode == .automatic)
+    }
+
     @Test("cached catalog bytes are revalidated on every load and rebuild")
     func cachedCatalogCorruptionFallsBackBeforeLoader() async throws {
         let artifact = try mtpCatalogArtifact()

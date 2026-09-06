@@ -1,0 +1,340 @@
+{
+  "category": "fresh_provider_cli",
+  "expanded_cases": 266,
+  "passed": true,
+  "source": {
+    "c": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+    "core": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+    "native": "f2d79145e040bbc28c6e0e355a19bc8923a70434",
+    "parent": "56fa3950160bb9e58d6702e9b751f2b0747ae3de",
+    "swift": "9561227d55a07db29f70a78aadc5d6b5aaeb10bf",
+    "unused_top_level_mlx": "0a725e3000edabc4911cde345270ca950bfa152f"
+  },
+  "suites": {
+    "BenchmarkSweepExitTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 10,
+      "failed": 0,
+      "log": {
+        "bytes": 2479,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-BenchmarkSweepExitTests.log",
+        "sha256": "74a2606416783bbfd5ad0854182c56d3b7fc7c92f84f2848b9ccfb578b8a2696"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 10,
+      "test_functions": 10,
+      "xctest_functions": 0
+    },
+    "DoctorClearBackendGuardTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 3,
+      "failed": 0,
+      "log": {
+        "bytes": 1367,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-DoctorClearBackendGuardTests.log",
+        "sha256": "1d32710421932857f3f7470f239274509ad2febe99c485b1b2f88902f515cf45"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 3,
+      "test_functions": 3,
+      "xctest_functions": 0
+    },
+    "EngineV2FP32PagedRateTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 4,
+      "failed": 0,
+      "log": {
+        "bytes": 1540,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-EngineV2FP32PagedRateTests.log",
+        "sha256": "bc853e09e1e765d4732af3c91eff15b9bbb517c8edd42d79d21ed04c477bab59"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 4,
+      "test_functions": 4,
+      "xctest_functions": 0
+    },
+    "EngineV2KVBackendFallbackHeartbeatTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 4,
+      "failed": 0,
+      "log": {
+        "bytes": 1512,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-EngineV2KVBackendFallbackHeartbeatTests.log",
+        "sha256": "8bb78ce10dbedac4a93d59f639010967c2598263e90c0a52bc3d8a3005894aec"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 4,
+      "test_functions": 4,
+      "xctest_functions": 0
+    },
+    "EngineV2KVBackendGateTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 62,
+      "failed": 0,
+      "log": {
+        "bytes": 12692,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-EngineV2KVBackendGateTests.log",
+        "sha256": "9cf283609ae9fe29d6a093f8c6edd55a1f89eb9e965aef779832481a51835528"
+      },
+      "passing_names_containing_failed": [
+        "\"failed kernel preflight REFUSES before slab construction\""
+      ],
+      "skipped": 0,
+      "swift_testing_functions": 39,
+      "test_functions": 39,
+      "xctest_functions": 0
+    },
+    "EngineV2KVBackendPolicyTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 28,
+      "failed": 0,
+      "log": {
+        "bytes": 5802,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-EngineV2KVBackendPolicyTests.log",
+        "sha256": "44d395e6d28c69b6b9eedb62b03db419caf7877b8688d2b72e4a6b6c38e17f50"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 8,
+      "test_functions": 8,
+      "xctest_functions": 0
+    },
+    "EngineV2PagedPoolDTypeEnvTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 11,
+      "failed": 0,
+      "log": {
+        "bytes": 2924,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-EngineV2PagedPoolDTypeEnvTests.log",
+        "sha256": "82c4c2d8fa21a593c020e55c03e4993a339cc0d89694029d43e84aa7e223ce72"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 11,
+      "test_functions": 11,
+      "xctest_functions": 0
+    },
+    "EngineV2PrefixCacheUsageTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 6,
+      "failed": 0,
+      "log": {
+        "bytes": 1944,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-EngineV2PrefixCacheUsageTests.log",
+        "sha256": "5abe0804353d7d7af3dd46884d6132d2d36c8312d0babef35b809e70369d600a"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 6,
+      "test_functions": 6,
+      "xctest_functions": 0
+    },
+    "EngineV2RequestRoutingTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 21,
+      "failed": 0,
+      "log": {
+        "bytes": 4778,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-EngineV2RequestRoutingTests.log",
+        "sha256": "a214761dec65dfe6669674bd09b3d20725a036b87e9272d7d4f1cb53c8447e27"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 21,
+      "test_functions": 21,
+      "xctest_functions": 0
+    },
+    "EngineV2ResliceTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 8,
+      "failed": 0,
+      "log": {
+        "bytes": 2274,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-EngineV2ResliceTests.log",
+        "sha256": "1eb658e89b85ebde95890054f6632518238ad8039dad872b8a9b913e14f00533"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 8,
+      "test_functions": 8,
+      "xctest_functions": 0
+    },
+    "EngineV2ResliceUnwindTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 2,
+      "failed": 0,
+      "log": {
+        "bytes": 1276,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-EngineV2ResliceUnwindTests.log",
+        "sha256": "10510aaf0616ec9361a93069f119629cb3e3e13e05feb3f7dce74e32a64e3019"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 2,
+      "test_functions": 2,
+      "xctest_functions": 0
+    },
+    "EngineV2ReslicingWiringTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 8,
+      "failed": 0,
+      "log": {
+        "bytes": 2384,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-EngineV2ReslicingWiringTests.log",
+        "sha256": "fbb5c4cb48a3f8815e076b812306798a958993aa087206a4056d63c640f63b40"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 8,
+      "test_functions": 8,
+      "xctest_functions": 0
+    },
+    "EngineV2RuntimeGuardTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 7,
+      "failed": 0,
+      "log": {
+        "bytes": 2135,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-EngineV2RuntimeGuardTests.log",
+        "sha256": "b23c9da8adaa50ff45fbce301955188e2364b19cf5b4405f5b2c153f3f7b1f66"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 7,
+      "test_functions": 7,
+      "xctest_functions": 0
+    },
+    "EngineV2SlotBuildTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 8,
+      "failed": 0,
+      "log": {
+        "bytes": 2360,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-EngineV2SlotBuildTests.log",
+        "sha256": "da6ed3ccd7ee7289eac9491bdd02544104a3ef3ed51fbfd45f617b3e86d85977"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 8,
+      "test_functions": 8,
+      "xctest_functions": 0
+    },
+    "KVBackendGuardDiagnosticsTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 9,
+      "failed": 0,
+      "log": {
+        "bytes": 2411,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-KVBackendGuardDiagnosticsTests.log",
+        "sha256": "57670e59a5053177c4df468bc1ca349df0686df673962455516cb2ec1c3a514b"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 9,
+      "test_functions": 9,
+      "xctest_functions": 0
+    },
+    "KVBackendPostureTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 18,
+      "failed": 0,
+      "log": {
+        "bytes": 4485,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-KVBackendPostureTests.log",
+        "sha256": "74ce88729c7c41acc35a9bd0349fdd8d38572098fe367fd5c18e995675771a74"
+      },
+      "passing_names_containing_failed": [
+        "\"status names the resolved backend for paged, contiguous, and failed slots\""
+      ],
+      "skipped": 0,
+      "swift_testing_functions": 16,
+      "test_functions": 16,
+      "xctest_functions": 0
+    },
+    "MTPBenchmarkTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 32,
+      "failed": 0,
+      "log": {
+        "bytes": 6381,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-MTPBenchmarkTests.log",
+        "sha256": "7ea4abfbaef2c52f4f69ec3eecc0714881512837667b4a55e6903d7cd195c48d"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 32,
+      "test_functions": 32,
+      "xctest_functions": 0
+    },
+    "PrefillDeadlineProductionConfigTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 5,
+      "failed": 0,
+      "log": {
+        "bytes": 1745,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-PrefillDeadlineProductionConfigTests.log",
+        "sha256": "eaf6637418e7431fc4d01cfbae1b4f0033682cf21795fa84879910ae4d43a5d9"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 5,
+      "test_functions": 5,
+      "xctest_functions": 0
+    },
+    "PrefixCachePolicyTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 12,
+      "failed": 0,
+      "log": {
+        "bytes": 3097,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-PrefixCachePolicyTests.log",
+        "sha256": "1227d74beffd4fce97c3c536be1ff4fa373d2c761f59df93cf9a3e5ace70a036"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 12,
+      "test_functions": 12,
+      "xctest_functions": 0
+    },
+    "SegmentedProductionGrantTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 8,
+      "failed": 0,
+      "log": {
+        "bytes": 2270,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime2/review/logs/test-SegmentedProductionGrantTests.log",
+        "sha256": "f242daf2a405605b66ddd1d044ae3735fc7eb7ab82517ad2818ecae5dc4ca98b"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 8,
+      "test_functions": 8,
+      "xctest_functions": 0
+    }
+  },
+  "test_functions": 221
+}

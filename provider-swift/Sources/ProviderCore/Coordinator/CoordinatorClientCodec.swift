@@ -13,6 +13,7 @@ public enum CoordinatorClientCodec {
         modelWeightHashOverrides: [String: String]? = nil,
         prefixCacheProtocol: Int = 1,
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+        prefixCacheMemoryModels: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
     ) -> ProviderMessage {
@@ -61,6 +62,7 @@ public enum CoordinatorClientCodec {
             apnsEnvironment: effectiveEnv,
             prefixCacheProtocol: prefixCacheProtocol,
             prefixCacheV2Models: prefixCacheV2Models,
+            prefixCacheMemoryModels: prefixCacheMemoryModels,
             prefixCacheStatuses: prefixCacheStatuses,
             prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
             toolConstraintProtocol: constrainedModels.isEmpty ? nil : 1,
@@ -77,6 +79,7 @@ public enum CoordinatorClientCodec {
         modelWeightHashOverrides: [String: String]? = nil,
         prefixCacheProtocol: Int = 1,
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+        prefixCacheMemoryModels: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
     ) throws -> Data {
@@ -90,6 +93,7 @@ public enum CoordinatorClientCodec {
                 modelWeightHashOverrides: modelWeightHashOverrides,
                 prefixCacheProtocol: prefixCacheProtocol,
                 prefixCacheV2Models: prefixCacheV2Models,
+                prefixCacheMemoryModels: prefixCacheMemoryModels,
                 prefixCacheStatuses: prefixCacheStatuses,
                 prefixCacheDonationOutcomes: prefixCacheDonationOutcomes
             )
@@ -107,6 +111,7 @@ public enum CoordinatorClientCodec {
         apnsEnvironment: String? = nil,
         prefixCacheProtocol: Int? = nil,
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+        prefixCacheMemoryModels: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
         idleUnloadMins: UInt64? = nil
@@ -122,6 +127,7 @@ public enum CoordinatorClientCodec {
             apnsEnvironment: apnsEnvironment,
             prefixCacheProtocol: prefixCacheProtocol,
             prefixCacheV2Models: prefixCacheV2Models,
+            prefixCacheMemoryModels: prefixCacheMemoryModels,
             prefixCacheStatuses: prefixCacheStatuses,
             prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
             idleUnloadMins: idleUnloadMins

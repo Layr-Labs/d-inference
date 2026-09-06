@@ -17,9 +17,7 @@ type providerInferenceFrameSnapshot struct {
 	ciphertext           string
 	firstContentBudgetMS int64
 	firstContentDeadline time.Time
-	cacheReceiptNonce    string
-	cacheScope           string
-	prefixCacheProtocol  int
+	cacheAttempt         registry.CacheAttemptSnapshot
 }
 
 func snapshotProviderInferenceFrame(
@@ -36,9 +34,7 @@ func snapshotProviderInferenceFrame(
 	}
 	snapshot.firstContentBudgetMS = pr.FirstContentBudgetMS
 	snapshot.firstContentDeadline = pr.FirstContentDeadline
-	snapshot.cacheReceiptNonce = pr.CacheReceiptNonce
-	snapshot.cacheScope = pr.CacheScope
-	snapshot.prefixCacheProtocol = pr.PrefixCacheProtocol
+	snapshot.cacheAttempt = pr.CacheAttemptSnapshot()
 	return snapshot
 }
 
@@ -57,14 +53,7 @@ func (snapshot providerInferenceFrameSnapshot) wireMessage(
 	if firstContentBudgetMS > 0 {
 		message.FirstContentBudgetMS = firstContentBudgetMS
 	}
-	if snapshot.cacheReceiptNonce == "" || snapshot.cacheScope == "" {
-		return message
-	}
-	message.CacheReceiptNonce = snapshot.cacheReceiptNonce
-	message.CacheScope = snapshot.cacheScope
-	if snapshot.prefixCacheProtocol > 0 {
-		message.PrefixCacheProtocol = snapshot.prefixCacheProtocol
-	}
+	snapshot.cacheAttempt.ApplyTo(&message)
 	return message
 }
 

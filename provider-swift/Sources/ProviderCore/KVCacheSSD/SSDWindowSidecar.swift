@@ -325,73 +325,7 @@ enum SSDWindowSidecar {
             && metadata.chunks.count == geometry.layers.count * 2
     }
 
-    /// Rebuild the per-layer window from the sidecars tiling `[base, base + n)`.
-    /// `blocks` must be in ascending absolute-position order and contiguous.
-    ///
-    /// Mirrors `SSDPrefixCache.rebuildPrefix`: descriptors and byte counts are
-    /// validated BEFORE any `MLXArray` init, whose shape/byte mismatch is an
-    /// uncatchable trap. nil on any inconsistency ⇒ the caller drops the
-    /// window and the adopter replays, which is always safe.
-    static func rebuildWindow(
-        blocks: [(metadata: SSDBlockMetadata, chunks: [Data])],
-        geometry: SSDWindowSidecarGeometry,
-        base: Int,
-        dtypeByName: [String: DType]
-    ) -> [Window?]? {
-        guard blocks.count == geometry.blocksPerWindow, let first = blocks.first else {
-            return nil
-        }
-        let descriptors = first.metadata.chunks
-        guard descriptors.count == geometry.layers.count * 2 else { return nil }
-        for block in blocks {
-            guard block.metadata.chunks == descriptors,
-                block.metadata.layerCount == geometry.layerCount,
-                block.chunks.count == descriptors.count
-            else { return nil }
-        }
-        for (d, desc) in descriptors.enumerated() {
-            let layer = geometry.layers[d / 2]
-            guard desc.layerIndex == layer.index, desc.tensor == d % 2,
-                desc.shape == [1, layer.kvHeads, geometry.blockSize, layer.headDim],
-                let dtype = dtypeByName[desc.dtype]
-            else { return nil }
-            var expected = dtype.size
-            for dim in desc.shape {
-                guard dim > 0 else { return nil }
-                let (product, overflow) = expected.multipliedReportingOverflow(by: dim)
-                guard !overflow else { return nil }
-                expected = product
-            }
-            for block in blocks where block.chunks[d].count != expected { return nil }
-        }
-        var restored: [Window?] = Array(repeating: nil, count: geometry.layerCount)
-        var toEval: [MLXArray] = []
-        toEval.reserveCapacity(geometry.layers.count * 2)
-        for (i, layer) in geometry.layers.enumerated() {
-            let keyDesc = descriptors[i * 2]
-            let valueDesc = descriptors[i * 2 + 1]
-            guard let keyDType = dtypeByName[keyDesc.dtype],
-                let valueDType = dtypeByName[valueDesc.dtype]
-            else { return nil }
-            var keyParts: [MLXArray] = []
-            var valueParts: [MLXArray] = []
-            keyParts.reserveCapacity(blocks.count)
-            valueParts.reserveCapacity(blocks.count)
-            for block in blocks {
-                keyParts.append(MLXArray(block.chunks[i * 2], keyDesc.shape, dtype: keyDType))
-                valueParts.append(
-                    MLXArray(block.chunks[i * 2 + 1], valueDesc.shape, dtype: valueDType))
-            }
-            let keys = keyParts.count == 1 ? keyParts[0] : concatenated(keyParts, axis: 2)
-            let values = valueParts.count == 1 ? valueParts[0] : concatenated(valueParts, axis: 2)
-            guard keys.dim(2) == geometry.windowTokens else { return nil }
-            restored[layer.index] = (keys: keys, values: values, base: base)
-            toEval.append(keys)
-            toEval.append(values)
-        }
-        eval(toEval)
-        return restored
-    }
+
 }
 
 // MARK: - Donor seam

@@ -329,8 +329,9 @@ extension ProviderLoop {
         // and engine build. The re-slice floor fallback below already does
         // exactly this for its own fail-open.
         if prepared.assistant == nil, specDecPreparation.artifact != nil {
-            await kvBudget.replacePendingLoadReservation(
-                requestID: "pending-load:\(modelId)", bytes: 0)
+            if let pendingLoad = pendingLoadLeases[modelId] {
+                await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
+            }
         }
         var sizing = targetSizing.replacingAuxiliaryWeightBytes(
             prepared.assistantBytes)
@@ -359,8 +360,9 @@ extension ProviderLoop {
             prepared.assistant?.release()
             prepared = prepared.fallingBack(.assistantResliceFloor)
             sizing = targetSizing.replacingAuxiliaryWeightBytes(0)
-            await kvBudget.replacePendingLoadReservation(
-                requestID: "pending-load:\(modelId)", bytes: 0)
+            if let pendingLoad = pendingLoadLeases[modelId] {
+                await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
+            }
             MLX.Memory.clearCache()
             fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
             targets = EngineV2KVSizing.resliceGrants(

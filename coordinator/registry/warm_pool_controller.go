@@ -728,7 +728,7 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	// pick a warm-pool target the provider already reports it cannot fit, or the
 	// warm pool issues a load_model the provider rejects (failed warm + pending-load
 	// cooldown) instead of choosing a truly loadable node (#390).
-	if admit, reported := reportedFreeForLoadAdmits(r.catalogSizeGBLocked(model), backendFreeForLoadGB(p.BackendCapacity), p.Version, model); reported && !admit {
+	if admit, reported := reportedFreeForLoadAdmits(r.catalogSizeGBLocked(model), backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
 		return warmPoolCandidate{}, warmColdNoFreeForLoad
 	}
 	freeGB := totalMemoryGB - gpuActiveGB

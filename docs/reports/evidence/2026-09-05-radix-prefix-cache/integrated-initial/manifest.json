@@ -1,0 +1,25 @@
+{
+  "head": "ce39db401f6093a00943683b54c22751a3ff5ef9",
+  "lm": "91157195f47e478dd71b8416b51fd37e9e296dd8",
+  "test_correction": "await actor-isolated bridge.kvBackendKind before assertion",
+  "test_sha256": "ba3841050db3cdddc22f359d61b742e806e08b7750e4f820c97a4a2eec01ac25",
+  "initial_build": "failed; new test actor access only",
+  "rerun_build": "passed32.95s",
+  "swift_testing": 287,
+  "suites": 35,
+  "xctest": 0,
+  "files": [
+    {
+      "path": "radix-integrated-initial-build.log.gz",
+      "sha256": "301fbb65814c8034c84ce8635e7e33cb8cb77aae5bca80a6528c601b1dda65d8"
+    },
+    {
+      "path": "radix-integrated-initial-build-rerun.log.gz",
+      "sha256": "f8f747e7e52de3022ecf17e2ec00520ad6bf31d862239005ba80dd77ff372904"
+    },
+    {
+      "path": "radix-integrated-initial-focused.log.gz",
+      "sha256": "9a25ee400be0783b761a7d2bb439081239f738346d03b285ba8bb12cdbf6e71f"
+    }
+  ]
+}

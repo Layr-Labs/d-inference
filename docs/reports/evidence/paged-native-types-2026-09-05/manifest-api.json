@@ -1,0 +1,282 @@
+{
+  "schema": 1,
+  "scope": "109 actual native semantic/regression cases, final47 provider functions and candidate probe release compilation; actual five-model target observations are separate. No default paging/paged SSD/fleet capacity claim.",
+  "native_source_count": 440,
+  "native_paths": 22,
+  "native_actual_cases": 109,
+  "provider_functions": 47,
+  "files": [
+    {
+      "path": "provider-build1/build.log.gz",
+      "source": "/tmp/darkbloom-090-native-types-provider1/build.log",
+      "bytes": 33448,
+      "sha256": "507360234e7e41ac43c079a1b401b2ab144c4d8761bf51b867bee5ec89b4fe1b",
+      "uncompressed_bytes": 1261293,
+      "uncompressed_sha256": "01ab260eb3733caaa0908de780e581cc172f24a176d93ecc0e1c52d3f2d5557c"
+    },
+    {
+      "path": "provider-build1/native-owned-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-native-types-provider1/native-owned-manifest.json",
+      "bytes": 1488,
+      "sha256": "cc4390cea4cf87d331f9c8c9a281acb81a04396c9c9c04cba496cb6584fe4ced",
+      "uncompressed_bytes": 4123,
+      "uncompressed_sha256": "287466becc01d28f798a3c078f432bf8efeec9273dd90cfcf20c9846a67d752d"
+    },
+    {
+      "path": "provider-build1/source-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-native-types-provider1/source-manifest.json",
+      "bytes": 56243,
+      "sha256": "e2d8e9489c8e6663ab2ef0770f337ba4ef71e39819036193c8150899326e325b",
+      "uncompressed_bytes": 160654,
+      "uncompressed_sha256": "60f03bfd7503928b89f307377da82f5b46ec35606451bcdd4189b8bff709ca6c"
+    },
+    {
+      "path": "provider-build2/build.log.gz",
+      "source": "/tmp/darkbloom-090-native-types-provider2/build.log",
+      "bytes": 2252,
+      "sha256": "39bde12b528d2a5e041d4adfad20979da9375dcebebc6c58128bd51e3c13df52",
+      "uncompressed_bytes": 24404,
+      "uncompressed_sha256": "32554a3d884b18c95b8bd6a4518970a343d3077f8052523bd756fc6f87217830"
+    },
+    {
+      "path": "provider-build2/focused-tests-isolated.log.gz",
+      "source": "/tmp/darkbloom-090-native-types-provider2/focused-tests-isolated.log",
+      "bytes": 2396,
+      "sha256": "101816610d36c4a3af5bb6d51508d3aa1ed5f872e85e25e6eeb8877bac8654e3",
+      "uncompressed_bytes": 11340,
+      "uncompressed_sha256": "3a0a3bf85e9e1f9aa655419b335967c3225981b9441913b6f8134ebebb530c93"
+    },
+    {
+      "path": "provider-build2/focused-tests.log.gz",
+      "source": "/tmp/darkbloom-090-native-types-provider2/focused-tests.log",
+      "bytes": 3196,
+      "sha256": "5f77d34a4bda28fafc1d4b377f5ddff761e5cea77c96c0b500b4eb88f2abeaa1",
+      "uncompressed_bytes": 16776,
+      "uncompressed_sha256": "9b09d0421489e61beca8d9655cee36ac9e23cae9d0fa9e81f529cef1d905d099"
+    },
+    {
+      "path": "provider-build2/resource-isolation.json.gz",
+      "source": "/tmp/darkbloom-090-native-types-provider2/resource-isolation.json",
+      "bytes": 395,
+      "sha256": "f66aab4cb3ce75500835af4b10eb2a4a3debf14a4358a0c6f265451a9cbd6b75",
+      "uncompressed_bytes": 565,
+      "uncompressed_sha256": "393ef710966aa8322e6e5fc76dec8100d55b8396252e0e3c1df209dd9e649a9a"
+    },
+    {
+      "path": "provider-build2/source-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-native-types-provider2/source-manifest.json",
+      "bytes": 56253,
+      "sha256": "493e06335c2ec75ab3755b5c98f00f36571c97ce1afb88b38be8c7c95606952b",
+      "uncompressed_bytes": 160673,
+      "uncompressed_sha256": "518aef68913c1cf7a41a90593d62e64721484071b6f3ecedfe6ab7bb2b6b02cc"
+    },
+    {
+      "path": "provider-build3/build.log.gz",
+      "source": "/tmp/darkbloom-090-native-types-provider3/build.log",
+      "bytes": 24116,
+      "sha256": "021cbdd75436e9d4b4cad5c92a10bc2850df1aa87161334accc10c72d95259dd",
+      "uncompressed_bytes": 806228,
+      "uncompressed_sha256": "b8c02da887f4f59e3d594cb1be53fb8dad0d0a5aa38051266e52d359f10c4bc4"
+    },
+    {
+      "path": "provider-build3/focused-tests.log.gz",
+      "source": "/tmp/darkbloom-090-native-types-provider3/focused-tests.log",
+      "bytes": 2899,
+      "sha256": "8229d4597a18977fed73999aab6c9920d6071f89b26c6a18aed0e34f768087d0",
+      "uncompressed_bytes": 12834,
+      "uncompressed_sha256": "70ea77407c65aa33a7ed44033a268dc9ea0bf7e508f022d6c5842fbad2d22745"
+    },
+    {
+      "path": "provider-build3/source-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-native-types-provider3/source-manifest.json",
+      "bytes": 56268,
+      "sha256": "517fc9a481821f73f135783198f4c26f62a47c8d544f31a65ab235dfcb501fa7",
+      "uncompressed_bytes": 160689,
+      "uncompressed_sha256": "cf9277b383fc24d43e5c7587845b0abf6db4f7b32995de8f6ae04089a3029022"
+    },
+    {
+      "path": "provider-build3/verdict.json.gz",
+      "source": "/tmp/darkbloom-090-native-types-provider3/verdict.json",
+      "bytes": 393,
+      "sha256": "3a13f0c97f27483a2c9129b47dc42bf5d1c2d73430e36a2ebf0f0bc50e080239",
+      "uncompressed_bytes": 579,
+      "uncompressed_sha256": "1c3a1e3c2b824d8fa99001721ee848a3dc0400c78cf17b96ff596a7e135d3588"
+    },
+    {
+      "path": "native/admission-tests.log.gz",
+      "source": "/tmp/darkbloom-090-native-types-native1/admission-tests.log",
+      "bytes": 896,
+      "sha256": "17a18ce540d8feb48025ab9f6732a2e4dc34c5e9b8f6edbfe58b32e30c7be256",
+      "uncompressed_bytes": 3036,
+      "uncompressed_sha256": "5840e83b534509698c611a2d63acdd23f95de539b6ffa9e05144f10b4f0e7813"
+    },
+    {
+      "path": "native/build.log.gz",
+      "source": "/tmp/darkbloom-090-native-types-native1/build.log",
+      "bytes": 19342,
+      "sha256": "7c472e7f4c7d923644beb07240152bba0dd51b77d1ca13d1200f41d811441ff7",
+      "uncompressed_bytes": 496585,
+      "uncompressed_sha256": "10d08cbd568061e98cc5f0ca8556d051b100e3d830a2c63169b95d3b339b432d"
+    },
+    {
+      "path": "native/geometry-config-tests.log.gz",
+      "source": "/tmp/darkbloom-090-native-types-native1/geometry-config-tests.log",
+      "bytes": 1577,
+      "sha256": "b71e9dcbc2dbc8e73477d23e12547a83a0bbe480e68729e888d1927176a7b374",
+      "uncompressed_bytes": 8889,
+      "uncompressed_sha256": "464f2c3e6c4569362180cc65c3fda807cf4f34d686a1a5340092393fc2a398a5"
+    },
+    {
+      "path": "native/new-tests.log.gz",
+      "source": "/tmp/darkbloom-090-native-types-native1/new-tests.log",
+      "bytes": 768,
+      "sha256": "46258da41c8246825b9546cd7d8a6737d5479719b13dc87f66108844f89bde80",
+      "uncompressed_bytes": 2613,
+      "uncompressed_sha256": "ec7de9ba67cccfeb4e8b2e838d298c995918c77491c05ab4369a6cb001cdc3db"
+    },
+    {
+      "path": "native/owned-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-native-types-native1/owned-manifest.json",
+      "bytes": 1490,
+      "sha256": "1f772ed23129afa8524a3532d8099b5463d844cac6394dc5a3f35a6ef69c7e29",
+      "uncompressed_bytes": 4123,
+      "uncompressed_sha256": "01c40494bd8712d74a94bdf7a2a4b48c97a56906f0fb7da6fca0c522fe88fa05"
+    },
+    {
+      "path": "native/prefix-deadline-tests.log.gz",
+      "source": "/tmp/darkbloom-090-native-types-native1/prefix-deadline-tests.log",
+      "bytes": 2485,
+      "sha256": "ab54f0477c61a71912a44cf7b8240f84b5989969ff790f409cc8f8dc5f59a6d5",
+      "uncompressed_bytes": 13525,
+      "uncompressed_sha256": "501e687d8f9fb5de170843d129b7e304a6348ba6884046dbc7d43482b4ae8ec4"
+    },
+    {
+      "path": "native/setup-capture-note.txt.gz",
+      "source": "/tmp/darkbloom-090-native-types-native1/setup-capture-note.txt",
+      "bytes": 155,
+      "sha256": "8749971163b55baaae0c5b582ecd4d1ef503ed100fb6e112a5105895a695c0d8",
+      "uncompressed_bytes": 195,
+      "uncompressed_sha256": "5748f3beea279f757173f715c0d0029929c10ed5204fe5faaa6e460a329d3d1f"
+    },
+    {
+      "path": "native/setup.log.gz",
+      "source": "/tmp/darkbloom-090-native-types-native1/setup.log",
+      "bytes": 206,
+      "sha256": "5d069f5f014d8fdc00e0dc55455f718d4960347ee7b4079bcb3d077a54de0dd8",
+      "uncompressed_bytes": 322,
+      "uncompressed_sha256": "c08927768f01af57e523be7499cf5ba0d628b4d5be4fbf3af33c2df7d27b0bf7"
+    },
+    {
+      "path": "native/source-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-native-types-native1/source-manifest.json",
+      "bytes": 22123,
+      "sha256": "c0170c9429568692e39685c2e0d4902cad33a5af7813f356cc8efd37b30bd6ea",
+      "uncompressed_bytes": 56108,
+      "uncompressed_sha256": "6388b427b8440e4eba4d60c0480f164cfb83d320b0a88513c137930809f59951"
+    },
+    {
+      "path": "native/verdict.json.gz",
+      "source": "/tmp/darkbloom-090-native-types-native1/verdict.json",
+      "bytes": 917,
+      "sha256": "f208e6fb77968ccc5c3e44e7d9296e7e9b51b51c0b71398145d79476f0656ade",
+      "uncompressed_bytes": 2028,
+      "uncompressed_sha256": "2a11e1bde105f686b68ae1ac51e104bb5c829e64ddd3c82766ffb53f664a259a"
+    },
+    {
+      "path": "release/artifact-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-native-types-release1/artifact-manifest.json",
+      "bytes": 1022,
+      "sha256": "2e36676360299fa6bdf35960e73eb5faeab683f9f2a2b816b907cd26d89e43b2",
+      "uncompressed_bytes": 2046,
+      "uncompressed_sha256": "5a935ce5c6073af71669c222b5e69ff88dbc7f6dd6c62a6aae2ff4940367e834"
+    },
+    {
+      "path": "release/build-configuration.json.gz",
+      "source": "/tmp/darkbloom-090-native-types-release1/build-configuration.json",
+      "bytes": 603,
+      "sha256": "e9f3677e1438c15019d9aea4d3230940966fdaa0d20d665664d2f306cea2df1c",
+      "uncompressed_bytes": 930,
+      "uncompressed_sha256": "5590c458b277d838e6270b4f88e81752bc33fe75a3dd1aec175adbc8188d424f"
+    },
+    {
+      "path": "release/build.log.gz",
+      "source": "/tmp/darkbloom-090-native-types-release1/build.log",
+      "bytes": 5708,
+      "sha256": "4aed3ac54d38b6e7b4f4b43cc82e0263f87196aca2520bc394632af3fb2da2e5",
+      "uncompressed_bytes": 31290,
+      "uncompressed_sha256": "666aa644129b591ce0bbdefa68064ae1a91d7dae2abdaf380e40a6f497a370c3"
+    },
+    {
+      "path": "release/docs-check.log.gz",
+      "source": "/tmp/darkbloom-090-native-types-release1/docs-check.log",
+      "bytes": 47,
+      "sha256": "9996eb352aec857405eff073d49ff8e3cbd144d6880e766c4e790de885fada0c",
+      "uncompressed_bytes": 27,
+      "uncompressed_sha256": "e0ab2a73688e8cb0162e96c213abc06ca9f8055a98fc3e3c1daa9520ed4b8db4"
+    },
+    {
+      "path": "release/docs-final.log.gz",
+      "source": "/tmp/darkbloom-090-native-types-release1/docs-final.log",
+      "bytes": 47,
+      "sha256": "9996eb352aec857405eff073d49ff8e3cbd144d6880e766c4e790de885fada0c",
+      "uncompressed_bytes": 27,
+      "uncompressed_sha256": "e0ab2a73688e8cb0162e96c213abc06ca9f8055a98fc3e3c1daa9520ed4b8db4"
+    },
+    {
+      "path": "release/owned-source-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-native-types-release1/owned-source-manifest.json",
+      "bytes": 892,
+      "sha256": "4b00dc4e672b986ca79c901bd9a2d87c15916fcaa15c815cca4dfc2c0abf537b",
+      "uncompressed_bytes": 2032,
+      "uncompressed_sha256": "eaca4898abd3eb20f0fde253908fd901db6186b8ac0c8371ad3f673d7e15e450"
+    },
+    {
+      "path": "release/source-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-native-types-release1/source-manifest.json",
+      "bytes": 56253,
+      "sha256": "7daeb1adf73be46a431b93b8585df67cc7d8421a6c05b0571e89727b8e2eca7b",
+      "uncompressed_bytes": 160777,
+      "uncompressed_sha256": "26aabd0a17a48bb2aa75fe09d43b00cd33ab3a7385e81aa92fed46886bb3bd0e"
+    },
+    {
+      "path": "native-queue-barrier/manifest-before-test-barrier.json.gz",
+      "source": "/tmp/darkbloom-paged-native-types1/manifest-before-test-barrier.json",
+      "bytes": 1488,
+      "sha256": "cc4390cea4cf87d331f9c8c9a281acb81a04396c9c9c04cba496cb6584fe4ced",
+      "uncompressed_bytes": 4123,
+      "uncompressed_sha256": "287466becc01d28f798a3c078f432bf8efeec9273dd90cfcf20c9846a67d752d"
+    },
+    {
+      "path": "native-queue-barrier/manifest.json.gz",
+      "source": "/tmp/darkbloom-paged-native-types1/manifest.json",
+      "bytes": 1490,
+      "sha256": "1f772ed23129afa8524a3532d8099b5463d844cac6394dc5a3f35a6ef69c7e29",
+      "uncompressed_bytes": 4123,
+      "uncompressed_sha256": "01c40494bd8712d74a94bdf7a2a4b48c97a56906f0fb7da6fca0c522fe88fa05"
+    },
+    {
+      "path": "native-queue-barrier/test-queue-barrier-manifest.json.gz",
+      "source": "/tmp/darkbloom-paged-native-types1/test-queue-barrier-manifest.json",
+      "bytes": 194,
+      "sha256": "b1d67445a8835c5bfceb51c96c271875bc4ba81e1f2a271eab6cff043715cb7e",
+      "uncompressed_bytes": 224,
+      "uncompressed_sha256": "fd4f8b9308615fe473e6c7205e0c556ced9b46eb77b89556c8ef38f0139d6630"
+    },
+    {
+      "path": "native-queue-barrier/test-queue-barrier.patch.gz",
+      "source": "/tmp/darkbloom-paged-native-types1/test-queue-barrier.patch",
+      "bytes": 909,
+      "sha256": "3710e7a45ecdc0327f1922c15faea50f2284e0d2944b1efac7dceb577cda4acd",
+      "uncompressed_bytes": 2722,
+      "uncompressed_sha256": "9987bd0963789c6e87fba9bcf8d03dcee99c564aa7bb9b8bed2cb37a8dd3f2c1"
+    },
+    {
+      "path": "native/final-commit.json.gz",
+      "source": "/tmp/darkbloom-paged-native-types1/final-commit.json",
+      "bytes": 2181,
+      "sha256": "a0cee30bb6cf9856babe6d67fd29361f3f6e581a1a98580278762d66baa2eca1",
+      "uncompressed_bytes": 6557,
+      "uncompressed_sha256": "701fbfdddd996a28e08594f2097fb1342dacff2af84a7f65ec7a67b6a947a5bf"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-05 · commit `1114a8ba0`
 
 How the coordinator's `promptsidecar` child process derives deterministic,
 provider-compatible token boundaries so exact-cache routing can predict which
@@ -90,10 +90,16 @@ limit (`_MAX_TOKENS`), the contract LRU (`_MAX_LOADED_CONTRACTS`), the per-plan
 deadline (`_TIMEOUT_MS`) and, on Linux, the address-space limit
 (`_MEMORY_LIMIT_MIB`). Completed connection tasks are reaped continuously.
 Contract misses use a per-contract singleflight (`SingleflightLru`,
-`coordinator/promptsidecar/src/artifact_cache.rs`): one worker performs file
-verification and tokenizer construction and concurrent callers wait for that
-same result. Distinct contracts remain bounded by the planner semaphore and
-LRU capacity.
+`coordinator/promptsidecar/src/artifact_cache.rs`): one worker loads the contract
+and concurrent callers wait for that result. The contract LRU owns loaded
+artifacts strongly. A second, bounded weak cache shares immutable parsed
+tokenizers by their verified `tokenizer.json` digest; it does not keep an unused
+tokenizer alive after the last contract or caller releases it. Every contract
+still reads and verifies every declared artifact before tokenizer reuse
+(`load`, `coordinator/promptsidecar/src/artifacts.rs`). Templates, tokenizer
+configuration and model metadata remain separate for each contract. Both caches
+use the same singleflight implementation and configured LRU capacity; the
+planner semaphore bounds concurrent loads and plans.
 
 At startup the sidecar binds its socket and reports live but not ready; it does
 not discover or load every directory left on disk. After asynchronous artifact
@@ -155,8 +161,8 @@ generator is the only interface that emits token IDs.
 
 The semantic versions (`CurrentVersions`) are:
 
-- normalization: `darkbloom-request-normalization-v2` (includes Gemma 4 tool-schema, argument, and turn-structure compatibility)
-- renderer: `swift-jinja-compatible-v1`
+- normalization: `darkbloom-request-normalization-v3` (includes Gemma 4 compatibility, explicit empty content on detached Harmony reasoning turns, and the provider's existing GPT-OSS high-to-medium effort policy)
+- renderer: `swift-jinja-request-date-compatible-v3`
 - tokenizer: `huggingface-tokenizer-json-v1`
 - block hash: `PromptContractIdentity.blockHashVersion`, stated in
   [`prefix-cache.md#block-hashing`](prefix-cache.md#block-hashing)
@@ -234,13 +240,50 @@ cold/warm/waited/failed contract loads and cold-load latency, preload runs, and
 cache occupancy. It contains no model IDs, contract IDs, accounts, scopes,
 prompts, tokens, or chain hashes. Public status projects only aggregate values.
 
-Templates that call `strftime_now` are deliberately ineligible
-(`validate_template_source`, `RenderError::DynamicTime`,
-`coordinator/promptsidecar/src/render.rs`): the pinned Swift renderer
-evaluates that function in each provider Mac's local timezone, so a central
-process cannot derive the same prompt for every provider near a date boundary.
-The sidecar returns a fixed planning failure instead of claiming an exact
-cache key for dynamic provider-local input.
+### Request-owned template date
+
+The coordinator captures one UTC Gregorian day when a request enters the shared
+prelude, overwriting the reserved `_darkbloom_prompt_date` body field. Endpoint
+lowering, cache planning, fallback and retries reuse that value. Local provider
+HTTP captures its own date and also overwrites caller input. See the
+[provider-bound body contract](../reference/api-contracts.md#provider-bound-request-normalization).
+
+Both renderers bind direct literal `strftime_now("%Y-%m-%d")` calls to this
+request date. Swift passes a private request clock through template context;
+`normalizeSwiftJinjaTemplate` installs it with a statement that emits no output
+before the model template executes. This avoids the pinned interpreter's
+built-in reset without modifying model artifacts or retaining a process-wide
+clock. A render without request context retains ordinary built-in behavior for
+scan checks. The Rust planner requires the captured date when a template uses
+the clock (`validate_template_source`, `coordinator/promptsidecar/src/render.rs`).
+
+Computed formats, clock aliases, unsupported formats and invalid or missing
+dates remain ineligible for exact planning. The date syntax and source guards
+live in `provider-swift/Sources/ProviderCoreFoundation/PromptRenderDate.swift`
+and `coordinator/promptsidecar/src/request_date.rs`. New requests after UTC
+midnight use the new date; retries keep their original date. Actual rendered
+tokens determine reuse, so a date change affects only templates that emit it.
+The semantic version changes every prompt-contract ID; artifact allowlists and
+preloaded contracts must be regenerated before a rollout.
+
+### Swift-compatible template values
+
+The provider pins Swift Jinja 2.3.6, including neighboring loop items used to
+group Qwen tool responses. The Rust renderer's `tojson` filter mirrors Swift's
+recursive key ordering, ASCII and slash escaping, numeric spelling and indent
+rules (`coordinator/promptsidecar/src/render/json.rs`, `tojson`). Output and
+sorting scratch share a bounded byte budget. Decimal JSON parsing uses
+`serde_json`'s `float_roundtrip` feature so supported fractional values reach
+the renderer with the same bits.
+
+Before normalization, the planner rejects known input shapes whose Swift and
+Rust representations differ (`coordinator/promptsidecar/src/render/input.rs`).
+These include canonically equivalent duplicate object keys and unsupported
+numeric ranges. Recognized JSON-encoded tool arguments receive the same checks
+before null sanitation; ordinary message text stays opaque. Unsupported inputs
+use ordinary serving without exact cache planning. Native boolean tool argument
+values remain booleans through `ParserUtilities.asSendable` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/ParserUtilities.swift`.
 
 ### Parity fixtures and measured latency
 
@@ -256,7 +299,7 @@ tokenizer/template/config artifacts are not stored in this repository. How to
 regenerate the vectors and run the three-way parity gate
 (`scripts/verify-prompt-parity.sh`) is a developer procedure:
 [`../developer/test.md#9-prompt-contract-parity-fixtures-and-vectors`](../developer/test.md#9-prompt-contract-parity-fixtures-and-vectors).
-Models with provider-local dynamic time stay in the inventory with
+Models with unsupported provider-local dynamic time stay in the inventory with
 `cache_routing_eligible: false` and `ineligibility_reason: "dynamic_time"`
 (written by `prompt-fixtures`,
 `coordinator/promptsidecar/src/bin/prompt-fixtures.rs`), have no routable
@@ -313,8 +356,9 @@ gate.
    consecutive-failure threshold and pass through backoff and the restart
    circuit — `coordinator/promptcontract/supervisor.go` (`Supervisor.run`),
    `coordinator/promptcontract/supervisor_status.go` (`restartCircuitDelay`).
-8. **Dynamic-time templates are ineligible.** A template that calls
-   `strftime_now` gets a fixed planning failure, never an exact cache key —
+8. **Template dates belong to requests.** Only the reviewed literal date format
+   with valid request context can participate. Other clock use gets a fixed
+   planning failure —
    `coordinator/promptsidecar/src/render.rs` (`validate_template_source`).
 
 ## Failure modes
@@ -324,7 +368,7 @@ gate.
 | Every request routes cold although routing mode is `on` | Sidecar disabled, not live or not ready; the model's contract has not preloaded in this child generation; the plan timed out or failed validation | `client.go` (`PlanFailCold`, `validatePlan`), `preload_controller.go` (`ReadyFor`) |
 | Child restarts repeatedly, then stops being restarted | Consecutive health failures reached the threshold; the restart circuit opened and suppresses restarts for the cooldown | `supervisor_status.go` (`restartCircuitDelay`, `setRestartSuppressed`) |
 | Contract provisioned but never planning-eligible | Artifact root reached through a symlink (for example `/data`), or an artifact failed size or hash re-verification | `artifacts.rs` (`load`), `artifact_cache.go` (`verifyPublished`) |
-| Fixed planning failure for one model on every request | Template calls `strftime_now`; body over `EIGENINFERENCE_PROMPT_SIDECAR_MAX_BODY_BYTES`; rendered prompt over `_MAX_TOKENS` | `render.rs` (`RenderError::DynamicTime`), `server/handler.rs` (body limit), `planner.rs` (`PlanError::TooManyTokens`) |
+| Fixed planning failure for one model on every request | Unsupported template clock use or missing request date; body over `EIGENINFERENCE_PROMPT_SIDECAR_MAX_BODY_BYTES`; rendered prompt over `_MAX_TOKENS` | `render.rs` (`RenderError::DynamicTime`), `server/handler.rs` (body limit), `planner.rs` (`PlanError::TooManyTokens`) |
 | Preload rejected | Active set larger than `EIGENINFERENCE_PROMPT_SIDECAR_MAX_LOADED_CONTRACTS` | `preload.rs` (`validate_contracts`) |
 | `verify-prompt-parity.sh` fails | Regenerated vectors differ from `production_vectors.json`; a manifest, artifact or corpus case is missing; an unrecognised template incompatibility — no fabricated token IDs are accepted | `scripts/verify-prompt-parity.sh`, `prompt-fixtures.rs` (`require_model_manifests`, `require_case_ids`) |
 

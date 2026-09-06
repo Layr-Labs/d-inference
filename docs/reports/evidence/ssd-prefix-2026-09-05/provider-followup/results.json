@@ -1,0 +1,49 @@
+{
+  "source_manifest": "source-manifest.json",
+  "source_manifest_sha256": "24290b65fc9f02a892210bc5675fbb045cac6541ab3cf5598bcdb0be28ed9289",
+  "artifacts": {
+    "radix-ssd-provider-testbuild5.txt.gz": {
+      "sha256": "b976d2aa69287159ebfc518f63dd5a9970c3562f56b84f725b24b5f2c99d1a00",
+      "uncompressed_sha256": "e1ea392a3a03d4a7cc94fbc31e4618c5ceb7e05b96c3384fff61692d18d8d6b5"
+    },
+    "radix-ssd-provider-full1.txt.gz": {
+      "sha256": "a3fac1596f074fd0a631740922df66fd2cc8ef83d3381f63a4a08e6f2effd94e",
+      "uncompressed_sha256": "6dd28528d258cbc5650ea8fc8ac5f72873c91d26cd07c5736e04d6fe502c9c5b"
+    },
+    "radix-ssd-provider-testbuild6.txt.gz": {
+      "sha256": "204cf067e0b6c66d3b96da888aba937c9b4d8682511e9c3874531a39057d0d1c",
+      "uncompressed_sha256": "b6a517838077f736c7340c5863e8e5d8293182302e72c98ec85b8d0014fdf1a2"
+    },
+    "radix-ssd-provider-testbuild7.txt.gz": {
+      "sha256": "94d48a15e8b28824ac6656853177b15517e4b0b5c99d69ccb9f1aa30c5e5e13a",
+      "uncompressed_sha256": "33909f8b0f76be13ab7fae932322af3ee9f33cf8ccd66b31d03f1881d5cb4f4f"
+    },
+    "radix-ssd-provider-full2.txt.gz": {
+      "sha256": "8a1314b19aec135429c40539ed8b48e6955ea262b54a801b90e4a49f3d000444",
+      "uncompressed_sha256": "bd6f7f3e69ec59c611afb6c6965df73640afa79f8ed34fd45f91dd6d0e999be0"
+    }
+  },
+  "build7": {
+    "compile_seconds": 27.04,
+    "xctest_passed": 82,
+    "swift_testing_passed": 2505,
+    "swift_testing_suites": 257,
+    "swift_testing_seconds": 39.865,
+    "failures": 0
+  },
+  "earlier_attempts": [
+    {
+      "build": "build5",
+      "xctest_passed": 82,
+      "swift_testing_run": 2503,
+      "failures": 1,
+      "reason": "New encrypted attention fixture omitted creation of its real temporary root. Production path guard correctly refused it. Fixed test-only root setup."
+    },
+    {
+      "build": "build6",
+      "result": "compile_failed",
+      "reason": "New FileManager setAttributes test used atPath instead of ofItemAtPath."
+    }
+  ],
+  "scope": "Full provider suite on source-manifest; LM new read-scratch API semantically compiled but native lease regression is a separate pending validation. Earlier build5 is retained as failure evidence, not a final-source full-suite pass."
+}

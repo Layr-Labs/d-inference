@@ -1,33 +1,8 @@
 // Copyright © 2026 Eigen Labs.
-//
-// `DARKBLOOM_CBV2_PAGED_KV_DTYPE` — the paged pool's page dtype, selectable
-// from the environment dictionary already threaded into
-// `EngineV2Factory.makeProductionBuild`. Three properties, in the order
-// they matter:
-//
-//   1. The knob REACHES the pool. Every assertion here reads the pool the
-//      factory actually constructed (`usablePageCount`, `bytesPhysical`,
-//      `reserve`) or the resolved dtype the build reports, never the
-//      `PagedKVPoolConfig` literal the test handed in. A knob that is
-//      merely accepted is a capability flag; a knob whose slabs changed
-//      size is evidence.
-//   2. A typo REFUSES an EXPLICIT paged selection: the seam exists so a
-//      parity harness — which runs explicit `.paged` — can trust its fp32
-//      control arm; a mistyped value that silently served fp16 would give
-//      it a second copy of the baseline, which looks exactly like
-//      agreement. (The knob's `.auto` half degraded rather than refused,
-//      for the one release where `.auto` resolved paged. As of v0.8.1
-//      `.auto` is contiguous and never reads the knob at all, so that
-//      degrade is dormant; `autoIgnoresThePageDTypeKnob` pins the inertness
-//      and `EngineV2KVBackendPolicy.degradesPagedFailure` still pins the
-//      rule itself.)
-//   3. fp32 pages cost 2x, and the physical plan is computed at the fp16
-//      rate — so the same grant buys HALF the pages, half the seats, and a
-//      grant that fits at fp16 can refuse outright at fp32. That refusal
-//      is the correct answer and is pinned below.
-//
-// These tests construct pools but never run a forward pass. Slabs default
-// to `.atFirstAdmission`, so nothing here materializes GPU memory.
+// Production paged storage preserves the loaded target's observed native KV
+// types. An explicit scalar override is a consistency assertion, not a cast.
+// Tiny real prefill/decode probes run before the pool is constructed; direct
+// low-level fixed-pool arithmetic remains a separate reference control.
 
 import Foundation
 import MLX
@@ -44,9 +19,8 @@ private func decodeDTypeConfig<T: Decodable>(_ json: [String: Any]) throws -> T 
     return try JSONDecoder().decode(T.self, from: data)
 }
 
-/// 2-layer GPT-OSS, headDim 64 / 2 KV heads on BOTH layers, so the pool
-/// builds exactly one slab group and its page arithmetic is a single
-/// number instead of a proportional split.
+/// A tiny native-FP32 GPT-OSS target with one full and one windowed layer.
+/// Production's explicit layout table keeps their storage ownership separate.
 private func dtypeFixtureModel() throws -> GPTOSSModel {
     let config: GPTOSSConfiguration = try decodeDTypeConfig([
         "model_type": "gpt_oss",
@@ -97,26 +71,6 @@ private func preparedPagedPool(
     return (paged.pool, paged, prepared.layerKinds)
 }
 
-/// Reserve `maxLength`-token rows against `backend` until the pool refuses,
-/// and return how many were seated. This is the ADMISSION consequence
-/// measured rather than restated: `PagedKVPool.pageDemand` charges pages,
-/// not bytes, so the per-row charge is identical at both dtypes and the
-/// only thing that moved is how many pages exist to charge against.
-private func seatableRows(
-    backend: PagedKVBackend, kinds: [CBv2LayerKind], maxLength: Int
-) -> Int {
-    var seated = 0
-    while seated < 4_096 {
-        do {
-            try backend.reserve(layerKinds: kinds, maxLength: maxLength)
-            seated += 1
-        } catch {
-            return seated
-        }
-    }
-    return seated
-}
-
 // MARK: - Tests
 
 @Suite("EngineV2 paged pool dtype env knob", .serialized)
@@ -125,71 +79,73 @@ struct EngineV2PagedPoolDTypeEnvTests {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
     }
 
-    @Test("float32 reaches the constructed pool's slabs, not just its config")
-    func float32SelectsFP32Pages() throws {
-        let fp32 = try preparedPagedPool(
-            environment: [EngineV2Factory.pagedPoolDTypeEnvKey: "float32"])
-        let fp16 = try preparedPagedPool(environment: [:])
-
-        #expect(fp32.pool.groupKeys.count == 1)
-        #expect(fp32.pool.groupKeys == fp16.pool.groupKeys)
-        let key = try #require(fp32.pool.groupKeys.first)
-
-        // THE read-back. `usablePageCount` and `bytesPhysical` are computed
-        // from `PagedKVGroup.pageBytes`, which multiplies by the GROUP's
-        // own dtype — the slab geometry the pool actually built, not the
-        // config struct this test passed in. Same byte budget, half the
-        // pages: `pageBytes` doubled underneath.
-        let fp32Pages = fp32.pool.usablePageCount(group: key)
-        let fp16Pages = fp16.pool.usablePageCount(group: key)
-        // The whole arithmetic, pinned as numbers rather than a ratio.
-        // `PagedKVPhysicalCapacityPolicy` is dtype-BLIND — it plans at
-        // `fp16BytesPerToken` — so BOTH pools get the identical byte
-        // budget: min(8 MiB grant, 2048 ctx * 2 rows * 1024 B/token) =
-        // 4 MiB. One group, so groupBytes == 4_194_304 B, and
-        // pageCount = groupBytes / pageBytes gives 4_194_304 / 8_192 = 512
-        // at fp16 and 4_194_304 / 16_384 = 256 at fp32, each less the one
-        // poison page.
-        #expect(fp16Pages == 511)
-        #expect(fp32Pages == 255)
-        #expect(fp16Pages + 1 == 2 * (fp32Pages + 1))
-        // Same bytes, half the pages, half the tokens. The pool did not
-        // get smaller; each token got twice as expensive.
-        #expect(fp32.pool.bytesPhysical == fp16.pool.bytesPhysical)
-        #expect(fp32.pool.bytesPhysical == 4 << 20)
-        #expect(fp32Pages * fp32.pool.config.pageSize == 4_080)
-        #expect(fp16Pages * fp16.pool.config.pageSize == 8_176)
+    @Test("native float32 reaches segmented storage without an override")
+    func nativeTypesSelectActualStorage() throws {
+        let built = try preparedPagedPool(environment: [:])
+        #expect(built.pool.layerDTypes == [.float32, .float32])
+        #expect(built.pool.groupKeys.count == 2) // full and window ownership differ
+        #expect(built.pool.config.segmentSizeBytes == 64 << 20)
+        let state = try built.backend.makeSequenceState(
+            layerKinds: built.kinds, promptLength: 2, maxLength: 16)
+        #expect(built.backend.bytesWired > 0)
+        for row in state {
+            let snapshot = try #require(row).snapshot()
+            #expect(snapshot.keys.dtype == .float32 && snapshot.values.dtype == .float32)
+        }
+        built.backend.release(state)
+        #expect(built.backend.bytesWired == 0)
     }
 
-    @Test("the resolved dtype is reported on the build, and reports float16 when unset")
+    @Test("the build reports observed native dtype for unset and matching overrides")
     func resolvedDTypeIsObservableOnTheBuild() async throws {
-        _ = LiveInferenceFixtures.ensureMetallibColocated()
-        for (value, expected) in [("float32", "float32"), ("float16", "float16")] {
+        for environment in [[:], [EngineV2Factory.pagedPoolDTypeEnvKey: "float32"]] {
             let build = try EngineV2Factory.makeProductionBuild(
-                model: try dtypeFixtureModel(),
-                tokenizer: StubBridgeTokenizer(),
-                kvBytesCapacity: dtypeTestCapacity,
-                maxConcurrentRequests: dtypeTestConcurrency,
-                kvBackend: .paged,
-                maxContextLength: dtypeTestContext,
-                environment: [EngineV2Factory.pagedPoolDTypeEnvKey: value],
-                pagedPreflightOverride: { _ in })
+                model: try dtypeFixtureModel(), tokenizer: StubBridgeTokenizer(),
+                kvBytesCapacity: dtypeTestCapacity, maxConcurrentRequests: dtypeTestConcurrency,
+                kvBackend: .paged, maxContextLength: dtypeTestContext,
+                environment: environment, pagedPreflightOverride: { _ in })
             #expect(build.kvBackendKind == .paged)
-            #expect(build.pagedPoolDType == expected)
+            #expect(build.pagedPoolDType == "float32")
             await build.engine.shutdown()
         }
-        // Unset is float16 — stated, not inferred from absence.
-        let unset = try EngineV2Factory.makeProductionBuild(
-            model: try dtypeFixtureModel(),
-            tokenizer: StubBridgeTokenizer(),
-            kvBytesCapacity: dtypeTestCapacity,
-            maxConcurrentRequests: dtypeTestConcurrency,
-            kvBackend: .paged,
-            maxContextLength: dtypeTestContext,
-            environment: [:],
-            pagedPreflightOverride: { _ in })
-        #expect(unset.pagedPoolDType == "float16")
-        await unset.engine.shutdown()
+    }
+
+    @Test("the actual paged engine queue snapshot reaches heartbeat and disappears on shutdown")
+    func queueCapturedPagedTelemetryReachesBridge() async throws {
+        let build = try EngineV2Factory.makeProductionBuild(
+            model: try dtypeFixtureModel(), tokenizer: StubBridgeTokenizer(),
+            kvBytesCapacity: dtypeTestCapacity, maxConcurrentRequests: dtypeTestConcurrency,
+            kvBackend: .paged, maxContextLength: dtypeTestContext,
+            environment: [:], pagedPreflightOverride: { _ in })
+        let native = try #require(build.engine.capacity().pagedStorage)
+        #expect(native.captureSequence > 0)
+        let bridge = EngineV2Bridge(engine: build.engine, modelId: "fixture",
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [],
+            kvBackendKind: .paged)
+        let first = await bridge.backendSlotCapacity()
+        let value = try #require(first.pagedStorage)
+        let after = try #require(build.engine.capacity().pagedStorage)
+        // Engine startup can publish another real capture while the actor call
+        // is suspended. The heartbeat must fall within the native brackets.
+        #expect(value.kind == .segmented)
+        #expect(value.sampleSeq >= native.captureSequence && value.sampleSeq <= after.captureSequence)
+        #expect(value.grantBytes == UInt64(native.grantBytes))
+        #expect(value.committedBytes == UInt64(native.committedBytes))
+        #expect(value.nominalKVBytes == native.nominalKVBytes.map(UInt64.init))
+        #expect(value.physicalFloorOverheadBytes == native.physicalFloorOverheadBytes.map(UInt64.init))
+        #expect(value.allocationFailuresTotal == native.allocationFailures)
+        #expect(value.admissionRefusalsTotal == native.admissionRefusals)
+        #expect(value.grantRefusalsTotal == native.grantRefusals)
+        #expect(value.grantEpochRetriesTotal == native.grantEpochRetries)
+        let repeated = await bridge.backendSlotCapacity()
+        let repeatedValue = try #require(repeated.pagedStorage)
+        let afterRepeated = try #require(build.engine.capacity().pagedStorage)
+        #expect(repeatedValue.sampleSeq >= value.sampleSeq
+                && repeatedValue.sampleSeq <= afterRepeated.captureSequence)
+        #expect(repeated.pagedStorage?.generation == value.generation)
+        await bridge.shutdown()
+        let closed = await bridge.backendSlotCapacity()
+        #expect(closed.pagedStorage == nil)
     }
 
     @Test("`.auto` IGNORES the page dtype entirely — malformed or not (v0.8.1)")
@@ -340,24 +296,20 @@ struct EngineV2PagedPoolDTypeEnvTests {
         await build.engine.shutdown()
     }
 
-    @Test("fp32 halves the seats: the same grant admits about half as many rows")
-    func fp32HalvesAdmission() throws {
-        let fp16 = try preparedPagedPool(environment: [:])
-        let fp32 = try preparedPagedPool(
-            environment: [EngineV2Factory.pagedPoolDTypeEnvKey: "float32"])
-
-        let fp16Rows = seatableRows(
-            backend: fp16.backend, kinds: fp16.kinds, maxLength: 256)
-        let fp32Rows = seatableRows(
-            backend: fp32.backend, kinds: fp32.kinds, maxLength: 256)
-
-        #expect(fp32Rows > 0)
-        // Page DEMAND is dtype-blind, so the per-row charge is identical
-        // and the seat count tracks the page count exactly: floor division
-        // over half as many usable pages, hence 2x within one row of
-        // rounding on each side.
-        #expect(fp16Rows >= 2 * fp32Rows)
-        #expect(fp16Rows <= 2 * fp32Rows + 2)
+    @Test("an explicit float16 override refuses a native float32 target")
+    func mismatchedOverrideRefusesBeforeServing() throws {
+        do {
+            _ = try preparedPagedPool(
+                environment: [EngineV2Factory.pagedPoolDTypeEnvKey: "float16"])
+            Issue.record("a scalar override must not narrow the actual model's KV")
+        } catch let error as EngineV2ProductionError {
+            guard case .pagedUnavailable(let reason) = error else {
+                Issue.record("unexpected failure: \(error)")
+                return
+            }
+            #expect(reason.contains("native_kv_probe"))
+            #expect(reason.contains("override differs"))
+        }
     }
 
     @Test("a grant that fits at float16 REFUSES at float32 rather than serving half a pool")

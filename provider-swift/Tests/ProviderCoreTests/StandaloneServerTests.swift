@@ -467,7 +467,7 @@ private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer 
 
 // MARK: - v0.7.5 one-engine: 32 MiB chat-route body ceiling
 
-@Test func localChatBatchRecoversQwenTemplateControlsPerItem() {
+@Test func localChatBatchRecoversQwenTemplateControlsPerItem() throws {
     let body = Data(#"""
     [
         {"model":"qwen","messages":[],"reasoning_effort":" high ","enable_thinking":false,"preserve_thinking":true},
@@ -475,7 +475,8 @@ private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer 
     ]
     """#.utf8)
 
-    let controls = LocalChatTemplateControls.batch(from: body, count: 2)
+    let controls = try JSONDecoder().decode([LocalChatRequest].self, from: body)
+        .map(\.templateControls)
     #expect(controls.count == 2)
     #expect(controls[0].reasoningEffort == "high")
     #expect(controls[0].enableThinking == false)
@@ -483,16 +484,6 @@ private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer 
     #expect(controls[1].reasoningEffort == nil)
     #expect(controls[1].enableThinking == true)
     #expect(controls[1].preserveThinking == false)
-}
-
-@Test func localChatBatchControlRecoveryFailsClosedOnShapeMismatch() {
-    let body = Data(#"[{"model":"qwen","messages":[],"enable_thinking":false}]"#.utf8)
-    let controls = LocalChatTemplateControls.batch(from: body, count: 2)
-    #expect(controls.count == 2)
-    #expect(controls.allSatisfy {
-        $0.reasoningEffort == nil && $0.enableThinking == nil
-            && $0.preserveThinking == nil
-    })
 }
 
 @Test func standaloneServerAcceptsChatBodiesPastTheOldTwoMiBLimit() async throws {
@@ -711,6 +702,7 @@ private func makeStandaloneFakeHFSnapshot(modelId: String) throws -> URL {
 
     let estimatedMemoryGb = 0.25
     let expectedBytes = UInt64(estimatedMemoryGb * 1_073_741_824)
+        + UnifiedMemoryCap.minimumLoadKVBytes
     let server = standaloneTestServer(models: [
         ModelInfo(
             id: modelId,

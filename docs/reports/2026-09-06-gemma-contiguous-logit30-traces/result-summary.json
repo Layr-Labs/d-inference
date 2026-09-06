@@ -1,0 +1,72 @@
+{
+  "status": "valid_bounded_logit_observations",
+  "errors": [],
+  "retained_verifier_correctness": "FAILED: frozen automatic and ordinary controls differ at index 30; diagnostic success does not waive it.",
+  "full_KV_state_identity": "UNOBSERVED",
+  "cases": {
+    "off": {
+      "argmax": 795,
+      "logit_dtype": "float32",
+      "top_two_ids": [
+        795,
+        735
+      ],
+      "top_two_logits": [
+        24.93285369873047,
+        24.77605438232422
+      ],
+      "top_two_gap": 0.15679931640625,
+      "candidate_logits": {
+        "795": 24.93285369873047,
+        "735": 24.77605438232422
+      },
+      "score_795_minus_735": 0.15679931640625,
+      "phase": "chained_decode",
+      "output_base": 30,
+      "column": 0,
+      "verification_width": 1,
+      "accepted_drafts": 0,
+      "confirmed_width": 1,
+      "cache_offset": 5447,
+      "causal_input_ids": [
+        4615
+      ],
+      "effective_position": 5447,
+      "all_seven_parity": true,
+      "counter_parity": true,
+      "prefill_geometry_parity": true
+    },
+    "automatic": {
+      "argmax": 735,
+      "logit_dtype": "float32",
+      "top_two_ids": [
+        735,
+        795
+      ],
+      "top_two_logits": [
+        24.854991912841797,
+        24.77605438232422
+      ],
+      "top_two_gap": 0.07893753051757812,
+      "candidate_logits": {
+        "795": 24.77605438232422,
+        "735": 24.854991912841797
+      },
+      "score_795_minus_735": -0.07893753051757812,
+      "phase": "rectangular_verify",
+      "output_base": 30,
+      "column": 0,
+      "verification_width": 2,
+      "accepted_drafts": 1,
+      "confirmed_width": 2,
+      "cache_offset": 5447,
+      "causal_input_ids": [
+        4615
+      ],
+      "effective_position": 5447,
+      "all_seven_parity": true,
+      "counter_parity": true,
+      "prefill_geometry_parity": true
+    }
+  }
+}

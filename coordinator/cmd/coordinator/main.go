@@ -218,6 +218,8 @@ func main() {
 	cacheRoutingCfg := reg.CacheRoutingConfigSnapshot()
 	logger.Info("provider-confirmed cache routing configured",
 		"mode", cacheRoutingCfg.Mode,
+		"artifact_allowlist_configured", cacheRoutingCfg.AllowedArtifacts != nil,
+		"artifact_allowlist_count", len(cacheRoutingCfg.AllowedArtifacts),
 		"activation_percent", cacheRoutingCfg.ActivationPct,
 		"max_plan_qps", cacheRoutingCfg.MaxPlanQPS,
 		"ttl", cacheRoutingCfg.TTL.String(),

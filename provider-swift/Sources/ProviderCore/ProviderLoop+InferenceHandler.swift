@@ -167,6 +167,7 @@ extension ProviderLoop {
         cacheReceiptNonce: String?,
         authenticatedCacheScope: String?,
         prefixCacheProtocol: Int? = nil,
+        cacheReceiptBoundaryMode: String? = nil,
         toolSchemaMetadataProtocol: Int? = nil,
         firstContentDeadline: FirstContentDeadline? = nil,
         receivedAt: ContinuousClock.Instant = .now,
@@ -182,9 +183,8 @@ extension ProviderLoop {
         profile.update { f, now in
             f.mark(.dequeued, offsetUs: now)
             // `tokens_after_cancel_total` is bumped by the bridge at engine
-            // finish, which on the cancel path can run AFTER this request's
-            // terminal already went out (the cancelled terminal is built
-            // before the engine's `.finished(.cancelled)`), so the detached
+            // finish. Partial cancellation waits for that finish, but error
+            // and pre-output terminals can still precede it, so the detached
             // task's defer cannot own that add.
             // Captures ONLY the process-lifetime stats sink — never `self`,
             // the profile, or `inflightProfiles` — so the counter lands even
@@ -202,10 +202,7 @@ extension ProviderLoop {
         let remoteCache = RemotePrefixCacheContext(
             cacheScope: authenticatedCacheScope,
             cacheReceiptNonce: cacheReceiptNonce)
-        var receiptCallbacks: (
-            lookup: (@Sendable (PrefixCacheLookupResult) -> Void)?,
-            ready: (@Sendable (PrefixCacheReadyResult) -> Void)?
-        ) = (nil, nil)
+        var receiptCallbacks: PrefixCacheReceiptEmitter.Callbacks = (nil, nil)
         if prefixCacheProtocol != 2 {
             receiptCallbacks = PrefixCacheReceiptEmitter.callbacks(
                 requestID: requestId,
@@ -366,7 +363,7 @@ extension ProviderLoop {
         // Recover the one out-of-band template-control value once from the
         // authenticated plaintext body. The same value is used by text,
         // vision, and both prompt-token recount paths.
-        let templateControls = Self.extractChatTemplateControls(from: decryptedData)
+        let templateControls = Self.extractChatTemplateControls(from: decryptedData).resolvingPromptDate()
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
         // for remote cache partitioning. Legacy coordinators omit the outer
@@ -595,12 +592,18 @@ extension ProviderLoop {
         // the scheduler-free vision gate covers media decode and generation
         // memory reservations.
         let slotEngineV2 = slot.engineV2
+        if slotEngineV2.ssdHybridCheckpointStore != nil {
+            PrefixCacheReceiptEmitter.suppressLegacyCheckpointReceipts(
+                protocolVersion: prefixCacheProtocol, callbacks: &receiptCallbacks,
+                finalizer: lookupReceiptFinalizer)
+        }
         if prefixCacheProtocol == 2,
             let nonce = remoteCache.receiptNonce,
-            let callbacks = slotEngineV2.prefixCacheEvidenceSequencer?.callbacks(
+            let callbacks = slotEngineV2.prefixCacheEvidenceCallbacks(
                 requestID: requestId,
                 nonce: nonce,
-                send: send)
+                send: send,
+                readyBoundaryMode: cacheReceiptBoundaryMode)
         {
             receiptCallbacks = (callbacks.lookup, callbacks.ready)
             lookupReceiptFinalizer.configureV2(
@@ -1286,6 +1289,12 @@ extension ProviderLoop {
                 promptTokens = Int(clamping: settledUsage.promptTokens)
                 completionTokens = Int(clamping: settledUsage.completionTokens)
                 reasoningTokens = Int(clamping: settledUsage.reasoningTokens)
+
+                // Partial billing stays tied to delivered output. Cache usage
+                // needs the native terminal that proves adoption; cancellation
+                // can end this frame loop before the bridge records it.
+                await slotEngineV2.settleCancelledStream(
+                    profile: profile, usageSignal: v2UsageSignal)
             }
 
             // No usage chunk on a clean finish means an upstream regression.

@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
 use thiserror::Error;
+use tokenizers::Tokenizer;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 mod preloading;
@@ -22,6 +23,7 @@ mod preloading;
 pub struct Planner {
     artifact_root: Arc<PathBuf>,
     cache: Arc<SingleflightLru<LoadedArtifacts, artifacts::ArtifactError>>,
+    tokenizers: Arc<SingleflightLru<Tokenizer, artifacts::ArtifactError>>,
     permits: Arc<Semaphore>,
     preload_lock: Arc<Mutex<()>>,
     readiness: Arc<AtomicU8>,
@@ -95,6 +97,7 @@ impl Planner {
         Self {
             artifact_root: Arc::new(artifact_root),
             cache: Arc::new(SingleflightLru::new(max_loaded_contracts)),
+            tokenizers: Arc::new(SingleflightLru::new_weak(max_loaded_contracts)),
             permits: Arc::new(Semaphore::new(max_concurrency)),
             preload_lock: Arc::new(Mutex::new(())),
             readiness: Arc::new(AtomicU8::new(Readiness::Ready as u8)),
@@ -202,6 +205,10 @@ impl Planner {
         request: PlanRequest,
         _permit: OwnedSemaphorePermit,
     ) -> Result<Planned, PlanError> {
+        // Reject known key, number and argument-shape bridge ambiguities
+        // before lowering or normalization can discard the input evidence;
+        // ordinary provider serving remains available without a cache plan.
+        render::validate_request_input(&request.body).map_err(PlanError::Render)?;
         let (contract, _) = self.load_contract(&request.prompt_contract_id)?;
         let lowered =
             endpoint::lower(request.endpoint, request.body).map_err(|_| PlanError::Endpoint)?;
@@ -263,7 +270,7 @@ impl Planner {
         let root = self.artifact_root.clone();
         let loaded = self.cache.get_or_load(contract_id, || {
             let started = Instant::now();
-            let result = artifacts::load(&root, contract_id);
+            let result = artifacts::load(&root, contract_id, &self.tokenizers);
             metrics.cold_load_finished(started.elapsed(), result.is_ok());
             result
         });

@@ -51,8 +51,8 @@ enum SSDPrefixCacheFactory {
     /// separate root is fully self-contained, zero coupling. Survival
     /// after a legacy sweep is pinned by tests.
     static let ssdRootDirectoryName = "darkbloom/kv3"
-    /// Testbed-only isolated root. Honored only together with the explicit
-    /// ephemeral-key escape hatch, which also forces an in-memory KEK.
+    /// Testbed-only isolated root. Requires the explicit test opt-in; ordinary
+    /// isolated tests use an in-memory KEK, while persistent tests opt in separately.
     static let testRootEnvironmentKey = "DARKBLOOM_PREFIX_CACHE_TEST_ROOT"
 
     static func cacheDirectory(
@@ -96,7 +96,7 @@ enum SSDPrefixCacheFactory {
         SSDWholeRootMaintainer.shared.stopPeriodicMaintenance(root: cacheRootDirectory())
     }
 
-    private static func ephemeralAllowed(environment: [String: String]) -> Bool {
+    static func ephemeralAllowed(environment: [String: String]) -> Bool {
         let raw = environment["DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL"]?
             .trimmingCharacters(in: .whitespaces).lowercased() ?? ""
         return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
@@ -111,6 +111,26 @@ enum SSDPrefixCacheFactory {
         return URL(fileURLWithPath: raw, isDirectory: true).standardizedFileURL
     }
 
+    static func loadKeyMaterial(
+        environment: [String: String],
+        persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
+        persistentLoader: SSDCacheKeyMaterial.PersistentLoader? = nil
+    ) async throws -> SSDCacheKeyMaterial {
+        try persistentTestNamespace?.validate(environment: environment)
+        return try await SSDCacheKeyMaterial.load(
+            environment: environment,
+            persistentTestNamespace: persistentTestNamespace,
+            persistentLoader: persistentLoader)
+    }
+
+    /// An explicit offline restart benchmark can use the normal KEK with its
+    /// isolated root. Ordinary isolated tests stay ephemeral and never prompt
+    /// for Secure Enclave access. This flag is not forwarded to LaunchAgents.
+    static func forceEphemeralKey(environment: [String: String]) -> Bool {
+        guard isolatedTestRoot(environment: environment) != nil else { return false }
+        return environment["DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY"] != "1"
+    }
+
     /// Build the SSD tier for a supported model slot. Reusable ciphertext is
     /// permitted only when it can be bound to the verified hash of the live
     /// weights. A missing/blank hash disables the tier instead of degrading to
@@ -123,6 +143,7 @@ enum SSDPrefixCacheFactory {
         prefixReuseCapability: CBv2PrefixReuseCapability,
         kvBudget: GlobalKVCacheBudget?,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
         onConstructionFailure:
             (@Sendable (SSDPrefixCacheConstructionFailure) -> Void)? = nil
     ) async -> SSDPrefixCache? {
@@ -142,6 +163,12 @@ enum SSDPrefixCacheFactory {
             #endif
             return nil
         }
+        do {
+            try persistentTestNamespace?.validate(environment: environment)
+        } catch {
+            onConstructionFailure?(.keyUnavailable)
+            return nil
+        }
         let wholeRoot = cacheRootDirectory(environment: environment)
         let dir = cacheDirectory(modelId: modelId, environment: environment)
         do {
@@ -159,46 +186,24 @@ enum SSDPrefixCacheFactory {
         // KEK: SE-wrapped + Keychain-persisted (files must survive restart
         // — restart warmth is the feature). Same construction + escape
         // hatch as the legacy tier.
-        let kekKey: SymmetricKey
-        var usedEphemeral = false
+        let material: SSDCacheKeyMaterial
         let forceEphemeral = isolatedTestRoot(environment: environment) != nil
-        if forceEphemeral {
-            let kek = KVCacheKEK(
-                wrapper: InMemoryKeyWrappingService(),
-                storage: InMemoryWrappedKEKStorage(identifier: "ephemeral-ssd"))
-            guard let key = try? await kek.loadOrCreate() else {
-                onConstructionFailure?(.ephemeralKeyUnavailable)
-                return nil
-            }
-            kekKey = key
-            usedEphemeral = true
-        } else {
-            do {
-                let se = try PersistentEnclaveKey.loadOrCreate()
-                let kek = KVCacheKEK(
-                    wrapper: SecureEnclaveKeyWrappingService(enclaveKey: se),
-                    storage: KeychainWrappedKEKStorage())
-                kekKey = try await kek.loadOrCreate()
-            } catch {
-                guard ephemeralAllowed(environment: environment) else {
-                    onConstructionFailure?(.keyUnavailable)
-                    #if canImport(os)
-                    logger.warning(
-                        "ssd prefix cache disabled for \(modelId, privacy: .public): KEK unavailable (\(String(describing: error), privacy: .public))")
-                    #endif
-                    return nil
-                }
-                let kek = KVCacheKEK(
-                    wrapper: InMemoryKeyWrappingService(),
-                    storage: InMemoryWrappedKEKStorage(identifier: "ephemeral-ssd"))
-                guard let ephKey = try? await kek.loadOrCreate() else {
-                    onConstructionFailure?(.ephemeralKeyUnavailable)
-                    return nil
-                }
-                kekKey = ephKey
-                usedEphemeral = true
-            }
+        do {
+            material = try await loadKeyMaterial(
+                environment: environment, persistentTestNamespace: persistentTestNamespace)
+        } catch SSDCacheKeyMaterial.Failure.ephemeralKeyUnavailable {
+            onConstructionFailure?(.ephemeralKeyUnavailable)
+            return nil
+        } catch {
+            onConstructionFailure?(.keyUnavailable)
+            #if canImport(os)
+            logger.warning(
+                "ssd prefix cache disabled for \(modelId, privacy: .public): KEK unavailable (\(String(describing: error), privacy: .public))")
+            #endif
+            return nil
         }
+        let kekKey = material.key
+        let usedEphemeral = material.ephemeral
         if usedEphemeral {
             #if canImport(os)
             if forceEphemeral {

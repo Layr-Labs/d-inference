@@ -141,6 +141,7 @@ public enum SchedulerPrefillBenchmark {
         // matrix of measurements nobody can attribute.
         _ = try await measureOne(
             container: container,
+            modelID: modelID,
             baseTokens: baseTokens,
             promptTokens: min(lengths.first ?? 128, 128),
             iteration: 0,
@@ -157,7 +158,7 @@ public enum SchedulerPrefillBenchmark {
             // compile all kernels a long-context cell will exercise.
             log("warming prefill shape: prompt=\(length), maxTokens=1 (unmeasured)")
             _ = try await measureOne(
-                container: container, baseTokens: baseTokens,
+                container: container, modelID: modelID, baseTokens: baseTokens,
                 promptTokens: length, iteration: 0, weightBytes: facts.weightBytes,
                 isVLM: isVLM, modelDirectory: modelDirectory, kvBackend: kvBackend)
         }
@@ -165,6 +166,7 @@ public enum SchedulerPrefillBenchmark {
             for iteration in 1 ... iterations {
                 let sample = try await measureOne(
                     container: container,
+                    modelID: modelID,
                     baseTokens: baseTokens,
                     promptTokens: length,
                     iteration: iteration,
@@ -200,6 +202,7 @@ public enum SchedulerPrefillBenchmark {
 
     private static func measureOne(
         container: ModelContainer,
+        modelID: String,
         baseTokens: [Int],
         promptTokens: Int,
         iteration: Int,
@@ -230,9 +233,11 @@ public enum SchedulerPrefillBenchmark {
                 model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
             let build = try EngineV2Factory.makeProductionBuild(
                 model: servingModel,
+                modelID: modelID,
                 tokenizer: ctx.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: 1,
+                kvBudget: BenchmarkMemoryBudget.shared,
                 kvBackend: kvBackend)
             return EngineParts(
                 engine: build.engine,

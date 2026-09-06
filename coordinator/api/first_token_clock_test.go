@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -277,28 +276,6 @@ func TestAbandonInflightDefersToPublishedIngress(t *testing.T) {
 
 	pr.FinishProviderChunkIngress(receivedAt, true)
 	d.s.cancelDispatch(provider, pr, cancelCauseFirstChunkTimeout)
-}
-
-func TestWriteFirstTokenTimeoutUsesOpenRouter429Contract(t *testing.T) {
-	s := newTestServerForDispatch(t)
-	rec := httptest.NewRecorder()
-	s.writeFirstTokenTimeout(rec, "m", "provider did not respond within TTFT deadline")
-	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("status=%d want 429", rec.Code)
-	}
-	if rec.Header().Get("Retry-After") == "" {
-		t.Fatal("Retry-After header missing")
-	}
-	if _, err := strconv.Atoi(rec.Header().Get("Retry-After")); err != nil {
-		t.Fatalf("Retry-After=%q want integer seconds", rec.Header().Get("Retry-After"))
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "rate_limit_exceeded") {
-		t.Fatalf("body missing rate_limit_exceeded: %s", body)
-	}
-	if strings.Contains(body, "first_chunk_timeout") {
-		t.Fatalf("client body must not use first_chunk_timeout: %s", body)
-	}
 }
 
 func TestProviderAttributableStall(t *testing.T) {

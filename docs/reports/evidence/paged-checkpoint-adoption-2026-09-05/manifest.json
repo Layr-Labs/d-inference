@@ -1,0 +1,763 @@
+{
+  "schema": 1,
+  "scope": "Native typed page adoption and pure provider ledger; live codec/process binding and real models remain pending. Rejected wrong-dependency attempt retained, excluded from correctness counts.",
+  "parent_base": "456a8dcff7560d060ee90bf635ca67646df53208",
+  "native_commit": "eeece251e91e90c29c75eb1db0a83816baea76e2",
+  "native_unique_functions": 128,
+  "native_unique_cases": 162,
+  "native_executed_functions": 136,
+  "native_executed_cases": 170,
+  "provider_functions": 117,
+  "provider_cases": 118,
+  "archive": {
+    "path": "payloads.tar.gz",
+    "bytes": 1763390,
+    "sha256": "7279d956957b62378e7e1178f67251a0de40538bb94b792f7c58afba4e824401"
+  },
+  "entries": [
+    {
+      "path": "rejected-native/manifest.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/manifest.json",
+      "bytes": 4663,
+      "sha256": "0cc952762be6e5cc396eadbbfd5e9fbedf0c16647177a81c0f6bf881ee0b88ef"
+    },
+    {
+      "path": "rejected-native/CBv2CheckpointAdmissionTransferTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/CBv2CheckpointAdmissionTransferTests.log",
+      "bytes": 1433,
+      "sha256": "31f16672437933d3812fa7b1c672f057199d18919e1955cd40f3fc9e8bc6bc2d"
+    },
+    {
+      "path": "rejected-native/CBv2CompleteCheckpointTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/CBv2CompleteCheckpointTests.log",
+      "bytes": 2126,
+      "sha256": "be9c0c70c2741ade09c834e68c96de7f62e8a4717015bc70b75409b6ab6188ef"
+    },
+    {
+      "path": "rejected-native/CBv2KVResizeTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/CBv2KVResizeTests.log",
+      "bytes": 1468,
+      "sha256": "89d61786c3c8e9babf894953df140f00ac7a899a133f95e5809bcad3771b283d"
+    },
+    {
+      "path": "rejected-native/CBv2PagedAdmissionTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/CBv2PagedAdmissionTests.log",
+      "bytes": 3015,
+      "sha256": "56970a839c98bcc11ff3819c2b21929a0c0e06e392c9b4211bd57f3f8f4db4f6"
+    },
+    {
+      "path": "rejected-native/CBv2PagedBackendTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/CBv2PagedBackendTests.log",
+      "bytes": 7740,
+      "sha256": "1c6d154c3a72c9a3fd408f83a9f7f80b6680e101fb40d3d3e4a1c24f99d63f1f"
+    },
+    {
+      "path": "rejected-native/CBv2PagedCheckpointAdoptionTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/CBv2PagedCheckpointAdoptionTests.log",
+      "bytes": 2835,
+      "sha256": "117504bd73f13fa9eb4fe022a1e457a0825d24bfa3cf964df60580a45666c06e"
+    },
+    {
+      "path": "rejected-native/CBv2PagedCheckpointStorageTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/CBv2PagedCheckpointStorageTests.log",
+      "bytes": 2553,
+      "sha256": "f6fcbbd5a168d151dcd2281b23edab45cc797f64a663bd543926142b73f01677"
+    },
+    {
+      "path": "rejected-native/CBv2PagedGrantTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/CBv2PagedGrantTests.log",
+      "bytes": 1396,
+      "sha256": "d3c1f7db22be10d9706813b2bf600f2206e80e999b1191ebed0d5400531eb909"
+    },
+    {
+      "path": "rejected-native/CBv2PagedPrefixBlockCacheTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/CBv2PagedPrefixBlockCacheTests.log",
+      "bytes": 1786,
+      "sha256": "db2228ccb2ccbaa97de1aad3aa7d799a4f0e37132db8422b583d203aadcbdd87"
+    },
+    {
+      "path": "rejected-native/CBv2PagedSegmentTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/CBv2PagedSegmentTests.log",
+      "bytes": 4428,
+      "sha256": "784bcacfd6c727abd13a727d4001829e927b9f0f167f21e9bb1e2392dd141c2b"
+    },
+    {
+      "path": "rejected-native/CBv2PagedSpeculativeRowTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/CBv2PagedSpeculativeRowTests.log",
+      "bytes": 1952,
+      "sha256": "6a674dd58e6dc599ea441d03ce356977b24dc4fae679c611cd558878c6443b62"
+    },
+    {
+      "path": "rejected-native/CBv2PagedStorageTelemetryTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/CBv2PagedStorageTelemetryTests.log",
+      "bytes": 1678,
+      "sha256": "bcd7ea522df9db8af65ba33c54b9308bb3ec8cf4a4f8842e440422004843c1f1"
+    },
+    {
+      "path": "rejected-native/CBv2RecurrentStateTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/CBv2RecurrentStateTests.log",
+      "bytes": 4645,
+      "sha256": "683be452651b9a6c8f6e5b3b4eb59be373a66232e4776003cdb6e62499664921"
+    },
+    {
+      "path": "rejected-native/CBv2SchedulerAdmissionTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/CBv2SchedulerAdmissionTests.log",
+      "bytes": 6681,
+      "sha256": "1d548f0efda4398c1ae3e15ce8a9045554fb0bdab5e1fa759ba1d67f141231ce"
+    },
+    {
+      "path": "rejected-native/active-package-sources.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/active-package-sources.json",
+      "bytes": 1765,
+      "sha256": "74d427833f2b61612d410944945b6fdb125a928b14234b56842b9c09a2bd727c"
+    },
+    {
+      "path": "rejected-native/actual-build-graph.yaml.gz",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/actual-build-graph.yaml.gz",
+      "bytes": 325371,
+      "sha256": "ed8da32fe52930d8c4f5cff8fb704b3ea24974e50fb816ab7686c4f25479aa24"
+    },
+    {
+      "path": "rejected-native/actual-package-state-final.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/actual-package-state-final.json",
+      "bytes": 19306,
+      "sha256": "b8d088dadfb821efa81c0dcb99518a0b3f0dc6404cd316cd9d3bfc7a572f67c1"
+    },
+    {
+      "path": "rejected-native/attempt-status.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/attempt-status.json",
+      "bytes": 431,
+      "sha256": "8e6c38768fecc0862b01405fab95e919d7c9a6d6dde56e21626607935530a6af"
+    },
+    {
+      "path": "rejected-native/build.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/build.log",
+      "bytes": 507913,
+      "sha256": "d588f3d6ef60e6fad7c995bf74bbf3a6cda14f6d7391eb6580046c0c95f09400"
+    },
+    {
+      "path": "rejected-native/dependency-pins.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/dependency-pins.json",
+      "bytes": 170,
+      "sha256": "1cc525bf810980b07bcb385a1eb4e86ef9ccdac9f16b46cebb638c7bcb244de8"
+    },
+    {
+      "path": "rejected-native/dependency-source-manifest.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/dependency-source-manifest.json",
+      "bytes": 161404,
+      "sha256": "ba49bc1b2b1b13f5db84b8de6439fc48aeaed8736a882dc52f59b18a513fa6b7"
+    },
+    {
+      "path": "rejected-native/execution.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/execution.json",
+      "bytes": 5890,
+      "sha256": "0b5185197dc89e399b43f8dd1845902147a0e45298634982a0ec5c67ef057262"
+    },
+    {
+      "path": "rejected-native/filters.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/filters.json",
+      "bytes": 452,
+      "sha256": "7cbca5a8c56f5d3ad63114e7bef24f39fbc0758dbdab8dfcdfdafb122b055252"
+    },
+    {
+      "path": "rejected-native/identifiers.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/identifiers.log",
+      "bytes": 127886,
+      "sha256": "602be0279694118fea39ddb2f16a116fc1e61fe2b9a886bc94150a64c832b8ff"
+    },
+    {
+      "path": "rejected-native/mlx-swift-lm-Package.resolved",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/mlx-swift-lm-Package.resolved",
+      "bytes": 8825,
+      "sha256": "4bf9d78d1ce65d7458d881a7f27854da04c728fff7f6fe429a9255e9245ebaef"
+    },
+    {
+      "path": "rejected-native/owned-manifest.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/owned-manifest.json",
+      "bytes": 3563,
+      "sha256": "e9651a582bcaf10d1eb2cd9647aecd6404b2a4518c4bb09cee356513edd7933b"
+    },
+    {
+      "path": "rejected-native/package-edit.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/package-edit.log",
+      "bytes": 322,
+      "sha256": "c08927768f01af57e523be7499cf5ba0d628b4d5be4fbf3af33c2df7d27b0bf7"
+    },
+    {
+      "path": "rejected-native/provider-swift-Package.resolved",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/provider-swift-Package.resolved",
+      "bytes": 10156,
+      "sha256": "b2b12d24d48bbedc4583d8831e0b81fe68b96d641804e0ebc56715cd2d88a7ea"
+    },
+    {
+      "path": "rejected-native/run.py",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/run.py",
+      "bytes": 1600,
+      "sha256": "8fcb389e1e78fa9e2ef8bf1977eb62335f7a2321ba6ae341b8488d2dceb7f415"
+    },
+    {
+      "path": "rejected-native/source-manifest.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation1/source-manifest.json",
+      "bytes": 57677,
+      "sha256": "2efe9e97618810bb59bd0aad3f96058ce86fd32ef69446639aaa8f4c87c6e0f9"
+    },
+    {
+      "path": "native/manifest.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/manifest.json",
+      "bytes": 5797,
+      "sha256": "c1dc46b12daba330e5e42e1ead2a3dc3d905c4360fb5655f4a70ad3c6fe29895"
+    },
+    {
+      "path": "native/CBv2CheckpointAdmissionTransferTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/CBv2CheckpointAdmissionTransferTests.log",
+      "bytes": 1769,
+      "sha256": "e6881093bdded5f6648037434b0b9449cae993736c45a0374a12bf8a852a0c96"
+    },
+    {
+      "path": "native/CBv2CompleteCheckpointTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/CBv2CompleteCheckpointTests.log",
+      "bytes": 2126,
+      "sha256": "f3fd765ef83b243c2682e6e9111a37c492424af832cdfeb9296e9282bab6d7bc"
+    },
+    {
+      "path": "native/CBv2KVResizeTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/CBv2KVResizeTests.log",
+      "bytes": 1468,
+      "sha256": "7e87e5237691d1e98dbfb9ce064810084df9993bb8d44a86657aa0e6b0ecd229"
+    },
+    {
+      "path": "native/CBv2PagedAdmissionTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/CBv2PagedAdmissionTests.log",
+      "bytes": 3015,
+      "sha256": "09323e42609bde1f3406118be02b09a33d9ac9884322e2bc837a0f89ec5876e6"
+    },
+    {
+      "path": "native/CBv2PagedBackendTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/CBv2PagedBackendTests.log",
+      "bytes": 7740,
+      "sha256": "28990245f32f9a8f41eb8bedf4a7a4c98f9bb9aa1bfdcee7f023b9a9d5ff95df"
+    },
+    {
+      "path": "native/CBv2PagedCheckpointAdoptionTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/CBv2PagedCheckpointAdoptionTests.log",
+      "bytes": 2835,
+      "sha256": "73b9d43c4467c71d0562d99c6f12ad4fa72a26224d47c6ce4a92ca5005c51f76"
+    },
+    {
+      "path": "native/CBv2PagedCheckpointStorageTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/CBv2PagedCheckpointStorageTests.log",
+      "bytes": 2553,
+      "sha256": "3feb3c33bda4d4118e00fd80455906ca63abe1187402c0a918129b33a8f5c58d"
+    },
+    {
+      "path": "native/CBv2PagedGrantTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/CBv2PagedGrantTests.log",
+      "bytes": 1396,
+      "sha256": "e90226e6275388a79de922f0dc019fa1eedd1e80a6b2d0ff937d26e6903bd439"
+    },
+    {
+      "path": "native/CBv2PagedPrefixBlockCacheTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/CBv2PagedPrefixBlockCacheTests.log",
+      "bytes": 1786,
+      "sha256": "822c3d1130a162dcd54f5010409da76db5ff478f47afc59b089c4d702f882a2e"
+    },
+    {
+      "path": "native/CBv2PagedSegmentTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/CBv2PagedSegmentTests.log",
+      "bytes": 4428,
+      "sha256": "af9e4d4e68de1923ec1e2bf30f08da963599f3124b0e9d645d9eb72e2b49e0d3"
+    },
+    {
+      "path": "native/CBv2PagedSpeculativeRowTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/CBv2PagedSpeculativeRowTests.log",
+      "bytes": 1952,
+      "sha256": "529319a73cd072508034c46730c78c7c8c15c2e1bbe7088c9f80e5328e6e0e4f"
+    },
+    {
+      "path": "native/CBv2PagedStorageTelemetryTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/CBv2PagedStorageTelemetryTests.log",
+      "bytes": 1678,
+      "sha256": "1f33138c38331e47c0c24fa80b5ea959296732ead0e0a113b7e073ed38165dcc"
+    },
+    {
+      "path": "native/CBv2RecurrentStateTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/CBv2RecurrentStateTests.log",
+      "bytes": 4645,
+      "sha256": "d1a84cdc85e16e0bf87b54e900ea670f787db7fdc1a3bd1c81bf61598cc9c6b2"
+    },
+    {
+      "path": "native/CBv2SchedulerAdmissionTests.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/CBv2SchedulerAdmissionTests.log",
+      "bytes": 6681,
+      "sha256": "593ea71d41f0b610914c3dd649c7d65cc48903984d090672faff9e2edbfedd1c"
+    },
+    {
+      "path": "native/actual-build-graph.yaml.gz",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/actual-build-graph.yaml.gz",
+      "bytes": 315670,
+      "sha256": "f390f238d3e4837b9c7114d7a0efe65f966ce8c9f42bf8c54757a00a511524b8"
+    },
+    {
+      "path": "native/actual-compiler-source-proof.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/actual-compiler-source-proof.json",
+      "bytes": 37339,
+      "sha256": "0e105fbc147fb3219f2cc795a4d167f83f80d3fa8bcd25d7b7ae8a4830ddca24"
+    },
+    {
+      "path": "native/actual-package-state.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/actual-package-state.json",
+      "bytes": 17102,
+      "sha256": "3b8a6a002bc3feb940f64cae4ae9617025cdc700913c2beac82817e1876e478f"
+    },
+    {
+      "path": "native/build.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/build.log",
+      "bytes": 585334,
+      "sha256": "15e0fdcc2596a4020961058248be6937bcc5172068f656827ebe4a89e2b507c5"
+    },
+    {
+      "path": "native/dependency-pins.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/dependency-pins.json",
+      "bytes": 170,
+      "sha256": "1cc525bf810980b07bcb385a1eb4e86ef9ccdac9f16b46cebb638c7bcb244de8"
+    },
+    {
+      "path": "native/dependency-source-manifest.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/dependency-source-manifest.json",
+      "bytes": 161404,
+      "sha256": "ba49bc1b2b1b13f5db84b8de6439fc48aeaed8736a882dc52f59b18a513fa6b7"
+    },
+    {
+      "path": "native/environment.txt",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/environment.txt",
+      "bytes": 303,
+      "sha256": "564fbcb6caae8487a8f6cff608ed72cd35584a0b28ffd5c2a4ecafc726107dc1"
+    },
+    {
+      "path": "native/execution.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/execution.json",
+      "bytes": 6453,
+      "sha256": "6982e258dc7c36681e9f26edc63bf4e85bcf0c90e445984fa0d265ab61bd6a04"
+    },
+    {
+      "path": "native/filters.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/filters.json",
+      "bytes": 452,
+      "sha256": "7cbca5a8c56f5d3ad63114e7bef24f39fbc0758dbdab8dfcdfdafb122b055252"
+    },
+    {
+      "path": "native/identifiers.log",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/identifiers.log",
+      "bytes": 128222,
+      "sha256": "99ee1f0baf52e530e841e43fe0f70f8091f7dca22a9727f466de86a79fdb766e"
+    },
+    {
+      "path": "native/manifest-overlay.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/manifest-overlay.json",
+      "bytes": 635,
+      "sha256": "fde47dffc983811d1953accd895e0c4513d7e8f4ab6fc2507098051534623319"
+    },
+    {
+      "path": "native/metallib-placement.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/metallib-placement.json",
+      "bytes": 553,
+      "sha256": "6dffb3d5951db1488299dc4a8aa7a56b6b7aa879e4f69b3feff7ddfcfef0ae8d"
+    },
+    {
+      "path": "native/owned-manifest.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/owned-manifest.json",
+      "bytes": 3563,
+      "sha256": "e9651a582bcaf10d1eb2cd9647aecd6404b2a4518c4bb09cee356513edd7933b"
+    },
+    {
+      "path": "native/primary-Package.swift",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/primary-Package.swift",
+      "bytes": 11422,
+      "sha256": "45a9552a8021285dcaabad222bebc2226b4577b48763721a388e2d9719562945"
+    },
+    {
+      "path": "native/run-nested-suite.sh",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/run-nested-suite.sh",
+      "bytes": 3578,
+      "sha256": "14ecf2a47a07c07b2bdc535ac1a6fdd64c674763963a2fa9b86cb07d8feeda48"
+    },
+    {
+      "path": "native/run.py",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/run.py",
+      "bytes": 3830,
+      "sha256": "4a50dbe5625a916cabf8a83d255c4fc4be90b132cddb7c911ef6c4c149fcf695"
+    },
+    {
+      "path": "native/selected-identifiers.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/selected-identifiers.json",
+      "bytes": 25978,
+      "sha256": "5da7fdde4e9d57576da8ad03cb6622ec42c91a6de56a4124c8e93daa428c7299"
+    },
+    {
+      "path": "native/source-manifest.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/source-manifest.json",
+      "bytes": 57677,
+      "sha256": "2efe9e97618810bb59bd0aad3f96058ce86fd32ef69446639aaa8f4c87c6e0f9"
+    },
+    {
+      "path": "native/source-verified-after.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/source-verified-after.json",
+      "bytes": 80,
+      "sha256": "fff16233cc7d684a7432494b2f66f22668134b3be6469a01f9e9c00091bd328d"
+    },
+    {
+      "path": "native/source-verified-before.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/source-verified-before.json",
+      "bytes": 80,
+      "sha256": "fff16233cc7d684a7432494b2f66f22668134b3be6469a01f9e9c00091bd328d"
+    },
+    {
+      "path": "native/test-binary.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/test-binary.json",
+      "bytes": 263,
+      "sha256": "74a03efa60109d36fb3f26c0ae3af029bead56fa23e10a34af8db3dc3dc572af"
+    },
+    {
+      "path": "native/validation-Package.resolved",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/validation-Package.resolved",
+      "bytes": 8825,
+      "sha256": "4bf9d78d1ce65d7458d881a7f27854da04c728fff7f6fe429a9255e9245ebaef"
+    },
+    {
+      "path": "native/validation-Package.swift",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/validation-Package.swift",
+      "bytes": 11441,
+      "sha256": "aa7a28c02e9565db0c7bb29f9263e8e23520981ce4a7a679632eabfbfb480b23"
+    },
+    {
+      "path": "native/verdict.json",
+      "source": "/tmp/darkbloom-paged-adoption-validation2/verdict.json",
+      "bytes": 4528,
+      "sha256": "7e65bc669f4a247017141567360245390dfe4a483d54430ccaf5d8a55f7b59df"
+    },
+    {
+      "path": "provider/manifest.json",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/manifest.json",
+      "bytes": 3454,
+      "sha256": "7aac2320679d3a50f759a5ca772717979067e569ef4c939c4d5e02a10760042b"
+    },
+    {
+      "path": "provider/actual-build-graph.yaml.gz",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/actual-build-graph.yaml.gz",
+      "bytes": 398768,
+      "sha256": "0cb4a277ef386ebb924ce566d63f9f4ec7042f40fcf03c75401c145a8b274122"
+    },
+    {
+      "path": "provider/actual-compiler-source-proof.json",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/actual-compiler-source-proof.json",
+      "bytes": 119241,
+      "sha256": "82e6e8f7e96057809ac07ff14c72ce7ea40e8c97773c7a76b48dc5650eabe60c"
+    },
+    {
+      "path": "provider/actual-package-state.json",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/actual-package-state.json",
+      "bytes": 20785,
+      "sha256": "a5fa03e56ad25ac97452ca6bdeffa0b81c30bef9ccd9cf94ad5b634bb228a6b2"
+    },
+    {
+      "path": "provider/budget.log",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/budget.log",
+      "bytes": 6574,
+      "sha256": "db0ee520174bcb1162586dfd0c1e74cc58c0a502539d0653beb6b24124fae6ce"
+    },
+    {
+      "path": "provider/build.log",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/build.log",
+      "bytes": 610030,
+      "sha256": "e703a96553d7ed787e77b60ab93019e96af1774d3e6b85bb202187e4141aa8e4"
+    },
+    {
+      "path": "provider/dependency-pins.json",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/dependency-pins.json",
+      "bytes": 170,
+      "sha256": "1cc525bf810980b07bcb385a1eb4e86ef9ccdac9f16b46cebb638c7bcb244de8"
+    },
+    {
+      "path": "provider/dependency-source-manifest.json",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/dependency-source-manifest.json",
+      "bytes": 161404,
+      "sha256": "ba49bc1b2b1b13f5db84b8de6439fc48aeaed8736a882dc52f59b18a513fa6b7"
+    },
+    {
+      "path": "provider/environment.txt",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/environment.txt",
+      "bytes": 333,
+      "sha256": "476087c5f0b442dda0ef531db23ce16cbe816f9ae14b996ecb927f62f43a4b67"
+    },
+    {
+      "path": "provider/execution.json",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/execution.json",
+      "bytes": 3862,
+      "sha256": "90aeebda1db8fb4d7dfc4161ebadb2d656f85d285f5e7e0f727f1b1aa860e97c"
+    },
+    {
+      "path": "provider/filters.json",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/filters.json",
+      "bytes": 2290,
+      "sha256": "431c6e049d3eae3bea89ab0c6cb41ee6e1ca35ff32ed52235c7d65a07043f633"
+    },
+    {
+      "path": "provider/identifiers.log",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/identifiers.log",
+      "bytes": 190777,
+      "sha256": "4028dbae81b88a88464ce93f265502f14143ca74b4baf0e66ca3686f054838b7"
+    },
+    {
+      "path": "provider/ledger.log",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/ledger.log",
+      "bytes": 3797,
+      "sha256": "5fc000070e2cfc96dc74c99441e75bfb0f1875d27acaf01f908cb02c9795366c"
+    },
+    {
+      "path": "provider/libs-mlx-swift-lm-Package.swift",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/libs-mlx-swift-lm-Package.swift",
+      "bytes": 11422,
+      "sha256": "45a9552a8021285dcaabad222bebc2226b4577b48763721a388e2d9719562945"
+    },
+    {
+      "path": "provider/load-lifecycle.log",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/load-lifecycle.log",
+      "bytes": 13419,
+      "sha256": "21ddfea8badb2b87be219d85d7207917f1483aebec751eeb5d56d3b76bc80ee3"
+    },
+    {
+      "path": "provider/owned-baselines.json",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/owned-baselines.json",
+      "bytes": 2146,
+      "sha256": "5654afa05bdc15fa86a82cabe6fbb73b270162728b2d01dd5646661e6ca6af26"
+    },
+    {
+      "path": "provider/provider-swift-Package.resolved",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/provider-swift-Package.resolved",
+      "bytes": 10156,
+      "sha256": "b2b12d24d48bbedc4583d8831e0b81fe68b96d641804e0ebc56715cd2d88a7ea"
+    },
+    {
+      "path": "provider/provider-swift-Package.swift",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/provider-swift-Package.swift",
+      "bytes": 14564,
+      "sha256": "0b1432205ee2f9db231b67bcf4160953de78a7efee069ff03f5cf2fd2e8dacf5"
+    },
+    {
+      "path": "provider/run.py",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/run.py",
+      "bytes": 3972,
+      "sha256": "70505ff62deb206eec2dcdb3abbc173bc9260f7b7571e982f1106cd6518c5bba"
+    },
+    {
+      "path": "provider/selected-identifiers.json",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/selected-identifiers.json",
+      "bytes": 9378,
+      "sha256": "a73fcdc1789a8fbef9b6cb8e9fe597ddf31f951806a54dc3de9a70c99d72b8bd"
+    },
+    {
+      "path": "provider/source-manifest.json",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/source-manifest.json",
+      "bytes": 163455,
+      "sha256": "b15dafbb8e5714cb7b9ef265dcb198aee3dc9a6351b7e9a8dd8394af31c142e1"
+    },
+    {
+      "path": "provider/source-verified-after.json",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/source-verified-after.json",
+      "bytes": 110,
+      "sha256": "245b78ddf7b9b0cef4a963352fedac52da37f20cfdf6082120a18370c0c5a66f"
+    },
+    {
+      "path": "provider/source-verified-before.json",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/source-verified-before.json",
+      "bytes": 110,
+      "sha256": "245b78ddf7b9b0cef4a963352fedac52da37f20cfdf6082120a18370c0c5a66f"
+    },
+    {
+      "path": "provider/verdict.json",
+      "source": "/tmp/darkbloom-paged-adoption-provider-validation1/verdict.json",
+      "bytes": 1342,
+      "sha256": "ef515b8ea852435200dbfee651b349e208f9ec931fbb293bee29a346f23c8ed2"
+    },
+    {
+      "path": "pure-ledger/manifest.json",
+      "source": "/tmp/darkbloom-process-memory-ledger-validation1/manifest.json",
+      "bytes": 2019,
+      "sha256": "506c5fcf132ac7563c923767cc662784bf3abbd3d41a827bd63447d5ea2dc993"
+    },
+    {
+      "path": "pure-ledger/build.log",
+      "source": "/tmp/darkbloom-process-memory-ledger-validation1/build.log",
+      "bytes": 613518,
+      "sha256": "f8a23e3eaa5801c12023b9085dafb15109ed2bfadb2e012608da867a284b4bb6"
+    },
+    {
+      "path": "pure-ledger/dependency-pins.json",
+      "source": "/tmp/darkbloom-process-memory-ledger-validation1/dependency-pins.json",
+      "bytes": 296,
+      "sha256": "f37d9ccc503e3cb9bdb39b28f8456d389a8c3faf1943aceae9390c99ff4afb58"
+    },
+    {
+      "path": "pure-ledger/execution.json",
+      "source": "/tmp/darkbloom-process-memory-ledger-validation1/execution.json",
+      "bytes": 1314,
+      "sha256": "1fba35c0568ff0c0eaeebe7a1d601f2908d3fe705f09d8dc97db452149b082d1"
+    },
+    {
+      "path": "pure-ledger/identifiers.log",
+      "source": "/tmp/darkbloom-process-memory-ledger-validation1/identifiers.log",
+      "bytes": 190777,
+      "sha256": "4028dbae81b88a88464ce93f265502f14143ca74b4baf0e66ca3686f054838b7"
+    },
+    {
+      "path": "pure-ledger/ledger.log",
+      "source": "/tmp/darkbloom-process-memory-ledger-validation1/ledger.log",
+      "bytes": 3797,
+      "sha256": "d36f88be5759e4653bf015a19b2fc5c44bbc84c4c0d340ef5c43bc110556de2b"
+    },
+    {
+      "path": "pure-ledger/overlay-manifest.json",
+      "source": "/tmp/darkbloom-process-memory-ledger-validation1/overlay-manifest.json",
+      "bytes": 1318,
+      "sha256": "72111e505ca726fe9a0165bd6793bfdcc82ec3f00c8785cbf82ba400feb5725b"
+    },
+    {
+      "path": "pure-ledger/run.py",
+      "source": "/tmp/darkbloom-process-memory-ledger-validation1/run.py",
+      "bytes": 1626,
+      "sha256": "1972bef71a6e54504301e84175046173a313fdad22e51d37bf8d976b367f5e2d"
+    },
+    {
+      "path": "pure-ledger/selected-identifiers.json",
+      "source": "/tmp/darkbloom-process-memory-ledger-validation1/selected-identifiers.json",
+      "bytes": 1512,
+      "sha256": "3ad201329abd296b94f3c452d6d239f4d30fff889bd054c70f348c56672b2374"
+    },
+    {
+      "path": "pure-ledger/source-manifest.json",
+      "source": "/tmp/darkbloom-process-memory-ledger-validation1/source-manifest.json",
+      "bytes": 162558,
+      "sha256": "1331401971b6d4f3ed8c81156741a68abcb28b1434f5adb3a4a623ac88f532a9"
+    },
+    {
+      "path": "pure-ledger/verdict.json",
+      "source": "/tmp/darkbloom-process-memory-ledger-validation1/verdict.json",
+      "bytes": 805,
+      "sha256": "ce390f4553d3a1a4b867ca7b38e6888cc3f28b1af93fbd8d2d3f82f11cfc0aca"
+    },
+    {
+      "path": "adoption-source/manifest.json",
+      "source": "/tmp/darkbloom-paged-adoption-recovery/freeze2/manifest.json",
+      "bytes": 3563,
+      "sha256": "e9651a582bcaf10d1eb2cd9647aecd6404b2a4518c4bb09cee356513edd7933b"
+    },
+    {
+      "path": "adoption-source/adoption.patch",
+      "source": "/tmp/darkbloom-paged-adoption-recovery/freeze2/adoption.patch",
+      "bytes": 55582,
+      "sha256": "55ab4a6e9eb2e495ab4829d8233e3f143dc2a0c7f19afc0fe65b2e6ff70f75b4"
+    },
+    {
+      "path": "adoption-source/README.md",
+      "source": "/tmp/darkbloom-paged-adoption-recovery/freeze2/README.md",
+      "bytes": 4018,
+      "sha256": "8e04491b8d4dda85845d2f747016b58eb3cf5380dd21342f33ec0a8acfa4bf3e"
+    },
+    {
+      "path": "adoption-source/final-commit.json",
+      "source": "/tmp/darkbloom-paged-adoption-recovery/final-commit.json",
+      "bytes": 418,
+      "sha256": "9ddc94144fc122451ecb2daa769563205e948774e890324dfaa2d3c913cc06ed"
+    },
+    {
+      "path": "adoption-source/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionCheckpointTransfer.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionCheckpointTransfer.swift",
+      "bytes": 1966,
+      "sha256": "1e04cdff667201a9e82a9a1913bf72f72ac90386230d7289d4747160ffa59ec9"
+    },
+    {
+      "path": "adoption-source/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionPhysicalFloor.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionPhysicalFloor.swift",
+      "bytes": 4266,
+      "sha256": "0900219c9c775ce0115b092c751f7919ebed7e66209394cd0e8b30211a0ed1e7"
+    },
+    {
+      "path": "adoption-source/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionV2.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionV2.swift",
+      "bytes": 53890,
+      "sha256": "1abb908287d7eedf82feed6f163438dc7ad19c64da7c28c96c07c5548ecd5f20"
+    },
+    {
+      "path": "adoption-source/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVGroup.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVGroup.swift",
+      "bytes": 19805,
+      "sha256": "788b4721c275ca91c6e63e1ea885549eca6b4eb75b8999bc9646ad56c352353c"
+    },
+    {
+      "path": "adoption-source/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool+CheckpointImport.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool+CheckpointImport.swift",
+      "bytes": 6187,
+      "sha256": "a9da2e467fb2a4a4905355a8d3a9ead7d7341684262e25de62af7be656d76427"
+    },
+    {
+      "path": "adoption-source/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool.swift",
+      "bytes": 49710,
+      "sha256": "b6891f1f3514c77facc6406385383f568e3331adfbd9c86f4b438345cc4d2768"
+    },
+    {
+      "path": "adoption-source/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSegments.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSegments.swift",
+      "bytes": 7376,
+      "sha256": "f256e1df751a6640ab2bb5dfde1c26f6007016db79d62d2006db17f8c80543c1"
+    },
+    {
+      "path": "adoption-source/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedSequenceKV.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedSequenceKV.swift",
+      "bytes": 39882,
+      "sha256": "77bf96ed2cb63a7357ad07fde633dad1c15c733d3265871867dbb7d3bd8184a7"
+    },
+    {
+      "path": "adoption-source/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/PagedCheckpointFrame.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/PagedCheckpointFrame.swift",
+      "bytes": 3195,
+      "sha256": "dd5621f97efdd850c6ddced3696e744ebfb98548fa5b2dc7f5d14e11f6c5331b"
+    },
+    {
+      "path": "adoption-source/Tests/MLXLMTests/CBv2CheckpointAdmissionTransferTests.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Tests/MLXLMTests/CBv2CheckpointAdmissionTransferTests.swift",
+      "bytes": 6182,
+      "sha256": "4c91510f20def550efb7466ed653a9c7d63e640ee76ed8106e126251d917b880"
+    },
+    {
+      "path": "adoption-source/Tests/MLXLMTests/CBv2PagedCheckpointAdoptionTests.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Tests/MLXLMTests/CBv2PagedCheckpointAdoptionTests.swift",
+      "bytes": 14147,
+      "sha256": "36745cabee1e94943ebd6e888762c365d601659ed186491093509d2d8456630a"
+    },
+    {
+      "path": "ledger-source/manifest.json",
+      "source": "/tmp/darkbloom-process-memory-ledger/freeze1/manifest.json",
+      "bytes": 1069,
+      "sha256": "f3fb9dd906d783e678931b269836fd51c6d9ac841354df7cdd3b1682580c5d3d"
+    },
+    {
+      "path": "ledger-source/provider-swift/Sources/ProviderCore/Inference/ProcessMemoryLedger.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Sources/ProviderCore/Inference/ProcessMemoryLedger.swift",
+      "bytes": 10687,
+      "sha256": "e2b7906f72ad909f9411fce61fbc6b4c6b18db250457dafbd861783761666eac"
+    },
+    {
+      "path": "ledger-source/provider-swift/Tests/ProviderCoreTests/ProcessMemoryLedgerTests.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Tests/ProviderCoreTests/ProcessMemoryLedgerTests.swift",
+      "bytes": 19881,
+      "sha256": "c5d28cdce7d948861991fa7e4ba67a2d6ec58a238e393d2053251cc16887a621"
+    },
+    {
+      "path": "ledger-source/interface.md",
+      "source": "/tmp/darkbloom-process-memory-ledger/interface.md",
+      "bytes": 8285,
+      "sha256": "0c8069979967aa8b1f6d491d569cc93a90754d25411a58e4ec972cf2136be602"
+    }
+  ]
+}

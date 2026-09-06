@@ -1,0 +1,65 @@
+{
+  "parent_base": "676df63e7460396993bbffe7b8b94015493973e5",
+  "lm_commit": "6192f858dd862734d21b3cd6908ec89210af84fc",
+  "first_production_build_seconds": 86.12,
+  "final_test_build_seconds": 88.69,
+  "focused_passed_swift_testing": 266,
+  "focused_passed_suites": 25,
+  "focused_passed_xctest": 0,
+  "final_runtime_seconds": 4.04,
+  "prior_failed_focused_tests": 1,
+  "prior_failure": "Stale Qwen fixture expected unsupportedLayout; complete-checkpoint identity eligibility now returns runtimeIdentityUnavailable. Corrected test retains both nil-cache assertions.",
+  "compile_setup_failures": [
+    "New fixture referred to kv.offset instead of absoluteOffset; a test source was edited during build1.",
+    "New tests called noasync DispatchSemaphore.wait directly; changed to synchronous nonblocking polling helpers."
+  ],
+  "source_manifest_sha256": "879d2885d966c000cea9916e836f301a3462cc5f9a3264d0ea27faf3044f95e2",
+  "commands": [
+    "swift build --package-path provider-swift --build-tests --jobs 4 --disable-automatic-resolution",
+    "swift test --package-path provider-swift --skip-build --filter SSDBlockStreamingTests|SSDHybridCheckpointStoreTests|SSDCheckpointStageReservationTests|PrefixCacheCheckpointIdentityTests|PrefixCachePolicyTests|PrefixCacheLoadHashTests|PrefixCacheReceiptTests|QwenVLMTargetExtractionTests|EngineV2KVBackendGateTests|EngineV2BridgeTests|ProtocolTests"
+  ],
+  "logs": [
+    {
+      "path": "radix-ssd-provider-build1.log.gz",
+      "sha256": "2dce4f66479eed4bf55aa27d99daa12bc1c5529f6826aec3fd39c0960d1b39a3",
+      "uncompressed_sha256": "e167aeac7dae3ed7e659e38822d1d8acd8e9c4660d224780d6e73eefeba10669",
+      "uncompressed_bytes": 593664
+    },
+    {
+      "path": "radix-ssd-provider-testbuild1.log.gz",
+      "sha256": "f649f47ac7b8dfc895dd81d3070356d511637ac576a25a609c3515c1c4210f0d",
+      "uncompressed_sha256": "8caf422b0205ba0bdea116899c8b1a0ece686c89f7c0e9c95a46b51e52d6c9fc",
+      "uncompressed_bytes": 525213
+    },
+    {
+      "path": "radix-ssd-provider-testbuild2.log.gz",
+      "sha256": "e7eb3baeb05f0ff313a3125c8ddd6d8c2a08d78b9ac8be6100a25d3721d51648",
+      "uncompressed_sha256": "7195ab7d9237104f9290c77cabf4aa4b27ba598b69ddeee0b1a5f7f7b260eed5",
+      "uncompressed_bytes": 601031
+    },
+    {
+      "path": "radix-ssd-provider-testbuild3.log.gz",
+      "sha256": "5194ab22ac806deabfed4173581685be8fa547bce9490b08e859f1bd60ac18a5",
+      "uncompressed_sha256": "1b344dee1259dd03161f26ae2ad14c9d9ede7dc6ee4e924763ef7bed6960d1da",
+      "uncompressed_bytes": 27420
+    },
+    {
+      "path": "radix-ssd-provider-testbuild4.log.gz",
+      "sha256": "50d50083b780646885cc8d380b8195babf0d0d8ec2fcf28ad46ec657308f7dbd",
+      "uncompressed_sha256": "aa2679b3bba294429383d9804f90387722194b6033db491e00b0b2978018a8dd",
+      "uncompressed_bytes": 215285
+    },
+    {
+      "path": "radix-ssd-provider-focused1.log.gz",
+      "sha256": "ef50106c69e945fc4a8889cdc23c02d6497752b3dc829e057a87fba422ef15d8",
+      "uncompressed_sha256": "64b016e0c5f13120055096ae5470d9775eaa20cc79ee07b2b47050eb0dc9a7aa",
+      "uncompressed_bytes": 55031
+    },
+    {
+      "path": "radix-ssd-provider-focused2.log.gz",
+      "sha256": "ec105c3cee590f63ae974b2aa9fcca3b2ff57723f1139b282c24a57abad4bd8d",
+      "uncompressed_sha256": "dc953db96b0cc8ceb0b4888161a61154eff21e8a13aae5db6d70492a56a4dab2",
+      "uncompressed_bytes": 55240
+    }
+  ]
+}

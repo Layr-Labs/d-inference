@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "scope": "Local Go-supervised release Rust prompt sidecar, real validated prompt artifacts, exclusive CPU-quiet interval. No live coordinator/provider routing or GPU/model inference. RSS sampled every25ms; existing limits unchanged.",
+  "head_at_evidence_capture": "d2ea8dfe4ce17416b9de1bdd0d3f19c03b1f5602",
+  "source_files_reverified": 37,
+  "toolchains": {
+    "go": "go1.25.0",
+    "rust": "1.88.0"
+  },
+  "command": [
+    "/tmp/darkbloom-090-qwen-jinja-probe/promptsidecarloadproof",
+    "--binary",
+    "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/coordinator/promptsidecar/target/release/promptsidecar",
+    "--artifact-root",
+    "/private/tmp/darkbloom-release-090/prompt-artifacts",
+    "--vectors",
+    "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/fixtures/prompt-contract/v1/production_vectors.json",
+    "--duration",
+    "15s",
+    "--qps",
+    "25",
+    "--max-rss-mib",
+    "1024",
+    "--max-rss-growth-mib",
+    "128"
+  ],
+  "exit_code": 0,
+  "observations_mib": {
+    "cold_peak": 954.015625,
+    "cold_margin": 69.984375,
+    "warm_peak": 871.890625,
+    "warm_growth": 4.671875
+  },
+  "files": {
+    "/tmp/darkbloom-release-090/renderer-v3-loadproof/promptsidecar-release": {
+      "sha256": "80ba1b36cdeb86a44ef67e5c3cd1017f9f79580df910bc9a9bf654e9690522c9",
+      "bytes": 8661760
+    },
+    "/tmp/darkbloom-090-qwen-jinja-probe/promptsidecarloadproof": {
+      "sha256": "3c786f8fad036ac9d4fdc1919081255a9c048345c46dee15b63d66fb7d1d07ea",
+      "bytes": 8839458
+    },
+    "/tmp/darkbloom-release-090/renderer-v3-loadproof/result.json": {
+      "sha256": "2de1c573854a3d092e7a8cfe68ff72861375f4be59ce8f9842ca0ca7bcb93590",
+      "bytes": 1581
+    },
+    "/tmp/darkbloom-release-090/renderer-v3-loadproof/stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "/tmp/darkbloom-release-090/renderer-v3-loadproof/go-source-manifest.json": {
+      "sha256": "ae4fe1e314fd2f6a744e41872bb1e15cb3e87896ae492865b331c6644ea06bcf",
+      "bytes": 141437
+    },
+    "/tmp/darkbloom-090-qwen-jinja-probe/renderer-v3-final-depth-source-manifest.json": {
+      "sha256": "5c0b71dc11f381e0a0f488dc7cf664b3bea02a52e36e6124d67a3117b558a870",
+      "bytes": 6355
+    },
+    "/tmp/darkbloom-090-qwen-jinja-probe/renderer-v3-final-verification.json": {
+      "sha256": "7a913f6959ee313e80b93b1c963ff232e01bdcb5b6e302557cd0b24390cace76",
+      "bytes": 1842
+    }
+  }
+}

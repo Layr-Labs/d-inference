@@ -12,7 +12,7 @@ import (
 // (provider_breaker.go), stable-identity health ejection (health_ejection.go),
 // the shape-keyed inference-error cooldown (error_cooldown.go), the capacity
 // cooldown / rate window / budget clamp (capacity_cooldown.go, capacity_rate.go,
-// budget_clamp.go) and the dispatch-load cooldown (registry.go) — used to live
+// budget_clamp.go) and the dispatch-load cooldown (model_loading.go) — used to live
 // in global maps guarded by Registry.mu. Recording an outcome therefore took
 // the registry WRITE lock: six times per served request, each acquisition
 // draining the whole batch of fleet-scan readers first (~190 ms in prod). The
@@ -144,7 +144,7 @@ type gateState struct {
 	versionResetAt             time.Time
 
 	// Per-model trackers, keyed by model id.
-	dispatchLoadCooldowns map[string]time.Time              // registry.go
+	dispatchLoadCooldowns map[string]time.Time              // model_loading.go
 	capacityRejectStrikes map[string][]time.Time            // capacity_cooldown.go
 	capacityCooldowns     map[string]*capacityCooldownEntry // capacity_cooldown.go
 	capacityCooldownTrips map[string]int                    // capacity_cooldown.go

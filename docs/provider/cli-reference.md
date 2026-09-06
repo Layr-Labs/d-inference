@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-05 · commit `94c7c31eb`
+> Last updated: 2026-09-06 · commit `2eebb5412`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -106,6 +106,12 @@ and how to read the line in [attestation → Verify](./attestation.md#verify).
 | `--support` | flag | `false` | Append coordinator URL, token presence, MDM state, PID-file path |
 | `--clear-backend-guard` | flag | `false` | Delete `~/.darkbloom/kv-backend-guard.json`, reset the crash-loop counter in `watchdog-state.json`, exit |
 
+Clearing restores model-aware `auto` on the next model load, not guaranteed
+paged service. It preserves explicit settings, the kill switch and capability
+vetoes (`provider-swift/Sources/darkbloom/DoctorCommand.swift`,
+`runClearBackendGuard`). See
+[guard recovery](./troubleshooting.md#kv-backend-crash-loop-guard).
+
 Exit 1 when any detailed check or diagnosis line is FAIL (or WARN with
 `--strict`). The check names are listed in
 [troubleshooting](./troubleshooting.md#doctor-checks).
@@ -155,11 +161,24 @@ Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 | Group | Flags (type = default) |
 |---|---|
 | Throughput | `--model <id>` (`String?`), `--prompt <text>` (`ModelBenchmark.defaultPrompt`), `--iterations <n>` (`ModelBenchmark.defaultIterations`), `--max-tokens <n>` (`ModelBenchmark.defaultMaxTokens`) |
+| Ordinary token scores | `--teacher-forced-input <json>` (`String?`, unset), explicit `--model <id>` and `--kv-backend contiguous\|paged` (`BenchmarkCommand.swift`, `teacherForcedOptionError`) |
 | Scheduler prefill decision | `--scheduler-prefill-decision`, `--expected-model-aggregate-sha256`, `--expected-registered-binary-sha256`, `--expected-version`, `--source-sha`, `--decision-iterations` (`SchedulerPrefillDecisionReport.minimumLiveIterations`), `--output <path>` (`BenchmarkCommand+SchedulerPrefillDecision.swift`) |
 | Sweep | `--sweep`, `--prefill-lengths` (`"128,512,2048"`), `--max-batch` (`6`), `--batch-sizes` (`String?`), `--decode-tokens`, `--decode-prompt-tokens`, `--decode-iterations` (`ThroughputSweep` defaults), `--kv-backend` (`"auto"`) (`BenchmarkCommand+Sweep.swift`) |
 | Scheduler prefill | `--scheduler-prefill`, `--prefill-iterations` (`2`) |
 | Arrival invariance | `--arrival-invariance`, `--arrival-prompt-tokens` (`512`), `--arrival-prompt-lengths` (`String?`; exactly four comma-separated positive lengths, overrides the uniform prompt length), `--arrival-decode-tokens` (`64`), `--arrival-iterations` (`3`) (`BenchmarkCommand.swift`, `Benchmark.arrivalPromptLengths`) |
 | Backend parity | `--parity`, `--assistant-model <id>` (`String?`), `--parity-max-tokens` (`48`), `--parity-prefix-tokens` (`28672`) (`BenchmarkCommand+Parity.swift`) |
+
+`--kv-backend auto` uses the candidate's
+[exact five-artifact allowlist](../architecture/prefix-cache.md#kv-layouts): eligible
+cohort models try paged, all other IDs use contiguous, and automatic paged
+failures or the version-bound crash-loop guard fall back to contiguous.
+Explicit `--kv-backend paged` refuses construction failures rather than measuring
+a fallback; the kill switch and capability/span-mask vetoes can still force
+contiguous. Inspect the measured engine's `resolvedKVBackend` and report
+`kvBackend` block (`provider-swift/Sources/darkbloom/BenchmarkCommand.swift`,
+`Benchmark.kvBackend`). The
+[five-artifact rollout](../design/release-090-paged-qwen-cache.md) is **not yet
+validated**; benchmark selection alone is not release evidence.
 
 Environment inputs for the harnesses are in
 [`reference/configuration.md`](../reference/configuration.md).
@@ -374,7 +393,7 @@ four write cycles: a value from before a reload is worse than no value.
 Run local diagnostics and fetch the coordinator's trust view.
 
 ```bash
-darkbloom doctor [--strict] [--coordinator <url>] [--support]
+darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-guard]
 ```
 
 | Flag | Description |
@@ -382,9 +401,11 @@ darkbloom doctor [--strict] [--coordinator <url>] [--support]
 | `--strict` | Treat warnings as failures |
 | `--coordinator <url>` | Override coordinator URL for remote checks |
 | `--support` | Print local identifiers useful for support |
+| `--clear-backend-guard` | Remove the crash-loop KV guard, reset its restart chain and exit; normal selection resumes on the next load |
 
 `darkbloom doctor` is read-only except for the subprocess calls used by public
-ProviderCore checks.
+ProviderCore checks and the explicit `--clear-backend-guard` action
+(`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `runClearBackendGuard`).
 
 Two of the detailed checks cover the KV-backend rollout:
 
@@ -394,10 +415,12 @@ Two of the detailed checks cover the KV-backend rollout:
 | `kv backend posture` | An EXPLICIT `paged` or `contiguous` request was not honoured: refused (no engine built, the box serves nothing for that model) or silently degraded to another backend. |
 
 `auto` never fails this check — it promises nothing, so whichever backend it
-lands on is honoured by definition. It resolves contiguous as of v0.8.1, so an
-`auto` slot reporting contiguous is expected output, not a finding. Explicit
-`paged` remains available and refuses a load it cannot serve instead of
-silently changing backends. When
+lands on is honoured by definition. Candidate `auto` can report paged for the
+[exact five-artifact cohort](../architecture/prefix-cache.md#kv-layouts), or contiguous
+after fallback; non-cohort `auto` remains contiguous. None is a posture fault
+or validation of the candidate rollout. Explicit `paged` construction failures
+refuse the load; a policy veto that serves contiguous instead still fails the
+explicit-request posture check. When
 the state file is past the wedge bar the backend verdict is WITHHELD rather
 than asserted from a snapshot that may predate a reload.
 
@@ -470,6 +493,36 @@ darkbloom benchmark [--model <id>] [--prompt <text>] [--iterations <n>] [--max-t
 | `--prompt <text>` | Prompt text |
 | `--iterations <n>` | Number of iterations (default from `ModelBenchmark`) |
 | `--max-tokens <n>` | Maximum tokens to generate per iteration |
+
+### Teacher-forced scores
+
+`--teacher-forced-input <json>` selects bounded ordinary target scoring with an
+explicit model and backend. The UTF-8 JSON input is at most 1 MiB; fields are
+defined by `provider-swift/Sources/ProviderBenchmark/TeacherForcedBenchmarkInput.swift`
+(`TeacherForcedBenchmarkInput`):
+
+| Field | Required value |
+|---|---|
+| `modelID` | Exact selected model ID |
+| `expectedModelAggregateSHA256` | Verified model aggregate hash, 64 lowercase hexadecimal characters |
+| `promptTokens` | Exact nonempty token-ID array, at most 32,768 IDs |
+| `continuation` | Exact nonempty token-ID array, at most 256 IDs |
+
+IDs must fit the model's declared vocabulary; the native request bounds and
+actual logit geometry are checked by
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2TeacherForcedScores.swift`.
+This mode disables prefix caching and MTP, uses a production single-slot KV
+grant, and refuses backend fallback. It is mutually exclusive with the other
+benchmark modes and rejects `--assistant-model` and `--output`; JSON goes to
+stdout (`BenchmarkCommand.swift`, `teacherForcedOptionError`).
+
+The report includes plain top-1 IDs, two diagnostic observations, forward
+counts, runtime/input/model hashes and the production grant. `observed` means
+finite scores and matching ordinary-forward controls; `inconclusive` preserves
+evidence and exits 2. Neither status certifies free generation, model quality
+or speculative verification
+(`provider-swift/Sources/ProviderBenchmark/TeacherForcedBenchmark.swift`).
+See the [developer test procedure](../developer/test.md#ordinary-teacher-forced-score-diagnostics).
 
 ## `darkbloom update`
 
@@ -703,7 +756,7 @@ override `provider.toml` for one process, are in
 | `[backend] idle_timeout_mins` | `60` | Unload a model idle this long; `0` disables |
 | `[backend] max_model_slots` | `3` | Resident models |
 | `[backend] engine_v2_max_concurrent` | `4` (clamped to `[1, 8]`) | Concurrent requests per engine |
-| `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` |
+| `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Candidate `auto` tries paged only for the [exact five-artifact allowlist](../architecture/prefix-cache.md#kv-layouts), with contiguous fallback; all other IDs remain contiguous (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
 | `[backend] startup_preload` | `true` | Load advertised models at start |
 | `[coordinator] url` | `"wss://api.darkbloom.dev/ws/provider"` | |
@@ -720,13 +773,33 @@ provider plist's `EnvironmentVariables`
 (`provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`,
 `passthroughEnvKeys` + `inferencePassthroughEnvKeys`,
 `passthroughEnvironment`). Every other variable — including `PATH` and all the
-media, prefix-cache-SSD and memory-cap tunables — reaches the engine only under
-`darkbloom start --foreground` or `--local`. Effects and defaults are specified
+media, SSD-prefix and memory-cap tunables — reaches the engine only under
+`darkbloom start --foreground` or `--local`. The `DARKBLOOM_PREFIX_CACHE` switch
+defaults to enabled for the three exact Qwen artifacts in the
+[release cohort](../design/release-090-paged-qwen-cache.md). Other models need an
+explicit affirmative value for SSD caching. Resident payload retention requires
+`DARKBLOOM_PREFIX_CACHE_MEMORY=1`; both switches are forwarded to the daemon,
+and the global disable wins (`PrefixCachePolicy.isEnabled`, `isMemoryEnabled`). Coordinator cache preference separately requires
+`EIGENINFERENCE_CACHE_ROUTING_MODE=on`; its default is `off`, and no provider CLI
+cache setting enables it (`coordinator/registry/config.go`, `ReadConfig`). Resident
+routing also requires the separate live capability described in
+[`cache-aware-routing.md`](../architecture/cache-aware-routing.md). Effects and defaults are specified
 once in [`reference/configuration.md`](../reference/configuration.md).
+
+`DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE` and `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES`
+control the explicitly opted-in recurrent checkpoint bank in foreground/local processes; they are
+not forwarded into the LaunchAgent. Their defaults and budget semantics are
+listed in the
+[`resident cache configuration`](../reference/configuration.md#resident-recurrent-prefix-cache)
+table (`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Hybrid.swift`,
+`hybridConfig`). They do not change `mtp_mode`; eligible persistent assistants
+must support the checkpoint contract described in
+[`prefix caching`](../architecture/prefix-cache.md#resident-tiers).
 
 | Variable | Read by |
 |---|---|
-| `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` (`environmentFlag`) |
+| `DARKBLOOM_PREFIX_CACHE_MEMORY` | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift` (`memoryEnvironmentFlag`) |
+| `DARKBLOOM_PREFIX_CACHE` | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift` (`environmentFlag`) |
 | `DARKBLOOM_MLX_RESOURCE_DEBUG` | forwarded to `mlx-swift-lm` |
 | `DARKBLOOM_CBV2_PAGED_KV` | `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift` |
 | `DARKBLOOM_CBV2_MTP` | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` |
@@ -734,7 +807,7 @@ once in [`reference/configuration.md`](../reference/configuration.md).
 | `DARKBLOOM_KV_BACKEND_GUARD` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
 | `DARKBLOOM_MLX_CACHE_LIMIT_GB` | `provider-swift/Sources/ProviderCore/Inference/MLXMemoryGuard.swift` (`defaultCacheLimitGB`) |
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/MLXMemoryGuard.swift` |
-| `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift` (`maxPartialPrefillsKey`) |
+| `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Configuration.swift` (`maxPartialPrefillsKey`) |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/PrefillDeadlineMode.swift` (`environmentKey`) |
 | `MLX_GATHER_QMM_EXPERT_SLICES` | only when the shell value is exactly `1` (`GemmaOptimizationEnvironment.daemonDrainPassthrough`, `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift`) |
 

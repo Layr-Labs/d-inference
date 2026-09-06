@@ -135,9 +135,6 @@ func TestFoldHelpersNeverPassProviderStringsVerbatim(t *testing.T) {
 	if foldChipFamily("M3 Max (evil=1)") != "m3" || foldChipFamily("weird") != profileOther {
 		t.Fatal("chip family fold")
 	}
-	if foldThermalState("SERIOUS") != "serious" || foldThermalState("=cmd") != profileOther || foldThermalState("") != "" {
-		t.Fatal("thermal fold")
-	}
 	if foldProviderVersion("0.8.13") != "0.8.13" || foldProviderVersion("0.8.13-rc.1") != "0.8.13-rc.1" || foldProviderVersion("v0.8; drop") != "invalid" {
 		t.Fatal("version fold")
 	}

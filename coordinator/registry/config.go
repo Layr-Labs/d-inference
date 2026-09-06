@@ -20,14 +20,16 @@ type Config struct {
 }
 
 type CacheRoutingConfig struct {
-	Mode            string
-	ActivationPct   float64
-	MaxPlanQPS      float64
-	TTL             time.Duration
-	MaxHolders      int
-	MaxDiscountMs   float64
-	MaxCostFraction float64
-	MasterKey       string
+	AllowedArtifacts    []CacheRoutingArtifact
+	artifactConfigError error
+	Mode                string
+	ActivationPct       float64
+	MaxPlanQPS          float64
+	TTL                 time.Duration
+	MaxHolders          int
+	MaxDiscountMs       *float64
+	MaxCostFraction     *float64
+	MasterKey           string
 }
 
 // QualityCapConfig governs the per-provider admission concurrency cap derived
@@ -115,6 +117,7 @@ func (c WarmPoolConfig) perTickCeiling() int {
 
 // ReadConfig reads registry configuration from environment variables.
 func ReadConfig() Config {
+	artifacts, artifactsErr := readCacheRoutingArtifacts()
 	return Config{
 		MinTrustLevel: os.Getenv(env.EnvPrefix + "_MIN_TRUST"),
 		WarmPool: WarmPoolConfig{
@@ -144,14 +147,16 @@ func ReadConfig() Config {
 			MaxGlobalPendingLoads:  env.EnvInt(env.EnvPrefix+"_WARM_POOL_MAX_GLOBAL_PENDING_LOADS", 16),
 		},
 		CacheRouting: CacheRoutingConfig{
-			Mode:            strings.ToLower(strings.TrimSpace(os.Getenv(env.EnvPrefix + "_CACHE_ROUTING_MODE"))),
-			ActivationPct:   envStrictFloat(env.EnvPrefix+"_CACHE_ROUTING_PERCENT", defaultCacheRoutingActivationPct),
-			MaxPlanQPS:      envStrictFloat(env.EnvPrefix+"_CACHE_ROUTING_MAX_PLAN_QPS", defaultCacheRoutingMaxPlanQPS),
-			TTL:             envDuration(env.EnvPrefix+"_CACHE_ROUTING_TTL", defaultCacheRoutingTTL),
-			MaxHolders:      env.EnvInt(env.EnvPrefix+"_CACHE_ROUTING_MAX_HOLDERS", defaultCacheRoutingMaxHolders),
-			MaxDiscountMs:   env.EnvFloat(env.EnvPrefix+"_CACHE_ROUTING_MAX_DISCOUNT_MS", defaultCacheRoutingMaxDiscountMs),
-			MaxCostFraction: env.EnvFloat(env.EnvPrefix+"_CACHE_ROUTING_MAX_COST_FRACTION", defaultCacheRoutingMaxCostFraction),
-			MasterKey:       strings.TrimSpace(os.Getenv(env.EnvPrefix + "_CACHE_MASTER_KEY")),
+			AllowedArtifacts:    artifacts,
+			artifactConfigError: artifactsErr,
+			Mode:                strings.ToLower(strings.TrimSpace(os.Getenv(env.EnvPrefix + "_CACHE_ROUTING_MODE"))),
+			ActivationPct:       envStrictFloat(env.EnvPrefix+"_CACHE_ROUTING_PERCENT", defaultCacheRoutingActivationPct),
+			MaxPlanQPS:          envStrictFloat(env.EnvPrefix+"_CACHE_ROUTING_MAX_PLAN_QPS", defaultCacheRoutingMaxPlanQPS),
+			TTL:                 envDuration(env.EnvPrefix+"_CACHE_ROUTING_TTL", defaultCacheRoutingTTL),
+			MaxHolders:          env.EnvInt(env.EnvPrefix+"_CACHE_ROUTING_MAX_HOLDERS", defaultCacheRoutingMaxHolders),
+			MaxDiscountMs:       optionalCacheScoreLimit(env.EnvPrefix + "_CACHE_ROUTING_MAX_DISCOUNT_MS"),
+			MaxCostFraction:     optionalCacheScoreLimit(env.EnvPrefix + "_CACHE_ROUTING_MAX_COST_FRACTION"),
+			MasterKey:           strings.TrimSpace(os.Getenv(env.EnvPrefix + "_CACHE_MASTER_KEY")),
 		},
 		QualityCap: QualityCapConfig{
 			Enabled:    env.EnvBool(env.EnvPrefix+"_QUALITY_CONCURRENCY_CAP", true),
@@ -204,6 +209,12 @@ func (c Config) Check() error {
 }
 
 func (c CacheRoutingConfig) Check() error {
+	if c.artifactConfigError != nil {
+		return fmt.Errorf("registry: %s: %w", cacheArtifactAllowlistEnv, c.artifactConfigError)
+	}
+	if _, err := newCacheArtifactAllowlist(c.AllowedArtifacts); err != nil {
+		return fmt.Errorf("registry: %s: %w", cacheArtifactAllowlistEnv, err)
+	}
 	mode := c.Mode
 	if mode == "" {
 		mode = CacheRoutingOff
@@ -225,10 +236,10 @@ func (c CacheRoutingConfig) Check() error {
 	if c.MaxHolders < 1 || c.MaxHolders > 32 {
 		return fmt.Errorf("registry: cache routing max holders must be between 1 and 32")
 	}
-	if math.IsNaN(c.MaxDiscountMs) || math.IsInf(c.MaxDiscountMs, 0) || c.MaxDiscountMs < 0 || c.MaxDiscountMs > 10_000 {
+	if !validCacheScoreLimit(c.MaxDiscountMs, 10_000) {
 		return fmt.Errorf("registry: cache routing max discount must be between 0 and 10000ms")
 	}
-	if math.IsNaN(c.MaxCostFraction) || math.IsInf(c.MaxCostFraction, 0) || c.MaxCostFraction < 0 || c.MaxCostFraction > 1 {
+	if !validCacheScoreLimit(c.MaxCostFraction, 1) {
 		return fmt.Errorf("registry: cache routing max cost fraction must be between 0 and 1")
 	}
 	if mode != CacheRoutingOff {

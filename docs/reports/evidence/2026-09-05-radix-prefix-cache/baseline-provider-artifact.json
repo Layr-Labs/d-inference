@@ -1,0 +1,18 @@
+{
+  "commit": "e928d395fa4f97e736552a6de89b37876b2bc56b",
+  "status": "",
+  "submodules": " 0a725e3000edabc4911cde345270ca950bfa152f libs/mlx (darkbloom-metal-resource-count-201-g0a725e30)\n 6b0505cc790f512ae49d740b21e13f80802946bd libs/mlx-swift (heads/main)\n 734241bbff26467bb33eff8adc65b82d17b33578 libs/mlx-swift/Source/Cmlx/mlx (heads/main)\n 9ff12fab2634d6d76276823164dc8ceeea68dca9 libs/mlx-swift/Source/Cmlx/mlx-c (darkbloom-metal-resource-count-8-g9ff12fa)\n c4089870a24b082a9d70f31dc853380e9cff92ca libs/mlx-swift-lm (remotes/origin/feat/cbv2-request-timing)\n",
+  "swift": "Apple Swift version 6.3.2 (swiftlang-6.3.2.1.108 clang-2100.1.1.101)\nTarget: arm64-apple-macosx26.0\n",
+  "files": [
+    {
+      "name": "darkbloom",
+      "bytes": 84080664,
+      "sha256": "f226a57636d3796c51ac98ad1a338854cea4c77a3fd9bc47047c754499fc23b3"
+    },
+    {
+      "name": "mlx.metallib",
+      "bytes": 182380912,
+      "sha256": "4ffbbac48a99b495916c3fa0921ce813eb554de1a09aff408d9b5a5a8053e6b0"
+    }
+  ]
+}

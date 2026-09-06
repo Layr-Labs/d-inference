@@ -1,0 +1,1662 @@
+{
+  "audit_execution": "local metadata, hashing, Git objects, codesign and otool only",
+  "audit_script": {
+    "bytes": 58214,
+    "mode": 420,
+    "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/audit.py",
+    "sha256": "4c5b5101517c3c7a5c125cce8bc6990ba1e3b20a9b43a9001830ca8be999bdeb"
+  },
+  "checks": {
+    "actual_product_graph_closures": {
+      "details": {
+        "darkbloom-verified": {
+          "candidate_define_checked": false,
+          "closure_commands": 402,
+          "closure_evidence": {
+            "bytes": 378498,
+            "mode": 420,
+            "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/graphs/darkbloom-verified.json",
+            "sha256": "890e481e33bd6db0debace215909f787192c431068fdee3f796d7b5559989339"
+          },
+          "closure_nodes": 4701,
+          "external_checkouts": [
+            "eventsource",
+            "hummingbird",
+            "swift-argument-parser",
+            "swift-async-algorithms",
+            "swift-atomics",
+            "swift-collections",
+            "swift-configuration",
+            "swift-crypto",
+            "swift-distributed-tracing",
+            "swift-http-types",
+            "swift-huggingface",
+            "swift-jinja",
+            "swift-log",
+            "swift-metrics",
+            "swift-nio",
+            "swift-nio-extras",
+            "swift-nio-transport-services",
+            "swift-numerics",
+            "swift-service-context",
+            "swift-service-lifecycle",
+            "swift-sodium",
+            "swift-syntax",
+            "swift-system",
+            "swift-transformers",
+            "tomlkit",
+            "yyjson"
+          ],
+          "inventory_by_repository": {
+            "c": 26,
+            "core": 108,
+            "native": 335,
+            "parent": 716,
+            "swift": 124
+          },
+          "inventory_files": 1309,
+          "product": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/release-build/arm64-apple-macosx/release/darkbloom",
+          "raw_graph": {
+            "bytes": 406640,
+            "mode": 420,
+            "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/darkbloom-verified-graph.yaml.gz",
+            "sha256": "0a047d9ea11738e6b510c9bbae736bf4c2b73f4dac51a6bc8d5ede5fc0b5d915"
+          },
+          "required_closure_sources": [
+            "EngineLoopV2+ForwardShapes.swift",
+            "EngineV2Factory+BackendPreparation.swift",
+            "EngineV2Factory+Production.swift",
+            "EngineV2KVBackendPolicy.swift",
+            "EngineV2SlotFactory.swift",
+            "ForwardShapeDispatchV2.swift",
+            "ForwardShapeV2.swift",
+            "SSDAuthenticatedFileIdentity.swift",
+            "SSDCheckpointFileCoordinator.swift",
+            "SSDHybridCheckpointStore+Read.swift",
+            "SSDHybridCheckpointStore.swift",
+            "quantized.cpp"
+          ],
+          "source_graph": {
+            "bytes": 386444,
+            "mode": 420,
+            "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/darkbloom-verified-source-graph.json",
+            "sha256": "284fec4ad7a870aa703bc23d77ca968a1593cd1faa7a617fbaf251d9233c7d3d"
+          }
+        },
+        "provider-tests": {
+          "candidate_define_checked": false,
+          "closure_commands": 865,
+          "closure_evidence": {
+            "bytes": 494706,
+            "mode": 420,
+            "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/graphs/provider-tests.json",
+            "sha256": "d6a6e7ced43680f2a52a6ef51d1bbe088d490c4667258d3f82e17ed3a1bfd27f"
+          },
+          "closure_nodes": 6697,
+          "external_checkouts": [
+            "async-http-client",
+            "eventsource",
+            "hummingbird",
+            "hummingbird-websocket",
+            "swift-algorithms",
+            "swift-argument-parser",
+            "swift-async-algorithms",
+            "swift-atomics",
+            "swift-collections",
+            "swift-configuration",
+            "swift-crypto",
+            "swift-distributed-tracing",
+            "swift-http-types",
+            "swift-huggingface",
+            "swift-jinja",
+            "swift-log",
+            "swift-metrics",
+            "swift-nio",
+            "swift-nio-extras",
+            "swift-nio-http2",
+            "swift-nio-ssl",
+            "swift-nio-transport-services",
+            "swift-numerics",
+            "swift-service-context",
+            "swift-service-lifecycle",
+            "swift-sodium",
+            "swift-syntax",
+            "swift-system",
+            "swift-transformers",
+            "swift-websocket",
+            "tomlkit",
+            "yyjson"
+          ],
+          "inventory_by_repository": {
+            "c": 26,
+            "core": 108,
+            "native": 335,
+            "parent": 716,
+            "swift": 124
+          },
+          "inventory_files": 1309,
+          "product": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/provider-test-build/arm64-apple-macosx/debug/DarkbloomProviderPackageTests.xctest/Contents/MacOS/DarkbloomProviderPackageTests",
+          "raw_graph": {
+            "bytes": 414583,
+            "mode": 420,
+            "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/provider-tests-graph.yaml.gz",
+            "sha256": "2cb42b3d29513c9cb1ad246efbea03508d0eaecf82916d0ccfa63f39741724de"
+          },
+          "required_closure_sources": [
+            "BenchmarkSweepExitTests.swift",
+            "DoctorClearBackendGuardTests.swift",
+            "EngineLoopV2+ForwardShapes.swift",
+            "EngineV2Factory+BackendPreparation.swift",
+            "EngineV2Factory+Production.swift",
+            "EngineV2KVBackendGateTests.swift",
+            "EngineV2KVBackendPolicy.swift",
+            "EngineV2KVBackendPolicyTests.swift",
+            "EngineV2PagedPoolDTypeEnvTests.swift",
+            "EngineV2PrefixCacheWiringTests.swift",
+            "EngineV2ProductionWiringTests.swift",
+            "EngineV2ResliceTests.swift",
+            "EngineV2ResliceUnwindTests.swift",
+            "EngineV2SlotFactory.swift",
+            "ForwardShapeDispatchV2.swift",
+            "ForwardShapeV2.swift",
+            "KVBackendGuardDiagnosticsTests.swift",
+            "KVBackendPostureTests.swift",
+            "MTPBenchmarkTests.swift",
+            "PrefixCachePolicyTests.swift",
+            "SSDAuthenticatedFileIdentity.swift",
+            "SSDBlockStreamingTests.swift",
+            "SSDCheckpointCoordinationTestSupport.swift",
+            "SSDCheckpointFileCoordinator.swift",
+            "SSDCheckpointFileCoordinatorPathTests.swift",
+            "SSDCheckpointFileCoordinatorTests.swift",
+            "SSDCheckpointLookupTests.swift",
+            "SSDCheckpointRecencyCoordinationTests.swift",
+            "SSDCheckpointStageReservationTests.swift",
+            "SSDHybridCheckpointCoordinationTests.swift",
+            "SSDHybridCheckpointRecencyTests.swift",
+            "SSDHybridCheckpointStore+Read.swift",
+            "SSDHybridCheckpointStore.swift",
+            "SSDHybridCheckpointStoreTests.swift",
+            "SSDSharedProcessCheckpointTests.swift",
+            "SegmentedProductionGrantTests.swift",
+            "quantized.cpp"
+          ],
+          "source_graph": {
+            "bytes": 386444,
+            "mode": 420,
+            "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/provider-tests-source-graph.json",
+            "sha256": "284fec4ad7a870aa703bc23d77ca968a1593cd1faa7a617fbaf251d9233c7d3d"
+          }
+        },
+        "radix-engine-verified": {
+          "candidate_define_checked": true,
+          "closure_commands": 390,
+          "closure_evidence": {
+            "bytes": 349837,
+            "mode": 420,
+            "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/graphs/radix-engine-verified.json",
+            "sha256": "1d5e7b178dd8682e6a16b3823aef6f6ee843f54247b1864f6f1a340b0f917d23"
+          },
+          "closure_nodes": 4451,
+          "external_checkouts": [
+            "eventsource",
+            "hummingbird",
+            "swift-async-algorithms",
+            "swift-atomics",
+            "swift-collections",
+            "swift-configuration",
+            "swift-crypto",
+            "swift-distributed-tracing",
+            "swift-http-types",
+            "swift-huggingface",
+            "swift-jinja",
+            "swift-log",
+            "swift-metrics",
+            "swift-nio",
+            "swift-nio-extras",
+            "swift-nio-transport-services",
+            "swift-numerics",
+            "swift-service-context",
+            "swift-service-lifecycle",
+            "swift-sodium",
+            "swift-syntax",
+            "swift-system",
+            "swift-transformers",
+            "tomlkit",
+            "yyjson"
+          ],
+          "inventory_by_repository": {
+            "c": 26,
+            "core": 108,
+            "native": 335,
+            "parent": 453,
+            "swift": 124
+          },
+          "inventory_files": 1046,
+          "product": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/release-build/arm64-apple-macosx/release/radix-engine",
+          "raw_graph": {
+            "bytes": 404597,
+            "mode": 420,
+            "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/radix-engine-verified-graph.yaml.gz",
+            "sha256": "291f48af17e8856de099998f36e709f688a4f2d829394840c86c7f7b7f8603e1"
+          },
+          "required_closure_sources": [
+            "BenchmarkLoader.swift",
+            "EngineLoopV2+ForwardShapes.swift",
+            "EngineV2Factory+BackendPreparation.swift",
+            "EngineV2Factory+Production.swift",
+            "EngineV2KVBackendPolicy.swift",
+            "EngineV2SlotFactory.swift",
+            "ForwardShapeDispatchV2.swift",
+            "ForwardShapeV2.swift",
+            "SSDAuthenticatedFileIdentity.swift",
+            "SSDCheckpointFileCoordinator.swift",
+            "SSDHybridCheckpointStore+Read.swift",
+            "SSDHybridCheckpointStore.swift",
+            "quantized.cpp"
+          ],
+          "source_graph": {
+            "bytes": 308491,
+            "mode": 420,
+            "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/radix-engine-verified-source-graph.json",
+            "sha256": "01c98626fdda34274c7d53b5c9eb216b1f4ffdcdc93a86786dbd0d90d67b28f8"
+          }
+        }
+      },
+      "passed": true
+    },
+    "adhoc_signatures_and_dylibs": {
+      "details": {
+        "darkbloom": {
+          "artifact": {
+            "bytes": 87672056,
+            "mode": 493,
+            "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/artifact/darkbloom",
+            "sha256": "e18c11b3429c06156fd2d85e4ddb9334053f635087438733a5852ba31bb743b7"
+          },
+          "description": "Executable=/private/tmp/darkbloom-qwen-first-runtime3/review/artifact/darkbloom\nIdentifier=darkbloom\nFormat=Mach-O thin (arm64)\nCodeDirectory v=20400 size=679746 flags=0x20002(adhoc,linker-signed) hashes=21239+0 location=embedded\nVersionPlatform=1\nVersionMin=917504\nVersionSDK=1704960\nHash type=sha256 size=32\nCandidateCDHash sha256=02cdc46263c0ea5daccf51080c317c40e6e87fea\nCandidateCDHashFull sha256=02cdc46263c0ea5daccf51080c317c40e6e87feaa3a3aab00f47b668d5037091\nHash choices=sha256\nCMSDigest=02cdc46263c0ea5daccf51080c317c40e6e87feaa3a3aab00f47b668d5037091\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=31595028\nExecutable Segment flags=0x1\nPage size=4096\nCDHash=02cdc46263c0ea5daccf51080c317c40e6e87fea\nSignature=adhoc\nInfo.plist=not bound\nTeamIdentifier=not set\nSealed Resources=none\nInternal requirements=none",
+          "dylibs": "/private/tmp/darkbloom-qwen-first-runtime3/review/artifact/darkbloom:\n\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 4424.1.255)\n\t/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 372.16.0)\n\t/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate (compatibility version 1.0.0, current version 4.0.0)\n\t/System/Library/Frameworks/Security.framework/Versions/A/Security (compatibility version 1.0.0, current version 61901.101.4)\n\t/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit (compatibility version 1.0.0, current version 275.0.0)\n\t/usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 2100.43.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)\n\t/System/Library/Frameworks/AVFoundation.framework/Versions/A/AVFoundation (compatibility version 1.0.0, current version 2.0.0)\n\t/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit (compatibility version 45.0.0, current version 2685.50.120)\n\t/System/Library/Frameworks/AuthenticationServices.framework/Versions/A/AuthenticationServices (compatibility version 1.0.0, current version 624.1.16)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 4424.1.255)\n\t/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics (compatibility version 64.0.0, current version 1965.4.5)\n\t/System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage (compatibility version 1.0.1, current version 7.0.0)\n\t/System/Library/Frameworks/CoreML.framework/Versions/A/CoreML (compatibility version 1.0.0, current version 1.0.0)\n\t/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia (compatibility version 1.0.0, current version 3305.24.5)\n\t/System/Library/Frameworks/CryptoKit.framework/Versions/A/CryptoKit (compatibility version 1.0.0, current version 1.0.0)\n\t/System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO (compatibility version 1.0.0, current version 1.0.0)\n\t/System/Library/Frameworks/Network.framework/Versions/A/Network (compatibility version 1.0.0, current version 5812.101.2)\n\t/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration (compatibility version 1.0.0, current version 1405.100.8)\n\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)\n\t/usr/lib/swift/libswiftAVFoundation.dylib (compatibility version 1.0.0, current version 2410.24.5)\n\t/usr/lib/swift/libswiftCore.dylib (compatibility version 0.0.0, current version 0.0.0)\n\t/usr/lib/swift/libswiftCoreAudio.dylib (compatibility version 1.0.0, current version 411.255.0, weak)\n\t/usr/lib/swift/libswiftCoreFoundation.dylib (compatibility version 1.0.0, current version 120.100.0)\n\t/usr/lib/swift/libswiftCoreImage.dylib (compatibility version 1.0.0, current version 2.2.0, weak)\n\t/usr/lib/swift/libswiftCoreMIDI.dylib (compatibility version 1.0.0, current version 6.0.0, weak)\n\t/usr/lib/swift/libswiftCoreMedia.dylib (compatibility version 1.0.0, current version 3305.24.5)\n\t/usr/lib/swift/libswiftDarwin.dylib (compatibility version 1.0.0, current version 377.100.15)\n\t/usr/lib/swift/libswiftDispatch.dylib (compatibility version 1.0.0, current version 1542.100.32)\n\t/usr/lib/swift/libswiftIOKit.dylib (compatibility version 1.0.0, current version 1.0.0)\n\t/usr/lib/swift/libswiftMetal.dylib (compatibility version 1.0.0, current version 372.16.0, weak)\n\t/usr/lib/swift/libswiftOSLog.dylib (compatibility version 1.0.0, current version 10.0.0, weak)\n\t/usr/lib/swift/libswiftObjectiveC.dylib (compatibility version 1.0.0, current version 951.7.0)\n\t/usr/lib/swift/libswiftObservation.dylib (compatibility version 0.0.0, current version 0.0.0, weak)\n\t/usr/lib/swift/libswiftQuartzCore.dylib (compatibility version 1.0.0, current version 5.0.0, weak)\n\t/usr/lib/swift/libswiftRegexBuilder.dylib (compatibility version 1.0.0, current version 0.0.0)\n\t/usr/lib/swift/libswiftSpatial.dylib (compatibility version 1.0.0, current version 1.0.0, weak)\n\t/usr/lib/swift/libswiftSynchronization.dylib (compatibility version 0.0.0, current version 0.0.0, weak)\n\t/usr/lib/swift/libswiftUniformTypeIdentifiers.dylib (compatibility version 1.0.0, current version 877.4.9)\n\t/usr/lib/swift/libswiftXPC.dylib (compatibility version 1.0.0, current version 128.100.15, weak)\n\t/usr/lib/swift/libswift_Concurrency.dylib (compatibility version 0.0.0, current version 0.0.0)\n\t/usr/lib/swift/libswift_StringProcessing.dylib (compatibility version 1.0.0, current version 0.0.0)\n\t/usr/lib/swift/libswiftos.dylib (compatibility version 1.0.0, current version 1082.0.0)\n\t/usr/lib/swift/libswiftsimd.dylib (compatibility version 1.0.0, current version 23.0.0, weak)\n\t/usr/lib/swift/libswiftCoreML.dylib (compatibility version 1.0.0, current version 1.0.0)\n\t@rpath/libswiftCompatibilitySpan.dylib (compatibility version 0.0.0, current version 0.0.0, weak)",
+          "strict_verification": "/private/tmp/darkbloom-qwen-first-runtime3/review/artifact/darkbloom: valid on disk\n/private/tmp/darkbloom-qwen-first-runtime3/review/artifact/darkbloom: satisfies its Designated Requirement"
+        },
+        "radix-engine": {
+          "artifact": {
+            "bytes": 81646816,
+            "mode": 493,
+            "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/artifact/radix-engine",
+            "sha256": "f39e5f21db20f9fcc459222ecca9068f08fa90642c151f2e31bd5764b6885d05"
+          },
+          "description": "Executable=/private/tmp/darkbloom-qwen-first-runtime3/review/artifact/radix-engine\nIdentifier=radix-engine\nFormat=Mach-O thin (arm64)\nCodeDirectory v=20400 size=633029 flags=0x20002(adhoc,linker-signed) hashes=19779+0 location=embedded\nVersionPlatform=1\nVersionMin=917504\nVersionSDK=1704960\nHash type=sha256 size=32\nCandidateCDHash sha256=87f52f70be7786a0d38b26f49d5034632be33d29\nCandidateCDHashFull sha256=87f52f70be7786a0d38b26f49d5034632be33d294c438f251741b606ba27745f\nHash choices=sha256\nCMSDigest=87f52f70be7786a0d38b26f49d5034632be33d294c438f251741b606ba27745f\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=29739876\nExecutable Segment flags=0x1\nPage size=4096\nCDHash=87f52f70be7786a0d38b26f49d5034632be33d29\nSignature=adhoc\nInfo.plist=not bound\nTeamIdentifier=not set\nSealed Resources=none\nInternal requirements=none",
+          "dylibs": "/private/tmp/darkbloom-qwen-first-runtime3/review/artifact/radix-engine:\n\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 4424.1.255)\n\t/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 372.16.0)\n\t/System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate (compatibility version 1.0.0, current version 4.0.0)\n\t/usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 2100.43.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)\n\t/System/Library/Frameworks/AVFoundation.framework/Versions/A/AVFoundation (compatibility version 1.0.0, current version 2.0.0)\n\t/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit (compatibility version 45.0.0, current version 2685.50.120)\n\t/System/Library/Frameworks/AuthenticationServices.framework/Versions/A/AuthenticationServices (compatibility version 1.0.0, current version 624.1.16)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 4424.1.255)\n\t/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics (compatibility version 64.0.0, current version 1965.4.5)\n\t/System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage (compatibility version 1.0.1, current version 7.0.0)\n\t/System/Library/Frameworks/CoreML.framework/Versions/A/CoreML (compatibility version 1.0.0, current version 1.0.0)\n\t/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia (compatibility version 1.0.0, current version 3305.24.5)\n\t/System/Library/Frameworks/CryptoKit.framework/Versions/A/CryptoKit (compatibility version 1.0.0, current version 1.0.0)\n\t/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit (compatibility version 1.0.0, current version 275.0.0)\n\t/System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO (compatibility version 1.0.0, current version 1.0.0)\n\t/System/Library/Frameworks/Network.framework/Versions/A/Network (compatibility version 1.0.0, current version 5812.101.2)\n\t/System/Library/Frameworks/Security.framework/Versions/A/Security (compatibility version 1.0.0, current version 61901.101.4)\n\t/System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration (compatibility version 1.0.0, current version 1405.100.8)\n\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)\n\t/usr/lib/swift/libswiftAVFoundation.dylib (compatibility version 1.0.0, current version 2410.24.5)\n\t/usr/lib/swift/libswiftCore.dylib (compatibility version 0.0.0, current version 0.0.0)\n\t/usr/lib/swift/libswiftCoreAudio.dylib (compatibility version 1.0.0, current version 411.255.0, weak)\n\t/usr/lib/swift/libswiftCoreFoundation.dylib (compatibility version 1.0.0, current version 120.100.0)\n\t/usr/lib/swift/libswiftCoreImage.dylib (compatibility version 1.0.0, current version 2.2.0, weak)\n\t/usr/lib/swift/libswiftCoreMIDI.dylib (compatibility version 1.0.0, current version 6.0.0, weak)\n\t/usr/lib/swift/libswiftCoreMedia.dylib (compatibility version 1.0.0, current version 3305.24.5)\n\t/usr/lib/swift/libswiftDarwin.dylib (compatibility version 1.0.0, current version 377.100.15)\n\t/usr/lib/swift/libswiftDispatch.dylib (compatibility version 1.0.0, current version 1542.100.32)\n\t/usr/lib/swift/libswiftIOKit.dylib (compatibility version 1.0.0, current version 1.0.0, weak)\n\t/usr/lib/swift/libswiftMetal.dylib (compatibility version 1.0.0, current version 372.16.0, weak)\n\t/usr/lib/swift/libswiftOSLog.dylib (compatibility version 1.0.0, current version 10.0.0, weak)\n\t/usr/lib/swift/libswiftObjectiveC.dylib (compatibility version 1.0.0, current version 951.7.0)\n\t/usr/lib/swift/libswiftObservation.dylib (compatibility version 0.0.0, current version 0.0.0, weak)\n\t/usr/lib/swift/libswiftQuartzCore.dylib (compatibility version 1.0.0, current version 5.0.0, weak)\n\t/usr/lib/swift/libswiftRegexBuilder.dylib (compatibility version 1.0.0, current version 0.0.0)\n\t/usr/lib/swift/libswiftSpatial.dylib (compatibility version 1.0.0, current version 1.0.0, weak)\n\t/usr/lib/swift/libswiftSynchronization.dylib (compatibility version 0.0.0, current version 0.0.0, weak)\n\t/usr/lib/swift/libswiftUniformTypeIdentifiers.dylib (compatibility version 1.0.0, current version 877.4.9)\n\t/usr/lib/swift/libswiftXPC.dylib (compatibility version 1.0.0, current version 128.100.15, weak)\n\t/usr/lib/swift/libswift_Concurrency.dylib (compatibility version 0.0.0, current version 0.0.0)\n\t/usr/lib/swift/libswift_StringProcessing.dylib (compatibility version 1.0.0, current version 0.0.0)\n\t/usr/lib/swift/libswiftos.dylib (compatibility version 1.0.0, current version 1082.0.0)\n\t/usr/lib/swift/libswiftsimd.dylib (compatibility version 1.0.0, current version 23.0.0, weak)\n\t/usr/lib/swift/libswiftCoreML.dylib (compatibility version 1.0.0, current version 1.0.0)\n\t@rpath/libswiftCompatibilitySpan.dylib (compatibility version 0.0.0, current version 0.0.0, weak)",
+          "strict_verification": "/private/tmp/darkbloom-qwen-first-runtime3/review/artifact/radix-engine: valid on disk\n/private/tmp/darkbloom-qwen-first-runtime3/review/artifact/radix-engine: satisfies its Designated Requirement"
+        }
+      },
+      "passed": true
+    },
+    "collected_archives_and_artifacts": {
+      "details": {
+        "files": {
+          "darkbloom": {
+            "bytes": 87672056,
+            "mode": 493,
+            "sha256": "e18c11b3429c06156fd2d85e4ddb9334053f635087438733a5852ba31bb743b7"
+          },
+          "mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": {
+            "bytes": 24804,
+            "mode": 420,
+            "sha256": "4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149"
+          },
+          "mlx.metallib": {
+            "bytes": 182424064,
+            "mode": 420,
+            "sha256": "22497b094bbae98a07db9b088bddfe825ea1150d61fd77ac35592a29528abbaa"
+          },
+          "radix-engine": {
+            "bytes": 81646816,
+            "mode": 493,
+            "sha256": "f39e5f21db20f9fcc459222ecca9068f08fa90642c151f2e31bd5764b6885d05"
+          },
+          "swift-crypto_Crypto.bundle/PrivacyInfo.xcprivacy": {
+            "bytes": 398,
+            "mode": 420,
+            "sha256": "42fb8a30dd8d7ba0900e1bf17fe64ed8c12cfdb8a9c791ab6b4e1eceb0f299c0"
+          },
+          "swift-nio_NIOPosix.bundle/PrivacyInfo.xcprivacy": {
+            "bytes": 599,
+            "mode": 420,
+            "sha256": "982f20d820bc4460acc9d4116c3e6c8ec837f717dc82edbb7308f7400515c909"
+          },
+          "swift-transformers_Hub.bundle/gpt2_tokenizer_config.json": {
+            "bytes": 234,
+            "mode": 420,
+            "sha256": "551e26ec611d8d0c8edc3ef72e518a38418cb71f40de1347dd486a595e1557d7"
+          },
+          "swift-transformers_Hub.bundle/t5_tokenizer_config.json": {
+            "bytes": 20746,
+            "mode": 420,
+            "sha256": "e0aff0b1de9071e30d9a60a199303b6abe916a64a19932bd1c46992279b41a1f"
+          }
+        },
+        "initial_stage_exit_code": 0,
+        "source_stage_verified_without_recovery": true,
+        "transport": {
+          "metadata": {
+            "bytes": 2005966,
+            "mode": 420,
+            "sha256": "ceb3abb4146ab2202e97d7e8abc91927b88a7b96bfdf9848ef731e9ffced2ceb"
+          },
+          "runtime": {
+            "bytes": 112241563,
+            "mode": 420,
+            "sha256": "52e8a1c60afa1fd0fef459588e19c5849f75ee5439b507199537faf15330a667"
+          }
+        }
+      },
+      "passed": true
+    },
+    "coordination_source_scope": {
+      "details": {
+        "actual_builder_suite_count": 30,
+        "authentication_identity_git_blob_unchanged": "36767824b5f17bd3cee82926f2f59c1b440817fc",
+        "authentication_identity_sha256": "0dbe5273892371c865ae9ce28d8be7f292dd8409cfdd6963933afb53ec96d484",
+        "builder_script": {
+          "bytes": 7204,
+          "mode": 420,
+          "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/remote_build.py",
+          "sha256": "a7bc22f2e5dcfd8069e9b6e3ca663c0d855dce513abdc1725d6660a84043fc33"
+        },
+        "changed_implementation_files": [
+          "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointFileCoordinator.swift",
+          "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Read.swift",
+          "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore.swift"
+        ],
+        "counts_are_requirements_not_summary_derived_acceptance": true,
+        "new_test_files": [
+          "provider-swift/Tests/ProviderCoreTests/SSDCheckpointCoordinationTestSupport.swift",
+          "provider-swift/Tests/ProviderCoreTests/SSDCheckpointFileCoordinatorPathTests.swift",
+          "provider-swift/Tests/ProviderCoreTests/SSDCheckpointFileCoordinatorTests.swift",
+          "provider-swift/Tests/ProviderCoreTests/SSDCheckpointRecencyCoordinationTests.swift",
+          "provider-swift/Tests/ProviderCoreTests/SSDHybridCheckpointCoordinationTests.swift",
+          "provider-swift/Tests/ProviderCoreTests/SSDHybridCheckpointRecencyTests.swift"
+        ],
+        "suite_sources": {
+          "BenchmarkSweepExitTests": {
+            "expected_expanded_cases": 10,
+            "expected_functions": 10,
+            "path": "provider-swift/Tests/DarkbloomCLITests/BenchmarkSweepExitTests.swift",
+            "sha256": "8dc5e81c3fa12c4954e688f7b3c4cf20ca26517918a4e72e9ed7f4ab76639180"
+          },
+          "DoctorClearBackendGuardTests": {
+            "expected_expanded_cases": 3,
+            "expected_functions": 3,
+            "path": "provider-swift/Tests/DarkbloomCLITests/DoctorClearBackendGuardTests.swift",
+            "sha256": "240b7a00468c6158aada3824f6c76155763bbc278364174f87c65838761dab5a"
+          },
+          "EngineV2FP32PagedRateTests": {
+            "expected_expanded_cases": 4,
+            "expected_functions": 4,
+            "path": "provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift",
+            "sha256": "c1d677d753f35a89dace7dce7d401b417bcf1b6066f4341c86b924a53962ce22"
+          },
+          "EngineV2KVBackendFallbackHeartbeatTests": {
+            "expected_expanded_cases": 4,
+            "expected_functions": 4,
+            "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ProductionWiringTests.swift",
+            "sha256": "863a75a7cebc7d219162d2cb680a1ff35d2ff2a3d91522627d92916c96060dfc"
+          },
+          "EngineV2KVBackendGateTests": {
+            "expected_expanded_cases": 62,
+            "expected_functions": 39,
+            "path": "provider-swift/Tests/ProviderCoreTests/EngineV2KVBackendGateTests.swift",
+            "sha256": "4c7e6ea44f308060adc478536a5091c2de4f805bf3aceb6cfe8d4a91fb638b6d"
+          },
+          "EngineV2KVBackendPolicyTests": {
+            "expected_expanded_cases": 28,
+            "expected_functions": 8,
+            "path": "provider-swift/Tests/ProviderCoreTests/EngineV2KVBackendPolicyTests.swift",
+            "sha256": "8f1e47877065f3b6e83284af8e8eb35fb91420d9ccc707948d60860e959adec4"
+          },
+          "EngineV2PagedPoolDTypeEnvTests": {
+            "expected_expanded_cases": 11,
+            "expected_functions": 11,
+            "path": "provider-swift/Tests/ProviderCoreTests/EngineV2PagedPoolDTypeEnvTests.swift",
+            "sha256": "a2a9d2b6ab878999b0bacf59bf9fdea7f2b4ba9e3a86de48fafac71b4eebdba7"
+          },
+          "EngineV2PrefixCacheUsageTests": {
+            "expected_expanded_cases": 6,
+            "expected_functions": 6,
+            "path": "provider-swift/Tests/ProviderCoreTests/EngineV2PrefixCacheWiringTests.swift",
+            "sha256": "c1d677d753f35a89dace7dce7d401b417bcf1b6066f4341c86b924a53962ce22"
+          },
+          "EngineV2RequestRoutingTests": {
+            "expected_expanded_cases": 21,
+            "expected_functions": 21,
+            "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ProductionWiringTests.swift",
+            "sha256": "863a75a7cebc7d219162d2cb680a1ff35d2ff2a3d91522627d92916c96060dfc"
+          },
+          "EngineV2ResliceTests": {
+            "expected_expanded_cases": 8,
+            "expected_functions": 8,
+            "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ResliceTests.swift",
+            "sha256": "48aa78d03fb049aa3e8339a5826cf1da1aea00b96438b9742dede5f413584357"
+          },
+          "EngineV2ResliceUnwindTests": {
+            "expected_expanded_cases": 2,
+            "expected_functions": 2,
+            "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ResliceUnwindTests.swift",
+            "sha256": "f0a842497be8696e1893eccf7ba97ced5046803389091b90f0b22779d4594820"
+          },
+          "EngineV2ReslicingWiringTests": {
+            "expected_expanded_cases": 8,
+            "expected_functions": 8,
+            "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ProductionWiringTests.swift",
+            "sha256": "863a75a7cebc7d219162d2cb680a1ff35d2ff2a3d91522627d92916c96060dfc"
+          },
+          "EngineV2RuntimeGuardTests": {
+            "expected_expanded_cases": 7,
+            "expected_functions": 7,
+            "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ProductionWiringTests.swift",
+            "sha256": "863a75a7cebc7d219162d2cb680a1ff35d2ff2a3d91522627d92916c96060dfc"
+          },
+          "EngineV2SlotBuildTests": {
+            "expected_expanded_cases": 8,
+            "expected_functions": 8,
+            "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ProductionWiringTests.swift",
+            "sha256": "863a75a7cebc7d219162d2cb680a1ff35d2ff2a3d91522627d92916c96060dfc"
+          },
+          "KVBackendGuardDiagnosticsTests": {
+            "expected_expanded_cases": 9,
+            "expected_functions": 9,
+            "path": "provider-swift/Tests/DarkbloomCLITests/KVBackendGuardDiagnosticsTests.swift",
+            "sha256": "029a8b0341deb8978fecdb2a946c8bfde70427723089ffcccd46ecfa5b919fe6"
+          },
+          "KVBackendPostureTests": {
+            "expected_expanded_cases": 18,
+            "expected_functions": 16,
+            "path": "provider-swift/Tests/DarkbloomCLITests/KVBackendPostureTests.swift",
+            "sha256": "0848af68bf410c457acda953a2b45f21351ddc466a15f60d066e0a1c4ff57612"
+          },
+          "MTPBenchmarkTests": {
+            "expected_expanded_cases": 32,
+            "expected_functions": 32,
+            "path": "provider-swift/Tests/ProviderCoreTests/MTPBenchmarkTests.swift",
+            "sha256": "26f92384cddf3b0bc58382649f9eea6754959992d206405cc83ee1bc27593855"
+          },
+          "PrefillDeadlineProductionConfigTests": {
+            "expected_expanded_cases": 5,
+            "expected_functions": 5,
+            "path": "provider-swift/Tests/ProviderCoreTests/EngineV2ProductionWiringTests.swift",
+            "sha256": "863a75a7cebc7d219162d2cb680a1ff35d2ff2a3d91522627d92916c96060dfc"
+          },
+          "PrefixCachePolicyTests": {
+            "expected_expanded_cases": 12,
+            "expected_functions": 12,
+            "path": "provider-swift/Tests/ProviderCoreTests/PrefixCachePolicyTests.swift",
+            "sha256": "51821c929b6bfe348c14573b245c8a55b5e8a33a6a7ca0c6d0d1d8d2ceb90fc0"
+          },
+          "SSDBlockStreamingTests": {
+            "expected_expanded_cases": 10,
+            "expected_functions": 10,
+            "path": "provider-swift/Tests/ProviderCoreTests/SSDBlockStreamingTests.swift",
+            "sha256": "5f47e7cb3fba2faf08135003a96d58f9b40f64a2c64b38aac98e4dc91d60fdf6"
+          },
+          "SSDCheckpointFileCoordinatorPathTests": {
+            "expected_expanded_cases": 6,
+            "expected_functions": 4,
+            "new_test_methods": [
+              "existenceChanges",
+              "systemAliases",
+              "lexicalNormalization",
+              "unrelatedPaths"
+            ],
+            "path": "provider-swift/Tests/ProviderCoreTests/SSDCheckpointFileCoordinatorPathTests.swift",
+            "sha256": "7ae775f93fa270cf4469f0949a03d531d4ce0db8a0d61fe268b9541658d01119"
+          },
+          "SSDCheckpointFileCoordinatorTests": {
+            "expected_expanded_cases": 4,
+            "expected_functions": 4,
+            "new_test_methods": [
+              "fifoAndIndependentFiles",
+              "cancelledWaiter",
+              "explicitCancellation",
+              "cancellationHandoff"
+            ],
+            "path": "provider-swift/Tests/ProviderCoreTests/SSDCheckpointFileCoordinatorTests.swift",
+            "sha256": "68f04345dbc24f324b88d3c19275abe2c50d8addaba6ce7f1857a14c7acc1aaa"
+          },
+          "SSDCheckpointLookupTests": {
+            "expected_expanded_cases": 2,
+            "expected_functions": 2,
+            "path": "provider-swift/Tests/ProviderCoreTests/SSDCheckpointLookupTests.swift",
+            "sha256": "93135b198691c56c80215fe7845c542d5d946ac9b06103624231cd67c29bbaf3"
+          },
+          "SSDCheckpointRecencyCoordinationTests": {
+            "expected_expanded_cases": 4,
+            "expected_functions": 3,
+            "new_test_methods": [
+              "uncoordinatedSameTimestampReproducer",
+              "coordinatedOverlappingReads",
+              "authenticationIsNotRelaxed"
+            ],
+            "path": "provider-swift/Tests/ProviderCoreTests/SSDCheckpointRecencyCoordinationTests.swift",
+            "sha256": "135b3f51f3f374d9e5a254d73dce842c52b9469f7e861159cf24b6e84fe613c6"
+          },
+          "SSDCheckpointStageReservationTests": {
+            "expected_expanded_cases": 3,
+            "expected_functions": 2,
+            "path": "provider-swift/Tests/ProviderCoreTests/SSDCheckpointStageReservationTests.swift",
+            "sha256": "d8e9c32c57ed1baefd3c1feb3ce042538a864f005e3dac0c0c59dad7f7acfed3"
+          },
+          "SSDHybridCheckpointCoordinationTests": {
+            "expected_expanded_cases": 10,
+            "expected_functions": 5,
+            "new_test_methods": [
+              "overlappingStages",
+              "activeCancellation",
+              "queuedLifecycle",
+              "queuedValidity",
+              "multipleStoresAndFiles"
+            ],
+            "path": "provider-swift/Tests/ProviderCoreTests/SSDHybridCheckpointCoordinationTests.swift",
+            "sha256": "9bdd6ec744b0fc6a04de4ae5ed27f1b736d608eae85adc23fdca08cfc0e75be7"
+          },
+          "SSDHybridCheckpointRecencyTests": {
+            "expected_expanded_cases": 1,
+            "expected_functions": 1,
+            "new_test_methods": [
+              "slidingTTLAndRestart"
+            ],
+            "path": "provider-swift/Tests/ProviderCoreTests/SSDHybridCheckpointRecencyTests.swift",
+            "sha256": "3623fe3ae1a66e2a25fb420541b70bba1a7ca39253fdf7a7faf5624c2a63ebd0"
+          },
+          "SSDHybridCheckpointStoreTests": {
+            "expected_expanded_cases": 12,
+            "expected_functions": 12,
+            "path": "provider-swift/Tests/ProviderCoreTests/SSDHybridCheckpointStoreTests.swift",
+            "sha256": "02ab92d0c33c5de2ac7545f1bd2dadf9fc6f2c390c45c5fb5fbadc0f92f122f9"
+          },
+          "SSDSharedProcessCheckpointTests": {
+            "expected_expanded_cases": 6,
+            "expected_functions": 6,
+            "path": "provider-swift/Tests/ProviderCoreTests/SSDSharedProcessCheckpointTests.swift",
+            "sha256": "749f5ecda5db0ac36dbbbb49fa60d39785334560d76a5d8b8bbe2a0d992d6ebb"
+          },
+          "SegmentedProductionGrantTests": {
+            "expected_expanded_cases": 8,
+            "expected_functions": 8,
+            "path": "provider-swift/Tests/ProviderCoreTests/SegmentedProductionGrantTests.swift",
+            "sha256": "65b3e32847b393c903c53c17bc5485cb0425e7b005decf8698de156c81f9d482"
+          }
+        }
+      },
+      "passed": true
+    },
+    "dependency_locks": {
+      "details": {
+        "darkbloom-verified": {
+          "count": 36,
+          "lock_sha256": "b2b12d24d48bbedc4583d8831e0b81fe68b96d641804e0ebc56715cd2d88a7ea",
+          "originHash": "0b1432205ee2f9db231b67bcf4160953de78a7efee069ff03f5cf2fd2e8dacf5",
+          "revisions": {
+            "async-http-client": "3a5b74a58782c3b4c1f0bc75e9b67b10c2494e8f",
+            "compress-nio": "e1caa19077dda4b00441142ef57da3db02acd466",
+            "eventsource": "ca2a9d90cbe49e09b92f4b6ebd922c03ebea51d0",
+            "hummingbird": "277e5db5b6d348270088e6ee8e8fa2539bae603d",
+            "hummingbird-websocket": "716c54294152c6d3301a6239a1d74db57cbcd6dc",
+            "swift-algorithms": "87e50f483c54e6efd60e885f7f5aa946cee68023",
+            "swift-argument-parser": "0fbc8848e389af3bb55c182bc19ca9d5dc2f255b",
+            "swift-asn1": "eb50cbd14606a9161cbc5d452f18797c90ef0bab",
+            "swift-async-algorithms": "9d349bcc328ac3c31ce40e746b5882742a0d1272",
+            "swift-atomics": "b601256eab081c0f92f059e12818ac1d4f178ff7",
+            "swift-certificates": "bde8ca32a096825dfce37467137c903418c1893d",
+            "swift-collections": "6675bc0ff86e61436e615df6fc5174e043e57924",
+            "swift-configuration": "be76c4ad929eb6c4bcaf3351799f2adf9e6848a9",
+            "swift-crypto": "1b6b2e274e85105bfa155183145a1dcfd63331f1",
+            "swift-distributed-tracing": "dc4030184203ffafbb2ec614352487235d747fe0",
+            "swift-http-structured-headers": "933538faa42c432d385f02e07df0ace7c5ecfc47",
+            "swift-http-types": "45eb0224913ea070ec4fba17291b9e7ecf4749ca",
+            "swift-huggingface": "b721959445b617d0bf03910b2b4aced345fd93bf",
+            "swift-jinja": "0b67ecb79139f6addef8699eff3622808aa6c7dc",
+            "swift-log": "5073617dac96330a486245e4c0179cb0a6fd2256",
+            "swift-metrics": "d51c8d13fa366eec807eedb4e37daa60ff5bfdd5",
+            "swift-nio": "f71c8d2a5e74a2c6d11a0fbe324774b5d6084237",
+            "swift-nio-extras": "5a48717e29f62cb8326d6d42e46b562ca93847a6",
+            "swift-nio-http2": "81cc18264f92cd307ff98430f89372711d4f6fe9",
+            "swift-nio-ssl": "3f337058ccd7243c4cac7911477d8ad4c598d4da",
+            "swift-nio-transport-services": "67787bb645a5e67d2edcdfbe48a216cc549222d5",
+            "swift-numerics": "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
+            "swift-service-context": "d0997351b0c7779017f88e7a93bc30a1878d7f29",
+            "swift-service-lifecycle": "9829955b385e5bb88128b73f1b8389e9b9c3191a",
+            "swift-sodium": "e7e799cd1eaa4d0f6d3eab56832e7f4b377f4a4f",
+            "swift-syntax": "9de99a78f099e59caf2b2beec65a4c45d54b2081",
+            "swift-system": "7c6ad0fc39d0763e0b699210e4124afd5041c5df",
+            "swift-transformers": "2fa33e1f5e7131a7fc64c28e6d161dcec0d24820",
+            "swift-websocket": "ca48d46c25f8fa948d37eaa480c73172182cf90f",
+            "tomlkit": "ec6198d37d495efc6acd4dffbd262cdca7ff9b3f",
+            "yyjson": "8b4a38dc994a110abaec8a400615567bd996105f"
+          }
+        },
+        "provider-tests": {
+          "count": 36,
+          "lock_sha256": "b2b12d24d48bbedc4583d8831e0b81fe68b96d641804e0ebc56715cd2d88a7ea",
+          "originHash": "0b1432205ee2f9db231b67bcf4160953de78a7efee069ff03f5cf2fd2e8dacf5",
+          "revisions": {
+            "async-http-client": "3a5b74a58782c3b4c1f0bc75e9b67b10c2494e8f",
+            "compress-nio": "e1caa19077dda4b00441142ef57da3db02acd466",
+            "eventsource": "ca2a9d90cbe49e09b92f4b6ebd922c03ebea51d0",
+            "hummingbird": "277e5db5b6d348270088e6ee8e8fa2539bae603d",
+            "hummingbird-websocket": "716c54294152c6d3301a6239a1d74db57cbcd6dc",
+            "swift-algorithms": "87e50f483c54e6efd60e885f7f5aa946cee68023",
+            "swift-argument-parser": "0fbc8848e389af3bb55c182bc19ca9d5dc2f255b",
+            "swift-asn1": "eb50cbd14606a9161cbc5d452f18797c90ef0bab",
+            "swift-async-algorithms": "9d349bcc328ac3c31ce40e746b5882742a0d1272",
+            "swift-atomics": "b601256eab081c0f92f059e12818ac1d4f178ff7",
+            "swift-certificates": "bde8ca32a096825dfce37467137c903418c1893d",
+            "swift-collections": "6675bc0ff86e61436e615df6fc5174e043e57924",
+            "swift-configuration": "be76c4ad929eb6c4bcaf3351799f2adf9e6848a9",
+            "swift-crypto": "1b6b2e274e85105bfa155183145a1dcfd63331f1",
+            "swift-distributed-tracing": "dc4030184203ffafbb2ec614352487235d747fe0",
+            "swift-http-structured-headers": "933538faa42c432d385f02e07df0ace7c5ecfc47",
+            "swift-http-types": "45eb0224913ea070ec4fba17291b9e7ecf4749ca",
+            "swift-huggingface": "b721959445b617d0bf03910b2b4aced345fd93bf",
+            "swift-jinja": "0b67ecb79139f6addef8699eff3622808aa6c7dc",
+            "swift-log": "5073617dac96330a486245e4c0179cb0a6fd2256",
+            "swift-metrics": "d51c8d13fa366eec807eedb4e37daa60ff5bfdd5",
+            "swift-nio": "f71c8d2a5e74a2c6d11a0fbe324774b5d6084237",
+            "swift-nio-extras": "5a48717e29f62cb8326d6d42e46b562ca93847a6",
+            "swift-nio-http2": "81cc18264f92cd307ff98430f89372711d4f6fe9",
+            "swift-nio-ssl": "3f337058ccd7243c4cac7911477d8ad4c598d4da",
+            "swift-nio-transport-services": "67787bb645a5e67d2edcdfbe48a216cc549222d5",
+            "swift-numerics": "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
+            "swift-service-context": "d0997351b0c7779017f88e7a93bc30a1878d7f29",
+            "swift-service-lifecycle": "9829955b385e5bb88128b73f1b8389e9b9c3191a",
+            "swift-sodium": "e7e799cd1eaa4d0f6d3eab56832e7f4b377f4a4f",
+            "swift-syntax": "9de99a78f099e59caf2b2beec65a4c45d54b2081",
+            "swift-system": "7c6ad0fc39d0763e0b699210e4124afd5041c5df",
+            "swift-transformers": "2fa33e1f5e7131a7fc64c28e6d161dcec0d24820",
+            "swift-websocket": "ca48d46c25f8fa948d37eaa480c73172182cf90f",
+            "tomlkit": "ec6198d37d495efc6acd4dffbd262cdca7ff9b3f",
+            "yyjson": "8b4a38dc994a110abaec8a400615567bd996105f"
+          }
+        },
+        "radix-engine-verified": {
+          "count": 36,
+          "lock_sha256": "b2b12d24d48bbedc4583d8831e0b81fe68b96d641804e0ebc56715cd2d88a7ea",
+          "originHash": "0b1432205ee2f9db231b67bcf4160953de78a7efee069ff03f5cf2fd2e8dacf5",
+          "revisions": {
+            "async-http-client": "3a5b74a58782c3b4c1f0bc75e9b67b10c2494e8f",
+            "compress-nio": "e1caa19077dda4b00441142ef57da3db02acd466",
+            "eventsource": "ca2a9d90cbe49e09b92f4b6ebd922c03ebea51d0",
+            "hummingbird": "277e5db5b6d348270088e6ee8e8fa2539bae603d",
+            "hummingbird-websocket": "716c54294152c6d3301a6239a1d74db57cbcd6dc",
+            "swift-algorithms": "87e50f483c54e6efd60e885f7f5aa946cee68023",
+            "swift-argument-parser": "0fbc8848e389af3bb55c182bc19ca9d5dc2f255b",
+            "swift-asn1": "eb50cbd14606a9161cbc5d452f18797c90ef0bab",
+            "swift-async-algorithms": "9d349bcc328ac3c31ce40e746b5882742a0d1272",
+            "swift-atomics": "b601256eab081c0f92f059e12818ac1d4f178ff7",
+            "swift-certificates": "bde8ca32a096825dfce37467137c903418c1893d",
+            "swift-collections": "6675bc0ff86e61436e615df6fc5174e043e57924",
+            "swift-configuration": "be76c4ad929eb6c4bcaf3351799f2adf9e6848a9",
+            "swift-crypto": "1b6b2e274e85105bfa155183145a1dcfd63331f1",
+            "swift-distributed-tracing": "dc4030184203ffafbb2ec614352487235d747fe0",
+            "swift-http-structured-headers": "933538faa42c432d385f02e07df0ace7c5ecfc47",
+            "swift-http-types": "45eb0224913ea070ec4fba17291b9e7ecf4749ca",
+            "swift-huggingface": "b721959445b617d0bf03910b2b4aced345fd93bf",
+            "swift-jinja": "0b67ecb79139f6addef8699eff3622808aa6c7dc",
+            "swift-log": "5073617dac96330a486245e4c0179cb0a6fd2256",
+            "swift-metrics": "d51c8d13fa366eec807eedb4e37daa60ff5bfdd5",
+            "swift-nio": "f71c8d2a5e74a2c6d11a0fbe324774b5d6084237",
+            "swift-nio-extras": "5a48717e29f62cb8326d6d42e46b562ca93847a6",
+            "swift-nio-http2": "81cc18264f92cd307ff98430f89372711d4f6fe9",
+            "swift-nio-ssl": "3f337058ccd7243c4cac7911477d8ad4c598d4da",
+            "swift-nio-transport-services": "67787bb645a5e67d2edcdfbe48a216cc549222d5",
+            "swift-numerics": "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
+            "swift-service-context": "d0997351b0c7779017f88e7a93bc30a1878d7f29",
+            "swift-service-lifecycle": "9829955b385e5bb88128b73f1b8389e9b9c3191a",
+            "swift-sodium": "e7e799cd1eaa4d0f6d3eab56832e7f4b377f4a4f",
+            "swift-syntax": "9de99a78f099e59caf2b2beec65a4c45d54b2081",
+            "swift-system": "7c6ad0fc39d0763e0b699210e4124afd5041c5df",
+            "swift-transformers": "2fa33e1f5e7131a7fc64c28e6d161dcec0d24820",
+            "swift-websocket": "ca48d46c25f8fa948d37eaa480c73172182cf90f",
+            "tomlkit": "ec6198d37d495efc6acd4dffbd262cdca7ff9b3f",
+            "yyjson": "8b4a38dc994a110abaec8a400615567bd996105f"
+          }
+        }
+      },
+      "passed": true
+    },
+    "exact_sources_and_git_signatures": {
+      "details": {
+        "commit_signatures": {
+          "native": "Good \"git\" signature for 26431906+Gajesh2007@users.noreply.github.com with ED25519 key SHA256:L2MmGf2Eq7WMrcroJK072jZg+M78Kv4aZgj/2NbRb1k",
+          "parent": "Good \"git\" signature for 26431906+Gajesh2007@users.noreply.github.com with ED25519 key SHA256:L2MmGf2Eq7WMrcroJK072jZg+M78Kv4aZgj/2NbRb1k"
+        },
+        "nested_gitlinks": [
+          {
+            "commit": "0a725e3000edabc4911cde345270ca950bfa152f",
+            "owner": "parent",
+            "path": "libs/mlx"
+          },
+          {
+            "commit": "9561227d55a07db29f70a78aadc5d6b5aaeb10bf",
+            "owner": "parent",
+            "path": "libs/mlx-swift"
+          },
+          {
+            "commit": "f2d79145e040bbc28c6e0e355a19bc8923a70434",
+            "owner": "parent",
+            "path": "libs/mlx-swift-lm"
+          },
+          {
+            "commit": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+            "owner": "swift",
+            "path": "Source/Cmlx/mlx"
+          },
+          {
+            "commit": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+            "owner": "swift",
+            "path": "Source/Cmlx/mlx-c"
+          }
+        ],
+        "nondefault_captured_modes": [
+          {
+            "captured_mode": 384,
+            "note": "Git records executable bit only; captured mode checked against local file.",
+            "path": "docs/architecture/system-profiler.md",
+            "repository": "parent"
+          },
+          {
+            "captured_mode": 384,
+            "note": "Git records executable bit only; captured mode checked against local file.",
+            "path": "docs/glossary.md",
+            "repository": "parent"
+          },
+          {
+            "captured_mode": 384,
+            "note": "Git records executable bit only; captured mode checked against local file.",
+            "path": "docs/operations/cache-routing-rollout.md",
+            "repository": "parent"
+          },
+          {
+            "captured_mode": 384,
+            "note": "Git records executable bit only; captured mode checked against local file.",
+            "path": "docs/operations/coordinator-deploy.md",
+            "repository": "parent"
+          }
+        ],
+        "repositories": {
+          "c": {
+            "commit": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+            "path": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift/Source/Cmlx/mlx-c",
+            "tracked_files": 132
+          },
+          "core": {
+            "commit": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+            "path": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift/Source/Cmlx/mlx",
+            "tracked_files": 947
+          },
+          "native": {
+            "commit": "f2d79145e040bbc28c6e0e355a19bc8923a70434",
+            "path": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm",
+            "tracked_files": 943
+          },
+          "parent": {
+            "commit": "35fea6d0e3b05ff65d60d9675ab480159913ac62",
+            "path": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated",
+            "tracked_files": 3720
+          },
+          "swift": {
+            "commit": "9561227d55a07db29f70a78aadc5d6b5aaeb10bf",
+            "path": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift",
+            "tracked_files": 772
+          },
+          "unused_top_level_mlx": {
+            "commit": "0a725e3000edabc4911cde345270ca950bfa152f",
+            "path": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx",
+            "tracked_files": 922
+          }
+        },
+        "symlinks": [
+          {
+            "link": "../../../libs/mlx-swift-lm/Tests/MLXLMTests/CBv2ModelTests.swift",
+            "path": "provider-swift/Tests/GPTOSSOptimizationTests/CBv2ModelTests.swift",
+            "referent": "Tests/MLXLMTests/CBv2ModelTests.swift",
+            "referent_repository": "native",
+            "repository": "parent",
+            "sha256": "eb019b2f4e9dce28c98e90361151a6bf4561467683ba5b985fb35d9e6a24ec1b"
+          },
+          {
+            "link": "../../../libs/mlx-swift/Tests/MLXTests/ConstantArrayCastCacheTests.swift",
+            "path": "provider-swift/Tests/GPTOSSOptimizationTests/ConstantArrayCastCacheTests.swift",
+            "referent": "Tests/MLXTests/ConstantArrayCastCacheTests.swift",
+            "referent_repository": "swift",
+            "repository": "parent",
+            "sha256": "345068d46d3ae0eb0ac131378f35e0b0f776844635a921d03022b9d58761b7d9"
+          },
+          {
+            "link": "../../../libs/mlx-swift-lm/Tests/MLXLMTests/GPTOSSCompiledExpertsTests.swift",
+            "path": "provider-swift/Tests/GPTOSSOptimizationTests/GPTOSSCompiledExpertsTests.swift",
+            "referent": "Tests/MLXLMTests/GPTOSSCompiledExpertsTests.swift",
+            "referent_repository": "native",
+            "repository": "parent",
+            "sha256": "638feb013051173b96c1ac4b2becad6993d56f8acb2e7cfac14e30575bd09e2b"
+          },
+          {
+            "link": "../../../libs/mlx-swift-lm/Tests/MLXLMTests/GPTOSSGateUpFusionTests.swift",
+            "path": "provider-swift/Tests/GPTOSSOptimizationTests/GPTOSSGateUpFusionTests.swift",
+            "referent": "Tests/MLXLMTests/GPTOSSGateUpFusionTests.swift",
+            "referent_repository": "native",
+            "repository": "parent",
+            "sha256": "d6e95d0a555bcce5886a398e0a801e43de0b8fda332b9d7f09b26c24f5ee9890"
+          },
+          {
+            "link": "../../../libs/mlx-swift/Tests/MLXTests/GPTOSSMXFP4DecodeTailTests.swift",
+            "path": "provider-swift/Tests/GPTOSSOptimizationTests/GPTOSSMXFP4DecodeTailTests.swift",
+            "referent": "Tests/MLXTests/GPTOSSMXFP4DecodeTailTests.swift",
+            "referent_repository": "swift",
+            "repository": "parent",
+            "sha256": "a45b159f4f07851df24ccfe7e5d301e2fe6251509f56a4815f8700f6577c9f2a"
+          },
+          {
+            "link": "../../../libs/mlx-swift/Tests/MLXTests/GPTOSSMXFP4KernelTests.swift",
+            "path": "provider-swift/Tests/GPTOSSOptimizationTests/GPTOSSMXFP4KernelTests.swift",
+            "referent": "Tests/MLXTests/GPTOSSMXFP4KernelTests.swift",
+            "referent_repository": "swift",
+            "repository": "parent",
+            "sha256": "e780d2e364dbe381e2534f7c34ba5f7d7e8fb8a192cd8eb5086d69d1a7d7e5f8"
+          },
+          {
+            "link": "../../../libs/mlx-swift-lm/Tests/MLXLMTests/GPTOSSPrefillOutputTests.swift",
+            "path": "provider-swift/Tests/GPTOSSOptimizationTests/GPTOSSPrefillOutputTests.swift",
+            "referent": "Tests/MLXLMTests/GPTOSSPrefillOutputTests.swift",
+            "referent_repository": "native",
+            "repository": "parent",
+            "sha256": "bc439349d0555d055b9d5ce0bc9b3fdd4f2dc1a06845a65bc6ec66c58ba24390"
+          },
+          {
+            "link": "../../../libs/mlx-swift-lm/Tests/MLXLMTests/GPTOSSRealCheckpointParityTests.swift",
+            "path": "provider-swift/Tests/GPTOSSOptimizationTests/GPTOSSRealCheckpointParityTests.swift",
+            "referent": "Tests/MLXLMTests/GPTOSSRealCheckpointParityTests.swift",
+            "referent_repository": "native",
+            "repository": "parent",
+            "sha256": "62253508343a95e9f309da05638afea042c70932d26c10944433fcfb9629e5c3"
+          },
+          {
+            "link": "../../../libs/mlx-swift-lm/Tests/MLXLMTests/IncrementalCheckpointMaterializationTests.swift",
+            "path": "provider-swift/Tests/GPTOSSOptimizationTests/IncrementalCheckpointMaterializationTests.swift",
+            "referent": "Tests/MLXLMTests/IncrementalCheckpointMaterializationTests.swift",
+            "referent_repository": "native",
+            "repository": "parent",
+            "sha256": "016c90c8c0f05a4e1cbbed8fad202cb695436c1d6e836f0c76919080cf88e6cf"
+          },
+          {
+            "link": "../../../libs/mlx-swift/Tests/MLXTests/QuantizedBiasAccumulatorTests.swift",
+            "path": "provider-swift/Tests/GPTOSSOptimizationTests/QuantizedBiasAccumulatorTests.swift",
+            "referent": "Tests/MLXTests/QuantizedBiasAccumulatorTests.swift",
+            "referent_repository": "swift",
+            "repository": "parent",
+            "sha256": "c92ad5d6d41e9bca9c1f5edc6b65235d6c7c78c980a9f67fba29037862169a9e"
+          },
+          {
+            "link": "../../../libs/mlx-swift/Tests/MLXTests/QuantizedConstantCastTests.swift",
+            "path": "provider-swift/Tests/GPTOSSOptimizationTests/QuantizedConstantCastTests.swift",
+            "referent": "Tests/MLXTests/QuantizedConstantCastTests.swift",
+            "referent_repository": "swift",
+            "repository": "parent",
+            "sha256": "c879729bdc554469a01740ce9a21b9633287bf16f8fe6e40ccc4d2a509ce8044"
+          },
+          {
+            "link": "../../../libs/mlx-swift-lm/Tests/MLXLMTests/QuantizedSwitchLinearConstantCastTests.swift",
+            "path": "provider-swift/Tests/GPTOSSOptimizationTests/QuantizedSwitchLinearConstantCastTests.swift",
+            "referent": "Tests/MLXLMTests/QuantizedSwitchLinearConstantCastTests.swift",
+            "referent_repository": "native",
+            "repository": "parent",
+            "sha256": "9b54159d9ff614297762e62daa0f1b0d5f68a06757ee9b89617d09306267b408"
+          },
+          {
+            "link": "AGENTS.md",
+            "path": "CLAUDE.md",
+            "referent": "AGENTS.md",
+            "referent_repository": "core",
+            "repository": "core",
+            "sha256": "5639bca30e983f0f25f7e65559152dd6ab65140155b78b21aa3b83c43ded31c7"
+          }
+        ],
+        "tracked_file_count": 7436
+      },
+      "passed": true
+    },
+    "execution_cleanup": {
+      "details": {
+        "all_exited_zero": true,
+        "all_groups_retired": true,
+        "cli_help_executed_on_remote_only": true,
+        "count": 41,
+        "final_observation": {
+          "bytes": 216,
+          "mode": 420,
+          "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/post-build-observation.json",
+          "sha256": "7874bb991e4cd8c8a55eb5fdb6f82b901c42508c53e9b8a69d50381d0dd3c0ba"
+        },
+        "records": {
+          "bytes": 34249,
+          "mode": 420,
+          "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/executions.json",
+          "sha256": "9e3523d8cb83a09ab1149291573dc2a74e9c784cd567431836f0417758bfdd6e"
+        }
+      },
+      "passed": true
+    },
+    "native_compiler_inheritance": {
+      "details": {
+        "compiler": {
+          "bytes": 3466,
+          "mode": 420,
+          "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/compiler-test-evidence.json",
+          "sha256": "e6371fdffdcb284a83acc6b8655e5f41e19f19dd18713ff69cf8b7b350a23376"
+        },
+        "inherited_suites": {
+          "CBv2ForwardShapeEngineTests": {
+            "expanded_cases": 5,
+            "failed": 0,
+            "graph": {
+              "bytes": 280828,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/graphs/native7-inherited.json",
+              "sha256": "2819f9aeffdc98cce9039eba2b8359160edbfaf8615b42be69d2398c3d439a41"
+            },
+            "inherited": true,
+            "log": {
+              "bytes": 1952,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-banked/logs/native7-test-CBv2ForwardShapeEngineTests.log",
+              "sha256": "98c24ef9416b960169262e8b48f379df58e49543f2e1aa730e64eb2cde1fb588"
+            },
+            "origin_generation": "native7",
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "suite_source_sha256": "1e61a7861ad7a07d299129549679ffba90cf58e2fc8ccd971543db1faa0d372c",
+            "swift_testing_functions": 3,
+            "terminal": {
+              "bytes": 311,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-banked/steps/native7-test-CBv2ForwardShapeEngineTests/terminal.json",
+              "sha256": "3864b03d02263430b5318589b91374fcf32db88b28117c0c76461a40658d4c51"
+            },
+            "test_functions": 3,
+            "xctest_functions": 0
+          },
+          "CBv2ForwardShapeTests": {
+            "expanded_cases": 8,
+            "failed": 0,
+            "graph": {
+              "bytes": 280828,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/graphs/native5-inherited.json",
+              "sha256": "035deb7fa6ba59956314d6b310da22eb4dc39326c77f5c7db765df829d61653f"
+            },
+            "inherited": true,
+            "log": {
+              "bytes": 3022,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-banked/logs/native5-test-CBv2ForwardShapeTests.log",
+              "sha256": "17c4e623be5dc07752a0886090e059fed7a023857553f4288782bf206a37be93"
+            },
+            "origin_generation": "native5",
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "suite_source_sha256": "fbeb59b3f8ceada5c617844882b6c09a01722188dd6de2176164ef7cae4b7b70",
+            "swift_testing_functions": 0,
+            "terminal": {
+              "bytes": 311,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-banked/steps/native5-test-CBv2ForwardShapeTests/terminal.json",
+              "sha256": "873403f2497b1644633b9053cf1c2d61f2df557f811f334413ecfdd59d582fe2"
+            },
+            "test_functions": 8,
+            "xctest_functions": 8
+          },
+          "CBv2MTPRoundSmokeTests": {
+            "expanded_cases": 11,
+            "failed": 0,
+            "graph": {
+              "bytes": 280828,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/graphs/native7-inherited.json",
+              "sha256": "2819f9aeffdc98cce9039eba2b8359160edbfaf8615b42be69d2398c3d439a41"
+            },
+            "inherited": true,
+            "log": {
+              "bytes": 2345,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-banked/logs/native7-test-CBv2MTPRoundSmokeTests.log",
+              "sha256": "4e2cbb7249fc2e549f12697169c208e38ae896820009c85ddf12a60dc30eb52a"
+            },
+            "origin_generation": "native7",
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "suite_source_sha256": "0382aecaa2db487ee6d0aeb7f6c898533f91f3adeedc0744fdc6e8612cf44186",
+            "swift_testing_functions": 11,
+            "terminal": {
+              "bytes": 310,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-banked/steps/native7-test-CBv2MTPRoundSmokeTests/terminal.json",
+              "sha256": "ff3ca8ab56a0ed5e86fe22a4c586b62e22674110fe41690adc24f3d1ac890da6"
+            },
+            "test_functions": 11,
+            "xctest_functions": 0
+          },
+          "GPTOSSCompiledExpertsTests": {
+            "expanded_cases": 5,
+            "failed": 0,
+            "graph": {
+              "bytes": 280828,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/graphs/native7-inherited.json",
+              "sha256": "2819f9aeffdc98cce9039eba2b8359160edbfaf8615b42be69d2398c3d439a41"
+            },
+            "inherited": true,
+            "log": {
+              "bytes": 1868,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-banked/logs/native7-test-GPTOSSCompiledExpertsTests.log",
+              "sha256": "eb01b7fef372600af23b560136748036f0e315e456142d0ddaccfcd10d2ca7df"
+            },
+            "origin_generation": "native7",
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "suite_source_sha256": "638feb013051173b96c1ac4b2becad6993d56f8acb2e7cfac14e30575bd09e2b",
+            "swift_testing_functions": 5,
+            "terminal": {
+              "bytes": 311,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-banked/steps/native7-test-GPTOSSCompiledExpertsTests/terminal.json",
+              "sha256": "281e04d82369aaf43695f19141e7bd6a6a548eda4d7cd26efe3e6ef7e2beccc8"
+            },
+            "test_functions": 5,
+            "xctest_functions": 0
+          }
+        },
+        "native": {
+          "bytes": 5184,
+          "mode": 420,
+          "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-test-evidence.json",
+          "sha256": "55f14c971440d32e54f2b507e9248904d3a6c89682e542cbf24cc4835ad21d9e"
+        },
+        "provider_cli_counts_not_inherited_native_counts": true,
+        "total_inherited_expanded_cases": 29,
+        "total_inherited_test_functions": 27
+      },
+      "passed": true
+    },
+    "provider_cli_tests": {
+      "details": {
+        "category": "fresh_provider_cli",
+        "evidence_record": {
+          "bytes": 17766,
+          "mode": 420,
+          "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/provider-cli-test-evidence.json",
+          "sha256": "98a775b6307ab30bfc2433ad8d265396ae07152cd310e7127dd331d0136df961"
+        },
+        "expanded_cases": 324,
+        "passed": true,
+        "source": {
+          "c": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+          "core": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+          "native": "f2d79145e040bbc28c6e0e355a19bc8923a70434",
+          "parent": "35fea6d0e3b05ff65d60d9675ab480159913ac62",
+          "swift": "9561227d55a07db29f70a78aadc5d6b5aaeb10bf",
+          "unused_top_level_mlx": "0a725e3000edabc4911cde345270ca950bfa152f"
+        },
+        "suites": {
+          "BenchmarkSweepExitTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 10,
+            "failed": 0,
+            "log": {
+              "bytes": 2479,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-BenchmarkSweepExitTests.log",
+              "sha256": "d5879b493084907899213371e477d3d0ed16fb3da39f08d4776f9e3fbf934b99"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 10,
+            "test_functions": 10,
+            "xctest_functions": 0
+          },
+          "DoctorClearBackendGuardTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 3,
+            "failed": 0,
+            "log": {
+              "bytes": 1367,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-DoctorClearBackendGuardTests.log",
+              "sha256": "145db3d3714bb677fee77e74131af26a6deeab8f83a3f2e4cb6773a0761b62a2"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 3,
+            "test_functions": 3,
+            "xctest_functions": 0
+          },
+          "EngineV2FP32PagedRateTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 4,
+            "failed": 0,
+            "log": {
+              "bytes": 1540,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2FP32PagedRateTests.log",
+              "sha256": "1e57f125e2dac57a6a1818273a6f6bbd83e20fb29ecef6f3ef10e727c01a280c"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 4,
+            "test_functions": 4,
+            "xctest_functions": 0
+          },
+          "EngineV2KVBackendFallbackHeartbeatTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 4,
+            "failed": 0,
+            "log": {
+              "bytes": 1512,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2KVBackendFallbackHeartbeatTests.log",
+              "sha256": "351b6bd5f4023a72e9173a04e6ed481d44b62f0da21b9a55b43209e2b3f5d540"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 4,
+            "test_functions": 4,
+            "xctest_functions": 0
+          },
+          "EngineV2KVBackendGateTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 62,
+            "failed": 0,
+            "log": {
+              "bytes": 12690,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2KVBackendGateTests.log",
+              "sha256": "558e18caf0c4b332483cbd6573e8c5ab0f4794757e6fd3f9a751ec0e1b0db09a"
+            },
+            "passing_names_containing_failed": [
+              "\"failed kernel preflight REFUSES before slab construction\""
+            ],
+            "skipped": 0,
+            "swift_testing_functions": 39,
+            "test_functions": 39,
+            "xctest_functions": 0
+          },
+          "EngineV2KVBackendPolicyTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 28,
+            "failed": 0,
+            "log": {
+              "bytes": 5862,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2KVBackendPolicyTests.log",
+              "sha256": "e2a0959209bfdfb8f7b081cfec9d591285acebaf5ae191d7d60b4d2f7274ced4"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 8,
+            "test_functions": 8,
+            "xctest_functions": 0
+          },
+          "EngineV2PagedPoolDTypeEnvTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 11,
+            "failed": 0,
+            "log": {
+              "bytes": 2924,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2PagedPoolDTypeEnvTests.log",
+              "sha256": "1d89b0f9615151a495e6b1b6ccd340f04d7d750c93a6a8f46be4873691c1ef12"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 11,
+            "test_functions": 11,
+            "xctest_functions": 0
+          },
+          "EngineV2PrefixCacheUsageTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 6,
+            "failed": 0,
+            "log": {
+              "bytes": 1944,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2PrefixCacheUsageTests.log",
+              "sha256": "d2f293c3fa838971250b047a61744fb110add66702c3098c03e830438d4a91ed"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 6,
+            "test_functions": 6,
+            "xctest_functions": 0
+          },
+          "EngineV2RequestRoutingTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 21,
+            "failed": 0,
+            "log": {
+              "bytes": 4778,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2RequestRoutingTests.log",
+              "sha256": "09682bbae503c21f2de3a3eea932bda08e3c9df759b89bedc21727abbad53d14"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 21,
+            "test_functions": 21,
+            "xctest_functions": 0
+          },
+          "EngineV2ResliceTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 8,
+            "failed": 0,
+            "log": {
+              "bytes": 2274,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2ResliceTests.log",
+              "sha256": "268fbdfd36a1fc081558e6da9ddcd5506b53cf990dee332cb3a0aa9cb2ea888c"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 8,
+            "test_functions": 8,
+            "xctest_functions": 0
+          },
+          "EngineV2ResliceUnwindTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 2,
+            "failed": 0,
+            "log": {
+              "bytes": 1276,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2ResliceUnwindTests.log",
+              "sha256": "7badc9bf47740c2abfaadfdcc3ece404ef0f6baa659c7e7f64e5412bc30e8ec4"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 2,
+            "test_functions": 2,
+            "xctest_functions": 0
+          },
+          "EngineV2ReslicingWiringTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 8,
+            "failed": 0,
+            "log": {
+              "bytes": 2384,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2ReslicingWiringTests.log",
+              "sha256": "4a8dfbc77b5fd7d2b331d4e53fae61e000b96f6a383c5b2febcf77a1db8ab190"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 8,
+            "test_functions": 8,
+            "xctest_functions": 0
+          },
+          "EngineV2RuntimeGuardTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 7,
+            "failed": 0,
+            "log": {
+              "bytes": 2135,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2RuntimeGuardTests.log",
+              "sha256": "74dfb3ebe10dd06e98c8886cf30cc0cc1c7040fb70b74fb22f2aad3e75fd07fc"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 7,
+            "test_functions": 7,
+            "xctest_functions": 0
+          },
+          "EngineV2SlotBuildTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 8,
+            "failed": 0,
+            "log": {
+              "bytes": 2360,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2SlotBuildTests.log",
+              "sha256": "603513a7256899f6866bf09629d1d54f28a71ed91087b10fcc226f10ff565e90"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 8,
+            "test_functions": 8,
+            "xctest_functions": 0
+          },
+          "KVBackendGuardDiagnosticsTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 9,
+            "failed": 0,
+            "log": {
+              "bytes": 2411,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-KVBackendGuardDiagnosticsTests.log",
+              "sha256": "6c1c08da3b6a7f4d8fddef4a6d22c9c69426f17f300863e60ed2fb3d29074534"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 9,
+            "test_functions": 9,
+            "xctest_functions": 0
+          },
+          "KVBackendPostureTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 18,
+            "failed": 0,
+            "log": {
+              "bytes": 4485,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-KVBackendPostureTests.log",
+              "sha256": "1ee925195e33ac308a97892fcbe877a964882969d09c2cbc10d6245442c40712"
+            },
+            "passing_names_containing_failed": [
+              "\"status names the resolved backend for paged, contiguous, and failed slots\""
+            ],
+            "skipped": 0,
+            "swift_testing_functions": 16,
+            "test_functions": 16,
+            "xctest_functions": 0
+          },
+          "MTPBenchmarkTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 32,
+            "failed": 0,
+            "log": {
+              "bytes": 6381,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-MTPBenchmarkTests.log",
+              "sha256": "a7fe15a1b888aa72b20f0e468f4b93150555e81c88248e811ca74779c2ae3f67"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 32,
+            "test_functions": 32,
+            "xctest_functions": 0
+          },
+          "PrefillDeadlineProductionConfigTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 5,
+            "failed": 0,
+            "log": {
+              "bytes": 1745,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-PrefillDeadlineProductionConfigTests.log",
+              "sha256": "62649b477b9817a7d913a1e5609c0ac518872788ef8e16fe42698652cfc3e838"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 5,
+            "test_functions": 5,
+            "xctest_functions": 0
+          },
+          "PrefixCachePolicyTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 12,
+            "failed": 0,
+            "log": {
+              "bytes": 3097,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-PrefixCachePolicyTests.log",
+              "sha256": "7d4e956ca371a3c752d3a0cece88737bbd58e68bbffb03242183cbd9c7da77ca"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 12,
+            "test_functions": 12,
+            "xctest_functions": 0
+          },
+          "SSDBlockStreamingTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 10,
+            "failed": 0,
+            "log": {
+              "bytes": 2625,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDBlockStreamingTests.log",
+              "sha256": "494c9dc49a2d03e81538fb4cd5cd4221a689ce81e3cfeab382ab3c9541b9d4ab"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 10,
+            "test_functions": 10,
+            "xctest_functions": 0
+          },
+          "SSDCheckpointFileCoordinatorPathTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 6,
+            "failed": 0,
+            "log": {
+              "bytes": 2108,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDCheckpointFileCoordinatorPathTests.log",
+              "sha256": "df7a89ea93a9ebc1c6b1c7ae3f672256167bc7946020ab9f85b7a05b8f6e4788"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 4,
+            "test_functions": 4,
+            "xctest_functions": 0
+          },
+          "SSDCheckpointFileCoordinatorTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 4,
+            "failed": 0,
+            "log": {
+              "bytes": 1566,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDCheckpointFileCoordinatorTests.log",
+              "sha256": "028079e271cb9003661ae85f26b5880aee20307c07f870918eda52edd3cc0c77"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 4,
+            "test_functions": 4,
+            "xctest_functions": 0
+          },
+          "SSDCheckpointLookupTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 2,
+            "failed": 0,
+            "log": {
+              "bytes": 1006,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDCheckpointLookupTests.log",
+              "sha256": "100042f3be03ac3769141bdf78befcbf5d23003677c60e8f0327d77648b43974"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 2,
+            "test_functions": 2,
+            "xctest_functions": 0
+          },
+          "SSDCheckpointRecencyCoordinationTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 4,
+            "failed": 0,
+            "log": {
+              "bytes": 1722,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDCheckpointRecencyCoordinationTests.log",
+              "sha256": "3c0fa5930be6d6a46bcc2ff7c2d28a797a3c64dc20fc4e19c7ffc83fab4d4861"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 3,
+            "test_functions": 3,
+            "xctest_functions": 0
+          },
+          "SSDCheckpointStageReservationTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 3,
+            "failed": 0,
+            "log": {
+              "bytes": 1423,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDCheckpointStageReservationTests.log",
+              "sha256": "dd4ceb6dd34d55e5a36ed1e42827064f33ce25853164471cdf67c01cf8d2b05a"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 2,
+            "test_functions": 2,
+            "xctest_functions": 0
+          },
+          "SSDHybridCheckpointCoordinationTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 10,
+            "failed": 0,
+            "log": {
+              "bytes": 2877,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDHybridCheckpointCoordinationTests.log",
+              "sha256": "47e9ef6362a9d55e87e3875427234998cd9f8197654dce982b8d9cb74230089b"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 5,
+            "test_functions": 5,
+            "xctest_functions": 0
+          },
+          "SSDHybridCheckpointRecencyTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 1,
+            "failed": 0,
+            "log": {
+              "bytes": 1012,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDHybridCheckpointRecencyTests.log",
+              "sha256": "5545957b7261f104d579b5478fd859045b1fe06a083692691a9c75540dac1fa0"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 1,
+            "test_functions": 1,
+            "xctest_functions": 0
+          },
+          "SSDHybridCheckpointStoreTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 12,
+            "failed": 0,
+            "log": {
+              "bytes": 3213,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDHybridCheckpointStoreTests.log",
+              "sha256": "6b048bc51948cfcf6ae9f6ce6d537c3187b609cc043bcd04e7b8f059549e4e22"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 12,
+            "test_functions": 12,
+            "xctest_functions": 0
+          },
+          "SSDSharedProcessCheckpointTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 6,
+            "failed": 0,
+            "log": {
+              "bytes": 2038,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDSharedProcessCheckpointTests.log",
+              "sha256": "ee5567632c4a9cf637333f2dae8c2b0396f5c9ecbc6952b727d374685af781ba"
+            },
+            "passing_names_containing_failed": [
+              "\"Failed native allocation drains both owners and preserves authenticated ciphertext\""
+            ],
+            "skipped": 0,
+            "swift_testing_functions": 6,
+            "test_functions": 6,
+            "xctest_functions": 0
+          },
+          "SegmentedProductionGrantTests": {
+            "category": "provider_or_cli_not_native_only",
+            "expanded_cases": 8,
+            "failed": 0,
+            "log": {
+              "bytes": 2270,
+              "mode": 420,
+              "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SegmentedProductionGrantTests.log",
+              "sha256": "0cc84aafe00016f50e1206bc710c5ca6c35ae33117a1fe4ec9485511a7f3a003"
+            },
+            "passing_names_containing_failed": [],
+            "skipped": 0,
+            "swift_testing_functions": 8,
+            "test_functions": 8,
+            "xctest_functions": 0
+          }
+        },
+        "test_functions": 270
+      },
+      "passed": true
+    },
+    "shader_and_resources": {
+      "details": {
+        "inheritance_bound_to_signed_banked_evidence": true,
+        "metallib": {
+          "bytes": 182424064,
+          "mode": 420,
+          "sha256": "22497b094bbae98a07db9b088bddfe825ea1150d61fd77ac35592a29528abbaa"
+        },
+        "metallib_rebuilt_by_auditor": false,
+        "note": "proof.previous_root names an intermediate reuse root; previous_artifact_manifest_sha256 identifies the banked forward-width artifact, not that intermediate binary.",
+        "official_generator_inputs_exact": {
+          "Source/Cmlx/mlx-generated/metal/quantized.h": {
+            "bytes": 98882,
+            "mode": 420,
+            "sha256": "a57af50dcef62d3b2ff945900b7acabf1c36cf699ebf320b2ded08b317298bc9"
+          },
+          "Source/Cmlx/mlx-generated/quantized.cpp": {
+            "bytes": 99454,
+            "mode": 420,
+            "sha256": "2059e9e42912955a4b8f498ceee96672972ac9907974615c455350ac43057d09"
+          }
+        },
+        "pagedattention_resource": {
+          "bytes": 24804,
+          "mode": 420,
+          "sha256": "4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149"
+        },
+        "proof": {
+          "bytes": 2030,
+          "mode": 420,
+          "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/shader-reuse-proof.json",
+          "sha256": "4bae8c42e0e99310f2b7c2f514e02e84f545950227150eb9ebb17214f0ea09fd"
+        }
+      },
+      "passed": true
+    }
+  },
+  "collected_executable_executed": false,
+  "failures": [],
+  "finished_at_utc": "2026-09-06T16:53:54.726821+00:00",
+  "limitations": [
+    "No new build, native suite, provider suite, collected executable, or model was run by this audit.",
+    "Remote completion and process retirement are verified from collected raw logs and owner receipts, not a fresh host observation.",
+    "Native/compiler evidence is inherited, source-bound evidence; the 270 provider/CLI functions and 324 cases are not native-only suites.",
+    "Ad-hoc executable signatures are not Developer ID, notarization, release authorization, or persistent-key restart evidence.",
+    "Real Qwen numerical parity, B2/B4 target batching, performance, persistence, two-host behavior, and release gates remain unproven by these inputs."
+  ],
+  "model_executed": false,
+  "repo_modified": false,
+  "source": {
+    "c": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+    "core": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+    "native": "f2d79145e040bbc28c6e0e355a19bc8923a70434",
+    "parent": "35fea6d0e3b05ff65d60d9675ab480159913ac62",
+    "swift": "9561227d55a07db29f70a78aadc5d6b5aaeb10bf",
+    "unused_top_level_mlx": "0a725e3000edabc4911cde345270ca950bfa152f"
+  },
+  "ssh_used": false,
+  "started_at_utc": "2026-09-06T16:53:49.939735+00:00",
+  "state": "AUDIT_PASSED_WITH_EXPLICIT_SCOPE_LIMITATIONS"
+}

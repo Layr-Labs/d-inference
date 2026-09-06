@@ -491,7 +491,7 @@ func TestPrefixCacheHeartbeatSnapshotReconcilesAtomically(t *testing.T) {
 		State: "pending", Reason: "scan_pending",
 	}}
 	if _, err := reg.UpdatePrefixCacheSnapshot(
-		provider.ID, false, 0, nil, &pending, nil); err != nil {
+		provider.ID, false, 0, nil, nil, &pending, nil); err != nil {
 		t.Fatal(err)
 	}
 	provider.mu.Lock()
@@ -504,7 +504,7 @@ func TestPrefixCacheHeartbeatSnapshotReconcilesAtomically(t *testing.T) {
 
 	restored := []protocol.PrefixCacheModelStatus{ready}
 	if _, err := reg.UpdatePrefixCacheSnapshot(
-		provider.ID, false, 0, nil, &restored, nil); err != nil {
+		provider.ID, false, 0, nil, nil, &restored, nil); err != nil {
 		t.Fatal(err)
 	}
 	provider.mu.Lock()
@@ -516,7 +516,7 @@ func TestPrefixCacheHeartbeatSnapshotReconcilesAtomically(t *testing.T) {
 
 	readyOnV1 := []protocol.PrefixCacheModelStatus{ready}
 	if _, err := reg.UpdatePrefixCacheSnapshot(
-		provider.ID, true, 1, nil, &readyOnV1, nil); err != nil {
+		provider.ID, true, 1, nil, nil, &readyOnV1, nil); err != nil {
 		t.Fatal(err)
 	}
 	provider.mu.Lock()

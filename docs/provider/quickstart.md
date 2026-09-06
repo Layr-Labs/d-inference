@@ -1,6 +1,6 @@
 # Provider quickstart
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-06 · commit `615d96328`
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
 coordinator, linked to your account and serving. For operators; install, check,
@@ -190,66 +190,35 @@ private_only = false         # true = serve only your own self-route traffic
   available both box-wide and per-model, which is what a box running
   `engine_v2_kv_backend = "paged"` wants.
 - `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
-  `"auto"` (default — resolves **CONTIGUOUS** as of v0.8.1, reverting the
-  v0.8.0 paged default; grep `case .auto: resolvedKind` in
-  `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift`
-  for the argument). Paged sizes its KV pool from a physical-capacity policy
-  rather than the slot's logical grant, which cost the fleet roughly 10x its
-  KV and produced widespread admission failures; contiguous gets the whole
-  grant. Set `"paged"` to opt a box back in — note that an explicit `"paged"`
-  on a box that cannot build it **refuses the load (503)** rather than
-  degrading, which is the point of naming it. There is no env var that turns
-  paged on: `DARKBLOOM_CBV2_PAGED_KV=0` is a kill switch and only forces
-  contiguous. **gemma-4 greedy outputs differ between the two backends** —
-  paged is measurably closer to an fp32 reference, but the text is not
-  identical. A resolved-contiguous slot also runs with the SSD prefix cache
-  OFF: adoption is not bit-exact on contiguous for the served models, so the
-  cache is not constructed there.
-  Vision (VLM) models are NOT forced to contiguous. The
-  VLM veto in `EngineV2KVBackendPolicy.applySlotVetoes`
-  (`guard isVLM, !pagedHonorsSpanMasks`, `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:202-210`)
-  fires only when the paged cache does not affirm multimodal span masks, and
-  `PagedLayerCache.honorsSpanMaskContextsByConstruction` is `true`
-  (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift:994`),
-  which is what the slot factory passes
-  (`provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift:301-304`),
-  so the veto is inert: an explicitly paged VLM slot can use paged like any
-  other model. Under `"auto"`, every slot resolves contiguous as described
-  above.
-  The concurrency cap above matters: paged only
-  overtakes contiguous above ~5 concurrent rows, so pairing
-  `engine_v2_kv_backend = "paged"` with a low `engine_v2_max_concurrent`
-  (say 2) buys you paged at a small loss, not a win. Under `"auto"`, a
-  model the paged kernel cannot serve still falls back to contiguous
-  automatically;
-  under an explicit `"paged"` the model REFUSES to load instead, with the
-  underlying reason attached:
-  `EngineV2KVBackendPolicy.degradesPagedFailure`
-  (`selection != .paged`, `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:229-233`)
-  returns `false` for — and only for — an explicit `.paged` selection, so a
-  paged fleet can never silently serve contiguous. That refusal surfaces as
-  a 503 and the coordinator reroutes: the engine-construction catch wraps it
-  as `InferenceError.modelLoadFailed`
-  (`provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift:543-549`),
-  `loadErrorStatusCode` maps that case to 503
-  (`same file:979-1007`), and the coordinator counts a 503 as
-  `capacityRejection` — no reputation strike — then cools the load-rejecting
-  pair so retries skip it (`coordinator/api/provider.go:2332`, cool-down at
-  `:2343-2351`).
-  Per-model overrides: `engine_v2_kv_backend_by_model` (TOML table of model
-  id → value). Fleet kill switch: launch with `DARKBLOOM_CBV2_PAGED_KV=0`
-  (survives restarts — it is forwarded into the launchd service
-  environment); the kill switch always degrades and never refuses, so
-  pulling it on a paged fleet gives you contiguous service, not failed
-  loads. An explicit paged model PLANS a separately capped physical pool
-  derived from useful concurrent context demand, live memory, machine size,
-  and Metal buffer limits, but does not commit it eagerly: slabs become
-  MLX-resident lazily, at first admission
-  (`PagedKVPhysicalCapacityPolicy.slabCommitment = .atFirstAdmission`,
-  `provider-swift/Sources/ProviderCore/Inference/PagedKVPhysicalCapacityPolicy.swift:58`),
-  so an admitted-but-idle pool contributes 0 bytes of idle residency
-  (`PagedKVPhysicalCapacityPolicy.idleResidencyBytes`, same file:101). It
-  never preallocates the full logical admission grant.
+  `"auto"` remains the default. The candidate selects paged only for the
+  [exact Qwen allowlist](../architecture/prefix-cache.md#kv-layouts); every
+  other ID, including unlisted Qwen, GPT-OSS and Gemma, stays contiguous.
+  **The candidate rollout is not yet validated**; see the retained failures
+  and remaining gates in the
+  [Qwen-first rollout decision](../design/qwen-first-paged-ssd-rollout.md).
+  Use `"contiguous"` to pin that backend, or `"paged"` to require paged
+  construction. Per-model `engine_v2_kv_backend_by_model` entries override
+  the global setting (`EngineV2KVBackendPolicy.parseSelection`,
+  `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift`).
+  Under `"auto"`, paged preflight/construction failures fall back to
+  contiguous; the version-bound crash-loop guard also forces automatic
+  selections contiguous. Explicit `"paged"` construction failures instead
+  **refuse the load (503)**. Capability/span-mask vetoes and
+  `DARKBLOOM_CBV2_PAGED_KV=0` can still force contiguous even for explicit
+  paged; the kill switch is forwarded to launchd and never turns paging on.
+  Check `darkbloom status` and `darkbloom doctor` for the actual backend and
+  fallback reason rather than assuming `"auto"` proves paged service.
+  SSD prefix reuse stays enabled by default for eligible checkpoints,
+  including complete Qwen checkpoints on contiguous; resident retention
+  remains off unless explicitly enabled with `DARKBLOOM_PREFIX_CACHE_MEMORY=1`.
+  Paging rollback does not itself disable SSD reuse; `DARKBLOOM_PREFIX_CACHE=0`
+  disables local reuse independently
+  ([prefix-cache policy](../architecture/prefix-cache.md#kv-layouts)).
+  A paged model starts with empty segmented storage under
+  its admitted KV grant. Pages are reserved and allocated as requests need
+  them; changing the grant does not preallocate or free live backing. See
+  [KV slot grants](../architecture/hardware-support.md#kv-slot-grants) for
+  co-resident shrink/regrow and the unchanged memory admission gates.
 - `coordinator.private_only` — serve only your own self-route traffic; never
   join the public fleet.
 

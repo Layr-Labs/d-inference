@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-04 · commit `376b4868f`
+> Last updated: 2026-09-05 · commit `7190d3bbf`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -146,6 +146,17 @@ file, refuses to drop any existing key, adds absent release defaults, migrates
 only explicitly retired defaults, keeps a root-only timestamped backup, and
 renames atomically. It never touches secrets. It fails if `/etc/d-inference` is
 tmpfs.
+
+The v0.9 cache-cost migration replaces only the exact historical pair
+`EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS=1000` and
+`EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION=0.35` with blank optional limits.
+If either value differs, both remain unchanged; explicit zero still means no
+credit. The exact old pair is treated as a stock default, even if deliberately
+chosen, so review its two `MIGRATE` lines before applying. A customized numeric
+spelling, such as `1000.0`, remains an explicit override. The migration changes no
+routing mode/cohort/QPS setting and does not enable cache routing. New release
+defaults supply blank values; older binaries interpret blanks as their previous
+stock limits, while the backup preserves the exact pre-refresh file.
 
 ```bash
 # First time on a host only: install the reviewed inputs and the boot-time unit.

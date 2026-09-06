@@ -2,3 +2,4 @@
 docs/reports/data/gptoss20b-profile/*.json linguist-generated=true
 docs/reports/data/gptoss20b-profile/*.svg linguist-generated=true
 docs/reports/data/gptoss20b-optimization/*.json linguist-generated=true
+docs/reports/evidence/** linguist-generated=true

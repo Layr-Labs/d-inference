@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-04 · commit `4a08f2a44`
+> Last updated: 2026-09-05 · commit `544cfa5ee`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -208,9 +208,9 @@ JSON-encoded on the sink worker.
 | `candidate_set_size` | `scanned − gate_rejections.not_serving_model` (unchanged in meaning by the index); exclude/allowlist drops happen before the catalog check and count as advertising | `scheduler.go` |
 | `gate_rejections` JSONB `{reason: count}` | per-`GateReason` tally, uint16-saturating; keys are `gateReasonNames` (`coordinator/registry/gate_reason.go`): `offline`, `untrusted`, `trust_floor`, `private_only`, `runtime_unverified`, `private_text`, `challenge_stale`, `trait_floor`, `dedicated`, `dispatch_load_cooldown`, `error_cooldown`, `capacity_cooldown`, `breaker`, `ejection`, `slot_crashed`, `slot_reloading`, `thermal_critical`, `no_headroom`, `model_too_large`, `free_memory`, `vision`, `ttft_ceiling`, `excluded`, `allowlist`, `not_serving_model`. `allowlist` absorbs exclusive self-route-not-owned and serial allowlist misses; `excluded` is the caller's exclude list. Meaning of each gate: [`routing.md`](routing.md) | `buildCandidateInto` |
 | `candidates` JSONB (≤ 4 rows) | `Top[0]` is the winner, then the lowest-cost other candidates ascending; each row is a `CandidateSummary` (cost + terms, `ttft_ms`, `effective_tps`, `effective_queue`, `total_pending`, `backend_running/waiting`, `active_token_budget_used/max`, `queued_prefill_tokens`, folded `slot_state`, `hb_age_ms`) | `CandidateSummary` (`gate_reason.go`) |
-| `runner_up_provider_id`, `runner_up_cost_ms` | lowest-cost candidate of the narrowed pool other than the winner; absent with one candidate | `lowestCostOther` |
+| `runner_up_provider_id`, `runner_up_cost_ms` | lowest-cost candidate of the narrowed pool other than the winner; absent with one candidate | `selectRoutingCandidate` (`coordinator/registry/candidate_selection.go`) |
 | `best_idle_provider_id`, `best_idle_ttft_ms` | lowest-TTFT candidate with the model resident and `backend_running + backend_waiting == 0`, computed over every gate-passing candidate before pool narrowing | `scheduler.go` |
-| `near_tie_pool_size`, `selection_path` | candidates within `nearTieCostWindowMs` of the minimum; branch of `selectRoutingCandidate`: `none`, `unique_min`, `tie_queue`, `tie_pending`, `cache_tiebreak`, `random` (`selectionPathNames`) | `selectRoutingCandidate` |
+| `near_tie_pool_size`, `selection_path` | retained cost candidates: exact minima in positive-cache pools, otherwise within `nearTieCostWindowMs`; current branches `none`, `unique_min`, `tie_queue`, `tie_pending`, `random` (`selectionPathNames`). Historical rows may retain `cache_tiebreak` | `selectRoutingCandidate` |
 | `snapshot_age_ms`, per-candidate `hb_age_ms` | `now − LastHeartbeat` when the routing snapshot was taken; observability only | `heartbeatAgeMs` |
 | `predicted_ttft_ms`, `raw_ttft_ms`, `ttft_calibration_ratio`, `prefill_decode_ratio`, `predicted_decode_tps` | calibrated vs raw estimate, the (model, chip) ratio applied, the decode→prefill fallback multiplier, `projectedPerRequestDecodeTPS` | `scheduler.go` |
 | `pending_for_model`, `total_pending` | winner's coordinator-side pending counts before this reservation | `scheduler.go` |
@@ -273,6 +273,13 @@ row `reserve_lock_wait_p95_us` (inserted and scanned, never assigned). All
 `kv_backend`, `transport_est_us`, `slept_us`, the request-shape columns and the
 heartbeat-derived fleet fields are `NULL`/0 for a provider older than the
 profiler build.
+
+The separate optional `slots[].paged_storage` observations are available in
+live backend snapshots and Datadog through `recordPagedStorageTelemetry`
+(`coordinator/api/provider_paged_storage_telemetry.go`); they are not columns in
+`fleet_snapshots`. The [wire reference](../reference/protocol-messages.md#slotspaged_storage)
+defines their overlapping memory gauges, counter scopes, freshness and current
+producer status.
 
 ### Sampling, sink, retention
 

@@ -1,0 +1,15 @@
+{
+  "scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkBatches.swift": "8616aad369f4b8eead845883ff497ad87dadcd4b764f061860b47782fa67a2d6",
+  "scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkLoader.swift": "0943fc144092ba2470957544494ad1dbff2ebedd7c24907bcfb586d4867803af",
+  "scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkMetrics.swift": "59fa88c8935cdf069adbde989b41526d9c721fd156b5e4e580ad0849f973e4be",
+  "scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkOptions.swift": "b635bdac3d16b31d9e73696f5b5c0b6f69ac16bbdf7d6460f8a557143f007f18",
+  "scripts/benchmarks/radix-engine/Sources/radix-engine/RadixBenchmark.swift": "ac7a5348171ade2bb86df31d7afc5b7da5381390140c83ba73f65247157b6a73",
+  "scripts/benchmarks/radix-engine/Package.swift": "84ce3d3a6b8bacbc104c110780773f59e17b7aeb764b599c81f983439ecd4724",
+  "scripts/benchmarks/run_radix_engine.py": "46419f67821f9a21e07837531e8cbd3ff4cff7f69ff472f8d3ec327a961fd2cf",
+  "scripts/benchmarks/compare_radix_engine.py": "c016042a8049e0353a0df7c3711d257f9d89e58f69abc564a8cc17c110b4ba53",
+  "scripts/benchmarks/test_compare_radix_engine.py": "94e891d7088f45116d1864eb72562ac5e0fd20e62106461f14faf6646be07286",
+  "scripts/benchmarks/test_run_radix_engine.py": "eacf7be3c26175dcd43c92000f053f67c69eb1a88f080e00beba619b4f2aba70",
+  "scripts/benchmarks/test_radix_prefix_cache.py": "b2d9aefe69c09b777a1e197738d00f8f54f7ddf002c27075ed0d471cacef2c99",
+  "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift": "ab27e2512b1c58f6cafedd3be5d7a648df8ed5459e951c5e897741374de71b99",
+  "provider-swift/Tests/ProviderCoreTests/QwenVLMTargetExtractionTests.swift": "1c8eb1c9cbbbd0945eec0e9e97fd5c425d271e1dba7f977e63834b3aa1c41575"
+}

@@ -72,7 +72,7 @@ func TestHeartbeat(t *testing.T) {
 // TestHeartbeatAccumulatesUptime is the integration regression: the
 // heartbeat handler credits the wall-clock gap since the previous heartbeat as
 // uptime (bounded), so an always-online provider's reputation can exceed 0.85.
-// This test fails without the registry.go Heartbeat change.
+// This test fails without the Heartbeat inventory update.
 func TestHeartbeatAccumulatesUptime(t *testing.T) {
 	reg := New(testLogger())
 	p := reg.Register("p1", nil, testRegisterMessage())

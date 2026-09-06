@@ -215,7 +215,7 @@ func TestStreamingChatMetadataDetailsHeaderOptIn(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
+	srv.handleStreamingResponseWithFirstChunkAndError(rec, req, pr, nil, nil)
 	body := rec.Body.String()
 	if !strings.Contains(body, `"provider_id":"prov-h"`) {
 		t.Fatalf("usage chunk missing metadata; body=\n%s", body)
@@ -247,7 +247,7 @@ func TestStreamingChatMetadataDetailsWithoutUsageChunk(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
+	srv.handleStreamingResponseWithFirstChunkAndError(rec, req, pr, nil, nil)
 	body := rec.Body.String()
 	if !strings.Contains(body, `"provider_id":"prov-h"`) {
 		t.Fatalf("terminal extras chunk missing metadata; body=\n%s", body)
@@ -341,11 +341,11 @@ func TestStreamingChatSwallowsDecoratedProviderDone(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(
+	srv.handleStreamingResponseWithFirstChunkAndError(
 		rec,
 		req,
 		pr,
-		[]string{`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}`},
+		[]string{`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}`}, nil,
 	)
 	body := rec.Body.String()
 

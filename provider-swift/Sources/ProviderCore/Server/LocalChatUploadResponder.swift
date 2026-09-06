@@ -1,34 +1,8 @@
 // Copyright © 2026 Eigen Labs.
 //
-// 32 MiB request-body ceiling for the local chat-completions routes.
-//
-// WHY THIS EXISTS (the known 413 backlog item): the upstream
-// `MLXServerApplication.buildRouter` handlers decode bodies via
-// `request.decode(as:context:)`, which collects the body with
-// `context.maxUploadSize`. `maxUploadSize` is a `RequestContext` protocol
-// requirement whose default witness — 2 MiB — is baked into
-// `BasicRequestContext` at Hummingbird compile time, and the upstream
-// router's signature pins `BasicRequestContext`, so there is NO config
-// knob to raise it from outside and a retroactive extension cannot
-// replace the witness. Inline media (`data:` image/video URLs) blows the
-// 2 MiB ceiling at ~1.5 MB of source media, 413-ing exactly the requests
-// the vision models exist for — while the coordinator WebSocket path
-// allows 32 MiB.
-//
-// The fix: intercept the media-bearing chat-completions POSTs *before*
-// the upstream router, collect the body under OUR 32 MiB limit (matching
-// the coordinator WS frame cap), decode with the same JSON configuration
-// Hummingbird's default `requestDecoder` uses, and call the same public
-// `MLXOpenAIService` entry points the upstream handler calls. Response
-// framing (SSE headers/JSON encoder) mirrors the upstream helpers
-// byte-for-byte; error throws propagate to `CORSResponder`'s catch, the
-// same status-mapping layer upstream-raised errors hit.
-//
-// Scope: the chat-completions POSTs (`/v1/chat/completions`,
-// `/chat/completions`, `/v1/chat/completions/batch`) — the routes whose
-// payload type carries inline media. Every other route keeps the
-// upstream 2 MiB decode ceiling (completions/responses/tokenize bodies
-// are text and sit far below it).
+// Local chat routes need a 32 MiB body ceiling for inline media. The upstream
+// router fixes BasicRequestContext's 2 MiB limit, so these routes collect and
+// decode here, then use the same MLXOpenAIService and response framing.
 
 import Foundation
 import Hummingbird
@@ -50,7 +24,6 @@ where Inner.Context == BasicRequestContext {
     public typealias Context = BasicRequestContext
 
     public let inner: Inner
-    let service: MLXOpenAIService
     let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService
     let maxUploadBytes: Int
 
@@ -61,7 +34,6 @@ where Inner.Context == BasicRequestContext {
         serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil
     ) {
         self.inner = inner
-        self.service = service
         self.serviceForTemplateControls = serviceForTemplateControls ?? { _ in service }
         self.maxUploadBytes = maxUploadBytes
     }
@@ -99,53 +71,42 @@ where Inner.Context == BasicRequestContext {
         }
 
         if isBatch {
-            let requests: [OpenAIChatCompletionRequest]
-            switch decodeBody([OpenAIChatCompletionRequest].self, from: buffer) {
+            let requests: [LocalChatRequest]
+            switch decodeBody([LocalChatRequest].self, from: buffer) {
             case .success(let decoded): requests = decoded
             case .failure(let badRequest): return badRequest
             }
-            let controls = LocalChatTemplateControls.batch(
-                from: Data(buffer: buffer), count: requests.count)
             // Mirror of the upstream batch handler: sequential
             // createChatCompletion calls, one JSON array response.
             var responses: [OpenAIChatCompletionResponse] = []
-            for (index, chatRequest) in requests.enumerated() {
+            responses.reserveCapacity(requests.count)
+            for item in requests {
                 responses.append(
-                    try await serviceForTemplateControls(controls[index])
-                        .createChatCompletion(request: chatRequest))
+                    try await serviceForTemplateControls(item.templateControls)
+                        .createChatCompletion(request: item.request))
             }
             return try Self.jsonResponse(responses)
         }
 
-        let chatRequest: OpenAIChatCompletionRequest
-        switch decodeBody(OpenAIChatCompletionRequest.self, from: buffer) {
-        case .success(let decoded): chatRequest = decoded
+        let item: LocalChatRequest
+        switch decodeBody(LocalChatRequest.self, from: buffer) {
+        case .success(let decoded): item = decoded
         case .failure(let badRequest): return badRequest
         }
-        let requestService = serviceForTemplateControls(
-            LocalChatTemplateControls.single(from: Data(buffer: buffer)))
+        let requestService = serviceForTemplateControls(item.templateControls)
         // Same service entry points as the upstream handler; pre-stream
         // throws (unknown model, admission refusal) travel to
         // `CORSResponder`'s status mapping unchanged.
-        if chatRequest.stream == true {
-            let frames = try await requestService.streamChatCompletionFrames(request: chatRequest)
+        if item.request.stream == true {
+            let frames = try await requestService.streamChatCompletionFrames(request: item.request)
             return Self.sseResponse(frames)
         }
         return try Self.jsonResponse(
-            try await requestService.createChatCompletion(request: chatRequest))
+            try await requestService.createChatCompletion(request: item.request))
     }
 
-    /// Decode with Hummingbird's default `requestDecoder` configuration
-    /// (RequestContext extension: JSONDecoder + .iso8601 dates) so a request
-    /// that decoded on the stock path decodes identically here — and mirror
-    /// the stock path's ERROR mapping too: Hummingbird's
-    /// `request.decode(as:context:)` converts every `DecodingError` into a
-    /// 400 Bad Request via an `HTTPError` the ROUTER responder renders.
-    /// This responder sits OUTSIDE the router, so a thrown error would
-    /// escape the CORS/error layers as a body-less 500 — a decode failure
-    /// is therefore RENDERED here (OpenAI-shaped 400 envelope), never
-    /// thrown.
-    /// A decode either yields the value or the already-rendered 400.
+    /// This responder sits outside the router that normally maps decode errors
+    /// to HTTP 400. Return the same error envelope explicitly to avoid a 500.
     enum DecodeOutcome<T> {
         case success(T)
         case failure(Response)
@@ -155,6 +116,7 @@ where Inner.Context == BasicRequestContext {
         _ type: T.Type, from buffer: ByteBuffer
     ) -> DecodeOutcome<T> {
         let decoder = JSONDecoder()
+        // Match Hummingbird's default request decoder.
         decoder.dateDecodingStrategy = .iso8601
         do {
             return .success(try decoder.decode(T.self, from: Data(buffer: buffer)))

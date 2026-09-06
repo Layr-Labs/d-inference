@@ -423,8 +423,13 @@ extension ProviderLoop {
     /// Test seam: the current aggregate backend capacity snapshot.
     func backendCapacityForTesting() -> BackendCapacity? { state.backendCapacity }
 
-    func reservePendingLoadForTesting(requestID: String, bytes: UInt64) async {
-        await kvBudget.reservePendingLoad(requestID: requestID, bytes: bytes)
+    func reservePendingLoadForTesting(requestID: String, bytes: UInt64) async -> Bool {
+        guard requestID.hasPrefix("pending-load:"),
+            let lease = await kvBudget.claimPendingLoad(
+                requestID: requestID, weightBytes: bytes, minimumKVBytes: 0)
+        else { return false }
+        pendingLoadLeases[String(requestID.dropFirst("pending-load:".count))] = lease
+        return true
     }
 
     func outstandingKVReservationBytesForTesting() async -> UInt64 {

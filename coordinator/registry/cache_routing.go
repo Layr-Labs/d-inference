@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -11,23 +12,24 @@ const (
 	CacheRoutingOff = "off"
 	CacheRoutingOn  = "on"
 
-	defaultCacheRoutingTTL             = 10 * time.Minute
-	defaultCacheRoutingMaxHolders      = 4
-	defaultCacheRoutingMaxDiscountMs   = 1000.0
-	defaultCacheRoutingMaxCostFraction = 0.35
-	defaultCacheRoutingActivationPct   = 100.0
-	defaultCacheRoutingMaxPlanQPS      = 0.0
-	maxCacheRoutingPlanQPS             = 1_000_000.0
-	cacheRoutingAttemptTTL             = 2 * time.Minute
-	cacheRoutingInFlightAttemptTTL     = 2 * time.Hour
-	cacheRoutingSweepInterval          = 30 * time.Second
-	cacheRoutingMaxEntries             = 10_000
-	cacheRoutingMaxAttempts            = 50_000
-	cacheRoutingMaxReceiptTokens       = 1_000_000
-	cacheRoutingMaxStageMs             = 10 * 60 * 1000.0
+	defaultCacheRoutingTTL                = 10 * time.Minute
+	defaultCacheRoutingMaxHolders         = 4
+	defaultCacheRoutingActivationPct      = 100.0
+	defaultCacheRoutingMaxPlanQPS         = 0.0
+	maxCacheRoutingPlanQPS                = 1_000_000.0
+	cacheRoutingAttemptTTL                = 2 * time.Minute
+	cacheRoutingInFlightAttemptTTL        = 2 * time.Hour
+	cacheRoutingSweepInterval             = 30 * time.Second
+	cacheRoutingMaxEntries                = 10_000
+	cacheRoutingMaxAttempts               = 50_000
+	cacheRoutingMaxReceiptTokens          = 1_000_000
+	cacheRoutingMaxStageMs                = 10 * 60 * 1000.0
+	cacheRoutingMemoryTTL                 = 30 * time.Second
+	cacheRoutingMaxCheckpointReadyAnchors = 16
 )
 
 type CachePlan struct {
+	generation         *cacheRoutingGeneration
 	ModelAggregateHash string
 	PromptContractID   string
 	CacheScope         string
@@ -49,13 +51,11 @@ func (p CachePlan) present() bool {
 // hash, or a provider/catalog hash mismatch all dispatch uncached and must keep
 // contributing ordinary TTFT/reputation feedback.
 func (pr *PendingRequest) CacheRoutingParticipates() bool {
-	return pr != nil && pr.cacheRoutingParticipates.Load()
-}
-
-func (pr *PendingRequest) setCacheRoutingParticipates(participates bool) {
 	if pr != nil {
-		pr.cacheRoutingParticipates.Store(participates)
+		owner := pr.cacheAttempt.Load()
+		return owner != nil && owner.dispatchState.Load() != cacheDispatchCold
 	}
+	return false
 }
 
 // CacheRoutingTelemetryEligible preserves the cache-selection denominator for
@@ -82,49 +82,60 @@ type cacheHolder struct {
 	Anchor                  protocol.PrefixCacheAnchor
 	RequiredRecomputeTokens int
 	StageMs                 float64
+	stageMeasurement        *cacheStageMeasurement
 	UpdatedAt               time.Time
 	ExpiresAt               time.Time
 }
 
 type cacheAttempt struct {
-	RequestID          string
-	ProviderID         string
-	Provider           *Provider
-	Model              string
-	ExpiresAt          time.Time
-	CreatedAt          time.Time
-	LookupSeen         bool
-	V2                 bool
-	Plan               CachePlan
-	V2Capability       protocol.PrefixCacheV2Capability
-	ExpectedPrompt     protocol.PrefixCacheAnchor
-	ExpectedBoundaries map[int]string
-	LastReadyAnchor    protocol.PrefixCacheAnchor
+	RequestID             string
+	ProviderID            string
+	Provider              *Provider
+	Model                 string
+	ExpiresAt             time.Time
+	CreatedAt             time.Time
+	LookupSeen            bool
+	V2                    bool
+	Plan                  CachePlan
+	V2Capability          protocol.PrefixCacheV2Capability
+	MemoryCapability      protocol.PrefixCacheV2Capability
+	MemoryLookupSeen      bool
+	MemoryLastReadyAnchor protocol.PrefixCacheAnchor
+	ExpectedPrompt        protocol.PrefixCacheAnchor
+	ExpectedBoundaries    map[int]string
+	LastReadyAnchor       protocol.PrefixCacheAnchor
 }
 
 type cacheV2SequenceKey struct {
 	ProviderID string
 	ModelID    string
 	CacheEpoch string
+	Tier       string
 }
 
 type cacheV2ProviderModelKey struct {
 	ProviderID string
 	ModelID    string
+	Tier       string
 }
 
 type cacheRoutingHint struct {
+	generation *cacheRoutingGeneration
+	// Frozen at holder lookup; pricing never re-reads the clock at reservation.
+	EvidenceWeight     float64
 	PrefillTokensSaved int
 	CachedTokens       int
 	StageMs            float64
 	Provider           *Provider
 	Capability         protocol.PrefixCacheV2Capability
 	CapabilityRevision uint64
+	Tier               string
 }
 
 type cacheRoutingCapability struct {
 	Provider           *Provider
 	Capability         protocol.PrefixCacheV2Capability
+	MemoryCapability   protocol.PrefixCacheV2Capability
 	CapabilityRevision uint64
 }
 
@@ -237,6 +248,7 @@ func (h *cacheHolderOrderHeap) Pop() any {
 }
 
 type cacheRoutingTracker struct {
+	generation          *cacheRoutingGeneration
 	mu                  sync.Mutex
 	ttl                 time.Duration
 	maxHolders          int
@@ -269,7 +281,8 @@ func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTrac
 		maxHolders = defaultCacheRoutingMaxHolders
 	}
 	return &cacheRoutingTracker{
-		ttl: ttl, maxHolders: maxHolders, maxEntries: cacheRoutingMaxEntries, maxAttempts: cacheRoutingMaxAttempts,
+		generation: &cacheRoutingGeneration{},
+		ttl:        ttl, maxHolders: maxHolders, maxEntries: cacheRoutingMaxEntries, maxAttempts: cacheRoutingMaxAttempts,
 		holders: make(map[string]map[string]cacheHolder), attempts: make(map[string]cacheAttempt),
 		holderOrderByRef: make(map[cacheHolderRef]*cacheHolderOrderEntry), attemptOrderByNonce: make(map[string]*cacheAttemptOrderEntry),
 		v2Sequences:      make(map[cacheV2SequenceKey]uint64),
@@ -359,5 +372,63 @@ func (t *cacheRoutingTracker) recordDonationOutcomes(deltas map[string]uint64) {
 		} else {
 			t.donationOutcomes[outcome] = current + delta
 		}
+	}
+}
+
+func (r *Registry) ConfigureCacheRouting(cfg CacheRoutingConfig) error {
+	cfg.Mode = strings.ToLower(strings.TrimSpace(cfg.Mode))
+	if cfg.Mode == "" {
+		cfg.Mode = CacheRoutingOff
+	}
+	if cfg.TTL == 0 {
+		cfg.TTL = defaultCacheRoutingTTL
+	}
+	if cfg.MaxHolders == 0 {
+		cfg.MaxHolders = defaultCacheRoutingMaxHolders
+	}
+	if err := cfg.Check(); err != nil {
+		return err
+	}
+	var keys cacheRouteKeys
+	if cfg.Mode != CacheRoutingOff {
+		master, err := decodeCacheMasterKey(cfg.MasterKey)
+		if err != nil {
+			return err
+		}
+		keys = deriveCacheKeys(master)
+	}
+	// Check validated these tuples; compile an owned immutable membership map.
+	artifacts, _ := newCacheArtifactAllowlist(cfg.AllowedArtifacts)
+	tracker := newCacheRoutingTracker(cfg.TTL, cfg.MaxHolders)
+	activation := newCacheActivationGate(cfg.ActivationPct, cfg.MaxPlanQPS)
+	r.mu.Lock()
+	previous := r.cacheRouting
+	if previous != nil {
+		previous.generation.revoked.Store(true)
+	}
+	r.cacheRouting = tracker
+	r.cacheActivation = activation
+	r.cacheRoutingMode = cfg.Mode
+	r.cacheRoutingAllowedArtifacts = artifacts
+	r.cacheRouteKeys = keys
+	r.cacheRoutingMaxDiscountMs = cloneCacheScoreLimit(cfg.MaxDiscountMs)
+	r.cacheRoutingMaxCostFraction = cloneCacheScoreLimit(cfg.MaxCostFraction)
+	r.mu.Unlock()
+	previous.clearRetired()
+	return nil
+}
+
+func (r *Registry) CacheRoutingConfigSnapshot() CacheRoutingConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return CacheRoutingConfig{
+		Mode:             r.cacheRoutingMode,
+		AllowedArtifacts: r.cacheRoutingAllowedArtifacts.snapshot(),
+		ActivationPct:    r.cacheActivation.percent,
+		MaxPlanQPS:       r.cacheActivation.maxQPS,
+		TTL:              r.cacheRouting.ttl,
+		MaxHolders:       r.cacheRouting.maxHolders,
+		MaxDiscountMs:    cloneCacheScoreLimit(r.cacheRoutingMaxDiscountMs),
+		MaxCostFraction:  cloneCacheScoreLimit(r.cacheRoutingMaxCostFraction),
 	}
 }

@@ -1,6 +1,6 @@
 # Models reference
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-05 · commit `169b342e6`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
@@ -95,6 +95,13 @@ A key created with `allowed_models` can only use those ids. Any other `model` fa
 | Reasoning | `"reasoning"` in `supported_features` | `reasoning` / `reasoning_effort` are applied per model policy (`applyResolvedModelReasoningPolicy`, `coordinator/api/reasoning_request_policy.go`); reasoning tokens are reported in `usage.completion_tokens_details.reasoning_tokens` |
 | Context | `context_length`, `max_output_length` | `max_tokens` clamped to `max_output_length`; prompts no provider can accept → 413 `payload_too_large` (`runInferenceAdmission`, `coordinator/api/inference_admission.go`) |
 | Availability | `metadata.can_accept`, `routable_providers`, `warm_providers` | Zero routable providers at dispatch → 503 `model_unavailable` |
+
+Prefix reuse is a runtime provider capability scoped to the exact model artifact,
+prompt contract and request isolation scope. A family name or model-list entry
+alone does not guarantee a cache hit. Complete SSD checkpoints support eligible
+loaded Qwen recurrent targets and paged GPT-OSS/Gemma historical attention;
+the [cache capability reference](../reference/ssd-kv-cache.md#per-family-reuse-capability)
+records backend and identity gates. This does not change API feature flags.
 
 ## Related
 

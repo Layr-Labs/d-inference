@@ -1,0 +1,108 @@
+{
+  "suites": {
+    "BenchmarkSweepExitTests": {
+      "functions": 10,
+      "expanded_cases": 10,
+      "log_sha256": "74a2606416783bbfd5ad0854182c56d3b7fc7c92f84f2848b9ccfb578b8a2696"
+    },
+    "DoctorClearBackendGuardTests": {
+      "functions": 3,
+      "expanded_cases": 3,
+      "log_sha256": "1d32710421932857f3f7470f239274509ad2febe99c485b1b2f88902f515cf45"
+    },
+    "EngineV2FP32PagedRateTests": {
+      "functions": 4,
+      "expanded_cases": 4,
+      "log_sha256": "bc853e09e1e765d4732af3c91eff15b9bbb517c8edd42d79d21ed04c477bab59"
+    },
+    "EngineV2KVBackendFallbackHeartbeatTests": {
+      "functions": 4,
+      "expanded_cases": 4,
+      "log_sha256": "8bb78ce10dbedac4a93d59f639010967c2598263e90c0a52bc3d8a3005894aec"
+    },
+    "EngineV2KVBackendGateTests": {
+      "functions": 39,
+      "expanded_cases": 62,
+      "log_sha256": "9cf283609ae9fe29d6a093f8c6edd55a1f89eb9e965aef779832481a51835528"
+    },
+    "EngineV2KVBackendPolicyTests": {
+      "functions": 8,
+      "expanded_cases": 28,
+      "log_sha256": "44d395e6d28c69b6b9eedb62b03db419caf7877b8688d2b72e4a6b6c38e17f50"
+    },
+    "EngineV2PagedPoolDTypeEnvTests": {
+      "functions": 11,
+      "expanded_cases": 11,
+      "log_sha256": "82c4c2d8fa21a593c020e55c03e4993a339cc0d89694029d43e84aa7e223ce72"
+    },
+    "EngineV2PrefixCacheUsageTests": {
+      "functions": 6,
+      "expanded_cases": 6,
+      "log_sha256": "5abe0804353d7d7af3dd46884d6132d2d36c8312d0babef35b809e70369d600a"
+    },
+    "EngineV2RequestRoutingTests": {
+      "functions": 21,
+      "expanded_cases": 21,
+      "log_sha256": "a214761dec65dfe6669674bd09b3d20725a036b87e9272d7d4f1cb53c8447e27"
+    },
+    "EngineV2ResliceTests": {
+      "functions": 8,
+      "expanded_cases": 8,
+      "log_sha256": "1eb658e89b85ebde95890054f6632518238ad8039dad872b8a9b913e14f00533"
+    },
+    "EngineV2ResliceUnwindTests": {
+      "functions": 2,
+      "expanded_cases": 2,
+      "log_sha256": "10510aaf0616ec9361a93069f119629cb3e3e13e05feb3f7dce74e32a64e3019"
+    },
+    "EngineV2ReslicingWiringTests": {
+      "functions": 8,
+      "expanded_cases": 8,
+      "log_sha256": "fbb5c4cb48a3f8815e076b812306798a958993aa087206a4056d63c640f63b40"
+    },
+    "EngineV2RuntimeGuardTests": {
+      "functions": 7,
+      "expanded_cases": 7,
+      "log_sha256": "b23c9da8adaa50ff45fbce301955188e2364b19cf5b4405f5b2c153f3f7b1f66"
+    },
+    "EngineV2SlotBuildTests": {
+      "functions": 8,
+      "expanded_cases": 8,
+      "log_sha256": "da6ed3ccd7ee7289eac9491bdd02544104a3ef3ed51fbfd45f617b3e86d85977"
+    },
+    "KVBackendGuardDiagnosticsTests": {
+      "functions": 9,
+      "expanded_cases": 9,
+      "log_sha256": "57670e59a5053177c4df468bc1ca349df0686df673962455516cb2ec1c3a514b"
+    },
+    "KVBackendPostureTests": {
+      "functions": 16,
+      "expanded_cases": 18,
+      "log_sha256": "74ce88729c7c41acc35a9bd0349fdd8d38572098fe367fd5c18e995675771a74"
+    },
+    "MTPBenchmarkTests": {
+      "functions": 32,
+      "expanded_cases": 32,
+      "log_sha256": "7ea4abfbaef2c52f4f69ec3eecc0714881512837667b4a55e6903d7cd195c48d"
+    },
+    "PrefillDeadlineProductionConfigTests": {
+      "functions": 5,
+      "expanded_cases": 5,
+      "log_sha256": "eaf6637418e7431fc4d01cfbae1b4f0033682cf21795fa84879910ae4d43a5d9"
+    },
+    "PrefixCachePolicyTests": {
+      "functions": 12,
+      "expanded_cases": 12,
+      "log_sha256": "1227d74beffd4fce97c3c536be1ff4fa373d2c761f59df93cf9a3e5ace70a036"
+    },
+    "SegmentedProductionGrantTests": {
+      "functions": 8,
+      "expanded_cases": 8,
+      "log_sha256": "f242daf2a405605b66ddd1d044ae3735fc7eb7ab82517ad2818ecae5dc4ca98b"
+    }
+  },
+  "total_functions": 221,
+  "expanded_cases": 266,
+  "no_skips_or_failures": true,
+  "note": "Failure detection uses terminal test records, not the word failed inside passing test names."
+}

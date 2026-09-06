@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-06 · commit `2eebb5412`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -15,11 +15,28 @@ Written for an operator with production access; how the feature works is in
 - Turning cache routing off — on its own, or as the first step of a coordinator
   binary rollback.
 
-There is no per-model switch. The mode is fleet-wide, and `PERCENT` samples a
-deterministic cohort keyed on account + resolved model + provider-bound body
-(`cacheActivationCohort`, `coordinator/registry/cache_route_keys.go`), so a
-small percentage is the only way to limit exposure; the same request from the
-same account is either always in or always out of the cohort.
+Use `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` to restrict network
+participation to measured exact model/weight/template tuples before selecting
+the request cohort. Unset preserves unrestricted existing eligibility; `[]`
+declines all participation. This is an optional coordinator control, not a
+provider capability override or a restriction on local HTTP caching
+(`coordinator/registry/cache_artifact_allowlist.go`).
+
+For the 0.9.0 rollout, configure this list explicitly with the validated tuples
+for `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` and
+`EigenLabs/Qwen3.8-27B-4bit-mtp`. GPT-OSS and Gemma QAT use paged attention but
+remain outside the initial SSD/cache-routing cohort. A successful paged-attention
+test alone does not qualify a tuple for cache routing. See the
+[five-model release decision](../design/release-090-paged-qwen-cache.md).
+Leave the provider's `DARKBLOOM_PREFIX_CACHE` unset to use its Qwen-only default.
+An explicit affirmative value opts other supported models into SSD caching;
+the coordinator allowlist restricts network participation but does not override
+that local provider setting.
+
+The mode remains global, and `PERCENT` samples a deterministic cohort keyed on
+account + resolved model + provider-bound body (`cacheActivationCohort`,
+`coordinator/registry/cache_activation.go`). Within the admitted artifact subset,
+the same request from the same account remains in or out of the cohort.
 
 ## Prerequisites
 
@@ -64,10 +81,19 @@ same account is either always in or always out of the cohort.
 
    ```bash
    curl -fsS localhost:8080/v1/cache/status | jq -S \
-     '{routing_mode, activation, sidecar: {enabled: .sidecar.enabled, ready: .sidecar.ready, restarts: .sidecar.restarts}, providers, holders, attempts}' \
+     '{routing_mode, artifact_allowlist, activation, sidecar: {enabled: .sidecar.enabled, ready: .sidecar.ready, restarts: .sidecar.restarts}, providers, holders, attempts}' \
      | tee /tmp/darkbloom-cache-rollout.before.json
    jq -e '.routing_mode == "off" and .sidecar.ready and .providers.v2 > 0' /tmp/darkbloom-cache-rollout.before.json
    ```
+
+   Confirm `artifact_allowlist.configured` and `artifact_allowlist.count` match
+   the intended restriction. `configured: true, count: 0` deliberately denies
+   participation; the status never exposes artifact identities. These values
+   also have aggregate gauges in the [API contract](../reference/api-contracts.md#exact-cache-status).
+
+   For the initial 0.9.0 cohort, require `configured: true, count: 3` and inspect
+   the proposed configuration to verify all three exact Qwen tuples. A count
+   alone cannot establish membership or successful model validation.
 
    `providers.v2` is the number of connected providers advertising the
    protocol-v2 capability (`PrefixCacheProtocolStatus`,
@@ -87,7 +113,18 @@ same account is either always in or always out of the cohort.
    `openssl rand -hex 32` yields 64 hex characters = 32 bytes, one of the
    encodings `decodeCacheMasterKey` accepts.
 
-3. **Set the first-activation bounds.** The first production activation uses
+3. **Set the artifact subset and first-activation bounds.** For a restricted
+   rollout, set `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` to a compact JSON
+   array of objects with `model_id`, `model_aggregate_sha256` and
+   `prompt_contract_id`. Take identities from the registered artifact manifest
+   and its completed model validation; use resolved IDs and exact hashes, not
+   family names or moving revision aliases. The [configuration reference](../reference/configuration.md#routing-admission-and-ttft)
+   specifies the schema and startup limits. The release defaults do not populate
+   this optional list. Setting it requires the same specific-operation approval
+   as the other production env changes; removing it restores unrestricted
+   eligibility, while `[]` keeps all network cache participation disabled.
+
+   The first production activation uses
    `EIGENINFERENCE_CACHE_ROUTING_PERCENT=1` and
    `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS=1` — the values
    `deploy/gcp/prod/release-env-defaults` ships for those two bounds; their
@@ -110,9 +147,15 @@ same account is either always in or always out of the cohort.
    sudo grep -E '^EIGENINFERENCE_CACHE_ROUTING_(MODE|PERCENT|MAX_PLAN_QPS)=' /etc/d-inference/env
    ```
 
-   Later deploys keep these values: the env refresh adds absent keys only and
-   never overwrites an `EIGENINFERENCE_CACHE_ROUTING_*` value an operator has
-   set (`deploy/gcp/prod/refresh-env.sh`;
+   Later deploys preserve mode/cohort/QPS choices. The v0.9 env refresh retires
+   only the exact historical limit pair `MAX_DISCOUNT_MS=1000` and
+   `MAX_COST_FRACTION=0.35` together, replacing both values with blank optional
+   limits. If either differs, both are preserved, including explicit zero.
+   An intentionally retained exact stock pair cannot be distinguished from
+   defaults; review the two `MIGRATE` lines from `--check` before approving
+   refresh. A different numeric spelling such as `1000.0` is treated as an
+   explicit customization and keeps the pair. Mode remains `off` unless
+   separately activated (`deploy/gcp/prod/refresh-env.sh`;
    [`coordinator-deploy.md` → Environment file](coordinator-deploy.md#environment-file)).
 
 4. **Restart the coordinator** per [`coordinator-deploy.md`](coordinator-deploy.md)
@@ -120,7 +163,7 @@ same account is either always in or always out of the cohort.
    boot the process logs `provider-confirmed cache routing configured` with
    `mode`, `activation_percent`, `max_plan_qps`, `ttl`, `max_holders`,
    `max_discount_ms` and `max_cost_fraction` (`coordinator/cmd/coordinator/main.go`);
-   a rejected configuration logs `cache routing configuration rejected` and
+   `null` means no optional clipping beyond avoidable prefill work. A rejected configuration logs `cache routing configuration rejected` and
    exits before listening.
 
    ```bash
@@ -186,7 +229,7 @@ Rollback always sets routing to `off` **before** any binary rollback.
    master key (`CacheRoutingConfig.Check`), and `ConfigureCacheRouting`
    installs a fresh, empty holder/attempt tracker on every application, so the
    restart clears all in-memory cache evidence
-   (`coordinator/registry/registry.go`). Leave
+   (`coordinator/registry/cache_routing.go`). Leave
    `EIGENINFERENCE_CACHE_MASTER_KEY` and the other `EIGENINFERENCE_CACHE_ROUTING_*`
    values in place; re-activation is then a one-line change.
 

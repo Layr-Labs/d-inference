@@ -123,13 +123,9 @@ extension EngineV2Bridge {
         } else {
             budgetUsed = maxTokensPotential
         }
-        // Physical backend truth binds the advertised capacity from below
-        // the admission ledger: on the PAGED backend a re-slice GROW moves
-        // only the ledger — the construction-fixed pool is what actually
-        // places pages, so advertising ledger tokens past pool truth would
-        // over-route into the capacity-requeue path. (Contiguous backends
-        // resize both ledgers together — the min is a no-op. 0 ⇒ unknown,
-        // e.g. an idle point-update snapshot — no bind.)
+        // Both ceilings resize for segmented and contiguous storage. Their
+        // minimum also protects explicit fixed-reference pools, whose backend
+        // capacity cannot grow. Zero means an unreported backend ceiling.
         var boundedKVBytesCapacity = snapshot.kvBytesCapacity
         if snapshot.kvBytesBackendCapacity > 0 {
             boundedKVBytesCapacity = min(
@@ -249,7 +245,10 @@ extension EngineV2Bridge {
             secondsSinceLastFirstToken: wedgeMonitor.secondsSinceLastFirstToken(now: now),
             wedgeSuspected: wedgeMonitor.wedgeSuspected(now: now),
             evalInFlightMs: evalInFlightMs,
-            telemetry: slotTelemetry
+            telemetry: slotTelemetry,
+            prefixCache: prefixCacheTelemetry.snapshot(),
+            pagedStorage: pagedStorageTelemetry.snapshot(
+                snapshot.pagedStorage.flatMap(PagedStorageTelemetryCapture.init))
         )
     }
 

@@ -4,8 +4,7 @@
 // process-wide disk-budget coordinator.
 //
 // The index maps truncated 16-byte HMAC tags → (fileBytes, lastAccess).
-// It is the ONLY resident state of the SSD tier at steady state
-// (~68 B/entry: <1 MB at the 20 GiB default budget). Rebuilt by directory
+// It retains metadata, not prefix payloads, between requests. Rebuilt by directory
 // scan at startup — the scan IS the recovery protocol, so index and files
 // can never disagree after a crash (no sidecar persistence, spec §5.1).
 //
@@ -14,8 +13,7 @@
 // process restart (the scan seeds `lastAccess` from mtime).
 //
 // Eviction is `unlink` + index removal, oldest-by-last-hit first (LRU),
-// coordinated ACROSS models by `SSDDiskBudget` so the 20 GiB budget is
-// box-wide.
+// coordinated across models by `SSDDiskBudget` under one box-wide budget.
 
 import Foundation
 #if canImport(os)
@@ -44,6 +42,10 @@ final class SSDBlockIndex: @unchecked Sendable {
         lock.withLock { _totalBytes }
     }
 
+    func usageSnapshot() -> (entries: Int, bytes: Int) {
+        lock.withLock { (entries.count, _totalBytes) }
+    }
+
     func insert(tag16: Data, fileBytes: Int, lastAccess: Int64) {
         lock.withLock {
             if let old = entries[tag16] { _totalBytes -= old.fileBytes }
@@ -54,6 +56,20 @@ final class SSDBlockIndex: @unchecked Sendable {
 
     func contains(tag16: Data) -> Bool {
         lock.withLock { entries[tag16] != nil }
+    }
+
+    /// Probe one complete checkpoint without scanning unrelated entries. Read
+    /// size and recency together; eviction or replacement is validated again
+    /// when the caller authenticates the file. A probe does not extend its TTL.
+    func freshFileBytes(tag16: Data, now: Int64, ttlSeconds: Int64) -> Int? {
+        lock.withLock {
+            guard let entry = entries[tag16] else { return nil }
+            if ttlSeconds > 0, now >= entry.lastAccess {
+                let (age, overflow) = now.subtractingReportingOverflow(entry.lastAccess)
+                guard !overflow, age < ttlSeconds else { return nil }
+            }
+            return entry.fileBytes
+        }
     }
 
     @discardableResult
@@ -165,10 +181,8 @@ protocol SSDEvictableStore: AnyObject, Sendable {
     func performExternalDestructiveChange(_ body: () -> Void) -> Bool
 }
 
-/// Process-wide, BOX-WIDE disk budget (Gaj, 2026-07-07: 20 GiB default
-/// across ALL models; `DARKBLOOM_PREFIX_CACHE_DISK_GB` overrides; the
-/// default is additionally clamped to free-disk/2 like the legacy
-/// resolver). When the limit is hit, the globally-oldest-by-last-hit
+/// Process-wide disk budget across all models, resolved by `PrefixCachePolicy`.
+/// When the limit is hit, the globally-oldest-by-last-hit
 /// entry is unlinked, across every registered model store, until the
 /// total is back under budget.
 ///

@@ -1,6 +1,6 @@
 # Beta features
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-06 · commit `615d96328`
 
 Turn experimental engine behaviour on or off per machine with `darkbloom beta`,
 which writes keys into `provider.toml` so every serve path (LaunchAgent daemon,
@@ -79,9 +79,14 @@ so an environment-variable toggle would silently no-op for the normal daemon
 | Variable | Relationship to the toggle | Source |
 |---|---|---|
 | `DARKBLOOM_CBV2_MTP` | Process-wide **kill switch**: `0`, `false`, `no` or `off` disables MTP regardless of `mtp_mode`; any other value, or unset, defers to config. On the LaunchAgent passthrough list | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` (`killSwitchEnabled`) |
-| `DARKBLOOM_CBV2_PAGED_KV` | Kill switch for the paged KV backend (`0` forces contiguous everywhere) — not a beta feature; paged is selected with `[backend] engine_v2_kv_backend = "paged"` or the per-model table. There is no env var that turns paged on. Passthrough-listed | `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift` (`killSwitchEnvKey`) |
+| `DARKBLOOM_CBV2_PAGED_KV` | Kill switch for the paged KV backend (`0` forces contiguous everywhere) — not a beta feature. Candidate `auto` selects paged only for the [exact Qwen allowlist](../architecture/prefix-cache.md#kv-layouts), with automatic fallback; all other IDs stay contiguous. Explicit global/per-model backend settings remain available. There is no env var that turns paged on. Passthrough-listed | `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift` (`killSwitchEnvKey`, `preferredBackend`) |
 | `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL`, `MLX_GEMMA4_FUSED_WEIGHTED_UNSORT`, `MLX_GATHER_QMM_EXPERT_SLICES` | **Outputs**, not inputs: `GemmaOptimizationEnvironment.apply` overwrites them from config at every serve start. The single exception is a shell `MLX_GATHER_QMM_EXPERT_SLICES=1`, which restores the descriptor-retract drain instead of the `trust` default and is copied into the daemon plist for that reason | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift` (`projection`, `daemonDrainPassthrough`) |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | Tighten-only cap on MTP verification width; passthrough-listed | [`reference/configuration.md`](../reference/configuration.md) |
+
+The [Qwen-first paging rollout](../design/qwen-first-paged-ssd-rollout.md) is
+**not yet validated**. Its candidate backend selection does not change the
+[SSD-enabled, no-resident-retention defaults](../architecture/prefix-cache.md#invariants)
+or enable coordinator cache routing.
 
 Order of precedence for MTP at load time: kill switch off → target-only;
 otherwise `mtp_mode` (`on` / `off` / `auto`) → artifact validation → fail-open

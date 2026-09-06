@@ -121,6 +121,40 @@ chmod 0600 "$blanked"
 expect_refresh_failure "a blanked release-default key" "$blanked" \
     "required existing variables are missing or empty: $seed_key"
 
+# v0.9 only retires the complete historical stock cache pair. Check is read-only,
+# migration keeps both keys, and a second run is idempotent. Any customization
+# (including explicit zero or only one old stock value) preserves both limits.
+cache_ms_key=EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS
+cache_fraction_key=EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION
+for pair in 1000:0.35 1000:0.5 2000:0.35 0:0.35 1000:0 1000.0:0.350; do
+    ms=${pair%%:*}
+    fraction=${pair#*:}
+    cache_env="$ENV_DIR/cache-$ms-$fraction.env"
+    awk -F= -v ms="$ms" -v fraction="$fraction" \
+        -v mk="$cache_ms_key" -v fk="$cache_fraction_key" \
+        '$1 == mk { print mk "=" ms; next } $1 == fk { print fk "=" fraction; next } { print }' \
+        "$ENV_FILE" > "$cache_env"
+    before=$(cksum < "$cache_env")
+    preview=$(SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$cache_env" \
+        REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --check)
+    [ "$(cksum < "$cache_env")" = "$before" ]
+    SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$cache_env" \
+        REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
+    if [ "$pair" = 1000:0.35 ]; then
+        printf '%s' "$preview" | grep -Fq "MIGRATE $cache_ms_key"
+        printf '%s' "$preview" | grep -Fq "MIGRATE $cache_fraction_key"
+        grep -Fxq "$cache_ms_key=" "$cache_env"
+        grep -Fxq "$cache_fraction_key=" "$cache_env"
+    else
+        grep -Fxq "$cache_ms_key=$ms" "$cache_env"
+        grep -Fxq "$cache_fraction_key=$fraction" "$cache_env"
+    fi
+    grep -Fxq 'EIGENINFERENCE_CACHE_ROUTING_MODE=off' "$cache_env"
+    after=$(SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$cache_env" \
+        REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --check)
+    printf '%s' "$after" | grep -Fq 'prod env refresh: no changes'
+done
+
 marker="$TEST_ROOT/path-injection-ran"
 if SKIP_PERSISTENCE_CHECK=1 \
     ENV_DIR="$ENV_DIR;touch$marker" ENV_FILE="$ENV_FILE" \

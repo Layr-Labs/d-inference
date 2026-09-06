@@ -14,14 +14,6 @@ import Foundation
 /// crash-looping box back to contiguous is that box itself. This record is
 /// that flip.
 ///
-/// DORMANT SINCE v0.8.1, RETAINED ON PURPOSE. `.auto` resolves contiguous
-/// again, so the guard's scope (`.auto` slots that resolved paged) is
-/// currently empty and the record can no longer change any outcome. It is
-/// kept whole — store, watchdog trip, doctor clear, staleness rules —
-/// because it is the automated safety net a future re-flip requires, and
-/// rebuilding it under an incident is exactly the wrong time. The
-/// description below is written in the present tense for that world.
-///
 /// EFFECT. While the record is present AND its `providerVersion` equals the
 /// RUNNING binary's version, an `.auto` slot that would resolve paged
 /// instead resolves CONTIGUOUS with

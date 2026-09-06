@@ -122,7 +122,7 @@ enum GPTOSSHarmonyTemplateFix {
             // Harmony forbids thinking in the same turn as a tool_call: emit a
             // standalone assistant thinking-turn first when present.
             if !thinking.isEmpty {
-                out.append(["role": "assistant", "thinking": thinking])
+                out.append(["role": "assistant", "content": "", "thinking": thinking])
             }
 
             var consumed = Set<String>()

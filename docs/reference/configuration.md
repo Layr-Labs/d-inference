@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-05 · commit `94c7c31eb`
+> Last updated: 2026-09-06 · commit `2eebb5412`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -17,7 +17,7 @@ read once at process start and a restart applies a change.
 | Coordinator, dev | Same file layout on the dev VM, written by `deploy/gcp/refresh-env.sh`; see [`../operations/dev-environment.md`](../operations/dev-environment.md). |
 | Coordinator, local | Whatever shell exports `go run ./coordinator/cmd/coordinator` inherits. `EIGENINFERENCE_ALLOW_MEMORY_STORE=true` is the only way to start without a database. |
 | Provider CLI, `darkbloom start --foreground` | The invoking shell's environment, minus the 13 variables scrubbed by `provider-swift/Sources/ProviderCore/Security/EnvironmentScrubber.swift`. Every `DARKBLOOM_*` row below applies. |
-| Provider CLI, installed LaunchAgent | `darkbloom start` (daemon mode) writes a launchd plist whose `EnvironmentVariables` are built by `passthroughEnvironment` in `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`: only the allow-list `passthroughEnvKeys` + `inferencePassthroughEnvKeys` is copied from the operator's shell (`DARKBLOOM_PREFIX_CACHE`, `DARKBLOOM_MLX_RESOURCE_DEBUG`, `DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`, `DARKBLOOM_KV_BACKEND_GUARD`, `DARKBLOOM_MLX_CACHE_LIMIT_GB`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`, `DARKBLOOM_PREFILL_DEADLINE_MODE`), plus `MLX_GATHER_QMM_EXPERT_SLICES` only when it is exactly `1`. `PATH` is deliberately dropped. The watchdog plist (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`) additionally forwards `DARKBLOOM_NO_UPDATE_CHECK`. Every other provider variable is inert under launchd. |
+| Provider CLI, installed LaunchAgent | `darkbloom start` (daemon mode) writes a launchd plist whose `EnvironmentVariables` are built by `passthroughEnvironment` in `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`: only the allow-list `passthroughEnvKeys` + `inferencePassthroughEnvKeys` is copied from the operator's shell (`DARKBLOOM_PREFIX_CACHE`, `DARKBLOOM_PREFIX_CACHE_MEMORY`, `DARKBLOOM_MLX_RESOURCE_DEBUG`, `DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`, `DARKBLOOM_KV_BACKEND_GUARD`, `DARKBLOOM_MLX_CACHE_LIMIT_GB`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`, `DARKBLOOM_PREFILL_DEADLINE_MODE`), plus `MLX_GATHER_QMM_EXPERT_SLICES` only when it is exactly `1`. `PATH` is deliberately dropped. The watchdog plist (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`) additionally forwards `DARKBLOOM_NO_UPDATE_CHECK`. Every other provider variable is inert under launchd. |
 | Provider CLI, `provider.toml` | `~/.config/darkbloom/provider.toml` (`ConfigManager` in `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`) is the durable configuration; a variable that overrides a config key says so in its Effect cell (`DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL`). |
 | console-ui | Next.js `.env*` files or the hosting build environment (Vercel-style). Every console-ui variable is `NEXT_PUBLIC_*` or build-tooling: inlined at **build** time, so changing one requires a rebuild. There is no server-only secret; a gitignored `.env.local` in `console-ui/` is the only local file and no `.env.example` exists. |
 | admin-ui | Server-only **runtime** variables read by React Server Components on each request; set them in `.env*` or the host environment. `NODE_ENV` is set by Next. |
@@ -205,13 +205,33 @@ Cache-aware routing (semantics in [`../architecture/cache-aware-routing.md`](../
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_CACHE_ROUTING_MODE` | `off`, `on` | `off` | `coordinator/registry/config.go` (`ReadConfig`, `CacheRoutingConfig.Check`) | Enables provider-confirmed cache routing; any other value refuses startup. |
+| `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` | JSON array of exact identity triples; at most 64 KiB / 128 entries | unset (unrestricted eligibility) | `coordinator/registry/cache_artifact_allowlist.go` (`readCacheRoutingArtifacts`, `newCacheArtifactAllowlist`) | Restricts network cache participation before cohort/QPS/sidecar work; `[]` denies all. Invalid configuration refuses startup, including while mode is `off`. |
 | `EIGENINFERENCE_CACHE_ROUTING_PERCENT` | float (0, 100] | `100` | `coordinator/registry/config.go` (`envStrictFloat`) | Share of eligible requests that use cache routing; malformed values refuse startup. |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS` | float 0–1,000,000 | `0` (unlimited) | `coordinator/registry/config.go` (`envStrictFloat`) | Rate limit on cache-plan computation. |
-| `EIGENINFERENCE_CACHE_ROUTING_TTL` | Go duration ≥ 0 | `10m` | `coordinator/registry/config.go` | Lifetime of a cache-affinity holder. |
-| `EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS` | integer 1–32 | `4` | `coordinator/registry/config.go` | Maximum holders per affinity key. |
-| `EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS` | float 0–10000 | `1000` | `coordinator/registry/config.go` | Largest TTFT discount a cache hit may earn. |
-| `EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION` | float 0–1 | `0.35` | `coordinator/registry/config.go` | Cap on the cost fraction attributed to cache reuse. |
+| `EIGENINFERENCE_CACHE_ROUTING_TTL` | Go duration ≥ 0 | `10m` | `coordinator/registry/config.go` | SSD holder lifetime; resident holders use the smaller of this value and `cacheRoutingMemoryTTL = 30 * time.Second` (`coordinator/registry/cache_tiers.go`, `receiptTTL`). |
+| `EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS` | integer 1–32 | `4` | `coordinator/registry/config.go` | Maximum machines per exact content prefix and tier, across provider epochs. |
+| `EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS` | optional float 0–10000 | unset/blank | `coordinator/registry/cache_score_config.go` (`optionalCacheScoreLimit`) | Optional millisecond cap on avoidable-prefill score credit; explicit `0` grants no credit. |
+| `EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION` | optional float 0–1 | unset/blank | `coordinator/registry/cache_score_config.go` (`optionalCacheScoreLimit`) | Optional cap as a fraction of baseline total cost, alongside the prefill-work bound; explicit `0` grants no credit. |
 | `EIGENINFERENCE_CACHE_MASTER_KEY` | secret key material | unset; required when mode is `on` | `coordinator/registry/config.go` (`decodeCacheMasterKey`) | Keys the affinity digests so raw identity and prefix bytes are never stored. |
+
+The optional artifact array uses exactly `model_id`, `model_aggregate_sha256`
+and `prompt_contract_id` string fields. Model IDs match resolved catalog IDs
+exactly (at most 512 bytes, no wildcard, surrounding whitespace or control
+separators); both hashes must be 64 lowercase hexadecimal characters. Missing,
+unknown or duplicate fields, duplicate tuples, `null`, a blank setting, trailing
+JSON and oversized input are configuration errors. Multiple exact revisions of
+one model may be listed as distinct tuples. An absent variable preserves the
+existing unrestricted eligibility; `[]` is an explicitly configured empty list.
+`MODE=off` still disables participation with any list.
+
+The list is parsed once at startup and compiled into immutable membership;
+`ConfigureCacheRouting` replaces it with the holder/attempt tracker. Exclusion
+returns ordinary `ineligible` without a reusable remote scope or inference
+error. It does not alter provider capabilities or local HTTP cache policy
+(`coordinator/registry/cache_route_keys.go`, `PlanCacheRouteWithResult`). No
+artifact entries are populated by the shipped defaults; follow the
+[rollout runbook](../operations/cache-routing-rollout.md) to configure a measured
+artifact subset before activating network routing.
 
 Rate limits and service-account admission (`coordinator/ratelimit/config.go`, `ReadConfig`):
 
@@ -337,10 +357,10 @@ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative value
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `DARKBLOOM_CBV2_PAGED_KV` | `0` forces contiguous | unset (policy decides) | `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift` | Kill switch for paged KV; beats the `provider.toml` setting. |
-| `DARKBLOOM_CBV2_PAGED_KV_DTYPE` | `float16`, `float32` | `float16` | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift` | Paged-KV storage dtype; any other value throws at engine build. |
-| `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | tokens | engine default | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift` | Solo-prefill stripe size. |
-| `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | integer (`0` = unlimited) | `1` | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift` | Maximum concurrent partial prefills. |
-| `DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT` | affirmative | off | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift` | Restores the legacy per-request timeout. |
+| `DARKBLOOM_CBV2_PAGED_KV_DTYPE` | `float16`, `float32` | unset: observed native per-layer types | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BackendPreparation.swift` | Optional assertion for resolved paged storage; a nonempty value must match every measured native layer. Unsupported values or mismatches refuse explicit paged construction. |
+| `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` | tokens | engine default | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Configuration.swift` | Solo-prefill stripe size. |
+| `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | integer (`0` = unlimited) | `1` | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Configuration.swift` | Maximum concurrent partial prefills. |
+| `DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT` | affirmative | off | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Configuration.swift` | Restores the legacy per-request timeout. |
 | `DARKBLOOM_CBV2_MTP` | negative disables | unset (beta flag decides) | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift`; `provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift` | Kill switch for MTP speculation; beats the `provider.toml` beta flag. See [`../provider/beta-features.md`](../provider/beta-features.md). |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | integer | policy default | `provider-swift/Sources/ProviderCore/Inference/MTPAutomaticVerificationPolicy.swift` | Tighten-only cap on rectangular MTP verification tokens. |
 | `DARKBLOOM_MTP_VERIFICATION_MODE` | `rectangular`, `serial`, `serial_target`, `automatic` | `automatic` | `provider-swift/Sources/ProviderBenchmark/MTPProductionSession.swift` | MTP verification strategy (benchmark session). |
@@ -369,19 +389,48 @@ Internals and file format: [`ssd-kv-cache.md`](ssd-kv-cache.md).
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
-| `DARKBLOOM_PREFIX_CACHE` | non-affirmative disables | on | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` | Master switch for the SSD prefix cache. |
-| `DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS` | seconds (`0` off) | `120` | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` | Cadence of the cache stats log line. |
-| `DARKBLOOM_PREFIX_CACHE_DISK_GB` | GiB | `20`, clamped to half the free space | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` | Box-wide on-disk budget. |
-| `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Allows a tmp-backed cache (tests and stress runs). |
-| `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | directory | unset | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Test override of the cache root. |
+| `DARKBLOOM_PREFIX_CACHE` | affirmative opts in; non-affirmative nonempty disables | on for exact Qwen cohort, off otherwise | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift` (`isEnabled`) | Unset/empty uses the [model default](../design/release-090-paged-qwen-cache.md). Explicit affirmative values permit other models subject to capability/identity gates; resident payloads require the separate memory opt-in. |
+| `DARKBLOOM_PREFIX_CACHE_MEMORY` | affirmative (`1`, `true`, `yes`, `on`) | off | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift` (`isMemoryEnabled`) | Explicit opt-in for both paged resident blocks and the recurrent RAM bank; global disable wins. Forwarded by LaunchAgent. |
+| `DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS` | seconds (`0` off) | `120` | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` | Cadence of the local SSD stats line and typed per-store heartbeat observation; `0` omits the observation. Sample age still advances between ticks; see [telemetry](../architecture/telemetry.md#durable-prefix-cache-observations). |
+| `DARKBLOOM_PREFIX_CACHE_DISK_GB` | GiB | `100`, clamped to half the currently available space | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) | Box-wide on-disk budget across all models. A valid positive override is used verbatim; the free-space clamp applies to the default. |
+| `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Allows an in-memory KEK fallback and the isolated test root. Ephemeral ciphertext cannot be reused after process exit. |
+| `DARKBLOOM_PREFIX_CACHE_TEST_ROOT` | directory | unset | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` | Isolated payload root, accepted only with `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL`; normally forces an ephemeral key. |
+| `DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY` | exactly `1` | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`forceEphemeralKey`) | Benchmark-only: use the normal persistent KEK path within an accepted test root. Fallback is still possible; the benchmark SPI defaults to requiring actual persistent mode. Not forwarded to LaunchAgents. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS` | seconds ≤ 900 | `900` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Entry time-to-live. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | GB/day (`0` unlimited) | `150` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Write-endurance budget. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` | tokens | `1024` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Smallest prefix worth persisting. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Persists the sliding-window sidecar. |
-| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`, `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | MiB, ms | `1024`, `1000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Staging buffer size and deadline. |
+| `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB`, `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | MiB, ms | `1024`, `1000` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | Attention staging byte/time caps. Complete checkpoints use the byte value as a payload-read cap; native destination plus bounded scratch is separately reserved before allocation, with no permanent RAM carve. |
 | `DARKBLOOM_PREFIX_CACHE_SSD_STRICT_FSYNC` | affirmative | off | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` | `fsync` after every write. |
 
+### Resident recurrent prefix cache
+
+These overrides are read at slot construction in foreground/local and test
+processes; neither is on the LaunchAgent environment allow-list. Both require
+`DARKBLOOM_PREFIX_CACHE_MEMORY=1` first; that opt-in and the global cache switch
+are forwarded to the LaunchAgent. Backend/model/assistant
+eligibility, measured publication limits, and the conservative reservation after
+a slot shrink are described in
+[`../architecture/prefix-cache.md#resident-tiers`](../architecture/prefix-cache.md#resident-tiers).
+Provider cache enablement does not enable coordinator preference; the independent
+`EIGENINFERENCE_CACHE_ROUTING_MODE` default remains `off`
+(`coordinator/registry/config.go`, `ReadConfig`).
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE` | exact `0` disables | unset (eligible only after memory opt-in) | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Hybrid.swift` (`hybridConfig`) | Disables recurrent checkpoint retention without changing paged/SSD policy or MTP mode. |
+| `DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES` | integer bytes | `min(1 << 30, max(0, kvBytesCapacity / 8))` | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Hybrid.swift` (`hybridConfig`) | Reservation inside the existing slot KV grant; parsed values outside `0 < bytes < kvBytesCapacity` disable the bank, malformed values use the default. |
+
+`CBv2HybridPrefixCacheConfig` defaults to `maximumEntries = 32` and
+`maximumCheckpointsPerRequest = 2`; these have no CLI environment overrides
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/HybridPrefixCacheContract.swift`).
+
 ### Benchmark, harness and tests
+
+Ordinary teacher-forced scoring is selected by CLI input, with no new environment
+variable; its required input and backend are documented in the
+[CLI reference](../provider/cli-reference.md#teacher-forced-scores)
+(`provider-swift/Sources/darkbloom/BenchmarkCommand.swift`, `teacherForcedOptionError`).
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|

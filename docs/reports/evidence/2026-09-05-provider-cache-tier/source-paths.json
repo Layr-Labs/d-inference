@@ -1,0 +1,4 @@
+{
+  "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift": "b763edb5ccb5c545c8a101ad903c5988072a5187219d40f34c373f3dc8a8d0f6",
+  "provider-swift/Tests/ProviderCoreTests/QwenVLMTargetExtractionTests.swift": "347742037f43936aeed7f323c7fd8d00f3015635f9bf1a0593ab90e8dbb9a6f4"
+}

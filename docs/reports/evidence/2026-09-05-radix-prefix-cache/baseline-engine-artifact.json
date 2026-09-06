@@ -1,0 +1,37 @@
+{
+  "source_commit": "e928d395fa4f97e736552a6de89b37876b2bc56b",
+  "candidate_define": false,
+  "binary_sha256": "e2db8be72ce495457c1cc5d76b4d24290d86cfb424f7a0d1c8239c01f1568d53",
+  "harness_files": [
+    {
+      "path": "Package.swift",
+      "sha256": "a3cf7146baa86d8cc7ffb6a62134a79d1f9d226b4e797e60b2f6cc8e136b37e8"
+    },
+    {
+      "path": "Sources/radix-engine/RadixBenchmark.swift",
+      "sha256": "b71f6fce7d43b5b291c09aaea10e02199ee2a15217acf8e195861189483a7a40"
+    }
+  ],
+  "resources": [
+    {
+      "path": "swift-transformers_Hub.bundle/gpt2_tokenizer_config.json",
+      "sha256": "551e26ec611d8d0c8edc3ef72e518a38418cb71f40de1347dd486a595e1557d7"
+    },
+    {
+      "path": "swift-transformers_Hub.bundle/t5_tokenizer_config.json",
+      "sha256": "e0aff0b1de9071e30d9a60a199303b6abe916a64a19932bd1c46992279b41a1f"
+    },
+    {
+      "path": "swift-crypto_Crypto.bundle/PrivacyInfo.xcprivacy",
+      "sha256": "42fb8a30dd8d7ba0900e1bf17fe64ed8c12cfdb8a9c791ab6b4e1eceb0f299c0"
+    },
+    {
+      "path": "mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal",
+      "sha256": "1a5b813ef89a36aa802951a1c5bccab789dd0746f2159846e649974572be368b"
+    },
+    {
+      "path": "swift-nio_NIOPosix.bundle/PrivacyInfo.xcprivacy",
+      "sha256": "982f20d820bc4460acc9d4116c3e6c8ec837f717dc82edbb7308f7400515c909"
+    }
+  ]
+}

@@ -1,10 +1,10 @@
 # Request Outcome Observability
 
-> Last updated: 2026-09-04 · commit `6f364e64b`
+> Last updated: 2026-09-04 · commit `7ae06021f`
 
 Every inference request the coordinator dispatches ends in exactly one terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the taxonomy as the code implements it, where each value is decided, and what is still not modelled.
 
-Scope: `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`. All four flow through `dispatchState` (`coordinator/api/dispatch.go`, `coordinator/api/consumer.go`), so all four write route rows and profile rows.
+Scope: `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`. All four flow through `dispatchState` (`coordinator/api/dispatch.go`, `coordinator/api/dispatch.go`), so all four write route rows and profile rows.
 
 ## Context
 

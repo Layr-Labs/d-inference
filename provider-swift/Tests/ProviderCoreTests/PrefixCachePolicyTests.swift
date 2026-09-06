@@ -15,18 +15,95 @@ struct PrefixCachePolicyTests {
 
     @Test("isEnabled: SSD defaults on and one explicit kill switch disables it")
     func envGate() {
-        #expect(PrefixCachePolicy.isEnabled(environment: [:]))
+        #expect(PrefixCachePolicy.isGloballyEnabled(environment: [:]))
         for on in ["1", "true", "yes", "on", " 1 ", "TRUE", "Yes", "ON"] {
             #expect(
-                PrefixCachePolicy.isEnabled(environment: ["DARKBLOOM_PREFIX_CACHE": on]),
+                PrefixCachePolicy.isGloballyEnabled(environment: ["DARKBLOOM_PREFIX_CACHE": on]),
                 "\(on) must enable")
         }
         for off in ["0", "false", "off", "no", "junk"] {
             #expect(
-                !PrefixCachePolicy.isEnabled(environment: ["DARKBLOOM_PREFIX_CACHE": off]),
+                !PrefixCachePolicy.isGloballyEnabled(environment: ["DARKBLOOM_PREFIX_CACHE": off]),
                 "\(off) must disable the cache")
         }
-        #expect(PrefixCachePolicy.isEnabled(environment: ["DARKBLOOM_PREFIX_CACHE": ""]))
+        #expect(PrefixCachePolicy.isGloballyEnabled(environment: ["DARKBLOOM_PREFIX_CACHE": ""]))
+    }
+
+    @Test(arguments: [
+        "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+        "EigenLabs/Qwen3.8-27B-4bit-mtp",
+    ])
+    func qwenDefaultSSD(modelID: String) {
+        for value in [nil, "", "   "] as [String?] {
+            let environment = value.map { [PrefixCachePolicy.environmentFlag: $0] } ?? [:]
+            #expect(PrefixCachePolicy.isEnabled(modelId: modelID, environment: environment))
+            #expect(!PrefixCachePolicy.isMemoryEnabled(environment: environment))
+        }
+        for value in ["0", "false", "no", "off", "junk"] {
+            #expect(!PrefixCachePolicy.isEnabled(
+                modelId: modelID, environment: [PrefixCachePolicy.environmentFlag: value]))
+        }
+    }
+
+    @Test(arguments: [
+        "gpt-oss-20b", "gemma-4-26b-qat-4bit", "gemma-4-26b", "gemma-4-26b-8bit", "unknown", "",
+        "qwen3.5-35b-a3b-other", "QWEN3.5-35B-A3B", " qwen3.5-35b-a3b",
+        "qwen3.6-35b-a3b", "EigenLabs/Qwen3.8-27B-4bit",
+    ])
+    func otherArtifactsRequireExplicitSSDOptIn(modelID: String) {
+        for value in [nil, "", "   ", "0", "false", "junk"] as [String?] {
+            let environment = value.map { [PrefixCachePolicy.environmentFlag: $0] } ?? [:]
+            #expect(!PrefixCachePolicy.isEnabled(modelId: modelID, environment: environment))
+            #expect(PrefixCachePolicy.residentConfig(
+                modelId: modelID, promptContractID: "contract", environment: environment) == nil)
+        }
+        for value in ["1", "true", "YES", " on "] {
+            let environment = [PrefixCachePolicy.environmentFlag: value]
+            #expect(PrefixCachePolicy.isEnabled(modelId: modelID, environment: environment))
+            #expect(!PrefixCachePolicy.isMemoryEnabled(environment: environment))
+        }
+    }
+
+    @Test("hybrid budget is carved from the slot and persistent assistants require exact restore")
+    func hybridBudgetAndAssistantGate() {
+        func config(
+            mtp: Bool = false, exact: Bool = false, template: String? = "template",
+            environment: [String: String] = [:]
+        ) -> CBv2HybridPrefixCacheConfig? {
+            PrefixCachePolicy.hybridConfig(
+                modelId: "qwen", promptContractID: template, kvBytesCapacity: 4 << 30,
+                hasMTPDrafter: mtp, supportsMTPPrefixCheckpoint: exact,
+                environment: [PrefixCachePolicy.memoryEnvironmentFlag: "1"].merging(environment) { _, new in new })
+        }
+        #expect(config()?.maximumBytes == 512 << 20)
+        #expect(config(mtp: true) == nil)
+        #expect(config(mtp: true, exact: true)?.maximumBytes == 512 << 20)
+        #expect(config(template: nil) == nil)
+        #expect(config(environment: ["DARKBLOOM_PREFIX_CACHE": "0"]) == nil)
+        #expect(config(environment: ["DARKBLOOM_CBV2_HYBRID_PREFIX_CACHE": "0"]) == nil)
+        #expect(config(environment: ["DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": "0"]) == nil)
+        #expect(config(environment: ["DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": "4294967296"]) == nil)
+        #expect(config(environment: ["DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": "268435456"])?.maximumBytes == 256 << 20)
+    }
+
+    @Test("resident payloads require a shared explicit opt-in; the global disable wins")
+    func memoryOptIn() {
+        for value in [nil, "", "0", "false", "junk"] as [String?] {
+            let environment = value.map { [PrefixCachePolicy.memoryEnvironmentFlag: $0] } ?? [:]
+            #expect(!PrefixCachePolicy.isMemoryEnabled(environment: environment))
+            #expect(PrefixCachePolicy.hybridConfig(
+                modelId: "qwen", promptContractID: "contract", kvBytesCapacity: 4 << 30,
+                hasMTPDrafter: false,
+                environment: environment.merging(["DARKBLOOM_CBV2_HYBRID_PREFIX_BYTES": "268435456"]) { _, new in new }) == nil)
+            #expect(PrefixCachePolicy.residentConfig(
+                modelId: "paged", promptContractID: "contract", environment: environment) == nil)
+        }
+        for value in ["1", "true", "YES", " on "] {
+            let environment = [PrefixCachePolicy.memoryEnvironmentFlag: value]
+            #expect(PrefixCachePolicy.isMemoryEnabled(environment: environment))
+            #expect(!PrefixCachePolicy.isMemoryEnabled(environment:
+                environment.merging([PrefixCachePolicy.environmentFlag: "0"]) { _, new in new }))
+        }
     }
 
     // MARK: - Backend adoption-exactness gate (v0.8.1)

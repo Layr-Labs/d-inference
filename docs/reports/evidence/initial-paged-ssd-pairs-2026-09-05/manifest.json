@@ -1,0 +1,938 @@
+{
+  "scope": "Initial strict paged B1 cache-off/SSD pairs for exact Q38, GPT-OSS 20B and Gemma 4 26B; includes failed setup attempts and fixture audit. No repeated-performance or release acceptance claim.",
+  "source_commit": "b274e0cd61331d1b26bebacff8a0fba4fff50e71",
+  "archive": {
+    "path": "payloads.tar.gz",
+    "bytes": 503994,
+    "sha256": "0e8ed86336dd553939098ca6cac89c5f0f0a4d0a86e5af85313ded2068fdeb52"
+  },
+  "payload_count": 185,
+  "payload_bytes": 6663091,
+  "files": {
+    "gemma-fixture-audit/AUDIT.md": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/AUDIT.md",
+      "bytes": 5427,
+      "sha256": "380a1f9614fa892f18de0d7dafab7455d1d4516e98531ca0fb23e9eac133cc04"
+    },
+    "gemma-fixture-audit/assistant-provenance/config.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/assistant-provenance/config.json",
+      "bytes": 2961,
+      "sha256": "0cd54ff36e53a258532c5c1433bc44b88ba758cfe9b59bb4e6eecfd5453fabcf"
+    },
+    "gemma-fixture-audit/assistant-provenance/manifest.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/assistant-provenance/manifest.json",
+      "bytes": 859,
+      "sha256": "8b7c00b7f131345156f5f20fa9c94a895c5340f16d9331bafb9e59628bf45bf2"
+    },
+    "gemma-fixture-audit/connected-bundle-handoff.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/connected-bundle-handoff.json",
+      "bytes": 1118,
+      "sha256": "653bbeea4ae5ca58b36e46c866681d97a6167f4b0e572f2b7a76b98d586c5d00"
+    },
+    "gemma-fixture-audit/local-artifact-rejection-proof.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/local-artifact-rejection-proof.json",
+      "bytes": 539,
+      "sha256": "79d0fb77af216caca9bdcc783506feb913ffd2dd79385b128a5ec9486cd3413a"
+    },
+    "gemma-fixture-audit/manifest.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/manifest.json",
+      "bytes": 5166,
+      "sha256": "495d610775c75073faea5400dcb6cbab3c4a4dee111f00d3a3aa423ab7b6902a"
+    },
+    "gemma-fixture-audit/provenance.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/provenance.json",
+      "bytes": 432,
+      "sha256": "43b2eb7751865e5b3f0fc9af9ca65cb8d3df3768a4f3045884c2ab6b08bf96c8"
+    },
+    "gemma-fixture-audit/raw-manifest.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/raw-manifest.json",
+      "bytes": 2440,
+      "sha256": "191d446dd1ba54e654e3b80feb94456ca4f831220a0b4bb715703ed031ad11b3"
+    },
+    "gemma-fixture-audit/raw/command.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/raw/command.json",
+      "bytes": 1632,
+      "sha256": "b017daf8dd9ef7e09f05b4e92357eb48daaf8a3d67b4d24ef7b4436d736b59f4"
+    },
+    "gemma-fixture-audit/raw/engine.log": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/raw/engine.log",
+      "bytes": 721,
+      "sha256": "1e971d22aee40480a44d5ccf458aeb0c637b1a5ecf69550fbc4fc97cb19eb3df"
+    },
+    "gemma-fixture-audit/raw/execution.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/raw/execution.json",
+      "bytes": 54,
+      "sha256": "18f8f5617d53b30a87846abb7d9d01460236e03ce4357ab183005713ff314fb2"
+    },
+    "gemma-fixture-audit/raw/handoff-artifact-preconditions.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/raw/handoff-artifact-preconditions.json",
+      "bytes": 2440,
+      "sha256": "0e0ebb270a83d71cfd6ffb4a417cd001df594478f004514babbd9345eb544bd4"
+    },
+    "gemma-fixture-audit/raw/input.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/raw/input.json",
+      "bytes": 72639,
+      "sha256": "9089b9445a49319a71a3b678d08582b91f3257a300dc62a628db95b949216a39"
+    },
+    "gemma-fixture-audit/raw/manifest.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/raw/manifest.json",
+      "bytes": 1718,
+      "sha256": "de073bcbd122adeac468a80c813e8a1ae118b8a5c7739a52e0a71d5ae05096cd"
+    },
+    "gemma-fixture-audit/raw/metadata.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/raw/metadata.json",
+      "bytes": 2583,
+      "sha256": "9b74156a614ed9e9d50fc09bc255b69a7a4da1d54a75f914fcc0e26d159734b5"
+    },
+    "gemma-fixture-audit/raw/report.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/raw/report.json",
+      "bytes": 1772,
+      "sha256": "811f11251b9e64475f346bec163ee81b2a38899307ae287b199af21b84de2437"
+    },
+    "gemma-fixture-audit/remote-inspection-command.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/remote-inspection-command.json",
+      "bytes": 333,
+      "sha256": "cf51429a71d267cb3a87137d1e76be771c0e2ff32cd0f8089d25dd5b307a08e7"
+    },
+    "gemma-fixture-audit/remote-inspection.py": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/remote-inspection.py",
+      "bytes": 1323,
+      "sha256": "2ea587582133a3c7174c02c04c3cdb68976456e364133a364df40cc41543f303"
+    },
+    "gemma-fixture-audit/remote-inspection.stderr.txt": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/remote-inspection.stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gemma-fixture-audit/remote-inspection.stdout.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/remote-inspection.stdout.json",
+      "bytes": 2420,
+      "sha256": "e135905fe0a5a562852fd608b515926d86f1ddebe1e357e5951c25b8dc603555"
+    },
+    "gemma-fixture-audit/source-manifest.json": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/source-manifest.json",
+      "bytes": 4024,
+      "sha256": "dce14dbf0b52bac534685757ef1a00b9c020ba897e6b3ceeac98639dc1034023"
+    },
+    "gemma-fixture-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CBv2MTPDrafter.swift": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CBv2MTPDrafter.swift",
+      "bytes": 8639,
+      "sha256": "cf90444cabc7cb59b9d6492703af4d98e11d26f9386229d62c3e4e04e8861226"
+    },
+    "gemma-fixture-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4MTP.swift": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4MTP.swift",
+      "bytes": 92369,
+      "sha256": "78441c077979578d367351109992000e9591fd626b23e62059693f2726699ff5"
+    },
+    "gemma-fixture-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4MTPConfigurationValidation.swift": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/sources/libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4MTPConfigurationValidation.swift",
+      "bytes": 24830,
+      "sha256": "7d169e82bdd2024b5352ad369dc75d9882bacd9979e6acccfd94ace62e9b4cd2"
+    },
+    "gemma-fixture-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkAssistant.swift": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkAssistant.swift",
+      "bytes": 1850,
+      "sha256": "ac4c904c42338b634a27fac4bca3afd33a7ab71638f6627d45620643f64df6df"
+    },
+    "gemma-fixture-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift",
+      "bytes": 18100,
+      "sha256": "ec28f11cd44b2b9ddec9ade3fc24700b246ff03ccedf738c1a88bf366844355b"
+    },
+    "gemma-fixture-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2MTPAssistant.swift": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2MTPAssistant.swift",
+      "bytes": 3222,
+      "sha256": "db323a201b846fa02079e5bf9262e1536ad110859beb2d8de71c216b78026c8c"
+    },
+    "gemma-fixture-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+MTP.swift": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+MTP.swift",
+      "bytes": 10701,
+      "sha256": "b92860d4fc5c628e6cc2d1332b2fca6c0b9b975005ada13d7a969daaabadadfe"
+    },
+    "gemma-fixture-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2SupportedModels.swift": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/sources/provider-swift/Sources/ProviderCore/Inference/EngineV2SupportedModels.swift",
+      "bytes": 3453,
+      "sha256": "f6e346a1be3c355b0a26d6eaa385d4d1793780d1c7792b70b09d063d5d5950d1"
+    },
+    "gemma-fixture-audit/sources/provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/sources/provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift",
+      "bytes": 15135,
+      "sha256": "16d0c7ca65dd4f7e6524854777197f4c7f5e6f53fc4f680a2acb0af4e790e5bd"
+    },
+    "gemma-fixture-audit/sources/provider-swift/Sources/ProviderCore/SpecDec/SpecDecStore.swift": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/sources/provider-swift/Sources/ProviderCore/SpecDec/SpecDecStore.swift",
+      "bytes": 32531,
+      "sha256": "fd31dc483f7727c85d3d9ccad3bf3cf9bf58ec10d2c1e1c0449d6364012a9c50"
+    },
+    "gemma-fixture-audit/sources/provider-swift/Sources/ProviderCore/SpecDec/SpecDecTypes.swift": {
+      "source": "/tmp/darkbloom-gemma-mtp-init-audit/sources/provider-swift/Sources/ProviderCore/SpecDec/SpecDecTypes.swift",
+      "bytes": 9941,
+      "sha256": "f8c4ef8dbf2ac5a1c73bd1c89488fefa7c98e46a16425d2c0e9b926d57fea3ce"
+    },
+    "pairs/PROVENANCE.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/PROVENANCE.json",
+      "bytes": 2227,
+      "sha256": "c7d38c4612be1ba0ed6467a042ad46fb08ca0905fce8ccb3070f3431366c2238"
+    },
+    "pairs/input/gemma-4-26b.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/input/gemma-4-26b.json",
+      "bytes": 72543,
+      "sha256": "935da8f154d824c82f223c498f1f446e584f6b5bd5fea1625df008e5a86c8ce9"
+    },
+    "pairs/input/gpt-oss-20b.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/input/gpt-oss-20b.json",
+      "bytes": 72543,
+      "sha256": "a949cf62f52eefc83571d96d2df8faea27b164bb305b5b1dd8869a2d4c197569"
+    },
+    "pairs/input/input-transfer.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/input/input-transfer.json",
+      "bytes": 790,
+      "sha256": "f1d68f62b097885106e8c40a3019dac6f2252805eae788f75ed1f13d19e492d6"
+    },
+    "pairs/input/plan.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/input/plan.json",
+      "bytes": 3526,
+      "sha256": "14deee3b01b166dac3215714bfce1552c10d0336ce8eecdf4b53bf41ec657e46"
+    },
+    "pairs/input/qwen38.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/input/qwen38.json",
+      "bytes": 72581,
+      "sha256": "607ecd4a67978fdc7e569b1cdaaec22ba83016c8683e9e62d424228a369ce4c3"
+    },
+    "pairs/manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/manifest.json",
+      "bytes": 42486,
+      "sha256": "4e6068782a134ef08d57ef0ecb0915c5254df26efa28cbb42d717f0f4db56690"
+    },
+    "pairs/models/gemma-4-26b-fleet-manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/models/gemma-4-26b-fleet-manifest.json",
+      "bytes": 2284,
+      "sha256": "4d36eeed9afe33805bdccf9f59b4d455193ada96a56b4b4e346727a5879b0c9b"
+    },
+    "pairs/models/gpt-oss-20b-fleet-manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/models/gpt-oss-20b-fleet-manifest.json",
+      "bytes": 1803,
+      "sha256": "a66dc823dd0cea6710be6bb7a84a8b9f78454a1893a76dcd7a9d4e5ba861a996"
+    },
+    "pairs/models/qwen38-fleet-manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/models/qwen38-fleet-manifest.json",
+      "bytes": 2434,
+      "sha256": "ec9001f5eabca1837c6688397c071c7d9da3a22a40c2130316d150882576a65d"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/cache-file-summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/cache-file-summary.json",
+      "bytes": 36,
+      "sha256": "4e3696189ea31d79393dcfbbcb54ce8eff66dc3550ed6c9b62e12bc6bcdf9b90"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/command.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/command.json",
+      "bytes": 1659,
+      "sha256": "6d3d9e6202b589781cb04eea0768c16879174d398c200114715d0f3f7ba28422"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/engine.log": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/engine.log",
+      "bytes": 716,
+      "sha256": "ae648d57d5c0ed014eb00dbf6c10ded1284364ed05b3a09422bc5ef3fe32098b"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/execution.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/execution.json",
+      "bytes": 53,
+      "sha256": "44cb99a8049bb578d1c8251543f128f30a2c2d446f742111544a076ff1f6e96c"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/input.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/input.json",
+      "bytes": 72639,
+      "sha256": "9089b9445a49319a71a3b678d08582b91f3257a300dc62a628db95b949216a39"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/integrity-verdict.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/integrity-verdict.json",
+      "bytes": 37,
+      "sha256": "76aa3b58148d89cc797ae408eba304f008308b708476e2db124fcf4e5d1c7a2e"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/manifest.json",
+      "bytes": 1717,
+      "sha256": "14377aa44e1cca5f2ddfff2627ffbdffd7fd61824d40a488bd4e5499593371f0"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/metadata.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/metadata.json",
+      "bytes": 2612,
+      "sha256": "166a55c848392729ddcd50a1c7b33ebf8bde864f531ddea07d66393cb920d6f0"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/remote-files.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/remote-files.json",
+      "bytes": 706,
+      "sha256": "cb551bbe31b98afd2305d7a9dc42041ddcc7ef20f81801f3f6cfa011b0a9ae33"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/report.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/report.json",
+      "bytes": 708855,
+      "sha256": "d3323757215e821fac633db8109d5b12d6e0356d67bb050f6ae470a5da630460"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/ssh-run.log": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/summary.json",
+      "bytes": 1083,
+      "sha256": "c8278dc383c4c4128fbdcf66e9ec2924ba0c64edeceafa0831c29ad54060562b"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2-assistant1/telemetry.jsonl",
+      "bytes": 149171,
+      "sha256": "68acef072285ea895f11b7a179a84ec613aad77284f1041584a926cde37481e1"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2/cache-file-summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2/cache-file-summary.json",
+      "bytes": 36,
+      "sha256": "4e3696189ea31d79393dcfbbcb54ce8eff66dc3550ed6c9b62e12bc6bcdf9b90"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2/command.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2/command.json",
+      "bytes": 1632,
+      "sha256": "b017daf8dd9ef7e09f05b4e92357eb48daaf8a3d67b4d24ef7b4436d736b59f4"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2/engine.log": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2/engine.log",
+      "bytes": 721,
+      "sha256": "1e971d22aee40480a44d5ccf458aeb0c637b1a5ecf69550fbc4fc97cb19eb3df"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2/execution.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2/execution.json",
+      "bytes": 54,
+      "sha256": "18f8f5617d53b30a87846abb7d9d01460236e03ce4357ab183005713ff314fb2"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2/input.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2/input.json",
+      "bytes": 72639,
+      "sha256": "9089b9445a49319a71a3b678d08582b91f3257a300dc62a628db95b949216a39"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2/integrity-verdict.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2/integrity-verdict.json",
+      "bytes": 119,
+      "sha256": "5e1122208b8a9434b87931b5378f4c7e48c296fba110295dc313e6b389d60c5a"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2/manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2/manifest.json",
+      "bytes": 1718,
+      "sha256": "de073bcbd122adeac468a80c813e8a1ae118b8a5c7739a52e0a71d5ae05096cd"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2/metadata.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2/metadata.json",
+      "bytes": 2583,
+      "sha256": "9b74156a614ed9e9d50fc09bc255b69a7a4da1d54a75f914fcc0e26d159734b5"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2/remote-files.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2/remote-files.json",
+      "bytes": 704,
+      "sha256": "58bd3213e7aaed52b6000789224419eba88d9919f11560006c606d044d67bb23"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2/report.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2/report.json",
+      "bytes": 1772,
+      "sha256": "811f11251b9e64475f346bec163ee81b2a38899307ae287b199af21b84de2437"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2/ssh-run.log": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2/ssh-run.log",
+      "bytes": 414,
+      "sha256": "3e6ec72c6f05160a9418761310f94689f1054f95de8019368828bedfa683bf9b"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2/summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2/summary.json",
+      "bytes": 1103,
+      "sha256": "71aa984b984dd0469ab4060e0d6686ed88ba4862890fe2d5e7f0399e832ab921"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-off-b1-smoke2/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-off-b1-smoke2/telemetry.jsonl",
+      "bytes": 105241,
+      "sha256": "2bebc74fdec074373fcedc5a8fa6c12477857d6fe4441d5b5dffea89c630762e"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/cache-file-summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/cache-file-summary.json",
+      "bytes": 45,
+      "sha256": "18c7e6d5530adb72f9a3de31d3f6b4e76b743f00576f30108f1c743b5385d3da"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/command.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/command.json",
+      "bytes": 1657,
+      "sha256": "5615d4f3e9d78ea5269754131e246b97fb8cf7569f5876e36b18af351d3dd75c"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/engine.log": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/engine.log",
+      "bytes": 706,
+      "sha256": "55045e7619a602f6f0382fd69cb72d3f6535c0a8fb35d03616b987149bea04b1"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/execution.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/execution.json",
+      "bytes": 53,
+      "sha256": "0b3ca7f8a00e7c757ddecbc7e8e3ee812647630b62c0c826fab50112d8d64a21"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/input.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/input.json",
+      "bytes": 72639,
+      "sha256": "9089b9445a49319a71a3b678d08582b91f3257a300dc62a628db95b949216a39"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/integrity-verdict.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/integrity-verdict.json",
+      "bytes": 37,
+      "sha256": "76aa3b58148d89cc797ae408eba304f008308b708476e2db124fcf4e5d1c7a2e"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/manifest.json",
+      "bytes": 1717,
+      "sha256": "1fd73c694ed3507a18dfa520748cbbcfe874f8d89ed6b35294000ab2104625f3"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/metadata.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/metadata.json",
+      "bytes": 2608,
+      "sha256": "e17e8d4bc39df3e3f3b63a147b0dd589e5eecb07e06d782008e8ed1c9fcb4215"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/remote-files.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/remote-files.json",
+      "bytes": 706,
+      "sha256": "1a6ceae8bd36b4c1aa853859241d27bc30ed0b88504c64ddf0c8d7247858f705"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/report.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/report.json",
+      "bytes": 725605,
+      "sha256": "e240facf1e3651b6ec8e6e463d7ed48dca3706a00d4c9d34a0bf5208b86a8a13"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/ssh-run.log": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/summary.json",
+      "bytes": 1067,
+      "sha256": "9a505adc1c95ff7f0829249d7360f7d0b8a3000ff1ca904a9811a7443e7ec21f"
+    },
+    "pairs/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gemma-4-26b-paged-cache-on-b1-smoke2-assistant1/telemetry.jsonl",
+      "bytes": 136412,
+      "sha256": "eee69741dfdbf7290be3cd38b5431c86735b3a6804b242623644ed1ecadb1269"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/cache-file-summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/cache-file-summary.json",
+      "bytes": 36,
+      "sha256": "4e3696189ea31d79393dcfbbcb54ce8eff66dc3550ed6c9b62e12bc6bcdf9b90"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/command.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/command.json",
+      "bytes": 1507,
+      "sha256": "b2e738a131c6592f1cae57d8bfcb3ba700a2197d3caca05b22c1b3d205e30cc0"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/engine.log": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/engine.log",
+      "bytes": 715,
+      "sha256": "86050360fac2110e2676d872bc1e8035e0c2551b9896b3c2dbbf255687143c39"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/execution.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/execution.json",
+      "bytes": 53,
+      "sha256": "1cf50d085ccbcd4ea62c66df3899028c86ed94c114ec6e106ee104356cc63297"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/input.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/input.json",
+      "bytes": 72639,
+      "sha256": "26e79cb0ece42a1907221e978dad8cea0aa9070bd3d344b368da8ee68ff4346a"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/integrity-verdict.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/integrity-verdict.json",
+      "bytes": 37,
+      "sha256": "76aa3b58148d89cc797ae408eba304f008308b708476e2db124fcf4e5d1c7a2e"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/manifest.json",
+      "bytes": 1717,
+      "sha256": "d2ec33acd7d4842545b7120f3520e1a16c90ea1da20be08a88fb8af552dcd32f"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/metadata.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/metadata.json",
+      "bytes": 2325,
+      "sha256": "2fe449e22dfaf1f6cb1b5d816d54261916b858a72922ecb04d3d3f6d87e1dd6f"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/remote-files.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/remote-files.json",
+      "bytes": 706,
+      "sha256": "4a5409765d2bca9c86e067dc4206f10af314edc3b2fd0065b6dd2936dcf66755"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/report.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/report.json",
+      "bytes": 685258,
+      "sha256": "066dab61e397930eaaaad310cdcf38434ddfe7f74d7b39a9f1214f6eda5aab04"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/ssh-run.log": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/summary.json",
+      "bytes": 1061,
+      "sha256": "0410fde85f1345ddb9d052562f24470172c9bd7d9bacaeadb3eb5c623aee8d9d"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-off-b1-smoke2/telemetry.jsonl",
+      "bytes": 100615,
+      "sha256": "233b2cd12f6f6d4b81f7bc03fb15722361c44edb2c0b6cfcbddcaf3c0d7c55ec"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/cache-file-summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/cache-file-summary.json",
+      "bytes": 45,
+      "sha256": "b29dbbd501b2513767628230e7f8735a6752379f6442d4e62b95ac7f1d6d42ea"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/command.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/command.json",
+      "bytes": 1505,
+      "sha256": "eb9b3ef08c9b89dead6c09366d51c2e44ce696dfc7c8271a3be72a9cfcf3281d"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/engine.log": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/engine.log",
+      "bytes": 710,
+      "sha256": "b9dfbca585b3facb4da293f4724750076939542e8581de3ab0a2cf34ee7b85cd"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/execution.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/execution.json",
+      "bytes": 53,
+      "sha256": "bb880b510c9b199acb4d865679d54c1a2c78e1b7d399a248192b9d9426c59014"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/input.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/input.json",
+      "bytes": 72639,
+      "sha256": "26e79cb0ece42a1907221e978dad8cea0aa9070bd3d344b368da8ee68ff4346a"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/integrity-verdict.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/integrity-verdict.json",
+      "bytes": 37,
+      "sha256": "76aa3b58148d89cc797ae408eba304f008308b708476e2db124fcf4e5d1c7a2e"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/manifest.json",
+      "bytes": 1716,
+      "sha256": "4419b738bac0aa08bf01107ab58b365d9adce6295001b5e2e91f55e2fbde0ce2"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/metadata.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/metadata.json",
+      "bytes": 2318,
+      "sha256": "0d29915aff71a59db9fc304693ab06c1da50d098da893bd3ff7974b276677346"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/remote-files.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/remote-files.json",
+      "bytes": 705,
+      "sha256": "3b32cd763045f46418965f75de200ff86145781c5b9b5b4eb2426e798df44d9b"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/report.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/report.json",
+      "bytes": 702053,
+      "sha256": "dd3792a59ef28dadb092a5e6427e157d03c9b5c87e23f2c5a2ee7c24f45770d5"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/ssh-run.log": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/summary.json",
+      "bytes": 1049,
+      "sha256": "02e89e209689b7722471510246c7030ae46037a82a39d240b898b67928ee8bd3"
+    },
+    "pairs/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/gpt-oss-20b-paged-cache-on-b1-smoke2/telemetry.jsonl",
+      "bytes": 77692,
+      "sha256": "13fbb6649933f73d1b3b49bbf16f48485c3bdbc3fbd26ac1330455ce86d48e47"
+    },
+    "pairs/raw/qwen38-paged-cache-off-b1-smoke2/cache-file-summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-off-b1-smoke2/cache-file-summary.json",
+      "bytes": 36,
+      "sha256": "4e3696189ea31d79393dcfbbcb54ce8eff66dc3550ed6c9b62e12bc6bcdf9b90"
+    },
+    "pairs/raw/qwen38-paged-cache-off-b1-smoke2/command.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-off-b1-smoke2/command.json",
+      "bytes": 1614,
+      "sha256": "57695523b334579db7eb068edfd9b9244eb59104fabb0e34cfdec0812a0e0e29"
+    },
+    "pairs/raw/qwen38-paged-cache-off-b1-smoke2/engine.log": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-off-b1-smoke2/engine.log",
+      "bytes": 792,
+      "sha256": "dfc75747bc80eef3613daee80e0cf52bcbfebc9cd0dd009aa3d655b38e4a17d7"
+    },
+    "pairs/raw/qwen38-paged-cache-off-b1-smoke2/execution.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-off-b1-smoke2/execution.json",
+      "bytes": 53,
+      "sha256": "25c782394bdc0b2b76c926c090eaa6f6990eaffce4b2990b90a45ab69ed46401"
+    },
+    "pairs/raw/qwen38-paged-cache-off-b1-smoke2/input.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-off-b1-smoke2/input.json",
+      "bytes": 72677,
+      "sha256": "7137c1c721a54b61b2e8df3e3258496cf5d29da35fb1cd31b1de3798cb207175"
+    },
+    "pairs/raw/qwen38-paged-cache-off-b1-smoke2/integrity-verdict.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-off-b1-smoke2/integrity-verdict.json",
+      "bytes": 37,
+      "sha256": "76aa3b58148d89cc797ae408eba304f008308b708476e2db124fcf4e5d1c7a2e"
+    },
+    "pairs/raw/qwen38-paged-cache-off-b1-smoke2/manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-off-b1-smoke2/manifest.json",
+      "bytes": 1717,
+      "sha256": "f32133e313552553687be9ef0c0fab0f812cc250aac7f9c00dd041d8618b4761"
+    },
+    "pairs/raw/qwen38-paged-cache-off-b1-smoke2/metadata.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-off-b1-smoke2/metadata.json",
+      "bytes": 2409,
+      "sha256": "fc412ee90ea9a74f9d062fa0420d03e845d24e6053fa7c417d4766ab51f58abb"
+    },
+    "pairs/raw/qwen38-paged-cache-off-b1-smoke2/remote-files.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-off-b1-smoke2/remote-files.json",
+      "bytes": 706,
+      "sha256": "13422ede421e40da58f2c17a4ec35a67c3e5fa19bc8df93aeca7a87060a8e8f7"
+    },
+    "pairs/raw/qwen38-paged-cache-off-b1-smoke2/report.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-off-b1-smoke2/report.json",
+      "bytes": 696634,
+      "sha256": "0a61f7b7f12e2f1623a3173f0c430feb8c012df82076ee6e71039bcfb8e5fc80"
+    },
+    "pairs/raw/qwen38-paged-cache-off-b1-smoke2/ssh-run.log": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-off-b1-smoke2/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "pairs/raw/qwen38-paged-cache-off-b1-smoke2/summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-off-b1-smoke2/summary.json",
+      "bytes": 1052,
+      "sha256": "ae3614defa498dad0d6a850f254bb83b19223d31698a6653701ec469f15c7299"
+    },
+    "pairs/raw/qwen38-paged-cache-off-b1-smoke2/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-off-b1-smoke2/telemetry.jsonl",
+      "bytes": 243685,
+      "sha256": "d9810b9f7ac37399572025582b54ac1c095a8f84deaf4d602d0dcc4ba75a2fb2"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2-retry1/cache-file-summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2-retry1/cache-file-summary.json",
+      "bytes": 45,
+      "sha256": "bbe35bd6afbfd5ed49f361cb40dd79ebd84d3a5bcc7d494cbda594f6f8c64fe3"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2-retry1/command.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2-retry1/command.json",
+      "bytes": 1619,
+      "sha256": "fd71c849153426f2f6935cb290576468a86ed63aba43ae274064705ad18248c6"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2-retry1/engine.log": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2-retry1/engine.log",
+      "bytes": 786,
+      "sha256": "647012bb1e0ccfd23180961a48aaa11d44ae41acfd4a07508b645dedc5448cb0"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2-retry1/execution.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2-retry1/execution.json",
+      "bytes": 53,
+      "sha256": "a94d9db2e1de7f194b672ace2754a2e69d108723b8385f50bfb5440e0f36e55a"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2-retry1/input.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2-retry1/input.json",
+      "bytes": 72677,
+      "sha256": "7137c1c721a54b61b2e8df3e3258496cf5d29da35fb1cd31b1de3798cb207175"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2-retry1/integrity-verdict.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2-retry1/integrity-verdict.json",
+      "bytes": 37,
+      "sha256": "76aa3b58148d89cc797ae408eba304f008308b708476e2db124fcf4e5d1c7a2e"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2-retry1/manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2-retry1/manifest.json",
+      "bytes": 1717,
+      "sha256": "d91db6b09db8625971308bd3ffb0a8bcd2fb64de9bb070b2641842d0e744737d"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2-retry1/metadata.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2-retry1/metadata.json",
+      "bytes": 2428,
+      "sha256": "b673cc15d6e617be4421e7f2193cbef715be61db9900c8551a1a6608235ba055"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2-retry1/remote-files.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2-retry1/remote-files.json",
+      "bytes": 706,
+      "sha256": "03f102ea718f311edc8123bac2bec44054022c18c6570a38ddfeaa4ee76e8ed1"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2-retry1/report.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2-retry1/report.json",
+      "bytes": 712691,
+      "sha256": "d0bfc522a60b242f48f077bc826683512ce64216e9de5eb46e9de92f173031f0"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2-retry1/ssh-run.log": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2-retry1/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2-retry1/summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2-retry1/summary.json",
+      "bytes": 1053,
+      "sha256": "36707541b92cb9d1fa4b0899d594d0e19077f3e8dfcd2a8336458b25f6f455f3"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2-retry1/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2-retry1/telemetry.jsonl",
+      "bytes": 180562,
+      "sha256": "727fed8a9ca2687ba3a8bd5874bfb0e1c66a0cbca00d6d03f1ab7a3692626f52"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2/cache-file-summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2/cache-file-summary.json",
+      "bytes": 36,
+      "sha256": "4e3696189ea31d79393dcfbbcb54ce8eff66dc3550ed6c9b62e12bc6bcdf9b90"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2/command.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2/command.json",
+      "bytes": 1612,
+      "sha256": "1fd37f7b5b32642d56f798ac9eb19d2af5eb5f1be0abfdf9fbfb3ab6e85620b1"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2/execution.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2/execution.json",
+      "bytes": 53,
+      "sha256": "9c599bf78bec25dcfcc6a696b8a9bf1b218e8c85c56f1b0518d16b1ef75edcfb"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2/manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2/manifest.json",
+      "bytes": 907,
+      "sha256": "088fad113637862845230c23abb12e531939b988943e0338d432c85194da3c1f"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2/remote-files.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2/remote-files.json",
+      "bytes": 36,
+      "sha256": "b808b0710b8f3653db52836c3f5543c27c0f980795a4ff32178920ab2aaabe04"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2/ssh-run.log": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2/ssh-run.log",
+      "bytes": 53,
+      "sha256": "cf0b5f1e24c4be9006b6a7883e5842b3aaae5d93624a1fa97da5dc172986d389"
+    },
+    "pairs/raw/qwen38-paged-cache-on-b1-smoke2/summary.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/raw/qwen38-paged-cache-on-b1-smoke2/summary.json",
+      "bytes": 193,
+      "sha256": "bae4162890b6a5d3c772f921b07cbd81e3b8e817276fe0003e99c7c951fc7458"
+    },
+    "pairs/support/freeze_initial_pairs.py": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/freeze_initial_pairs.py",
+      "bytes": 5935,
+      "sha256": "8be5c1ef8b8b39da8b418b8836c061811f7c15453e2e5fb8bae585c10c13f8fb"
+    },
+    "pairs/support/gemma-assistant-post-pair.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/gemma-assistant-post-pair.json",
+      "bytes": 756,
+      "sha256": "615b82af10543ab70925623eadafa757920fe9b677f5276f95030d30dd0d64ff"
+    },
+    "pairs/support/gemma-corrected-driver-proof.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/gemma-corrected-driver-proof.json",
+      "bytes": 566,
+      "sha256": "6be6c4339ebf72eb7a15137278cf456ff1ba18d2cb7836a0914be22861c9ab10"
+    },
+    "pairs/support/gemma-off-assistant1-preflight.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/gemma-off-assistant1-preflight.json",
+      "bytes": 198,
+      "sha256": "3614d2cb0329c1f687a22cf70a540daba932a06763fb70f06b9260edd2d18f5f"
+    },
+    "pairs/support/gemma-off-preflight.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/gemma-off-preflight.json",
+      "bytes": 197,
+      "sha256": "9469c2cc7a75e1f4d3172df89a97733fe9e32f9f78dafe8ae3fd41df35ec9a97"
+    },
+    "pairs/support/gemma-on-assistant1-preflight.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/gemma-on-assistant1-preflight.json",
+      "bytes": 194,
+      "sha256": "0933b92920dd264ceda2b8f3e831d2bf04496247a269472ea33f8b1be140ed3e"
+    },
+    "pairs/support/gemma-two-file-fixture-proof.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/gemma-two-file-fixture-proof.json",
+      "bytes": 1537,
+      "sha256": "c137fad64fec8e0a5ca47d6d26f58f7504c383ec626fbdd95262a9f83705f9c2"
+    },
+    "pairs/support/gpt-off-preflight.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/gpt-off-preflight.json",
+      "bytes": 166,
+      "sha256": "9f63ca60f395eacf326faf6ed19f80a9bbe7500f1dd08924665330eb40e2b1c7"
+    },
+    "pairs/support/gpt-on-preflight.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/gpt-on-preflight.json",
+      "bytes": 192,
+      "sha256": "3512333e9688b74ea9ccfa152637d28c378d2ee02c1e0d7bc36953bf3e4aed36"
+    },
+    "pairs/support/handoff-artifact-preconditions.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/handoff-artifact-preconditions.json",
+      "bytes": 2440,
+      "sha256": "0e0ebb270a83d71cfd6ffb4a417cd001df594478f004514babbd9345eb544bd4"
+    },
+    "pairs/support/hardened_compare.py": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/hardened_compare.py",
+      "bytes": 1647,
+      "sha256": "09b874b13e55dc0ee05f499df7b971869a3869e9cd8b7d9a52c847766e4b2af7"
+    },
+    "pairs/support/matrix.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/matrix.json",
+      "bytes": 28062,
+      "sha256": "d1a86bc8fac28291ddc659f9108243b4d842479945cbbe45227c53219b3c932b"
+    },
+    "pairs/support/preflight.py": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/preflight.py",
+      "bytes": 1633,
+      "sha256": "8ba55ca6f113442ee6740ed8ff2a505c80ff4130e2a8d0da412a8165c5fe6516"
+    },
+    "pairs/support/qwen38-hardened-bank-proof.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/qwen38-hardened-bank-proof.json",
+      "bytes": 283,
+      "sha256": "913fb95f4b5f4700a8931fa6df39ff084670b3cc722263ba0efa426145901715"
+    },
+    "pairs/support/run-final-model-cell-smoke2-gemma-assistant1.py": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/run-final-model-cell-smoke2-gemma-assistant1.py",
+      "bytes": 4544,
+      "sha256": "d03518e6906e3480868a68e4c4820ab387d79ff87c8e41f4b1a49c9494ee730e"
+    },
+    "pairs/support/run-final-model-cell-smoke2-root.py": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/run-final-model-cell-smoke2-root.py",
+      "bytes": 4528,
+      "sha256": "bb33bd72b1a414c7bbc1e8f0f6f504e4a80dc137b79d7c3b039de8ec10fc756a"
+    },
+    "pairs/support/summarize_pair.py": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/support/summarize_pair.py",
+      "bytes": 5922,
+      "sha256": "9ccd9f26b5f2795a576ec8755dc1c26a816183869dbd09ea5ae750c0b698397c"
+    },
+    "pairs/verdicts/gemma-hardened-comparator/command.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gemma-hardened-comparator/command.json",
+      "bytes": 555,
+      "sha256": "6e08be2c327795b74e691013b804718dab2b66b9137fe5fb3c2ea359c40f7ddb"
+    },
+    "pairs/verdicts/gemma-hardened-comparator/compare_radix_engine.py": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gemma-hardened-comparator/compare_radix_engine.py",
+      "bytes": 13154,
+      "sha256": "b33922deda8f21128873a8b71b639a0626005d449e3cc603cb35e2d660a253cc"
+    },
+    "pairs/verdicts/gemma-hardened-comparator/manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gemma-hardened-comparator/manifest.json",
+      "bytes": 1662,
+      "sha256": "edd2d00e21df58142d79012e383fa5afd7c42dd26a5ae8908bcfdb88bb218a15"
+    },
+    "pairs/verdicts/gemma-hardened-comparator/radix_engine_evidence.py": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gemma-hardened-comparator/radix_engine_evidence.py",
+      "bytes": 15658,
+      "sha256": "e0f57723d4be3f1a00068b9870f70a6bc9a0174b76fdea285d33f0f4eb658e4e"
+    },
+    "pairs/verdicts/gemma-hardened-comparator/stderr.txt": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gemma-hardened-comparator/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "pairs/verdicts/gemma-hardened-comparator/verdict.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gemma-hardened-comparator/verdict.json",
+      "bytes": 885,
+      "sha256": "9f56c673a08308565229a7a62e4b8c74a424a2e1aedc85c545b0345735ef5c0d"
+    },
+    "pairs/verdicts/gemma-paged-cache-pair/manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gemma-paged-cache-pair/manifest.json",
+      "bytes": 6995,
+      "sha256": "80398b37d5cc516193f42aab1d1e67c411f0d68a52c9e2a79d18716715f3c889"
+    },
+    "pairs/verdicts/gemma-paged-cache-pair/observations.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gemma-paged-cache-pair/observations.json",
+      "bytes": 27297,
+      "sha256": "ff367deb367372b11665f00204171f28ccaf3015d3d0d46e419332e836329324"
+    },
+    "pairs/verdicts/gemma-paged-cache-pair/strict-comparator-verdict.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gemma-paged-cache-pair/strict-comparator-verdict.json",
+      "bytes": 885,
+      "sha256": "9f56c673a08308565229a7a62e4b8c74a424a2e1aedc85c545b0345735ef5c0d"
+    },
+    "pairs/verdicts/gpt-hardened-comparator/command.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gpt-hardened-comparator/command.json",
+      "bytes": 531,
+      "sha256": "dfdf4d2c4e068af64fa843d9cdf053e564d39df6ce250a07c2f17f360ad24f95"
+    },
+    "pairs/verdicts/gpt-hardened-comparator/compare_radix_engine.py": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gpt-hardened-comparator/compare_radix_engine.py",
+      "bytes": 13154,
+      "sha256": "b33922deda8f21128873a8b71b639a0626005d449e3cc603cb35e2d660a253cc"
+    },
+    "pairs/verdicts/gpt-hardened-comparator/manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gpt-hardened-comparator/manifest.json",
+      "bytes": 1630,
+      "sha256": "b2e737aeb072986f17daddda567de4d69d6365c38eb08092e1d9ae5c819e409b"
+    },
+    "pairs/verdicts/gpt-hardened-comparator/radix_engine_evidence.py": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gpt-hardened-comparator/radix_engine_evidence.py",
+      "bytes": 15658,
+      "sha256": "e0f57723d4be3f1a00068b9870f70a6bc9a0174b76fdea285d33f0f4eb658e4e"
+    },
+    "pairs/verdicts/gpt-hardened-comparator/stderr.txt": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gpt-hardened-comparator/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "pairs/verdicts/gpt-hardened-comparator/verdict.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gpt-hardened-comparator/verdict.json",
+      "bytes": 893,
+      "sha256": "fce5b629f226f1f26610a6760e874769697403d2cf3877264afe28ef31359ea3"
+    },
+    "pairs/verdicts/gpt-paged-cache-pair/manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gpt-paged-cache-pair/manifest.json",
+      "bytes": 6704,
+      "sha256": "b4b0ae5be6a9fa375fbd1e7b443a4c4d8c7db0b95b27317517430a50c7e5f098"
+    },
+    "pairs/verdicts/gpt-paged-cache-pair/observations.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gpt-paged-cache-pair/observations.json",
+      "bytes": 26757,
+      "sha256": "a211b2ead4785faafc0a773d34f61385915c888f2bfcc05c86b3c004d8aa65de"
+    },
+    "pairs/verdicts/gpt-paged-cache-pair/strict-comparator-verdict.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/gpt-paged-cache-pair/strict-comparator-verdict.json",
+      "bytes": 893,
+      "sha256": "fce5b629f226f1f26610a6760e874769697403d2cf3877264afe28ef31359ea3"
+    },
+    "pairs/verdicts/qwen38-hardened-comparator/command.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/qwen38-hardened-comparator/command.json",
+      "bytes": 487,
+      "sha256": "d501799598fb7b45561998a804733c96f06b85aaa08f808640546cec41c04f1e"
+    },
+    "pairs/verdicts/qwen38-hardened-comparator/compare_radix_engine.py": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/qwen38-hardened-comparator/compare_radix_engine.py",
+      "bytes": 13154,
+      "sha256": "b33922deda8f21128873a8b71b639a0626005d449e3cc603cb35e2d660a253cc"
+    },
+    "pairs/verdicts/qwen38-hardened-comparator/manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/qwen38-hardened-comparator/manifest.json",
+      "bytes": 703,
+      "sha256": "ad5bce0353483e71913725a098ad15dbccb02ea72a030ac6ff59bd1d4823f630"
+    },
+    "pairs/verdicts/qwen38-hardened-comparator/radix_engine_evidence.py": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/qwen38-hardened-comparator/radix_engine_evidence.py",
+      "bytes": 15658,
+      "sha256": "e0f57723d4be3f1a00068b9870f70a6bc9a0174b76fdea285d33f0f4eb658e4e"
+    },
+    "pairs/verdicts/qwen38-hardened-comparator/stderr.txt": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/qwen38-hardened-comparator/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "pairs/verdicts/qwen38-hardened-comparator/verdict.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/qwen38-hardened-comparator/verdict.json",
+      "bytes": 897,
+      "sha256": "827d6e3407cd95dc1062c2abb594dbe93a8cee17b8d3f5ce9bfb22862ca0878f"
+    },
+    "pairs/verdicts/qwen38-paged-cache-pair/manifest.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/qwen38-paged-cache-pair/manifest.json",
+      "bytes": 6672,
+      "sha256": "0148a21d7e8a40afdbf7dd31b4e33edff1cb8f768cf3c172cae229c870f66f20"
+    },
+    "pairs/verdicts/qwen38-paged-cache-pair/observations.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/qwen38-paged-cache-pair/observations.json",
+      "bytes": 27325,
+      "sha256": "68a976ca2da9b9b7cf38d9041f0617f593a19c30152c2f711fc9cb5048af74fc"
+    },
+    "pairs/verdicts/qwen38-paged-cache-pair/strict-comparator-verdict.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-freeze1/verdicts/qwen38-paged-cache-pair/strict-comparator-verdict.json",
+      "bytes": 897,
+      "sha256": "827d6e3407cd95dc1062c2abb594dbe93a8cee17b8d3f5ce9bfb22862ca0878f"
+    },
+    "root-review.json": {
+      "source": "/tmp/darkbloom-initial-paged-pairs-root-review.json",
+      "bytes": 3459,
+      "sha256": "c66bb45fff891705faf138576266536fc9e8358c8f96de33ff5dce60d22fb2ce"
+    }
+  }
+}

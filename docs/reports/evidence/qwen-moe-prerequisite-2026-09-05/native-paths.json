@@ -1,0 +1,11 @@
+{
+  "base": "72902c4a9a0faa1053c348fbb9d2dc381e3f19f7",
+  "branch": "optimizations/qwen-moe-complete-checkpoints",
+  "files": {
+    "Libraries/MLXLLM/Models/Qwen35+CompleteCheckpoint.swift": "57541b7a16ddf5a15e3f271754933e3e1b5c56b8e07150b1fd47805e73eb1f03",
+    "Libraries/MLXLLM/Models/Qwen35.swift": "745edd9dfc3d0f28816fd8a3541dbccb4ac92199bd34f11dafcbfef6a5dd27b5",
+    "Tests/MLXLMTests/CBv2CompleteCheckpointEngineTests.swift": "6465ee9697705f13e35205d137a2f31b4b9f37d81d0dbd7ebeabf6ad795b7366",
+    "Tests/MLXLMTests/Qwen35MTPDraftTrimTests.swift": "d81d678e4ef91cc60e24dbbf2b3c05c23a17667c47257e0d21a6f021d760c90a",
+    "Tests/MLXLMTests/Qwen35MoECompleteCheckpointTests.swift": "debcef7c284cbd19f1d4f764bf04813277e52657cf0d4d9a6a5235cae9bcc339"
+  }
+}

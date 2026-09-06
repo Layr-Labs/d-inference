@@ -1,0 +1,47 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/eigeninference/d-inference/coordinator/api
+cpu: Apple M3 Max
+BenchmarkTemporaryMetadataPair/content/baseline-14         	  558483	       623.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/content/baseline-14         	  605278	       626.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/content/baseline-14         	  615318	       627.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/content/current-14          	 1803988	       200.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/content/current-14          	 1791536	       202.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/content/current-14          	 1800385	       201.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/large_content/baseline-14   	   18145	     19921 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/large_content/baseline-14   	   18094	     19814 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/large_content/baseline-14   	   18184	     19837 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/large_content/current-14    	  213507	      1730 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/large_content/current-14    	  213621	      1735 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/large_content/current-14    	  215018	      1738 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/tool_arguments/baseline-14  	  508911	       749.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/tool_arguments/baseline-14  	  506991	       748.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/tool_arguments/baseline-14  	  470872	       747.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/tool_arguments/current-14   	 1373344	       260.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/tool_arguments/current-14   	 1385752	       255.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/tool_arguments/current-14   	 1376330	       261.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTemporaryMetadataPair/reserved_metadata/baseline-14         	  241636	      1433 ns/op	    1986 B/op	      30 allocs/op
+BenchmarkTemporaryMetadataPair/reserved_metadata/baseline-14         	  244527	      1491 ns/op	    1986 B/op	      30 allocs/op
+BenchmarkTemporaryMetadataPair/reserved_metadata/baseline-14         	  239268	      1488 ns/op	    1986 B/op	      30 allocs/op
+BenchmarkTemporaryMetadataPair/reserved_metadata/current-14          	  252038	      1460 ns/op	    1986 B/op	      30 allocs/op
+BenchmarkTemporaryMetadataPair/reserved_metadata/current-14          	  244258	      1469 ns/op	    1986 B/op	      30 allocs/op
+BenchmarkTemporaryMetadataPair/reserved_metadata/current-14          	  249490	      1465 ns/op	    1986 B/op	      30 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_64/baseline-14    	    2133	    165602 ns/op	  189075 B/op	    1863 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_64/baseline-14    	    2156	    167012 ns/op	  189074 B/op	    1863 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_64/baseline-14    	    2181	    165434 ns/op	  189074 B/op	    1863 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_64/current-14     	    2439	    144823 ns/op	  121105 B/op	    1743 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_64/current-14     	    2508	    144492 ns/op	  121105 B/op	    1743 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_64/current-14     	    2470	    145066 ns/op	  121105 B/op	    1743 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_512/baseline-14   	     166	   2189099 ns/op	 5357841 B/op	   14407 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_512/baseline-14   	     162	   2171053 ns/op	 5357801 B/op	   14407 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_512/baseline-14   	     162	   2157367 ns/op	 5357817 B/op	   14407 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_512/current-14    	     309	   1145361 ns/op	  964384 B/op	   13398 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_512/current-14    	     314	   1139881 ns/op	  964385 B/op	   13398 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_512/current-14    	     313	   1142764 ns/op	  964386 B/op	   13398 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_2048/baseline-14  	      24	  13956861 ns/op	75890814 B/op	   57422 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_2048/baseline-14  	      25	  14160868 ns/op	75890741 B/op	   57421 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_2048/baseline-14  	      25	  13839748 ns/op	75890657 B/op	   57420 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_2048/current-14   	      73	   4607681 ns/op	 3794765 B/op	   53338 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_2048/current-14   	      81	   4597651 ns/op	 3794764 B/op	   53338 allocs/op
+BenchmarkTemporaryToolReconstructionPair/fragments_2048/current-14   	      79	   4616422 ns/op	 3794773 B/op	   53338 allocs/op
+PASS

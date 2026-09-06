@@ -1,0 +1,62 @@
+[
+  {
+    "suite": "CBv2CompleteCheckpointEngineTests",
+    "xctest": 4,
+    "swift_testing": 0,
+    "passed": true
+  },
+  {
+    "suite": "CBv2CompleteCheckpointTests",
+    "xctest": 5,
+    "swift_testing": 0,
+    "passed": true
+  },
+  {
+    "suite": "CBv2FirstTokenDeadlineAdmissionTests",
+    "xctest": 0,
+    "swift_testing": 0,
+    "passed": false
+  },
+  {
+    "suite": "CBv2FirstTokenDeadlineEngineTests",
+    "xctest": 16,
+    "swift_testing": 0,
+    "passed": true
+  },
+  {
+    "suite": "CBv2FirstTokenWorkProjectionTests",
+    "xctest": 12,
+    "swift_testing": 0,
+    "passed": true
+  },
+  {
+    "suite": "CBv2QwenMTPIntegrationTests",
+    "xctest": 0,
+    "swift_testing": 29,
+    "passed": true
+  },
+  {
+    "suite": "CBv2RecurrentStateTests",
+    "xctest": 15,
+    "swift_testing": 0,
+    "passed": true
+  },
+  {
+    "suite": "CBv2SchedulerAdmissionTests",
+    "xctest": 25,
+    "swift_testing": 0,
+    "passed": true
+  },
+  {
+    "suite": "FirstTokenDeadlineAdmissionTests",
+    "xctest": 0,
+    "swift_testing": 0,
+    "passed": false
+  },
+  {
+    "suite": "Qwen35MTPDraftTrimTests",
+    "xctest": 0,
+    "swift_testing": 15,
+    "passed": true
+  }
+]

@@ -309,10 +309,6 @@ func providerFailedPendingRouteOutcomeWithReason(pr *registry.PendingRequest, st
 	return out
 }
 
-func dispatchFailedPendingRouteOutcome(pr *registry.PendingRequest, class string, code int) *store.InferenceRouteOutcome {
-	return pendingRouteOutcome(pr, finalStatusError, class, code)
-}
-
 func providerDisconnectedError(msg protocol.InferenceErrorMessage) bool {
 	return msg.CoordinatorCause.IsProviderDisconnect()
 }
@@ -497,8 +493,8 @@ func applyPendingRouteTelemetry(out *store.InferenceRouteOutcome, pr *registry.P
 	if out == nil || pr == nil {
 		return
 	}
-	out.UsedBackup = pr.UsedBackup
-	out.BackupWon = pr.BackupWon
+	out.BackupWon = pr.BackupWon.Load()
+	out.UsedBackup = pr.UsedBackup.Load()
 	if pr.Timing == nil {
 		return
 	}

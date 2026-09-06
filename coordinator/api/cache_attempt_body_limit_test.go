@@ -12,7 +12,6 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 func TestLegacyCacheIsolationOverflowIsPayloadTooLarge(t *testing.T) {
@@ -90,19 +89,6 @@ func TestBodyAtLimitWithoutLegacyCacheIsolationRemainsAccepted(t *testing.T) {
 	}
 	if len(sealed) != maxInferenceBodyBytes {
 		t.Fatalf("sealed body = %d bytes, want %d", len(sealed), maxInferenceBodyBytes)
-	}
-}
-
-func TestCompatibleProviderReservationFailureSupersedesLegacyOverflow(t *testing.T) {
-	overflowErr := &providerBodyTooLargeError{size: maxInferenceBodyBytes + 1}
-	reservationErr := errors.New("reservation store unavailable")
-	if got := exhaustedProviderPreparationError(
-		registry.RoutingDecision{}, reservationErr, overflowErr); !errors.Is(got, reservationErr) {
-		t.Fatalf("terminal preparation error = %v, want reservation failure", got)
-	}
-	if got := exhaustedProviderPreparationError(
-		registry.RoutingDecision{CapacityRejections: 1}, reservationErr, overflowErr); got != nil {
-		t.Fatalf("capacity-blocked compatible fallback should remain queueable, got %v", got)
 	}
 }
 
@@ -274,62 +260,4 @@ func TestVisionPreflightKeepsLegacyProviderWhenPenaltyStrippingFits(t *testing.T
 	if len(excluded) != 1 || excluded[0] != "newer-v0" {
 		t.Fatalf("queued fallback exclusions = %v, want [newer-v0]", excluded)
 	}
-}
-
-func TestProviderBodyOverflowPersistsTerminalRouteOutcome(t *testing.T) {
-	s := newTestServerForDispatch(t)
-	st, ok := s.store.(*store.MemoryStore)
-	if !ok {
-		t.Fatalf("store = %T, want *store.MemoryStore", s.store)
-	}
-	const model = "overflow-route-model"
-	provider := s.registry.Register("overflow-provider", nil, &protocol.RegisterMessage{
-		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat"}},
-	})
-	pr := &registry.PendingRequest{
-		RequestID:  "overflow-route-request",
-		Attempt:    2,
-		ProviderID: provider.ID,
-		Model:      model,
-		Timing:     &registry.RequestTiming{},
-	}
-	state := &dispatchState{
-		s:                     s,
-		r:                     httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
-		model:                 model,
-		publicModel:           model,
-		estimatedPromptTokens: 11,
-		requestedMaxTokens:    22,
-		requiresVision:        true,
-		hasTools:              true,
-	}
-	state.recordProviderBodyTooLargeRoute(provider, pr, registry.RoutingDecision{
-		ProviderID:     provider.ID,
-		CandidateCount: 1,
-	})
-
-	deadline := time.Now().Add(2 * time.Second)
-	var observed *store.InferenceRouteRecord
-	for time.Now().Before(deadline) {
-		for _, record := range st.InferenceRouteRecordsSince(time.Time{}) {
-			if record.RequestID != pr.RequestID || record.Attempt != pr.Attempt {
-				continue
-			}
-			current := record
-			observed = &current
-			if record.FinalStatus == "" {
-				continue
-			}
-			if record.ProviderID != provider.ID ||
-				record.FinalStatus != "error" ||
-				record.ErrorClass != errorClassClientError ||
-				record.ErrorReason != errorReasonClientError ||
-				record.ErrorCode != http.StatusRequestEntityTooLarge {
-				t.Fatalf("overflow route outcome = %+v", record)
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for terminal overflow route outcome; last=%+v", observed)
 }

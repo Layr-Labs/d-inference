@@ -130,6 +130,19 @@ migrate_exact_value \
     100 \
     1000
 
+# v0.9 prices cache savings within the request's own prefill work. Retire only
+# the complete historical stock pair: a partly customized policy keeps BOTH
+# limits. Empty values mean no optional clipping in the v0.9 binary; explicit
+# zero remains a zero-credit limit. Keys stay present for audit and rollback.
+# An intentionally chosen exact stock pair is indistinguishable from defaults,
+# so --check exposes this migration for operator review before --apply.
+cache_discount=$(awk -F= '$1 == "EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS" { print $2 }' "$tmp")
+cache_fraction=$(awk -F= '$1 == "EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION" { print $2 }' "$tmp")
+if [ "$cache_discount" = 1000 ] && [ "$cache_fraction" = 0.35 ]; then
+    migrate_exact_value EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS 1000 ""
+    migrate_exact_value EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION 0.35 ""
+fi
+
 added=0
 while IFS= read -r line; do
     case "$line" in ""|\#*) continue ;; esac

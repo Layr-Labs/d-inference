@@ -185,7 +185,8 @@ public final class ProviderState: @unchecked Sendable {
     private var _warmModels: [String] = []
     private var _currentModelHash: String? = nil
     private var _backendCapacity: BackendCapacity? = nil
-    private var _prefixCacheV2Sources: [String: SSDPrefixCache] = [:]
+    private var _prefixCacheV2Sources: [String: any DurablePrefixCacheEvidenceSource] = [:]
+    private var _prefixCacheMemorySources: [String: ResidentPrefixCacheEvidence] = [:]
     private var _prefixCacheStatuses: [PrefixCacheModelStatus] = []
     private var _prefixCacheRuntimeIdentityAvailable = true
     private var _publishedCapacity: BackendCapacity? = nil
@@ -261,6 +262,9 @@ public final class ProviderState: @unchecked Sendable {
         return lock.withLock {
             _capacitySeq &+= 1
             capacity.capacitySeq = _capacitySeq
+            let agedProcessMemory = capacity.telemetry?.processMemory?
+                .agedForHeartbeat(now: DispatchTime.now().uptimeNanoseconds)
+            capacity.telemetry?.processMemory = agedProcessMemory
             _publishedCapacity = capacity
             return capacity
         }
@@ -278,12 +282,14 @@ public final class ProviderState: @unchecked Sendable {
     }
 
     func setPrefixCacheSnapshot(
-        sources: [String: SSDPrefixCache],
+        sources: [String: any DurablePrefixCacheEvidenceSource],
+        memorySources: [String: ResidentPrefixCacheEvidence] = [:],
         statuses: [PrefixCacheModelStatus],
         runtimeIdentityAvailable: Bool
     ) {
         lock.withLock {
             _prefixCacheV2Sources = sources
+            _prefixCacheMemorySources = memorySources
             _prefixCacheStatuses = statuses
             _prefixCacheRuntimeIdentityAvailable = runtimeIdentityAvailable
         }
@@ -292,12 +298,14 @@ public final class ProviderState: @unchecked Sendable {
     func prefixCacheV2Advertisement() -> (
         protocolVersion: Int,
         models: [PrefixCacheV2Capability],
+        memoryModels: [PrefixCacheV2Capability],
         statuses: [PrefixCacheModelStatus],
         donationOutcomes: [PrefixCacheDonationOutcomeCount]
     ) {
         let snapshot = lock.withLock {
             (
                 sources: _prefixCacheV2Sources,
+                memorySources: _prefixCacheMemorySources,
                 statuses: _prefixCacheStatuses,
                 runtimeIdentityAvailable: _prefixCacheRuntimeIdentityAvailable
             )
@@ -330,9 +338,13 @@ public final class ProviderState: @unchecked Sendable {
             statuses.lazy.filter(\.isConcreteReady).map(\.modelId))
         models.removeAll { !readyModels.contains($0.modelId) }
         models.sort { $0.modelId < $1.modelId }
+        let memoryModels = snapshot.runtimeIdentityAvailable
+            ? snapshot.memorySources.values.compactMap { $0.capability() }.sorted { $0.modelId < $1.modelId }
+            : []
         return (
-            models.isEmpty || !snapshot.runtimeIdentityAvailable ? 1 : 2,
+            (models.isEmpty && memoryModels.isEmpty) || !snapshot.runtimeIdentityAvailable ? 1 : 2,
             models,
+            memoryModels,
             statuses,
             PrefixCacheDonationTelemetry.shared.snapshot()
         )

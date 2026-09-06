@@ -62,9 +62,9 @@ func TestGateReasonNamesComplete(t *testing.T) {
 	}
 	want := map[string]string{
 		"none": "none", "unique_min": "unique_min", "tie_queue": "tie_queue",
-		"tie_pending": "tie_pending", "cache_tiebreak": "cache_tiebreak", "random": "random",
+		"tie_pending": "tie_pending", "random": "random",
 	}
-	for _, s := range []SelectionPath{SelectionNone, SelectionUniqueMin, SelectionTieQueue, SelectionTiePending, SelectionCacheTiebreak, SelectionRandom} {
+	for _, s := range []SelectionPath{SelectionNone, SelectionUniqueMin, SelectionTieQueue, SelectionTiePending, SelectionRandom} {
 		if _, ok := want[s.String()]; !ok {
 			t.Fatalf("unexpected SelectionPath name %q", s.String())
 		}
@@ -329,7 +329,6 @@ func mkCandidate(id string, cost float64, queue, pending int, discount float64) 
 }
 
 func TestSelectRoutingCandidatePaths(t *testing.T) {
-	cost := func(c *routingCandidate) float64 { return c.costMs }
 	id := func(c *routingCandidate) string {
 		if c == nil {
 			return ""
@@ -337,35 +336,35 @@ func TestSelectRoutingCandidatePaths(t *testing.T) {
 		return c.provider.ID
 	}
 	t.Run("empty", func(t *testing.T) {
-		w, ru, n, path := selectRoutingCandidate(nil, cost)
+		w, ru, n, path := selectRoutingCandidate(nil)
 		if w != nil || ru != nil || n != 0 || path != SelectionNone {
 			t.Fatalf("got %v %v %d %s", w, ru, n, path)
 		}
 	})
 	t.Run("unique_min", func(t *testing.T) {
 		a, b, c := mkCandidate("a", 1000, 0, 0, 0), mkCandidate("b", 10000, 0, 0, 0), mkCandidate("c", 20000, 0, 0, 0)
-		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{c, b, a}, cost)
+		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{c, b, a})
 		if id(w) != "a" || id(ru) != "b" || n != 1 || path != SelectionUniqueMin {
 			t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
 		}
 	})
 	t.Run("single_candidate", func(t *testing.T) {
 		a := mkCandidate("a", 1000, 0, 0, 0)
-		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{a}, cost)
+		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{a})
 		if id(w) != "a" || ru != nil || n != 1 || path != SelectionUniqueMin {
 			t.Fatalf("got winner=%s runnerUp=%v nearTie=%d path=%s", id(w), ru, n, path)
 		}
 	})
 	t.Run("tie_queue", func(t *testing.T) {
 		a, b := mkCandidate("a", 1000, 1, 0, 0), mkCandidate("b", 1500, 0, 0, 0)
-		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{a, b}, cost)
+		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{a, b})
 		if id(w) != "b" || id(ru) != "a" || n != 2 || path != SelectionTieQueue {
 			t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
 		}
 	})
 	t.Run("tie_pending", func(t *testing.T) {
 		a, b := mkCandidate("a", 1000, 0, 2, 0), mkCandidate("b", 1500, 0, 1, 0)
-		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{a, b}, cost)
+		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{a, b})
 		if id(w) != "b" || id(ru) != "a" || n != 2 || path != SelectionTiePending {
 			t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
 		}
@@ -373,7 +372,7 @@ func TestSelectRoutingCandidatePaths(t *testing.T) {
 	t.Run("random", func(t *testing.T) {
 		a, b, far := mkCandidate("a", 1000, 0, 0, 0), mkCandidate("b", 1500, 0, 0, 0), mkCandidate("far", 50000, 0, 0, 0)
 		for i := 0; i < 20; i++ {
-			w, ru, n, path := selectRoutingCandidate([]*routingCandidate{far, a, b}, cost)
+			w, ru, n, path := selectRoutingCandidate([]*routingCandidate{far, a, b})
 			if path != SelectionRandom || n != 2 {
 				t.Fatalf("got nearTie=%d path=%s", n, path)
 			}
@@ -391,24 +390,24 @@ func TestSelectRoutingCandidatePaths(t *testing.T) {
 			}
 		}
 	})
-	t.Run("cache_tiebreak", func(t *testing.T) {
+	t.Run("cache_cost_minimum", func(t *testing.T) {
 		a, b := mkCandidate("a", 1000, 0, 0, 0), mkCandidate("b", 900, 0, 0, 500)
-		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{a, b}, cost)
-		if id(w) != "b" || id(ru) != "a" || n != 2 || path != SelectionCacheTiebreak {
+		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{a, b})
+		if id(w) != "b" || id(ru) != "a" || n != 1 || path != SelectionUniqueMin {
 			t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
 		}
 	})
 	t.Run("cache_equal_random", func(t *testing.T) {
 		a, b := mkCandidate("a", 900, 0, 0, 500), mkCandidate("b", 900, 0, 0, 500)
-		_, _, _, path := selectRoutingCandidate([]*routingCandidate{a, b}, cost)
+		_, _, _, path := selectRoutingCandidate([]*routingCandidate{a, b})
 		if path != SelectionRandom {
 			t.Fatalf("path = %s, want random", path)
 		}
 	})
-	t.Run("discounted_single_equivalent_is_tie_queue", func(t *testing.T) {
+	t.Run("discounted_minimum_keeps_cost_preference", func(t *testing.T) {
 		a, b := mkCandidate("a", 500, 0, 0, 300), mkCandidate("b", 1000, 1, 0, 0)
-		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{b, a}, cost)
-		if id(w) != "a" || id(ru) != "b" || n != 2 || path != SelectionTieQueue {
+		w, ru, n, path := selectRoutingCandidate([]*routingCandidate{b, a})
+		if id(w) != "a" || id(ru) != "b" || n != 1 || path != SelectionUniqueMin {
 			t.Fatalf("got winner=%s runnerUp=%s nearTie=%d path=%s", id(w), id(ru), n, path)
 		}
 	})

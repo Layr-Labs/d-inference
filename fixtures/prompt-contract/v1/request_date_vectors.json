@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "date": "2028-02-29",
+  "cases": [
+    {
+      "template": "  text {{ strftime_now('%Y-%m-%d') }}",
+      "expected": "  text 2028-02-29"
+    },
+    {
+      "template": "  {% set date = strftime_now('%Y-%m-%d') %}{{ date }}",
+      "expected": "2028-02-29"
+    },
+    {
+      "template": "  {{ strftime_now('%Y-%m-%d') }}",
+      "expected": "  2028-02-29"
+    },
+    {
+      "template": " \n {{- strftime_now('%Y-%m-%d') }}",
+      "expected": "2028-02-29"
+    },
+    {
+      "template": " \n {%- set date = strftime_now('%Y-%m-%d') %}{{ date }}",
+      "expected": "2028-02-29"
+    },
+    {
+      "template": "  {# comment #}{{ strftime_now('%Y-%m-%d') }}",
+      "expected": "2028-02-29"
+    }
+  ]
+}

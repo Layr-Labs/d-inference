@@ -1,0 +1,322 @@
+{
+  "adapter_manifest_sha256": "12cd0ce5eec6cf252a5d8cdc58c6a30e5756fa17b5c30cde7dbfc93c222367d8",
+  "arms": {
+    "baseline": {
+      "artifact_files": {
+        "attention-replay": {
+          "bytes": 34251216,
+          "mode": 493,
+          "sha256": "5a4a1e512a89f794937602b3aca0fdd7f5f3e6f8ecebcf65b608037e69fbfb35"
+        },
+        "mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": {
+          "bytes": 24804,
+          "mode": 420,
+          "sha256": "4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149"
+        },
+        "mlx.metallib": {
+          "bytes": 182424064,
+          "mode": 420,
+          "sha256": "22497b094bbae98a07db9b088bddfe825ea1150d61fd77ac35592a29528abbaa"
+        }
+      },
+      "compiled_function_count": 17326,
+      "exec_unix": 1788717889.6130219,
+      "exit_code": 0,
+      "foreground_end_unix": 1788717897.201108,
+      "group_cleanup_complete": true,
+      "independent_cleanup_complete": true,
+      "native_timeout_seconds": 180,
+      "pid": 18768,
+      "trace": {
+        "blocks": 128,
+        "boolMask": 0,
+        "causal": 0,
+        "event": "two_pass_enqueued",
+        "firstPass": "sdpa_vector_2pass_1_bfloat16_t_256_256_nomask_qnt_nc_nosinks_128",
+        "floatMask": 0,
+        "hasMask": 0,
+        "hasSinks": 0,
+        "inputDType": "bfloat16_t",
+        "keyShape": [
+          1,
+          2,
+          5585,
+          256
+        ],
+        "outputDType": "bfloat16_t",
+        "partialBytes": 1048576,
+        "partialDType": "bfloat16_t",
+        "partialElements": 524288,
+        "queryShape": [
+          1,
+          16,
+          1,
+          256
+        ],
+        "queryTransposed": 0,
+        "scaleHex": "0x1p-4",
+        "schema": 1,
+        "secondPass": "sdpa_vector_2pass_2_bfloat16_t_256",
+        "valueDim": 256
+      }
+    },
+    "variant": {
+      "artifact_files": {
+        "attention-replay": {
+          "bytes": 34250304,
+          "mode": 493,
+          "sha256": "d04c0fe1005a16f900020b61ece12c07f79327e74a4b04fe9f377922d02f42bc"
+        },
+        "mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": {
+          "bytes": 24804,
+          "mode": 420,
+          "sha256": "4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149"
+        },
+        "mlx.metallib": {
+          "bytes": 182425984,
+          "mode": 420,
+          "sha256": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+        }
+      },
+      "compiled_function_count": 17326,
+      "exec_unix": 1788717915.948462,
+      "exit_code": 0,
+      "foreground_end_unix": 1788717923.535834,
+      "group_cleanup_complete": true,
+      "independent_cleanup_complete": true,
+      "native_timeout_seconds": 180,
+      "pid": 18872,
+      "trace": {
+        "blocks": 128,
+        "boolMask": 0,
+        "causal": 0,
+        "event": "two_pass_enqueued",
+        "firstPass": "sdpa_vector_2pass_fp32partials_1_bfloat16_t_256_256_nomask_qnt_nc_nosinks_128",
+        "floatMask": 0,
+        "hasMask": 0,
+        "hasSinks": 0,
+        "inputDType": "bfloat16_t",
+        "keyShape": [
+          1,
+          2,
+          5585,
+          256
+        ],
+        "outputDType": "bfloat16_t",
+        "partialBytes": 2097152,
+        "partialDType": "float",
+        "partialElements": 524288,
+        "queryShape": [
+          1,
+          16,
+          1,
+          256
+        ],
+        "queryTransposed": 0,
+        "scaleHex": "0x1p-4",
+        "schema": 1,
+        "secondPass": "sdpa_vector_2pass_fp32partials_2_bfloat16_t_256",
+        "valueDim": 256
+      }
+    }
+  },
+  "collected_raw_files_verified": 51,
+  "collection_postflight": {
+    "free_bytes": 264400338944,
+    "gpu_temperature_c": 24.384672164916992,
+    "hardware_model": "Mac17,6",
+    "load1": 0.939453125,
+    "memory_bytes": 137438953472,
+    "owned_processes": [],
+    "unexpected_processes": []
+  },
+  "date": "2026-09-06",
+  "limits": [
+    "One selected owner0 Q36 B1/D256 input; one execution per arm.",
+    "No Q35/Q36 whole-model, token, quality, serving or performance acceptance.",
+    "No primary source or production precision change; no permission for global FP32 partials.",
+    "Recorded cleanup/idle observations are historical receipts, not a fresh remote process probe."
+  ],
+  "numerical": {
+    "analysis_reproduced_exactly": true,
+    "comparison": {
+      "baseline": {
+        "fp32_reference": {
+          "linf": 0.004564166069030762,
+          "nonfinite": {
+            "actual": {
+              "nan": 0,
+              "negativeInfinity": 0,
+              "positiveInfinity": 0
+            },
+            "reference": {
+              "nan": 0,
+              "negativeInfinity": 0,
+              "positiveInfinity": 0
+            }
+          },
+          "relativeL2": 0.001761930723092301,
+          "rmse": 0.00047287907608271174,
+          "undefinedReason": null
+        },
+        "fp32_rounded_bf16": {
+          "linf": 0.0078125,
+          "nonfinite": {
+            "actual": {
+              "nan": 0,
+              "negativeInfinity": 0,
+              "positiveInfinity": 0
+            },
+            "reference": {
+              "nan": 0,
+              "negativeInfinity": 0,
+              "positiveInfinity": 0
+            }
+          },
+          "relativeL2": 0.0016610437172524738,
+          "rmse": 0.00044581557293482443,
+          "undefinedReason": null
+        }
+      },
+      "paged_capture": {
+        "fp32_reference": {
+          "linf": 0.003840804100036621,
+          "nonfinite": {
+            "actual": {
+              "nan": 0,
+              "negativeInfinity": 0,
+              "positiveInfinity": 0
+            },
+            "reference": {
+              "nan": 0,
+              "negativeInfinity": 0,
+              "positiveInfinity": 0
+            }
+          },
+          "relativeL2": 0.0016508148395131476,
+          "rmse": 0.00044305703161957557,
+          "undefinedReason": null
+        },
+        "fp32_rounded_bf16": {
+          "linf": 0.00048828125,
+          "nonfinite": {
+            "actual": {
+              "nan": 0,
+              "negativeInfinity": 0,
+              "positiveInfinity": 0
+            },
+            "reference": {
+              "nan": 0,
+              "negativeInfinity": 0,
+              "positiveInfinity": 0
+            }
+          },
+          "relativeL2": 2.8426010663614677e-05,
+          "rmse": 7.629394758623672e-06,
+          "undefinedReason": null
+        }
+      },
+      "variant": {
+        "fp32_reference": {
+          "linf": 0.003840804100036621,
+          "nonfinite": {
+            "actual": {
+              "nan": 0,
+              "negativeInfinity": 0,
+              "positiveInfinity": 0
+            },
+            "reference": {
+              "nan": 0,
+              "negativeInfinity": 0,
+              "positiveInfinity": 0
+            }
+          },
+          "relativeL2": 0.0016508148395015991,
+          "rmse": 0.0004430570316164761,
+          "undefinedReason": null
+        },
+        "fp32_rounded_bf16": {
+          "linf": 0.00048828125,
+          "nonfinite": {
+            "actual": {
+              "nan": 0,
+              "negativeInfinity": 0,
+              "positiveInfinity": 0
+            },
+            "reference": {
+              "nan": 0,
+              "negativeInfinity": 0,
+              "positiveInfinity": 0
+            }
+          },
+          "relativeL2": 2.842600981645358e-05,
+          "rmse": 7.62939453125e-06,
+          "undefinedReason": null
+        }
+      }
+    },
+    "decoder_source": {
+      "bytes": 2395,
+      "mode": 420,
+      "sha256": "2d6068e1d704c8345669c5ed4ec70e0be79cbf501fc3f50de8f6c98f13d52641"
+    },
+    "input_bank": {
+      "archive": "docs/reports/evidence/qwen36-owner0-packets-2026-09-06/payloads.tar.gz",
+      "archive_identity": {
+        "bytes": 18633161,
+        "mode": 420,
+        "sha256": "0ad883a7d23b3de60643197446064e15fd91ac71ee759012f5ef4ebd25f30f81"
+      },
+      "manifest_identity": {
+        "bytes": 42418,
+        "mode": 420,
+        "sha256": "f22191f08fa53f83f8b01bfd9e6bdb2284fc2fa7e65def86633c9bc859efa01e"
+      },
+      "members": {
+        "queries": "raw/qwen36-contiguous-owner0-packet/report.attention-packet/queries.bin",
+        "storedKeys": "raw/qwen36-contiguous-owner0-packet/report.attention-packet/stored-keys.bin",
+        "storedValues": "raw/qwen36-contiguous-owner0-packet/report.attention-packet/stored-values.bin"
+      }
+    },
+    "numpy_version": "2.4.2",
+    "reference_source": {
+      "bytes": 7008,
+      "mode": 420,
+      "sha256": "bb5c65f673f5a23550c6621fb3aca1d3d9a067b62dbb105e6f481d58acc0bfd6"
+    },
+    "remaining_variant_vs_paged": [
+      {
+        "baseline": 5.0067901611328125e-05,
+        "channel": 155,
+        "flat_index": 1179,
+        "fp32_reference": 2.385427796980366e-05,
+        "paged_capture": 2.396106719970703e-05,
+        "query_head": 4,
+        "variant": 2.384185791015625e-05
+      }
+    ],
+    "rounded_reference_mismatches": {
+      "baseline": 785,
+      "paged_capture": 2,
+      "variant": 1
+    }
+  },
+  "pair": {
+    "baseline_reproduces_contiguous_capture": true,
+    "baseline_sha256": "390fe57dded021665191e7fffa0278a39ca44909f399b34128403fb6aa69b78d",
+    "blocks": 128,
+    "release_acceptance": "NOT_EVALUATED",
+    "scope": "Only the sealed owner0 operator; enqueue trace plus successful evaluated replay. Build/source/runtime proofs remain mandatory. No numeric tolerance, quality verdict, performance result, or proof of whole-model causal sufficiency.",
+    "status": "bounded_partial_storage_observation",
+    "variant_changed_output": true,
+    "variant_sha256": "1b5a4d9488fb48f5099c9e58d5f1eee601263e8f635259aca6dff85969cc2cec",
+    "variant_vs_baseline_bf16_mismatches": 786,
+    "variant_vs_paged_capture_bf16_mismatches": 1
+  },
+  "raw_proof_file_count": 2137,
+  "raw_proof_manifest_sha256": "900f7cc8a895bd3fcf6372a7f21a89258de9bc14b316bd1f8cad278534e3dfed",
+  "reviewer": "Avicenna",
+  "schema": "darkbloom.q36-partials-result-review.v1",
+  "source_verification_provenance": "Main ran the final adapter full raw-evidence/Git-base verifier on M5 before both operators. This independent review checks the frozen binding, manifests, collected metadata, trace/output and cleanup receipts; it does not rerun the 2137-file remote source audit.",
+  "status": "BOUNDED_OPERATOR_RESULT_VERIFIED"
+}

@@ -91,6 +91,7 @@ extension CoordinatorClient {
                 cacheReceiptNonce: request.cacheReceiptNonce,
                 cacheScope: request.cacheScope,
                 prefixCacheProtocol: request.prefixCacheProtocol,
+                cacheReceiptBoundaryMode: request.cacheReceiptBoundaryMode,
                 toolSchemaMetadataProtocol: request.toolSchemaMetadataProtocol,
                 firstContentDeadline: firstContentDeadline,
                 receivedAt: receivedAt,

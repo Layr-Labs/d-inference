@@ -7,6 +7,24 @@ import Testing
 
 @Suite("MTP benchmark report and matrix")
 struct MTPBenchmarkTests {
+    @Test("production MTP sessions preserve rollback environment while disabling prefix cache")
+    func productionBackendEnvironment() {
+        let ambient = [
+            EngineV2KVBackendPolicy.killSwitchEnvKey: "0",
+            KVBackendGuardStore.pathEnvKey: "/tmp/benchmark-backend-guard.json",
+            EngineV2Factory.pagedPoolDTypeEnvKey: "invalid",
+            PrefixCachePolicy.environmentFlag: "1",
+        ]
+        let environment = MTPProductionModelBundle.engineEnvironment(ambient: ambient)
+        #expect(environment[EngineV2KVBackendPolicy.killSwitchEnvKey] == "0")
+        #expect(environment[KVBackendGuardStore.pathEnvKey] == ambient[KVBackendGuardStore.pathEnvKey])
+        #expect(environment[EngineV2Factory.pagedPoolDTypeEnvKey] == "invalid")
+        #expect(environment[PrefixCachePolicy.environmentFlag] == "0")
+        #expect(MTPProductionModelBundle.engineEnvironment(ambient: [:]) == [
+            PrefixCachePolicy.environmentFlag: "0",
+        ])
+    }
+
     @Test("standard matrix is baseline, fixed L=1...8, adaptive")
     func standardMatrix() throws {
         let modes = MTPBenchmarkRunner.standardModes

@@ -1,0 +1,7 @@
+{
+  "commit": "544cfa5eef9c6a02021d81f0054a5bbe624e89d3",
+  "source_archive_sha256": "6448aea754dbdd58f6fb2c6e3180f2a7a513762d6e443823d83fc84b154b54b7",
+  "source_archive_bytes": 12236800,
+  "target": "aarch64-unknown-linux-musl",
+  "scope": "Local native ARM Linux diagnostic; production native linux/amd64 CI remains required."
+}

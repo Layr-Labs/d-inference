@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-06 · commit `63caa59f5`
+> Last updated: 2026-09-06 · commit `ab992bef4`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), native macOS app, console-ui and admin-ui: accepted values, the compiled default,

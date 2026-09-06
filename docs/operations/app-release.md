@@ -1,6 +1,6 @@
 # Darkbloom App Release Runbook
 
-> Last updated: 2026-09-06 · commit `7daeb553f`
+> Last updated: 2026-09-06 · commit `ab992bef4`
 
 Use this runbook to package and qualify the SwiftUI **Darkbloom** macOS app
 (`DarkbloomApp`) with its provider CLI. The public app zip and the legacy

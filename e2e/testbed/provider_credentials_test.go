@@ -81,10 +81,28 @@ func TestCanonicalProviderIssuerMatchesSwiftOriginContract(t *testing.T) {
 	for _, tc := range []struct{ input, want string }{
 		{"http://127.0.0.1:54321", "http://127.0.0.1:54321"},
 		{"ws://127.0.0.1:54321/ws/provider", "http://127.0.0.1:54321"},
-		{" \nWSS://Issuer.Example:443/ws/provider?region=one#fragment\t", "https://issuer.example:443"},
+		{" \nWSS://Issuer.Example:443/ws/provider?region=one#fragment\t", "https://issuer.example"},
 		{"https://Issuer.Example/other/path/", "https://issuer.example"},
 		{"wss://Issuer.Example/ws/provider", "https://issuer.example"},
-		{"http://Issuer.Example:80/", "http://issuer.example:80"},
+		{"https://Issuer.Example:443/", "https://issuer.example"},
+		{"https://Issuer.Example:0443/", "https://issuer.example"},
+		{"http://Issuer.Example/", "http://issuer.example"},
+		{"ws://Issuer.Example/ws/provider", "http://issuer.example"},
+		{"http://Issuer.Example:80/", "http://issuer.example"},
+		{"ws://Issuer.Example:80/ws/provider", "http://issuer.example"},
+		{"ws://Issuer.Example:080/ws/provider", "http://issuer.example"},
+		{"https://Issuer.Example:8443/", "https://issuer.example:8443"},
+		{"wss://Issuer.Example:8443/ws/provider", "https://issuer.example:8443"},
+		{"http://Issuer.Example:8080/", "http://issuer.example:8080"},
+		{"ws://Issuer.Example:8080/ws/provider", "http://issuer.example:8080"},
+		{"https://Issuer.Example:80/", "https://issuer.example:80"},
+		{"wss://Issuer.Example:80/ws/provider", "https://issuer.example:80"},
+		{"http://Issuer.Example:443/", "http://issuer.example:443"},
+		{"ws://Issuer.Example:443/ws/provider", "http://issuer.example:443"},
+		{"https://[2001:DB8::1]:443/api/", "https://[2001:db8::1]"},
+		{"wss://[2001:DB8::1]:443/ws/provider", "https://[2001:db8::1]"},
+		{"http://[::1]:80/", "http://[::1]"},
+		{"ws://[::1]:80/ws/provider", "http://[::1]"},
 		{"ws://[::1]:54321/ws/provider", "http://[::1]:54321"},
 		{"https://[2001:DB8::1]:8443/api/", "https://[2001:db8::1]:8443"},
 	} {
@@ -92,6 +110,9 @@ func TestCanonicalProviderIssuerMatchesSwiftOriginContract(t *testing.T) {
 			got, err := canonicalProviderIssuer(tc.input)
 			require.NoError(t, err)
 			require.Equal(t, tc.want, got)
+			again, err := canonicalProviderIssuer(got)
+			require.NoError(t, err)
+			require.Equal(t, got, again, "canonicalization must be idempotent")
 		})
 	}
 	for _, invalid := range []string{

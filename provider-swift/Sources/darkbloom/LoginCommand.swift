@@ -70,7 +70,8 @@ struct Login: AsyncParsableCommand {
                     onPollTick: pollTick,
                     openBrowser: !emitJSON,
                     onEvent: onEvent,
-                    recoverIncompleteCredential: true
+                    recoverIncompleteCredential: true,
+                    acceptExistingCredential: emitJSON
                 )
             }
 

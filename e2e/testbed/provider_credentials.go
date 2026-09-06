@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,8 +29,8 @@ func providerCredentialPathsIn(dir string) providerCredentialPaths {
 }
 
 // canonicalProviderIssuer mirrors Swift's canonicalCoordinatorIssuer for test
-// coordinator URLs: HTTP(S) origin, lowercase host, explicit port preserved,
-// no userinfo, path, query, or fragment.
+// coordinator URLs: HTTP(S) origin, lowercase host, non-default ports preserved,
+// no userinfo, default port, path, query, or fragment.
 func canonicalProviderIssuer(rawURL string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || u.Hostname() == "" || u.User != nil {
@@ -42,6 +43,10 @@ func canonicalProviderIssuer(rawURL string) (string, error) {
 		u.Scheme = "https"
 	default:
 		return "", fmt.Errorf("invalid testbed coordinator URL scheme")
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err == nil && ((u.Scheme == "https" && port == 443) || (u.Scheme == "http" && port == 80)) {
+		u.Host = strings.TrimSuffix(u.Host, ":"+u.Port())
 	}
 	return (&url.URL{Scheme: u.Scheme, Host: strings.ToLower(u.Host)}).String(), nil
 }

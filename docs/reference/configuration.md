@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-06 · commit `ab992bef4`
+> Last updated: 2026-09-06 · commit `14f809d65`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), native macOS app, console-ui and admin-ui: accepted values, the compiled default,
@@ -324,7 +324,7 @@ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative value
 | `DARKBLOOM_NO_UPDATE_CHECK` | any value | unset | `provider-swift/Sources/darkbloom/Darkbloom.swift`; `provider-swift/Sources/darkbloom/StartCommand+Modes.swift`; `provider-swift/Sources/darkbloom/WatchdogCommand.swift`; `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`; forwarded by `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` | Skips the startup version banner, the in-daemon auto-update loop, the start-mode check and the watchdog's update check; `scripts/install.sh` sets it for the runtime smoke test. |
 | `DARKBLOOM_AUTH_TOKEN_PATH` | file path | `~/.darkbloom/auth_token` | `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` | Where the device-auth token is stored. |
 | `DARKBLOOM_PROVIDER_ACCOUNT_PATH` | file path | `~/.darkbloom/provider_account` | `provider-swift/Sources/ProviderCore/Auth/ProviderAccountStore.swift` (`accountPath`) | Account bound to the provider token. Test credentials must isolate all three credential paths. |
-| `DARKBLOOM_PROVIDER_ISSUER_PATH` | file path | `~/.darkbloom/provider_issuer` | `provider-swift/Sources/ProviderCore/Auth/ProviderCredentialStore.swift` (`ProviderIssuerStore.issuerPath`) | Recorded HTTP(S) origin that issued the provider token; normal authentication requires it to match the configured coordinator. |
+| `DARKBLOOM_PROVIDER_ISSUER_PATH` | file path | `~/.darkbloom/provider_issuer` | `provider-swift/Sources/ProviderCore/Auth/ProviderCredentialStore.swift` (`ProviderIssuerStore.issuerPath`) | Recorded HTTP(S) origin that issued the provider token; normal authentication requires it to match the configured coordinator. HTTPS/WSS port 443 and HTTP/WS port 80 match their omitted-port origins; other ports remain distinct. Reads preserve stored issuer bytes for exact credential replacement/deletion. |
 | `DARKBLOOM_LOCAL_DIR` | directory | `~/.darkbloom` | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` | Directory for `local_token` and `local.json` (direct mode). |
 | `DARKBLOOM_STATE_FILE` | file path | `~/.darkbloom/daemon-state.json` | `provider-swift/Sources/ProviderCoreFoundation/DaemonStateFile.swift` | Daemon state snapshot read by `status`, `doctor` and the watchdog. |
 | `DARKBLOOM_LOADED_MODELS_FILE` | file path | `~/.darkbloom/loaded-models.json` | `provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift` | Warm-model journal. |

@@ -302,6 +302,7 @@ struct EnrollmentTests {
                 #expect(request.httpMethod == "POST")
                 #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
                 #expect(request.httpBody == Data("{}".utf8))
+                #expect(request.timeoutInterval == 30)
                 return (payload.data, payload.response)
             },
             enrollmentStateReader: { _ in .notEnrolled },
@@ -324,6 +325,83 @@ struct EnrollmentTests {
             [result.profilePath.path],
             ["x-apple.systempreferences:com.apple.Profiles-Settings.extension"],
         ])
+    }
+
+    @Test("Streamed overflow is a size error and never writes or opens a profile")
+    func streamedOverflowIsTerminal() async throws {
+        let fixture = try EnrollmentProfileFixture()
+        defer { fixture.remove() }
+        let stream = EnrollmentProfileHTTPStream()
+        defer { stream.close() }
+        let recorder = EnrollmentOpenRecorder()
+        let service = EnrollmentService(
+            openCommand: recorder.run,
+            requestProfile: { request in
+                try await EnrollmentProfileTransport.fetchProfile(request, using: stream.session)
+            },
+            enrollmentStateReader: { _ in .notEnrolled },
+            profileDirectory: fixture.root
+        )
+        let enrollment = Task {
+            try await service.enroll(coordinatorURL: stream.coordinatorURL)
+        }
+        defer { enrollment.cancel() }
+        try await stream.waitUntil { $0.request != nil }
+        #expect(stream.snapshot.request?.httpMethod == "POST")
+        #expect(stream.snapshot.request?.timeoutInterval == 30)
+        stream.sendResponse(headers: [
+            "Content-Type": EnrollmentProfileResponse.supportedMediaType,
+            "Content-Length": "8",
+        ])
+        stream.sendBody(
+            Data(repeating: 0x41, count: EnrollmentProfileResponse.maximumBytes + 1),
+            ending: .stall
+        )
+        try await stream.waitUntil { $0.stopped }
+        do {
+            _ = try await enrollment.value
+            Issue.record("accepted a streamed oversized profile")
+        } catch EnrollmentError.profileResponseTooLarge(let maximum) {
+            #expect(maximum == EnrollmentProfileResponse.maximumBytes)
+        }
+        #expect(recorder.calls.isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).isEmpty)
+    }
+
+    @Test("Stream errors retain enrollment request error mapping", arguments: [
+        URLError.Code.networkConnectionLost, .timedOut, .cancelled,
+    ])
+    func streamedErrorNeverWritesOrOpens(code: URLError.Code) async throws {
+        let fixture = try EnrollmentProfileFixture()
+        defer { fixture.remove() }
+        let stream = EnrollmentProfileHTTPStream()
+        defer { stream.close() }
+        let recorder = EnrollmentOpenRecorder()
+        let service = EnrollmentService(
+            openCommand: recorder.run,
+            requestProfile: { request in
+                try await EnrollmentProfileTransport.fetchProfile(request, using: stream.session)
+            },
+            enrollmentStateReader: { _ in .notEnrolled },
+            profileDirectory: fixture.root
+        )
+        let enrollment = Task {
+            try await service.enroll(coordinatorURL: stream.coordinatorURL)
+        }
+        defer { enrollment.cancel() }
+        try await stream.waitUntil { $0.request != nil }
+        stream.sendResponse(headers: [
+            "Content-Type": EnrollmentProfileResponse.supportedMediaType,
+        ])
+        stream.sendBody(Data("partial profile".utf8), ending: .fail(code))
+        do {
+            _ = try await enrollment.value
+            Issue.record("accepted a failed profile stream")
+        } catch EnrollmentError.coordinatorRequestFailed(let detail) {
+            #expect(detail == URLError(code).localizedDescription)
+        }
+        #expect(recorder.calls.isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path).isEmpty)
     }
 
     @Test("LocalDataCleanup.purge removes only requested files")

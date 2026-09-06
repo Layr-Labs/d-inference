@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-06 · commit `ab992bef4`
+> Last updated: 2026-09-06 · commit `14f809d65`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -186,7 +186,7 @@ Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 | Command / option | Behavior | Code |
 |---|---|---|
 | `login [--config <path>]` | Request a device code, open the approval URL, and poll for fresh authorization. Save the token with its account and issuing coordinator. | `provider-swift/Sources/darkbloom/LoginCommand.swift` (`Login`); `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` (`performDeviceCodeLogin`) |
-| `login --json` | Emit `code`, `linked`, or `error` NDJSON events; the calling app opens the approval URL. | `provider-swift/Sources/darkbloom/LoginCommand.swift` (`LoginEventNDJSON`) |
+| `login --json` | Emit `code`, `linked`, or `error` NDJSON events; the calling app opens the approval URL. A complete saved credential for the configured issuer emits `linked` immediately without a new browser flow. Error text never confirms a link. | `provider-swift/Sources/darkbloom/LoginCommand.swift` (`LoginEventNDJSON`) |
 | `login` with incomplete legacy metadata | Run fresh browser authorization without first deleting the old credential. Replace only the unchanged original files after authorization succeeds; a recorded issuer must still match. Normal credential reads continue to reject incomplete metadata. | `provider-swift/Sources/ProviderCore/Auth/ProviderCredentialRecovery.swift` (`ProviderCredentialRecovery`); `provider-swift/Sources/ProviderCore/Auth/ProviderCredentialStore.swift` (`load`) |
 | `login` after interrupted replacement | Require fresh authorization before replacing the interrupted state. Recovery backups block legacy-token import and are never restored as credentials. | `provider-swift/Sources/ProviderCore/Auth/ProviderCredentialRecoveryArtifacts.swift` (`ProviderCredentialRecoveryArtifacts`); `provider-swift/Sources/ProviderCore/Auth/ProviderCredentialRecovery.swift` (`ProviderCredentialRecovery`) |
 | `logout` | Stop provider services, revoke the token at its recorded issuer, then clear local credentials. Revocation failure preserves credentials. | `provider-swift/Sources/darkbloom/LogoutCommand.swift` (`Logout`); `provider-swift/Sources/darkbloom/AccountUnlink.swift` (`unlinkProviderAccount`) |

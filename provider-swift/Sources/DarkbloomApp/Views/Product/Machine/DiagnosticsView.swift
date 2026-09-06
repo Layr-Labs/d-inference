@@ -2,6 +2,8 @@ import SwiftUI
 
 struct DiagnosticsView: View {
     let store: DiagnosticsStore
+    let actionDispatcher: DiagnosticActionDispatcher
+    let actionCallbacks: DiagnosticActionCallbacks
 
     @Environment(\.dismiss) private var dismiss
     @State private var launchedFix: DiagnosticFix?
@@ -21,7 +23,9 @@ struct DiagnosticsView: View {
                         if !store.isScanning, !store.report.prioritizedFixes.isEmpty {
                             DiagnosticFixesSection(
                                 fixes: store.report.prioritizedFixes,
-                                isLive: store.isLive,
+                                presentation: {
+                                    actionDispatcher.presentation(for: $0, in: store, callbacks: actionCallbacks)
+                                },
                                 onOpen: open
                             )
                         }
@@ -115,8 +119,9 @@ struct DiagnosticsView: View {
     }
 
     private func open(_ fix: DiagnosticFix) {
-        guard store.triggerFix(id: fix.id) != nil else { return }
-        launchedFix = fix
+        launchedFix = actionDispatcher.open(
+            fix, in: store, callbacks: actionCallbacks, dismiss: { dismiss() }
+        )
     }
 
     private func resolveLaunchedFix() {

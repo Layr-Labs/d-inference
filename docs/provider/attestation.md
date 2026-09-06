@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-06 · commit `14f809d65`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -42,6 +42,8 @@ The command downloads the enrolment profile from `POST /v1/enroll`, saves it as
 `Darkbloom-Enroll-<uuid>.mobileconfig`, registers it with System Settings and
 opens the Profiles pane (`EnrollCommand.swift`; options in
 [`cli-reference.md`](./cli-reference.md#darkbloom-enroll--darkbloom-unenroll)).
+The download accepts at most 1 MiB and rejects interrupted, oversized, empty,
+or incorrectly typed responses before saving or opening a profile.
 "Already enrolled" means the Darkbloom profile is present and you can skip to
 step 3. What the profile contains and the read-only `AccessRights` it requests
 are in [`../architecture/security/enrollment.md#the-profile`](../architecture/security/enrollment.md#the-profile).

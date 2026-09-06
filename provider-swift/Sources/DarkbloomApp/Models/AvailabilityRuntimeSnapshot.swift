@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCoreFoundation
 
 enum AvailabilityRuntimeState: String, Codable, Equatable, Sendable {
     case available
@@ -74,4 +75,38 @@ enum AvailabilityLocalAPIBehavior: String, CaseIterable, Hashable, Sendable {
     /// `darkbloom start --local` runs its own standalone server and is not
     /// controlled by the network provider's schedule.
     case standaloneLocalIsIndependent
+}
+
+extension AvailabilityRuntimeSnapshot {
+    /// Map the daemon state file onto the store's runtime observation. The
+    /// view additionally overlays the ProviderStore snapshot's process state;
+    /// the irreplaceable payloads here are the schedule-driven
+    /// `nextObservedTransitionAt` and the source timestamps.
+    static func readStateFile(_ url: URL) -> AvailabilityRuntimeSnapshot? {
+        guard let state = DaemonStateFile.read(from: url) else { return nil }
+        let writtenAt = Date(timeIntervalSince1970: state.writtenAt)
+        let posture = state.schedule
+
+        let runtimeState: AvailabilityRuntimeState
+        switch posture?.mode {
+        case "scheduled-off":
+            runtimeState = .scheduledOff
+        default:
+            if state.isStale(now: Date().timeIntervalSince1970) {
+                runtimeState = .stale
+            } else if state.inferenceActive {
+                runtimeState = .serving
+            } else {
+                runtimeState = .available
+            }
+        }
+
+        return AvailabilityRuntimeSnapshot(
+            sampledAt: writtenAt,
+            sourceUpdatedAt: writtenAt,
+            state: runtimeState,
+            nextObservedTransitionAt: posture?.nextChangeAtEpoch.map(Date.init(timeIntervalSince1970:))
+        )
+    }
+
 }

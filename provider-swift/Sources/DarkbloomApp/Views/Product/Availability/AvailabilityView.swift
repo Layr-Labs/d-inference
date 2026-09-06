@@ -58,6 +58,9 @@ struct AvailabilityView: View {
         .onChange(of: currentRuntime.sampledAt) { _, sampledAt in
             synchronizeHorizonClock(to: sampledAt)
         }
+        .onChange(of: providerSnapshot.sourceUpdatedAt) { _, _ in
+            Task { await store.refreshAfterObservedRestart() }
+        }
     }
 
     private func policyPage(_ policy: AvailabilityPolicy) -> some View {
@@ -144,6 +147,32 @@ struct AvailabilityView: View {
                 )
             }
 
+            if store.partialSaveRequiresRestart {
+                AvailabilityInlineNotice(
+                    title: "Saved availability requires a restart",
+                    detail: store.savedPolicyNeedsReconciliation
+                        ? "A configuration write may have succeeded, but the complete saved availability is unverified. Reload availability before restarting; saved changes apply on the next provider restart."
+                        : "The saved availability is shown below. Restart the provider to apply it; any remaining draft edits have not been saved.",
+                    systemImage: "arrow.clockwise.circle.fill",
+                    tint: ProductPalette.warning
+                )
+                if store.savedPolicyNeedsReconciliation {
+                    Button("Reload Saved Availability", systemImage: "arrow.clockwise") {
+                        Task { await store.refresh() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(store.saveState.isSaving || store.isRefreshing)
+                } else {
+                    Button("Restart Provider Now", systemImage: "arrow.clockwise") {
+                        onRequestProviderAction(.restart)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(store.saveState.isSaving || store.isRefreshing)
+                }
+            }
+
             switch store.saveState {
             case .savedAndRestarted:
                 AvailabilityInlineNotice(
@@ -171,7 +200,7 @@ struct AvailabilityView: View {
 
             case .failed(let message):
                 AvailabilityInlineNotice(
-                    title: "Changes were not saved",
+                    title: store.partialSaveRequiresRestart ? "Availability save needs review" : "Changes were not saved",
                     detail: store.isLive
                         ? message
                         : "\(message) No provider configuration or process changed.",
@@ -182,7 +211,9 @@ struct AvailabilityView: View {
             case .validationFailed:
                 AvailabilityInlineNotice(
                     title: "Schedule needs review",
-                    detail: "Open the editor to review the schedule. No provider configuration or process changed.",
+                    detail: store.partialSaveRequiresRestart
+                        ? "Open the editor to review the schedule. Previously saved changes still require a provider restart."
+                        : "Open the editor to review the schedule. No provider configuration or process changed.",
                     systemImage: "exclamationmark.circle.fill",
                     tint: ProductPalette.critical
                 )

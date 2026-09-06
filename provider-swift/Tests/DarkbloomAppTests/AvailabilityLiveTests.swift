@@ -269,7 +269,10 @@ struct AvailabilityLiveTests {
         #expect(store.savedPolicy == original)
         #expect(store.draft == edit)
         #expect(store.hasUnsavedChanges)
-        #expect(!store.requiresRestart)
+        // Both apply and readback fail: disk state is unknown, even though
+        // this stub did not mutate it. The store must not infer rollback.
+        #expect(store.savedPolicyNeedsReconciliation)
+        #expect(store.requiresRestart)
     }
 
     @Test("invalid drafts never reach the CLI")

@@ -2,7 +2,7 @@ import SwiftUI
 
 struct DiagnosticFixesSection: View {
     let fixes: [DiagnosticFix]
-    let isLive: Bool
+    let presentation: (DiagnosticFix) -> DiagnosticActionPresentation
     let onOpen: (DiagnosticFix) -> Void
 
     var body: some View {
@@ -11,6 +11,7 @@ struct DiagnosticFixesSection: View {
 
             VStack(spacing: 0) {
                 ForEach(Array(fixes.enumerated()), id: \.element.id) { index, fix in
+                    let action = presentation(fix)
                     HStack(spacing: 13) {
                         Text("\(index + 1)")
                             .font(.system(size: 12, weight: .bold, design: .rounded))
@@ -24,20 +25,27 @@ struct DiagnosticFixesSection: View {
                             Text(fix.detail)
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
+                            if let reason = action.disabledReason {
+                                Text(reason)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
 
                         Spacer()
 
                         if index == 0 {
-                            Button(fix.action.buttonTitle(isLive: isLive)) {
+                            Button(action.title) {
                                 onOpen(fix)
                             }
                             .buttonStyle(.borderedProminent)
+                            .disabled(!action.isEnabled)
                         } else {
-                            Button(fix.action.buttonTitle(isLive: isLive)) {
+                            Button(action.title) {
                                 onOpen(fix)
                             }
                             .buttonStyle(.bordered)
+                            .disabled(!action.isEnabled)
                         }
                     }
                     .padding(15)
@@ -48,21 +56,6 @@ struct DiagnosticFixesSection: View {
                 }
             }
             .productSurface()
-        }
-    }
-}
-
-extension DiagnosticFixAction {
-    func buttonTitle(isLive: Bool) -> String {
-        if isLive { return "View Guidance" }
-        return switch self {
-        case .openEnrollment: "Finish Setup"
-        case .openRecoveryInstructions: "View Instructions"
-        case .checkForUpdates: "Check for Updates"
-        case .restartProvider: "Restart"
-        case .redownloadModel: "Download Again"
-        case .openNetworkSettings: "Network Settings"
-        case .openSupport: "Contact Support"
         }
     }
 }

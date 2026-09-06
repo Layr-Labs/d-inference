@@ -20,6 +20,8 @@ struct ProductShellView: View {
 
     @SceneStorage("darkbloom.product.destination") private var destinationRawValue = ProductDestination.overview.rawValue
     @State private var showsDiagnostics = false
+    @State private var diagnosticActionDispatcher = DiagnosticActionDispatcher()
+    @State private var diagnosticSettingsFailed = false
     @State private var didApplyInitialDestination = false
     @State private var actionConfirmation: ProviderActionConfirmation?
     @State private var showsLocalSessionConflict = false
@@ -49,8 +51,17 @@ struct ProductShellView: View {
         .background(StudioPalette.canvas)
         .foregroundStyle(StudioPalette.ink)
         .tint(StudioPalette.accent)
-        .sheet(isPresented: $showsDiagnostics) {
-            DiagnosticsView(store: diagnosticsStore)
+        .sheet(isPresented: $showsDiagnostics, onDismiss: dispatchDiagnosticAction) {
+            DiagnosticsView(
+                store: diagnosticsStore,
+                actionDispatcher: diagnosticActionDispatcher,
+                actionCallbacks: diagnosticActionCallbacks
+            )
+        }
+        .alert("Network Settings couldn’t open", isPresented: $diagnosticSettingsFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Open System Settings and choose Network, then run the system check again.")
         }
         .alert("Your local session is still running", isPresented: $showsLocalSessionConflict) {
             Button("Open Studio") { select(.overview) }
@@ -221,6 +232,34 @@ struct ProductShellView: View {
                 trust: providerStore.snapshot.trust,
                 onRunDiagnostics: { showsDiagnostics = true }
             )
+        }
+    }
+
+    private var diagnosticActionCallbacks: DiagnosticActionCallbacks {
+        DiagnosticActionCallbacks(
+            isPreview: isPreview,
+            restartUnavailableReason: DiagnosticActionCallbacks.restartUnavailableReason(
+                providerStore: providerStore,
+                needsSetup: needsSetup,
+                hasActiveLocalSession: localAPIStore.localStart.hasActiveSession
+            ),
+            onContinueSetup: onContinueSetup,
+            requestProviderAction: request,
+            openModelLibrary: { modelID in
+                if let modelID { modelLibraryStore.selectModel(id: modelID) }
+                select(.models)
+            },
+            openNetworkSettings: { try DiagnosticNetworkSettings.open() }
+        )
+    }
+
+    private func dispatchDiagnosticAction() {
+        do {
+            try diagnosticActionDispatcher.didDismiss(
+                store: diagnosticsStore, callbacks: diagnosticActionCallbacks
+            )
+        } catch {
+            diagnosticSettingsFailed = true
         }
     }
 

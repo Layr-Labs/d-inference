@@ -103,7 +103,7 @@ public struct EnrollmentService: Sendable {
             try await Task.sleep(for: .seconds(1))
         }
         requestProfile = { request in
-            try await URLSession.shared.data(for: request)
+            try await EnrollmentProfileTransport.fetchProfile(request)
         }
         enrollmentStateReader = { coordinatorURL in
             checkMDMEnrollment(coordinatorURL: coordinatorURL)
@@ -115,7 +115,7 @@ public struct EnrollmentService: Sendable {
         openCommand: @escaping OpenCommand,
         pauseBeforeOpeningSettings: @escaping Pause = {},
         requestProfile: @escaping ProfileRequest = { request in
-            try await URLSession.shared.data(for: request)
+            try await EnrollmentProfileTransport.fetchProfile(request)
         },
         enrollmentStateReader: @escaping EnrollmentStateReader = {
             coordinatorURL in
@@ -175,6 +175,10 @@ public struct EnrollmentService: Sendable {
         let response: URLResponse
         do {
             (data, response) = try await requestProfile(request)
+        } catch EnrollmentError.profileResponseTooLarge(let maximumBytes) {
+            // Preserve the validator's size error when the transport detects
+            // overflow before it can return a body.
+            throw EnrollmentError.profileResponseTooLarge(maximumBytes: maximumBytes)
         } catch {
             throw EnrollmentError.coordinatorRequestFailed(error.localizedDescription)
         }

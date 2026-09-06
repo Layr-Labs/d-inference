@@ -285,8 +285,35 @@ struct DeviceLoginEventTests {
         }
     }
 
-    @Test("A saved login for another issuer cannot confirm this coordinator", arguments: [false, true])
-    func loginRejectsDifferentIssuer(recoverIncompleteCredential: Bool) async throws {
+    @Test("Machine login confirms a matching existing credential with one linked event", arguments: [false, true])
+    func loginAcceptsValidatedExistingCredential(recoverIncompleteCredential: Bool) async throws {
+        try await withAuthTokenOverride { _ in
+            try ProviderCredentialStore.save(
+                token: "existing-bound-token", accountID: "existing-account",
+                coordinatorURL: "http://127.0.0.1:1"
+            )
+            let before = try ProviderCredentialStore.load(for: "http://127.0.0.1:1")
+            let recorder = EventRecorder()
+            let token = try await performDeviceCodeLogin(
+                coordinatorURL: "http://127.0.0.1:1",
+                onDisplayCode: { _, _, _ in Issue.record("No browser authorization should start for the matching credential") },
+                openBrowser: false,
+                onEvent: { recorder.record($0) },
+                recoverIncompleteCredential: recoverIncompleteCredential,
+                acceptExistingCredential: true
+            )
+            #expect(token == "existing-bound-token")
+            #expect(recorder.events.count == 1)
+            guard case .linked = recorder.events.first else {
+                Issue.record("Expected exactly one linked event: \(recorder.events)")
+                return
+            }
+            #expect(try ProviderCredentialStore.load(for: "http://127.0.0.1:1") == before)
+        }
+    }
+
+    @Test("A saved login for another issuer cannot confirm this coordinator", arguments: [false, true], [false, true])
+    func loginRejectsDifferentIssuer(recoverIncompleteCredential: Bool, acceptExistingCredential: Bool) async throws {
         try await withAuthTokenOverride { _ in
             try ProviderCredentialStore.save(
                 token: "existing-bound-token", accountID: "existing-account",
@@ -299,7 +326,8 @@ struct DeviceLoginEventTests {
                     onDisplayCode: { _, _, _ in Issue.record("Wrong-issuer login must stop before requesting a code") },
                     openBrowser: false,
                     onEvent: { recorder.record($0) },
-                    recoverIncompleteCredential: recoverIncompleteCredential
+                    recoverIncompleteCredential: recoverIncompleteCredential,
+                    acceptExistingCredential: acceptExistingCredential
                 )
                 Issue.record("Expected an issuer mismatch")
             } catch let error as DeviceAuthError {

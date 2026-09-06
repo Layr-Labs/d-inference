@@ -116,7 +116,10 @@ public enum ProviderCredentialStore: Sendable {
             guard let credential = try loadUnlocked() else {
                 return nil
             }
-            guard credential.issuer == expectedIssuer else {
+            // Accept canonical origins saved before default ports were omitted.
+            // Reject non-origin metadata rather than normalizing it into a valid
+            // binding. Keep the original snapshot for exact compare-and-delete.
+            guard providerCredentialIssuerMatches(credential.issuer, expected: expectedIssuer) else {
                 throw ProviderCredentialStoreError.issuerMismatch(
                     expected: expectedIssuer,
                     actual: credential.issuer
@@ -213,9 +216,26 @@ public enum ProviderCredentialStoreError: LocalizedError, Sendable, Equatable {
 }
 
 /// Normalize an HTTP(S) or WebSocket coordinator URL to the issuing HTTP
-/// origin. Paths, query parameters, fragments, and trailing slashes are not
-/// credential identity and are intentionally discarded.
+/// origin. Default ports, paths, query parameters, fragments, and trailing
+/// slashes are not credential identity and are intentionally discarded.
 public func canonicalCoordinatorIssuer(_ rawURL: String) throws -> String {
+    try coordinatorIssuer(rawURL, omittingDefaultPort: true)
+}
+
+/// Stored metadata must already be an origin in the old canonical format.
+/// Only the newly normalized default port may differ; paths or user info must
+/// not be silently repaired into a trusted binding. Recovery shares this rule.
+func providerCredentialIssuerMatches(_ recorded: String, expected: String) -> Bool {
+    guard let legacy = try? coordinatorIssuer(recorded, omittingDefaultPort: false),
+          legacy == recorded,
+          let normalized = try? canonicalCoordinatorIssuer(recorded)
+    else { return false }
+    return normalized == expected
+}
+
+private func coordinatorIssuer(
+    _ rawURL: String, omittingDefaultPort: Bool
+) throws -> String {
     let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
     guard var components = URLComponents(string: trimmed),
           let rawScheme = components.scheme?.lowercased(),
@@ -234,6 +254,11 @@ public func canonicalCoordinatorIssuer(_ rawURL: String) throws -> String {
         components.scheme = "http"
     default:
         throw ProviderCredentialStoreError.invalidCoordinatorURL
+    }
+    if omittingDefaultPort,
+       (components.scheme == "https" && components.port == 443)
+        || (components.scheme == "http" && components.port == 80) {
+        components.port = nil
     }
     components.host = host.lowercased()
     components.path = ""

@@ -376,13 +376,10 @@ final class OnboardingFlowModel {
     }
 
     private func applyAccountLinkError(_ message: String) {
-        if message.hasPrefix("Already logged in") {
-            accountLinkFailureDetail = nil
-            accountPhase = .linked
-        } else {
-            accountLinkFailureDetail = message
-            accountPhase = message.contains("expired") ? .expired : .unreachable
-        }
+        // Only the typed `.linked` event confirms the selected CLI's issuer
+        // validation. Older CLIs can emit this prose for an unrelated token.
+        accountLinkFailureDetail = message
+        accountPhase = message.contains("expired") ? .expired : .unreachable
     }
 
     // MARK: - Shared helpers

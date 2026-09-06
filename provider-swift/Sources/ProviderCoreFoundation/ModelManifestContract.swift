@@ -19,6 +19,7 @@ public enum ModelManifestContract {
         case fieldTooLarge
         case negativeTotalSize(Int64)
         case negativeFileSize(path: String, size: Int64)
+        case duplicateFilePath(path: String)
         case totalSizeOverflow
         case totalSizeMismatch(declared: Int64, actual: Int64)
 
@@ -40,6 +41,8 @@ public enum ModelManifestContract {
                 return "manifest total_size_bytes \(size) must be nonnegative"
             case .negativeFileSize(let path, let size):
                 return "manifest file \(path) size_bytes \(size) must be nonnegative"
+            case .duplicateFilePath(let path):
+                return "manifest file path \(path) is duplicated"
             case .totalSizeOverflow:
                 return "manifest file sizes overflow Int64"
             case .totalSizeMismatch(let declared, let actual):
@@ -101,9 +104,14 @@ public enum ModelManifestContract {
 
     public static func checkedTotalSize(_ files: [ManifestFile]) throws -> Int64 {
         var total: Int64 = 0
+        var seenPaths = Set<String>()
         for file in files {
             guard file.sizeBytes >= 0 else {
                 throw ValidationError.negativeFileSize(path: file.path, size: file.sizeBytes)
+            }
+            // Match the coordinator's lowercase uniqueness key for download destinations.
+            guard seenPaths.insert(file.path.lowercased()).inserted else {
+                throw ValidationError.duplicateFilePath(path: file.path)
             }
             let (next, overflow) = total.addingReportingOverflow(file.sizeBytes)
             guard !overflow else {

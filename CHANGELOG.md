@@ -1,9 +1,14 @@
 # Changelog
 
-> Last updated: 2026-09-06 · commit `63caa59f5`
+> Last updated: 2026-09-06 · commit `14f809d65`
 
 ## Unreleased (2026-09-05) — native macOS app refresh
 
+- Preserve availability edits after a partial save, reconcile confirmed settings, and retain the provider-reload warning until the saved settings are applied.
+- Run diagnostic setup, restart, Library, and network-settings actions after dismissing the report, with current ownership and runtime guards. Recheck completed setup against current enrollment evidence; keep manual instructions explicit.
+- Confirm an existing issuer-bound account link through a typed JSON `linked` event. Accept standard default ports as the same issuer while preserving credential snapshot bytes.
+- Bound enrollment downloads while streaming and cancel unfinished oversized responses. Reject repeated model-manifest destinations, including case collisions, before download jobs begin.
+- Wait for the cache write consumer to terminate during awaited shutdown, so teardown does not return while its last payload is still retained. Normal drain barriers keep the consumer reusable.
 - Package the signed provider CLI as the main executable of `DarkbloomProvider.app` inside the GUI bundle, with its own matching provisioning profile and real runtime resources. Keep the outer app identity and single provider version, and preserve the exact outer CLI alias for shell compatibility.
 - Validate the nested layout across installer, updater, coordinator, and managed GUI/service paths; retain legacy regular layouts and verify signed payload parity. Local helper launch and Gemma/Paged kernel probes pass; final signed-release, persistent Secure Enclave/APNs, and MDM qualification remain separate gates ([signing report](docs/reports/2026-09-05-macos-app-signing-qualification.md)).
 - Open a native Studio before network setup, with four main areas: Studio, Library, Network, and This Mac. Start and select local models in the conversation surface; keep network controls and enrollment in their own area. Browsing does not mark setup complete or start serving.

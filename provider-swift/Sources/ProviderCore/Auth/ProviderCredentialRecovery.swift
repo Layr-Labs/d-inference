@@ -28,7 +28,8 @@ struct ProviderCredentialRecovery: Sendable {
 
             let issuer = try canonicalCoordinatorIssuer(coordinatorURL)
             // Missing account metadata must not erase a known issuer binding.
-            if let recordedIssuer = files[1].value, recordedIssuer != issuer {
+            if let recordedIssuer = files[1].value,
+               !providerCredentialIssuerMatches(recordedIssuer, expected: issuer) {
                 throw ProviderCredentialStoreError.issuerMismatch(
                     expected: issuer,
                     actual: recordedIssuer

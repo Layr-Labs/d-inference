@@ -273,6 +273,9 @@ public func coordinatorHTTPBase(_ wsURL: String) -> String {
 ///   - recoverIncompleteCredential: Opt in only for an explicit login action.
 ///     Fresh authorization may replace an unchanged incomplete credential; the
 ///     old token is never used to authenticate or infer its missing binding.
+///   - acceptExistingCredential: Machine-readable login may reuse a complete
+///     credential only after its binding to the requested issuer is validated.
+///     The normal success path then emits `.linked`; error prose is never proof.
 /// - Returns: The auth token string on success.
 /// - Throws: `DeviceAuthError` on failure.
 @discardableResult
@@ -282,7 +285,8 @@ public func performDeviceCodeLogin(
     onPollTick: (@Sendable () -> Void)? = nil,
     openBrowser: Bool = true,
     onEvent: (@Sendable (DeviceLoginEvent) -> Void)? = nil,
-    recoverIncompleteCredential: Bool = false
+    recoverIncompleteCredential: Bool = false,
+    acceptExistingCredential: Bool = false
 ) async throws -> String {
     do {
         try Task.checkCancellation()
@@ -292,7 +296,8 @@ public func performDeviceCodeLogin(
             onPollTick: onPollTick,
             openBrowser: openBrowser,
             onEvent: onEvent,
-            recoverIncompleteCredential: recoverIncompleteCredential
+            recoverIncompleteCredential: recoverIncompleteCredential,
+            acceptExistingCredential: acceptExistingCredential
         )
         onEvent?(.linked)
         return token
@@ -311,7 +316,8 @@ private func runDeviceCodeLogin(
     onPollTick: (@Sendable () -> Void)?,
     openBrowser: Bool,
     onEvent: (@Sendable (DeviceLoginEvent) -> Void)?,
-    recoverIncompleteCredential: Bool
+    recoverIncompleteCredential: Bool,
+    acceptExistingCredential: Bool
 ) async throws -> String {
     let existingCredential: ProviderCredential?
     let recovery: ProviderCredentialRecovery?
@@ -327,6 +333,7 @@ private func runDeviceCodeLogin(
         throw DeviceAuthError.invalidResponse(error.localizedDescription)
     }
     if let existingCredential {
+        if acceptExistingCredential { return existingCredential.token }
         let prefix = String(
             existingCredential.token.prefix(
                 min(20, existingCredential.token.count)

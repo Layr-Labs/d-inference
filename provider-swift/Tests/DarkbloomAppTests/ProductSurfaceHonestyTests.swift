@@ -75,19 +75,13 @@ struct ProductSurfaceHonestyTests {
         )
     }
 
-    @Test("Unwired live actions are hidden or demoted to guidance")
+    @Test("Remaining unwired live actions stay hidden")
     func liveActionsDoNotPromiseMutations() {
         #expect(!ModelLibraryPresentation.allowsTransientSelection(isLive: true))
         #expect(ModelLibraryPresentation.allowsTransientSelection(isLive: false))
         #expect(!ContributionsPresentation.allowsPayoutActions(isLive: true))
         #expect(ContributionsPresentation.allowsPayoutActions(isLive: false))
-        #expect(
-            DiagnosticFixAction.restartProvider.buttonTitle(isLive: true)
-                == "View Guidance"
-        )
-        #expect(
-            DiagnosticFixAction.restartProvider.buttonTitle(isLive: false)
-                == "Restart"
-        )
+        // Diagnostic callbacks and their live/preview labels are covered by
+        // DiagnosticActionDispatchTests and DiagnosticActionGuardTests.
     }
 }

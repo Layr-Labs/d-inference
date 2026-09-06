@@ -1,6 +1,6 @@
 # MDM enrollment
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-06 · commit `14f809d65`
 
 How a provider Mac joins Darkbloom's MDM so the coordinator can ask Apple's
 management subsystem, rather than the provider binary, whether SIP and Secure
@@ -84,8 +84,16 @@ re-rendered).
    `enrolledDarkbloom` → print "Already enrolled" and stop;
    `enrolledOtherMDM` → `EnrollmentError.managedByOtherMDM`; `notEnrolled` or
    `checkFailed` → continue (a redundant download is idempotent).
-2. `POST <https base>/v1/enroll` with `Content-Type: application/json`; a
-   non-2xx → `coordinatorReturnedHTTP`.
+2. `POST <https base>/v1/enroll` with `Content-Type: application/json` and a
+   30-second request timeout. `EnrollmentProfileTransport.fetchProfile`
+   (`provider-swift/Sources/ProviderCore/Auth/EnrollmentProfileTransport.swift`)
+   rejects a declared length above 1 MiB and enforces the same inclusive limit
+   on streamed body bytes before appending. Overflow and caller cancellation
+   cancel the download. `EnrollmentProfileResponse.validate`
+   (`provider-swift/Sources/ProviderCore/Auth/EnrollmentProfileResponse.swift`)
+   requires a successful HTTP status, the enrollment-profile content type, and
+   a nonempty body before any file is saved or opened. A bounded non-2xx response
+   produces `coordinatorReturnedHTTP`.
 3. Save to a temp `Darkbloom-Enroll-<uuid>.mobileconfig`; unless `--no-open`,
    `open` the file (registers it with System Settings) and then `open
    x-apple.systempreferences:com.apple.Profiles-Settings.extension`.

@@ -77,6 +77,13 @@ final class AppFlowStore {
 
     func startOnboarding() {
         rememberOnboardingReturnPhase()
+        if hasCompletedNetworkOnboarding {
+            // A prior completion describes the walkthrough, not the Mac's
+            // current enrollment. Reopen at a recoverable step and let doctor
+            // reconcile account, profile, model, and runtime evidence.
+            onboardingFlow.recoverRejectedCompletion()
+            onboardingFlow.requireResumeReconciliation()
+        }
         if persistenceEnabled, !hasCompletedNetworkOnboarding {
             persist(draft: onboardingFlow.draft)
         }

@@ -1,6 +1,6 @@
 # Notarized macOS Studio candidate — 2026-09-06
 
-> Last updated: 2026-09-06 · commit `441e533ed`
+> Last updated: 2026-09-06 · commit `201eff027`
 
 The Studio candidate passed Apple notarization, the complete signed-artifact
 qualifier on an approved Mac, and one authenticated model request through its
@@ -97,8 +97,10 @@ Local evidence under the app-refresh artifact root includes
 `validation/notarized-local-policy`, and the policy/stream regression logs.
 The Actions manifest records the source, run, notary ID, and exact hashes.
 
-Main and integration CI passed at build source `9dc6be50f`. The required
-security review remains blocked by an invalid Anthropic repository credential.
+Main and integration CI passed at build source `9dc6be50f`. The automated
+security review is unavailable because its Anthropic repository credential is
+invalid. The effective master rules require an approving review, including
+approval of the last push; they do not list that job as a required status check.
 The known informational exact-cache failure and released-provider artifact-only
 coverage on SIP-disabled CI are retained as explicit limitations.
 

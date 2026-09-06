@@ -200,8 +200,8 @@ struct OnboardingLiveLinkTests {
         #expect(!deadFlow.showsAccountLinkCode)
     }
 
-    @Test("An already-linked machine maps the error message onto .linked")
-    func liveLinkAlreadyLoggedIn() async {
+    @Test("Legacy already-logged-in error prose cannot advance account setup")
+    func liveLinkAlreadyLoggedInErrorIsNotConfirmation() async {
         let runner = ScriptedRunner(scripts: [
             .init(events: [
                 .error(message: "Already logged in (token: existing-token-1234...). Run 'darkbloom logout' first to unlink."),
@@ -209,10 +209,23 @@ struct OnboardingLiveLinkTests {
         ])
         let flow = makeFlow(runner: runner)
         flow.startAccountLink()
+        let blocked = await eventually { flow.accountPhase == .unreachable }
+        #expect(blocked)
+        #expect(!flow.canContinue)
+        #expect(flow.accountLinkFailureDetail?.hasPrefix("Already logged in") == true)
+        #expect(!flow.showsAccountLinkCode)
+    }
+
+    @Test("A typed linked event confirms an existing login without a browser code")
+    func liveLinkExistingCredentialUsesTypedConfirmation() async {
+        let runner = ScriptedRunner(scripts: [.init(events: [.linked])])
+        let flow = makeFlow(runner: runner)
+        flow.startAccountLink()
         let linked = await eventually { flow.accountPhase == .linked }
         #expect(linked)
         #expect(flow.canContinue)
         #expect(flow.accountLinkFailureDetail == nil)
+        #expect(!flow.showsAccountLinkCode)
     }
 
     @Test("Navigating away cancels the attempt and ignores late events")

@@ -55,6 +55,60 @@ final class ModelManifestContractTests: XCTestCase {
         }
     }
 
+    func testRejectsExactDuplicatePaths() {
+        let manifest = makeManifest(paths: [
+            "weights/model.safetensors",
+            "config.json",
+            "weights/model.safetensors",
+        ])
+        XCTAssertThrowsError(try ModelManifestContract.validate(manifest)) { error in
+            guard case ModelManifestContract.ValidationError.duplicateFilePath(let path) = error else {
+                return XCTFail("expected duplicateFilePath, got \(error)")
+            }
+            XCTAssertEqual(path, "weights/model.safetensors")
+        }
+    }
+
+    func testRejectsCaseInsensitiveDuplicatePaths() {
+        for duplicatePath in [
+            "weights/MODEL.safetensors",
+            "WEIGHTS/model.safetensors",
+            "WEIGHTS/MODEL.SAFETENSORS",
+        ] {
+            let manifest = makeManifest(paths: ["weights/model.safetensors", duplicatePath])
+            XCTAssertThrowsError(try ModelManifestContract.validate(manifest), duplicatePath) { error in
+                guard case ModelManifestContract.ValidationError.duplicateFilePath(let path) = error else {
+                    return XCTFail("expected duplicateFilePath for \(duplicatePath), got \(error)")
+                }
+                XCTAssertEqual(path, duplicatePath)
+            }
+        }
+    }
+
+    func testAcceptsDistinctPaths() throws {
+        let manifest = makeManifest(paths: [
+            "Config.json",
+            "weights/model.safetensors",
+            "weights/model-00001.safetensors",
+            "vision/MODEL.safetensors",
+        ])
+        XCTAssertNoThrow(try ModelManifestContract.validate(manifest))
+        XCTAssertEqual(try ModelManifestContract.checkedTotalSize(manifest.files), 20)
+    }
+
+    private func makeManifest(paths: [String]) -> ModelManifest {
+        makeManifest(
+            totalSizeBytes: Int64(paths.count) * 5,
+            fileCount: paths.count,
+            files: paths.map { path in
+                ManifestFile(
+                    path: path,
+                    sizeBytes: 5,
+                    sha256: String(repeating: "b", count: 64),
+                    role: "weight")
+            })
+    }
+
     private func makeManifest(
         totalSizeBytes: Int64 = 5,
         fileCount: Int = 1,

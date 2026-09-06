@@ -85,6 +85,7 @@ enum OnboardingOperationTestError: Error {
 
 struct OnboardingOperationTestDiagnostics: DiagnosticsCLIRunning {
     var fails = false
+    var enrolled = true
 
     func runDoctorJSON() async throws -> DoctorJSONReport {
         if fails { throw OnboardingOperationTestError.diagnosticsUnavailable }
@@ -96,7 +97,10 @@ struct OnboardingOperationTestDiagnostics: DiagnosticsCLIRunning {
             schema: 1,
             version: "test",
             checks: ids.map {
-                .init(id: $0, section: "test", title: $0, status: "pass", detail: "Verified test prerequisite", advice: nil)
+                .init(id: $0, section: "test", title: $0,
+                      status: $0 == "mdm-enrollment" && !enrolled ? "fail" : "pass",
+                      detail: $0 == "mdm-enrollment" && !enrolled ? "not enrolled" : "Verified test prerequisite",
+                      advice: nil)
             },
             fixes: nil,
             verdict: .init(status: "pass", failures: 0, warnings: 0)

@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-06 · commit `b7e95f890`
+> Last updated: 2026-09-06 · commit `a34ef5944`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -173,3 +173,4 @@ Machine-generated; kept as evidence for the reports above.
 
 - [GPT-OSS 20B optimization results](2026-09-05-gptoss20b-optimization-results.md) — local prefill/decode changes, paired comparisons, correctness evidence and rejected experiments.
 - [2026-09-06-gemma-contiguous-logit30-traces.md](2026-09-06-gemma-contiguous-logit30-traces.md) — Corrected-control Gemma index-30 logit evidence, preserved correctness failure and M5 retirement.
+- [Gemma position-30 raw evidence capsule](2026-09-06-gemma-contiguous-logit30-traces/README.md) — All 137 manifested payloads and CPU reproduction of the original analysis.

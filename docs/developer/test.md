@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-06 · commit `9c107e7b2`
+> Last updated: 2026-09-06 · commit `dcf764a0d`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -82,13 +82,25 @@ production prompt vectors against it with
 
 ### 4. Provider (Swift) — unit tests with a source-matched metallib
 
+`scripts/run-provider-tests.sh` passes `--no-parallel` explicitly for the general
+suite because unrelated Swift Testing cases share process-wide MLX state and
+executor capacity. Concurrency tests retain their own tasks and interleavings.
+The real process-environment projection case (`defaultApplyProjectsSettings`)
+and bounded SSD stage-deadline case (`stageDelta`) run in separate processes
+through `scripts/run-nested-suite.sh`, including its nonempty/no-skips guards.
+A failure in the general suite does not silence either isolated gate. No test
+assertion, timeout or inference-concurrency setting changes.
+
 ```bash
 make provider-test
 # = cd provider-swift && swift build --build-tests
 #   ./scripts/fetch-metallib.sh <bin-path>            (build mlx.metallib from libs/mlx-swift source)
 #   cp mlx.metallib into every <bin-path>/*PackageTests.xctest/Contents/MacOS/
-#   cd provider-swift && swift test --skip-build
+#   cd provider-swift && ../scripts/run-provider-tests.sh
 ```
+
+Run `python3 scripts/test-run-provider-tests.py` to check this shell routing with
+a fake Swift command. These CPU tests do not build or run Swift, MLX or a model.
 
 The metallib staging is not optional: MLX loads `mlx.metallib` from beside the
 running executable, and for tests the executable is the `.xctest` runner.

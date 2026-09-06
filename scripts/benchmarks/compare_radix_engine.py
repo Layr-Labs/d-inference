@@ -41,6 +41,7 @@ def compare(baseline, candidate, expect_hits=False, axis="cache"):
             errors.append({"report": name, "duplicate_request_ids": True})
     if errors and any(report.get("schema", 1) >= 2 for report in (baseline, candidate)):
         return {"passed": False, "errors": errors, "rows": [], "generated_token_ids_compared": False,
+                "actual_model_batch_width_verified": False,
                 "comparison_axis": axis}
     left = {row["id"]: row for row in baseline["rows"]}
     right = {row["id"]: row for row in candidate["rows"]}
@@ -194,6 +195,7 @@ def compare(baseline, candidate, expect_hits=False, axis="cache"):
 
     return {"passed": not errors, "errors": errors, "rows": rows, "comparison_axis": axis,
             "generated_token_ids_compared": True,
+            "actual_model_batch_width_verified": all(report.get("schema", 1) >= 3 for report in (baseline, candidate)),
             "cancellation_cache_policy": "completed priming donor remains reusable" if primed_cancel else (
                 "finalized paged blocks may be reused" if paged_publication else "cancelled hybrid donor must not publish"),
             "baseline_decode_tps": decode(baseline), "candidate_decode_tps": decode(candidate)}

@@ -1,6 +1,7 @@
-"""Integrity checks for the existing direct benchmark's schema-2 evidence."""
+"""Integrity checks for direct benchmark schema-2/3 evidence."""
 
 import math
+from radix_forward_shapes import report_forward_shape_errors
 
 
 def digest(value):
@@ -173,6 +174,7 @@ def report_errors(report):
         errors.append({"incomplete_run": report.get("status"), "error": report.get("error")})
         return errors
     errors.extend({reason: True} for reason in production_grant_errors(report))
+    errors.extend({reason: True} for reason in report_forward_shape_errors(report))
     errors.extend({reason: True} for reason in cancellation_errors(report))
     rows = report.get("rows", [])
     if not rows or any(row.get("outcome") != "completed" for row in rows):

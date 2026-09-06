@@ -94,8 +94,13 @@ enum RadixBenchmark {
                  "kind": row.case.kind, "outcome": "not_run"]
             }
         }
+        #if RADIX_CANDIDATE
+        let reportSchema = 3
+        #else
+        let reportSchema = 2
+        #endif
         var result: [String: Any] = [
-            "schema": 2, "status": "loading", "model": modelID,
+            "schema": reportSchema, "status": "loading", "model": modelID,
             "model_directory": directory.path,
             "input_sha256": inputSHA256,
             "cache_requested": cacheEnabled, "cache_mode_requested": options.cacheMode,
@@ -120,6 +125,10 @@ enum RadixBenchmark {
             "unavailable_metrics": ["historical_capture_count", "historical_capture_retirement_ms",
                                     "historical_capture_successor_pause_ms"],
         ]
+        #if RADIX_CANDIDATE
+        result["forward_shape_telemetry_schema"] = 1
+        result["forward_shape_scope_definition"] = "Actual target trunk and compiled-component calls; submitted means dispatch entered, completed means the existing step readback completed. Neither is a kernel-launch count. Cohort deltas exclude warmup and control requests."
+        #endif
         if let keys = options.persistentTestKeys {
             result["persistent_test_key_namespace"] = keys.observedProvenance(keyMode: nil)
         }
@@ -167,6 +176,7 @@ enum RadixBenchmark {
             result["warmup"] = warmup
             try write(result, to: options.outputURL)
             try requireCompleted(warmup)
+            result["forward_shape_scope"] = try BenchmarkForwardShapes.begin(loaded.engine) as Any? ?? NSNull()
             for (index, input) in loaded.inputs.enumerated() {
                 if index == 0 {
                     try BenchmarkLogitDiagnostic.install(options.logitDiagnostic, loaded: loaded)
@@ -200,7 +210,8 @@ enum RadixBenchmark {
                 } else {
                     requestID += 1
                     do {
-                        rows[index] = try await generate(loaded, input: input, id: requestID, enabled: cacheEnabled)
+                        rows[index] = try await generate(loaded, input: input, id: requestID, enabled: cacheEnabled,
+                            observeForwardShapes: true)
                     } catch {
                         rows[index] = ["id": input.name, "kind": input.kind, "outcome": "failed",
                                        "error": String(describing: error), "prompt_token_ids": input.tokens]

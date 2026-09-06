@@ -22,8 +22,10 @@ extension RadixBenchmark {
 
     static func generate(
         _ loaded: Loaded, input: Input, id: UInt64, enabled: Bool,
-        scope: String = "tenant-A", cancelAfter: Int? = nil, observeIdle: Bool = true
+        scope: String = "tenant-A", cancelAfter: Int? = nil, observeIdle: Bool = true,
+        observeForwardShapes: Bool = false
     ) async throws -> [String: Any] {
+        let shapeBefore = observeForwardShapes ? BenchmarkForwardShapes.boundary(loaded.engine) : nil
         let metricsBefore = await BenchmarkMetrics.snapshot(loaded)
         let start = DispatchTime.now().uptimeNanoseconds
         let requestID = CBv2RequestID(id)
@@ -114,6 +116,9 @@ extension RadixBenchmark {
         if let failure = BenchmarkIdleObservation.failure(metricsAfter) {
             row["outcome"] = "failed"
             row["error"] = failure
+        }
+        if observeForwardShapes {
+            row["forward_shapes"] = BenchmarkForwardShapes.finish(shapeBefore, engine: loaded.engine) as Any? ?? NSNull()
         }
         return row
     }

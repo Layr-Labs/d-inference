@@ -22,6 +22,7 @@ enum BenchmarkBatches {
     static func run(
         _ loaded: Loaded, input: Input, firstID: UInt64, count: Int, enabled: Bool
     ) async -> Result {
+        let shapeBefore = BenchmarkForwardShapes.boundary(loaded.engine)
         let started = DispatchTime.now().uptimeNanoseconds
         let sampler = Task { await sample(loaded, started: started) }
         let collected = await withTaskGroup(of: Row.self, returning: [Row].self) { group in
@@ -78,6 +79,7 @@ enum BenchmarkBatches {
             "peak_mlx_active_bytes": samples.peakMLXActive,
             "peak_mlx_cache_bytes": samples.peakMLXCache,
             "metrics_after_batch": metricsAfter,
+            "forward_shapes": BenchmarkForwardShapes.finish(shapeBefore, engine: loaded.engine) as Any? ?? NSNull(),
             "idle_observation_error": BenchmarkIdleObservation.failure(metricsAfter) as Any? ?? NSNull(),
         ], completed: completed)
     }

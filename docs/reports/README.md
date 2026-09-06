@@ -11,6 +11,8 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Qwen3.6 B2 repeatability diagnosis](2026-09-06-qwen36-concurrency-diagnosis.md) — failed strict repeat comparison, observed prefill geometry and preserved evidence.
+- [Five-model short quality probe](2026-09-06-five-model-quality-probe.md) — all native integrity checks pass; 58 capped responses and seven substantive code failures require separate budget and backend controls.
 - [Qwen3.5 native B1 validation](2026-09-06-qwen35-b1-validation.md) — exact 79-token backend and paged SSD outputs, four actual 4,096-token hits, and complete native integrity/retirement checks.
 - [Three Qwen default HTTP checks](2026-09-06-qwen-default-http.md) — all six requests select paged/MTP/SSD defaults and repeat 4,096-token restores; 64-token reasoning-only cap remains explicit.
 - [Gemma QAT retained B2/B4 continuation](2026-09-06-qat-concurrency-validation.md) — both backends pass actual widths, isolation and cleanup; single-request semantic caveat remains explicit.

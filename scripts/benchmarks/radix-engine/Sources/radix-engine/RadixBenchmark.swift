@@ -128,6 +128,13 @@ enum RadixBenchmark {
         #if RADIX_CANDIDATE
         result["forward_shape_telemetry_schema"] = 1
         result["forward_shape_scope_definition"] = "Actual target trunk and compiled-component calls; submitted means dispatch entered, completed means the existing step readback completed. Neither is a kernel-launch count. Cohort deltas exclude warmup and control requests."
+        result["forward_shape_counter_semantics"] = [
+            "submitted_calls": "Actual dispatch entry, including lazy graph construction; not GPU submission or execution proof.",
+            "completed_calls": "The owning step reached its existing readback and MTP finalization boundary; discarded or rejected speculative tokens still count as completed computation.",
+            "live_batch_rows": "Input row axis observed at the target trunk after adapter splitting.",
+            "sequence_width": "Separate input sequence axis, including speculative lookahead columns.",
+            "physical_component_rows": "Compiled component leading rows, including flattening or padding; never request batch width.",
+        ]
         #endif
         if let keys = options.persistentTestKeys {
             result["persistent_test_key_namespace"] = keys.observedProvenance(keyMode: nil)

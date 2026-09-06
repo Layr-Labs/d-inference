@@ -172,10 +172,9 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 	// coordinator deploys, instead of waiting out provider update lag. The
 	// repair runs on the decoded map (one parse per request); the caller's
 	// original tools are kept for constraint validation.
-	originalTools, dirty := normalizeParsedToolSchemas(parsed, rawBody)
+	originalTools, _ := normalizeParsedToolSchemas(parsed, rawBody)
 	if stop, ok := parsed["stop"].(string); ok {
 		parsed["stop"] = []any{stop}
-		dirty = true
 	}
 
 	model, _ := parsed["model"].(string)
@@ -195,10 +194,9 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 	// Own the template date before any model fallback or endpoint lowering.
 	// Always overwrite the reserved field; originalRawBody remains untouched.
 	promptcontract.SetRequestDate(parsed, receivedAt)
-	dirty = true
 
 	return inferencePrelude{
-		body:            forwardBody{parsed: parsed, bytes: rawBody, dirty: dirty},
+		body:            forwardBody{parsed: parsed, bytes: rawBody, dirty: true},
 		originalRawBody: rawBody,
 		parsed:          parsed,
 		model:           model,

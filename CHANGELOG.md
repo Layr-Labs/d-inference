@@ -24,6 +24,10 @@
 
 ## Unreleased — paged attention foundation
 
+- Accumulate affine quantized matrix-vector bias inputs in the wider accumulator type. Regenerate the embedded shader source alongside the Metal library; GPU regressions cover low-precision input cancellation across quantization widths and dispatch shapes.
+
+- Add manual signing/notarization validation without deployment environments or release publication, and exclude the 0.9.0 validation branch from console UI Git deployments. Keep signing/runtime/model approval gates separate.
+
 - Bind GPT-OSS and Gemma optimization settings to SSD checkpoint identities, so changing an optimization or rollback control cannot reuse a checkpoint from the previous numerical configuration.
 
 - Add bounded exact-token ordinary scoring through `darkbloom benchmark --teacher-forced-input`, with explicit model/backend identity, repeated numerical observations and instrumentation controls. These observations do not certify model quality or speculative verification.

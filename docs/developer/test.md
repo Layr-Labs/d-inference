@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-06 · commit `758ab0b0f`
+> Last updated: 2026-09-06 · commit `8e284e3f5`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -76,6 +76,15 @@ production prompt vectors against it with
 
 ### 4. Provider (Swift) — unit tests with a source-matched metallib
 
+CI also applies the [restored-resource cleanup](build.md#restored-swiftpm-runtime-resources)
+before building the debug test product.
+
+`scripts/run-provider-tests.sh` runs exact allocator integration, the controlled
+ledger interleaving, and the real process-environment projection test in separate
+processes. The general suite excludes those cases; each isolated invocation
+uses the existing nonempty/no-skips guard. A general-suite failure does not
+silence the isolated gates, and isolation does not relax their assertions.
+
 ```bash
 make provider-test
 # = cd provider-swift && swift build --build-tests
@@ -150,6 +159,23 @@ instrumentation controls passed, not that model quality or speculative
 verification passed. The controls compare ordinary forwards only
 (`provider-swift/Sources/ProviderBenchmark/TeacherForcedBenchmark.swift`,
 `controlReasons`).
+
+#### Quantized bias accumulation regression
+
+`QuantizedBiasAccumulatorTests` covers 216 exact affine-bias cases across
+BF16, FP16 and FP32 inputs, quantization widths 2/3/4/5/6/8, aligned and tail
+dimensions, and one/two input rows. Zero packed weights and unit bias isolate
+input accumulation from weight quantization. Run it after the
+[embedded shader rebuild](build.md#swift-provider-macos):
+
+```bash
+cd provider-swift
+../scripts/run-nested-suite.sh QuantizedBiasAccumulatorTests
+```
+
+The provider test target links the canonical test from `libs/mlx-swift`.
+Passing these operator cases does not replace full-model trajectory, cache,
+batching or performance validation.
 
 <a id="resident-prefix-benchmark-validation"></a>
 
@@ -893,6 +919,7 @@ token IDs are accepted.
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 120 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) → current coordinator vs released v0.7.12 provider (`scripts/fetch-v0712-provider.sh`, `DARKBLOOM_MIXED_VERSION_EXPECT=artifact`, fails unless `MIXED_VERSION_TIER_ARTIFACT_OK` appears) → released v0.7.12 coordinator (`git worktree add … v0.7.12`) vs candidate provider (`NonStreamingInference`, `StreamingInference`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |
+| [`.github/workflows/provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml) | manual only | Build an exact signed source revision, validate Developer ID signing/provisioning/notarization in a separate job, and retain an Actions artifact; no GitHub environment, deployment, release registration or model execution |
 | [`.github/workflows/register-model.yml`](../../.github/workflows/register-model.yml) | manual | `POST /v1/admin/models/register`; see [`../operations/model-migration.md`](../operations/model-migration.md) |
 | `.github/workflows/threat-model-review.yml`, `.github/workflows/claude.yml`, `.github/workflows/codex.yml` | PR / comment | Review automation; not test gates |
 

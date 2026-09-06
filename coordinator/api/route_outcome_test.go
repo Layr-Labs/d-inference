@@ -158,7 +158,8 @@ func TestPostCommitTimeoutAndNoTerminalArePartialSuccess(t *testing.T) {
 }
 
 func TestSpeculativeLoserOutcome(t *testing.T) {
-	pr := &registry.PendingRequest{RequestID: "req-loser", UsedBackup: true}
+	pr := &registry.PendingRequest{RequestID: "req-loser"}
+	pr.UsedBackup.Store(true)
 	out := speculativeLoserOutcome(pr)
 	if out.FinalStatus != "cancelled" {
 		t.Fatalf("FinalStatus = %q, want cancelled", out.FinalStatus)
@@ -171,6 +172,51 @@ func TestSpeculativeLoserOutcome(t *testing.T) {
 	}
 	if out.BackupWon {
 		t.Fatal("speculative loser outcome must not set backup_won")
+	}
+}
+
+func TestSpeculativeOutcomeFlagsSurviveCompletionBeforeWinnerSelection(t *testing.T) {
+	for _, completionFirst := range []bool{true, false} {
+		name := "commit_before_delayed_completion"
+		if completionFirst {
+			name = "completion_before_commit"
+		}
+		t.Run(name, func(t *testing.T) {
+			st := store.NewMemory(store.Config{})
+			pr := &registry.PendingRequest{RequestID: "early-backup-completion", Attempt: 1}
+			if err := st.RecordInferenceRoute(&store.InferenceRouteRecord{
+				RequestID: pr.RequestID, Attempt: pr.Attempt, ProviderID: "backup",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			completion := completeRouteOutcome(pr, protocol.UsageInfo{
+				PromptTokens: 17, CompletionTokens: 3,
+			}, 0, false)
+			if completion.UsedBackup || completion.BackupWon {
+				t.Fatal("early completion must precede backup classification")
+			}
+			pr.UsedBackup.Store(true)
+			pr.BackupWon.Store(true)
+			commit := committedRouteOutcome(pr)
+			updates := []*store.InferenceRouteOutcome{commit, completion}
+			if completionFirst {
+				updates = []*store.InferenceRouteOutcome{completion, commit}
+			}
+			for _, update := range updates {
+				if err := st.UpdateInferenceRouteOutcome(pr.RequestID, pr.Attempt, update); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rows := st.InferenceRouteRecordsSince(time.Time{})
+			if len(rows) != 1 {
+				t.Fatalf("route count = %d, want 1", len(rows))
+			}
+			got := rows[0]
+			if got.FinalStatus != finalStatusSuccess || got.PromptTokens != 17 || got.CompletionTokens != 3 ||
+				!got.UsedBackup || !got.BackupWon {
+				t.Fatalf("completion and winner classification did not merge: %+v", got)
+			}
+		})
 	}
 }
 

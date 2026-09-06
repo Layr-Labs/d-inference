@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-06 · commit `25f0775cc`
+> Last updated: 2026-09-06 · commit `f272f8641`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -8,6 +8,51 @@ environment, and let [`.github/workflows/release-swift.yml`](../../.github/workf
 build, sign, notarize, hash, upload, and register the bundle. The coordinator
 verifies every registered artifact by re-downloading it, so a release either
 lands fully or not at all.
+
+## Environment-free signing validation
+
+[`provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml)
+is a separate manual workflow for a reviewed full `source_sha` and its existing
+`version`. It has no GitHub `environment` field or environment selector and no
+coordinator registration, R2 upload, GitHub Release, tag or deployment step.
+Its token has only `contents: read` and `actions: read`.
+
+The build job has no signing secrets. It checks the source's verified commit
+signature and version parity, builds the exact provider and metallib, then stages
+an unsigned app with the existing SwiftPM resource helper. A new runner downloads
+that same run's artifact, verifies its inventory/source/version, rejects unsafe
+archive paths and links, and checks the candidate entitlements against the
+reviewed workflow tooling (`scripts/provider-signing-validation.py`).
+
+Unpacking limits the compressed archive and total declared member bytes to
+2 GiB, each member to 512 MiB, and the archive to 16,384 members. Normalized
+duplicate paths, including case aliases, are refused. The app's bundle ID,
+executable name and both version fields must match the expected source before
+signing and when the final receipt is written.
+
+The signing job uses repository-scoped `APPLE_CERTIFICATE_P12`,
+`APPLE_CERTIFICATE_PASSWORD`, `PROVISIONING_PROFILE_BASE64`, `APPLE_ID` and
+`APPLE_APP_PASSWORD`. It imports an isolated temporary keychain, validates the
+profile's team/access group/push entitlement/expiry, signs the normal app
+components, then checks the signed CLI's keychain group, APNs entitlement and
+disabled debug-task entitlement. It checks Apple notarization and a stapled
+ticket, and emits post-sign
+file hashes. Keychain material is removed even on failure. Only explicit Actions
+artifacts and non-secret notarization diagnostics are retained for three days.
+
+The normal APNs entitlement retains its required `production` value; this is a
+static signing entitlement, not a GitHub environment or a provider registration.
+The workflow never executes the candidate CLI, helper, model or inference server.
+Signed runtime smoke, installation, model correctness and release approval remain
+separate gates. The original release workflow's `validation_only` option still
+selects a deployment environment and is not this isolated path.
+
+Review and make the new manual workflow available before authorizing a dispatch.
+Source preparation and the CPU helper tests do not claim a completed signing run:
+
+```bash
+python3 scripts/test-provider-signing-validation.py
+```
 
 ## When to use
 

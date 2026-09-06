@@ -171,8 +171,8 @@ type PendingRequest struct {
 	ResponseMetadata json.RawMessage
 	// Speculative backup telemetry. UsedBackup means a backup race was launched
 	// for this logical request; BackupWon is true only on the serving backup.
-	UsedBackup bool
-	BackupWon  bool
+	UsedBackup atomic.Bool
+	BackupWon  atomic.Bool
 
 	// ReservedMicroUSD is the balance atomically debited at pre-flight.
 	// The post-inference charge adjusts for the difference between the

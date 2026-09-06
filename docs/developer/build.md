@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-06 · commit `32b28b0a7`
+> Last updated: 2026-09-06 · commit `8e284e3f5`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -124,6 +124,17 @@ builds them with cmake from `libs/mlx-swift/Source/Cmlx/mlx` (the exact source
 the host side links) and copies the result next to the binary. Despite its
 name it builds, it does not download.
 
+MLX also embeds shader source in Cmlx for runtime compilation. After changing
+an MLX kernel header, regenerate the affected embedded sources with
+`libs/mlx-swift/Tools/update-mlx.sh` from a clean, isolated `libs/mlx-swift`
+checkout and review its generated diff. For `quantized.h`, keep both
+`Source/Cmlx/mlx-generated/quantized.cpp` and
+`Source/Cmlx/mlx-generated/metal/quantized.h` synchronized with the core header.
+Rebuild Cmlx and relink the provider as well as rebuilding `mlx.metallib`;
+replacing the Metal library alone leaves the embedded QMV implementation intact.
+Run the [bias-accumulation regression](test.md#quantized-bias-accumulation-regression)
+against the resulting runtime.
+
 ```bash
 ./scripts/fetch-metallib.sh            # next to the latest debug build
 ./scripts/fetch-metallib.sh release    # next to the release build
@@ -136,6 +147,19 @@ includes the MLX tree SHA, toolchain hash and deployment target) and
 compiled at SDK/deployment target ≥ 26.2). The script fails if required kernel
 symbols (`_nax`, `gemv`, the `affine_qmv_wide_*` variants) are missing from the
 produced library.
+
+#### Restored SwiftPM runtime resources
+
+The Provider Tests job removes restored metallibs and release-configuration
+resource bundles before building its debug test product
+(`.github/workflows/ci.yml`). The shared cache warmer builds release provider
+products, so retaining those bundles alongside a fresh debug bundle makes
+runtime resource discovery ambiguous. Release-bundle removal is limited to
+platform/configuration output directories; compiled objects and debug bundles
+remain cached. Ambiguous runtime resources remain an error.
+
+The separate [signing-validation workflow](../operations/provider-release.md#environment-free-signing-validation)
+checks packaging and Apple signing without selecting a deployment environment.
 
 Release configuration, as the release workflow builds it:
 

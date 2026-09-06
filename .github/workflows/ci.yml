@@ -132,10 +132,13 @@ jobs:
           key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
             spm-v3-${{ runner.os }}-
-      - name: Discard metallibs restored by the generic SwiftPM cache
+      - name: Discard cached metallibs and release resource bundles
         run: |
           for root in provider-swift/.build libs/mlx-swift-lm/.build; do
-            [ ! -d "$root" ] || find "$root" -type f -name mlx.metallib -delete
+            [ -d "$root" ] || continue
+            find "$root" -type f -name mlx.metallib -delete
+            find "$root" -mindepth 3 -maxdepth 3 -type d \
+              -path "$root/*-apple-macosx/release/*.bundle" -prune -exec rm -rf {} +
           done
       - name: Install pinned Rust toolchain for production prompt parity
         run: |

@@ -702,6 +702,7 @@ private func makeStandaloneFakeHFSnapshot(modelId: String) throws -> URL {
 
     let estimatedMemoryGb = 0.25
     let expectedBytes = UInt64(estimatedMemoryGb * 1_073_741_824)
+        + UnifiedMemoryCap.minimumLoadKVBytes
     let server = standaloneTestServer(models: [
         ModelInfo(
             id: modelId,

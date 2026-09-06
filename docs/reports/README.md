@@ -172,3 +172,4 @@ Machine-generated; kept as evidence for the reports above.
 - Plans and decisions, each with a status: [`../design/README.md`](../design/README.md).
 
 - [GPT-OSS 20B optimization results](2026-09-05-gptoss20b-optimization-results.md) — local prefill/decode changes, paired comparisons, correctness evidence and rejected experiments.
+- [2026-09-06-gemma-contiguous-logit30-traces.md](2026-09-06-gemma-contiguous-logit30-traces.md) — Corrected-control Gemma index-30 logit evidence, preserved correctness failure and M5 retirement.

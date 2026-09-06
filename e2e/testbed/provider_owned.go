@@ -159,7 +159,11 @@ func startOwnedProvider(ctx context.Context, target ProviderTarget, spec Provide
 			}
 			o.mu.Lock()
 			if event.FixturePID > 0 {
-				o.fixturePID = event.FixturePID
+				if o.fixturePID != 0 && event.FixturePID != o.fixturePID {
+					scanErr = fmt.Errorf("fixture process identity changed")
+				} else {
+					o.fixturePID = event.FixturePID
+				}
 			}
 			switch event.Event {
 			case "entry":
@@ -172,7 +176,7 @@ func startOwnedProvider(ctx context.Context, target ProviderTarget, spec Provide
 				o.hostID = event.HostID
 				o.entry = event.Observation
 			case "started":
-				if o.pid != 0 || o.hostID == "" || event.PID <= 0 {
+				if scanErr != nil || o.terminal != nil || o.pid != 0 || o.hostID == "" || event.PID <= 0 {
 					scanErr = fmt.Errorf("invalid helper start identity")
 				} else {
 					o.pid = event.PID
@@ -190,8 +194,13 @@ func startOwnedProvider(ctx context.Context, target ProviderTarget, spec Provide
 				} // Late responses to cancelled requests have no active authority.
 
 			case "terminal":
+				if o.terminal != nil {
+					scanErr = errors.Join(scanErr, fmt.Errorf("duplicate terminal receipt"))
+				}
 				copied := event
 				o.terminal = &copied
+				_, _, identityErr := providerStartupIdentity(o.pid, o.terminal)
+				scanErr = errors.Join(scanErr, identityErr)
 			case "cleanup":
 				copied := event.Observation
 				o.cleanup = &copied
@@ -269,9 +278,9 @@ func startOwnedProvider(ctx context.Context, target ProviderTarget, spec Provide
 			return o, errors.Join(err, o.failure())
 		}
 		if failure := o.failure(); failure != nil {
-			return o, fmt.Errorf("owned helper ended before provider start: %w", failure)
+			return o, fmt.Errorf("owned helper ended before provider start acknowledgement: %w", failure)
 		}
-		return o, fmt.Errorf("owned helper ended before provider start")
+		return o, fmt.Errorf("owned helper ended before provider start acknowledgement")
 	case <-ctx.Done():
 		return o, errors.Join(ctx.Err(), o.stop())
 	case <-time.After(5 * time.Minute):

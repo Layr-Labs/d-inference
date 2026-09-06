@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-06 · commit `d01b82078`
+> Last updated: 2026-09-06 · commit `6b955ee76`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -973,7 +973,11 @@ foreign processes still refuse immediately. Lease pings and cancellation
 cover preparation; EOF, stop, signals or deadlines prevent a later launch.
 Reports retain `host_lifecycles` for failed and unattempted targets, including
 readiness observations, helper/fixture identities, `provider_started`, and
-terminal/cleanup receipts. A started Go/helper fixture is not evidence that
+terminal/cleanup receipts. A valid terminal can prove provider startup when its
+start acknowledgement was lost; successful startup still requires the acknowledgement.
+Without an acknowledgement or valid terminal, `provider_started` is null.
+Contradictory identities remain explicit errors; an acknowledged start stays recorded.
+A started Go/helper fixture is not evidence that
 a provider started, and a refused startup remains a failed correctness run.
 
 

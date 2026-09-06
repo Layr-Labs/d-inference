@@ -128,7 +128,13 @@ func (rl *chatStreamRelay) flush() {
 		return
 	}
 	frames := rl.frames
+	size := rl.buf.Len()
+	content := generatedContentSSE(rl.buf.Bytes())
 	n, err := rl.w.Write(rl.buf.Bytes())
+	markContentWrite(rl.w, content, n, size, err)
+	if n != size {
+		rl.stamps.writeErr()
+	}
 	if rl.buf.Cap() > maxCoalescedBatchBytes {
 		rl.buf = bytes.Buffer{}
 	} else {

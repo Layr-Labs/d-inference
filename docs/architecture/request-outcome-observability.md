@@ -1,10 +1,10 @@
 # Request Outcome Observability
 
-> Last updated: 2026-09-04 · commit `6f364e64b`
+> Last updated: 2026-09-06 · commit `bbf6f83d4`
 
-Every inference request the coordinator dispatches ends in exactly one terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the taxonomy as the code implements it, where each value is decided, and what is still not modelled.
+Every provider dispatch attempt ends in one claimed terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the existing attempt taxonomy and protected counters. The unsampled incoming-request ledger, its coverage limits, and separate egress/completion evidence are defined in [incoming request accounting](request-accounting.md).
 
-Scope: `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`. All four flow through `dispatchState` (`coordinator/api/dispatch.go`, `coordinator/api/consumer.go`), so all four write route rows and profile rows.
+Scope of attempt telemetry: `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/messages`. All four flow through `dispatchState` (`coordinator/api/dispatch.go`, `coordinator/api/consumer.go`), so all four write route rows and profile rows.
 
 ## Context
 
@@ -13,7 +13,7 @@ A single success flag cannot describe a streamed inference request. The client c
 Two design rules follow from that:
 
 - Outcome strings are closed enums chosen in Go. Raw provider error text stays in logs; the route row and every metric tag carry only a value from the tables below.
-- The commit point (first content-bearing chunk written to the client) is a transition, not a terminal. Anything that happens after commit is reported as `partial_success` with an `_after_commit` class, never left as `success`.
+- The commit point (selecting a provider after a commit-worthy chunk or valid empty terminal) is a transition, not a terminal or proof of a successful client write. Anything that happens after commit is reported as `partial_success` with an `_after_commit` class, never left as `success`.
 
 ## Mechanism
 

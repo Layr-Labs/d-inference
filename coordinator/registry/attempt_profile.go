@@ -14,6 +14,8 @@ import (
 
 // AttemptProfile holds the per-dispatch-attempt slice of the profile.
 type AttemptProfile struct {
+	GeneratedContentObserved atomic.Bool
+	ProviderCompleteObserved atomic.Bool // matched complete received; independent of terminal arbitration
 	// Identity (written once by the dispatch goroutine before sharing).
 	RequestID  string // attempt UUID (joins inference_routes.request_id)
 	Attempt    int

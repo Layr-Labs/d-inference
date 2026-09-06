@@ -40,6 +40,7 @@ const profileAttemptInline = 2
 
 // RequestProfile is the request-level profile shared across attempts.
 type RequestProfile struct {
+	CompactOnly    bool // lifecycle evidence only; no heavy profiler output or timing header keys
 	T0             time.Time
 	CoordRequestID string
 	Endpoint       string // mux pattern

@@ -42,6 +42,7 @@ type Store interface {
 	APIKeyStore
 	UsageStore
 	TelemetryStore
+	RequestOutcomeStore
 	LedgerStore
 	BillingStore
 	ModelRegistryStore

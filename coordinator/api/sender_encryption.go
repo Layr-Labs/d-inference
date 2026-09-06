@@ -129,6 +129,7 @@ func (s *Server) handleEncryptionKey(w http.ResponseWriter, r *http.Request) {
 // Plaintext requests bypass the wrapper entirely.
 func (s *Server) sealedTransport(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		setOutcomeStage(r, "sealed_transport")
 		if !isSealedContentType(r.Header.Get("Content-Type")) {
 			next(w, r)
 			return
@@ -342,9 +343,12 @@ func (w *sealingResponseWriter) flushCompleteEvents() {
 		// event and let the client time out / abort.
 		sealed, err := sealBytes(event, w.clientPub, w.coordPriv)
 		if err != nil {
+			markEgressError(w.inner)
 			continue
 		}
-		fmt.Fprintf(w.inner, "data: %s\n\n", base64.StdEncoding.EncodeToString(sealed))
+		encoded := base64.StdEncoding.EncodeToString(sealed)
+		n, writeErr := fmt.Fprintf(w.inner, "data: %s\n\n", encoded)
+		markContentWrite(w.inner, generatedContentSSE(event), n, len(encoded)+8, writeErr)
 	}
 }
 
@@ -356,10 +360,16 @@ func (w *sealingResponseWriter) finish() {
 		// (rare — most servers terminate with `data: [DONE]\n\n`), seal and
 		// emit it now to avoid losing data.
 		if w.sseScratch.Len() > 0 {
+			content := generatedContentSSE(w.sseScratch.Bytes())
 			sealed, err := sealBytes(w.sseScratch.Bytes(), w.clientPub, w.coordPriv)
+			if err != nil {
+				markEgressError(w.inner)
+			}
 			w.sseScratch.Reset()
 			if err == nil {
-				fmt.Fprintf(w.inner, "data: %s\n\n", base64.StdEncoding.EncodeToString(sealed))
+				encoded := base64.StdEncoding.EncodeToString(sealed)
+				n, writeErr := fmt.Fprintf(w.inner, "data: %s\n\n", encoded)
+				markContentWrite(w.inner, content, n, len(encoded)+8, writeErr)
 				if w.flusher != nil {
 					w.flusher.Flush()
 				}
@@ -370,6 +380,7 @@ func (w *sealingResponseWriter) finish() {
 	case sealModeBuffered:
 		sealed, err := sealBytes(w.bodyBuf.Bytes(), w.clientPub, w.coordPriv)
 		if err != nil {
+			markEgressError(w.inner)
 			// Best-effort error reply; we already promised the client a sealed
 			// response so just close the connection by not writing anything.
 			w.inner.Header().Del("Content-Type")
@@ -384,7 +395,8 @@ func (w *sealingResponseWriter) finish() {
 		w.inner.Header().Set("X-Eigen-Sealed", "true")
 		w.inner.Header().Set("X-Eigen-Sealed-Kid", w.kid)
 		w.inner.WriteHeader(w.statusCode)
-		_, _ = w.inner.Write(envelope)
+		n, writeErr := w.inner.Write(envelope)
+		markContentWrite(w.inner, generatedContentJSON(w.bodyBuf.Bytes()), n, len(envelope), writeErr)
 		return
 	}
 }

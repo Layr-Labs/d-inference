@@ -146,6 +146,7 @@ type MemoryStore struct {
 	// System profiler: per-attempt request profiles (write-once per
 	// request_id/attempt, mirroring the Postgres UNIQUE + DO NOTHING) and
 	// per-tick fleet snapshots. Both are append-only and capped by Prune.
+	requestOutcomes    map[string]RequestOutcomeRecord
 	requestProfiles    []RequestProfileRecord
 	requestProfileKeys map[string]struct{} // request_id/attempt -> present
 	fleetSnapshots     []FleetSnapshotRow
@@ -1096,6 +1097,12 @@ func (s *MemoryStore) PruneTelemetry(ctx context.Context, profilesBefore, snapsh
 		return deleted, err
 	}
 	if !profilesBefore.IsZero() {
+		for id, r := range s.requestOutcomes {
+			if r.ReceivedAt.Before(profilesBefore) {
+				delete(s.requestOutcomes, id)
+				deleted++
+			}
+		}
 		kept := s.requestProfiles[:0:0]
 		for i := range s.requestProfiles {
 			if s.requestProfiles[i].CreatedAt.Before(profilesBefore) {

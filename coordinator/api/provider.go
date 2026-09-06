@@ -1862,6 +1862,9 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		ap.DecryptUSTotal.Add(time.Since(decryptStart).Microseconds())
 		ap.MarkAt(registry.StampFirstChunkIngress, receivedAt)
 	}
+	if pr.Profile != nil && !pr.Profile.GeneratedContentObserved.Load() && (generatedContentSSE([]byte(chunkData)) || generatedContentJSON([]byte(chunkData))) {
+		pr.Profile.GeneratedContentObserved.Store(true)
+	}
 	contentBearing := !isBoilerplateChunk(chunkData)
 	firstContent := pr.FinishProviderChunkIngress(receivedAt, contentBearing)
 	ingressClassified = true
@@ -2053,6 +2056,9 @@ func (s *Server) handleCompleteAt(
 	// otherwise never finalize.
 	var claimed *registry.AttemptProfile
 	if pending := provider.GetPending(msg.RequestID); pending != nil {
+		if pending.Profile != nil {
+			pending.Profile.ProviderCompleteObserved.Store(true)
+		}
 		pending.MarkCompletionIngress(receivedAt)
 		pending.Profile.MarkAt(registry.StampCompleteIngress, receivedAt)
 		// The claim is the single ownership token: only the frame that owns
@@ -2062,14 +2068,17 @@ func (s *Server) handleCompleteAt(
 		// pending request is a provider duplicate and is dropped here. Without
 		// a profile (profiler off) there is no token and the pre-existing
 		// RemovePending race decides, exactly as before.
-		terminalOwner, terminalClaimed = pending.Profile == nil || pending.Profile.ClaimTerminal(), true
+		compact := compactOnlyAttempt(pending.Profile)
+		terminalOwner, terminalClaimed = pending.Profile == nil || compact || pending.Profile.ClaimTerminal(), true
 		if !terminalOwner {
 			s.logger.Warn("duplicate complete for in-flight request", "provider_id", providerID)
 			s.ddIncr("inference.unknown_request_frames", []string{"kind:duplicate_complete"})
 			s.unknownRequestFrames.Add(1)
 			return
 		}
-		claimed = pending.Profile
+		if !compact {
+			claimed = pending.Profile
+		}
 		// Usage and the provider profile are retained BEFORE any branch below
 		// can discard this completion (the deadline-late conversion to an error,
 		// the speculative-loser return), so a losing or late racer that sent a
@@ -2077,7 +2086,9 @@ func (s *Server) handleCompleteAt(
 		// claim site below no-ops for this pending (a second retain would count
 		// a false duplicate); it still retains for a PARKED record, which has
 		// no pending entry.
-		pending.Profile.SetTerminalUsage(msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
+		if !compact {
+			pending.Profile.SetTerminalUsage(msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
+		}
 		s.retainProviderProfile(pending.Profile, msg.Profile)
 		msg.Profile = nil
 		if !pending.HasFirstContentIngress() &&
@@ -2122,10 +2133,12 @@ func (s *Server) handleCompleteAt(
 				// race can be resolved and never on the write-failure path, so
 				// the check is deterministic; the close always lands because the
 				// attempt cannot finalize before the handler half (finalizeProfile).
-				if pending.Profile.Dispatched() {
+				if !compact && pending.Profile.Dispatched() {
 					pending.Profile.SetOutcome("", "", "", "completed", "")
 				}
-				pending.Profile.CompleteTerminal()
+				if !compact {
+					pending.Profile.CompleteTerminal()
+				}
 				return
 			}
 		}
@@ -2169,9 +2182,19 @@ func (s *Server) handleCompleteAt(
 		claimed.CompleteTerminal()
 		return
 	}
+	if pr.Profile != nil {
+		pr.Profile.ProviderCompleteObserved.Store(true)
+	}
 	pr.Profile.MarkAt(registry.StampCompleteIngress, receivedAt)
+	if compactOnlyAttempt(pr.Profile) {
+		// With heavy profiling off, RemovePending/claimSettlement is the
+		// existing arbitration. Only its actual winner claims compact
+		// evidence, after removal; receipt never gates another terminal.
+		pr.Profile.ClaimTerminal()
+		terminalOwner = true
+	}
 	if !terminalClaimed { // parked record (mutex single-winner): no pending entry above
-		terminalOwner = pr.Profile == nil || pr.Profile.ClaimTerminal()
+		terminalOwner = pr.Profile == nil || compactOnlyAttempt(pr.Profile) || pr.Profile.ClaimTerminal()
 	}
 	// Terminal usage is recorded at ingress, outside the billing gate, so a
 	// completion whose reservation was already finalized (a late terminal after
@@ -2779,7 +2802,7 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	// completes a claimed terminal).
 	var claimedHere *registry.AttemptProfile
 	pending := provider.GetPending(msg.RequestID)
-	if pending != nil && pending.Profile != nil && !owned {
+	if pending != nil && pending.Profile != nil && !compactOnlyAttempt(pending.Profile) && !owned {
 		if !pending.Profile.ClaimTerminal() {
 			s.logger.Warn("duplicate error for in-flight request", "provider_id", providerID)
 			s.ddIncr("inference.unknown_request_frames", []string{"kind:duplicate_error"})
@@ -2843,6 +2866,9 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 		s.noteProviderDraining(providerID, pr.Model)
 	}
 	if ap := pr.Profile; ap != nil {
+		if compactOnlyAttempt(ap) {
+			ap.ClaimTerminal()
+		}
 		ap.Mark(registry.StampCompleteIngress)
 		// A pending entry was claimed at the peek above; a PARKED record (no
 		// pending entry) is claimed here. claimSettlement is single-winner, so

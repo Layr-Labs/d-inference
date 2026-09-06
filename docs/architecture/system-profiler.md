@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-04 · commit `4a08f2a44`
+> Last updated: 2026-09-06 · commit `bbf6f83d4`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -12,6 +12,8 @@ gets only pipeline-health counters. Wire shapes of the heartbeat sub-objects:
 [`../reference/protocol-messages.md`](../reference/protocol-messages.md); the
 outcome vocabularies the rows carry:
 [`request-outcome-observability.md`](request-outcome-observability.md).
+
+The separate [incoming-request ledger](request-accounting.md) uses compact lifecycle evidence even when heavy profiling is disabled. Its records are unsampled; this profiler's rows remain sampled and must not supply the full traffic denominator.
 
 ## Context
 

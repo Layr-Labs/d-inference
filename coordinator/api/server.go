@@ -53,6 +53,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
+	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
 	"golang.org/x/sync/singleflight"
 )
@@ -500,7 +501,8 @@ type Server struct {
 
 	// profiler owns the per-request profile records and their dedicated sink
 	// (system profiler). Nil on a Server built without NewServer.
-	profiler *profiler
+	profiler        *profiler
+	requestOutcomes *requestOutcomeSink
 	// unknownRequestFrames counts provider frames for requests the coordinator
 	// no longer tracks (zombie streams); exported on the fleet coordinator row.
 	unknownRequestFrames atomic.Int64
@@ -877,6 +879,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		s.ddHistogram("registry.gate.wait_ms", float64(wait.Microseconds())/1000, []string{"site:" + site})
 	})
 	s.profiler = newProfilerFromEnv(s)
+	s.requestOutcomes = newRequestOutcomeSink(s, defaultTelemetrySinkCapacity)
 	s.registerDefaultGauges()
 	s.routes()
 
@@ -981,6 +984,9 @@ func (s *Server) Close() {
 		s.trustAuthority = nil
 	}
 	s.trustAuthorityMu.Unlock()
+	if s.requestOutcomes != nil {
+		s.requestOutcomes.close()
+	}
 	if s.profiler != nil {
 		s.profiler.close()
 	}
@@ -2788,10 +2794,10 @@ func (s *Server) routes() {
 	// because it isn't counted in httpInflight, won't be seen by WaitForInflightZero
 	// — so a graceful shutdown could cut it off mid-flight. Add new dispatch routes
 	// here, gated, alongside the four below.
-	s.mux.HandleFunc("POST /v1/chat/completions", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions)))))
-	s.mux.HandleFunc("POST /v1/responses", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))) // Responses API — same handler, auto-detects input vs messages
-	s.mux.HandleFunc("POST /v1/completions", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions)))))
-	s.mux.HandleFunc("POST /v1/messages", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages)))))
+	s.mux.HandleFunc("POST /v1/chat/completions", s.observeRequestOutcome(s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))))
+	s.mux.HandleFunc("POST /v1/responses", s.observeRequestOutcome(s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions)))))) // Responses API — same handler, auto-detects input vs messages
+	s.mux.HandleFunc("POST /v1/completions", s.observeRequestOutcome(s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions))))))
+	s.mux.HandleFunc("POST /v1/messages", s.observeRequestOutcome(s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages))))))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
 	// Dedicated OpenRouter provider feed — pure OpenRouter schema, no Darkbloom metadata.
 	s.mux.HandleFunc("GET /v1/models/openrouter", s.requireAuth(s.handleListModelsOpenRouter))
@@ -2998,6 +3004,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/routes", s.handleAdminRoutes)
 	s.mux.HandleFunc("GET /v1/admin/routes/export", s.handleAdminRoutesExport)
 	s.mux.HandleFunc("GET /v1/admin/profiles", s.handleAdminProfiles)
+	s.mux.HandleFunc("GET /v1/admin/request-outcomes", s.handleAdminRequestOutcomes)
 	s.mux.HandleFunc("GET /v1/admin/profiles/export", s.handleAdminProfilesExport)
 	s.mux.HandleFunc("GET /v1/admin/snapshots", s.handleAdminSnapshots)
 	s.mux.HandleFunc("GET /v1/admin/snapshots/export", s.handleAdminSnapshotsExport)
@@ -3293,6 +3300,7 @@ func (s *Server) invalidateAllAPIKeyCache() {
 // identity is stored in the request context for downstream use.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		setOutcomeStage(r, "auth")
 		token := extractBearerToken(r)
 		if token == "" {
 			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing credentials — use Authorization: Bearer <token>"))
@@ -3487,6 +3495,7 @@ func (s *Server) rateLimitWith(getLimiter func() *ratelimit.Limiter, next http.H
 // rejections in dashboards.
 func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		setOutcomeStage(r, "rate_limit")
 		// Per-key RPM override applies to inference (consumer) traffic and is
 		// enforced regardless of whether the account-level limiter is set.
 		if tier == "consumer" {
@@ -3611,10 +3620,10 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), ctxKeyRequestID, reqID)
 		// Profiler correlation id is ALWAYS coordinator-minted (the client-supplied
 		// X-Request-ID above is echoed and logged but never persisted).
-		if s.profilerEnabled() {
+		if s.profilerEnabled() || inferenceOutcomeEndpoint(r) {
 			meta := &requestMeta{coordID: reqID, start: start}
-			if r.Header.Get("X-Request-ID") != "" {
-				meta.coordID = newRequestID()
+			if inferenceOutcomeEndpoint(r) || r.Header.Get("X-Request-ID") != "" {
+				meta.coordID = uuid.NewString()
 			}
 			ctx = context.WithValue(ctx, requestMetaKey{}, meta)
 		}

@@ -3628,6 +3628,11 @@ exhausted:
 				s.ddIncr("routing.unservable_reclassified", []string{"model:" + d.model})
 			}
 		}
+		if o := requestOutcomeFromContext(r.Context()); o != nil {
+			o.mu.Lock()
+			o.record.CoordinatorExhausted = reason == "dispatch_exhausted" && dominance == exhaustedUndecided && failure.statusCode == 0
+			o.mu.Unlock()
+		}
 		// Resolved once: the telemetry event and the OR-uptime counter must agree
 		// on which slot's backend this failure belongs to, and on whether that
 		// backend was chosen or degraded into (v0.8.0 paged rollout).

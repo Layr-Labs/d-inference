@@ -233,6 +233,10 @@ func (e *completionsStreamEmitter) emit(value any) {
 		return
 	}
 	n, werr := fmt.Fprintf(e.w, "data: %s\n\n", encoded)
+	markContentWrite(e.w, generatedContentJSON(encoded), n, len(encoded)+8, werr)
+	if n != len(encoded)+8 {
+		e.stamps.writeErr()
+	}
 	e.flusher.Flush()
 	e.stamps.wrote(n, werr)
 }
@@ -389,6 +393,10 @@ func (e *messagesStreamEmitter) emit(eventType string, fields map[string]any) {
 		return
 	}
 	n, werr := fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, encoded)
+	markContentWrite(e.w, generatedContentJSON(encoded), n, len(eventType)+len(encoded)+16, werr)
+	if n != len(eventType)+len(encoded)+16 {
+		e.stamps.writeErr()
+	}
 	e.flusher.Flush()
 	e.stamps.wrote(n, werr)
 }

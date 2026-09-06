@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased: incoming request accounting
+
+- Add the unsampled request-outcome ledger and bounded admin inspection with explicit coverage and completion evidence.
+
 ## Unreleased — stats request-flow refresh
 
 - Restore Stats refreshes on large usage windows by aggregating request origins before looking up provider locations. Preserve weighted coordinates, request/token counts, and the top-50 flow limit while avoiding large temporary sorts.

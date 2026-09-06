@@ -39,7 +39,7 @@ func (d *dispatchState) writeTimingHeaderWithProfile(w http.ResponseWriter, pr *
 // applyProfileTiming clamps the legacy segments and fills the additive keys.
 func (d *dispatchState) applyProfileTiming(tj *types.RequestTimingDetails, pr *registry.PendingRequest) {
 	// With the profiler off the header is byte-for-byte the legacy output.
-	if tj == nil || d.profile == nil {
+	if tj == nil || d.profile == nil || d.profile.CompactOnly {
 		return
 	}
 	anomaly := false
@@ -173,6 +173,7 @@ func writeNonStreamBody(w http.ResponseWriter, rp *registry.RequestProfile, v an
 		rp.Stamp(&rp.HeadersWrittenUS)
 	}
 	n, err := w.Write(body)
+	markContentWrite(w, generatedContentJSON(body), n, len(body), err)
 	if rp == nil {
 		return
 	}

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-06 · commit `32b28b0a7`
+> Last updated: 2026-09-06 · commit `2eebb5412`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process in v0.8.16: one in-process engine (`mlx-swift-lm`
@@ -135,7 +135,7 @@ by `deadlineProjectionRateHaircut = 0.5`. `WedgeMonitor.suspectStallSeconds =
 | Target | Drafter | Activation |
 |---|---|---|
 | Qwen3.5 family (`qwen3_5`, `qwen3_5_moe`) | Embedded head (`Qwen35InlineMTPAssistant`, request-stateful) | `mtp_mode = "auto"` (default) when the checkpoint declares the embedded artifact |
-| Gemma 4 | Separate assistant checkpoint (`Gemma4AssistantDraftModel`, stateless) | `mtp_mode = "on"` or a catalog-declared `spec_dec` artifact resolved by `SpecDecArtifactFunnel`; `mtp_drafter_path` overrides the directory |
+| Gemma 4 | Separate assistant checkpoint (`Gemma4AssistantDraftModel`, stateless) | Requires `mtp_mode = "on"`; `SpecDecArtifactFunnel` resolves the catalog-declared `spec_dec` artifact, with `mtp_drafter_path` as a directory override |
 
 `MTPAutomaticVerificationPolicy`: `initialDraftTokens = 1`;
 `fixedDraftTokens = nil` for request-stateful drafters (engine controller, 0…4)
@@ -143,6 +143,14 @@ and `1` for the stateless Gemma drafter; `maxRectangularTokens = 8` on
 M3/M4/M5 and `4` on M1/M2/unknown, lowered only by
 `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`
 (`provider-swift/Sources/ProviderCore/Inference/MTPAutomaticVerificationPolicy.swift`).
+For the exact `gemma-4-26b-qat-4bit` artifact, an enabled assistant uses serial
+target verification: drafting and acceptance remain enabled, but each target column
+uses the ordinary forward shape. This avoids the measured width-dependent
+logit difference and gives up rectangular target amortization. Explicit offline
+Gemma verification controls retain their bounded automatic baseline and the
+existing target/drafter checks. Drafter-required modes retain priority
+(`provider-swift/Sources/ProviderCore/Inference/EngineV2MTPAssistant.swift`,
+`providerMTPVerificationPolicy`).
 Engine contract: `CBv2MTPConfig` with `testedMaxDraftTokens` (≤ 7) and
 `testedMaxSpeculativeBatch = 8`
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift`).

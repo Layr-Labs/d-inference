@@ -203,7 +203,7 @@ def mark_aborted_report(path, error):
 
 def validate_key_mode(args, report_path):
     if args.persistent_test_namespace is None and (args.cache == "off" or args.cache_mode == "resident"):
-        return
+        return None
     report = json.loads(Path(report_path).read_text())
     provenance = validate_persistent_test_key_provenance(args, report)
     if args.cache == "off" or args.cache_mode == "resident":
@@ -211,7 +211,7 @@ def validate_key_mode(args, report_path):
     # Archived serial binaries predate SSD/key-mode reporting. Explicit SSD
     # requests and all current reports must prove the actual key mode.
     if report.get("schema", 1) < 2 and args.cache_mode is None and not args.production_kv_grant:
-        return
+        return provenance
     expected = "ephemeral" if args.key_mode == "ephemeral" else "persistent"
     actual = report.get("metrics_loaded", {}).get("key_mode")
     if actual != expected:

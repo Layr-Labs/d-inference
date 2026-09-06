@@ -75,6 +75,12 @@ func (in connectedCacheInput) validate() (exactCacheArtifactFixture, error) {
 	if in.Artifact.ModelID == "gemma-4-26b" && in.AssistantPath == "" {
 		return fixture, fmt.Errorf("normal Gemma requires explicit verified assistant input")
 	}
+	return in.validateArtifacts()
+}
+
+// Artifact validation is shared with the separately scoped release-default smoke.
+func (in connectedCacheInput) validateArtifacts() (exactCacheArtifactFixture, error) {
+	fixture := exactCacheArtifactFixture{files: map[string][]byte{}}
 	if len(in.Prompt) == 0 || len(in.ToolsRequest) == 0 {
 		return fixture, fmt.Errorf("explicit text and tools fixtures required")
 	}

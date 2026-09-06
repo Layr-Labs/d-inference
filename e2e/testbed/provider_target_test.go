@@ -245,3 +245,13 @@ func TestProviderDelayedRetiredResponseCannotSupplyNextStateOrObservation(t *tes
 	require.NoError(t, err)
 	require.Equal(t, uint64(3), event.RequestID)
 }
+
+func TestProviderLaunchDefaultCacheDoesNotInstallGlobalOverride(t *testing.T) {
+	spec, err := buildProviderStartSpec("http://127.0.0.1:8123", t.TempDir(), ProviderConfig{ModelIDs: []string{"gpt-oss-20b"}, KVBackend: "auto", MTPMode: "auto", MaxConcurrent: 1, EnableEphemeralPrefixCache: true}, 0)
+	require.NoError(t, err)
+	require.NotContains(t, spec.Environment, "DARKBLOOM_PREFIX_CACHE")
+	require.NotContains(t, spec.Environment, "DARKBLOOM_PREFIX_CACHE_MEMORY")
+	require.Equal(t, "1", spec.Environment["DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL"])
+	require.Contains(t, spec.Config, `mtp_mode = "auto"`)
+	require.Contains(t, spec.Config, `engine_v2_kv_backend = "auto"`)
+}

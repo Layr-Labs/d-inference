@@ -405,7 +405,7 @@ extension ProviderLoop {
             // goes active guarantees a challenge arriving mid-serve reports the
             // hash of the bytes actually loaded — not the disk state at daemon
             // start. (See `captureWeightHash` for the full rationale.)
-            let reusableSSDRequested = PrefixCachePolicy.isEnabled()
+            let reusableSSDRequested = PrefixCachePolicy.isEnabled(modelId: modelId)
             let preLoadHash = try await captureWeightHash(
                 modelId: modelId,
                 modelPath: modelPath,

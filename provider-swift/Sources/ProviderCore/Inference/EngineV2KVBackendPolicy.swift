@@ -1,7 +1,7 @@
 // Copyright © 2026 Eigen Labs.
 // Backend policy: per-model config wins, slot/model capabilities may veto it,
 // and the fleet kill switch overrides every caller. Auto selects paged only
-// for exact candidate fleet Qwen IDs. Explicit paged failures refuse the load; automatic
+// for the five exact release artifact IDs. Explicit paged failures refuse the load; automatic
 // failures may degrade. The crash-loop guard applies only to automatic selection.
 
 import Foundation
@@ -30,7 +30,7 @@ public enum EngineV2KVBackendPolicy {
         case .auto:
             switch modelID {
             case "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
-                "EigenLabs/Qwen3.8-27B-4bit-mtp":
+                "EigenLabs/Qwen3.8-27B-4bit-mtp", "gpt-oss-20b", "gemma-4-26b-qat-4bit":
                 return .paged
             default:
                 return .contiguous

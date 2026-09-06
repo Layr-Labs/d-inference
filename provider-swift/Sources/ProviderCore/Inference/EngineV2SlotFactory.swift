@@ -372,6 +372,8 @@ enum EngineV2SlotFactory {
             environment: environment)
         let mtpVerification = providerMTPVerificationPolicy(
             for: assistantHandle?.drafter,
+            modelID: modelId,
+            benchmarkVerification: assemblyOverrides.gemmaMTPVerification,
             automaticRectangularTokens: automaticRectangularTokens)
         let fixedDraftTokens = MTPAutomaticVerificationPolicy.fixedDraftTokens(
             usesRequestStatefulDrafter:
@@ -474,7 +476,7 @@ enum EngineV2SlotFactory {
             // the bridge must never retain or stage an incomplete snapshot.
             cacheConstructionStatus = PrefixCacheConstructionStatus(
                 state: .disabled, reason: .unsupportedLayout)
-        } else if PrefixCachePolicy.isEnabled(environment: environment) {
+        } else if PrefixCachePolicy.isEnabled(modelId: modelId, environment: environment) {
             if let preparedBackend,
                 !PrefixCachePolicy.adoptionIsExact(
                     onResolvedBackend: preparedBackend.kind)

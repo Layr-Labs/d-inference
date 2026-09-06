@@ -40,7 +40,7 @@ class HostGuards(unittest.TestCase):
                 return '{"temp":{"gpu_temp_avg":30}}\n'
             if argv[-1]=='hw.model':return 'MacFixture,1\n'
             if argv[-1]=='hw.memsize':return str(36<<30)+'\n'
-            self.fail('unexpected subprocess '+repr(argv))
+            raise AssertionError('unexpected subprocess '+repr(argv))
         with patch.object(host.subprocess,'check_output',side_effect=output),patch.object(host,'check_file'),patch.object(host.os,'getloadavg',return_value=(1,1,1)),patch.object(host.shutil,'disk_usage',return_value=Mock(free=200<<30)):
             observed=host.observe({'macmon_path':'/fixture/macmon','macmon':{}},owned=(202,))
         self.assertEqual(observed['unexpected_processes'],[101])
@@ -149,7 +149,9 @@ class OwnedLifecycle(unittest.TestCase):
                 if owner.poll()is None:owner.kill();owner.wait(timeout=5)
                 if child is not None:
                     try:os.killpg(child,signal.SIGKILL)
-                    except ProcessLookupError:pass
+                    except ProcessLookupError:
+                        # The owner may already have reaped the descendant.
+                        pass
 
     def test_stop_reaps_child(self):
         def stop(owner,_):owner.stdin.write('{"command":"stop"}\n');owner.stdin.flush()

@@ -222,7 +222,7 @@ func BuildProviderTOML(cfg ProviderConfig, providerIndex int) (string, error) {
 		fmt.Fprintf(&b, "mtp_drafter_path = %q\n", cfg.MTPDrafterPath)
 	}
 	if cfg.MTPMode != "" {
-		if cfg.MTPMode != "on" && cfg.MTPMode != "off" {
+		if cfg.MTPMode != "auto" && cfg.MTPMode != "on" && cfg.MTPMode != "off" {
 			return "", fmt.Errorf("invalid explicit MTP mode %q", cfg.MTPMode)
 		}
 		fmt.Fprintf(&b, "mtp_mode = %q\n", cfg.MTPMode)

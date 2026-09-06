@@ -18,7 +18,7 @@ public enum EngineV2BenchmarkMTPVerification: String, Sendable {
     {
         guard mtpEnabled, concurrency == 1, productionGrant,
             ["contiguous", "paged"].contains(backend),
-            !PrefixCachePolicy.isEnabled(environment: environment),
+            !PrefixCachePolicy.isGloballyEnabled(environment: environment),
             !PrefixCachePolicy.isMemoryEnabled(environment: environment) else {
             throw Failure.invalidScope
         }

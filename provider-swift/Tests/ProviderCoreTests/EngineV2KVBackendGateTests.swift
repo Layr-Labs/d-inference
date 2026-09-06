@@ -2,7 +2,7 @@
 //
 // KV-backend GATE tests over the REAL `EngineV2Factory.makeProductionBuild`
 // with tiny real-family models (JSON-decoded configs, random-init weights,
-// no downloads): exact-Qwen candidate `auto`, the
+// no downloads): exact-artifact candidate `auto`, the
 // fleet kill switch at the deepest layer, explicit selections, and the
 // degrade-or-REFUSE split — an explicit paged request that cannot be
 // served throws `EngineV2ProductionError.pagedUnavailable` with the reason
@@ -363,23 +363,15 @@ struct EngineV2KVBackendGateTests {
         await contiguous.engine.shutdown()
     }
 
-    @Test("auto is CONTIGUOUS for GPT-OSS and cannot drift with family defaults")
-    func autoServesContiguousForGPTOSS() async throws {
-        let build = try makeBuild(model: try tinyGPTOSS(), modelID: "gpt-oss-20b", kvBackend: .auto)
-        // GPT-OSS remains outside the exact-Qwen automatic candidate policy.
-        #expect(build.kvBackendKind == .contiguous)
-        // NIL, not "the default": a fallback reason means something
-        // OVERRODE the selection (kill switch, guard, a paged failure), and
-        // the heartbeat/dashboard population split on exactly this field.
-        // The default resolving to its default is not a fallback.
+    @Test(arguments: ["gpt-oss-20b", "gemma-4-26b-qat-4bit"])
+    func releaseAttentionModelsDefaultToPaged(modelID: String) async throws {
+        let model: any LanguageModel = try modelID == "gpt-oss-20b"
+            ? tinyGPTOSS() : tinyGemma4Text()
+        let build = try makeBuild(model: model, modelID: modelID, kvBackend: .auto)
+        #expect(build.kvBackendKind == .paged)
         #expect(build.kvBackendFallbackReason == nil)
-        // Contiguous advertises its LOGICAL grant — the whole point of the
-        // revert. It must not shrink to a paged-style physical pool.
-        let snapshot = build.engine.capacity()
-        #expect(snapshot.kvBytesBackendCapacity > 0)
-        #expect(snapshot.kvBytesCapacity == gateTestCapacity)
-        // No pool, so no page dtype to report.
-        #expect(build.pagedPoolDType == nil)
+        #expect(build.pagedPoolDType != nil)
+        #expect(build.engine.capacity().kvBytesCapacity == gateTestCapacity)
         await build.engine.shutdown()
     }
 
@@ -563,8 +555,8 @@ struct EngineV2KVBackendGateTests {
         try await body(env)
     }
 
-    @Test("the crash-loop guard does not relabel GPT-OSS contiguous auto as fallback")
-    func crashLoopGuardIsDormantUnderContiguousDefault() async throws {
+    @Test("the crash-loop guard degrades automatically paged GPT-OSS with truthful fallback")
+    func crashLoopGuardDegradesGPTOSSDefault() async throws {
         try await withGuardFile(
             KVBackendGuard(
                 trippedAt: 1, providerVersion: ProviderCore.version, crashCount: 3)
@@ -579,8 +571,8 @@ struct EngineV2KVBackendGateTests {
                 model: try tinyGPTOSS(), modelID: "gpt-oss-20b", kvBackend: .auto, environment: env)
             #expect(build.kvBackendKind == .contiguous)
             #expect(
-                build.kvBackendFallbackReason == nil,
-                "the default resolving to contiguous is not a guard degrade and must not be labelled one")
+                build.kvBackendFallbackReason == "crash_loop_guard",
+                "the exact GPT-OSS default is paged, so the guard must report the degrade")
             await build.engine.shutdown()
         }
     }
@@ -924,7 +916,8 @@ struct EngineV2KVBackendGateTests {
     /// The attention-only factory remains a tripwire for an incorrect fallback.
     private func slotCacheOutcome(
         kvBackendConfig: String,
-        environment: [String: String] = [:]
+        modelID: String = "tiny-gemma",
+        environment: [String: String] = [PrefixCachePolicy.environmentFlag: "1"]
     ) async throws -> (
         kind: EngineV2KVBackendKind,
         legacyConstructionAttempted: Bool,
@@ -941,7 +934,8 @@ struct EngineV2KVBackendGateTests {
             try? FileManager.default.removeItem(at: root)
         }
         let attempted = GateFlag()
-        let model = try tinyGemma4Text()
+        let model: any LanguageModel = try modelID == "gpt-oss-20b"
+            ? tinyGPTOSS() : tinyGemma4Text()
         let tokenizer = StubBridgeTokenizer()
         let container = ModelContainer(
             context: ModelContext(
@@ -958,8 +952,8 @@ struct EngineV2KVBackendGateTests {
             mtpArtifact: nil)
 
         let bundle = try await EngineV2SlotFactory.makeProductionBundle(
-            modelId: "tiny-gemma",
-            modelType: "gemma4_text",
+            modelId: modelID,
+            modelType: modelID == "gpt-oss-20b" ? "gpt_oss" : "gemma4_text",
             isVLM: false,
             modelDirectory: nil,
             container: container,
@@ -1039,7 +1033,8 @@ struct EngineV2KVBackendGateTests {
         // contiguous rows. Requested does not predict; resolved does.
         let outcome = try await slotCacheOutcome(
             kvBackendConfig: "paged",
-            environment: [EngineV2KVBackendPolicy.killSwitchEnvKey: "0"])
+            environment: [EngineV2KVBackendPolicy.killSwitchEnvKey: "0",
+                          PrefixCachePolicy.environmentFlag: "1"])
         #expect(outcome.kind == .contiguous)
         #expect(
             !outcome.legacyConstructionAttempted,
@@ -1048,14 +1043,27 @@ struct EngineV2KVBackendGateTests {
         #expect(outcome.status.reason == .unsupportedLayout)
     }
 
-    @Test("Gemma `.auto` slots retain contiguous with no paged prefix cache")
+    @Test("unlisted tiny Gemma `.auto` stays contiguous even with explicit cache opt-in")
     func autoSlotGetsNoPrefixCache() async throws {
-        // The Gemma default must not change with the exact-Qwen candidate policy.
+        // Only exact release IDs change automatic backend selection.
         let outcome = try await slotCacheOutcome(kvBackendConfig: "")
         #expect(outcome.kind == .contiguous)
         #expect(!outcome.legacyConstructionAttempted)
         #expect(!outcome.cache)
         #expect(outcome.status.reason == .unsupportedLayout)
+    }
+
+    @Test(arguments: ["gpt-oss-20b", "gemma-4-26b-qat-4bit"])
+    func releasePagedModelsDefaultToNoSSD(modelID: String) async throws {
+        let outcome = try await slotCacheOutcome(
+            kvBackendConfig: "auto", modelID: modelID, environment: [:])
+        #expect(outcome.kind == .paged)
+        #expect(!outcome.legacyConstructionAttempted)
+        #expect(!outcome.cache)
+        #expect(outcome.completeLayout == nil)
+        #expect(outcome.status.backend == .paged)
+        #expect(outcome.status.state == .disabled)
+        #expect(outcome.status.reason == .configDisabled)
     }
 
     // MARK: VLM slot routing (WS-2.2)

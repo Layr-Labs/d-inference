@@ -1515,7 +1515,7 @@ public actor StandaloneServer {
 
             try await v2TestHooks?.beforeWeightLoad?(modelId)
             let reusableSSDRequested = PrefixCachePolicy.requiresLoadHashBracket(
-                modelDirectory: modelPath)
+                modelId: modelId, modelDirectory: modelPath)
             let preLoadCacheHash = await computeStandaloneWeightHash(
                 modelPath: modelPath, modelId: modelId, required: reusableSSDRequested)
             // Hard-fail without Metal: CPU inference is not acceptable, and

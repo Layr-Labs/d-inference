@@ -217,7 +217,7 @@ def prepare(request, checkpoint=None, emit=lambda value: None, record=None, crea
         if root == snapshot or root in snapshot.parents or snapshot in root.parents:
             raise ValueError('owned root overlaps selected model input')
     verify_models(target, home, checkpoint)
-    observation = wait_for_entry(target, checkpoint, emit, record)
+    wait_for_entry(target, checkpoint, emit, record)
     # Hash a hardware identifier with a suite-scoped nonce; never export a raw
     # serial/UUID. Two aliases of one machine cannot claim independent hosts.
     hardware = subprocess.check_output(['ioreg', '-rd1', '-c', 'IOPlatformExpertDevice'], text=True, timeout=10)
@@ -280,6 +280,7 @@ def retire_group(process, record):
             os.killpg(group, sig)
             record['signals_sent'].append(int(sig))
         except ProcessLookupError:
+            # The group may exit between the presence check and the signal.
             pass
         except PermissionError as error:
             record['signal_errors'].append(str(error))
@@ -426,6 +427,7 @@ def run_owner(command, environment, root, control, emit, lease_seconds=30, deadl
             try:
                 emit(record)
             except (BrokenPipeError, OSError):
+                # The caller may have closed its reader during teardown.
                 pass
         finally:
             selector.close()

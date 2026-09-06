@@ -26,7 +26,7 @@ struct PrefixCacheLoadHashTests {
             defer { try? FileManager.default.removeItem(at: directory) }
             let model = try JSONDecoder().decode(Qwen35Configuration.self, from: Data(config.utf8))
             #expect(!model.cbv2Capabilities.supportsPrefixReuse)
-            #expect(PrefixCachePolicy.requiresLoadHashBracket(modelDirectory: directory, environment: [:])
+            #expect(PrefixCachePolicy.requiresLoadHashBracket(modelId: "qwen3.5-35b-a3b", modelDirectory: directory, environment: [:])
                 == model.cbv2Capabilities.supportsRecurrentCheckpointReuse)
         }
     }
@@ -35,16 +35,16 @@ struct PrefixCacheLoadHashTests {
     func noCachedExclusion() throws {
         let directory = try snapshot(#"{"model_type":"qwen3_5"}"#)
         defer { try? FileManager.default.removeItem(at: directory) }
-        #expect(PrefixCachePolicy.requiresLoadHashBracket(modelDirectory: directory, environment: [:]))
+        #expect(PrefixCachePolicy.requiresLoadHashBracket(modelId: "qwen3.5-35b-a3b", modelDirectory: directory, environment: [:]))
         for config in [#"{"model_type":"gpt_oss"}"#, #"{"model_type":"gemma4"}"#,
                        #"{"model_type":"future_model"}"#, #"{"model_type":"qwen3_5","text_config":false}"#, "invalid"] {
             try Data(config.utf8).write(to: directory.appendingPathComponent("config.json"))
-            #expect(PrefixCachePolicy.requiresLoadHashBracket(modelDirectory: directory, environment: [:]))
+            #expect(PrefixCachePolicy.requiresLoadHashBracket(modelId: "qwen3.5-35b-a3b", modelDirectory: directory, environment: [:]))
         }
         try FileManager.default.removeItem(at: directory.appendingPathComponent("config.json"))
-        #expect(PrefixCachePolicy.requiresLoadHashBracket(modelDirectory: directory, environment: [:]))
+        #expect(PrefixCachePolicy.requiresLoadHashBracket(modelId: "qwen3.5-35b-a3b", modelDirectory: directory, environment: [:]))
         #expect(!PrefixCachePolicy.requiresLoadHashBracket(
-            modelDirectory: directory, environment: ["DARKBLOOM_PREFIX_CACHE": "0"]))
+            modelId: "qwen3.5-35b-a3b", modelDirectory: directory, environment: ["DARKBLOOM_PREFIX_CACHE": "0"]))
     }
 
     @Test("standalone skips disabled caching and brackets dense and MoE loads")
@@ -57,7 +57,7 @@ struct PrefixCacheLoadHashTests {
             computeWeightHash: { _, _ in calls.hash() },
             makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
         let required = PrefixCachePolicy.requiresLoadHashBracket(
-            modelDirectory: directory, environment: ["DARKBLOOM_PREFIX_CACHE": "0"])
+            modelId: "qwen3.5-35b-a3b", modelDirectory: directory, environment: ["DARKBLOOM_PREFIX_CACHE": "0"])
         for _ in 0..<2 {
             #expect(await server.computeStandaloneWeightHash(
                 modelPath: directory, modelId: "test/qwen", required: required) == nil)
@@ -69,13 +69,24 @@ struct PrefixCacheLoadHashTests {
             #"{"model_type":"qwen3_5_moe","text_config":{"num_experts":8}}"#,
         ] {
             try Data(config.utf8).write(to: directory.appendingPathComponent("config.json"))
-            let eligible = PrefixCachePolicy.requiresLoadHashBracket(modelDirectory: directory, environment: [:])
+            let eligible = PrefixCachePolicy.requiresLoadHashBracket(modelId: "qwen3.5-35b-a3b", modelDirectory: directory, environment: [:])
             #expect(eligible)
             let pre = await server.computeStandaloneWeightHash(modelPath: directory, modelId: "test/qwen", required: eligible)
             let post = await server.computeStandaloneWeightHash(modelPath: directory, modelId: "test/qwen", required: eligible)
             #expect(pre != nil && pre == post)
         }
         #expect(calls.count == 4)
+    }
+
+    @Test(arguments: ["gpt-oss-20b", "gemma-4-26b-qat-4bit", "gemma-4-26b", "gemma-4-26b-8bit"])
+    func uncachedReleaseModelsSkipSSDHashing(modelID: String) throws {
+        let directory = try snapshot(#"{"model_type":"future_model"}"#)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(!PrefixCachePolicy.requiresLoadHashBracket(
+            modelId: modelID, modelDirectory: directory, environment: [:]))
+        #expect(PrefixCachePolicy.requiresLoadHashBracket(
+            modelId: modelID, modelDirectory: directory,
+            environment: [PrefixCachePolicy.environmentFlag: "1"]))
     }
 
     @Test("a failed standalone hash is retried rather than cached")

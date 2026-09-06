@@ -2,7 +2,7 @@
 
 > Last updated: 2026-09-06 · commit `615d96328`
 
-Status: **In progress** — 2026-09-06 — the initial activation cohort is the three Qwen fleet artifacts; validation and release approval remain incomplete.
+Status: **Superseded by [0.9.0 paged attention and Qwen caching](release-090-paged-qwen-cache.md)** — 2026-09-06 — the user clarified that all five target artifacts migrate to paged attention; only Qwen caching is initially enabled.
 
 The user selected Qwen 3.5, 3.6 and 3.8 for initial paged-attention activation. GPT-OSS and Gemma remain outside this first rollout, without discarding their retained failures or the broader migration work. This record separates implemented cache functionality from the evidence still needed to ship it.
 

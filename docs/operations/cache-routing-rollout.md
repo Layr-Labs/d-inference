@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-05 · commit `7190d3bbf`
+> Last updated: 2026-09-06 · commit `2eebb5412`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -21,6 +21,17 @@ the request cohort. Unset preserves unrestricted existing eligibility; `[]`
 declines all participation. This is an optional coordinator control, not a
 provider capability override or a restriction on local HTTP caching
 (`coordinator/registry/cache_artifact_allowlist.go`).
+
+For the 0.9.0 rollout, configure this list explicitly with the validated tuples
+for `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` and
+`EigenLabs/Qwen3.8-27B-4bit-mtp`. GPT-OSS and Gemma QAT use paged attention but
+remain outside the initial SSD/cache-routing cohort. A successful paged-attention
+test alone does not qualify a tuple for cache routing. See the
+[five-model release decision](../design/release-090-paged-qwen-cache.md).
+Leave the provider's `DARKBLOOM_PREFIX_CACHE` unset to use its Qwen-only default.
+An explicit affirmative value opts other supported models into SSD caching;
+the coordinator allowlist restricts network participation but does not override
+that local provider setting.
 
 The mode remains global, and `PERCENT` samples a deterministic cohort keyed on
 account + resolved model + provider-bound body (`cacheActivationCohort`,
@@ -79,6 +90,10 @@ the same request from the same account remains in or out of the cohort.
    the intended restriction. `configured: true, count: 0` deliberately denies
    participation; the status never exposes artifact identities. These values
    also have aggregate gauges in the [API contract](../reference/api-contracts.md#exact-cache-status).
+
+   For the initial 0.9.0 cohort, require `configured: true, count: 3` and inspect
+   the proposed configuration to verify all three exact Qwen tuples. A count
+   alone cannot establish membership or successful model validation.
 
    `providers.v2` is the number of connected providers advertising the
    protocol-v2 capability (`PrefixCacheProtocolStatus`,

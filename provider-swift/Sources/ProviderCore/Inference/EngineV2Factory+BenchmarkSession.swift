@@ -320,7 +320,7 @@ extension EngineV2Factory {
             bundle.releaseAssistant()
             throw EngineV2BenchmarkSession.Failure.unexpectedResidentCache
         }
-        if PrefixCachePolicy.isEnabled(environment: effectiveEnvironment) {
+        if PrefixCachePolicy.isEnabled(modelId: modelId, environment: effectiveEnvironment) {
             let cacheStatus = bundle.bridge.prefixCacheModelStatus()
             let hasEvidenceSource = bundle.bridge.durablePrefixCacheEvidenceSource != nil
             guard hasEvidenceSource, cacheStatus.state == .ready else {

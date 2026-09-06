@@ -25,7 +25,7 @@ extension EngineV2SlotFactory {
         guard let preparedBackend,
             preparedBackend.modelCapabilities.supportsRecurrentCheckpointReuse || historicalTarget
         else { return nil }
-        guard PrefixCachePolicy.isEnabled(environment: environment) else {
+        guard PrefixCachePolicy.isEnabled(modelId: modelId, environment: environment) else {
             return .init(cache: nil, status: .configDisabled)
         }
         guard let storage = completeCheckpointStorage(

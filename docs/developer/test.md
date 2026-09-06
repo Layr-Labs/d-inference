@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-06 · commit `5ac838810`
+> Last updated: 2026-09-06 · commit `2eebb5412`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1006,6 +1006,31 @@ token IDs are accepted.
 - [`../architecture/prompt-contract-sidecar.md`](../architecture/prompt-contract-sidecar.md) — what prompt parity protects.
 
 ## Connected coordinator/provider HTTP cache gate
+
+For a focused release-default check, use
+`e2e/release_defaults_http_test.go` (`TestIntegrationReleaseDefaultsHTTP`).
+Prepare an exact artifact/runtime input using the shared connected input schema,
+with backend and MTP mode both `auto` and the model's expected cache mode. Leave
+provider cache overrides unset. Run on one owned idle host:
+
+```bash
+DARKBLOOM_RELEASE_DEFAULT_INPUT=/absolute/defaults.json \
+DARKBLOOM_RELEASE_DEFAULT_OUTPUT=/absolute/new-defaults-output \
+  go test ./e2e -run '^TestIntegrationReleaseDefaultsHTTP$' -count=1 -timeout=15m
+```
+
+The two B1 requests check actual paged activation, automatic MTP selection,
+complete cold/repeat output and token accounting, and model-scoped cache
+capability. Qwen requires an exact ready SSD capability and an accepted repeat
+hit; GPT-OSS and Gemma QAT require cache inactivity. The report retains the actual
+generated provider configuration. This smoke does not establish raw token-ID
+parity, concurrent widths, cancellation, restart, or selection between providers;
+run the corresponding native and connected gates separately. CPU helper checks:
+
+```bash
+go test -short ./e2e ./e2e/testbed \
+  -run 'TestReleaseDefault|TestProviderLaunchDefaultCache' -count=1
+```
 
 Owned two-host startup waits up to five minutes for the existing GPU ≤42°C
 and load1 ≤4 entry thresholds. Identity, disk, nonfinite measurements and

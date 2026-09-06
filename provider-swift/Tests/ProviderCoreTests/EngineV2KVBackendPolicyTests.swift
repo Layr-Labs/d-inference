@@ -19,9 +19,9 @@ struct EngineV2KVBackendPolicyTests {
 
     @Test(arguments: [
         "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
-        "EigenLabs/Qwen3.8-27B-4bit-mtp",
+        "EigenLabs/Qwen3.8-27B-4bit-mtp", "gpt-oss-20b", "gemma-4-26b-qat-4bit",
     ])
-    func exactQwenAutoPolicy(modelID: String) {
+    func exactReleaseArtifactAutoPolicy(modelID: String) {
         let parsed = EngineV2KVBackendPolicy.parseSelection(
             global: "auto", byModel: [:], modelID: modelID)
         #expect(parsed.selection == .auto)
@@ -40,14 +40,14 @@ struct EngineV2KVBackendPolicyTests {
         #expect(automaticOverride.selection == .auto)
         #expect(EngineV2KVBackendPolicy.preferredBackend(
             selection: automaticOverride.selection, modelID: modelID) == .paged)
-        #expect(PrefixCachePolicy.isEnabled(environment: [:]))
         #expect(!PrefixCachePolicy.isMemoryEnabled(environment: [:]))
         #expect(PrefixCachePolicy.residentConfig(
             modelId: modelID, promptContractID: "contract", environment: [:]) == nil)
     }
 
     @Test(arguments: [
-        nil, "", "unknown", "gpt-oss-20b", "gemma-4-26b", "gemma-4-31b",
+        nil, "", "unknown", "gemma-4-26b", "gemma-4-31b", "gemma-4-26b-8bit",
+        "gemma-4-26b-qat-4bit-other", "gpt-oss-20b-other",
         "qwen3.5-9b", "qwen3.5-27b", "qwen3.6-35b-a3b",
         "EigenLabs/Qwen3.8-27B-4bit", "Qwen3.8-27B-4bit-mtp",
         "eigenlabs/qwen3.8-27b-4bit-mtp", "QWEN3.5-35B-A3B",

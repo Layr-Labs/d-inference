@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-06 · commit `615d96328`
+> Last updated: 2026-09-06 · commit `2eebb5412`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -46,8 +46,10 @@ for these exact fleet model IDs, not family names, aliases or substrings:
 - `qwen3.5-35b-a3b`
 - `qwen3.6-35b-a3b-vl-mtp-mxfp8`
 - `EigenLabs/Qwen3.8-27B-4bit-mtp`
+- `gpt-oss-20b`
+- `gemma-4-26b-qat-4bit`
 
-Every other ID, including unlisted Qwen artifacts, GPT-OSS, Gemma and unknown
+Every other ID, including unlisted Qwen artifacts, Gemma 8-bit and unknown
 models, resolves contiguous under `auto`. Per-model configuration still overrides
 the global setting, and explicit `"contiguous"` keeps a cohort model contiguous
 (`provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift`,
@@ -86,11 +88,16 @@ loaded layer/owner/type map; ordinary attention snapshots remain a separate code
 **The candidate rollout is not yet validated.** Retained Qwen 3.5/3.6
 cross-backend equality failures and the remaining concurrency, capacity,
 persistent-restart and final-runtime gates are tracked in the
-[Qwen-first rollout decision](../design/qwen-first-paged-ssd-rollout.md).
+[five-artifact rollout decision](../design/release-090-paged-qwen-cache.md).
 This selection change is not a release or deployment claim. SSD prefix reuse
-remains enabled by default for eligible checkpoints, and resident retention
-still requires explicit opt-in; neither default changes with this cohort
-(`PrefixCachePolicy.isEnabled`, `PrefixCachePolicy.isMemoryEnabled`).
+defaults on only for the three exact Qwen IDs above. An explicit affirmative
+`DARKBLOOM_PREFIX_CACHE` opts other models into their existing cache eligibility
+checks; a non-affirmative nonempty value disables all tiers. Both SSD codecs,
+local/connected load hashing and benchmark expectations use the model-scoped
+`PrefixCachePolicy.isEnabled(modelId:environment:)` gate in
+`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift`.
+Resident retention remains off unless explicitly enabled through the separate
+memory flag (`PrefixCachePolicy.isMemoryEnabled`).
 
 The production paged factory binds its empty segmented pool to the shared
 process memory owner before constructing the engine. Its native admission owns

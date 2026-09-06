@@ -1,18 +1,12 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Production prefix-cache policy. Encrypted SSD storage is the default;
+// Production prefix-cache policy. Encrypted SSD defaults on for exact Qwen artifacts;
 // retaining resident KV between requests requires an explicit local opt-in.
 
 import Foundation
 import MLXLMCommon
 
 enum PrefixCachePolicy {
-
-    /// Local cache kill switch. Unset defaults to enabled. Any explicitly
-    /// non-affirmative value disables resident L1 and encrypted SSD L2.
-    static let environmentFlag = "DARKBLOOM_PREFIX_CACHE"
-
-    static let memoryEnvironmentFlag = "DARKBLOOM_PREFIX_CACHE_MEMORY"
 
     /// Stats-logger cadence override (seconds). Shared semantics with the
     /// legacy checkpoint-tier logger: unset/malformed ⇒ default 120s;
@@ -26,29 +20,6 @@ enum PrefixCachePolicy {
     /// Resident L1 indexes one physical page per hash block, matching vLLM's
     /// allocator/index identity. SSD keeps the coarser durable format above.
     static let residentBlockSize = CBv2PagedDefaults.pageSize
-
-    // MARK: - Gate
-
-    /// SSD prefix reuse is on by default. Explicit affirmative values keep it
-    /// enabled; any other non-empty value disables all local tiers.
-    static func isEnabled(
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> Bool {
-        environmentEnabled(environment[environmentFlag], defaultValue: true)
-    }
-
-    /// One explicit opt-in covers both resident tiers. A byte-budget override
-    /// alone cannot keep prompt state in RAM between requests.
-    static func isMemoryEnabled(environment: [String: String]) -> Bool {
-        isEnabled(environment: environment)
-            && environmentEnabled(environment[memoryEnvironmentFlag], defaultValue: false)
-    }
-
-    private static func environmentEnabled(_ value: String?, defaultValue: Bool) -> Bool {
-        guard let raw = value?.trimmingCharacters(in: .whitespaces).lowercased(),
-            !raw.isEmpty else { return defaultValue }
-        return ["1", "true", "yes", "on"].contains(raw)
-    }
 
     /// Configuration for the paged backend's copy-free resident L1. The
     /// backend is model-local, so `modelId` scopes unscoped/standalone calls;

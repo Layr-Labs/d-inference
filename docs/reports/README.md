@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-06 · commit `35fea6d0e`
+> Last updated: 2026-09-06 · commit `2eebb5412`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,13 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Qwen3.6 candidate D256 numerical gates](2026-09-06-qwen36-candidate-d256.md) — all 13 existing precision and planted-fault cases pass unchanged limits on the rebuilt candidate.
+- [Qwen3.6 candidate backend logits](2026-09-06-qwen36-candidate-logits.md) — cache-off wording differences persist with different MTP verification widths; finite actual logits and exact internal repeats, with original validator failure preserved.
+- [GPT-OSS and Gemma QAT default HTTP](2026-09-06-gpt-qat-default-http.md) — both exact artifacts select paged automatically, keep SSD/MTP off, and pass cold/repeat responses and token accounting on the rebuilt candidate.
+- [0.9.0 correctness candidate build](2026-09-06-release090-candidate-build.md) — both optimized products build with the combined fixes; eight focused suites pass, with whole-model acceptance pending.
+- [Gemma QAT same-state verifier diagnosis](2026-09-06-gemma-qat-state-fork.md) — identical checkpoint reproduces the width-dependent MTP decision; serial verification matches all seven ordinary trajectories, with explicit-on cost and default-auto behavior distinguished.
+- [Qwen3.6 SDPA partial precision](2026-09-06-qwen36-sdpa-partial-precision.md) — baseline reproduces the sealed capture; FP32 partials change 786/4,096 outputs and differ from the paged capture at one element, without model or production acceptance.
+- [Qwen3.8 retained B4](2026-09-06-qwen38-b4-coordinated-reads.md) — both strict comparisons and actual width-four execution pass; all four warm requests restore 5,120 tokens without a resident prefix bank.
 - [Qwen3.8 B2 coordinated reads](2026-09-06-qwen38-b2-coordinated-reads.md) — both strict comparisons pass on the fresh coordinated-read runtime; both warm requests restore 5,120 tokens with unchanged outputs.
 - [SSD read coordination runtime](2026-09-06-ssd-read-coordination-runtime.md) — same-file coordination and final alias repair; 324 fresh provider/CLI cases, original CPU regressions and exact artifact audit pass; real-model retest pending.
 - [Qwen3.8 B2 staging policy](2026-09-06-qwen38-b2-staging-policy.md) — exact backend outputs and actual B2 pass, but one warm request skips authenticated SSD restore; failed gate and full raw evidence preserved.

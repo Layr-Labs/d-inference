@@ -133,9 +133,10 @@ struct WeightHashCacheEligibilityTests {
         let cached = try await loop.captureWeightHashForTesting(modelId: modelID, modelPath: path)
         #expect(cached.hash == priorHash)
         #expect(!cached.recomputed)
-        // Connected loading deliberately keeps the original global SSD flag,
-        // fresh reads, and delayed publication, independent of the local probe.
-        let connectedRequiresFresh = PrefixCachePolicy.isEnabled(environment: [:])
+        // Explicit opt-in on this synthetic model keeps fresh reads and delayed
+        // publication, independently of the local configuration probe.
+        let connectedRequiresFresh = PrefixCachePolicy.isEnabled(
+            modelId: modelID, environment: [PrefixCachePolicy.environmentFlag: "1"])
         let pre = try await loop.captureWeightHashForTesting(
             modelId: modelID, modelPath: path, requireFreshCryptographicHash: connectedRequiresFresh)
         let post = try await loop.captureWeightHashForTesting(

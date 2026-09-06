@@ -33,12 +33,14 @@ type connectedCase struct {
 	SlotsAfter         []connectedSlot             `json:"slots_after"`
 }
 type connectedSlot struct {
-	ProviderID string                            `json:"provider_id"`
-	Model      string                            `json:"model"`
-	Aggregate  string                            `json:"aggregate"`
-	Templates  map[string]string                 `json:"template_hashes"`
-	Capability *protocol.PrefixCacheV2Capability `json:"cache_capability,omitempty"`
-	Capacity   *protocol.BackendCapacity         `json:"capacity,omitempty"`
+	CacheStatus      *protocol.PrefixCacheModelStatus  `json:"cache_status,omitempty"`
+	MemoryCapability *protocol.PrefixCacheV2Capability `json:"memory_cache_capability,omitempty"`
+	ProviderID       string                            `json:"provider_id"`
+	Model            string                            `json:"model"`
+	Aggregate        string                            `json:"aggregate"`
+	Templates        map[string]string                 `json:"template_hashes"`
+	Capability       *protocol.PrefixCacheV2Capability `json:"cache_capability,omitempty"`
+	Capacity         *protocol.BackendCapacity         `json:"capacity,omitempty"`
 }
 type connectedReport struct {
 	HostLifecycles []testbed.ProviderHostLifecycle `json:"host_lifecycles,omitempty"`
@@ -86,6 +88,14 @@ func connectedSlots(s *testbed.Suite, model string) []connectedSlot {
 		if c, ok := p.PrefixCacheV2Models[model]; ok {
 			copy := c
 			slot.Capability = &copy
+		}
+		if status, ok := p.PrefixCacheStatuses[model]; ok {
+			copy := status
+			slot.CacheStatus = &copy
+		}
+		if capability, ok := p.PrefixCacheMemoryModels[model]; ok {
+			copy := capability
+			slot.MemoryCapability = &copy
 		}
 		if p.BackendCapacity != nil {
 			raw, _ := json.Marshal(p.BackendCapacity)

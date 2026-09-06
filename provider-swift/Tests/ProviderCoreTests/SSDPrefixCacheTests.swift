@@ -616,12 +616,12 @@ struct SSDPrefixCacheModeTests {
 
     @Test("SSD defaults on and the single local kill switch disables it")
     func gateMatrix() {
-        #expect(PrefixCachePolicy.isEnabled(environment: [:]))
-        #expect(PrefixCachePolicy.isEnabled(
+        #expect(PrefixCachePolicy.isGloballyEnabled(environment: [:]))
+        #expect(PrefixCachePolicy.isGloballyEnabled(
             environment: ["DARKBLOOM_PREFIX_CACHE": "1"]))
-        #expect(!PrefixCachePolicy.isEnabled(
+        #expect(!PrefixCachePolicy.isGloballyEnabled(
             environment: ["DARKBLOOM_PREFIX_CACHE": "0"]))
-        #expect(!PrefixCachePolicy.isEnabled(
+        #expect(!PrefixCachePolicy.isGloballyEnabled(
             environment: ["DARKBLOOM_PREFIX_CACHE": "banana"]))
     }
 

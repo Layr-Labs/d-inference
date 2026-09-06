@@ -61,11 +61,30 @@ func responseAccountingTerminal(v any) string {
 	}
 }
 
+// Two different observations suffice to preserve conflict without retaining
+// every terminal in a coalesced write. Matching observations are idempotent.
+type responseTerminalObservations struct {
+	first, conflicting string
+}
+
+func (o *responseTerminalObservations) observe(terminal string) {
+	if terminal == "" {
+		return
+	}
+	if o.first == "" {
+		o.first = terminal
+	} else if o.first != terminal && o.conflicting == "" {
+		o.conflicting = terminal
+	}
+}
+
 // Native Responses frames can pass through the chat relay without a generated
-// [DONE]. Inspect only candidate terminal envelopes, independently of content.
-func accountingStreamTerminal(frame string) string {
+// [DONE]. Inspect candidate terminal envelopes, including multiple SSE events
+// in one provider chunk, without discarding contradictory observations.
+func accountingStreamTerminals(frame string) responseTerminalObservations {
+	var observed responseTerminalObservations
 	if !strings.Contains(frame, "response.completed") && !strings.Contains(frame, "response.incomplete") && !strings.Contains(frame, "response.failed") {
-		return ""
+		return observed
 	}
 	for line := range strings.SplitSeq(frame, "\n") {
 		data, ok := strings.CutPrefix(line, "data:")
@@ -84,13 +103,16 @@ func accountingStreamTerminal(frame string) string {
 		switch event.Type {
 		case "response.completed":
 			if event.Response.Status == "completed" {
-				return "completed"
+				observed.observe("completed")
 			}
 		case "response.incomplete":
-			return "incomplete"
+			observed.observe("incomplete")
 		case "response.failed":
-			return "error"
+			observed.observe("error")
+		}
+		if observed.conflicting != "" {
+			return observed
 		}
 	}
-	return ""
+	return observed
 }

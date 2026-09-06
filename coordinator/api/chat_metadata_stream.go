@@ -100,11 +100,15 @@ func (s *Server) writeChatStreamTerminalError(
 	errorType string,
 	message string,
 ) {
+	accounting := pr.Accounting.Parent()
 	if hasChatCompletionMetadata(pr) {
 		event := newChatCompletionExtrasEvent(pr)
 		attachChatCompletionMetadata(event, pr)
 		if metadataEvent, err := json.Marshal(event); err == nil {
-			fmt.Fprintf(w, "data: %s\n\n", metadataEvent)
+			n, writeErr := fmt.Fprintf(w, "data: %s\n\n", metadataEvent)
+			if writeErr != nil || n != len(metadataEvent)+8 {
+				accounting.Egress(false, true)
+			}
 		}
 	}
 	errData, _ := json.Marshal(map[string]any{
@@ -113,6 +117,11 @@ func (s *Server) writeChatStreamTerminalError(
 			"type":    errorType,
 		},
 	})
-	fmt.Fprintf(w, "data: %s\n\n", errData)
+	n, writeErr := fmt.Fprintf(w, "data: %s\n\n", errData)
 	flusher.Flush()
+	if writeErr == nil && n == len(errData)+8 {
+		accounting.Egress(true, false, "error")
+	} else {
+		accounting.Egress(false, true)
+	}
 }

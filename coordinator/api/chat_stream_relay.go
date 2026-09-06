@@ -48,7 +48,7 @@ type chatStreamRelay struct {
 	frames         int
 	contentWritten bool
 	batchContent   bool
-	batchTerminal  string
+	batchTerminals responseTerminalObservations
 }
 
 func newChatStreamRelay(pr *registry.PendingRequest, w http.ResponseWriter, flusher http.Flusher, stamps *relayStamps) *chatStreamRelay {
@@ -113,10 +113,12 @@ func (rl *chatStreamRelay) writeFrame(frame string) {
 	if !rl.contentWritten && rl.stamps != nil && rl.stamps.accounting != nil && accountingChunkHasContent(frame) {
 		rl.batchContent = true
 	}
-	if rl.sawResponsesAPI && rl.stamps != nil && rl.stamps.accounting != nil {
-		if terminal := accountingStreamTerminal(frame); terminal != "" {
-			rl.batchTerminal = terminal
-		}
+	if rl.stamps != nil && rl.stamps.accounting != nil {
+		// Accounting recognizes terminal envelopes independently of the
+		// wire-format latch, including an event-prefixed or grouped first chunk.
+		terminals := accountingStreamTerminals(frame)
+		rl.batchTerminals.observe(terminals.first)
+		rl.batchTerminals.observe(terminals.conflicting)
 	}
 	rl.buf.WriteString(frame)
 	rl.buf.WriteString("\n\n")
@@ -146,10 +148,10 @@ func (rl *chatStreamRelay) flush() {
 		rl.contentWritten = true
 	}
 	rl.batchContent = false
-	if rl.batchTerminal != "" && err == nil && n == wanted {
-		rl.stamps.accounting.Egress(true, false, rl.batchTerminal)
+	if rl.batchTerminals.first != "" && err == nil && n == wanted {
+		rl.stamps.accounting.Egress(true, false, rl.batchTerminals.first, rl.batchTerminals.conflicting)
 	}
-	rl.batchTerminal = ""
+	rl.batchTerminals = responseTerminalObservations{}
 	if n != wanted {
 		rl.stamps.writeErr()
 	}

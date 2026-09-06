@@ -196,8 +196,11 @@ func TestRequestAccountingPostContentErrorAcrossAdapters(t *testing.T) {
 					t.Fatalf("status=%d body=%s", status, output)
 				}
 				r := waitRequestOutcome(t, st, 1)[0]
-				if r.Termination == "completed" || r.ResponseProgress != "content_observed" || r.ProviderOutcome != "error" || r.ResponseEgressCompleted || r.ContentEgressObserved != stream {
+				if r.Termination == "completed" || r.ResponseProgress != "content_observed" || r.ProviderOutcome != "error" || r.ResponseEgressCompleted != stream || r.ContentEgressObserved != stream {
 					t.Fatalf("interrupted progress conflates ingress/egress: %+v", r)
+				}
+				if stream && (r.ResponseTerminal != "error" || r.ClientWriteError) {
+					t.Fatalf("accepted error envelope lacks terminal evidence: %+v", r)
 				}
 				if r.NormalizedCode != "" {
 					t.Fatalf("mid-response error became pre-content timeout: %+v", r)

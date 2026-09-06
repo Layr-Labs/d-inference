@@ -1022,19 +1022,20 @@ func dispatchErrorClass(errText string) string {
 }
 
 // queuedExitOutcome records the terminal route outcome of a queue-wait exit
-// and mirrors its status/reason onto the placeholder attempt profile. While
+// and mirrors its status/reason onto the placeholder attempt evidence. While
 // the request waits, d.pr is nil, so updateRoutingOutcome takes the request-id
 // path and never reaches the attempt profile; the pair is written here, in one
 // place, so the row and the profile cannot drift. It is deliberately NOT
 // routed through updateInferenceRouteOutcomeForPending, which would also fire
 // the cache-selection terminal for a request that never had a provider.
-func (d *dispatchState) queuedExitOutcome(ap *registry.AttemptProfile, status, reason string, code int) {
+func (d *dispatchState) queuedExitOutcome(pr *registry.PendingRequest, status, reason string, code int) {
 	outcome := d.errorRoutingOutcome(status, reason, code)
 	// No provider attempt was dispatched: the funnel counts this exit on
 	// inference.queue_outcome, never on inference.attempt_outcome.
 	outcome.QueueExit = true
 	d.updateRoutingOutcome(outcome)
-	ap.SetOutcome(status, reason, "", "", "")
+	pr.Profile.SetOutcome(status, reason, "", "", "")
+	pr.Accounting.Observe("not_dispatched", reason, code)
 }
 
 // closeQueuedAttempt closes the queue-path placeholder attempt when it never
@@ -1446,7 +1447,15 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		}
 		queuePR.Timing.QueuedAt = time.Now()
 		queuePR.Accounting = requestOutcomeFromContext(r.Context()).NewAttempt(d.requestID, d.attempt, "")
-		defer func() { queuePR.Accounting.Observe("not_dispatched", dispatchErrorClass(d.lastErr), d.lastErrCode) }()
+		queuedWriteCompleted := false
+		defer func() {
+			if !queuedWriteCompleted {
+				// Queue exits and pre-write route failures record their own
+				// reason/status below. Request-level lastErr can belong to a
+				// previous attempt and must never decorate this attempt.
+				queuePR.Accounting.Observe("not_dispatched", "", 0)
+			}
+		}()
 		queuePR.Profile = d.profile.NewAttempt(d.requestID, d.attempt, "")
 		queuePR.Profile.Mark(registry.StampAttemptStart)
 		queuePR.Profile.Mark(registry.StampQueued)
@@ -1465,6 +1474,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			// decision is recorded only after a successful enqueue); the
 			// placeholder carries the rejection vocabulary directly.
 			queuePR.Profile.SetOutcome("rejected", "queue_full", "", "", "")
+			queuePR.Accounting.Observe("not_dispatched", "queue_full", http.StatusTooManyRequests)
 			retryAfter := s.estimateRetryAfter(d.model)
 			d.refundReservation()
 			info := d.rejectionInfoWithDecision("queue", "queue_full", http.StatusTooManyRequests, retryAfter*1000, decision)
@@ -1500,7 +1510,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			if errors.Is(err, context.Canceled) {
 				s.recordWarmPoolQueueState(d.model)
 				d.emitClientGone(phaseBeforeFirstToken)
-				d.queuedExitOutcome(queuePR.Profile, "cancelled", "client_gone", 0)
+				d.queuedExitOutcome(queuePR, "cancelled", "client_gone", 0)
 				d.refundReservation()
 				return outcomeClientGone
 			}
@@ -1514,7 +1524,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				// resolveDominantExhaustedStatus keys the reason on. The route
 				// row and the attempt profile carry queue_deadline as well.
 				s.recordWarmPoolQueueState(d.model)
-				d.queuedExitOutcome(queuePR.Profile,
+				d.queuedExitOutcome(queuePR,
 					"timeout", rejectionReasonQueueDeadline, http.StatusGatewayTimeout)
 				d.setLastError(errQueueDeadlineExpired, http.StatusGatewayTimeout)
 				return outcomeFailFast
@@ -1524,7 +1534,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				// ceiling — deterministic, so answer with the standard
 				// ttft_too_slow 429 instead of waiting out the queue.
 				s.recordWarmPoolQueueState(d.model)
-				d.queuedExitOutcome(queuePR.Profile, "error", "ttft_too_slow", http.StatusTooManyRequests)
+				d.queuedExitOutcome(queuePR, "error", "ttft_too_slow", http.StatusTooManyRequests)
 				d.refundReservation()
 				s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 				s.triggerWarmPool()
@@ -1538,7 +1548,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			}
 			if errors.Is(err, registry.ErrQueueToolConstraintUnavailable) {
 				s.recordWarmPoolQueueState(d.model)
-				d.queuedExitOutcome(queuePR.Profile,
+				d.queuedExitOutcome(queuePR,
 					"error", "model_capability_unsupported",
 					http.StatusServiceUnavailable)
 				d.refundReservation()
@@ -1554,7 +1564,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 					"model_unavailable")
 				return outcomeResponseWritten
 			}
-			d.queuedExitOutcome(queuePR.Profile, "timeout", "queue_timeout", http.StatusTooManyRequests)
+			d.queuedExitOutcome(queuePR, "timeout", "queue_timeout", http.StatusTooManyRequests)
 			d.refundReservation()
 			s.ddIncr("request_queue.timeout", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model)})
 			s.registry.RecordWarmPoolQueueTimeout(d.model, time.Since(queuedReq.EnqueuedAt))
@@ -1733,6 +1743,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		)
 		cancelWrite()
 		if writeErr == nil {
+			queuedWriteCompleted = true
 			d.pr.Profile.Mark(registry.StampWriteDone)
 			d.pr.Accounting.Observe("write_completed", "", 0)
 		}

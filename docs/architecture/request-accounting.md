@@ -1,6 +1,6 @@
 # Incoming request accounting
 
-> Last updated: 2026-09-05 · commit `bbf6f83d4`
+> Last updated: 2026-09-05 · commit `881f9ff50`
 
 The coordinator's `request_outcomes` ledger records one incoming request with
 linked internal attempts and separate provider, response and client evidence.
@@ -64,6 +64,9 @@ socket write (`write_completed`), provider acknowledgment, first content
 ingress, and provider terminal. A failed write may have delivered bytes;
 selection or acknowledgment does not prove engine admission. Synthetic route
 timeouts and cancellations never become observed provider refusals.
+Queued attempts retain their own exit diagnostics. A successful queued write
+does not inherit a previous attempt's error reason or HTTP status
+(`dispatchState.dispatchPrimary`, `dispatchState.queuedExitOutcome`).
 
 `Tracker.Finish` records handler exit, HTTP status, context departure and write
 errors. A subsequent terminal can revise an attempt while the coordinator
@@ -88,11 +91,21 @@ The record keeps the following dimensions distinct
 | `evidence_conflict` | Contradictory evidence; consumers must retain it as conflicting/unknown rather than count it as completion. |
 
 Completion requires a completed winning provider, a completed endpoint
-terminal, successful full response egress and no write error. A legitimate
-zero-token completion can satisfy this without generated-content egress.
+terminal, successful full response egress, no write error and no conflicting
+evidence. A legitimate zero-token completion can satisfy this without
+generated-content egress.
 Responses `incomplete` or error terminals do not satisfy it. Observed client
 departure takes precedence over completion; a later provider completion
 remains visible. Successful local writes do not prove downstream receipt.
+
+A fully accepted streamed error envelope records `response_terminal=error`
+and complete local egress, while failed or short writes do not establish that
+terminal. This error response still does not fulfill the request. `Tracker.Egress`
+preserves the first valid response terminal; differing later terminals set
+sticky `evidence_conflict`, including terminals coalesced in one relay write.
+Matching observations are idempotent. Changed evidence after finalization
+publishes a revised snapshot without moving the receipt or handler-exit cohort
+(`coordinator/api/request_outcome_accounting.go`, `Tracker.Egress`).
 
 | Normalized code | Required evidence | Owner |
 |---|---|---|
@@ -109,8 +122,8 @@ history and does not become a final rejection.
 
 `NewServer` starts a dedicated unsampled sink, independent of profiler enablement
 and sample rate. It publishes receipt and final snapshots, then changed late
-attempt evidence. Detailed per-token events and full provider profiles are
-excluded. Only the first generated-content ingress/egress adds accounting work.
+attempt or egress evidence. Detailed per-token events and full provider profiles
+are excluded. Only the first generated-content ingress/egress adds accounting work.
 
 The channel holds 4,096 snapshots. The worker batches at most 64 rows and
 flushes every 100 ms or on a full batch. PostgreSQL calls have a five-second

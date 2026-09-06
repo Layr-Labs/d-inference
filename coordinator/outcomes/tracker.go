@@ -169,13 +169,25 @@ func (t *Tracker) Egress(completed, writeError bool, terminal ...string) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	priorTerminal, priorConflict := t.record.ResponseTerminal, t.record.EvidenceConflict
+	priorEgress, priorWriteError := t.record.ResponseEgressCompleted, t.record.ClientWriteError
 	t.record.ClientWriteError = t.record.ClientWriteError || writeError
 	t.record.ResponseEgressCompleted = (t.record.ResponseEgressCompleted || completed) && !t.record.ClientWriteError
-	if len(terminal) > 0 {
-		switch terminal[0] {
+	for _, observed := range terminal {
+		switch observed {
 		case "completed", "incomplete", "error":
-			t.record.ResponseTerminal = terminal[0]
+			if t.record.ResponseTerminal == "unknown" {
+				t.record.ResponseTerminal = observed
+			} else if t.record.ResponseTerminal != observed {
+				// Keep the first observation and make disagreement sticky. A
+				// repeated matching terminal is evidence of the same outcome.
+				t.record.EvidenceConflict = true
+			}
 		}
+	}
+	if t.record.FinalizedAt != nil && (t.record.ResponseTerminal != priorTerminal || t.record.EvidenceConflict != priorConflict || t.record.ResponseEgressCompleted != priorEgress || t.record.ClientWriteError != priorWriteError) {
+		t.classifyLocked()
+		t.emitLocked()
 	}
 }
 
@@ -223,7 +235,7 @@ func (t *Tracker) classifyLocked() {
 	} else if r.AttemptCount == 0 {
 		r.ProviderOutcome = "not_dispatched"
 	}
-	complete := r.ProviderOutcome == "completed" && r.ResponseTerminal == "completed" && r.ResponseEgressCompleted && !r.ClientWriteError
+	complete := !r.EvidenceConflict && r.ProviderOutcome == "completed" && r.ResponseTerminal == "completed" && r.ResponseEgressCompleted && !r.ClientWriteError
 	if complete {
 		r.ResponseProgress = "completion_confirmed"
 	}

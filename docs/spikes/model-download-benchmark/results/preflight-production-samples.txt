@@ -1,0 +1,7 @@
+Pre-flight probes of the PRODUCTION path (models.darkbloom.ai), same Mac, same day (2026-09-01, colo MIA),
+object v2/gpt-oss-20b--ca1fe4e9c149/2026-05-25-r1/model-00001-of-00003.safetensors (5,303,719,858 bytes).
+Taken ~6 hours BEFORE the benchmark passes:
+  HEAD: HTTP/2 200, cf-cache-status: DYNAMIC, no cache-control header, accept-ranges: bytes
+  single stream, 12 s sample: bytes=505069514 speed=42,088,098 B/s (40.1 MiB/s)
+  4 parallel Range streams (512 MiB each), 12 s: 16.2 / 18.4 / 10.0 / 21.0 MB/s -> ~62 MiB/s aggregate
+Taken during the warm probe (see warm-probe/probe.log): 15 s sample 12,430,209 B/s (11.9 MiB/s), TTFB 504 ms.

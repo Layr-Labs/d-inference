@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "transparent-reconstruction-benchmark-local-only",
+  "main": "benchmark-worker.mjs",
+  "compatibility_date": "2026-08-22",
+  "r2_buckets": [
+    {
+      "binding": "BENCH_BUCKET",
+      "bucket_name": "darkbloom-reconstruction-benchmark-local-only"
+    }
+  ],
+  "vars": {
+    "BENCH_RUN_ID": "local-validation",
+    "CHUNK_BYTES": "1048576",
+    "SETUP_TOKEN": "local-validation-token"
+  }
+}

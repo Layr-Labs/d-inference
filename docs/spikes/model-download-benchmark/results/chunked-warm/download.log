@@ -1,0 +1,128 @@
+1788311506.890782000 Downloading Benchmark chunked 2026-09-01-r1 (bench-chunked-2026-09-01-r1)…
+1788311506.896834000   ✓ shard-01-part-01.bin  64.0 MB
+1788311506.902316000   ✓ shard-01-part-02.bin  64.0 MB
+1788311506.906455000   ✓ shard-01-part-03.bin  64.0 MB
+1788311506.910508000   ✓ shard-01-part-04.bin  64.0 MB
+1788311506.915276000   ✓ shard-01-part-05.bin  64.0 MB
+1788311506.919650000   ✓ shard-01-part-06.bin  64.0 MB
+1788311506.923999000   ✓ shard-01-part-07.bin  64.0 MB
+1788311506.928083000   ✓ shard-01-part-08.bin  64.0 MB
+1788311506.932025000   ✓ shard-01-part-09.bin  64.0 MB
+1788311506.935922000   ✓ shard-01-part-10.bin  64.0 MB
+1788311506.939741000   ✓ shard-01-part-11.bin  64.0 MB
+1788311506.943557000   ✓ shard-01-part-12.bin  64.0 MB
+1788311506.947370000   ✓ shard-01-part-13.bin  64.0 MB
+1788311506.951171000   ✓ shard-01-part-14.bin  64.0 MB
+1788311506.955040000   ✓ shard-01-part-15.bin  64.0 MB
+1788311506.959055000   ✓ shard-01-part-16.bin  64.0 MB
+1788311506.962957000   ✓ shard-02-part-01.bin  64.0 MB
+1788311506.966872000   ✓ shard-02-part-02.bin  64.0 MB
+1788311506.970855000   ✓ shard-02-part-03.bin  64.0 MB
+1788311506.974765000   ✓ shard-02-part-04.bin  64.0 MB
+1788311506.978670000   ✓ shard-02-part-05.bin  64.0 MB
+1788311506.982655000   ✓ shard-02-part-06.bin  64.0 MB
+1788311506.986741000   ✓ shard-02-part-07.bin  64.0 MB
+1788311506.991275000   ✓ shard-02-part-08.bin  64.0 MB
+1788311506.996694000   ✓ shard-02-part-09.bin  64.0 MB
+1788311507.001870000   ✓ shard-02-part-10.bin  64.0 MB
+1788311507.007029000   ✓ shard-02-part-11.bin  64.0 MB
+1788311507.012298000   ✓ shard-02-part-12.bin  64.0 MB
+1788311507.017814000   ✓ shard-02-part-13.bin  64.0 MB
+1788311507.022835000   ✓ shard-02-part-14.bin  64.0 MB
+1788311507.028895000   ✓ shard-02-part-15.bin  64.0 MB
+1788311507.035475000   ✓ shard-02-part-16.bin  64.0 MB
+1788311507.043005000   ✓ shard-03-part-01.bin  64.0 MB
+1788311507.050572000   ✓ shard-03-part-02.bin  64.0 MB
+1788311507.058003000   ✓ shard-03-part-03.bin  64.0 MB
+1788311507.065902000   ✓ shard-03-part-04.bin  64.0 MB
+1788311507.074461000   ✓ shard-03-part-05.bin  64.0 MB
+1788311507.081265000   ✓ shard-03-part-06.bin  64.0 MB
+1788311507.087841000   ✓ shard-03-part-07.bin  64.0 MB
+1788311507.093875000   ✓ shard-03-part-08.bin  64.0 MB
+1788311507.100064000   ✓ shard-03-part-09.bin  64.0 MB
+1788311507.105127000   ✓ shard-03-part-10.bin  64.0 MB
+1788311507.109422000   ✓ shard-03-part-11.bin  64.0 MB
+1788311507.114041000   ✓ shard-03-part-12.bin  64.0 MB
+1788311507.118192000   ✓ shard-03-part-13.bin  64.0 MB
+1788311507.122135000   ✓ shard-03-part-14.bin  64.0 MB
+1788311507.126508000   ✓ shard-03-part-15.bin  64.0 MB
+1788311507.130773000   ✓ shard-03-part-16.bin  64.0 MB
+1788311507.134876000   ✓ shard-04-part-01.bin  64.0 MB
+1788311507.138386000   ✓ shard-04-part-02.bin  64.0 MB
+1788311507.141585000   ✓ shard-04-part-03.bin  64.0 MB
+1788311507.144950000   ✓ shard-04-part-04.bin  64.0 MB
+1788311507.148465000   ✓ shard-04-part-05.bin  64.0 MB
+1788311507.153488000   ✓ shard-04-part-06.bin  64.0 MB
+1788311507.157983000   ✓ shard-04-part-07.bin  64.0 MB
+1788311507.162901000   ✓ shard-04-part-08.bin  64.0 MB
+1788311507.167829000   ✓ shard-04-part-09.bin  64.0 MB
+1788311507.173085000   ✓ shard-04-part-10.bin  64.0 MB
+1788311507.178208000   ✓ shard-04-part-11.bin  64.0 MB
+1788311507.183507000   ✓ shard-04-part-12.bin  64.0 MB
+1788311507.188905000   ✓ shard-04-part-13.bin  64.0 MB
+1788311507.193944000   ✓ shard-01-part-01.bin  64.0 MB  14 MB/s  4s
+1788311507.199290000   ✓ shard-01-part-02.bin  64.0 MB  14 MB/s  4s
+1788311507.205434000   ✓ shard-01-part-03.bin  64.0 MB  14 MB/s  4s
+1788311507.210760000   ✓ shard-01-part-04.bin  64.0 MB  14 MB/s  4s
+1788311507.218532000   ✓ shard-01-part-05.bin  64.0 MB  7 MB/s  9s
+1788311507.223417000   ✓ shard-01-part-06.bin  64.0 MB  7 MB/s  9s
+1788311507.227263000   ✓ shard-01-part-07.bin  64.0 MB  7 MB/s  9s
+1788311507.230675000   ✓ shard-01-part-08.bin  64.0 MB  7 MB/s  9s
+1788311507.234291000   ✓ shard-01-part-09.bin  64.0 MB  5 MB/s  13s
+1788311507.238046000   ✓ shard-01-part-10.bin  64.0 MB  5 MB/s  13s
+1788311507.241521000   ✓ shard-01-part-11.bin  64.0 MB  5 MB/s  13s
+1788311507.245116000   ✓ shard-01-part-12.bin  64.0 MB  5 MB/s  13s
+1788311507.248397000   ✓ shard-01-part-13.bin  64.0 MB  4 MB/s  17s
+1788311507.251790000   ✓ shard-01-part-14.bin  64.0 MB  4 MB/s  17s
+1788311507.255220000   ✓ shard-01-part-15.bin  64.0 MB  4 MB/s  17s
+1788311507.258429000   ✓ shard-01-part-16.bin  64.0 MB  4 MB/s  17s
+1788311507.261859000   ✓ shard-02-part-01.bin  64.0 MB  3 MB/s  21s
+1788311507.265281000   ✓ shard-02-part-02.bin  64.0 MB  3 MB/s  21s
+1788311507.268674000   ✓ shard-02-part-03.bin  64.0 MB  3 MB/s  21s
+1788311507.272362000   ✓ shard-02-part-04.bin  64.0 MB  3 MB/s  21s
+1788311507.276084000   ✓ shard-02-part-05.bin  64.0 MB  2 MB/s  25s
+1788311507.279989000   ✓ shard-02-part-06.bin  64.0 MB  2 MB/s  25s
+1788311507.284252000   ✓ shard-02-part-07.bin  64.0 MB  2 MB/s  25s
+1788311507.290134000   ✓ shard-02-part-08.bin  64.0 MB  2 MB/s  25s
+1788311507.294741000   ✓ shard-02-part-09.bin  64.0 MB  2 MB/s  30s
+1788311507.299916000   ✓ shard-02-part-10.bin  64.0 MB  2 MB/s  30s
+1788311507.304771000   ✓ shard-02-part-11.bin  64.0 MB  2 MB/s  30s
+1788311507.309469000   ✓ shard-02-part-12.bin  64.0 MB  2 MB/s  30s
+1788311507.314135000   ✓ shard-02-part-13.bin  64.0 MB  2 MB/s  34s
+1788311507.318739000   ✓ shard-02-part-14.bin  64.0 MB  2 MB/s  34s
+1788311507.323225000   ✓ shard-02-part-15.bin  64.0 MB  2 MB/s  34s
+1788311507.327597000   ✓ shard-02-part-16.bin  64.0 MB  2 MB/s  34s
+1788311507.332210000   ✓ shard-03-part-01.bin  64.0 MB  2 MB/s  38s
+1788311507.336809000   ✓ shard-03-part-02.bin  64.0 MB  2 MB/s  38s
+1788311507.341438000   ✓ shard-03-part-03.bin  64.0 MB  2 MB/s  38s
+1788311507.346057000   ✓ shard-03-part-04.bin  64.0 MB  2 MB/s  38s
+1788311507.351065000   ✓ shard-03-part-05.bin  64.0 MB  1 MB/s  42s
+1788311507.355864000   ✓ shard-03-part-06.bin  64.0 MB  1 MB/s  43s
+1788311507.360667000   ✓ shard-03-part-07.bin  64.0 MB  1 MB/s  43s
+1788311507.365929000   ✓ shard-03-part-08.bin  64.0 MB  1 MB/s  43s
+1788311507.371206000   ✓ shard-03-part-09.bin  64.0 MB  1 MB/s  47s
+1788311507.376354000   ✓ shard-03-part-10.bin  64.0 MB  1 MB/s  48s
+1788311507.381577000   ✓ shard-03-part-11.bin  64.0 MB  1 MB/s  48s
+1788311507.386898000   ✓ shard-03-part-12.bin  64.0 MB  1 MB/s  48s
+1788311507.392976000   ✓ shard-03-part-13.bin  64.0 MB  1 MB/s  51s
+1788311507.398757000   ✓ shard-03-part-14.bin  64.0 MB  1 MB/s  52s
+1788311507.404044000   ✓ shard-03-part-15.bin  64.0 MB  1 MB/s  52s
+1788311507.409179000   ✓ shard-03-part-16.bin  64.0 MB  1 MB/s  52s
+1788311507.414459000   ✓ shard-04-part-01.bin  64.0 MB  1 MB/s  55s
+1788311507.420163000   ✓ shard-04-part-02.bin  64.0 MB  1 MB/s  56s
+1788311507.426175000   ✓ shard-04-part-03.bin  64.0 MB  1 MB/s  56s
+1788311507.431718000   ✓ shard-04-part-04.bin  64.0 MB  1 MB/s  56s
+1788311507.437793000   ✓ shard-04-part-05.bin  64.0 MB  1 MB/s  59s
+1788311507.444105000   ✓ shard-04-part-06.bin  64.0 MB  1 MB/s  1m 1s
+1788311507.450094000   ✓ shard-04-part-07.bin  64.0 MB  1 MB/s  1m 1s
+1788311507.455979000   ✓ shard-04-part-08.bin  64.0 MB  1 MB/s  1m 1s
+1788311507.462673000   ✓ shard-04-part-09.bin  64.0 MB  1 MB/s  1m 3s
+1788311507.469186000   ✓ shard-04-part-10.bin  64.0 MB  1005 KB/s  1m 5s
+1788311507.475452000   ✓ shard-04-part-11.bin  64.0 MB  1004 KB/s  1m 5s
+1788311507.481642000   ✓ shard-04-part-12.bin  64.0 MB  1004 KB/s  1m 5s
+1788311507.488175000   ✓ shard-04-part-13.bin  64.0 MB  968 KB/s  1m 7s
+1788311507.493954000   ✓ shard-04-part-14.bin  64.0 MB  947 KB/s  1m 9s
+1788311507.500390000   ✓ shard-04-part-15.bin  64.0 MB  947 KB/s  1m 9s
+1788311507.507373000   ✓ shard-04-part-16.bin  64.0 MB  947 KB/s  1m 9s
+1788311507.513248000   ✓ bench-chunked-2026-09-01-r1  4096.0 MB
+1788311507.519277000 Done. Cached at /Users/fork/.cache/huggingface/hub/models--bench-chunked-2026-09-01-r1

@@ -1,0 +1,250 @@
+{
+  "schema": 1,
+  "reviewer": "gpt_finish",
+  "status": "PASS_PUBLICATION_IDENTITIES_AND_SCOPE_VERIFIED",
+  "packet": "/private/tmp/darkbloom-release090-qat145-publication1",
+  "files": {
+    "report.md": {
+      "sha256": "a23d7a229af190fd5d9722d4df0fd1fe33ebe5b00788d15ae5e6fba99d52e753",
+      "bytes": 4382
+    },
+    "evidence.json": {
+      "sha256": "224e2a40daacbb2414cd3596d14cf7f84bfbc0b700f0bdfd33e12487f24915b1",
+      "bytes": 28252
+    },
+    "manifest.json": {
+      "sha256": "ffb5872acec61e9e0c46886ab211a52b5bf36d26fa31a324bff7ac30e31b94db",
+      "bytes": 8701
+    },
+    "evidence.tar.gz": {
+      "sha256": "017c4505827a69e924e90cfda345a55bda4dced80d2f97501d391c7a9393cd8f",
+      "bytes": 5990901
+    },
+    "root-review.json": {
+      "sha256": "8bb07eae215dba01652b0496bc7082a1c841948c0f01a19fdcca647071f6cc93",
+      "bytes": 5135
+    },
+    "peer-review.json": {
+      "sha256": "de3398c38ac915ec4e2acbbb8534f15c8cfbd26da22ccbcc8e934a4cdb1d6203",
+      "bytes": 19806
+    }
+  },
+  "actual_archive_members": 56,
+  "archive_member_hashes_and_sizes_verified": true,
+  "archive_members_equal_originals": [
+    {
+      "member": "142/evidence-manifest.json",
+      "original": "/private/tmp/darkbloom-release090-sustained-final-execution2/evidence/evidence-manifest.json"
+    },
+    {
+      "member": "142/qat/input.json",
+      "original": "/private/tmp/darkbloom-release090-sustained-final-execution2/evidence/results/gemma-4-26b-qat-4bit-sustained-b1-r1-paged-cache-off/input.json"
+    },
+    {
+      "member": "142/qat/metadata.json",
+      "original": "/private/tmp/darkbloom-release090-sustained-final-execution2/evidence/results/gemma-4-26b-qat-4bit-sustained-b1-r1-paged-cache-off/metadata.json"
+    },
+    {
+      "member": "142/qat/report.json",
+      "original": "/private/tmp/darkbloom-release090-sustained-final-execution2/evidence/results/gemma-4-26b-qat-4bit-sustained-b1-r1-paged-cache-off/report.json"
+    },
+    {
+      "member": "142/steps/5/cell-results.json",
+      "original": "/private/tmp/darkbloom-release090-sustained-final-execution2/evidence/steps/5/cell-results.json"
+    },
+    {
+      "member": "142/steps/5/retirement.json",
+      "original": "/private/tmp/darkbloom-release090-sustained-final-execution2/evidence/steps/5/retirement.json"
+    },
+    {
+      "member": "142/terminal.json",
+      "original": "/private/tmp/darkbloom-release090-sustained-final-execution2/evidence/terminal.json"
+    },
+    {
+      "member": "142/worker-verdict.json",
+      "original": "/private/tmp/darkbloom-release090-sustained-final-execution2/evidence/worker-verdict.json"
+    },
+    {
+      "member": "145/binding.reviewed.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/binding.reviewed.json"
+    },
+    {
+      "member": "145/collection-receipt.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/collection-receipt.json"
+    },
+    {
+      "member": "145/evidence-manifest.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/evidence-manifest.json"
+    },
+    {
+      "member": "145/foreground-retirement.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/foreground-retirement.json"
+    },
+    {
+      "member": "145/m5-release.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/m5-release.json"
+    },
+    {
+      "member": "145/partial-verdict.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/partial-verdict.json"
+    },
+    {
+      "member": "145/results/qat145-nonrepetitive-contiguous-off/input.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/results/qat145-nonrepetitive-contiguous-off/input.json"
+    },
+    {
+      "member": "145/results/qat145-nonrepetitive-contiguous-off/metadata.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/results/qat145-nonrepetitive-contiguous-off/metadata.json"
+    },
+    {
+      "member": "145/results/qat145-nonrepetitive-contiguous-off/report.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/results/qat145-nonrepetitive-contiguous-off/report.json"
+    },
+    {
+      "member": "145/results/qat145-nonrepetitive-paged-off/input.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/results/qat145-nonrepetitive-paged-off/input.json"
+    },
+    {
+      "member": "145/results/qat145-nonrepetitive-paged-off/metadata.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/results/qat145-nonrepetitive-paged-off/metadata.json"
+    },
+    {
+      "member": "145/results/qat145-nonrepetitive-paged-off/report.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/results/qat145-nonrepetitive-paged-off/report.json"
+    },
+    {
+      "member": "145/results/qat145-original142-contiguous-off/input.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/results/qat145-original142-contiguous-off/input.json"
+    },
+    {
+      "member": "145/results/qat145-original142-contiguous-off/metadata.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/results/qat145-original142-contiguous-off/metadata.json"
+    },
+    {
+      "member": "145/results/qat145-original142-contiguous-off/report.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/results/qat145-original142-contiguous-off/report.json"
+    },
+    {
+      "member": "145/root-ack.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/root-ack.json"
+    },
+    {
+      "member": "145/root-combined-exposure-review.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/root-combined-exposure-review.json"
+    },
+    {
+      "member": "145/root-controller-review.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/root-controller-review.json"
+    },
+    {
+      "member": "145/root-execution-grant.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/root-execution-grant.json"
+    },
+    {
+      "member": "145/selected-collection-receipt.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/selected-collection-receipt.json"
+    },
+    {
+      "member": "145/stage-receipt.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/stage-receipt.json"
+    },
+    {
+      "member": "145/steps/1/audit-after.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/1/audit-after.json"
+    },
+    {
+      "member": "145/steps/1/audit-before.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/1/audit-before.json"
+    },
+    {
+      "member": "145/steps/1/cell-results.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/1/cell-results.json"
+    },
+    {
+      "member": "145/steps/1/command.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/1/command.json"
+    },
+    {
+      "member": "145/steps/1/retirement.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/1/retirement.json"
+    },
+    {
+      "member": "145/steps/1/verdict.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/1/verdict.json"
+    },
+    {
+      "member": "145/steps/2/audit-after.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/2/audit-after.json"
+    },
+    {
+      "member": "145/steps/2/audit-before.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/2/audit-before.json"
+    },
+    {
+      "member": "145/steps/2/cell-results.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/2/cell-results.json"
+    },
+    {
+      "member": "145/steps/2/command.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/2/command.json"
+    },
+    {
+      "member": "145/steps/2/retirement.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/2/retirement.json"
+    },
+    {
+      "member": "145/steps/2/verdict.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/2/verdict.json"
+    },
+    {
+      "member": "145/steps/3/audit-after.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/3/audit-after.json"
+    },
+    {
+      "member": "145/steps/3/audit-before.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/3/audit-before.json"
+    },
+    {
+      "member": "145/steps/3/cell-results.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/3/cell-results.json"
+    },
+    {
+      "member": "145/steps/3/command.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/3/command.json"
+    },
+    {
+      "member": "145/steps/3/retirement.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/3/retirement.json"
+    },
+    {
+      "member": "145/steps/3/verdict.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/3/verdict.json"
+    },
+    {
+      "member": "145/supervisor-terminal.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/supervisor-terminal.json"
+    },
+    {
+      "member": "145/terminal.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/terminal.json"
+    },
+    {
+      "member": "145/worker-verdict.json",
+      "original": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/worker-verdict.json"
+    }
+  ],
+  "root_and_peer_reviews_equal_standalone_and_embedded_versions": true,
+  "prior_original145_identity_check": {
+    "files": 203,
+    "receipt_sha256": "de3398c38ac915ec4e2acbbb8534f15c8cfbd26da22ccbcc8e934a4cdb1d6203"
+  },
+  "corrected_report_duration": "Retained142 tenant decode20.192673375 rounded20.193; initial20.195 report typo corrected before this final review.",
+  "scope_review": [
+    "Original142 and145 strict failed verdicts remain explicit and included. Root combined sustained-intent acceptance is a separately attributed release assessment.",
+    "Direct145 main-row B1 traces and absent142 tenant width trace are distinguished. No exact-word equality is introduced as a requirement.",
+    "New literary prose is coherent but factual detail errors on both backends, incomplete5000-word request and selective coverage remain disclosed.",
+    "All203 originals, matching three-cell audits, lifecycle controls and clean retirement were independently verified in the prior combined receipt.",
+    "No universal quality, multibatch throughput, SSD persistence or full release acceptance claim. Full remote archive hashes are owner-recorded; publication projection does not claim to rehash full remote originals or preserve original modes."
+  ],
+  "new_gpu_or_model_tests_performed": false
+}

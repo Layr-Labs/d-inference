@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-07 · commit `e7f9c53ee`
+> Last updated: 2026-09-07 · commit `32a756317`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,9 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Final cache routing checks](2026-09-07-final-cache-routing.md) — twenty cache-off/SSD cases pass with two isolated providers, including holder selection, tenant isolation, cancellation and cold fallback.
+- [0.9.0 implementation and validation readiness](2026-09-07-release090-readiness.md) — consolidated model, cache and routing evidence; code review readiness with signed production-key restart remaining.
+- [QAT sustained generation and matched prompt control](2026-09-07-qat-sustained-followup.md) — combined long-generation evidence satisfies sustained exposure, while original refusals, exact-cap failures and literary limits remain preserved.
 - [GPT-OSS matched contiguous quality control](2026-09-07-gpt-contiguous-quality-control.md) — all eight observed GPT code/prose concerns reproduce exactly on contiguous attention, closing their migration-specific investigation while preserving task failures.
 - [Final five-model serving defaults](2026-09-07-final-defaults.md) — automatic paged attention for all five artifacts, normal MTP policy, and 4,096-token SSD restores for all three Qwens.
 - [Final tool and vision capability checks](2026-09-07-final-capabilities.md) — four correct tool calls and three accurate image descriptions on the verified 0.9.0 runtime; Qwen 3.8 routing capabilities remain separate.

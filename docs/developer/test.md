@@ -845,6 +845,21 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 
 ### 2. Coordinator (Go)
 
+For Open Sales Program changes, run the referral HTTP/service, consumer settlement,
+and cross-backend contracts from the repository root:
+
+```bash
+go test ./coordinator/tests/api/billing/... ./coordinator/tests/billing/... ./coordinator/tests/api/inference/... ./coordinator/tests/store/... -run 'Referral|ConsumerCharge|ConsumerSettlement'
+```
+
+`coordinator/tests/internal/testkit/billing.go` (`NewBilling`) supplies isolated
+mock billing and a funded consumer; it does not set a configurable referral rate.
+Use the real composed router with locally signed Privy sessions for referral
+mutations, and verify that API keys cannot register or apply a code. Store
+contracts exercise atomic collected-spend rewards and paid-only promotion rewards
+on memory and disposable PostgreSQL backends. Follow the database isolation
+requirements below; no production credentials or databases are permitted.
+
 The Go module lives at the repository root. Run `go test ./coordinator/...`
 there to select coordinator packages; keep component `cd` commands in separate
 shells when following the repository README examples.

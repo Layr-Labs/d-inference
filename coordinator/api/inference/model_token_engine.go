@@ -23,4 +23,12 @@ func (s *Owner) settleModelTokenPromotion(pr *registry.PendingRequest, provider 
 func promotionAdmission(p balanceReservationParams) promotions.Admission {
 	return promotions.Admission{Model: p.model, PublicModel: p.publicModel, BillingPromptTokens: p.billingPromptTokens, EstimatedPromptTokens: p.estimatedPromptTokens, RequestedMaxTokens: p.requestedMaxTokens}
 }
-func (s *Owner) RunModelTokenMaintenance(ctx context.Context) { s.promotions.Run(ctx) }
+func (s *Owner) RunModelTokenMaintenance(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.consumerCharges.Run(ctx, s.logger)
+	}()
+	s.promotions.Run(ctx)
+	<-done
+}

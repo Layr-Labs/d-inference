@@ -44,6 +44,7 @@ func testPostgresStore(t testing.TB) *postgres.PostgresStore {
 
 	// Clean tables within this test process's isolated database.
 	for _, table := range []string{
+		"consumer_charge_settlements",
 		"model_token_provider_carries",
 		"model_token_reservations",
 		"model_token_grants",

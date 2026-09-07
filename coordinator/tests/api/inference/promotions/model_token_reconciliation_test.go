@@ -83,8 +83,17 @@ func TestModelTokenPromotionReconciliationResumesAccountingOnce(t *testing.T) {
 			provider, pr := promotionCompletionRequest(s, promotions.Reservation(r), "reconcile-accounting")
 			s.fault.useSettlement(&promotionSettlementFaultStore{Store: st, ModelTokenPromotionStore: st, beforeCommit: beforeCommit})
 			s.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{RequestID: pr.RequestID, Usage: protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 200}})
-			if len(s.ledger.Usage("promotion-user")) != 0 || st.GetBalance("platform") != 0 || st.GetBalance("referrer") != 0 {
+			if len(s.ledger.Usage("promotion-user")) != 0 || st.GetBalance("platform") != 0 {
 				t.Fatal("accounting ran before reconciliation")
+			}
+			// Referral rewards now commit with the consumer charge, even when
+			// the acknowledgement needed for downstream accounting is lost.
+			initialReward := int64(20)
+			if beforeCommit {
+				initialReward = 0
+			}
+			if got := st.GetWithdrawableBalance("referrer"); got != initialReward {
+				t.Fatalf("referral reward before reconciliation=%d want=%d", got, initialReward)
 			}
 			s.promotions.ReleaseRequest(r) // Must not refund an ambiguous commit.
 			var attempted atomic.Bool
@@ -125,8 +134,8 @@ func TestModelTokenPromotionReconciliationResumesAccountingOnce(t *testing.T) {
 				t.Fatalf("key spend=%d", spent)
 			}
 			// Gross 500, consumer 400; provider 80% of gross, fee 20% of
-			// collected spend, and the referrer gets 20% of that fee.
-			for account, want := range map[string]int64{"promotion-user": 600, "paid-provider": 400, "referrer": 16, "platform": 64} {
+			// collected spend, and a separately funded 5% referral reward.
+			for account, want := range map[string]int64{"promotion-user": 600, "paid-provider": 400, "referrer": 20, "platform": 80} {
 				if got := st.GetBalance(account); got != want {
 					t.Errorf("%s balance=%d want=%d", account, got, want)
 				}

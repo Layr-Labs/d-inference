@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/internal/store/consumersettlement"
 	inventory "github.com/eigeninference/d-inference/coordinator/internal/store/inventory"
 
 	"sync"
@@ -26,6 +27,7 @@ type MemoryStore struct {
 	modelTokenPromotions      map[string]store.ModelTokenPromotion
 	modelTokenGrants          map[string]map[string]store.ModelTokenGrant
 	modelTokenReservations    map[string]store.ModelTokenReservation
+	consumerSettlements       map[string]consumersettlement.Record
 
 	mu           sync.RWMutex
 	epochLocks   epochlocks.Owner
@@ -154,6 +156,7 @@ func NewMemory(scfg store.Config) *MemoryStore {
 		now = time.Now
 	}
 	s := &MemoryStore{
+		consumerSettlements:           make(map[string]consumersettlement.Record),
 		now:                           now,
 		history:                       memoryhistory.New(),
 		modelDemandStartedAt:          time.Now().UTC(),

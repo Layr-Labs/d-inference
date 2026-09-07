@@ -6,7 +6,6 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/internal/store/shared"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/jackc/pgx/v5"
 )
 
 func (s *PostgresStore) ReleaseModelTokenReservation(id string) (bool, error) {
@@ -43,26 +42,6 @@ func (s *PostgresStore) releaseModelTokenBefore(id string, before time.Time) (bo
 	return true, tx.Commit(ctx)
 }
 
-// Lock both balance rows in account order before debiting/refunding/crediting.
-// This keeps two consumer/providers serving each other from forming a cycle.
-func lockPromotionBalances(ctx context.Context, tx pgx.Tx, consumer string, earning *store.ModelTokenEarning) error {
-	accounts := []string{consumer}
-	if earning != nil && earning.AccountID != consumer {
-		accounts = append(accounts, earning.AccountID)
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO balances(account_id,balance_micro_usd,withdrawable_micro_usd) SELECT x,0,0 FROM unnest($1::text[]) AS x ORDER BY x ON CONFLICT DO NOTHING`, accounts); err != nil {
-		return err
-	}
-	rows, err := tx.Query(ctx, `SELECT account_id FROM balances WHERE account_id=ANY($1::text[]) ORDER BY account_id FOR UPDATE`, accounts)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-	}
-	return rows.Err()
-}
-
 func (s *PostgresStore) SettleModelTokenReservation(id string, actual int64, quote store.ModelTokenQuote, earning *store.ModelTokenEarning) (store.ModelTokenSettlement, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -88,7 +67,18 @@ func (s *PostgresStore) SettleModelTokenReservation(id string, actual int64, quo
 	if _, err = tx.Exec(ctx, `UPDATE model_token_grants SET reserved_tokens=reserved_tokens-$3,used_tokens=used_tokens+$4 WHERE account_id=$1 AND model_id=$2`, r.AccountID, r.ModelID, r.FreeTokens, next.UsedTokens); err != nil {
 		return store.ModelTokenSettlement{}, err
 	}
-	if err = lockPromotionBalances(ctx, tx, r.AccountID, earning); err != nil {
+	referrer, err := settlementReferrer(ctx, tx, r.AccountID)
+	if err != nil {
+		return store.ModelTokenSettlement{}, err
+	}
+	accounts := []string{r.AccountID}
+	if earning != nil {
+		accounts = append(accounts, earning.AccountID)
+	}
+	if referrer != "" {
+		accounts = append(accounts, referrer)
+	}
+	if err = lockSettlementBalances(ctx, tx, accounts); err != nil {
 		return store.ModelTokenSettlement{}, err
 	}
 	delta := next.ConsumerCostMicroUSD - r.ReservedMicroUSD
@@ -112,6 +102,9 @@ func (s *PostgresStore) SettleModelTokenReservation(id string, actual int64, quo
 				return store.ModelTokenSettlement{}, err
 			}
 		}
+	}
+	if err = recordPromotionReferral(ctx, tx, next, referrer); err != nil {
+		return store.ModelTokenSettlement{}, err
 	}
 	if err = savePromotionReservation(ctx, tx, next); err != nil {
 		return store.ModelTokenSettlement{}, err

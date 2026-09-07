@@ -108,7 +108,7 @@ func billingTestServer(t *testing.T) (*reservationFixture, *memory.MemoryStore, 
 	s := newComposedServer(registry.New(logger), store.NewCached(fault, store.CacheConfig{}), TestServerConfig{}, logger)
 	s.fault = fault
 	s.server.SetChallengeInterval(200 * time.Millisecond)
-	s.bindBilling(billing.NewService(s.store, s.ledger, logger, billing.Config{MockMode: true, ReferralSharePercent: 20}))
+	s.bindBilling(billing.NewService(s.store, s.ledger, logger, billing.Config{MockMode: true}))
 	_ = mem.Credit(store.LegacyAccountID("test-key"), 100_000_000, store.LedgerDeposit, "test-setup")
 	return s, mem, s.ledger
 }

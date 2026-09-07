@@ -212,6 +212,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_referrals_code ON referrals(referrer_code)`,
 
+		consumerSettlementSchema,
+		`CREATE INDEX IF NOT EXISTS idx_consumer_settlements_referrer ON consumer_charge_settlements(referrer_account) WHERE referrer_account <> ''`,
+
 		// Billing sessions table
 		`CREATE TABLE IF NOT EXISTS billing_sessions (
 			id TEXT PRIMARY KEY,

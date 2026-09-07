@@ -1,8 +1,8 @@
 # 0.9.0 acceptance criteria
 
-> Last updated: 2026-09-07 · commit `2827184f5`
+> Last updated: 2026-09-07 · commit `e7f9c53ee`
 
-Status: **In progress** — 2026-09-07 — the [final build reports 0.9.0](../reports/2026-09-07-release090-final-build.md); [Qwen concurrency](../reports/2026-09-07-qwen-concurrency-final.md) and [quality follow-up](../reports/2026-09-07-five-model-quality-followup.md) supersede the historical evidence state below. Final sustained, connected-serving, GPT quality-control and production-key restart validation remain incomplete. The decision body is preserved as recorded.
+Status: **In progress** — 2026-09-07 — the [final build](../reports/2026-09-07-release090-final-build.md), [Qwen concurrency](../reports/2026-09-07-qwen-concurrency-final.md), [five-model defaults](../reports/2026-09-07-final-defaults.md), [tool/vision checks](../reports/2026-09-07-final-capabilities.md) and [GPT contiguous quality control](../reports/2026-09-07-gpt-contiguous-quality-control.md) supersede the historical evidence state below. [Sustained checks pass for the Qwens and GPT](../reports/2026-09-07-five-model-sustained-final.md); QAT sustained exposure, two-provider routing and production-key restart remain incomplete. The decision body is preserved as recorded.
 
 This supplements the [five-artifact activation decision](release-090-paged-qwen-cache.md). The release uses paged attention for all five listed artifacts, SSD caching by default for the three Qwens, and ordinary decoding for default-auto GPT-OSS and Gemma QAT. Gemma 8-bit and package-distribution changes remain outside this work.
 

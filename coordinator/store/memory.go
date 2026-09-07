@@ -77,6 +77,10 @@ type MemoryStore struct {
 	usersByAccountID       map[string]*User // accountID → user
 	usersByStripeAccountID map[string]*User // stripeAccountID → user (subset of usersByAccountID)
 
+	// Global Payouts use the same balance lock as Connect withdrawals.
+	globalRecipients map[string]GlobalRecipient
+	globalPayouts    map[string]GlobalPayout
+
 	// Stripe Connect withdrawals
 	stripeWithdrawalsByID         map[string]*StripeWithdrawal
 	stripeWithdrawalsByTransferID map[string]string   // transferID → withdrawalID

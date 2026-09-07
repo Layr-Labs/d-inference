@@ -20,12 +20,14 @@ printf 'EIGENINFERENCE_PROMPT_SIDECAR_ENABLED=true\n' >> "$ENV_FILE"
 printf 'EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT=/data/prompt-contracts\n' >> "$ENV_FILE"
 printf 'EIGENINFERENCE_PROMPT_SIDECAR_STARTUP_TIMEOUT_MS=5000\n' >> "$ENV_FILE"
 printf 'EIGENINFERENCE_PROMPT_SIDECAR_HEALTH_INTERVAL_MS=100\n' >> "$ENV_FILE"
+printf 'EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT=fa_test\n' >> "$ENV_FILE"
+printf 'EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET=whsec_test_do_not_print\n' >> "$ENV_FILE"
 chmod 0600 "$ENV_FILE"
 
 before_secret=$(awk -F= '$1=="UNLISTED_SECRET" { print substr($0, index($0, "=") + 1) }' "$ENV_FILE")
 check_output=$(SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$ENV_FILE" \
     REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --check)
-if printf '%s' "$check_output" | grep -Fq "$before_secret"; then
+if printf '%s' "$check_output" | grep -Eq "$before_secret|whsec_test_do_not_print"; then
     echo "refresh check leaked an existing secret value" >&2
     exit 1
 fi
@@ -36,6 +38,7 @@ SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$ENV_FILE" \
 [ "$(awk -F= '$1=="UNLISTED_SECRET" { print substr($0, index($0, "=") + 1) }' "$ENV_FILE")" = "$before_secret" ]
 [ "$(awk -F= '$1=="EIGENINFERENCE_PROMPT_SIDECAR_ENABLED" { print $2 }' "$ENV_FILE")" = "true" ]
 grep -Fxq 'EIGENINFERENCE_CACHE_ROUTING_MODE=off' "$ENV_FILE"
+grep -Fxq 'EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=true' "$ENV_FILE"
 grep -Fxq 'EIGENINFERENCE_CACHE_ROUTING_PERCENT=1' "$ENV_FILE"
 grep -Fxq 'EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS=1' "$ENV_FILE"
 grep -Fxq 'EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT=/mnt/disks/userdata/prompt-contracts' "$ENV_FILE"
@@ -64,6 +67,30 @@ expect_refresh_failure() {
         exit 1
     fi
 }
+
+# Missing payout prerequisites must reject activation before changing the file.
+for payout_key in EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET; do
+    payout_missing="$ENV_DIR/$payout_key.env"
+    awk -F= -v key="$payout_key" '$1 != key && $1 != "EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED"' "$ENV_FILE" > "$payout_missing"
+    cp "$payout_missing" "$payout_missing.before"
+    expect_refresh_failure "missing payout configuration" "$payout_missing" \
+        "Global Payouts is enabled but $payout_key is missing or empty"
+    if SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$payout_missing" \
+        REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null 2>&1; then
+        echo "refresh applied incomplete payout configuration" >&2
+        exit 1
+    fi
+    cmp "$payout_missing.before" "$payout_missing"
+done
+
+# An explicit off switch must remain off, including on a host that has not yet
+# configured Global Payouts. The production default must not undo a pause.
+payout_paused="$ENV_DIR/payout-paused.env"
+awk '$0 !~ /^EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_/' "$ENV_FILE" > "$payout_paused"
+printf 'EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=false\n' >> "$payout_paused"
+SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$payout_paused" \
+    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
+grep -Fxq 'EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=false' "$payout_paused"
 
 missing="$ENV_DIR/missing.env"
 awk '$0 !~ /^EIGENINFERENCE_HEALTH_EJECTION=/' "$ENV_FILE" > "$missing"

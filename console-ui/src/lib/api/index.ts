@@ -18,6 +18,7 @@ export {
   startStripeOnboarding,
   createStripeDashboardLink,
   withdrawStripe,
+  fetchBankWithdrawalQuote,
   fetchStripeWithdrawals,
   unlinkStripeAccount,
   computeStripeFeeUsd,

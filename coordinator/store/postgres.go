@@ -147,6 +147,7 @@ END $$`
 // migrate runs the schema creation statements.
 func (s *PostgresStore) migrate(ctx context.Context) error {
 	migrations := []string{
+		globalPayoutSchema,
 		// schema_migrations records one-time data migrations that must run at most
 		// once rather than on every boot. Idempotent DDL (CREATE/ALTER ... IF [NOT]
 		// EXISTS) does not need this; it exists to gate destructive one-shot DML

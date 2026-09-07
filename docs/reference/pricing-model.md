@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-04 · commit `075d37a91`
+> Last updated: 2026-09-06 · commit `8c22f0cdb`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -283,3 +283,17 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | `EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_ADMIN_EMAILS` | admin authorization for admin billing routes (`isAdminAuthorized`, `coordinator/api/release_handlers.go`) | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |
 | `MODEL_REGISTRY_PUBLISHING_KEY` | bootstrap publishing key accepted by `POST /v1/admin/models/register` (`requirePublishingAPIKey`) | [Model registry, releases and R2/CDN](configuration.md#model-registry-releases-and-r2cdn) |
 | `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS`, `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_BURST`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_RPS`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_BURST` | financial and service limiters; compiled defaults under [Constants](#constants) | [Routing, admission and TTFT](configuration.md#routing-admission-and-ttft) |
+
+## Global Payouts withdrawals
+
+| Quantity | Policy | Citation |
+|---|---|---|
+| User fee | Zero for standard bank withdrawals; platform pays Stripe charges | `coordinator/api/global_payouts_withdraw.go` (`handleGlobalPayoutQuote`) |
+| USD input | Decimal with at most two fractional digits; $1 to $1,000,000, further constrained by balance and published recipient limits in local currency | `coordinator/api/global_payouts_withdraw.go` (`payoutUSDCents`) |
+| Local amount | Stripe quote, in destination minor units with explicit currency exponent | `coordinator/api/global_payouts_withdraw.go` (`payoutCurrencyExponent`) |
+| Quote validity | At most two minutes, shortened to the Stripe FX lock expiry | `coordinator/api/global_payouts_withdraw.go` (`handleGlobalPayoutQuote`) |
+| Quote cleanup | Up to 1,000 expired, never-confirmed quotes per minute; confirmed withdrawals are retained | `coordinator/store/global_payouts_maintenance.go` (`PruneExpiredGlobalPayoutQuotes`); `coordinator/api/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`) |
+| Retry window without remote ID | Twelve hours, then `manual_reconciliation_required`: excluded from automatic scans and claims, without refund | `coordinator/api/global_payouts_reconcile.go` (`syncGlobalPayout`) |
+| Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days and later returns handled by events | `coordinator/api/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/global_payouts_postgres.go` (`ListGlobalPayoutsToReconcile`) |
+
+Published recipient bounds are stored in `coordinator/billing/globalpayouts/recipient_limits.go` (`Country.Limits`) from [Stripe's recipient minimums and maximums](https://docs.stripe.com/global-payouts/send-money#recipient-minimums). The API reports the local-currency threshold and validates the credited amount; direct pre-quote comparison is possible for USD destinations. The private payout row retains Stripe's `estimated_fees` as `estimated_stripe_fees` for operator cost review (`coordinator/api/global_payouts_withdraw.go`, `handleGlobalPayoutQuote`).

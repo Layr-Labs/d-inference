@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-07 · commit `2827184f5`
+> Last updated: 2026-09-07 · commit `8ca30e4be`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -522,6 +522,12 @@ routing has separate Go regression coverage; an end-to-end routing claim require
 a live multi-provider run. Record source and artifact hashes with every result;
 [the cache architecture](../architecture/prefix-cache.md) links retained validation
 evidence.
+
+The connected routing fixture preserves the testbed's provider startup and process
+logs, including provider-index attributes, alongside its structured routing
+observations. A registration failure can occur before any routing decision;
+inspect the captured test output as well as the report's routing rows
+(`e2e/connected_cache_report_test.go`, `connectedRouteHandler`).
 
 Schema 2 writes an atomic initial report before loading, then preserves every
 completed, failed, aborted or not-run cell. Raw token IDs, chunks, usage and

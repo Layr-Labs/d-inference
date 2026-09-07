@@ -114,6 +114,30 @@ type connectedRouteLog struct {
 	rows []map[string]any
 }
 
+// Keep the testbed's startup and process diagnostics while collecting routing
+// observations separately. Provider registration can fail before any route exists.
+type connectedRouteHandler struct {
+	routes *connectedRouteLog
+	output slog.Handler
+}
+
+func (h *connectedRouteHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *connectedRouteHandler) Handle(ctx context.Context, r slog.Record) error {
+	if err := h.routes.Handle(ctx, r); err != nil {
+		return err
+	}
+	if h.output.Enabled(ctx, r.Level) {
+		return h.output.Handle(ctx, r)
+	}
+	return nil
+}
+func (h *connectedRouteHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &connectedRouteHandler{routes: h.routes, output: h.output.WithAttrs(attrs)}
+}
+func (h *connectedRouteHandler) WithGroup(name string) slog.Handler {
+	return &connectedRouteHandler{routes: h.routes, output: h.output.WithGroup(name)}
+}
+
 func (l *connectedRouteLog) Enabled(context.Context, slog.Level) bool { return true }
 func (l *connectedRouteLog) Handle(_ context.Context, r slog.Record) error {
 	if r.Message != "routing_decision" {

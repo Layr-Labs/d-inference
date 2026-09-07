@@ -31,6 +31,8 @@
 
 ## Release candidate v0.9.0 — paged attention and Qwen caching (not shipped)
 
+- Preserve provider startup and process diagnostics in the connected cache-routing test, so a two-provider registration failure remains diagnosable before any request runs.
+
 - Prepare automatic paged attention for the three Qwen artifacts, GPT-OSS 20B and Gemma 4 QAT. Scope default SSD caching to Qwen independently of the attention backend; preserve explicit cache opt-in and all backend rollback controls. Model acceptance and operational release validation remain incomplete.
 
 - Verify explicitly enabled Gemma 4 QAT draft tokens with ordinary target-forward shapes to avoid the observed width-dependent token change. Keep assistant drafting and explicit offline rectangular diagnostics; the serialized verification can reduce speculative throughput.

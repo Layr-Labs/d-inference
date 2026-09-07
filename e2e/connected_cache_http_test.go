@@ -125,7 +125,7 @@ func runConnectedCacheHTTP(t *testing.T, inputEnvironment, outputEnvironment str
 		CatalogModels: in.Catalog, ExpectedProviderCapabilities: requiredCapabilities, EnableEphemeralPrefixCache: true, ProviderRelay: relay,
 		MTPMode: in.MTPMode, MTPDrafterPath: in.AssistantPath, KVBackend: in.Backend, MaxConcurrent: in.MaxConcurrent, ExpectKVBackend: in.Backend,
 	})
-	suite.Logger = slog.New(routes)
+	suite.Logger = slog.New(&connectedRouteHandler{routes: routes, output: suite.Logger.Handler()})
 	started := false
 	defer func() {
 		if in.Providers == nil {

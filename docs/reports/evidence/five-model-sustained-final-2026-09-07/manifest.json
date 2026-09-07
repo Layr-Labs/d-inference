@@ -1,0 +1,157 @@
+{
+  "files": {
+    "collection-receipt.json": {
+      "sha256": "81e8e3e395d4abe01ef864507bb5ec371912080d3a70e0986c47ac0128702a0b",
+      "bytes": 216
+    },
+    "evidence-manifest.json": {
+      "sha256": "052dceccb50775c26f455952fdf744c541e3606ab257d4a0deab8247a51825dd",
+      "bytes": 227691
+    },
+    "foreground-retirement.json": {
+      "sha256": "3ee7b437a41b9f807bffd1d854ebe991cf944aa0b367df0d54acbca466e47783",
+      "bytes": 7664
+    },
+    "partial-verdict.json": {
+      "sha256": "9b3e490e84061eca00feb81b86f8deff22203c7d7fd6cdc58dec800c9c7e34f2",
+      "bytes": 1755730
+    },
+    "results/gemma-4-26b-qat-4bit-sustained-b1-r1-paged-cache-off/input.json": {
+      "sha256": "8101980daeaa0df96b04ad3278e05ab539e2081c62552ed77eaae17fcb536838",
+      "bytes": 284593
+    },
+    "results/gemma-4-26b-qat-4bit-sustained-b1-r1-paged-cache-off/metadata.json": {
+      "sha256": "9f2a80011e26c1c06b0c820647151f74ac750514fd234cf1b6e9baa6b7275664",
+      "bytes": 3578
+    },
+    "results/gemma-4-26b-qat-4bit-sustained-b1-r1-paged-cache-off/report.json": {
+      "sha256": "4aa1520fdfed5485ac7016ddffe7f17e3927fe132d4f60c830ea6e991ed3c9d8",
+      "bytes": 2869795
+    },
+    "results/gpt-oss-20b-sustained-b1-r1-paged-cache-off/input.json": {
+      "sha256": "1af6d481b18e66ddabde59cc844677683317d0b11c530c30d5fb68441ff1ad1b",
+      "bytes": 284651
+    },
+    "results/gpt-oss-20b-sustained-b1-r1-paged-cache-off/metadata.json": {
+      "sha256": "5b239bb83b4f37e2309d1c2b23cb620a7ac3f05a2bcc8bed2af16ef218e1129a",
+      "bytes": 3515
+    },
+    "results/gpt-oss-20b-sustained-b1-r1-paged-cache-off/report.json": {
+      "sha256": "af2560103b79b1cf26c9d544a0681585779f6fe6139a3c835d9e21334ece5d7b",
+      "bytes": 4271367
+    },
+    "results/qwen35-sustained-b1-r1-paged-cache-on/input.json": {
+      "sha256": "4d3b4dcc630abee0c18ee11c08f525a7eed11d9f6adacda6eff4c9f69a8451d9",
+      "bytes": 284381
+    },
+    "results/qwen35-sustained-b1-r1-paged-cache-on/metadata.json": {
+      "sha256": "1e9c043452c2203e9fb885e0da7908f7ecb4b0bba6cac6bc7a2967590418060c",
+      "bytes": 3571
+    },
+    "results/qwen35-sustained-b1-r1-paged-cache-on/report.json": {
+      "sha256": "18e0d0cbc8b3fc1e387819a78b262a1c09e08faf818e8f69a86092828f7ff866",
+      "bytes": 3683965
+    },
+    "results/qwen36-sustained-b1-r1-paged-cache-on/input.json": {
+      "sha256": "6f0af94cb50ff5802129cb6083a30e19a298f23c6d386f3c14c67d0c5b3c1de7",
+      "bytes": 284407
+    },
+    "results/qwen36-sustained-b1-r1-paged-cache-on/metadata.json": {
+      "sha256": "1c9e8c436262ad38c4284dac99ce80e381b9658272b2d28ac37cba1545e63985",
+      "bytes": 3598
+    },
+    "results/qwen36-sustained-b1-r1-paged-cache-on/report.json": {
+      "sha256": "0c62611a74c73a2959068e725fbc0bbe3ee5f4236b8c79f28f222fc3d719c2c5",
+      "bytes": 3738355
+    },
+    "results/qwen38-sustained-b1-r1-paged-cache-on/input.json": {
+      "sha256": "95a0492e213a4da3537dcba77d23002bba5b98ea9d72b45fee0b27f270f9eb44",
+      "bytes": 284411
+    },
+    "results/qwen38-sustained-b1-r1-paged-cache-on/metadata.json": {
+      "sha256": "63bb0695c496ebbcb90ac556cdae399eccf34f204e6069ecafb4e56b9e93c3a1",
+      "bytes": 3591
+    },
+    "results/qwen38-sustained-b1-r1-paged-cache-on/report.json": {
+      "sha256": "1aeb3e65bdf69e54abf23f504f7b5da27b2682a2a0e205ded2c1d99651af831a",
+      "bytes": 3564399
+    },
+    "review/m5-release.json": {
+      "sha256": "7500346133f49b54c2bc68addf214b206879847d3126f82a3214bdd7ee327cba",
+      "bytes": 9991
+    },
+    "review/root-final-evidence-review.json": {
+      "sha256": "b2095ccb74d7af083b65ffb50e6cd0f75fd6d7c87113fdafeb034deb6f043129",
+      "bytes": 3051
+    },
+    "review/root-provisional-gpt-sustained-review.json": {
+      "sha256": "100cccf995fee7a58ce14453853440dfff9deea1e8e0429872ff729e70888203",
+      "bytes": 1448
+    },
+    "review/root-provisional-qat-sustained-review.json": {
+      "sha256": "7f25c521399bb21867bf38105c3965b269fb47d360b5efa763e22852f255489a",
+      "bytes": 2256
+    },
+    "review/root-provisional-qwen-review.json": {
+      "sha256": "60758b1dbaf1ac98f2ac965863413732f18af97f7a6cff6afe379534b5460a0b",
+      "bytes": 4587
+    },
+    "review/selected-collection-receipt.json": {
+      "sha256": "8d97ce91591deab6ad903cbbea3be6b276d2f2bb5ff78dc205d7e27e88cc9798",
+      "bytes": 1762
+    },
+    "review/sustained-results-summary.json": {
+      "sha256": "7213c65d457ac46c1d0104a71a21b33c510c24ff12681247fe4405e142bf5132",
+      "bytes": 34471
+    },
+    "steps/1/cell-results.json": {
+      "sha256": "886a09c49e3952bf87a6872dbc6dbb958fa0f768b5fce05e9ab1bef7ace4e8aa",
+      "bytes": 12534
+    },
+    "steps/1/retirement.json": {
+      "sha256": "62967242f23bd5c87daca3acf901993f9c371897e11d36afaab988173999ee9b",
+      "bytes": 1594
+    },
+    "steps/2/cell-results.json": {
+      "sha256": "2556d50ea5144d38e98626f22a138207559baf46758c96b65dd560bb0c338d48",
+      "bytes": 12534
+    },
+    "steps/2/retirement.json": {
+      "sha256": "5b102de036257719c4eab2e0ccc10fc338e7a5fcc332e0c568f7fa7b87d58866",
+      "bytes": 3117
+    },
+    "steps/3/cell-results.json": {
+      "sha256": "773eabc8d23531ad83fca60187e9fb4cf05349d6cceb868b8e18b7e00ea6e4fe",
+      "bytes": 12536
+    },
+    "steps/3/retirement.json": {
+      "sha256": "fec5c651eb69c3c555d0390da95cd50824ba5ef54e96673381f9a1f195f8e6fe",
+      "bytes": 4651
+    },
+    "steps/4/cell-results.json": {
+      "sha256": "bce0cd4e173b8d270d25c895f2059128554ba2cca942f0854e4db6f207273e9b",
+      "bytes": 4071
+    },
+    "steps/4/retirement.json": {
+      "sha256": "5f6e5ae6acc75dde3cb6a37514a56c86acbddcdbcf1e1d6080e00c4e4bf6c2f0",
+      "bytes": 6144
+    },
+    "steps/5/cell-results.json": {
+      "sha256": "97f1549145cc97820c3cc7d73eee9f7e0c81d1c520ad939289bfecb8f762f1b7",
+      "bytes": 4170
+    },
+    "steps/5/retirement.json": {
+      "sha256": "3ee7b437a41b9f807bffd1d854ebe991cf944aa0b367df0d54acbca466e47783",
+      "bytes": 7664
+    },
+    "terminal.json": {
+      "sha256": "0461a2ccacfcbeb1b4a9646da9ab6cfc7259f5a965c3900b82afb56d0cf2e8c7",
+      "bytes": 598
+    },
+    "worker-verdict.json": {
+      "sha256": "1e4df2f3df4b128fdceb634339593637909b3cce54614430d889cd85fd9cc5d8",
+      "bytes": 397
+    }
+  },
+  "archive_sha256": "5581c9a74e6ea9c269a1aaebccb75b602d7a97a0026286615372919ad9914e2d"
+}

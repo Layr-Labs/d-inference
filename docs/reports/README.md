@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-07 · commit `9a4992d26`
+> Last updated: 2026-09-07 · commit `72be6e10d`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,7 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Five-model quality follow-up](2026-09-07-five-model-quality-followup.md) — complete correct arithmetic, matched contiguous code concerns, and outstanding GPT-OSS code/prose controls.
 - [Merged dependency pins](2026-09-07-release090-merged-dependency-pins.md) — merged core/C revisions preserve tested source trees; NAX review follows the active kernel path.
 - [Qwen3.6 uniform-prefill control](2026-09-06-qwen36-uniform-prefill.md) — strict per-index repeats pass with uniform 512-token prefill; distinct batch positions still produce different trajectories.
 - [Three-model shared-memory lifecycle](2026-09-06-coresidency-lifecycle.md) — active Qwen SSD generation survives GPT/Gemma QAT loads, grant shrink, cancellation, recovery and clean unload.

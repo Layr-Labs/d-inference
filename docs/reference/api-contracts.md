@@ -167,7 +167,7 @@ Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../ar
 | POST | `/v1/invite/redeem` | `handleRedeemInviteCode` (`coordinator/api/invite_handlers.go`) | `key` | `fin` | Redeem an invite code |
 | GET | `/v1/providers/attestation` | `handleProviderAttestation` (`coordinator/api/provider.go`) | `—` | — | Public attestation roster; see [`../architecture/security/attestation.md`](../architecture/security/attestation.md) |
 
-### Referral program payloads
+### Open Sales Program payloads
 
 All routes resolve the caller's account; they do not accept an account ID from
 the body. Register and apply require Privy authentication. Read routes accept

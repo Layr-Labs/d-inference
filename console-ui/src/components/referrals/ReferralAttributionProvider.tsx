@@ -53,12 +53,12 @@ export function ReferralAttributionProvider({ children }: { children: React.Reac
       if (activeAccount.current !== account) return false;
       clearReferral(code);
       setState({ code, status: "applied", error: null });
-      useToastStore.getState().addToast(`Referral ${code} applied. View it in Referrals.`, "success");
+      useToastStore.getState().addToast(`Referral ${code} applied. View it in the Open Sales Program.`, "success");
       return true;
     } catch (error) {
       if (activeAccount.current === account) {
         setState({ code, status: "error", error: error instanceof Error ? error.message : "Unable to apply referral. Please try again." });
-        useToastStore.getState().addToast("Your referral could not be applied. Open Referrals to review or retry it.", "info");
+        useToastStore.getState().addToast("Your referral could not be applied. Visit the Open Sales Program to review or retry it.", "info");
       }
       return false;
     } finally {

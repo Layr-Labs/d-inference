@@ -15,7 +15,7 @@ const CONSUMER_GROUPS: Array<{ label: string; items: NavigationItem[] }> = [
 ];
 const ACCOUNT_ITEMS: NavigationItem[] = [
   { href: "/billing", icon: CreditCard, label: "Billing" },
-  { href: "/referrals", icon: Gift, label: "Referrals" },
+  { href: "/referrals", icon: Gift, label: "Open Sales Program" },
   { href: "/settings", icon: Settings, label: "Settings" },
 ];
 export function navigationGroups(mode: Workspace, account: ProviderAccount) {

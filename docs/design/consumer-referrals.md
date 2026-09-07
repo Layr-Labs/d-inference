@@ -1,6 +1,6 @@
-# Consumer referral rewards
+# Open Sales Program
 
-> Last updated: 2026-09-07 · commit `0b46b1618`
+> Last updated: 2026-09-07 · commit `14ffb2114`
 
 Status: **In progress** — 2026-09-07 — implementation and verification prepared for pull-request review; not deployed.
 
@@ -36,7 +36,7 @@ participate in future settlements; do not backfill earlier rewards.
 3. Keep account-scoped register/apply/info/stats APIs. Return an empty
    info response for an account without a referral code (stats stays 404), expose the spend basis,
    and separate lifetime rewards from available earned balance.
-4. Add a console Referrals page for code registration, a copyable share link,
+4. Add a console Open Sales Program page for code registration, a copyable share link,
    attribution, and earnings. Preserve the first valid `?ref=CODE` through
    sign-in, then apply it to the authenticated account.
 5. Keep modules focused: settlement persistence, referral domain rules, HTTP

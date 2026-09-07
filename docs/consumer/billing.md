@@ -137,7 +137,7 @@ to their reservations (`coordinator/api/apikey_handlers.go` `checkKeySpendCap`).
 
 ### 6. Referral codes
 
-Open **Referrals** in the console to register a code, copy your share link,
+Visit **Open Sales Program** in the console to register a code, copy your share link,
 apply a referrer's code, and check rewards. Follow
 [Share a referral code and withdraw rewards](referrals.md) for the full flow.
 Referral rewards are earned balance and use the withdrawal steps above; the
@@ -145,7 +145,7 @@ reward basis is defined in
 [pricing formulas](../reference/pricing-model.md#formulas).
 
 A `referral_code` on a Checkout session (step 1) still applies after a successful
-deposit. For attribution before the first request, apply the code in Referrals
+deposit. For attribution before the first request, apply the code in Open Sales Program
 before using the API.
 
 ### 7. Redeem an invite code
@@ -205,7 +205,7 @@ Choose **Unlink Stripe account and start over** to remove the destination curren
 | `400` `invalid_request_error` on `create-session` about `amount_usd` | Deposit below the [minimum](../reference/pricing-model.md#constants) | Send `amount_usd` at or above the minimum, as a string (step 1) |
 | `400` "invalid referral code" on `create-session` | `referral_code` is not a registered code | Drop the field or fix the code |
 | `400` `referral_error` "account already has a referrer" / "cannot refer yourself" | One referrer per account; self-referral rejected | — |
-| `404` `referral_error` on `GET /v1/referral/stats` | You have not registered your own referral code | Open Referrals and register a code |
+| `404` `referral_error` on `GET /v1/referral/stats` | You have not registered your own referral code | Visit Open Sales Program and register a code |
 | `400` "invite code … is inactive / has expired / has reached max uses" or "account has already redeemed code" | Code exhausted or reused | Ask for a new code |
 | `401` `auth_error` on `POST /v1/keys`, `/v1/referral/register`, `/v1/referral/apply` | Called with an API key | Use the Privy access token |
 | `429` on `create-session`, key mutations, referral or invite calls | The [financial rate limiter](../reference/pricing-model.md#constants) | Back off for `Retry-After` |

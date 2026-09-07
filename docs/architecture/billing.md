@@ -211,7 +211,7 @@ returns an existing account code; applying the same referrer again succeeds.
 Self-referral and reassignment fail. Both mutation routes require Privy auth
 and the financial rate limiter. Info returns an empty code before registration; stats returns 404 until the
 account registers a code. Their account-scoped payloads are in the
-[API contract](../reference/api-contracts.md#referral-program-payloads).
+[API contract](../reference/api-contracts.md#open-sales-program-payloads).
 
 The reward's fixed rate and exact integer arithmetic live in
 [pricing formulas](../reference/pricing-model.md#formulas). Its basis is the
@@ -231,7 +231,7 @@ settled request returns the existing result and cannot add a referrer or reward
 retroactively. Existing referral relationships apply to future settlements;
 there is no historical backfill. See [Storage](storage.md#consumer-referral-settlement).
 
-The console's **Referrals** page provides registration, share links, attribution
+The console's **Open Sales Program** page provides registration, share links, attribution
 and earnings. A first-touch `?ref=CODE` survives sign-in and the invite gate;
 [the consumer how-to](../consumer/referrals.md) explains checking attribution
 before paid use and withdrawing rewards. The separately proposed

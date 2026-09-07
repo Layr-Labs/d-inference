@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-06 · commit `23e6f986f`
+> Last updated: 2026-09-07 · commit `14ffb2114`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -64,13 +64,11 @@ sequenceDiagram
   A->>P: dispatch (E2E request)
   P-->>A: inference_complete {prompt, completion, cached tokens}
   A->>A: handleCompleteAt: resolve price, totalCost
-  alt totalCost > reserved
-    A->>S: Debit(overage, "overage:<request_id>") — clamped at reserved
-  else totalCost < reserved
-    A->>S: Credit(reserved − totalCost, refund, <request_id>)
-  end
+  A->>S: FinalizeConsumerCharge(request_id, reserved, totalCost)
+  Note over A,S: One transaction: collect/refund, snapshot referrer, credit referral reward, record settlement
+  S-->>A: CollectedMicroUSD, ReferralRewardMicroUSD, Applied
   A->>S: CreditProviderAccount(providerPayout) — withdrawable, idempotent on job_id
-  A->>S: Credit("platform", platformFee) and referral share
+  A->>S: Credit("platform", platformFee)
   Note over A,S: failure before a terminal → refundReservedBalance (refund of the whole reservation)
 ```
 
@@ -79,17 +77,18 @@ sequenceDiagram
 | 1. Reserve | `coordinator/api/inference_admission.go` `reserveInferenceBalance` | `reserved = reservationCost(model, max(billingPromptTokens, estimatedPromptTokens), requestedMaxTokens)` at the platform price. The output bound follows the precedence in [pricing-model.md → Formulas](../reference/pricing-model.md#formulas) (`coordinator/api/consumer.go` `ensureMaxTokensBound`; an explicit value is never clamped). The per-key spend cap is checked first (`checkKeySpendCap`), then `reserveInitialBalance` debits the ledger (`LedgerCharge`, reference `reserve:<account>`) or, for a service account with holds enabled, adds to an in-memory hold (`coordinator/api/reservations.go` `serviceReservationManager`). Self-route and a nil billing backend skip the step entirely. |
 | 2. Media top-up | `topUpReservationForInlinedMedia` | After remote media is fetched and inlined, the byte-bound prompt estimate is recomputed; if it exceeds the reservation the delta is reserved with the same cap check and mode. |
 | 3. Provider top-up | `coordinator/api/consumer.go` `reserveAdditionalForProvider` | If the chosen provider has a custom price above the platform price, the delta is debited after a second spend-cap check against the new total. `ErrInsufficientBalance` excludes that provider and dispatch tries another; when none fits the request fails with 402 (`coordinator/api/dispatch.go` `dispatchPrimary`, `run`). Service consumers and free self-route skip it. If dispatch to that provider then fails, `refundExtra` credits the delta back (metric `billing.reservation_extra_refunds`). |
-| 4. Settle | `coordinator/api/provider.go` `handleCompleteAt` | Resolve the price, compute `totalCost`; an owned machine serving its owner's request settles free (`totalCost = 0`). Exactly one of the settlement or refund paths wins the reservation (`registry.PendingRequest.FinalizeReservation` / `MarkReservationFinalized`). Overage: `overage = totalCost − reserved`, clamped so `totalCost ≤ 2 × reserved` (metric `billing.cost_clamped`), then `Debit(overage, "overage:<request_id>")`; if that debit fails `totalCost = reserved`. Underage: `Credit(reserved − totalCost, LedgerRefund, <request_id>)`. Service hold: `Debit(totalCost)` and release the hold; a failed debit zeroes cost and payout (`billing.uncollected_zeroed`). No reservation and not free: `Debit(totalCost)`. |
+| 4. Settle | `coordinator/api/provider.go` `handleCompleteAt` → `store.FinalizeConsumerCharge` | Resolve the price; an owned machine serving its owner's request settles free. The request's reservation finalization gate selects settlement or refund. `FinalizeConsumerCharge` atomically adjusts the consumer balance, records the collected amount, and credits any referral reward. A reservation overage is capped at the reservation amount and falls back to the reservation if funds cannot cover it. Underage refunds the excess. Service holds and direct charges pass no already-debited reservation; insufficient funds collect zero. A duplicate job returns its saved result; conflicting inputs fail. |
 | 5. Record usage | `handleCompleteAt` | In-memory `payments.Ledger.RecordUsage` always (bounded recent history, lazily allocated to the [usage history limit](../reference/pricing-model.md#constants)); a persistent `usage` row (`RecordUsageFullWithPublicModel`) unless the request was free self-route. |
-| 6. Pay out | `handleCompleteAt` | `feePercent` is the consumer's `users.platform_fee_percent` override, else the global default (invariant 4). `platformFee = PlatformFeeWithPercent(totalCost, feePercent)`; `DistributeReferralReward` carves the referrer's share out of it; `CreditProviderAccount` credits `totalCost − platformFee` to the provider's account as withdrawable earnings (only when the provider is linked and the payout is > 0); the remaining fee is credited to `platform` (`LedgerPlatformFee`). |
+| 6. Pay out | `handleCompleteAt` | Use the collected amount returned by settlement for fee and provider-payout arithmetic. `feePercent` is the consumer override, else the global default (invariant 4). `CreditProviderAccount` credits `totalCost − platformFee` to a linked provider account as withdrawable earnings; `Credit("platform", …)` credits the full platform fee. The referral reward is already credited by settlement and reduces neither amount. |
 | 7. Abort / disconnect | `coordinator/api/consumer.go` `refundReservedBalance`; `coordinator/api/settlement.go` `settlementHolder` | A request that fails before any provider terminal refunds the whole reservation (`LedgerRefund`, reference `reservation_refund:<request_id>`). If the consumer disconnects first, the billing record is parked for `defaultTerminalSettleGrace = 30 * time.Second` so a late terminal settles it; otherwise it is refunded. |
 
 ### Ledger
 
-Tables (all `CREATE TABLE IF NOT EXISTS` in `coordinator/store/postgres.go`):
+Tables use idempotent DDL in `coordinator/store/postgres.go` and
+`coordinator/store/postgres_consumer_settlement.go` (`consumerSettlementSchema`):
 `balances`, `ledger_entries(account_id, entry_type, amount_micro_usd,
 balance_after, reference, created_at)`, `model_prices`, `billing_sessions`,
-`referrers`, `referrals`, `invite_codes`, `invite_redemptions`,
+`referrers`, `referrals`, `consumer_charge_settlements`, `invite_codes`, `invite_redemptions`,
 `provider_earnings` (unique partial index `idx_provider_earnings_job` on
 `job_id`), `provider_payouts` (legacy), `stripe_withdrawals`,
 `provider_floor_draws` (`UNIQUE (provider_key, epoch_id)`), and the
@@ -104,7 +103,7 @@ and which balance column moves:
 | `refund` | reservation refund, settlement refund, withdrawal refunds (`refundReservedBalance`, `handleCompleteAt`, `CreditWithdrawableOnce` in `coordinator/api/stripe_payouts_webhooks.go`) | `balance` for reservation/settlement refunds; both for withdrawal refunds |
 | `payout` | `provider_earnings` credit path (`CreditProviderAccount` ledger CTE) | both |
 | `platform_fee` | `handleCompleteAt` → `store.Credit("platform", …)` | `balance` |
-| `referral_reward` | `coordinator/billing/referral.go` `DistributeReferralReward` → `CreditWithdrawable` | both |
+| `referral_reward` | `coordinator/store/postgres_consumer_settlement.go` `FinalizeConsumerCharge` → `creditWithdrawableBalance` (same transaction as consumer settlement) | both |
 | `stripe_deposit` | `handleStripeWebhook` → `Service.CreditDeposit` → `store.Credit` | `balance` |
 | `stripe_payout` | `coordinator/api/stripe_withdraw.go` `handleStripeWithdraw` → `CreateStripeWithdrawalWithDebit` | both (guarded by `withdrawable_micro_usd >= amount`) |
 | `invite_credit` | `coordinator/api/invite_handlers.go` `handleRedeemInviteCode` → `store.Credit` | `balance` |
@@ -119,12 +118,13 @@ leaderboard and `GET /v1/me/summary` count as "reward" rather than "work"
 earnings (`coordinator/store/interface.go` `IsRewardLedgerType`;
 `coordinator/api/me_handlers.go` `handleMySummary`).
 
-Three credit primitives (`coordinator/store/postgres.go`):
+Credit and settlement primitives:
 
 | Primitive | Effect | Used for |
 |---|---|---|
 | `Credit` (`creditTx`) | raises `balance_micro_usd` only; not reference-idempotent | deposits, invite/admin credits, reservation and settlement refunds, platform fee |
-| `CreditWithdrawable` (`creditWithdrawableTx`) | raises both columns; not reference-idempotent | referral rewards, admin rewards |
+| `CreditWithdrawable` (`creditWithdrawableTx`) | raises both columns; not reference-idempotent | admin rewards |
+| `FinalizeConsumerCharge` (`coordinator/store/postgres_consumer_settlement.go`) | consumer adjustment, referral reward and durable settlement record in one transaction; idempotent on job ID | inference settlement and referral rewards |
 | `CreditWithdrawableOnce` | `CreditWithdrawable` guarded by a `pg_advisory_xact_lock` on `entry_type:reference` and an existence check on `(account_id, entry_type, reference)`; returns whether it applied | withdrawal principal and fee refunds |
 
 `CreditProviderAccount` and `SettleProviderFloorDraw` are single-statement
@@ -201,21 +201,38 @@ Recipient limits are stored in API minor units and shown before review. USD dest
 
 ### Consumer referral
 
-`coordinator/billing/referral.go`: `POST /v1/referral/register` creates one
-code per account (`validateReferralCode`: 3–20 characters, letters, digits and
-hyphens, no leading/trailing hyphen, uppercased). `POST /v1/referral/apply`
-links the caller to a referrer once — no self-referral, no second referrer
-(`Apply`); a `referral_code` in Checkout metadata applies implicitly after a
-deposit. Register and apply require a Privy user and run under the financial
-limiter. `GET /v1/referral/stats` and `GET /v1/referral/info` read back.
-Reward: `DistributeReferralReward` credits the referrer
-`referralSharePercent` (`EIGENINFERENCE_REFERRAL_SHARE_PCT`; default and clamp under
-[Constants](../reference/pricing-model.md#constants)) of the **platform fee** of each referred request as
-withdrawable `referral_reward`. Because the fee is what invariant 4 says it
-is, the reward is zero unless the referred consumer has a per-user fee
-override. The provider referral program described in
-[`design/provider-referral-growth-program.md`](../design/provider-referral-growth-program.md) is not
-implemented: no tables, ledger types, or handlers exist.
+`coordinator/billing/referral.go` (`Register`, `Apply`) manages one code per
+referrer account and one immutable referrer per consumer account. Registration
+returns an existing account code; applying the same referrer again succeeds.
+Self-referral and reassignment fail. Both mutation routes require Privy auth
+and the financial rate limiter. Info returns an empty code before registration; stats returns 404 until the
+account registers a code. Their account-scoped payloads are in the
+[API contract](../reference/api-contracts.md#open-sales-program-payloads).
+
+The reward's fixed rate and exact integer arithmetic live in
+[pricing formulas](../reference/pricing-model.md#formulas). Its basis is the
+collected token charge after clamps and failed-debit handling, independent of
+the consumer's platform-fee override. Darkbloom funds it as an additive
+withdrawable `referral_reward`; consumer prices, provider payouts and the full
+platform-fee credit stay unchanged. No reward is generated by a deposit,
+reservation, free request or uncollected charge. Inference paid from invite or
+admin credits qualifies once the shared spendable balance is debited; the
+ledger does not track a cash-only funding source. Attribution has no expiry.
+
+`FinalizeConsumerCharge` snapshots the consumer's current referrer and stores
+that attribution, the collected amount and reward with the request ID in
+`consumer_charge_settlements`. Consumer adjustment, reward credit and this
+record commit in one Postgres transaction or one memory-store lock. Replaying a
+settled request returns the existing result and cannot add a referrer or reward
+retroactively. Existing referral relationships apply to future settlements;
+there is no historical backfill. See [Storage](storage.md#consumer-referral-settlement).
+
+The console's **Open Sales Program** page provides registration, share links, attribution
+and earnings. A first-touch `?ref=CODE` survives sign-in and the invite gate;
+[the consumer how-to](../consumer/referrals.md) explains checking attribution
+before paid use and withdrawing rewards. The separately proposed
+[provider referral program](../design/provider-referral-growth-program.md)
+is not part of this consumer program.
 
 ### Invite codes and admin credits
 
@@ -306,9 +323,8 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
    otherwise this constant. `platformFee = totalCost × fee / 100` and
    `providerPayout = totalCost − platformFee` (`PlatformFeeWithPercent`,
    `ProviderPayoutWithPercent`), so at the default every provider receives
-   the full `totalCost` and every referral reward is zero. The comments
-   claiming a 10% fee in `coordinator/payments/payments.go` and a 95/5 split
-   in `coordinator/billing/referral.go` are stale.
+   the full `totalCost`. Referral rewards are independently funded and can be
+   non-zero even when the platform fee is zero (invariant 14).
 5. **Cached tokens are free.** `calculateCost` takes only `promptTokens` and
    `completionTokens`; `Usage.CachedTokens` and `PrefillTokensSaved` from the
    provider's terminal message feed only the `routing.cache_*` metrics
@@ -337,8 +353,8 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
    `provider_floor_draw`, and withdrawal refunds go through the withdrawable
    primitives (`coordinator/api/billing_handlers.go` `handleStripeWebhook`,
    `handleAdminCredit`, `handleAdminReward`; `coordinator/api/invite_handlers.go`
-   `handleRedeemInviteCode`; `coordinator/billing/referral.go`
-   `DistributeReferralReward`; `coordinator/store/postgres_base_rewards.go`
+   `handleRedeemInviteCode`; `coordinator/store/postgres_consumer_settlement.go`
+   `FinalizeConsumerCharge`; `coordinator/store/postgres_base_rewards.go`
    `SettleProviderFloorDraw`).
 10. **Withdrawal refunds are reference-idempotent.** Principal
     (`stripe_withdraw:<id>`) and instant-fee (`stripe_withdraw_fee:<id>`)
@@ -368,10 +384,13 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
     provider's `AccountID` equals the consumer key; a `FreeSelfRoute` request
     served by another provider settles as paid, and if that charge fails
     nothing is paid out (`coordinator/api/provider.go`).
-14. **Referral rewards come out of the platform fee.**
-    `DistributeReferralReward` credits the referrer
-    `platformFee × share / 100` and returns the remainder for the `platform`
-    account; `providerPayout` is unchanged (`coordinator/billing/referral.go`).
+14. **Referral rewards use collected spend and commit with settlement.**
+    `FinalizeConsumerCharge` credits the fixed reward on the collected amount
+    as additional withdrawable earnings, without reducing provider or platform
+    credits. The settlement record's unique `job_id` prevents duplicate
+    charges, refunds and rewards; replay with changed input is an error
+    (`coordinator/store/consumer_settlement.go`, `replayConsumerSettlement`;
+    `coordinator/store/postgres_consumer_settlement.go`, `consumerSettlementSchema`).
 15. **Base-reward draws are idempotent and never count as organic earnings.**
     `SettleProviderFloorDraw` inserts into `provider_floor_draws`
     (`UNIQUE (provider_key, epoch_id)`), credits withdrawable, and mirrors a
@@ -380,6 +399,15 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
     (`coordinator/store/postgres_base_rewards.go`).
 
 ## Failure modes
+
+`coordinator/api/consumer_settlement.go` (`settleCompletedConsumer`) retries an
+uncertain settlement result up to three times using the same durable job key.
+If all attempts fail, it seals the in-memory reservation against a later generic
+refund and releases any service hold. The `billing.consumer_settlement_failed`
+metric and error log identify requests requiring operator reconciliation against
+`consumer_charge_settlements` and the ledger. Do not issue a blind refund: the
+transaction may already have committed. Provider and platform credits remain
+separate downstream operations.
 
 ### Payment-required responses
 
@@ -489,7 +517,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | Ledger and balances | `coordinator/store/interface.go` (`LedgerEntryType`, `RewardLedgerTypes`); `coordinator/store/postgres.go` (`balances`, `ledger_entries`, `provider_earnings`, `creditTx`, `creditWithdrawableTx`, `CreditWithdrawableOnce`, `Debit`, `CreditProviderAccount`, `idx_provider_earnings_job`) | `GET /v1/provider/earnings`, `GET /v1/provider/account-earnings`, `GET /v1/me/summary` |
 | Deposits | `coordinator/billing/stripe.go` (`CreateCheckoutSession`, `VerifyWebhookSignature`, `ParseCheckoutSession`); `coordinator/billing/billing.go` (`CreditDeposit`, `IsExternalIDProcessed`); `coordinator/api/billing_handlers.go` (`handleStripeCreateSession`, `handleStripeWebhook`, `handleStripeSessionStatus`, `handleWalletBalance`, `handleBillingMethods`) | `POST /v1/billing/stripe/create-session`, `POST /v1/billing/stripe/webhook`, `GET /v1/billing/stripe/session`, `GET /v1/billing/wallet/balance`, `GET /v1/billing/methods` |
 | Payouts | `coordinator/billing/stripe_connect.go` (`MinWithdrawMicroUSD`, `InstantFeeBps`, `InstantFeeMinMicroUSD`, `FeeForMethodMicroUSD`); `coordinator/billing/stripe_regions.go` (`RequiredServiceAgreement`); `coordinator/api/stripe_payouts.go` (`handleStripeOnboard`, `handleStripeStatus`, `handleStripeWithdrawals`, `handleStripeDashboardLink`, `handleStripeUnlink`, `microUSDToCents`); `coordinator/api/stripe_withdraw.go` (`handleStripeWithdraw`, `creditRefundOnceWithRetry`); `coordinator/api/stripe_payouts_webhooks.go` (`handleStripeConnectWebhook`, `stripeRecipientTransferDelay`); `coordinator/api/stripe_reconcile.go` (`StartStripePayoutReconciler`); `coordinator/store/postgres.go` (`CreateStripeWithdrawalWithDebit`) | `POST /v1/billing/stripe/onboard`, `GET /v1/billing/stripe/status`, `POST /v1/billing/withdraw/stripe`, `GET /v1/billing/stripe/withdrawals`, `POST /v1/billing/stripe/dashboard`, `DELETE /v1/billing/stripe/account`, `POST /v1/billing/stripe/connect/webhook` |
-| Referral | `coordinator/billing/referral.go` (`ReferralService`, `Register`, `Apply`, `DistributeReferralReward`, `validateReferralCode`); `coordinator/billing/config.go` (`ReferralSharePercent`) | `POST /v1/referral/register`, `POST /v1/referral/apply`, `GET /v1/referral/stats`, `GET /v1/referral/info` |
+| Referral | `coordinator/billing/referral.go` (`ReferralService`, `Register`, `Apply`, `validateReferralCode`); `coordinator/store/postgres_consumer_settlement.go` (`FinalizeConsumerCharge`) | `POST /v1/referral/register`, `POST /v1/referral/apply`, `GET /v1/referral/stats`, `GET /v1/referral/info` |
 | Invite codes and admin credits | `coordinator/api/invite_handlers.go` (`handleAdminCreateInviteCode`, `handleAdminListInviteCodes`, `handleAdminDeactivateInviteCode`, `handleRedeemInviteCode`, `requireAdminKey`); `coordinator/store/postgres.go` (`RedeemInviteCode`); `coordinator/api/billing_handlers.go` (`handleAdminCredit`, `handleAdminReward`) | `POST /v1/admin/invite-codes`, `GET /v1/admin/invite-codes`, `DELETE /v1/admin/invite-codes`, `POST /v1/invite/redeem`, `POST /v1/admin/credit`, `POST /v1/admin/reward` |
 | Roles and fee overrides | `coordinator/api/billing_handlers.go` (`handleAdminSetUserRole`, `handleAdminSetUserPlatformFee`); `coordinator/store/postgres.go` (`SetUserRole`, `SetUserPlatformFeePercent`) | `PUT /v1/admin/users/role`, `PUT /v1/admin/users/platform-fee` |
 | Per-key spend caps | `coordinator/api/apikey_handlers.go` (`validateKeyLimitInputs`, `checkKeySpendCap`, `apiKeyToResponse`); `coordinator/store/apikey.go` (`KeySpendWindowStart`, `NormalizeResetWindow`); `coordinator/store/postgres.go` (`KeySpendSince`) | `POST /v1/keys`, `PATCH /v1/keys/{id}`, `GET /v1/keys` |

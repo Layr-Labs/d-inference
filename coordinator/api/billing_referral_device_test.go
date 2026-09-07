@@ -25,7 +25,7 @@ import (
 
 // TestIntegration_ReferralRewardDistribution verifies the full referral flow:
 // a referrer registers a code, a consumer applies it, and after inference the
-// referrer receives their share of the platform fee.
+// referrer receives 5% of the consumer token spend.
 func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 	srv, st, ledger := billingTestServer(t)
 
@@ -90,9 +90,9 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 	expectedProviderPayout := payments.ProviderPayout(totalCost) // provider payout at the default fee
 	expectedPlatformFee := payments.PlatformFee(totalCost)       // platform fee at the default rate (0% during alpha)
 
-	// Referral share is a percentage of the platform fee (0 while the fee is 0).
-	referralShare := expectedPlatformFee * referralSvc.SharePercent() / 100
-	expectedPlatformAfterReferral := expectedPlatformFee - referralShare
+	// Referrals earn 5% even at the default zero platform fee.
+	referralShare := totalCost / 20
+	expectedPlatformAfterReferral := expectedPlatformFee
 
 	// Verify consumer was charged.
 	actualConsumerBalance := ledger.Balance(consumerID)
@@ -111,10 +111,10 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 	// Verify referrer got their share.
 	referrerBalance := st.GetBalance(referrerAccountID)
 	if referrerBalance != referralShare {
-		t.Errorf("referrer balance = %d, want %d (share of platform fee %d)", referrerBalance, referralShare, expectedPlatformFee)
+		t.Errorf("referrer balance = %d, want %d (5%% of collected cost %d)", referrerBalance, referralShare, totalCost)
 	}
 
-	// Verify platform got the remaining platform fee (after referral deduction).
+	// The platform fee is unaffected by the additional referral incentive.
 	platformBalance := st.GetBalance("platform")
 	if platformBalance != expectedPlatformAfterReferral {
 		t.Errorf("platform balance = %d, want %d (platform fee %d minus referral %d)",
@@ -133,13 +133,14 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 		t.Errorf("total_rewards = %d, want %d", stats.TotalRewardsMicroUSD, referralShare)
 	}
 
-	// Verify the fee split sums correctly:
-	// totalCost = providerPayout + platformFee
-	// platformFee = platformAfterReferral + referralShare
-	feeCheck := expectedProviderPayout + expectedPlatformAfterReferral + referralShare
-	if feeCheck != totalCost {
-		t.Errorf("fee split does not sum: provider(%d) + platform(%d) + referral(%d) = %d, want %d",
-			expectedProviderPayout, expectedPlatformAfterReferral, referralShare, feeCheck, totalCost)
+	if got := st.GetWithdrawableBalance(referrerAccountID); got != referralShare {
+		t.Errorf("withdrawable referral reward = %d, want %d", got, referralShare)
+	}
+	if stats.TotalReferredSpendMicroUSD != totalCost {
+		t.Errorf("referred spend = %d, want %d", stats.TotalReferredSpendMicroUSD, totalCost)
+	}
+	if expectedProviderPayout+expectedPlatformFee != totalCost {
+		t.Fatal("referrals must preserve the existing provider/platform split")
 	}
 }
 

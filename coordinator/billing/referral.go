@@ -5,229 +5,134 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"unicode"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// ReferralService manages the referral code system.
-//
-// Anyone can register as a referrer and receive a unique referral code.
-// When a new user applies a referral code, a referral relationship is
-// established. On each inference charge, the referrer earns a percentage
-// of the platform fee.
-//
-// Fee split with referral:
-//
-//	Total cost  = 100%
-//	Provider    = 95%
-//	Platform    = 5% × (100% - referralSharePercent)
-//	Referrer    = 5% × referralSharePercent
-//
-// Default referralSharePercent = 20, so:
-//
-//	Provider = 95%, Platform = 4%, Referrer = 1%
+// ErrInvalidReferral identifies a referral input the caller can correct.
+var ErrInvalidReferral = errors.New("invalid referral")
+
+// ReferralService manages consumer attribution. The store atomically credits
+// 5% of collected token spend during FinalizeConsumerCharge, independently of
+// the platform fee and without reducing provider earnings.
 type ReferralService struct {
-	store                store.Store
-	logger               *slog.Logger
-	referralSharePercent int64 // percentage of platform fee that goes to referrer
+	store  store.Store
+	logger *slog.Logger
 }
 
-// NewReferralService creates a new referral service.
-func NewReferralService(st store.Store, logger *slog.Logger, sharePercent int64) *ReferralService {
-	if sharePercent <= 0 || sharePercent > 50 {
-		sharePercent = 20
-	}
-	return &ReferralService{
-		store:                st,
-		logger:               logger,
-		referralSharePercent: sharePercent,
-	}
+func NewReferralService(st store.Store, logger *slog.Logger) *ReferralService {
+	return &ReferralService{store: st, logger: logger}
 }
 
-// SharePercent returns the current referral share percentage.
-func (r *ReferralService) SharePercent() int64 {
-	return r.referralSharePercent
-}
+func (r *ReferralService) SharePercent() int64 { return store.ConsumerReferralPercent }
 
-// Register creates a referral code for an account. The user provides their
-// desired code. If the account already has a code, it returns the existing one.
+// Register returns the account's immutable code, including on concurrent retry.
 func (r *ReferralService) Register(accountID, desiredCode string) (*store.Referrer, error) {
-	// Check if already registered.
+	if accountID == "" {
+		return nil, fmt.Errorf("%w: account is required", ErrInvalidReferral)
+	}
 	existing, err := r.store.GetReferrerByAccount(accountID)
 	if err == nil {
 		return existing, nil
 	}
-
+	if !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
 	code, err := validateReferralCode(desiredCode)
 	if err != nil {
 		return nil, err
 	}
-
-	// Check uniqueness.
-	if _, err := r.store.GetReferrerByCode(code); err == nil {
-		return nil, fmt.Errorf("referral: code %q is already taken", code)
-	}
-
-	if err := r.store.CreateReferrer(accountID, code); err != nil {
+	if err = r.store.CreateReferrer(accountID, code); err != nil {
+		if existing, lookupErr := r.store.GetReferrerByAccount(accountID); lookupErr == nil {
+			return existing, nil
+		}
 		return nil, fmt.Errorf("referral: create referrer: %w", err)
 	}
-
-	r.logger.Info("referral: new referrer registered",
-		"account", truncateID(accountID),
-		"code", code,
-	)
-
-	return &store.Referrer{
-		AccountID: accountID,
-		Code:      code,
-	}, nil
+	r.logger.Info("referral: new referrer registered", "account", truncateID(accountID), "code", code)
+	return r.store.GetReferrerByAccount(accountID)
 }
 
-// validateReferralCode normalizes and validates a user-chosen referral code.
-// Rules: 3-20 characters, alphanumeric and hyphens only, uppercased.
+// validateReferralCode keeps share links portable: 3-20 ASCII letters, digits,
+// or internal hyphens. Case and surrounding whitespace are normalized.
 func validateReferralCode(code string) (string, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
-	if code == "" {
-		return "", errors.New("referral: code is required")
-	}
-	if len(code) < 3 {
-		return "", errors.New("referral: code must be at least 3 characters")
-	}
-	if len(code) > 20 {
-		return "", errors.New("referral: code must be at most 20 characters")
+	if len(code) < 3 || len(code) > 20 {
+		return "", fmt.Errorf("%w: code must be 3-20 characters", ErrInvalidReferral)
 	}
 	for _, ch := range code {
-		if !unicode.IsLetter(ch) && !unicode.IsDigit(ch) && ch != '-' {
-			return "", errors.New("referral: code can only contain letters, numbers, and hyphens")
+		if !(ch >= 'A' && ch <= 'Z') && !(ch >= '0' && ch <= '9') && ch != '-' {
+			return "", fmt.Errorf("%w: code can only contain ASCII letters, numbers, and hyphens", ErrInvalidReferral)
 		}
 	}
-	// No leading/trailing hyphens.
 	if code[0] == '-' || code[len(code)-1] == '-' {
-		return "", errors.New("referral: code cannot start or end with a hyphen")
+		return "", fmt.Errorf("%w: code cannot start or end with a hyphen", ErrInvalidReferral)
 	}
 	return code, nil
 }
 
-// Apply links an account to a referral code. The account must not already
-// have a referrer, and the account cannot refer itself.
+// Apply is immutable first-touch attribution. Reapplying the same code succeeds
+// so login retries and duplicate checkout webhooks are safe.
 func (r *ReferralService) Apply(accountID, referralCode string) error {
-	referralCode = strings.ToUpper(strings.TrimSpace(referralCode))
-	if referralCode == "" {
-		return errors.New("referral: code is required")
+	if accountID == "" {
+		return fmt.Errorf("%w: account is required", ErrInvalidReferral)
 	}
-
-	// Validate the referral code exists
-	referrer, err := r.store.GetReferrerByCode(referralCode)
+	// Existing codes may contain Unicode letters accepted by older releases.
+	// Registration is ASCII-only; applying an existing code uses its lookup as
+	// the authority so previously shared links keep working.
+	code := strings.ToUpper(strings.TrimSpace(referralCode))
+	if len(code) < 3 || len(code) > 20 {
+		return fmt.Errorf("%w: code must be 3-20 characters", ErrInvalidReferral)
+	}
+	referrer, err := r.store.GetReferrerByCode(code)
+	if errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("%w: code does not exist", ErrInvalidReferral)
+	}
 	if err != nil {
-		return fmt.Errorf("referral: invalid code %q", referralCode)
+		return err
 	}
-
-	// Prevent self-referral
 	if referrer.AccountID == accountID {
-		return errors.New("referral: cannot refer yourself")
+		return fmt.Errorf("%w: cannot refer yourself", ErrInvalidReferral)
 	}
-
-	// Check if account already has a referrer
-	existing, err := r.store.GetReferrerForAccount(accountID)
-	if err == nil && existing != "" {
-		return errors.New("referral: account already has a referrer")
-	}
-
-	// Record the referral
-	if err := r.store.RecordReferral(referralCode, accountID); err != nil {
-		return fmt.Errorf("referral: record referral: %w", err)
-	}
-
-	r.logger.Info("referral: code applied",
-		"account", truncateID(accountID),
-		"referrer_code", referralCode,
-	)
-
-	return nil
+	// The store enforces immutability under its lock/transaction, not a racy read.
+	return r.store.RecordReferral(code, accountID)
 }
 
-// Stats returns referral statistics for the given account.
 func (r *ReferralService) Stats(accountID string) (*ReferralStatsResponse, error) {
 	referrer, err := r.store.GetReferrerByAccount(accountID)
 	if err != nil {
-		return nil, errors.New("referral: account is not a referrer")
+		return nil, err
 	}
-
 	stats, err := r.store.GetReferralStats(referrer.Code)
 	if err != nil {
-		return nil, fmt.Errorf("referral: get stats: %w", err)
+		return nil, err
 	}
-
 	balance := r.store.GetBalance(accountID)
-
 	return &ReferralStatsResponse{
-		Code:                 referrer.Code,
-		SharePercent:         r.referralSharePercent,
-		TotalReferred:        stats.TotalReferred,
-		TotalRewardsMicroUSD: stats.TotalRewardsMicroUSD,
-		TotalRewardsUSD:      fmt.Sprintf("%.6f", float64(stats.TotalRewardsMicroUSD)/1_000_000),
-		BalanceMicroUSD:      balance,
-		BalanceUSD:           fmt.Sprintf("%.6f", float64(balance)/1_000_000),
+		Code: referrer.Code, SharePercent: r.SharePercent(), RewardBasis: "consumer_spend",
+		TotalReferred: stats.TotalReferred, TotalRewardsMicroUSD: stats.TotalRewardsMicroUSD,
+		TotalRewardsUSD:            microUSDString(stats.TotalRewardsMicroUSD),
+		TotalReferredSpendMicroUSD: stats.TotalReferredSpendMicroUSD, TotalReferredSpendUSD: microUSDString(stats.TotalReferredSpendMicroUSD),
+		BalanceMicroUSD: balance, BalanceUSD: microUSDString(balance),
 	}, nil
 }
 
-// DistributeReferralReward checks if a consumer has a referrer and distributes
-// the referral share of the platform fee. Returns the adjusted platform fee
-// (after deducting the referral reward).
-//
-// Call this during inference billing, after calculating the platform fee.
-func (r *ReferralService) DistributeReferralReward(consumerKey string, platformFee int64, jobID string) int64 {
-	// Check if consumer was referred
-	referrerCode, err := r.store.GetReferrerForAccount(consumerKey)
-	if err != nil || referrerCode == "" {
-		return platformFee // no referrer, full platform fee
-	}
-
-	// Look up the referrer account
-	referrer, err := r.store.GetReferrerByCode(referrerCode)
-	if err != nil {
-		return platformFee // referrer not found, full platform fee
-	}
-
-	// Calculate referral reward: X% of platform fee
-	referralReward := platformFee * r.referralSharePercent / 100
-	if referralReward <= 0 {
-		return platformFee
-	}
-
-	// Credit the referrer
-	if err := r.store.CreditWithdrawable(referrer.AccountID, referralReward, store.LedgerReferralReward, jobID); err != nil {
-		r.logger.Error("referral: failed to credit reward",
-			"referrer", truncateID(referrer.AccountID),
-			"reward", referralReward,
-			"error", err,
-		)
-		return platformFee
-	}
-
-	r.logger.Debug("referral: reward distributed",
-		"referrer", truncateID(referrer.AccountID),
-		"consumer", truncateID(consumerKey),
-		"reward_micro_usd", referralReward,
-		"job_id", jobID,
-	)
-
-	return platformFee - referralReward
-}
-
-// ReferralStatsResponse is the API response for referral statistics.
 type ReferralStatsResponse struct {
-	Code                 string `json:"code"`
-	SharePercent         int64  `json:"share_percent"`
-	TotalReferred        int    `json:"total_referred"`
-	TotalRewardsMicroUSD int64  `json:"total_rewards_micro_usd"`
-	TotalRewardsUSD      string `json:"total_rewards_usd"`
-	BalanceMicroUSD      int64  `json:"balance_micro_usd"`
-	BalanceUSD           string `json:"balance_usd"`
+	Code                       string `json:"code"`
+	SharePercent               int64  `json:"share_percent"`
+	RewardBasis                string `json:"reward_basis"`
+	TotalReferred              int    `json:"total_referred"`
+	TotalRewardsMicroUSD       int64  `json:"total_rewards_micro_usd"`
+	TotalRewardsUSD            string `json:"total_rewards_usd"`
+	TotalReferredSpendMicroUSD int64  `json:"total_referred_spend_micro_usd"`
+	TotalReferredSpendUSD      string `json:"total_referred_spend_usd"`
+	BalanceMicroUSD            int64  `json:"balance_micro_usd"`
+	BalanceUSD                 string `json:"balance_usd"`
 }
 
-// truncateID shortens an ID for logging (shows first 8 chars).
+func microUSDString(amount int64) string {
+	return fmt.Sprintf("%d.%06d", amount/1_000_000, amount%1_000_000)
+}
+
 func truncateID(id string) string {
 	if len(id) <= 10 {
 		return id

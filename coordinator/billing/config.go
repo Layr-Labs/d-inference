@@ -3,7 +3,6 @@ package billing
 import (
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
 )
@@ -35,9 +34,6 @@ type Config struct {
 	// E2E request encryption (e2e.DeriveCoordinatorKey).
 	EncryptionMnemonic string
 
-	// Referral
-	ReferralSharePercent int64 // percentage of platform fee going to referrer (default 20)
-
 	// MockMode skips on-chain verification and auto-credits test balances.
 	// Set EIGENINFERENCE_BILLING_MOCK=true for testing without real payments.
 	//
@@ -66,12 +62,6 @@ func ReadConfig() Config {
 		StripeGlobalPayoutsSecretKey:        env.FirstNonEmpty(os.Getenv(env.EnvPrefix+"_STRIPE_GLOBAL_PAYOUTS_SECRET_KEY"), os.Getenv(env.EnvPrefix+"_STRIPE_SECRET_KEY")),
 		StripeGlobalPayoutsWebhookSecret:    os.Getenv(env.EnvPrefix + "_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET"),
 		MockMode:                            os.Getenv(env.EnvPrefix+"_BILLING_MOCK") == "true",
-		ReferralSharePercent:                20,
-	}
-	if refShareStr := os.Getenv(env.EnvPrefix + "_REFERRAL_SHARE_PCT"); refShareStr != "" {
-		if v, err := strconv.ParseInt(refShareStr, 10, 64); err == nil {
-			cfg.ReferralSharePercent = v
-		}
 	}
 	return cfg
 }

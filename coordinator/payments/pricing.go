@@ -37,9 +37,7 @@ const minimumChargeMicroUSD int64 = 100
 // this post-alpha; per-account overrides via PUT /v1/admin/users/platform-fee
 // still apply on top of the default.
 //
-// NOTE: the referral program pays out a share of this platform fee, so while
-// the default is 0 there is no fee pool to distribute (referrals are dormant
-// during the alpha).
+// Consumer referral rewards are funded separately from the platform fee.
 const platformFeePercent int64 = 0
 
 // MinimumCharge returns the minimum charge per inference request in micro-USD.

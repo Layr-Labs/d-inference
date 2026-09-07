@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-05 · commit `2eb19e269`
+> Last updated: 2026-09-07 · commit `14ffb2114`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -76,6 +76,7 @@
 - [`consumer/authentication.md`](consumer/authentication.md): create and manage API keys, sign in with Privy, run the device-code flow for the CLI; auth failures and fixes.
 - [`consumer/models.md`](consumer/models.md): the model catalog, aliases, capabilities, and how to query it.
 - [`consumer/billing.md`](consumer/billing.md): funding a balance, reading usage, what a 402 means.
+- [`consumer/referrals.md`](consumer/referrals.md): Open Sales Program: share a referral code, check earnings, and withdraw rewards.
 - [`consumer/verification.md`](consumer/verification.md): verify the provider that served you.
 - [`consumer/privacy-expectations.md`](consumer/privacy-expectations.md): what a consumer can and cannot assume, in plain terms.
 - [`provider/self-route.md`](provider/self-route.md): pin your own API traffic to your own provider machine.

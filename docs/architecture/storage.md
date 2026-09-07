@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-07 · commit `0b46b1618`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -116,11 +116,33 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 | Family | Tables | Notes |
 |---|---|---|
 | Identity and access | `api_keys`, `users`, `device_codes`, `provider_tokens`, `publishing_api_keys`, `invite_codes`, `invite_redemptions` | Keys are stored as hashes with a display prefix; `users` carries the Stripe Connect fields. |
-| Money | `balances`, `ledger_entries`, `billing_sessions`, `model_prices`, `referrers`, `referrals`, `stripe_withdrawals`, `global_payout_recipients`, `global_payout_withdrawals`, `provider_earnings`, `earnings_summary`, `provider_payouts`, `provider_floor_draws`, `payments` (legacy) | The ledger is append-only; `balances` is the materialised view of it. Semantics in [`billing.md`](billing.md). |
+| Money | `balances`, `ledger_entries`, `billing_sessions`, `model_prices`, `referrers`, `referrals`, `consumer_charge_settlements`, `stripe_withdrawals`, `global_payout_recipients`, `global_payout_withdrawals`, `provider_earnings`, `earnings_summary`, `provider_payouts`, `provider_floor_draws`, `payments` (legacy) | The ledger is append-only; `balances` is the materialised view of it. Semantics in [`billing.md`](billing.md). |
 | Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter kept by `migrateUsageTotals`. |
 | Provider fleet and trust | `providers`, `provider_reputation`, `provider_sessions`, `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets`, `provider_log_reports` | Trust reuse and code attestations are durable so a redeploy does not re-challenge the whole fleet; see [`security/attestation.md`](security/attestation.md). `provider_log_reports.serial_number` is kept empty by trigger. |
 | Models and releases | `model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `releases` | The catalog the registry syncs at boot; see [`model-registry.md`](model-registry.md). |
 | Bookkeeping | `schema_migrations` | Markers for one-shot data migrations. |
+
+### Consumer referral settlement
+
+`FinalizeConsumerCharge` adds a request-keyed settlement record in
+`consumer_charge_settlements` through `consumerSettlementSchema`
+(`coordinator/store/postgres_consumer_settlement.go`); the normal boot migration
+creates it. Each row stores input account/reservation/cost, collected cost,
+referral enablement, captured referrer account, reward, and collection outcome.
+It does not backfill historical usage or modify existing referral relationships.
+
+The Postgres implementation serializes a job with an advisory transaction lock,
+then locks the consumer and referrer balances in sorted account order. It commits
+the consumer debit/refund, withdrawable referral credit, and settlement row
+atomically. Exact replay returns the stored outcome with `Applied = false`;
+changed inputs fail (`coordinator/store/consumer_settlement.go`,
+`replayConsumerSettlement`). This also prevents later attribution from rewriting
+a settled job. The memory implementation preserves the same behavior under one
+mutex (`coordinator/store/memory_consumer_settlement.go`).
+
+These paths write balances, ledger and settlement records, not cached users or
+model-registry rows. Attribution uses `referrers` and `referrals`; the reward
+formula and funding model are in [Billing](billing.md#consumer-referral).
 
 ### Global Payouts state
 

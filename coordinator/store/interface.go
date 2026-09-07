@@ -416,7 +416,7 @@ const (
 	LedgerPayout         LedgerEntryType = "payout"              // provider credited for serving
 	LedgerPlatformFee    LedgerEntryType = "platform_fee"        // Darkbloom platform cut
 	LedgerWithdrawal     LedgerEntryType = "withdrawal"          // on-chain withdrawal
-	LedgerReferralReward LedgerEntryType = "referral_reward"     // referrer earns share of platform fee
+	LedgerReferralReward LedgerEntryType = "referral_reward"     // referrer earns 5% of collected consumer token spend
 	LedgerStripeDeposit  LedgerEntryType = "stripe_deposit"      // Stripe checkout deposit
 	LedgerStripePayout   LedgerEntryType = "stripe_payout"       // user-initiated bank/card withdrawal via Stripe Connect
 	LedgerInviteCredit   LedgerEntryType = "invite_credit"       // invite code redemption
@@ -460,9 +460,10 @@ type Referrer struct {
 
 // ReferralStats provides aggregate metrics for a referral code.
 type ReferralStats struct {
-	Code                 string `json:"code"`
-	TotalReferred        int    `json:"total_referred"`
-	TotalRewardsMicroUSD int64  `json:"total_rewards_micro_usd"`
+	Code                       string `json:"code"`
+	TotalReferred              int    `json:"total_referred"`
+	TotalRewardsMicroUSD       int64  `json:"total_rewards_micro_usd"`
+	TotalReferredSpendMicroUSD int64  `json:"total_referred_spend_micro_usd"`
 }
 
 // ModelPrice represents a custom per-model price override for an account.

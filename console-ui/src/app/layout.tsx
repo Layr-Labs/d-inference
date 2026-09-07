@@ -8,6 +8,7 @@ import { PrivyClientProvider } from "@/components/providers/PrivyClientProvider"
 import { VerificationModeProvider } from "@/components/providers/verification-mode";
 import { TelemetryInitializer } from "@/components/TelemetryInitializer";
 import { DatadogRUM } from "@/components/DatadogRUM";
+import { ReferralAttributionProvider } from "@/components/referrals/ReferralAttributionProvider";
 
 export const metadata: Metadata = {
   title: "Darkbloom — Private AI on Verified Macs",
@@ -47,9 +48,11 @@ export default function RootLayout({
         <DatadogRUM />
         <ThemeProvider>
           <PrivyClientProvider>
-            <VerificationModeProvider>
-              <AppShell>{children}</AppShell>
-            </VerificationModeProvider>
+            <ReferralAttributionProvider>
+              <VerificationModeProvider>
+                <AppShell>{children}</AppShell>
+              </VerificationModeProvider>
+            </ReferralAttributionProvider>
           </PrivyClientProvider>
         </ThemeProvider>
       </body>

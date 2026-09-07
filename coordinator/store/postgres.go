@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -331,6 +332,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_referrals_code ON referrals(referrer_code)`,
+
+		// Finalized consumer charges and rewards share a single transaction.
+		consumerSettlementSchema,
+		`CREATE INDEX IF NOT EXISTS idx_consumer_settlements_referrer ON consumer_charge_settlements(referrer_account) WHERE referrer_account <> ''`,
 
 		// Billing sessions table
 		`CREATE TABLE IF NOT EXISTS billing_sessions (
@@ -2755,6 +2760,10 @@ func (s *PostgresStore) CreateReferrer(accountID, code string) error {
 		accountID, code,
 	)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return fmt.Errorf("%w: referral code or account already registered", ErrReferralConflict)
+		}
 		return fmt.Errorf("store: create referrer: %w", err)
 	}
 	return nil
@@ -2770,7 +2779,10 @@ func (s *PostgresStore) GetReferrerByCode(code string) (*Referrer, error) {
 		`SELECT account_id, code, created_at FROM referrers WHERE code = $1`, code,
 	).Scan(&ref.AccountID, &ref.Code, &ref.CreatedAt)
 	if err != nil {
-		return nil, fmt.Errorf("store: referrer not found: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("store: referrer: %w", ErrNotFound)
+		}
+		return nil, fmt.Errorf("store: lookup referrer: %w", err)
 	}
 	return &ref, nil
 }
@@ -2785,7 +2797,10 @@ func (s *PostgresStore) GetReferrerByAccount(accountID string) (*Referrer, error
 		`SELECT account_id, code, created_at FROM referrers WHERE account_id = $1`, accountID,
 	).Scan(&ref.AccountID, &ref.Code, &ref.CreatedAt)
 	if err != nil {
-		return nil, fmt.Errorf("store: referrer not found: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("store: referrer: %w", ErrNotFound)
+		}
+		return nil, fmt.Errorf("store: lookup referrer: %w", err)
 	}
 	return &ref, nil
 }
@@ -2794,11 +2809,20 @@ func (s *PostgresStore) GetReferrerByAccount(accountID string) (*Referrer, error
 func (s *PostgresStore) RecordReferral(referrerCode, referredAccountID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO referrals (referred_account, referrer_code) VALUES ($1, $2)`,
-		referredAccountID, referrerCode,
-	)
+	ref, err := s.GetReferrerByCode(referrerCode)
+	if err != nil {
+		return err
+	}
+	if ref.AccountID == referredAccountID {
+		return fmt.Errorf("%w: cannot refer yourself", ErrReferralConflict)
+	}
+	var code string
+	err = s.pool.QueryRow(ctx, `INSERT INTO referrals (referred_account,referrer_code) VALUES ($1,$2)
+		ON CONFLICT (referred_account) DO UPDATE SET referrer_code=referrals.referrer_code
+		WHERE referrals.referrer_code=EXCLUDED.referrer_code RETURNING referrer_code`, referredAccountID, referrerCode).Scan(&code)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: account already has a referrer", ErrReferralConflict)
+	}
 	if err != nil {
 		return fmt.Errorf("store: record referral: %w", err)
 	}
@@ -2814,8 +2838,11 @@ func (s *PostgresStore) GetReferrerForAccount(accountID string) (string, error) 
 	err := s.pool.QueryRow(ctx,
 		`SELECT referrer_code FROM referrals WHERE referred_account = $1`, accountID,
 	).Scan(&code)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
 	if err != nil {
-		return "", nil // no referrer is not an error
+		return "", fmt.Errorf("store: lookup referral: %w", err)
 	}
 	return code, nil
 }
@@ -2824,35 +2851,19 @@ func (s *PostgresStore) GetReferrerForAccount(accountID string) (string, error) 
 func (s *PostgresStore) GetReferralStats(code string) (*ReferralStats, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	// Verify code exists
-	var accountID string
-	err := s.pool.QueryRow(ctx,
-		`SELECT account_id FROM referrers WHERE code = $1`, code,
-	).Scan(&accountID)
-	if err != nil {
-		return nil, fmt.Errorf("store: referral code not found: %w", err)
+	stats := &ReferralStats{Code: code}
+	err := s.pool.QueryRow(ctx, `SELECT
+		(SELECT COUNT(*) FROM referrals f WHERE f.referrer_code=r.code),
+		(SELECT COALESCE(SUM(amount_micro_usd),0) FROM ledger_entries l WHERE l.account_id=r.account_id AND l.entry_type=$2),
+		(SELECT COALESCE(SUM(collected_micro_usd),0) FROM consumer_charge_settlements c WHERE c.referrer_account=r.account_id AND c.referrer_account<>'')
+		FROM referrers r WHERE r.code=$1`, code, string(LedgerReferralReward)).Scan(&stats.TotalReferred, &stats.TotalRewardsMicroUSD, &stats.TotalReferredSpendMicroUSD)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("store: referral stats: %w", ErrNotFound)
 	}
-
-	// Count referred accounts
-	var totalReferred int
-	_ = s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM referrals WHERE referrer_code = $1`, code,
-	).Scan(&totalReferred)
-
-	// Sum referral rewards from ledger
-	var totalRewards int64
-	_ = s.pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(amount_micro_usd), 0) FROM ledger_entries
-		 WHERE account_id = $1 AND entry_type = $2`,
-		accountID, string(LedgerReferralReward),
-	).Scan(&totalRewards)
-
-	return &ReferralStats{
-		Code:                 code,
-		TotalReferred:        totalReferred,
-		TotalRewardsMicroUSD: totalRewards,
-	}, nil
+	if err != nil {
+		return nil, fmt.Errorf("store: referral stats: %w", err)
+	}
+	return stats, nil
 }
 
 // --- Billing Sessions ---

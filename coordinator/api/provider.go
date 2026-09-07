@@ -27,7 +27,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"maps"
 	"math"
 
@@ -2328,8 +2327,6 @@ func (s *Server) handleCompleteAt(
 		totalCost = payments.CalculateCostWithOverrides(pr.Model, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, customIn, customOut, hasCustom)
 	}
 
-	providerPayout := payments.ProviderPayoutWithPercent(totalCost, feePercent)
-
 	// Free settlement when an OWNED machine served the request. Two paths reach
 	// here:
 	//   - FreeSelfRoute (exclusive self-route): the router only ever picks owned
@@ -2356,7 +2353,6 @@ func (s *Server) handleCompleteAt(
 			// refunds the up-front reservation below (totalCost 0 < reserved).
 			freeSelfRoute = true
 			totalCost = 0
-			providerPayout = 0
 		} else if pr.FreeSelfRoute {
 			// Exclusive self-route should never be served by a non-owned
 			// provider — surface it and settle as paid (defense-in-depth).
@@ -2371,153 +2367,7 @@ func (s *Server) handleCompleteAt(
 		// log, settle as paid against the reservation.
 	}
 
-	billingFinalized := true
-
-	// Settle billing against the pre-flight reservation. All balance
-	// mutations (overage charge, refund) happen inside the finalization
-	// gate so that a concurrent timeout/error refund path cannot race
-	// with the settlement here.
-	if pr.ServiceReservation && pr.ReservedMicroUSD > 0 {
-		var chargeErr error
-		finalized, _ := pr.FinalizeReservation(func() error {
-			if totalCost > 0 {
-				start := time.Now()
-				chargeErr = s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID)
-				s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:service_reservation_settle"})
-			}
-			s.releaseServiceReservation(pr, "finalize")
-			return nil
-		})
-		if !finalized {
-			billingFinalized = false
-			s.logger.Warn("skipping completion billing for already-finalized service reservation",
-				"provider_id", providerID,
-				"request_id", msg.RequestID,
-			)
-		} else if chargeErr != nil {
-			if errors.Is(chargeErr, store.ErrInsufficientBalance) {
-				s.logger.Warn("service reservation settlement failed (insufficient balance) — zeroing uncollected charge",
-					"consumer_key", pr.ConsumerKey,
-					"cost_micro_usd", totalCost,
-				)
-			} else {
-				s.logger.Error("service reservation settlement failed (DB error) — zeroing uncollected charge",
-					"consumer_key", pr.ConsumerKey,
-					"cost_micro_usd", totalCost,
-					"error", chargeErr,
-				)
-			}
-			totalCost = 0
-			providerPayout = 0
-			s.ddIncr("billing.uncollected_zeroed", []string{"model:" + pr.Model, "mode:service_hold"})
-		} else {
-			s.ddIncr("billing.reservation_finalize", []string{"model:" + pr.Model, "mode:service_hold", "outcome:charged"})
-			s.ddHistogram("billing.service_settlement_micro_usd", float64(totalCost), []string{"model:" + pr.Model})
-		}
-	} else if pr.ReservedMicroUSD > 0 {
-		if !pr.MarkReservationFinalized() {
-			billingFinalized = false
-			s.logger.Warn("skipping completion billing for already-finalized reservation",
-				"provider_id", providerID,
-				"request_id", msg.RequestID,
-			)
-		} else if totalCost > pr.ReservedMicroUSD {
-			// Actual cost exceeds reservation (e.g. provider custom
-			// pricing above platform rate). Attempt to charge the
-			// consumer the difference. Cap overage at the reservation
-			// amount as a fraud circuit-breaker — a provider cannot
-			// bill more than 2x the pre-flight estimate.
-			overage := totalCost - pr.ReservedMicroUSD
-			if overage > pr.ReservedMicroUSD {
-				s.logger.Error("overage exceeds reservation cap — clamping",
-					"provider_id", providerID,
-					"request_id", msg.RequestID,
-					"reported_cost_micro_usd", totalCost,
-					"reserved_micro_usd", pr.ReservedMicroUSD,
-					"uncapped_overage_micro_usd", overage,
-				)
-				s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
-				overage = pr.ReservedMicroUSD
-				totalCost = pr.ReservedMicroUSD * 2
-			}
-			if err := s.ledger.Charge(pr.ConsumerKey, overage, "overage:"+msg.RequestID); err != nil {
-				// Overage charge failed — clamp to reservation so
-				// the provider still gets paid something.
-				if errors.Is(err, store.ErrInsufficientBalance) {
-					s.logger.Warn("overage charge failed (insufficient balance) — clamping to reservation",
-						"provider_id", providerID,
-						"request_id", msg.RequestID,
-						"reported_cost_micro_usd", totalCost,
-						"reserved_micro_usd", pr.ReservedMicroUSD,
-						"overage_micro_usd", overage,
-					)
-				} else {
-					s.logger.Error("overage charge failed (DB error) — clamping to reservation",
-						"provider_id", providerID,
-						"request_id", msg.RequestID,
-						"reported_cost_micro_usd", totalCost,
-						"reserved_micro_usd", pr.ReservedMicroUSD,
-						"overage_micro_usd", overage,
-						"error", err,
-					)
-				}
-				s.ddIncr("billing.cost_clamped", []string{"model:" + pr.Model})
-				totalCost = pr.ReservedMicroUSD
-			} else {
-				s.logger.Info("overage charged to consumer",
-					"provider_id", providerID,
-					"request_id", msg.RequestID,
-					"overage_micro_usd", overage,
-					"total_cost_micro_usd", totalCost,
-				)
-				s.ddIncr("billing.overage_charged", []string{"model:" + pr.Model})
-				s.ddHistogram("billing.overage_micro_usd", float64(overage), []string{"model:" + pr.Model})
-				pr.ReservedMicroUSD = totalCost
-			}
-			// Recompute payout after potential clamp.
-			providerPayout = payments.ProviderPayoutWithPercent(totalCost, feePercent)
-		} else if totalCost < pr.ReservedMicroUSD {
-			refund := pr.ReservedMicroUSD - totalCost
-			start := time.Now()
-			// Financial: a failed refund over-charges the consumer. Never swallow it.
-			if err := s.store.Credit(pr.ConsumerKey, refund, store.LedgerRefund, msg.RequestID); err != nil {
-				s.logger.Error("failed to credit settlement refund to consumer",
-					"request_id", msg.RequestID, "refund_micro_usd", refund, "error", err)
-				s.ddIncr("billing.credit_failed", []string{"op:settlement_refund"})
-			}
-			s.ddHistogram("billing.settlement_refund_micro_usd", float64(refund), []string{"model:" + pr.Model})
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:settlement_refund"})
-		}
-	} else if !freeSelfRoute {
-		start := time.Now()
-		if err := s.ledger.Charge(pr.ConsumerKey, totalCost, msg.RequestID); err != nil {
-			if errors.Is(err, store.ErrInsufficientBalance) {
-				s.logger.Warn("could not charge consumer (insufficient balance)",
-					"consumer_key", pr.ConsumerKey,
-					"cost_micro_usd", totalCost,
-				)
-			} else {
-				s.logger.Error("could not charge consumer (DB error)",
-					"consumer_key", pr.ConsumerKey,
-					"cost_micro_usd", totalCost,
-					"error", err,
-				)
-			}
-			// If this was a self-route request that FELL BACK to paid settlement
-			// (marked free at dispatch, but mid-flight ownership revalidation
-			// failed), the owner has no balance because self-route skips
-			// reservation — so a failed charge means no money was collected and
-			// we must NOT credit the provider from an unfunded balance. Zero the
-			// cost and payout. (Other no-reservation paths — e.g. admin /
-			// platform-covered usage — keep their existing payout behavior.)
-			if pr.FreeSelfRoute {
-				totalCost = 0
-				providerPayout = 0
-				s.ddIncr("billing.uncollected_zeroed", []string{"model:" + pr.Model})
-			}
-		}
-		s.ddHistogram("store.debit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:charge"})
-	}
+	billingFinalized, totalCost, providerPayout := s.settleCompletedConsumer(pr, totalCost, feePercent, freeSelfRoute)
 
 	if billingFinalized {
 		// Record in-memory usage (for current session queries).
@@ -2644,11 +2494,9 @@ func (s *Server) handleCompleteAt(
 			p = provider
 		}
 
-		// Compute platform fee (needs referral lookup before spawning goroutines).
+		// Consumer referrals were credited atomically with the charge above.
+		// They are funded separately and do not reduce provider/platform credits.
 		platformFee := payments.PlatformFeeWithPercent(totalCost, feePercent)
-		if platformFee > 0 && s.billing != nil && s.billing.Referral() != nil {
-			platformFee = s.billing.Referral().DistributeReferralReward(pr.ConsumerKey, platformFee, msg.RequestID)
-		}
 
 		// Run provider credit and platform fee credit concurrently —
 		// they target different accounts so there is no data dependency.

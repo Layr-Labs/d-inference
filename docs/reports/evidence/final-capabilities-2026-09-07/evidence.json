@@ -1,0 +1,332 @@
+{
+  "status": "FOUR_MODEL_SEVEN_CAPABILITY_REQUESTS_PASSED",
+  "agent_summary": {
+    "status": "FOUR_MODELS_SEVEN_CAPABILITY_REQUESTS_PASSED",
+    "runtime_review_sha256": "0294038647e97e98398c516bb6df6c52914c49c1897726a9fffd00064c2e86ee",
+    "native_rebuilt": false,
+    "reviewer": "http_finish",
+    "rows": [
+      {
+        "model": "qwen36",
+        "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+        "report_path": "/private/tmp/darkbloom-release090-capabilities-final-execution2/qwen36-evidence/steps/1/http-evidence/evidence/report.json",
+        "report_sha256": "6832b3cfd4b977a23160b0ef49d6169096a91e4dae97ca970a52c72278568e57",
+        "archive_sha256": "0727cbb2a8d09034d7da45ed18e3f0ba899bad868b9008c44a076438e2c88dec",
+        "files_verified": 83,
+        "worker_accepted": true,
+        "cleanup_complete": true,
+        "requests": [
+          {
+            "name": "tools",
+            "status": "passed",
+            "finish_reason": "tool_calls",
+            "content": "",
+            "tools": {
+              "0": {
+                "id": "call_F42AF5ED311C4320BA6B545B",
+                "name": "record_color",
+                "arguments": "{\"color\":\"blue\",\"count\":2}"
+              }
+            },
+            "usage": {
+              "completion_tokens": 161,
+              "completion_tokens_details": {
+                "reasoning_tokens": 121
+              },
+              "prompt_tokens": 284,
+              "total_tokens": 445
+            }
+          },
+          {
+            "name": "vision",
+            "status": "passed",
+            "finish_reason": "stop",
+            "content": "A grayscale 3D voxel structure with a bright white center, rendered in a pixelated, blocky form against a black background.",
+            "tools": null,
+            "usage": {
+              "completion_tokens": 28,
+              "prompt_tokens": 1255,
+              "total_tokens": 1283
+            }
+          }
+        ],
+        "semantic_review": "PASS correct tool name and requested JSON args; vision when present accurately describes grayscale cubes/voxel structure against black",
+        "semantic_review_basis": "Actual text inspected against the original cube-hero PNG; HTTP/process pass is recorded separately"
+      },
+      {
+        "model": "qwen35",
+        "model_id": "qwen3.5-35b-a3b",
+        "report_path": "/private/tmp/darkbloom-release090-capabilities-final-execution2/qwen35-evidence/steps/1/http-evidence/evidence/report.json",
+        "report_sha256": "296978a5373e0322a54398e0e7f66cff64848fac2173c5904e56aff6f98cd199",
+        "archive_sha256": "d96c61f2a158ab9dc6f78809f5019c6101d822735ca90c18f5e787b816cae609",
+        "files_verified": 83,
+        "worker_accepted": true,
+        "cleanup_complete": true,
+        "requests": [
+          {
+            "name": "tools",
+            "status": "passed",
+            "finish_reason": "tool_calls",
+            "content": "",
+            "tools": {
+              "0": {
+                "id": "call_48DECEAD50F94B7AB4613ACF",
+                "name": "record_color",
+                "arguments": "{\"color\":\"blue\",\"count\":2}"
+              }
+            },
+            "usage": {
+              "completion_tokens": 154,
+              "completion_tokens_details": {
+                "reasoning_tokens": 114
+              },
+              "prompt_tokens": 284,
+              "total_tokens": 438
+            }
+          },
+          {
+            "name": "vision",
+            "status": "passed",
+            "finish_reason": "stop",
+            "content": "A monochromatic, abstract 3D structure composed of interconnected, semi-transparent cubes arranged in a complex, symmetrical pattern against a black background.",
+            "tools": null,
+            "usage": {
+              "completion_tokens": 31,
+              "prompt_tokens": 1255,
+              "total_tokens": 1286
+            }
+          }
+        ],
+        "semantic_review": "PASS correct tool name and requested JSON args; vision when present accurately describes grayscale cubes/voxel structure against black",
+        "semantic_review_basis": "Actual text inspected against the original cube-hero PNG; HTTP/process pass is recorded separately"
+      },
+      {
+        "model": "gpt-oss-20b",
+        "model_id": "gpt-oss-20b",
+        "report_path": "/private/tmp/darkbloom-release090-capabilities-final-execution2/gpt-oss-20b-evidence/steps/1/http-evidence/evidence/report.json",
+        "report_sha256": "ffa1eb499abb0580e2a8b5490b02dbe023aa143048b25924a39ebb09f9e0766b",
+        "archive_sha256": "10cba8f53242de3eaa00b99d189da141e88832a5ccff085080c96a88fe7f4aef",
+        "files_verified": 83,
+        "worker_accepted": true,
+        "cleanup_complete": true,
+        "requests": [
+          {
+            "name": "tools",
+            "status": "passed",
+            "finish_reason": "tool_calls",
+            "content": "",
+            "tools": {
+              "0": {
+                "id": "call_EF939345731F479A89FEB3CA",
+                "name": "record_color",
+                "arguments": "{\"color\":\"blue\",\"count\":2}"
+              }
+            },
+            "usage": {
+              "completion_tokens": 50,
+              "completion_tokens_details": {
+                "reasoning_tokens": 22
+              },
+              "prompt_tokens": 135,
+              "total_tokens": 185
+            }
+          }
+        ],
+        "semantic_review": "PASS correct tool name and requested JSON args; vision when present accurately describes grayscale cubes/voxel structure against black",
+        "semantic_review_basis": "Actual text inspected against the original cube-hero PNG; HTTP/process pass is recorded separately"
+      },
+      {
+        "model": "gemma-4-26b-qat-4bit",
+        "model_id": "gemma-4-26b-qat-4bit",
+        "report_path": "/private/tmp/darkbloom-release090-capabilities-final-execution2/gemma-4-26b-qat-4bit-evidence/steps/1/http-evidence/evidence/report.json",
+        "report_sha256": "98d0f72ba10c67f72b7b6532b6dda49152b8b7378453a7b52041958549f3ce87",
+        "archive_sha256": "3d68ab0af4b9f58bc711be037dcd0ec639dcd78023a215be0060d744fbe17d9c",
+        "files_verified": 83,
+        "worker_accepted": true,
+        "cleanup_complete": true,
+        "requests": [
+          {
+            "name": "tools",
+            "status": "passed",
+            "finish_reason": "tool_calls",
+            "content": "",
+            "tools": {
+              "0": {
+                "id": "call_6361CA3243FE487DBA83AA4B",
+                "name": "record_color",
+                "arguments": "{\"color\":\"blue\",\"count\":2}"
+              }
+            },
+            "usage": {
+              "completion_tokens": 19,
+              "prompt_tokens": 91,
+              "total_tokens": 110
+            }
+          },
+          {
+            "name": "vision",
+            "status": "passed",
+            "finish_reason": "stop",
+            "content": "A cluster of white and gray cubes is arranged in a complex, three-dimensional shape against a black background.",
+            "tools": null,
+            "usage": {
+              "completion_tokens": 23,
+              "prompt_tokens": 306,
+              "total_tokens": 329
+            }
+          }
+        ],
+        "semantic_review": "PASS correct tool name and requested JSON args; vision when present accurately describes grayscale cubes/voxel structure against black",
+        "semantic_review_basis": "Actual text inspected against the original cube-hero PNG; HTTP/process pass is recorded separately"
+      }
+    ],
+    "not_covered": [
+      "Qwen3.8 final capability rerun belongs to routing successor",
+      "Persistent signed SSD restart",
+      "General tool or vision benchmark quality"
+    ],
+    "aliases_restored": true
+  },
+  "root_review": {
+    "reviewer": "/root",
+    "created_at": "2026-09-07T02:37:01.906722+00:00",
+    "status": "FOUR_MODEL_SEVEN_REQUEST_CAPABILITY_ACCEPTANCE",
+    "verified_original_files": 332,
+    "rows": [
+      {
+        "model": "qwen36",
+        "case": "tools",
+        "finish_reason": "tool_calls",
+        "content": "",
+        "tools": {
+          "0": {
+            "id": "call_F42AF5ED311C4320BA6B545B",
+            "name": "record_color",
+            "arguments": "{\"color\":\"blue\",\"count\":2}"
+          }
+        },
+        "usage": {
+          "completion_tokens": 161,
+          "completion_tokens_details": {
+            "reasoning_tokens": 121
+          },
+          "prompt_tokens": 284,
+          "total_tokens": 445
+        }
+      },
+      {
+        "model": "qwen36",
+        "case": "vision",
+        "finish_reason": "stop",
+        "content": "A grayscale 3D voxel structure with a bright white center, rendered in a pixelated, blocky form against a black background.",
+        "tools": null,
+        "usage": {
+          "completion_tokens": 28,
+          "prompt_tokens": 1255,
+          "total_tokens": 1283
+        }
+      },
+      {
+        "model": "qwen35",
+        "case": "tools",
+        "finish_reason": "tool_calls",
+        "content": "",
+        "tools": {
+          "0": {
+            "id": "call_48DECEAD50F94B7AB4613ACF",
+            "name": "record_color",
+            "arguments": "{\"color\":\"blue\",\"count\":2}"
+          }
+        },
+        "usage": {
+          "completion_tokens": 154,
+          "completion_tokens_details": {
+            "reasoning_tokens": 114
+          },
+          "prompt_tokens": 284,
+          "total_tokens": 438
+        }
+      },
+      {
+        "model": "qwen35",
+        "case": "vision",
+        "finish_reason": "stop",
+        "content": "A monochromatic, abstract 3D structure composed of interconnected, semi-transparent cubes arranged in a complex, symmetrical pattern against a black background.",
+        "tools": null,
+        "usage": {
+          "completion_tokens": 31,
+          "prompt_tokens": 1255,
+          "total_tokens": 1286
+        }
+      },
+      {
+        "model": "gpt-oss-20b",
+        "case": "tools",
+        "finish_reason": "tool_calls",
+        "content": "",
+        "tools": {
+          "0": {
+            "id": "call_EF939345731F479A89FEB3CA",
+            "name": "record_color",
+            "arguments": "{\"color\":\"blue\",\"count\":2}"
+          }
+        },
+        "usage": {
+          "completion_tokens": 50,
+          "completion_tokens_details": {
+            "reasoning_tokens": 22
+          },
+          "prompt_tokens": 135,
+          "total_tokens": 185
+        }
+      },
+      {
+        "model": "gemma-4-26b-qat-4bit",
+        "case": "tools",
+        "finish_reason": "tool_calls",
+        "content": "",
+        "tools": {
+          "0": {
+            "id": "call_6361CA3243FE487DBA83AA4B",
+            "name": "record_color",
+            "arguments": "{\"color\":\"blue\",\"count\":2}"
+          }
+        },
+        "usage": {
+          "completion_tokens": 19,
+          "prompt_tokens": 91,
+          "total_tokens": 110
+        }
+      },
+      {
+        "model": "gemma-4-26b-qat-4bit",
+        "case": "vision",
+        "finish_reason": "stop",
+        "content": "A cluster of white and gray cubes is arranged in a complex, three-dimensional shape against a black background.",
+        "tools": null,
+        "usage": {
+          "completion_tokens": 23,
+          "prompt_tokens": 306,
+          "total_tokens": 329
+        }
+      }
+    ],
+    "image": {
+      "sha256": "f9f9fbf8c0a05fbac1081db94dff3688cdcb3ee3425e2c18e51cbe90f3c5cb33",
+      "viewed_by_root": true,
+      "description": "Browser screenshot whose central subject is a three-dimensional cluster of white/gray cubes with a bright center against black. All three returned descriptions accurately identify this subject within the short requested scope."
+    },
+    "all_actual_backends_paged": true,
+    "all_actual_model_aggregates_match": true,
+    "all_immutable_dependency_checks_pass": true,
+    "all_workers_and_groups_retired": true,
+    "temporary_qwen_aliases_restored": true,
+    "scope": "One-provider connected HTTP tools and vision. Qwen3.8 final capability evidence remains part of the routing successor; no general model-quality, SSD restart or two-provider routing claim."
+  },
+  "publication_archive": {
+    "sha256": "36598bb1d24b1728622c69af305b787621104be00a2f1c24272c0f1ea86adbd5",
+    "bytes": 5407617,
+    "members": 49
+  },
+  "projection": "Selected original reports and audit/retirement records with separately attributed reviews; full per-cell archives retained locally. No original file-mode claim."
+}

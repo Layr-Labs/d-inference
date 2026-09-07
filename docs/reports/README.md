@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-07 · commit `f8086ef1e`
+> Last updated: 2026-09-07 · commit `dbf2b73cf`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,7 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Final tool and vision capability checks](2026-09-07-final-capabilities.md) — four correct tool calls and three accurate image descriptions on the verified 0.9.0 runtime; Qwen 3.8 routing capabilities remain separate.
 - [Five-model sustained workload](2026-09-07-five-model-sustained-final.md) — four models reach the required long decode; QAT refuses the checklist workload, with original failure and clean retirement preserved.
 - [Final Qwen concurrency checks](2026-09-07-qwen-concurrency-final.md) — Qwen 3.5/3.6 B2/B4 backend and SSD comparisons pass with real warm restores and preserved wording diagnostics.
 - [Five-model quality follow-up](2026-09-07-five-model-quality-followup.md) — complete correct arithmetic, matched contiguous code concerns, and outstanding GPT-OSS code/prose controls.

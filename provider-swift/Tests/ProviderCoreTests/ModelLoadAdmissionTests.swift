@@ -134,6 +134,49 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(ok, "the core fix must still hold under the OOM-safety clamps")
 }
 
+// MARK: - freeForLoadAfterReclaimGb (the reclaim-aware pool, GROSS of headroom)
+
+// The two reclaim-aware figures differ by exactly the load headroom, and by
+// nothing else. This is the invariant that keeps `doctor` from charging the
+// headroom twice: `freeForLoadAfterReclaimGb` is comparable to
+// `requiredToLoadGb` (weights + headroom), `maxLoadableWeightGb` is comparable
+// to weights alone.
+@Test func freeForLoadAfterReclaimIsMaxLoadableWeightPlusHeadroom() {
+    let total: UInt64 = 64 * gib
+    let sysAvail: UInt64 = 20 * gib
+    let mlx: UInt64 = 12 * gib
+    let reserve: UInt64 = 4 * gib
+    let headroom = 6.5
+    // min(64, 20+12) = 32; minus 4 reserve = 28 gross.
+    let gross = ModelLoadAdmission.freeForLoadAfterReclaimGb(
+        totalBytes: total, systemAvailableBytes: sysAvail,
+        mlxUsedBytes: mlx, reserveBytes: reserve)
+    #expect(abs(gross - 28.0) < 0.001, "gross reclaim pool (got \(gross))")
+    let net = ModelLoadAdmission.maxLoadableWeightGb(
+        totalBytes: total, systemAvailableBytes: sysAvail,
+        mlxUsedBytes: mlx, reserveBytes: reserve, headroomGb: headroom)
+    #expect(abs(gross - headroom - net) < 0.001,
+        "the weight budget must be the gross pool minus the headroom, exactly once")
+}
+
+// With nothing resident the reclaim-aware pool collapses onto the
+// non-reclaiming one, so the refactor cannot move any existing verdict on an
+// idle box and `doctor`'s offline path stays bit-identical.
+@Test func freeForLoadAfterReclaimEqualsFreeForLoadWhenNothingIsResident() {
+    let total: UInt64 = 32 * gib
+    let sysAvail: UInt64 = 22 * gib
+    let reserve: UInt64 = 4 * gib
+    let reclaimAware = ModelLoadAdmission.freeForLoadAfterReclaimGb(
+        totalBytes: total, systemAvailableBytes: sysAvail,
+        mlxUsedBytes: 0, reserveBytes: reserve)
+    let plain = ModelLoadAdmission.freeForLoadGb(
+        totalBytes: total, systemAvailableBytes: sysAvail,
+        gpuActiveBytes: 0, gpuCacheBytes: 0, reserveBytes: reserve)
+    #expect(abs(reclaimAware - plain) < 0.001,
+        "at mlxUsed == 0 the two bounds must agree (got \(reclaimAware) vs \(plain))")
+    #expect(abs(reclaimAware - 18.0) < 0.001)
+}
+
 // MARK: - maxLoadableWeightGb (heartbeat free_for_load_gb the coordinator consumes)
 
 // Idle resident models are reclaimable: the provider LRU-evicts them on a cold

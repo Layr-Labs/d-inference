@@ -1,6 +1,6 @@
 # Hardware support and the provider memory model
 
-> Last updated: 2026-09-05 · commit `02f6af71a`
+> Last updated: 2026-09-07 · commit `0b46b1618`
 
 What hardware the provider runs on and how it decides, in bytes, whether a
 model may load and how much KV cache each resident model may use. Read this to
@@ -113,16 +113,30 @@ freeForLoadGb(total, systemAvailable, gpuActive, gpuCache, reserve, outstanding)
     committed = reserve + outstanding
     = max(0, realFree − committed) / 2^30                    -- no multiplicative discount
 
+freeForLoadAfterReclaimGb(total, systemAvailable, mlxUsed, reserve, outstanding)
+    reclaimable = min(total, systemAvailable + mlxUsed)   -- unloading returns MLX memory to the OS
+    committed   = reserve + outstanding
+    = max(0, reclaimable − committed) / 2^30              -- GROSS of headroom, like freeForLoadGb
+
 maxLoadableWeightGb(total, systemAvailable, mlxUsed, reserve, headroomGb, outstanding)
-    reclaimable = min(total, systemAvailable + mlxUsed)
-    usable      = reclaimable − (reserve + outstanding)
-    = max(0, usable / 2^30 − max(0, headroomGb))
+    = max(0, freeForLoadAfterReclaimGb(...) − max(0, headroomGb))   -- a WEIGHT budget
 
 requiredToLoadGb(weightsGb, headroomGb) = max(0, weightsGb) + max(0, headroomGb)
 evictionCanReach(available, reclaimable, required) = available + reclaimable ≥ required
 fitsAtAllocation(availableNetOfLedger, ownReservation, required) = availableNetOfLedger + ownReservation / 2^30 ≥ required
 canLoad(...) = requiredToLoadGb ≤ freeForLoadGb
 ```
+
+The two reclaim-aware figures differ only by the load headroom, and confusing them
+charges it twice: `freeForLoadAfterReclaimGb` is comparable to `requiredToLoadGb`
+(weights plus headroom), while `maxLoadableWeightGb` is comparable to weights alone —
+which is why the heartbeat's `free_for_load_gb` is populated from the latter and
+`CapacityQuoteEngine` compares model weights against it directly.
+
+`doctor` consumes `freeForLoadGb` and `freeForLoadAfterReclaimGb` as a floor and a ceiling; it never calls `maxLoadableWeightGb`. Its single non-reclaiming sample
+cannot see the reclaim the load gate performs before it refuses, so a requirement that
+lands between the two is reported as a warning rather than a refusal; only past the
+ceiling is it a failure. See `ModelFitDiagnostic`, `memoryBasis`.
 
 `weightsGb` is the scanner's padded estimate (`sizeBytes / 2^30 ×
 memoryOverheadFactor`), so a load needs `weights × memoryOverheadFactor +

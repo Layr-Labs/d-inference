@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-07 · commit `0b46b1618`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -406,6 +406,16 @@ darkbloom doctor [--strict] [--coordinator <url>] [--support] [--clear-backend-g
 `darkbloom doctor` is read-only except for the subprocess calls used by public
 ProviderCore checks and the explicit `--clear-backend-guard` action
 (`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `runClearBackendGuard`).
+
+The operator diagnosis above those checks includes `model fits in RAM`. It is
+reported as a pair of bounds rather than a single verdict: `doctor` runs in its own
+process and takes one non-reclaiming memory sample, while the daemon's load gate
+unloads idle models and drops the MLX buffer cache before it refuses. A requirement
+below the sample passes; one above what that reclaim could reach fails; one between
+them is a warning that names both figures and states that `doctor` cannot settle it
+from outside the daemon (`provider-swift/Sources/ProviderCore/Diagnostics/ModelFitDiagnostic.swift`,
+`memoryBasis`). Only the failure exits non-zero; the warning exits non-zero only
+under `--strict`.
 
 Two of the detailed checks cover the KV-backend rollout:
 

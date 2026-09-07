@@ -66,6 +66,43 @@ public enum ModelLoadAdmission {
         return Double(usable) / bytesPerGb
     }
 
+    /// Physical memory (GB) available to load a model AFTER the reclaim the load
+    /// path performs before it gives up: `ProviderLoop.evictUntilAvailable`
+    /// LRU-evicts idle resident models and calls `MLX.Memory.clearCache()`, then
+    /// RE-SAMPLES. Unloading hands our MLX memory back to the OS, so the pool is
+    /// `min(total, systemAvailable + mlxUsed)`, less the reserve and any
+    /// outstanding unmaterialized KV commitment.
+    ///
+    /// GROSS of the load headroom — like `freeForLoadGb` and UNLIKE
+    /// `maxLoadableWeightGb`, which is exactly this value MINUS `headroomGb` (a
+    /// model-WEIGHT budget, which is why the wire field `free_for_load_gb` is
+    /// populated from that one and not from `freeForLoadGb`). Compare this
+    /// against `requiredToLoadGb`; comparing a weight budget against it charges
+    /// the headroom twice (`CapacityQuoteEngine` compares weights DIRECTLY
+    /// against the wire figure for exactly that reason).
+    ///
+    /// The OPTIMISTIC bound. It assumes every resident byte is evictable, which
+    /// is looser than the eviction loop's own feasibility credit
+    /// (`Σ evictable slot weights + MLX cache`, which excludes a slot that is
+    /// serving). Callers that must not over-promise pass `mlxUsedBytes: 0` while
+    /// work is in flight — the heartbeat does exactly that for
+    /// `free_for_load_gb`, gated on `ProviderLoop.hasInflightWork`.
+    ///
+    /// A caller that only ever uses this to WITHHOLD a refusal does not need
+    /// that gate: over-crediting cannot turn into a false "fits".
+    public static func freeForLoadAfterReclaimGb(
+        totalBytes: UInt64,
+        systemAvailableBytes: UInt64 = .max,
+        mlxUsedBytes: UInt64,
+        reserveBytes: UInt64,
+        outstandingReservationBytes: UInt64 = 0
+    ) -> Double {
+        let reclaimable = min(totalBytes, saturatingAdd(systemAvailableBytes, mlxUsedBytes))
+        let committed = saturatingAdd(reserveBytes, outstandingReservationBytes)
+        let usable = reclaimable > committed ? reclaimable - committed : 0
+        return Double(usable) / bytesPerGb
+    }
+
     /// Maximum model-WEIGHT footprint (GB) this machine could load right now,
     /// assuming idle/evictable resident models are unloaded to make room. This is
     /// the number the coordinator needs for COLD-LOAD routing: it answers "if I
@@ -80,6 +117,8 @@ public enum ModelLoadAdmission {
     /// value on the idle path (totalPending == 0), where every resident model is
     /// in fact evictable, so the full-eviction assumption holds. The result is the
     /// loadable headroom MINUS the load headroom, i.e. weights only; clamped >= 0.
+    /// Concretely: the same reclaimable pool as `freeForLoadAfterReclaimGb`,
+    /// minus the load headroom.
     ///
     /// - Parameters:
     ///   - reserveBytes: OS/operator reserve to hold back, i.e.
@@ -104,10 +143,12 @@ public enum ModelLoadAdmission {
         // reclaimable pool is current OS-available plus our own MLX usage, capped
         // at total physical. Hold back the load reserve and any outstanding KV
         // reservation, then the load headroom.
-        let reclaimable = min(totalBytes, saturatingAdd(systemAvailableBytes, mlxUsedBytes))
-        let committed = saturatingAdd(reserveBytes, outstandingReservationBytes)
-        let usable = reclaimable > committed ? reclaimable - committed : 0
-        let freeGb = Double(usable) / bytesPerGb
+        let freeGb = freeForLoadAfterReclaimGb(
+            totalBytes: totalBytes,
+            systemAvailableBytes: systemAvailableBytes,
+            mlxUsedBytes: mlxUsedBytes,
+            reserveBytes: reserveBytes,
+            outstandingReservationBytes: outstandingReservationBytes)
         return max(0, freeGb - max(0, headroomGb))
     }
 

@@ -917,8 +917,12 @@ extension ProviderLoop {
     ///      or count their already materialized backing twice.
     ///
     /// `doctor`'s model-fit check shares the SAME arithmetic via
-    /// `ModelLoadAdmission`, so the operator-facing verdict can never drift from
-    /// what this method enforces at load time.
+    /// `ModelLoadAdmission`, but NOT the same decision: this method is called
+    /// inside `evictUntilAvailable`'s reclaim loop, which unloads idle models,
+    /// drops the MLX buffer cache and re-samples before refusing, while `doctor`
+    /// takes one sample from a separate process and can do neither. So the two
+    /// agree per-sample and diverge by whatever is reclaimable. `doctor` handles
+    /// that by bounding rather than asserting — see `ModelFitDiagnostic`.
     ///
     /// `internal` (not `private`): also the admission probe for the startup
     /// preload (`ProviderLoop+StartupPreload`), which must skip — never evict

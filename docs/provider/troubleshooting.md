@@ -1,6 +1,6 @@
 # Provider troubleshooting
 
-> Last updated: 2026-09-06 · commit `615d96328`
+> Last updated: 2026-09-07 · commit `0b46b1618`
 
 Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
 check names, service lifecycle, coordinator connection, updates, models and the
@@ -138,7 +138,8 @@ are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `model fit` ✗ / `recent model load` shows admission refused | `ModelLoadAdmission` (`provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift`) found less free-for-load memory than the model's padded weights plus headroom ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)) | Close other apps; lower `max_model_slots`; pick a smaller quantisation ([hardware requirements](./hardware-requirements.md)) |
+| `model fit` ✗ / `recent model load` shows admission refused | `ModelLoadAdmission` (`provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift`) found less memory than the model's padded weights plus headroom, even after the load gate evicts every idle model ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)) | Close other apps; lower `max_model_slots`; pick a smaller quantisation ([hardware requirements](./hardware-requirements.md)) |
+| `model fits in RAM` ⚠ "cannot settle whether this model loads" | The requirement lands between what `doctor` can sample and what the daemon's load gate could reach by unloading idle models and dropping the MLX buffer cache. `doctor` runs in a separate process, so it can neither perform that reclaim nor see in-flight work (`provider-swift/Sources/ProviderCore/Diagnostics/ModelFitDiagnostic.swift`, `memoryBasis`) | Nothing to change in `provider.toml`. If loads are actually failing, the daemon records the refusal — check `recent model load` and `darkbloom logs` |
 | Model missing from `darkbloom models list` | Not in `~/.cache/huggingface/hub`, or filtered by `enabled_models` | `darkbloom models download <id>`; `darkbloom models list --all` |
 | Load fails after a catalog update | New build published for the alias | `darkbloom models remove <id>` then `darkbloom models download <id>` |
 | `Skipping <id>: model_type … has no engine-v2 adapter` | Family not served by CBv2 | Use a supported family; the model is never advertised |

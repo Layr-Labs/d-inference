@@ -1,8 +1,8 @@
 # 0.9.0 acceptance criteria
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-07 · commit `2827184f5`
 
-Status: **In progress** — 2026-09-06 — acceptance criteria clarified; execution and final release validation remain incomplete.
+Status: **In progress** — 2026-09-07 — the [final build reports 0.9.0](../reports/2026-09-07-release090-final-build.md); [Qwen concurrency](../reports/2026-09-07-qwen-concurrency-final.md) and [quality follow-up](../reports/2026-09-07-five-model-quality-followup.md) supersede the historical evidence state below. Final sustained, connected-serving, GPT quality-control and production-key restart validation remain incomplete. The decision body is preserved as recorded.
 
 This supplements the [five-artifact activation decision](release-090-paged-qwen-cache.md). The release uses paged attention for all five listed artifacts, SSD caching by default for the three Qwens, and ordinary decoding for default-auto GPT-OSS and Gemma QAT. Gemma 8-bit and package-distribution changes remain outside this work.
 

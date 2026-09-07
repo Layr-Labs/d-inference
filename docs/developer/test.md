@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-06 · commit `23e6f986f`
+> Last updated: 2026-09-07 · commit `2827184f5`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -561,8 +561,10 @@ model capacity. `BenchmarkProductionGrantTests` checks policy composition and
 the separate live minimum gate. A source freeze documents unrun code; a compiled
 test result proves only its exercised fixtures. Neither replaces exact-model
 B1/B2/B4 serving, real admission boundaries, latency/memory observations or
-co-resident load/unload runs. These changes leave `auto` on contiguous until the
-release's real-model/default-promotion gates pass.
+co-resident load/unload runs. The 0.9.0 candidate's `auto` policy prefers paged
+for the [five exact release artifacts](../architecture/prefix-cache.md), subject
+to capability checks and fallback. Verify the actual backend in each run;
+the source default alone does not establish release acceptance.
 
 The Python runner binds all three isolated-cache controls together: it sets
 `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1`, the owned

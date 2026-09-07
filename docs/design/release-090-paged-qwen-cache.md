@@ -1,8 +1,8 @@
 # 0.9.0 paged attention and Qwen caching
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-07 · commit `2827184f5`
 
-Status: **In progress** — 2026-09-06 — source activation policy corrected; [acceptance criteria clarified](release-090-acceptance.md), with model and release validation incomplete.
+Status: **In progress** — 2026-09-07 — source activation is implemented; [numerical controls](../reports/2026-09-06-qwen36-candidate-controls.md), [final Qwen concurrency](../reports/2026-09-07-qwen-concurrency-final.md) and the [versioned build](../reports/2026-09-07-release090-final-build.md) supersede the historical open findings below. Remaining validation follows the [acceptance criteria](release-090-acceptance.md). The decision body is preserved as recorded.
 
 The release migrates five exact artifacts to paged attention. Only the three Qwen artifacts default to SSD prefix caching and belong in the initial cache-routing cohort. Gemma 8-bit (`gemma-4-26b`) remains supported but is outside this release's activation and validation matrix. This supersedes the earlier [Qwen-first paging scope](qwen-first-paged-ssd-rollout.md).
 

@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-07 · commit `dfa72078a`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -113,6 +113,8 @@ freshness stamp carries its own date, not the current one.
 - [SSD cache heartbeat telemetry validation](2026-09-05-ssd-cache-telemetry.md) — typed observations, counter freshness, donation outcomes and nonblocking maintenance snapshots.
 - [Qwen 3.5 contiguous SSD reference](2026-09-05-qwen35-contiguous-ssd-reference.md) — exact fleet artifact, normal-MTP SSD comparison and lifecycle checks before paging.
 - [Qwen 3.6 contiguous SSD reference](2026-09-05-qwen36-contiguous-ssd-reference.md) — exact fleet artifact, first cache comparison and lifecycle checks before paging.
+
+- [0.9.0 final candidate build](2026-09-07-release090-final-build.md) — versioned optimized artifacts, exact source/resource verification and preserved interrupted builds.
 
 ## Incidents and root causes
 

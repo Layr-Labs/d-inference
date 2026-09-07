@@ -85,16 +85,24 @@ enum DoctorRunner {
             // When the daemon is up and fresh, subtract its live GPU-active
             // memory too (the min() inside ModelLoadAdmission keeps it conservative
             // without double-counting against the OS-available figure).
+            //
+            // #721: that single sample is the FLOOR, not the decision. The daemon
+            // reclaims its own MLX memory before refusing, so `basis` also carries
+            // the ceiling that reclaim could reach; a requirement between the two
+            // is undecidable from out here and must not be reported as a refusal.
+            // With no fresh daemon both GPU figures are 0 and the two bounds are
+            // equal, so the offline verdict is unchanged.
             let gpuActiveGb = (stateFresh ? state?.capacity?.gpuMemoryActiveGb : nil) ?? 0
             let gpuCacheGb = (stateFresh ? state?.capacity?.gpuMemoryCacheGb : nil) ?? 0
             let bytesPerGb = 1024.0 * 1024.0 * 1024.0
             let systemAvailableGb = SystemMemory.availableBytes().map { Double($0) / bytesPerGb }
-            let usableGb = ModelFitDiagnostic.usableInferenceGb(
+            let basis = ModelFitDiagnostic.memoryBasis(
                 totalGb: Double(hw.memoryGb),
                 reserveGb: Double(snapshot.config.provider.memoryReserveGB),
                 systemAvailableGb: systemAvailableGb,
                 gpuActiveGb: gpuActiveGb,
                 gpuCacheGb: gpuCacheGb)
+            let usableGb = basis.usableGb
 
             // Prefer the live loaded model ONLY when the daemon is up and fresh;
             // otherwise diagnose the CONFIGURED model. A stale state file (daemon
@@ -154,7 +162,8 @@ enum DoctorRunner {
             if let targetID, let target = allModels.first(where: { $0.id == targetID }) {
                 out.append(ModelFitDiagnostic.diagnose(
                     modelID: targetID, weightGb: target.estimatedMemoryGb,
-                    usableGb: usableGb, alternatives: alternatives,
+                    usableGb: usableGb, usableAfterReclaimGb: basis.afterReclaimGb,
+                    alternatives: alternatives,
                     // A LIVE empty set is authoritative (the daemon retired
                     // everything) and must reach the verdict as [] — the
                     // open-world default floor — not collapse to nil, which
@@ -168,7 +177,8 @@ enum DoctorRunner {
                 if let biggest = alternatives.max(by: { $0.weightGb < $1.weightGb }) {
                     out.append(ModelFitDiagnostic.diagnose(
                         modelID: biggest.id, weightGb: biggest.weightGb,
-                        usableGb: usableGb, alternatives: alternatives))
+                        usableGb: usableGb, usableAfterReclaimGb: basis.afterReclaimGb,
+                        alternatives: alternatives))
                 }
             }
         }
@@ -189,7 +199,9 @@ enum DoctorRunner {
             if let err = state.lastModelLoadError {
                 out.append(Diagnostic(section: .runtime, name: "recent model load", level: .warn,
                                       message: "FAILED for \(err.model): \(err.message)",
-                                      fix: "see the model-fit check above; serve a model that fits this box's RAM."))
+                                      fix: "this is the daemon's own record of a refused load — it is "
+                                          + "authoritative where the model-fit check above is only a bound. "
+                                          + "Read the message for the reason before changing `enabled_models`."))
             }
             // ---- Billing ----
             if state.stats.usageGaps > 0 {

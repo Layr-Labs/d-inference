@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — doctor model-fit verdict
+
+- Stop `darkbloom doctor` reporting "model fits in RAM" as a failure on boxes the daemon serves. The check sampled memory once from outside the daemon, while the load gate unloads idle models and drops the MLX buffer cache before refusing, so a resident model's footprint was charged against the verdict despite being memory the gate reclaims. A requirement that lands between the sample and what that reclaim could reach is now a warning naming both figures, and no longer advises narrowing `enabled_models` on a capable machine. Requirements beyond the reclaim ceiling still fail, and now cite the ceiling rather than the sample.
+- Operator-visible: that case exits 0 instead of 1. `darkbloom doctor --strict` still exits non-zero. Suggested alternative models are judged against the same ceiling, so a box is no longer steered to a smaller model than it can serve.
+
 ## Unreleased — stats request-flow refresh
 
 - Restore Stats refreshes on large usage windows by aggregating request origins before looking up provider locations. Preserve weighted coordinates, request/token counts, and the top-50 flow limit while avoiding large temporary sorts.

@@ -131,6 +131,92 @@ import Testing
     #expect(bad.level == .fail)
 }
 
+// MARK: - #721: the reclaim band (doctor's floor vs the load gate's ceiling)
+
+/// The two bounds on the #721 reporter's box. `doctor` subtracts resident MLX
+/// memory as consumed; the daemon's load gate unloads idle models and drops the
+/// MLX buffer cache, handing those bytes back to the OS, then re-samples.
+@Test func memoryBasisReportsBothTheSampleAndTheReclaimCeiling() {
+    // 32 GB box, 4 GB reserve, OS-available 15, resident MLX 14 active + 1 cache.
+    // floor   = min(32 − 15, 15) − 4 = min(17, 15) − 4 = 11.0
+    // ceiling = min(32, 15 + 15)  − 4 = min(32, 30) − 4 = 26.0
+    let basis = ModelFitDiagnostic.memoryBasis(
+        totalGb: 32, reserveGb: 4, systemAvailableGb: 15, gpuActiveGb: 14, gpuCacheGb: 1)
+    #expect(abs(basis.usableGb - 11.0) < 0.01, "floor (got \(basis.usableGb))")
+    #expect(abs(basis.afterReclaimGb - 26.0) < 0.01, "ceiling (got \(basis.afterReclaimGb))")
+}
+
+/// With nothing resident the ceiling collapses onto the sample, so a run with no
+/// fresh daemon — where DoctorRunner passes 0 for both GPU figures — is unchanged.
+@Test func memoryBasisCollapsesToOneBoundWhenNothingIsResident() {
+    let basis = ModelFitDiagnostic.memoryBasis(totalGb: 32, reserveGb: 4, systemAvailableGb: 22)
+    #expect(abs(basis.usableGb - basis.afterReclaimGb) < 0.01)
+    #expect(abs(basis.usableGb - 18.0) < 0.01)
+}
+
+/// THE #721 REGRESSION. gpt-oss-20b needs 13.53 + 3.5 (its measured floor) + 1.0
+/// (min serveable KV) = 18.03. The sample says 11.0 — a refusal — but the gate can
+/// reach 26.0, so the requirement lands inside the band doctor cannot settle from
+/// outside the daemon. Before the fix this was a FAIL telling the operator to
+/// shrink `enabled_models` on a box that serves the model.
+@Test func modelFitWarnsInsteadOfFailingInsideTheReclaimBand() {
+    let d = ModelFitDiagnostic.diagnose(
+        modelID: "gpt-oss-20b", weightGb: 13.53,
+        usableGb: 11.0, usableAfterReclaimGb: 26.0,
+        servingSetIDs: ["gpt-oss-20b"])
+    #expect(d.level == .warn, "a shortfall inside the reclaim band is undecidable, not a refusal")
+    #expect(d.message.contains("18.0"), "must still state the requirement")
+    #expect(d.message.contains("11.0") && d.message.contains("26.0"), "must name BOTH bounds")
+    #expect(d.fix?.contains("enabled_models") != true,
+        "must not tell the operator to downgrade a box the daemon can serve")
+}
+
+/// The ceiling only ever WITHHOLDS a failure. Past it, the verdict is still FAIL —
+/// and the message now names the ceiling rather than the sample, so the operator
+/// sees the number that actually decides it.
+@Test func modelFitStillFailsBeyondTheReclaimCeiling() {
+    // 25 GB weights + 4.5 headroom (3.5 activation floor + 1.0 min KV) = 29.5 > 26.0.
+    let d = ModelFitDiagnostic.diagnose(
+        modelID: "gpt-oss-20b", weightGb: 25.0,
+        usableGb: 11.0, usableAfterReclaimGb: 26.0,
+        servingSetIDs: ["gpt-oss-20b"])
+    #expect(d.level == .fail)
+    #expect(d.message.contains("26.0"), "the FAIL must cite the ceiling, not the sample")
+    #expect(d.message.contains("evicts every idle model"))
+}
+
+/// A nil ceiling means "no ceiling known" and must reproduce the pre-#721 verdict
+/// exactly — this is what keeps all 14 existing call sites and their assertions
+/// byte-identical.
+@Test func modelFitWithoutACeilingReproducesTheSingleBoundVerdict() {
+    let withoutCeiling = ModelFitDiagnostic.diagnose(
+        modelID: "gpt-oss-20b", weightGb: 13.53, usableGb: 11.0,
+        servingSetIDs: ["gpt-oss-20b"])
+    #expect(withoutCeiling.level == .fail)
+    #expect(withoutCeiling.message.contains("only 11.0 GB is usable"))
+    // Passing the sample as its own ceiling is the same thing.
+    let echoed = ModelFitDiagnostic.diagnose(
+        modelID: "gpt-oss-20b", weightGb: 13.53,
+        usableGb: 11.0, usableAfterReclaimGb: 11.0,
+        servingSetIDs: ["gpt-oss-20b"])
+    #expect(echoed == withoutCeiling)
+}
+
+/// Suggestions model `enabled_models = [candidate]`, i.e. the resident set this
+/// box holds today is gone — so they are judged against the ceiling. Filtering
+/// against the sample would recommend a smaller model than the box can serve,
+/// which is the downgrade this check exists to stop.
+@Test func modelFitAlternativesAreJudgedAgainstTheCeiling() {
+    // "mid" needs 12.0 + 6.5 = 18.5: above the 11.0 sample, under the 26.0 ceiling.
+    let alts = [ModelFitDiagnostic.ModelOption(id: "mid", weightGb: 12.0)]
+    let d = ModelFitDiagnostic.diagnose(
+        modelID: "huge", weightGb: 40.0,
+        usableGb: 11.0, usableAfterReclaimGb: 26.0,
+        alternatives: alts, servingSetIDs: ["huge"])
+    #expect(d.level == .fail, "40 GB weights exceed even the ceiling")
+    #expect(d.fix?.contains("mid") == true, "a model reachable after reclaim must still be offered")
+}
+
 @Test func modelFitSuggestsFittingAlternatives() {
     let alts = [
         ModelFitDiagnostic.ModelOption(id: "small", weightGb: 5.0),

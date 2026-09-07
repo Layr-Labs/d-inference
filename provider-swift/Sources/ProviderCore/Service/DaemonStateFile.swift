@@ -101,9 +101,11 @@ public struct DaemonState: Codable, Sendable, Equatable {
         public var gpuMemoryActiveGb: Double
         /// Live MLX GPU cache (buffer pool) memory. Optional for backward
         /// compatibility with state files written before this field existed; the
-        /// model-fit diagnostic subtracts it so `doctor` exactly mirrors
-        /// `ProviderLoop.availableMemoryGb()` even when the OS-available reading
-        /// is unavailable.
+        /// model-fit diagnostic subtracts it to match
+        /// `ProviderLoop.availableMemoryGb()` per-sample even when the
+        /// OS-available reading is unavailable. It also ADDS it back as the
+        /// reclaim ceiling, because the daemon's load gate drops this pool and
+        /// re-samples before refusing — see `ModelFitDiagnostic.memoryBasis`.
         public var gpuMemoryCacheGb: Double?
         public init(totalMemoryGb: Double, gpuMemoryActiveGb: Double, gpuMemoryCacheGb: Double? = nil) {
             self.totalMemoryGb = totalMemoryGb

@@ -1,0 +1,41 @@
+>> [pre-push] Go formatting check...
+>> [pre-push] Go tests...
+ok  	github.com/eigeninference/d-inference/coordinator/mdm	(cached)
+ok  	github.com/eigeninference/d-inference/coordinator/mediafetch	(cached)
+ok  	github.com/eigeninference/d-inference/coordinator/modelpolicy	(cached)
+ok  	github.com/eigeninference/d-inference/coordinator/payments	(cached)
+ok  	github.com/eigeninference/d-inference/coordinator/payments/baserewards	0.738s
+ok  	github.com/eigeninference/d-inference/coordinator/profilesign	(cached)
+ok  	github.com/eigeninference/d-inference/coordinator/promptcontract	3.205s
+ok  	github.com/eigeninference/d-inference/coordinator/protocol	(cached)
+ok  	github.com/eigeninference/d-inference/coordinator/ratelimit	(cached)
+ok  	github.com/eigeninference/d-inference/coordinator/registry	16.629s
+ok  	github.com/eigeninference/d-inference/coordinator/registry/routingsim	1.600s
+ok  	github.com/eigeninference/d-inference/coordinator/saferun	(cached)
+ok  	github.com/eigeninference/d-inference/coordinator/stateexport	(cached)
+ok  	github.com/eigeninference/d-inference/coordinator/store	(cached)
+ok  	github.com/eigeninference/d-inference/coordinator/telemetry	(cached)
+>> [pre-push] TypeScript lint check...
+npm warn Unknown user config "min-release-age". This will stop working in the next major version of npm.
+>> [pre-push] Next.js build check...
+├ ○ /providers/setup
+├ ○ /settings
+└ ○ /stats
+
+
+ƒ Proxy (Middleware)
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+>> [pre-push] All checks passed.
+remote: Bypassed rule violations for refs/heads/feat/paged-kv-quantization:        
+remote: 
+remote: - Cannot update this protected ref.        
+remote: 
+remote: 
+remote: GitHub found 56 vulnerabilities on Layr-Labs/d-inference's default branch (7 critical, 27 high, 20 moderate, 2 low). To find out more, visit:        
+remote:      https://github.com/Layr-Labs/d-inference/security/dependabot        
+remote: 
+To github.com:Layr-Labs/d-inference.git
+   cbd206b24..d39be5e37  feat/paged-kv-quantization -> feat/paged-kv-quantization

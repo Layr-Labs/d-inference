@@ -1,0 +1,42 @@
+[1/1] Compiling plugin CudaBuild
+[2/2] Compiling plugin GenerateManual
+[3/3] Compiling plugin GenerateDoccReference
+Building for debugging...
+[3/19] Write sources
+[4/19] Write swift-version--58304C5D6DBC2206.txt
+[5/15] Compiling scaled_dot_product_attention.cpp
+[6/19] Write Objects.LinkFileList
+[11/21] Emitting module MLXTests
+[12/21] Compiling MLXTests ForcedAttentionTests.swift
+[12/22] Linking Tutorial
+[13/22] Write Objects.LinkFileList
+[14/22] Linking Example1
+[15/22] Applying Tutorial
+[16/22] Linking CustomFunctionExampleSimple
+[17/22] Applying Example1
+[18/22] Applying CustomFunctionExampleSimple
+[19/22] Linking CustomFunctionExample
+[20/22] Applying CustomFunctionExample
+[21/22] Linking mlx-swiftPackageTests
+Build complete! (4.53s)
+Test Suite 'Selected tests' started at 2026-09-07 07:04:10.078.
+Test Suite 'mlx-swiftPackageTests.xctest' started at 2026-09-07 07:04:10.079.
+Test Suite 'ForcedAttentionTests' started at 2026-09-07 07:04:10.079.
+Test Case '-[MLXTests.ForcedAttentionTests testFalsePreservesExistingRouting]' started.
+Test Case '-[MLXTests.ForcedAttentionTests testFalsePreservesExistingRouting]' passed (0.042 seconds).
+Test Case '-[MLXTests.ForcedAttentionTests testFusedDoesNotMaterializeAttentionScores]' started.
+Test Case '-[MLXTests.ForcedAttentionTests testFusedDoesNotMaterializeAttentionScores]' passed (0.569 seconds).
+Test Case '-[MLXTests.ForcedAttentionTests testFusedPitchedViewsAndSinksMatchDenseReference]' started.
+Test Case '-[MLXTests.ForcedAttentionTests testFusedPitchedViewsAndSinksMatchDenseReference]' passed (0.291 seconds).
+Test Case '-[MLXTests.ForcedAttentionTests testUnsupportedHeadRefusesInsteadOfFallingBack]' started.
+Test Case '-[MLXTests.ForcedAttentionTests testUnsupportedHeadRefusesInsteadOfFallingBack]' passed (0.001 seconds).
+Test Suite 'ForcedAttentionTests' passed at 2026-09-07 07:04:10.982.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.902 (0.903) seconds
+Test Suite 'mlx-swiftPackageTests.xctest' passed at 2026-09-07 07:04:10.982.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.902 (0.903) seconds
+Test Suite 'Selected tests' passed at 2026-09-07 07:04:10.982.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.902 (0.904) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

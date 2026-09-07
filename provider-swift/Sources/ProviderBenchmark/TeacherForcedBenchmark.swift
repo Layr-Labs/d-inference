@@ -34,6 +34,8 @@ public enum TeacherForcedBenchmark {
         let metallibSHA256: String
         let modelDirectory: String
         let resolvedBackend: String
+        let kvQuantization: String
+        let kvQuantizationIdentity: String?
         let cacheMode = "off"
         let mtpEnabled = false
         let concurrency = 1
@@ -83,7 +85,8 @@ public enum TeacherForcedBenchmark {
     }
 
     public static func run(modelID: String, modelDirectory: URL, inputURL: URL,
-        backend: String, gemmaOptimizations: GemmaOptimizationSettings) async throws
+        backend: String, kvQuantization: EngineV2KVQuantizationSelection = .native,
+        gemmaOptimizations: GemmaOptimizationSettings) async throws
         -> (json: String, controlsPassed: Bool)
     {
         try validateBackend(backend)
@@ -103,14 +106,7 @@ public enum TeacherForcedBenchmark {
             throw Failure.runtimeIdentityUnavailable
         }
         let isVLM = declaration.visionConfig != nil
-        let container: ModelContainer
-        if isVLM {
-            container = try await VLMModelFactory.shared.loadContainer(
-                from: modelDirectory, using: LocalTokenizerLoader())
-        } else {
-            container = try await LLMModelFactory.shared.loadContainer(
-                from: modelDirectory, using: LocalTokenizerLoader())
-        }
+        let container = try await BenchmarkModelLoading.load(directory: modelDirectory, isVLM: isVLM)
         guard WeightHasher.computeHash(snapshotDir: modelDirectory, modelID: modelID) == verified else {
             throw Failure.modelHashMismatch
         }
@@ -122,12 +118,14 @@ public enum TeacherForcedBenchmark {
             modelId: modelID, modelDirectory: modelDirectory, isVLM: isVLM,
             container: container, tokenizer: tokenizer, verifiedWeightHash: verified,
             kvBytesCapacity: 1 << 30, maxConcurrentRequests: 1, mtpEnabled: false,
-            useProductionKVGrant: true, kvBackendConfig: backend, requirePersistentKey: false,
+            useProductionKVGrant: true, kvBackendConfig: backend,
+            kvQuantizationConfig: kvQuantization.rawValue, requirePersistentKey: false,
             environment: environment)
         do {
             let cache = await session.cacheSnapshot()
             let engine = session.rawEngine
             guard session.backend == backend, session.backendFallback == nil,
+                session.kvQuantizationIdentity == kvQuantization.configuration?.identity,
                 !cache.memoryEnabled, cache.durableMode == nil, cache.recurrentBankBudgetBytes == 0,
                 engine.mtpMetricsSnapshot() == nil, let grant = cache.productionGrant else {
                 throw Failure.unexpectedServingMode
@@ -150,7 +148,9 @@ public enum TeacherForcedBenchmark {
                 inputSHA256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(),
                 verifiedModelAggregateSHA256: verified, executableSHA256: executable,
                 metallibSHA256: metallib, modelDirectory: modelDirectory.path,
-                resolvedBackend: session.backend, kvCapacityBytes: cache.engineKVCapacityBytes,
+                resolvedBackend: session.backend, kvQuantization: kvQuantization.rawValue,
+                kvQuantizationIdentity: session.kvQuantizationIdentity,
+                kvCapacityBytes: cache.engineKVCapacityBytes,
                 productionGrant: grant, plainTop1: plain, activity: activity,
                 diagnostic: first, repeatedDiagnostic: repeated,
                 meanForcedTokenNLL: first.allFinite ? first.records.reduce(0.0) {

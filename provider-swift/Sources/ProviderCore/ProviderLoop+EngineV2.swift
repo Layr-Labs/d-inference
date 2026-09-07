@@ -630,6 +630,8 @@ extension ProviderLoop {
                 activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: loopConfig.config.backend.engineV2KVBackend,
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
+                kvQuantizationConfig: loopConfig.config.backend.engineV2KVQuantization,
+                kvQuantizationConfigByModel: loopConfig.config.backend.engineV2KVQuantizationByModel,
                 prefillDeadlineMode:
                     loopConfig.config.backend.prefillDeadlineMode,
                 // SSD-tier metadata binding: the verified hash for the bytes

@@ -58,24 +58,26 @@ extension Benchmark {
         }
         let backend = try resolvedKVBackendSelection()
 
-        let report = try await ThroughputSweep.run(
-            modelID: modelID,
-            modelDirectory: modelDirectory,
-            promptLengths: lengths,
-            batchSizes: batches,
-            decodeTokens: decodeTokens,
-            decodePromptTokens: decodePromptTokens,
-            decodeIterations: decodeIterations,
-            kvBackend: backend,
-            gemmaOptimizations: gemmaOptimizations,
-            hardware: hardware
-        )
+        let measurement = try await measureExactArtifact(modelID: modelID, directory: modelDirectory) {
+            try await ThroughputSweep.run(
+                modelID: modelID,
+                modelDirectory: modelDirectory,
+                promptLengths: lengths,
+                batchSizes: batches,
+                decodeTokens: decodeTokens,
+                decodePromptTokens: decodePromptTokens,
+                decodeIterations: decodeIterations,
+                kvBackend: backend,
+                kvQuantization: try resolvedKVQuantizationSelection(),
+                quantizedPrefillMode: try resolvedQuantizedPrefillMode(),
+                gemmaOptimizations: gemmaOptimizations,
+                hardware: hardware
+            )
+        }
+        let report = measurement.result
 
-        // The artifact ALWAYS ships, including on a refused run: the operator
-        // needs the notes line and the failure reason more than the status,
-        // and swallowing the report to signal an error would trade a good
-        // diagnostic for a bad one.
-        print(try report.jsonString())
+        // Failed decode cells still produce a report after artifact verification.
+        print(try measurement.json(report.jsonString()))
 
         if let message = Self.sweepFailureMessage(
             backend: backend, failure: report.decodeConstructionFailure,
@@ -149,16 +151,21 @@ extension Benchmark {
             throw ExitCode.failure
         }
 
-        let report = try await SchedulerPrefillBenchmark.run(
-            modelID: modelID,
-            modelDirectory: modelDirectory,
-            promptLengths: lengths,
-            iterations: prefillIterations,
-            kvBackend: try resolvedKVBackendSelection(),
-            gemmaOptimizations: gemmaOptimizations
-        )
+        let measurement = try await measureExactArtifact(modelID: modelID, directory: modelDirectory) {
+            try await SchedulerPrefillBenchmark.run(
+                modelID: modelID,
+                modelDirectory: modelDirectory,
+                promptLengths: lengths,
+                iterations: prefillIterations,
+                kvBackend: try resolvedKVBackendSelection(),
+                kvQuantization: try resolvedKVQuantizationSelection(),
+                quantizedPrefillMode: try resolvedQuantizedPrefillMode(),
+                gemmaOptimizations: gemmaOptimizations
+            )
+        }
+        let report = measurement.result
 
-        print(try report.jsonString())
+        print(try measurement.json(report.jsonString()))
     }
 
     func runArrivalInvarianceBenchmark(
@@ -190,17 +197,21 @@ extension Benchmark {
             lengths = nil
         }
 
-        let report = try await ArrivalInvarianceBenchmark.run(
-            modelID: modelID,
-            modelDirectory: modelDirectory,
-            promptTokens: arrivalPromptTokens,
-            promptLengths: lengths,
-            decodeTokens: arrivalDecodeTokens,
-            iterations: arrivalIterations,
-            kvBackend: try resolvedKVBackendSelection(),
-            gemmaOptimizations: gemmaOptimizations
-        )
-        print(try report.jsonString())
+        let measurement = try await measureExactArtifact(modelID: modelID, directory: modelDirectory) {
+            try await ArrivalInvarianceBenchmark.run(
+                modelID: modelID,
+                modelDirectory: modelDirectory,
+                promptTokens: arrivalPromptTokens,
+                promptLengths: lengths,
+                decodeTokens: arrivalDecodeTokens,
+                iterations: arrivalIterations,
+                kvBackend: try resolvedKVBackendSelection(),
+                kvQuantization: try resolvedKVQuantizationSelection(),
+                gemmaOptimizations: gemmaOptimizations
+            )
+        }
+        let report = measurement.result
+        print(try measurement.json(report.jsonString()))
     }
 
     /// Arrival positions identify rows, so invalid/empty fields must never

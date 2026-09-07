@@ -1,0 +1,363 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/gaj/documents/builds/d-inference-kv-quant/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/gaj/documents/builds/d-inference-kv-quant/provider-swift->/users/gaj/documents/builds/d-inference-kv-quant/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/gaj/documents/builds/d-inference-kv-quant/provider-swift->/users/gaj/documents/builds/d-inference-kv-quant/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+[0/1] Planning build
+Building for production...
+[0/4] Write sources
+[1/4] Copying pagedattention.metal
+[2/4] Write swift-version--58304C5D6DBC2206.txt
+[4/5] Compiling MLXLMCommon DoRA+Layers.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2AttentionMetadata.swift:37:42: warning: 'strides' is deprecated: Do not use -- see asData(access:) [#DeprecatedDeclaration]
+35 |         dtype = String(describing: array.dtype)
+36 |         shape = array.shape
+37 |         graphConstructionStrides = array.strides
+   |                                          `- warning: 'strides' is deprecated: Do not use -- see asData(access:) [#DeprecatedDeclaration]
+38 |     }
+39 | }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:3699:52: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 218 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 219 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 220 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 221 |     /// Append confirmed tokens; returns text now safe to emit.
+ 222 |     func push(_ tokens: [Int]) -> String
+     :
+3697 |                     firstEmissionArmedNanos: firstToken ? readbackDoneNanos : 0)
+3698 |                 detokQueue.async {
+3699 |                     let text = isStopToken ? "" : (detokenizer?.push([token]) ?? "")
+     |                                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+3700 |                     stream?.emit(
+3701 |                         .delta(text: text, tokens: [token], logprobs: logprobs),
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:3946:36: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 218 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 219 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 220 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 221 |     /// Append confirmed tokens; returns text now safe to emit.
+ 222 |     func push(_ tokens: [Int]) -> String
+     :
+3944 |             if usesAsyncDetokenization {
+3945 |                 terminalQueue.async {
+3946 |                     let trailing = detokenizer?.flush() ?? ""
+     |                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+3947 |                     if !trailing.isEmpty {
+3948 |                         stream?.emit(.delta(text: trailing, tokens: [], logprobs: nil))
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:275:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+273 |                 let allTokens = kept
+274 |                 detokQueue.async {
+275 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+276 |                     stream?.emit(
+277 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:220:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 218 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 219 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 220 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 221 |     /// Append confirmed tokens; returns text now safe to emit.
+ 222 |     func push(_ tokens: [Int]) -> String
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointCodec.swift:50:16: warning: value 'historicalLayout' was defined but never used; consider replacing with boolean test [#no-usage]
+ 48 | 
+ 49 |     func tensorDescriptors(position: Int) throws -> [CBv2CheckpointTensorDescriptor] {
+ 50 |         if let historicalLayout {
+    |                `- warning: value 'historicalLayout' was defined but never used; consider replacing with boolean test [#no-usage]
+ 51 |             guard identity.isValid, position > 1 else { throw CBv2CompleteCheckpointError.incompatibleCheckpoint }
+ 52 |             return try attentionTensorDescriptors(position: position)
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[5/8] Compiling MLXHuggingFace Macros.swift
+[6/8] Compiling MLXEmbedders EmbedderModelContainer.swift
+[7/8] Compiling MLXLLM LLMModel.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLLM/Models/DeepseekV4.swift:758:27: warning: immutable value 'D' was never used; consider replacing with '_' or removing it [#no-usage]
+ 756 | 
+ 757 |     func callAsFunction(_ x: MLXArray, poolCache: PoolingCache?, offset: Int) -> MLXArray {
+ 758 |         let B = x.dim(0), D = x.dim(2)
+     |                           `- warning: immutable value 'D' was never used; consider replacing with '_' or removing it [#no-usage]
+ 759 |         let kv = wkv(x)    // [B, S, out_dim]
+ 760 |         let gate = wgate(x) // [B, S, out_dim]
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLLM/Models/DeepseekV4.swift:1401:9: warning: switch must be exhaustive
+1399 |         // Local scores: [B, H, L, localLen]
+1400 |         let localScores: MLXArray
+1401 |         switch localMask {
+     |         |- warning: switch must be exhaustive
+     |         `- note: add missing case: '.arrays(_)'
+1402 |         case .none, .causal:
+1403 |             localScores = qScaled.matmul(localKV.transposed(0, 1, 3, 2))
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLLM/Models/DeepseekV4.swift:1513:13: warning: variable 'h' was never mutated; consider changing to 'let' constant
+1511 |         }
+1512 | 
+1513 |         var h = hcPost(x: attnOut, residual: residual, post: postAttn, comb: combAttn)
+     |             `- warning: variable 'h' was never mutated; consider changing to 'let' constant
+1514 | 
+1515 |         // FFN sub-block
+[8/9] Compiling MLXVLM MediaProcessing.swift
+[9/10] Compiling MLXLMServer MLXServerRunner.swift
+macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXEmbeddingServerEngine.swift:78:49: note: expanded code originates here
+76 |         try await EmbedderModelFactory.shared.loadContainer(
+77 |             from: #hubDownloader(),
+78 |             using: #huggingFaceTokenizerLoader(),
+   |                    `- note: in expansion of macro 'huggingFaceTokenizerLoader' here
+   +--- macro expansion #huggingFaceTokenizerLoader --------------------
+   |10 |             //
+   |11 |             let upstream = try await Tokenizers.AutoTokenizer.from(modelFolder: directory)
+   |12 |             return #adaptHuggingFaceTokenizer(upstream)
+   |   |                    `- note: in expansion of macro 'adaptHuggingFaceTokenizer' here
+   |   +--- macro expansion #adaptHuggingFaceTokenizer -----------------
+   |   | 6 |     struct TokenizerBridge: MLXLMCommon.Tokenizer {
+   |   | 7 |         // nonisolated(unsafe): the upstream tokenizer is immutable after init.
+   |   | 8 |         nonisolated(unsafe) private let upstream: any Tokenizers.Tokenizer
+   |   |   |         `- warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+   |   | 9 | 
+   |   |10 |         init(_ upstream: any Tokenizers.Tokenizer) {
+   |   +----------------------------------------------------------------
+   |13 |         }
+   |14 |     }
+   +--------------------------------------------------------------------
+79 |             configuration: configuration
+80 |         )
+
+macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXModelContainerEngine.swift:202:79: note: expanded code originates here
+200 |         configuration: ModelConfiguration
+201 |     ) async throws -> ModelContainer {
+202 |         try await #huggingFaceLoadModelContainer(configuration: configuration)
+    |                   `- note: in expansion of macro 'huggingFaceLoadModelContainer' here
+    +--- macro expansion #huggingFaceLoadModelContainer ----------------
+    |1 | loadModelContainer(
+    |2 |     from: #hubDownloader(),
+    |3 |     using: #huggingFaceTokenizerLoader(),
+    |  |            `- note: in expansion of macro 'huggingFaceTokenizerLoader' here
+    |  +--- macro expansion #huggingFaceTokenizerLoader ----------------
+    |  |10 |             //
+    |  |11 |             let upstream = try await Tokenizers.AutoTokenizer.from(modelFolder: directory)
+    |  |12 |             return #adaptHuggingFaceTokenizer(upstream)
+    |  |   |                    `- note: in expansion of macro 'adaptHuggingFaceTokenizer' here
+    |  |   +--- macro expansion #adaptHuggingFaceTokenizer -------------
+    |  |   | 6 |     struct TokenizerBridge: MLXLMCommon.Tokenizer {
+    |  |   | 7 |         // nonisolated(unsafe): the upstream tokenizer is immutable after init.
+    |  |   | 8 |         nonisolated(unsafe) private let upstream: any Tokenizers.Tokenizer
+    |  |   |   |         `- warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+    |  |   | 9 | 
+    |  |   |10 |         init(_ upstream: any Tokenizers.Tokenizer) {
+    |  |   +------------------------------------------------------------
+    |  |13 |         }
+    |  |14 |     }
+    |  +----------------------------------------------------------------
+    |4 |     configuration: configuration,
+    |5 |     progressHandler: { _ in
+    +-------------------------------------------------------------------
+203 |     }
+204 | 
+
+macro expansion #adaptHuggingFaceTokenizer:8:9: warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXModelContainerEngine.swift:211:70: note: expanded code originates here
+209 |         configuration: ModelConfiguration
+210 |     ) async throws -> sending ModelContext {
+211 |         try await #huggingFaceLoadModel(configuration: configuration)
+    |                   `- note: in expansion of macro 'huggingFaceLoadModel' here
+    +--- macro expansion #huggingFaceLoadModel -------------------------
+    |1 | loadModel(
+    |2 |     from: #hubDownloader(),
+    |3 |     using: #huggingFaceTokenizerLoader(),
+    |  |            `- note: in expansion of macro 'huggingFaceTokenizerLoader' here
+    |  +--- macro expansion #huggingFaceTokenizerLoader ----------------
+    |  |10 |             //
+    |  |11 |             let upstream = try await Tokenizers.AutoTokenizer.from(modelFolder: directory)
+    |  |12 |             return #adaptHuggingFaceTokenizer(upstream)
+    |  |   |                    `- note: in expansion of macro 'adaptHuggingFaceTokenizer' here
+    |  |   +--- macro expansion #adaptHuggingFaceTokenizer -------------
+    |  |   | 6 |     struct TokenizerBridge: MLXLMCommon.Tokenizer {
+    |  |   | 7 |         // nonisolated(unsafe): the upstream tokenizer is immutable after init.
+    |  |   | 8 |         nonisolated(unsafe) private let upstream: any Tokenizers.Tokenizer
+    |  |   |   |         `- warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any Tokenizer', consider removing it
+    |  |   | 9 | 
+    |  |   |10 |         init(_ upstream: any Tokenizers.Tokenizer) {
+    |  |   +------------------------------------------------------------
+    |  |13 |         }
+    |  |14 |     }
+    |  +----------------------------------------------------------------
+    |4 |     configuration: configuration,
+    |5 |     progressHandler: { _ in
+    +-------------------------------------------------------------------
+212 |     }
+213 | }
+[10/11] Compiling ProviderCore APNsBridge.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift:77:12: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+ 75 |         throw HardwareError.sysctlFailed(key)
+ 76 |     }
+ 77 |     return String(cString: buffer)
+    |            `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+ 78 | }
+ 79 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift:353:24: warning: no 'async' operations occur within 'await' expression
+351 |             let sample = budget.memoryHeadroomSnapshot()
+352 |             postBuildHeadroom = sample.runtimeRemainingBytes
+353 |             let kind = await bundle.bridge.kvBackendKind
+    |                        `- warning: no 'async' operations occur within 'await' expression
+354 |             let ceiling = await bundle.bridge.kvBackendPoolBytes()
+355 |             guard KVHeadroomProbe.postBuildServeable(kvBackendKind: kind, pagedPoolBytes: ceiling,
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift:364:23: warning: no 'async' operations occur within 'await' expression
+362 |             }
+363 |         }
+364 |         let backend = await bundle.bridge.kvBackendKind.rawValue
+    |                       `- warning: no 'async' operations occur within 'await' expression
+365 |         let fallback = await bundle.bridge.kvBackendFallbackReason
+366 |         return EngineV2BenchmarkSession(
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift:365:24: warning: no 'async' operations occur within 'await' expression
+363 |         }
+364 |         let backend = await bundle.bridge.kvBackendKind.rawValue
+365 |         let fallback = await bundle.bridge.kvBackendFallbackReason
+    |                        `- warning: no 'async' operations occur within 'await' expression
+366 |         return EngineV2BenchmarkSession(
+367 |             bundle: bundle, engine: engine,
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift:369:37: warning: no 'async' operations occur within 'await' expression
+367 |             bundle: bundle, engine: engine,
+368 |             backend: backend, fallback: fallback,
+369 |             kvQuantizationIdentity: await bundle.bridge.kvQuantizationIdentity,
+    |                                     `- warning: no 'async' operations occur within 'await' expression
+370 |             stopTokenIDs: await bundle.bridge.stopTokenIds,
+371 |             memoryEnabled: PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment),
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift:370:27: warning: no 'async' operations occur within 'await' expression
+368 |             backend: backend, fallback: fallback,
+369 |             kvQuantizationIdentity: await bundle.bridge.kvQuantizationIdentity,
+370 |             stopTokenIDs: await bundle.bridge.stopTokenIds,
+    |                           `- warning: no 'async' operations occur within 'await' expression
+371 |             memoryEnabled: PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment),
+372 |             activationReserveBytes: reserve, postLoadMaximumKVBytes: maximumKVBytes,
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/GPUEnforcement.swift:85:16: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+83 |         // any code path that might have called `Device.setDefault(.cpu)`
+84 |         // earlier in the process (e.g. a stray test fixture).
+85 |         Device.setDefault(device: .gpu)
+   |                `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+86 |         if Device.defaultDevice().deviceType != .gpu {
+87 |             throw Error.mlxDefaultIsCPU
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/KVHeadroomProbe.swift:30:45: warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+28 |         activationReserveBytes: UInt64? = nil
+29 |     ) -> UInt64 {
+30 |         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+   |                                             |- warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+   |                                             `- note: use 'Memory.activeMemory' instead
+31 |         return UnifiedMemoryCap.liveKVHeadroomBytes(
+32 |             mlxUsedBytes: mlxUsed,
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/KVHeadroomProbe.swift:30:84: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+28 |         activationReserveBytes: UInt64? = nil
+29 |     ) -> UInt64 {
+30 |         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+   |                                                                                    |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+   |                                                                                    `- note: use 'Memory.cacheMemory' instead
+31 |         return UnifiedMemoryCap.liveKVHeadroomBytes(
+32 |             mlxUsedBytes: mlxUsed,
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift:141:50: warning: 'peakMemory' is deprecated: renamed to 'Memory.peakMemory' [#DeprecatedDeclaration]
+139 |         // idle do we assume idle models can be evicted.
+140 |         let mlxActiveBytes = processMemory.activeBytes
+141 |         let mlxPeakBytes = UInt64(max(0, MLX.GPU.peakMemory))
+    |                                                  |- warning: 'peakMemory' is deprecated: renamed to 'Memory.peakMemory' [#DeprecatedDeclaration]
+    |                                                  `- note: use 'Memory.peakMemory' instead
+142 |         let mlxCacheBytes = processMemory.cacheBytes
+143 |         let (sumUsed, usedOverflow) = mlxActiveBytes.addingReportingOverflow(mlxCacheBytes)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift:1031:43: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+1029 |                 let reclaimableGb = evictable.reduce(0.0) {
+1030 |                     $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
+1031 |                 } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+     |                                           |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+     |                                           `- note: use 'Memory.cacheMemory' instead
+1032 |                 if !ModelLoadAdmission.evictionCanReach(
+1033 |                     availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift:1169:39: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+1167 |             let reclaimableGb = evictable.reduce(0.0) {
+1168 |                 $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
+1169 |             } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+     |                                       |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+     |                                       `- note: use 'Memory.cacheMemory' instead
+1170 |             if !ModelLoadAdmission.evictionCanReach(
+1171 |                 availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift:354:12: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+352 |     var model = [CChar](repeating: 0, count: size)
+353 |     sysctlbyname("hw.model", &model, &size, nil, 0)
+354 |     return String(cString: model)
+    |            `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+355 | }
+356 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift:260:25: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+258 |         throw RuntimeMetallibBindingError.snapshotCreateFailed
+259 |     }
+260 |     let temporaryPath = String(cString: template)
+    |                         `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+261 |     guard unlink(temporaryPath) == 0 else {
+262 |         Darwin.close(descriptor)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift:349:16: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+347 |     // Resolve symlinks
+348 |     guard let resolved = realpath(buffer, nil) else {
+349 |         return String(cString: buffer)
+    |                `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+350 |     }
+351 |     defer { free(resolved) }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Security/SecurityFoundation.swift:279:41: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+277 |         }
+278 |         guard let resolved = realpath(buffer, nil) else {
+279 |             return URL(fileURLWithPath: String(cString: buffer))
+    |                                         `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+280 |         }
+281 |         defer { free(resolved) }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Server/ModelPrefetchCoordinator.swift:273:24: warning: no 'async' operations occur within 'await' expression
+271 | 
+272 |     private func runPrefetch(modelId: String, taskId: UUID) async {
+273 |         defer { Task { await self.removeTask(modelId: modelId, taskId: taskId) } }
+    |                        `- warning: no 'async' operations occur within 'await' expression
+274 | 
+275 |         // Short-circuit if already available (loaded or on-disk-and-valid).
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Service/LaunchctlControl.swift:82:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+80 |                 return String(cString: resolved)
+81 |             }
+82 |             return String(cString: buffer)
+   |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+83 |         }
+84 |         return FileManager.default.homeDirectoryForCurrentUser
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[11/12] Compiling ProviderBenchmark ArrivalInvarianceBenchmark.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderBenchmark/ModelBenchmark.swift:184:27: warning: no calls to throwing functions occur within 'try' expression
+182 |         )
+183 | 
+184 |         let rawMessages = try messages.map { msg -> MLXLMCommon.Message in
+    |                           `- warning: no calls to throwing functions occur within 'try' expression
+185 |             ["role": msg.role, "content": msg.content] as MLXLMCommon.Message
+186 |         }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift:97:21: warning: no calls to throwing functions occur within 'try' expression
+ 95 |         }
+ 96 | 
+ 97 |         let facts = try await container.perform { ctx -> ModelFacts in
+    |                     `- warning: no calls to throwing functions occur within 'try' expression
+ 98 |             eval(ctx.model.parameters().flattened().map { $0.1 })
+ 99 |             let params = ctx.model.parameters().flattened()
+[11/13] Write Objects.LinkFileList
+[12/13] Linking darkbloom
+Build of product 'darkbloom' complete! (150.07s)

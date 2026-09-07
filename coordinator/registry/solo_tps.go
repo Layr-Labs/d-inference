@@ -37,38 +37,43 @@ func chipClassKey(hw protocol.Hardware) string {
 // purely-queued box's retained EWMA is not sampled — this method itself only
 // validates the sample value, mirroring Record. The tpsKey.ChipFamily field
 // carries the chip-class string for solo entries.
-func (r *TPSRegistry) RecordSolo(model, chipClass string, tps float64) {
+func (r *TPSRegistry) RecordSolo(model, chipClass string, tps float64, executionIdentity ...string) {
+	execution := optionalExecutionIdentity(executionIdentity)
+	if execution == invalidExecutionIdentity {
+		return
+	}
 	if tps <= 0 || model == "" {
 		return
 	}
-	key := tpsKey{Model: model, ChipFamily: chipClass}
+	key := tpsKey{Model: model, ChipFamily: chipClass, ExecutionIdentity: execution}
+	modelKey := modelExecutionKey{model: model, execution: execution}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.soloSamples == nil { // zero-value registry
 		r.soloSamples = make(map[tpsKey][]float64)
 	}
 	if r.soloByModel == nil {
-		r.soloByModel = make(map[string]map[string]tpsSampleStat)
+		r.soloByModel = make(map[modelExecutionKey]map[string]tpsSampleStat)
 	}
 	// FIFO ring, same shape as Record.
 	samples := appendRingSample(r.soloSamples[key], tps, r.maxSamples)
 	r.soloSamples[key] = samples
-	byClass := r.soloByModel[model]
+	byClass := r.soloByModel[modelKey]
 	if byClass == nil {
 		byClass = make(map[string]tpsSampleStat)
-		r.soloByModel[model] = byClass
+		r.soloByModel[modelKey] = byClass
 	}
 	byClass[chipClass] = tpsSampleStat{median: r.medianOfRingLocked(samples), n: len(samples)}
-	r.refreshSoloAllChipsLocked(model)
+	r.refreshSoloAllChipsLocked(modelKey)
 }
 
 // SoloMedian returns the median solo decode TPS for the given model and chip
 // CLASS (chipClassKey) plus the number of samples behind it. (0, 0) when no
 // solo samples exist. The count lets callers apply a min-sample trust floor
 // before using the median for admission decisions.
-func (r *TPSRegistry) SoloMedian(model, chipClass string) (float64, int) {
+func (r *TPSRegistry) SoloMedian(model, chipClass string, executionIdentity ...string) (float64, int) {
 	r.mu.RLock()
-	stat := r.soloByModel[model][chipClass]
+	stat := r.soloByModel[modelExecutionKey{model: model, execution: optionalExecutionIdentity(executionIdentity)}][chipClass]
 	r.mu.RUnlock()
 	return stat.median, stat.n
 }
@@ -104,9 +109,9 @@ func (r *TPSRegistry) SoloMedian(model, chipClass string) (float64, int) {
 // (tps_median_cache.go), which is what lets the routing scan resolve the
 // quality cap for every provider without copying and sorting the fleet's
 // samples per provider.
-func (r *TPSRegistry) SoloMedianAllChips(model string) (tps float64, samples, classes int) {
+func (r *TPSRegistry) SoloMedianAllChips(model string, executionIdentity ...string) (tps float64, samples, classes int) {
 	r.mu.RLock()
-	agg := r.soloAllChips[model]
+	agg := r.soloAllChips[modelExecutionKey{model: model, execution: optionalExecutionIdentity(executionIdentity)}]
 	r.mu.RUnlock()
 	return agg.minMedian, agg.total, agg.classes
 }

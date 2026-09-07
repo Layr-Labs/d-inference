@@ -84,6 +84,7 @@ public enum ArrivalInvarianceBenchmark {
         arrivalToleranceMs: Double? = nil,
         maxAttemptsPerSample: Int = 3,
         kvBackend: EngineV2KVBackendSelection = .auto,
+        kvQuantization: EngineV2KVQuantizationSelection = .native,
         gemmaOptimizations: GemmaOptimizationSettings
     ) async throws -> ArrivalInvarianceBenchmarkReport {
         let promptTokens = max(2, promptTokens)
@@ -135,7 +136,7 @@ public enum ArrivalInvarianceBenchmark {
             modelDirectory: modelDirectory,
             weightBytes: facts.weightBytes,
             maxConcurrentRequests: patterns.map(\.delaysMs.count).max() ?? 1,
-            kvBackend: kvBackend
+            kvBackend: kvBackend, kvQuantization: kvQuantization
         )
         let engine = engineParts.engine
         log("kv backend selection \(kvBackend.rawValue), engine resolved "
@@ -255,7 +256,7 @@ public enum ArrivalInvarianceBenchmark {
             arrivalToleranceMs: toleranceMs,
             arrivalMaxAttemptsPerSample: maxAttempts,
             kvBackend: BenchmarkKVBackend(
-                selection: kvBackend.rawValue,
+                selection: kvBackend.rawValue, quantizationSelection: kvQuantization.rawValue,
                 resolved: [engineParts.resolvedBackend]),
             patterns: patternReports
         )
@@ -440,7 +441,8 @@ public enum ArrivalInvarianceBenchmark {
         modelDirectory: URL,
         weightBytes: Int,
         maxConcurrentRequests: Int,
-        kvBackend: EngineV2KVBackendSelection
+        kvBackend: EngineV2KVBackendSelection,
+        kvQuantization: EngineV2KVQuantizationSelection = .native
     ) async throws -> EngineParts {
         let kvCapacity = Int(min(
             UnifiedMemoryCap.kvBudgetBytes(
@@ -467,7 +469,7 @@ public enum ArrivalInvarianceBenchmark {
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: maxConcurrentRequests,
                 kvBudget: BenchmarkMemoryBudget.shared,
-                kvBackend: kvBackend
+                kvBackend: kvBackend, kvQuantization: kvQuantization
             )
             return EngineParts(
                 engine: build.engine,

@@ -1,0 +1,11 @@
+<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-09-07
+
+Reasoning: low
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|><|start|>developer<|message|># Instructions
+
+Follow the user's output format exactly. Do not include an explanation unless requested.
+
+<|end|><|start|>user<|message|>A warehouse receives 36 boxes with 48 bolts each. It discards 125 damaged bolts, then ships 217 bolts to each of three customers. How many bolts remain? Return only the integer.<|end|><|start|>assistant

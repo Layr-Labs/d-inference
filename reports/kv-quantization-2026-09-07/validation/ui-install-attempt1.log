@@ -1,0 +1,17 @@
+npm warn Unknown user config "min-release-age". This will stop working in the next major version of npm.
+npm warn deprecated @paulmillr/qr@0.2.1: The package is now available as "qr": npm install qr
+npm warn deprecated @metamask/sdk-analytics@0.0.5: No longer maintained, superseded by @metamask/connect-analytics
+npm warn deprecated @walletconnect/sign-client@2.21.1: Reliability and performance improvements. See: https://github.com/WalletConnect/walletconnect-monorepo/releases
+npm warn deprecated @walletconnect/sign-client@2.21.0: Reliability and performance improvements. See: https://github.com/WalletConnect/walletconnect-monorepo/releases
+npm warn deprecated @walletconnect/sign-client@2.21.0: Reliability and performance improvements. See: https://github.com/WalletConnect/walletconnect-monorepo/releases
+npm warn deprecated @walletconnect/sign-client@2.21.0: Reliability and performance improvements. See: https://github.com/WalletConnect/walletconnect-monorepo/releases
+npm warn deprecated @walletconnect/universal-provider@2.21.1: Reliability and performance improvements. See: https://github.com/WalletConnect/walletconnect-monorepo/releases
+npm warn deprecated @walletconnect/universal-provider@2.21.0: Reliability and performance improvements. See: https://github.com/WalletConnect/walletconnect-monorepo/releases
+npm warn deprecated @walletconnect/universal-provider@2.21.0: Reliability and performance improvements. See: https://github.com/WalletConnect/walletconnect-monorepo/releases
+npm warn deprecated @walletconnect/universal-provider@2.21.0: Reliability and performance improvements. See: https://github.com/WalletConnect/walletconnect-monorepo/releases
+npm warn deprecated @walletconnect/ethereum-provider@2.21.1: Reliability and performance improvements. See: https://github.com/WalletConnect/walletconnect-monorepo/releases
+npm warn deprecated @metamask/sdk-install-modal-web@0.32.1: No longer maintained, superseded by https://docs.metamask.io/metamask-connect
+npm warn deprecated @metamask/sdk-communication-layer@0.33.1: No longer maintained, superseded by https://docs.metamask.io/metamask-connect
+npm warn deprecated @metamask/sdk@0.33.1: No longer maintained, superseded by https://docs.metamask.io/metamask-connect
+
+added 1167 packages in 16s

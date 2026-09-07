@@ -35,11 +35,15 @@ struct CompleteCheckpointStorageIdentity: Sendable {
             else { return nil }
             switch target {
             case .recurrentFull:
-                backendLayout = CBv2CompleteCheckpointManifest.pagedLayout
+                backendLayout = pagedConfig.quantization == nil
+                    ? CBv2CompleteCheckpointManifest.pagedLayout
+                    : CBv2CompleteCheckpointManifest.quantizedPagedLayout
             case .historicalAttention(let kinds):
                 guard let layers = try? CBv2CheckpointAttentionLayer.resolve(layerKinds: kinds, dtypes: layerDTypes)
                 else { return nil }
-                backendLayout = CBv2CompleteCheckpointManifest.historicalAttentionLayout
+                backendLayout = pagedConfig.quantization == nil
+                    ? CBv2CompleteCheckpointManifest.historicalAttentionLayout
+                    : CBv2CompleteCheckpointManifest.quantizedHistoricalAttentionLayout
                 for (index, layer) in layers.enumerated() {
                     let prefix = "storage.attention.\(index)."
                     fields[prefix + "modelLayer"] = String(layer.modelLayer)
@@ -51,6 +55,9 @@ struct CompleteCheckpointStorageIdentity: Sendable {
                     fields[prefix + "sinks"] = String(layer.hasSinks)
                     fields[prefix + "dtype"] = layer.dtype.rawValue
                 }
+            }
+            if let quantization = pagedConfig.quantization {
+                fields["storage.quantization"] = quantization.identity
             }
             fields["storage.pageSize"] = String(pagedConfig.pageSize)
             fields["storage.segmentBytes"] = String(segmentBytes)

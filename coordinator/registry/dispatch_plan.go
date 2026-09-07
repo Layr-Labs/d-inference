@@ -474,7 +474,7 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 		// only (see reserveProvider).
 		bd := candidate.breakdown
 		if !pr.RequiresVision && bd.RawTTFTMs > 0 && bd.StateMs == 0 {
-			ttftCalibration.notePrediction(pr.RequestID, pr.Attempt, model, candidate.snapshot.chipFamily, bd.RawTTFTMs)
+			ttftCalibration.notePrediction(pr.RequestID, pr.Attempt, model, candidate.snapshot.chipFamily, bd.RawTTFTMs, candidate.snapshot.executionIdentity)
 		}
 		// Winner-specific fields only: the scan tallies belong to the plan
 		// (EligibleCount/…), not to this per-entry revalidation, so the count

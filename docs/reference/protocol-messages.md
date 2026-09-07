@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-05 · commit `055a76364`
+> Last updated: 2026-09-07 · commit `47da6bf26`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -117,8 +117,8 @@ Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
 |---|---|---|---|---|
 | `id` | `string` | `String` | req | catalog build id |
 | `size_bytes` | `int64` | `UInt64` | req | |
-| `model_type` | `string` | `String?` | req in Go | |
-| `quantization` | `string` | `String?` | req in Go | |
+| `model_type`, `quantization` | `string` | `String?` | req in Go | Model family and weight-format labels; neither selects KV execution history |
+| `execution_identity` | `string` | `String?` | opt | Declared policy for a future load; native/legacy omit. Includes packed KV format and prefill mode, independently of weight quantization. `ModelInfo` in `coordinator/protocol/messages.go` and `provider-swift/Sources/ProviderCore/Protocol/Types.swift`; [identity contract](paged-kv-quantization.md#execution-identity-and-performance-history) |
 | `weight_hash` | `string` | `String?` | opt | SHA-256 of the weight files |
 | `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media |
 | `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
@@ -197,14 +197,15 @@ and how the scheduler reads them: [`../architecture/scheduling.md`](../architect
 
 #### `slots[]`
 
-Go `BackendSlotCapacity` · Swift `BackendSlotCapacity`. One entry per loaded
-model. Every engine-health, `kv_backend` and `telemetry` field is **measurement
+Go `BackendSlotCapacity` · Swift `BackendSlotCapacity`. One entry per reported
+model slot. Every engine-health, `kv_backend` and `telemetry` field is **measurement
 only**: the coordinator decodes them into the routing snapshot but does not gate
 routing on them.
 
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
 | `model` | `string` | `String` | req | |
+| `execution_identity` | `string` | `String?` | opt | Actual loaded execution for performance-history partition. `running`/`idle` takes precedence over `models[]`, including native omission; nonresident placeholders use the model declaration. Native omission preserves legacy keys. `BackendSlotCapacity` in `coordinator/protocol/messages.go` and `provider-swift/Sources/ProviderCore/Protocol/Types.swift`; [identity contract and coordinator-first boundary](paged-kv-quantization.md#execution-identity-and-performance-history) |
 | `state` | `string` | `String` | req | Coordinator accepts `running`, `idle`, `idle_shutdown`, `crashed`, `reloading`; `registry.SlotStateFold` (`coordinator/registry/gate_reason.go`) folds anything else to `other`. The v0.8.16 provider emits `running`, `idle`, `crashed`, `reloading` (`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Capacity.swift`); `idle_shutdown` stays accepted for older providers. `idle` means the model **is loaded** (`slotStateModelLoaded`, `coordinator/registry/scheduler.go`); `reloading`/`crashed` make the slot unroutable |
 | `num_running`, `num_waiting` | `int` | `UInt32` | req | |
 | `max_concurrency` | `int` | `UInt32` | opt | |

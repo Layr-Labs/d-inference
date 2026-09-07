@@ -1,0 +1,3 @@
+[backend]
+engine_v2_kv_backend = "paged"
+engine_v2_kv_quantization = "native"

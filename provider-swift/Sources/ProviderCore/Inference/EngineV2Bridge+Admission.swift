@@ -264,8 +264,9 @@ extension EngineV2Bridge {
         guard !tokenOverflow else { return nil }
         let (auxiliaryOverhead, auxiliaryOverflow) = auxiliaryBytesPerToken
             .multipliedReportingOverflow(by: max(0, extraAuxiliaryTokens))
-        let (total, totalOverflow) = fixedRequestBytes.addingReportingOverflow(
-            auxiliaryOverhead)
-        return auxiliaryOverflow || totalOverflow ? nil : total
+        let (fixedOverhead, fixedOverflow) = fixedRequestBytes.addingReportingOverflow(
+            kvRoutingRequestOverheadBytes)
+        let (total, totalOverflow) = fixedOverhead.addingReportingOverflow(auxiliaryOverhead)
+        return auxiliaryOverflow || fixedOverflow || totalOverflow ? nil : total
     }
 }

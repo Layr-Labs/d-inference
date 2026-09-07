@@ -1,0 +1,196 @@
+{
+  "artifactIdentity" : {
+    "afterModelAggregateSHA256" : "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+    "beforeModelAggregateSHA256" : "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+    "expectedModelAggregateSHA256" : "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+    "modelDirectory" : "\/Users\/gaj\/Documents\/Builds\/d-inference-kv-quant\/reports\/kv-quantization-2026-09-07\/models\/qwen36",
+    "modelID" : "qwen3.6-35b-a3b-vl-mtp-mxfp8"
+  },
+  "gemmaOptimizations" : {
+    "environment" : {
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL" : "18",
+      "MLX_GATHER_QMM_EXPERT_SLICES" : "trust",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT" : "1"
+    },
+    "prefillLayer18" : true,
+    "weightedR1" : true
+  },
+  "iterations" : 2,
+  "kvBackend" : {
+    "quantizationSelection" : "int4",
+    "resolved" : [
+      "paged [affine-v1-k4v4-g64-f32-h128-s1]"
+    ],
+    "selection" : "paged"
+  },
+  "modelID" : "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+  "modelPath" : "\/Users\/gaj\/Documents\/Builds\/d-inference-kv-quant\/reports\/kv-quantization-2026-09-07\/models\/qwen36",
+  "promptLengths" : [
+    512,
+    4096,
+    16384
+  ],
+  "samples" : [
+    {
+      "activeMemoryBytes" : 20937720749,
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.76632346575342469,
+      "peakMemoryBytes" : 21680212295,
+      "promptTokens" : 512,
+      "quantizedPrefill" : {
+        "counterScope" : "graph_built_layer_rows",
+        "observationScope" : "measured_engine_after_shutdown",
+        "statistics" : {
+          "budgetFallbackCount" : 0,
+          "currentAdditionalWorkspaceBytes" : 0,
+          "directCallCount" : 10,
+          "directQueryTokenCount" : 5120,
+          "fusedCallCount" : 0,
+          "fusedQueryTokenCount" : 0,
+          "ineligibleFallbackCount" : 0,
+          "mode" : "direct",
+          "peakAdditionalWorkspaceBytes" : 0
+        },
+        "successfulTerminalControls" : true
+      },
+      "resolvedKVBackend" : "paged [affine-v1-k4v4-g64-f32-h128-s1]",
+      "strategy" : "cbv2",
+      "ttftMs" : 391.59129100000001
+    },
+    {
+      "activeMemoryBytes" : 20914561333,
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.75934377103718198,
+      "peakMemoryBytes" : 21680219855,
+      "promptTokens" : 512,
+      "quantizedPrefill" : {
+        "counterScope" : "graph_built_layer_rows",
+        "observationScope" : "measured_engine_after_shutdown",
+        "statistics" : {
+          "budgetFallbackCount" : 0,
+          "currentAdditionalWorkspaceBytes" : 0,
+          "directCallCount" : 10,
+          "directQueryTokenCount" : 5120,
+          "fusedCallCount" : 0,
+          "fusedQueryTokenCount" : 0,
+          "ineligibleFallbackCount" : 0,
+          "mode" : "direct",
+          "peakAdditionalWorkspaceBytes" : 0
+        },
+        "successfulTerminalControls" : true
+      },
+      "resolvedKVBackend" : "paged [affine-v1-k4v4-g64-f32-h128-s1]",
+      "strategy" : "cbv2",
+      "ttftMs" : 388.02466699999997
+    },
+    {
+      "activeMemoryBytes" : 21010890429,
+      "iteration" : 1,
+      "msPerPrefillToken" : 1.0800876476190475,
+      "peakMemoryBytes" : 24106249967,
+      "promptTokens" : 4096,
+      "quantizedPrefill" : {
+        "counterScope" : "graph_built_layer_rows",
+        "observationScope" : "measured_engine_after_shutdown",
+        "statistics" : {
+          "budgetFallbackCount" : 0,
+          "currentAdditionalWorkspaceBytes" : 0,
+          "directCallCount" : 20,
+          "directQueryTokenCount" : 40960,
+          "fusedCallCount" : 0,
+          "fusedQueryTokenCount" : 0,
+          "ineligibleFallbackCount" : 0,
+          "mode" : "direct",
+          "peakAdditionalWorkspaceBytes" : 0
+        },
+        "successfulTerminalControls" : true
+      },
+      "resolvedKVBackend" : "paged [affine-v1-k4v4-g64-f32-h128-s1]",
+      "strategy" : "cbv2",
+      "ttftMs" : 4422.9589169999999
+    },
+    {
+      "activeMemoryBytes" : 21151603781,
+      "iteration" : 2,
+      "msPerPrefillToken" : 1.0763444341880342,
+      "peakMemoryBytes" : 24106257527,
+      "promptTokens" : 4096,
+      "quantizedPrefill" : {
+        "counterScope" : "graph_built_layer_rows",
+        "observationScope" : "measured_engine_after_shutdown",
+        "statistics" : {
+          "budgetFallbackCount" : 0,
+          "currentAdditionalWorkspaceBytes" : 0,
+          "directCallCount" : 20,
+          "directQueryTokenCount" : 40960,
+          "fusedCallCount" : 0,
+          "fusedQueryTokenCount" : 0,
+          "ineligibleFallbackCount" : 0,
+          "mode" : "direct",
+          "peakAdditionalWorkspaceBytes" : 0
+        },
+        "successfulTerminalControls" : true
+      },
+      "resolvedKVBackend" : "paged [affine-v1-k4v4-g64-f32-h128-s1]",
+      "strategy" : "cbv2",
+      "ttftMs" : 4407.6304579999996
+    },
+    {
+      "activeMemoryBytes" : 21187312077,
+      "iteration" : 1,
+      "msPerPrefillToken" : 2.230059258621742,
+      "peakMemoryBytes" : 24191398399,
+      "promptTokens" : 16384,
+      "quantizedPrefill" : {
+        "counterScope" : "graph_built_layer_rows",
+        "observationScope" : "measured_engine_after_shutdown",
+        "statistics" : {
+          "budgetFallbackCount" : 0,
+          "currentAdditionalWorkspaceBytes" : 0,
+          "directCallCount" : 80,
+          "directQueryTokenCount" : 163840,
+          "fusedCallCount" : 0,
+          "fusedQueryTokenCount" : 0,
+          "ineligibleFallbackCount" : 0,
+          "mode" : "direct",
+          "peakAdditionalWorkspaceBytes" : 0
+        },
+        "successfulTerminalControls" : true
+      },
+      "resolvedKVBackend" : "paged [affine-v1-k4v4-g64-f32-h128-s1]",
+      "strategy" : "cbv2",
+      "ttftMs" : 36535.060833999996
+    },
+    {
+      "activeMemoryBytes" : 21225117525,
+      "iteration" : 2,
+      "msPerPrefillToken" : 2.2264309039858392,
+      "peakMemoryBytes" : 24191405959,
+      "promptTokens" : 16384,
+      "quantizedPrefill" : {
+        "counterScope" : "graph_built_layer_rows",
+        "observationScope" : "measured_engine_after_shutdown",
+        "statistics" : {
+          "budgetFallbackCount" : 0,
+          "currentAdditionalWorkspaceBytes" : 0,
+          "directCallCount" : 80,
+          "directQueryTokenCount" : 163840,
+          "fusedCallCount" : 0,
+          "fusedQueryTokenCount" : 0,
+          "ineligibleFallbackCount" : 0,
+          "mode" : "direct",
+          "peakAdditionalWorkspaceBytes" : 0
+        },
+        "successfulTerminalControls" : true
+      },
+      "resolvedKVBackend" : "paged [affine-v1-k4v4-g64-f32-h128-s1]",
+      "strategy" : "cbv2",
+      "ttftMs" : 36475.6175
+    }
+  ],
+  "schemaVersion" : 4,
+  "soloPrefillStripeTokens" : 2048,
+  "strategies" : [
+    "cbv2"
+  ]
+}

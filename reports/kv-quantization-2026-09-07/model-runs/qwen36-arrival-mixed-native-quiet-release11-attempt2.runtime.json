@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "startedUnixSeconds": 1788796303.436554,
+  "runtimeBeforeSHA256": {
+    "/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/.build/arm64-apple-macosx/release/darkbloom": "8e18d7c8ffcba82d2f4ae67c92ad6abd254164efe18c6046b70eb77bcbc65935",
+    "/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/.build/arm64-apple-macosx/release/mlx.metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb",
+    "/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/.build/arm64-apple-macosx/release/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": "bc4642f50f5cf6dd0e65741337b43443ba602d1b45046f86b7e1abb8fccfe09b",
+    "/Users/gaj/Documents/Builds/d-inference-kv-quant/reports/kv-quantization-2026-09-07/benchmark.toml": "94556013143de1bed45827c0b6e3d4d3824b0ccd0f4bd75a2dd22f68145e0b25"
+  },
+  "finishedUnixSeconds": 1788796350.2019541,
+  "exitCode": 1,
+  "runtimeAfterSHA256": {
+    "/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/.build/arm64-apple-macosx/release/darkbloom": "8e18d7c8ffcba82d2f4ae67c92ad6abd254164efe18c6046b70eb77bcbc65935",
+    "/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/.build/arm64-apple-macosx/release/mlx.metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb",
+    "/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/.build/arm64-apple-macosx/release/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": "bc4642f50f5cf6dd0e65741337b43443ba602d1b45046f86b7e1abb8fccfe09b",
+    "/Users/gaj/Documents/Builds/d-inference-kv-quant/reports/kv-quantization-2026-09-07/benchmark.toml": "94556013143de1bed45827c0b6e3d4d3824b0ccd0f4bd75a2dd22f68145e0b25"
+  },
+  "runtimeUnchanged": true
+}

@@ -70,13 +70,24 @@ extension EngineV2Bridge {
             let (nextPotential, potentialOverflow) = maxTokensPotential.addingReportingOverflow(
                 Int64(tokens))
             maxTokensPotential = potentialOverflow ? Int64.max : nextPotential
-            if let bytes = requestReservationBytes(tokenCount: tokens) {
-                let (next, overflow) = committedBytes.addingReportingOverflow(bytes)
+            if let bytes = requestReservationBytes(tokenCount: tokens),
+                let workspace = kvRoutingWorkspaceBytes(tokens, 1), workspace >= 0 {
+                let (fixedAndWorkspace, workspaceOverflow) = kvRoutingRequestOverheadBytes
+                    .addingReportingOverflow(workspace)
+                let (routingBytes, routingOverflow) = bytes.addingReportingOverflow(fixedAndWorkspace)
+                let (next, overflow) = committedBytes.addingReportingOverflow(routingBytes)
                 committedBytes = next
-                committedBytesOverflow = committedBytesOverflow || overflow
+                committedBytesOverflow = committedBytesOverflow || workspaceOverflow || routingOverflow || overflow
             } else {
                 committedBytesOverflow = true
             }
+        }
+
+        // The native paged ledger also protects detached prefixes, scratch and
+        // physical segment floors. Those obligations may exceed the sum of
+        // request token costs; never advertise them as spare capacity.
+        if kvBackendKind == .paged {
+            committedBytes = max(committedBytes, snapshot.kvBytesReserved)
         }
 
         // Budget fields — SEMANTICS ALIGNED WITH THE LEGACY SCHEDULER
@@ -100,29 +111,18 @@ extension EngineV2Bridge {
         //   activeTokens          ← snapshot.activeTokens (ENGINE TRUTH: the
         //                           real KV-resident token count)
         //   maxTokensPotential    ← Σ(prompt + maxTokens)  (worst case)
-        //   activeTokenBudgetUsed ← ceil(byte-exact active commitments /
-        //                           resolved native rate), including recurrent
-        //                           and assistant allocation overhead
-        //   activeTokenBudgetMax  ← (min(kvBytesCapacity, live fleet clamp) −
-        //                           worst-case fixed/block overhead for every
-        //                           still-available concurrency slot) / rate
-        //                           (0 when the rate or arithmetic is unknown)
+        //   activeTokenBudgetUsed ← Σ(prompt + maxTokens), ordinary tokens
+        //   activeTokenBudgetMax  ← raw used + largest aggregate new token
+        //                           count whose KV, fixed and workspace bounds
+        //                           fit the remaining byte grant
         //   queuedTokenBudget     ← 0 (engine-WAITING requests are already
-        //                           inside the committed sum above — the
-        //                           bridge does not split running/waiting)
-        // Coordinator requests are expressed in ordinary tokens. Convert the
-        // provider's byte-exact commitments back through the advertised rate;
-        // rounding up preserves fixed recurrent and assistant allocation blocks.
-        let budgetUsed: Int64
-        if kvBytesPerToken > 0 {
-            let (roundedBytes, roundingOverflow) = committedBytes.addingReportingOverflow(
-                kvBytesPerToken - 1)
-            budgetUsed = committedBytesOverflow || roundingOverflow
-                ? Int64.max
-                : Int64(roundedBytes / kvBytesPerToken)
-        } else {
-            budgetUsed = maxTokensPotential
-        }
+        //                           inside the committed sum above)
+        // The coordinator also uses `used` to deduplicate dispatched requests
+        // against heartbeat progress. Byte-derived equivalent tokens would let
+        // window/page/recurrent overhead masquerade as reflected requests and
+        // cancel a new in-gap reservation. Keep used in raw tokens and charge
+        // every excess byte against the maximum instead.
+        let budgetUsed = maxTokensPotential
         // Both ceilings resize for segmented and contiguous storage. Their
         // minimum also protects explicit fixed-reference pools, whose backend
         // capacity cannot grow. Zero means an unreported backend ceiling.
@@ -137,23 +137,17 @@ extension EngineV2Bridge {
         } else {
             reportedKVBytesCapacity = boundedKVBytesCapacity
         }
-        let prospectiveRequests = max(0, maxConcurrentRequests - active.count)
-        let prospectiveOverheadBytes: Int?
-        if let perRequestOverhead = maximumRequestOverheadBytes() {
-            let (bytes, overflow) = perRequestOverhead.multipliedReportingOverflow(
-                by: prospectiveRequests)
-            prospectiveOverheadBytes = overflow ? nil : bytes
-        } else {
-            prospectiveOverheadBytes = nil
-        }
-        let budgetMax: Int64
-        if kvBytesPerToken > 0, let prospectiveOverheadBytes {
-            budgetMax = Int64(
-                max(0, reportedKVBytesCapacity - prospectiveOverheadBytes)
-                    / kvBytesPerToken)
-        } else {
-            budgetMax = 0
-        }
+        let routing = EngineV2RoutingCapacity.project(
+            capacityBytes: reportedKVBytesCapacity,
+            committedBytes: committedBytesOverflow ? nil : committedBytes,
+            rawUsedTokens: maxTokensPotential, bytesPerToken: kvBytesPerToken,
+            additionalRequests: max(0, maxConcurrentRequests - active.count),
+            fixedBytesPerRequest: maximumRequestOverheadBytes(),
+            workspaceBytes: kvRoutingWorkspaceBytes)
+        let budgetMax = kvBytesPerToken > 0 ? routing.tokenBudgetMax : 0
+        let advertisedConcurrency = kvBytesPerToken > 0
+            ? min(maxConcurrentRequests, active.count + routing.additionalRequests)
+            : maxConcurrentRequests
 
         // Profiler slot telemetry (slice 2). ALWAYS attached: the object's
         // presence is the coordinator's "new provider" sentinel. Everything
@@ -206,12 +200,13 @@ extension EngineV2Bridge {
             numWaiting: UInt32(clamping: max(0, snapshot.waitingRequests)),
             activeTokens: Int64(snapshot.activeTokens),
             maxTokensPotential: maxTokensPotential,
-            maxConcurrency: UInt32(clamping: maxConcurrentRequests),
+            maxConcurrency: UInt32(clamping: advertisedConcurrency),
             observedDecodeTps: observedDecodeTpsEwma,
             // Bridge-measured cold-prefill EWMA (submit → first token over
             // prompt tokens; see EngineV2Bridge.recordPrefillSample). Feeds
             // the coordinator's prefill-honest TTFT estimation.
             observedPrefillTps: observedPrefillTpsEwma,
+            executionIdentity: executionIdentity,
             activeTokenBudgetUsed: budgetUsed,
             activeTokenBudgetMax: budgetMax,
             queuedTokenBudget: 0,

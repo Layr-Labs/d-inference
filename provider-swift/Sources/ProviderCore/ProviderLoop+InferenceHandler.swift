@@ -592,6 +592,7 @@ extension ProviderLoop {
         // the scheduler-free vision gate covers media decode and generation
         // memory reservations.
         let slotEngineV2 = slot.engineV2
+        let performanceExecutionIdentity = await slotEngineV2.executionIdentity
         if slotEngineV2.ssdHybridCheckpointStore != nil {
             PrefixCacheReceiptEmitter.suppressLegacyCheckpointReceipts(
                 protocolVersion: prefixCacheProtocol, callbacks: &receiptCallbacks,
@@ -1371,7 +1372,7 @@ extension ProviderLoop {
                     warm: modelWasResidentAtDispatch,
                     promptTokens: promptTokens,
                     activeRequestsAtDispatch: activeRequestsAtDispatch,
-                    ttftMs: ttftMs)
+                    ttftMs: ttftMs, executionIdentity: performanceExecutionIdentity)
             }
 
             // Update state

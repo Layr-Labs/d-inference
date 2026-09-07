@@ -1,0 +1,9 @@
+<|im_start|>system
+Follow the user's output format exactly. Do not include an explanation unless requested.<|im_end|>
+<|im_start|>user
+Start with an empty set. Apply these operations in order: add 8; add 3; add 8; remove 3; add 11; add 3; remove 8; add 2; remove 11; add 7. Return the final set as an ascending JSON array without spaces.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

@@ -45,6 +45,9 @@ public actor EngineV2BenchmarkSession {
     public nonisolated let rawEngine: EngineV2
     public nonisolated let backend: String
     public nonisolated let backendFallback: String?
+    public nonisolated let kvQuantizationIdentity: String?
+    /// EOS/stop IDs resolved by the same production bridge tokenizer policy.
+    public nonisolated let stopTokenIDs: Set<Int>
     private let bundle: ProviderEngineBundle
     private let budget: GlobalKVCacheBudget
     private let assistantIdentity: [String: String]
@@ -60,7 +63,7 @@ public actor EngineV2BenchmarkSession {
 
     fileprivate init(
         bundle: ProviderEngineBundle, engine: EngineV2,
-        backend: String, fallback: String?, memoryEnabled: Bool,
+        backend: String, fallback: String?, kvQuantizationIdentity: String?, stopTokenIDs: Set<Int>, memoryEnabled: Bool,
         activationReserveBytes: UInt64, postLoadMaximumKVBytes: UInt64,
         budget: GlobalKVCacheBudget, assistantIdentity: [String: String],
         productionGrant: EngineV2BenchmarkProductionGrant?, postBuildHeadroomBytes: UInt64?
@@ -73,6 +76,8 @@ public actor EngineV2BenchmarkSession {
         self.rawEngine = engine
         self.backend = backend
         self.backendFallback = fallback
+        self.kvQuantizationIdentity = kvQuantizationIdentity
+        self.stopTokenIDs = stopTokenIDs
         self.memoryEnabled = memoryEnabled
         self.activationReserveBytes = activationReserveBytes
         self.postLoadMaximumKVBytes = postLoadMaximumKVBytes
@@ -208,6 +213,8 @@ extension EngineV2Factory {
         useProductionKVGrant: Bool = false,
         kvBudget: GlobalKVCacheBudget? = nil,
         kvBackendConfig: String = "auto",
+        kvQuantizationConfig: String = "native",
+        quantizedPrefillMode: PagedQuantizedPrefillMode = .direct,
         requirePersistentKey: Bool = true,
         persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -288,9 +295,11 @@ extension EngineV2Factory {
                 sizing: sizing, kvBytesCapacity: selectedGrant,
                 maxConcurrentRequests: maxConcurrentRequests, kvBudget: budget,
                 activationReserveBytes: reserve, kvBackendConfig: kvBackendConfig,
+                kvQuantizationConfig: kvQuantizationConfig,
                 weightHash: verifiedWeightHash, specDecPreparation: preparation,
                 preparedModel: prepared,
-                assemblyOverrides: .init(gemmaMTPVerification: gemmaMTPVerification),
+                assemblyOverrides: .init(gemmaMTPVerification: gemmaMTPVerification,
+                    quantizedPrefillMode: quantizedPrefillMode),
                 environment: effectiveEnvironment,
                 persistentTestNamespace: persistentTestNamespace)
         } catch {
@@ -359,6 +368,8 @@ extension EngineV2Factory {
         return EngineV2BenchmarkSession(
             bundle: bundle, engine: engine,
             backend: backend, fallback: fallback,
+            kvQuantizationIdentity: await bundle.bridge.kvQuantizationIdentity,
+            stopTokenIDs: await bundle.bridge.stopTokenIds,
             memoryEnabled: PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment),
             activationReserveBytes: reserve, postLoadMaximumKVBytes: maximumKVBytes,
             budget: budget, assistantIdentity: benchmarkAssistantIdentity(preparation.artifact),

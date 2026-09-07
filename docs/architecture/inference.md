@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-07 · commit `47da6bf26`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process in v0.8.16: one in-process engine (`mlx-swift-lm`
@@ -302,8 +302,13 @@ Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `8bit`|`q8`|`int8` → `8bit`; `3bit`|`q3` → `3bit`; `bf16`; `fp16`|`f16`; else
 `quantize_config.json` `bits`; else `nil`
 (`provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift`,
-`detectQuantization`). KV quantization was retired in v0.8.0. Memory sizing
-(the `1.2` padded estimate and the load gate) is in
+`detectQuantization`). This is weight quantization. The independent,
+opt-in [paged KV format](../reference/paged-kv-quantization.md) supports packed
+full-attention pages while leaving native storage as the default
+(`provider-swift/Sources/ProviderCore/Inference/EngineV2KVQuantizationPolicy.swift`,
+`EngineV2KVQuantizationSelection`). Its format-aware admission and measured limitations
+are recorded in the [implementation report](../reports/2026-09-07-paged-kv-quantization-implementation.md).
+Weight memory sizing (the `1.2` padded estimate and load gate) remains in
 [`hardware-support.md`](hardware-support.md).
 
 ## Invariants

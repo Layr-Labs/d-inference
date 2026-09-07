@@ -1,0 +1,7 @@
+<bos><|turn>system
+Follow the user's output format exactly. Do not include an explanation unless requested.<turn|>
+<|turn>user
+A warehouse receives 36 boxes with 48 bolts each. It discards 125 damaged bolts, then ships 217 bolts to each of three customers. How many bolts remain? Return only the integer.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>

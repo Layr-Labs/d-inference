@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — optional paged KV quantization
+
+- Add optional K4/V4, K8/V4 and K8/V8 full-attention cache storage with exact packed checkpoints, GPU-fenced workspace ownership, and physical admission that preserves raw-token accounting. Native KV remains the default.
+- Separate throughput and TTFT histories by KV execution identity. Bootstrap unknown quantized formats at one request, preserve cold-load deadline bounds, and expand only after sufficient same-format observations within the configured concurrency ceiling.
+- Add provenance-pinned quality/performance probes and a benchmark-only, separately budgeted fused-prefill candidate. Preserve observed quality regressions, slower measured 4K execution and inconclusive strict arrival timing; no serving default or concurrency increase is promoted. See the [implementation report](docs/reports/2026-09-07-paged-kv-quantization-implementation.md).
+
 ## Unreleased — stats request-flow refresh
 
 - Restore Stats refreshes on large usage windows by aggregating request origins before looking up provider locations. Preserve weighted coordinates, request/token counts, and the top-50 flow limit while avoiding large temporary sorts.

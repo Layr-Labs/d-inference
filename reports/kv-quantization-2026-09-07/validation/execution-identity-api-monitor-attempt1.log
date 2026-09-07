@@ -1,0 +1,46 @@
+=== RUN   TestThroughputAnomalySweep_FlagsGemmaNotGptoss
+--- PASS: TestThroughputAnomalySweep_FlagsGemmaNotGptoss (0.00s)
+=== RUN   TestThroughputAnomalySweep_InsufficientSamples
+--- PASS: TestThroughputAnomalySweep_InsufficientSamples (0.00s)
+=== RUN   TestThroughputAnomalySweep_EmitsDatadog
+--- PASS: TestThroughputAnomalySweep_EmitsDatadog (0.20s)
+=== RUN   TestThroughputAnomalyBucketsExcludeQuantizedExecution
+--- PASS: TestThroughputAnomalyBucketsExcludeQuantizedExecution (0.00s)
+PASS
+ok  	github.com/eigeninference/d-inference/coordinator/api	1.051s
+=== RUN   TestExecutionCalibrationCaptureSurvivesSlotReplacement
+--- PASS: TestExecutionCalibrationCaptureSurvivesSlotReplacement (0.00s)
+=== RUN   TestExecutionBootstrapFourKHasUnknownTTFTAndStillAdmitsOne
+--- PASS: TestExecutionBootstrapFourKHasUnknownTTFTAndStillAdmitsOne (0.00s)
+=== RUN   TestExecutionColdDeclarationPreservesLoadBiasAndBootstrap
+--- PASS: TestExecutionColdDeclarationPreservesLoadBiasAndBootstrap (0.00s)
+=== RUN   TestExecutionConcurrencyRequiresQualifiedSameIdentitySoloSamples
+--- PASS: TestExecutionConcurrencyRequiresQualifiedSameIdentitySoloSamples (0.00s)
+=== RUN   TestExecutionPlaceholderCannotLendStaleObservedRates
+--- PASS: TestExecutionPlaceholderCannotLendStaleObservedRates (0.00s)
+=== RUN   TestExecutionModelsUpdateRetainsOnlyNormalizedIdentity
+--- PASS: TestExecutionModelsUpdateRetainsOnlyNormalizedIdentity (0.00s)
+=== RUN   TestExecutionIdentityFiniteNormalization
+--- PASS: TestExecutionIdentityFiniteNormalization (0.00s)
+=== RUN   TestExecutionTPSPartitionsAndCannotCollideWithModelNames
+--- PASS: TestExecutionTPSPartitionsAndCannotCollideWithModelNames (0.00s)
+=== RUN   TestExecutionLoadedSlotAndPlaceholderPrecedence
+--- PASS: TestExecutionLoadedSlotAndPlaceholderPrecedence (0.00s)
+=== RUN   TestExecutionHeartbeatPartitionAndPlaceholderNoTraining
+--- PASS: TestExecutionHeartbeatPartitionAndPlaceholderNoTraining (0.00s)
+=== RUN   TestThroughputAnomaly_GemmaFlaggedGptossNot
+    throughput_anomaly_test.go:102: gemma  ratio=0.148 (observed=21 expected=142.2) -> flagged
+    throughput_anomaly_test.go:104: gptoss ratio=0.437 (observed=69 expected=158.0) -> ok
+--- PASS: TestThroughputAnomaly_GemmaFlaggedGptossNot (0.00s)
+=== RUN   TestThroughputAnomaly_GemmaFlaggedAcrossMaxTier
+--- PASS: TestThroughputAnomaly_GemmaFlaggedAcrossMaxTier (0.00s)
+=== RUN   TestThroughputAnomaly_BandwidthOverride
+--- PASS: TestThroughputAnomaly_BandwidthOverride (0.00s)
+=== RUN   TestThroughputAnomaly_InsufficientSamples
+--- PASS: TestThroughputAnomaly_InsufficientSamples (0.00s)
+=== RUN   TestThroughputAnomaly_UnknownModelAndChipSkipped
+--- PASS: TestThroughputAnomaly_UnknownModelAndChipSkipped (0.00s)
+=== RUN   TestThroughputAnomaly_HealthyGemmaNotFlagged
+--- PASS: TestThroughputAnomaly_HealthyGemmaNotFlagged (0.00s)
+PASS
+ok  	github.com/eigeninference/d-inference/coordinator/registry	0.766s

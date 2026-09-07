@@ -1,0 +1,192 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/gaj/documents/builds/d-inference-kv-quant/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/gaj/documents/builds/d-inference-kv-quant/provider-swift->/users/gaj/documents/builds/d-inference-kv-quant/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/gaj/documents/builds/d-inference-kv-quant/provider-swift->/users/gaj/documents/builds/d-inference-kv-quant/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+[0/2] Write swift-version--58304C5D6DBC2206.txt
+[0/1] Planning build
+Building for production...
+[0/6] Write sources
+[2/6] Write swift-version--58304C5D6DBC2206.txt
+[4/6] Compiling ProviderCore APNsBridge.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift:77:12: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+ 75 |         throw HardwareError.sysctlFailed(key)
+ 76 |     }
+ 77 |     return String(cString: buffer)
+    |            `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+ 78 | }
+ 79 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift:353:24: warning: no 'async' operations occur within 'await' expression
+351 |             let sample = budget.memoryHeadroomSnapshot()
+352 |             postBuildHeadroom = sample.runtimeRemainingBytes
+353 |             let kind = await bundle.bridge.kvBackendKind
+    |                        `- warning: no 'async' operations occur within 'await' expression
+354 |             let ceiling = await bundle.bridge.kvBackendPoolBytes()
+355 |             guard KVHeadroomProbe.postBuildServeable(kvBackendKind: kind, pagedPoolBytes: ceiling,
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift:364:23: warning: no 'async' operations occur within 'await' expression
+362 |             }
+363 |         }
+364 |         let backend = await bundle.bridge.kvBackendKind.rawValue
+    |                       `- warning: no 'async' operations occur within 'await' expression
+365 |         let fallback = await bundle.bridge.kvBackendFallbackReason
+366 |         return EngineV2BenchmarkSession(
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift:365:24: warning: no 'async' operations occur within 'await' expression
+363 |         }
+364 |         let backend = await bundle.bridge.kvBackendKind.rawValue
+365 |         let fallback = await bundle.bridge.kvBackendFallbackReason
+    |                        `- warning: no 'async' operations occur within 'await' expression
+366 |         return EngineV2BenchmarkSession(
+367 |             bundle: bundle, engine: engine,
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift:369:37: warning: no 'async' operations occur within 'await' expression
+367 |             bundle: bundle, engine: engine,
+368 |             backend: backend, fallback: fallback,
+369 |             kvQuantizationIdentity: await bundle.bridge.kvQuantizationIdentity,
+    |                                     `- warning: no 'async' operations occur within 'await' expression
+370 |             stopTokenIDs: await bundle.bridge.stopTokenIds,
+371 |             memoryEnabled: PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment),
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift:370:27: warning: no 'async' operations occur within 'await' expression
+368 |             backend: backend, fallback: fallback,
+369 |             kvQuantizationIdentity: await bundle.bridge.kvQuantizationIdentity,
+370 |             stopTokenIDs: await bundle.bridge.stopTokenIds,
+    |                           `- warning: no 'async' operations occur within 'await' expression
+371 |             memoryEnabled: PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment),
+372 |             activationReserveBytes: reserve, postLoadMaximumKVBytes: maximumKVBytes,
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/GPUEnforcement.swift:85:16: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+83 |         // any code path that might have called `Device.setDefault(.cpu)`
+84 |         // earlier in the process (e.g. a stray test fixture).
+85 |         Device.setDefault(device: .gpu)
+   |                `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+86 |         if Device.defaultDevice().deviceType != .gpu {
+87 |             throw Error.mlxDefaultIsCPU
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/KVHeadroomProbe.swift:30:45: warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+28 |         activationReserveBytes: UInt64? = nil
+29 |     ) -> UInt64 {
+30 |         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+   |                                             |- warning: 'activeMemory' is deprecated: renamed to 'Memory.activeMemory' [#DeprecatedDeclaration]
+   |                                             `- note: use 'Memory.activeMemory' instead
+31 |         return UnifiedMemoryCap.liveKVHeadroomBytes(
+32 |             mlxUsedBytes: mlxUsed,
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/KVHeadroomProbe.swift:30:84: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+28 |         activationReserveBytes: UInt64? = nil
+29 |     ) -> UInt64 {
+30 |         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+   |                                                                                    |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+   |                                                                                    `- note: use 'Memory.cacheMemory' instead
+31 |         return UnifiedMemoryCap.liveKVHeadroomBytes(
+32 |             mlxUsedBytes: mlxUsed,
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift:141:50: warning: 'peakMemory' is deprecated: renamed to 'Memory.peakMemory' [#DeprecatedDeclaration]
+139 |         // idle do we assume idle models can be evicted.
+140 |         let mlxActiveBytes = processMemory.activeBytes
+141 |         let mlxPeakBytes = UInt64(max(0, MLX.GPU.peakMemory))
+    |                                                  |- warning: 'peakMemory' is deprecated: renamed to 'Memory.peakMemory' [#DeprecatedDeclaration]
+    |                                                  `- note: use 'Memory.peakMemory' instead
+142 |         let mlxCacheBytes = processMemory.cacheBytes
+143 |         let (sumUsed, usedOverflow) = mlxActiveBytes.addingReportingOverflow(mlxCacheBytes)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift:1031:43: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+1029 |                 let reclaimableGb = evictable.reduce(0.0) {
+1030 |                     $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
+1031 |                 } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+     |                                           |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+     |                                           `- note: use 'Memory.cacheMemory' instead
+1032 |                 if !ModelLoadAdmission.evictionCanReach(
+1033 |                     availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift:1169:39: warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+1167 |             let reclaimableGb = evictable.reduce(0.0) {
+1168 |                 $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
+1169 |             } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+     |                                       |- warning: 'cacheMemory' is deprecated: renamed to 'Memory.cacheMemory' [#DeprecatedDeclaration]
+     |                                       `- note: use 'Memory.cacheMemory' instead
+1170 |             if !ModelLoadAdmission.evictionCanReach(
+1171 |                 availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift:354:12: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+352 |     var model = [CChar](repeating: 0, count: size)
+353 |     sysctlbyname("hw.model", &model, &size, nil, 0)
+354 |     return String(cString: model)
+    |            `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+355 | }
+356 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift:260:25: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+258 |         throw RuntimeMetallibBindingError.snapshotCreateFailed
+259 |     }
+260 |     let temporaryPath = String(cString: template)
+    |                         `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+261 |     guard unlink(temporaryPath) == 0 else {
+262 |         Darwin.close(descriptor)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift:349:16: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+347 |     // Resolve symlinks
+348 |     guard let resolved = realpath(buffer, nil) else {
+349 |         return String(cString: buffer)
+    |                `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+350 |     }
+351 |     defer { free(resolved) }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Security/SecurityFoundation.swift:279:41: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+277 |         }
+278 |         guard let resolved = realpath(buffer, nil) else {
+279 |             return URL(fileURLWithPath: String(cString: buffer))
+    |                                         `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+280 |         }
+281 |         defer { free(resolved) }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Server/ModelPrefetchCoordinator.swift:273:24: warning: no 'async' operations occur within 'await' expression
+271 | 
+272 |     private func runPrefetch(modelId: String, taskId: UUID) async {
+273 |         defer { Task { await self.removeTask(modelId: modelId, taskId: taskId) } }
+    |                        `- warning: no 'async' operations occur within 'await' expression
+274 | 
+275 |         // Short-circuit if already available (loaded or on-disk-and-valid).
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Service/LaunchctlControl.swift:82:20: warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+80 |                 return String(cString: resolved)
+81 |             }
+82 |             return String(cString: buffer)
+   |                    `- warning: 'init(cString:)' is deprecated: Use String(decoding: array, as: UTF8.self) instead, after truncating the null termination. [#DeprecatedDeclaration]
+83 |         }
+84 |         return FileManager.default.homeDirectoryForCurrentUser
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[5/7] Compiling ProviderBenchmark ArrivalInvarianceBenchmark.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderBenchmark/ModelBenchmark.swift:184:27: warning: no calls to throwing functions occur within 'try' expression
+182 |         )
+183 | 
+184 |         let rawMessages = try messages.map { msg -> MLXLMCommon.Message in
+    |                           `- warning: no calls to throwing functions occur within 'try' expression
+185 |             ["role": msg.role, "content": msg.content] as MLXLMCommon.Message
+186 |         }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift:97:21: warning: no calls to throwing functions occur within 'try' expression
+ 95 |         }
+ 96 | 
+ 97 |         let facts = try await container.perform { ctx -> ModelFacts in
+    |                     `- warning: no calls to throwing functions occur within 'try' expression
+ 98 |             eval(ctx.model.parameters().flattened().map { $0.1 })
+ 99 |             let params = ctx.model.parameters().flattened()
+[6/8] Compiling darkbloom AutoUpdateCommand.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/darkbloom/ProviderAppKitHost.swift:68:35: warning: sending 'cmd' risks causing data races [#SendingRisksDataRace]
+64 |             do {
+65 |                 let command = try Darkbloom.parseAsRoot(args)
+66 |                 if let asyncCommand = command as? AsyncParsableCommand {
+   |                                               `- note: isolated conformance to protocol 'AsyncParsableCommand' can be introduced here
+67 |                     var cmd = asyncCommand
+68 |                     try await cmd.run()
+   |                                   |- warning: sending 'cmd' risks causing data races [#SendingRisksDataRace]
+   |                                   `- note: sending main actor-isolated 'cmd' to nonisolated instance method 'run()' risks causing data races between nonisolated and main actor-isolated uses
+69 |                 } else {
+70 |                     var cmd = command
+
+[#SendingRisksDataRace]: <https://docs.swift.org/compiler/documentation/diagnostics/sending-risks-data-race>
+[6/8] Write Objects.LinkFileList
+[7/8] Linking darkbloom
+Build of product 'darkbloom' complete! (78.85s)

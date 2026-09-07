@@ -1,0 +1,4 @@
+gemma optimizations: prefill_layer18=on weighted_r1=on
+2026-09-07T04:24:40-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for EigenLabs/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8 (14 files)...
+2026-09-07T04:24:57-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for EigenLabs/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8: 07e98796f9713dcc
+Error: modelHashMismatch

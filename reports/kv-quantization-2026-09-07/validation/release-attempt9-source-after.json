@@ -1,0 +1,85 @@
+{
+  ".": {
+    "head": "0b46b1618d43cae3ae3d8e0fde1a9cc6d974e9d0",
+    "modified_source_sha256": {
+      "coordinator/protocol/messages.go": "910b7ee76e4db9553588f3d9e6328ef39acecf4d901de028a740a2630506b58c",
+      "coordinator/registry/model_capacity.go": "039633d9c7a856c207217ce1e4006f43d9aa99ce30de3cfad39e502ecbd072f3",
+      "coordinator/registry/quantized_kv_admission_test.go": "1b4cdf399aee1e03ea77d4412a4bf34f547f87d393f0ea2ffb52d7b00ec03d2a",
+      "coordinator/registry/scheduler.go": "7ddd33d58134586a3fc11b4634dd4103b8742b434283d3f05fe5c19114c805fa",
+      "coordinator/registry/slot_token_budget.go": "2820a12467bec38fc217125dcf67902caf0da3fd8951922a3e48559cdfbf2bd8",
+      "provider-swift/Sources/ProviderBenchmark/ArrivalInvarianceBenchmark.swift": "a6fed1bddc65acd0ffd191848adc844820a4153ab38a38d167323a75273e15e1",
+      "provider-swift/Sources/ProviderBenchmark/BenchmarkKVBackend.swift": "77fe915390b85d06ccb4cf26a9c88af91650c704f2322e526fa1eaa1a66c017a",
+      "provider-swift/Sources/ProviderBenchmark/BenchmarkModelLoading.swift": "ccde835b7b81acb9af8a47b611269ca810eed1417417d785d5c5ceb505e82178",
+      "provider-swift/Sources/ProviderBenchmark/KVQualityBenchmark+Execution.swift": "0b06e3fba03b5204b0242e9f60ee870ace1596781fc481c47ef0d13397ab2dea",
+      "provider-swift/Sources/ProviderBenchmark/KVQualityBenchmark.swift": "8f4fd9db854af78fd109d558e2efe26f57abe2e8e5e8e21956bdbeb758c1ace1",
+      "provider-swift/Sources/ProviderBenchmark/KVQualityCollection.swift": "26a87b3cd001dd35acc605361d927b7c7557204dc29ad8d1da3be301519d61e6",
+      "provider-swift/Sources/ProviderBenchmark/KVQualityDeadline.swift": "9e91a02974f690421028b36dd0e9fc6b06d7eb4c551053d160aa025e497adc34",
+      "provider-swift/Sources/ProviderBenchmark/KVQualityInput.swift": "70a02c8cd128640c8fbd41837da60c322b7b9f7bc3e701a4880346c8b9147348",
+      "provider-swift/Sources/ProviderBenchmark/SchedulerPrefillBenchmark.swift": "08f5c9e48e46f50d1ea39c4ec35f6a684e3b9c203fc7231d894cad5b33f92f72",
+      "provider-swift/Sources/ProviderBenchmark/TeacherForcedBenchmark.swift": "7353f8a789612ad2ec0580e9cf3ccc4b8a40d1d5f104490e07f552fd9f5076fc",
+      "provider-swift/Sources/ProviderBenchmark/TeacherForcedBenchmarkInput.swift": "17fd8475f89fa46e687921699e5c1e2700e4bc0c6f82d0e07fb7140528892a08",
+      "provider-swift/Sources/ProviderBenchmark/ThroughputSweep+PrefillExecution.swift": "87580508aa48e7170d0b9afa5eec4251e44a918a68a499e257963fed675f63f1",
+      "provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift": "33f5516584f8c7fd2bd4d96129e98235d44266ea65edd6448a85bbebf962f995",
+      "provider-swift/Sources/ProviderBenchmark/ThroughputSweepReport.swift": "f887c2f88dd313a523578c20534126e56e199ee9bf7e285faac78fd04fb654c6",
+      "provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift": "594f67fc7d61f00b42025c52b1979b875330508bad88f37ee431fa14d061642a",
+      "provider-swift/Sources/ProviderCore/Inference/BenchmarkServingContent.swift": "894735ad98543c93ebbadc7546f715219d8c4591c17c34d139417aa0c2defc7d",
+      "provider-swift/Sources/ProviderCore/Inference/CompleteCheckpointStorageIdentity.swift": "e1e539452b2d57b20bb42308cff1e34966e1c9ff225b4d0eb253fa3bc61ea5a2",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Admission.swift": "29072865ef1d78a8acdec3b0d5eceabce20c2a32dcc707fa6a02b249f0382138",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Capacity.swift": "22229de05fa341ce400d5081f3b7dec415a5347a4200c9cc26b44063c9218bab",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift": "9a79a6822115c1e2568be07acdac76d1c873a246eda244f55a950c7b04f729fd",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Config.swift": "4ac5b098651aaff3829f6a1dba415aa5f8ae69a4823e96cf7e36612114200cf5",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BackendPreparation.swift": "8b398c7b376cf883e71e2cd3e9fb5ab81a8521a0ec8b4e2e89a7b3e15d51c093",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift": "326e26c0aef09280844ec66e5817c3151f71ef2380af2d7d1195be32b2c57a66",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+NativeKVTypes.swift": "46ca6465c09183f05fe31094b9d9486d8413a7e0501362e0d55bdf7827be6dc2",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift": "64a6bbc479adc9073fc9d94584e6274649cc1e9d5e1bedc904682acaf550eff4",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+SegmentedBackend.swift": "f58a0b7a0b91cb935d9f49e0cb0a412b018d7f41de749b20ace261f26ffd2092",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2KVQuantizationPolicy.swift": "6bfac9035e80ae60315aa496a44b22742514be515d866b67faa4d14208e8d1f7",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2KVSizing.swift": "164540654fea22bfd0a45db53ff674ed0b2f2616803c916e5287120e3ccc8a17",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2RoutingCapacity.swift": "0618db8b5f94216611fb807df887ba71ad09d3818e07b9425debb09dbcff7a46",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift": "4cc1c17859e505a54971eb7a65ec916aa0f43e9baa6de13d342c3973a586d213",
+      "provider-swift/Sources/ProviderCore/ProviderLoop+EngineV2.swift": "062b34f4b41e20209071437721bbe4b7ce3e909ab4fade1d6e4729922ba82a55",
+      "provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift": "5c71bb18095de2cb232c5e9e681dedd43e0facb2a83ffc9040b976bd5e009b5c",
+      "provider-swift/Sources/darkbloom/BenchmarkArtifactIdentity.swift": "dbf27fb60b1d605cffda8de360b242df14d1b48e0624f82765ba2acdad25a286",
+      "provider-swift/Sources/darkbloom/BenchmarkCommand+KVQuality.swift": "a6c8e70d457947a5328b079da946bcd90947929e4fb582454c954950d1b30e46",
+      "provider-swift/Sources/darkbloom/BenchmarkCommand+KVQuantization.swift": "3eb8e4e9d8c248c041fff7f15e4bfe152cbec527523ea73af80610b325e91f5a",
+      "provider-swift/Sources/darkbloom/BenchmarkCommand+ModelDirectory.swift": "1fc98decd8a1a72546ab903b317a0ef5bfd67d1149470a45ca13844c553b1e11",
+      "provider-swift/Sources/darkbloom/BenchmarkCommand+Sweep.swift": "fa39be0aab0dba361814536aba51de09f427d0be31bd8b66a4c9838eeb1a4d07",
+      "provider-swift/Sources/darkbloom/BenchmarkCommand+TeacherForced.swift": "55c15c13eab004973d6e89aab9f155e5c34a73b20ffb8917337fa7ed39b82938",
+      "provider-swift/Sources/darkbloom/BenchmarkCommand.swift": "9639da87503feb3edb45a1eb21f1992b2be4518d5a55d53e4a6e8a1fdad89a9c",
+      "provider-swift/Sources/darkbloom/StartCommand+Modes.swift": "4f8d8e452527d61589cf2cd4f617a1f329bdbb1871c1b49a4acd5754361cfe7e",
+      "provider-swift/Tests/DarkbloomCLITests/BenchmarkArtifactIdentityTests.swift": "0aa248ad48170c0ea08a95f93b3212d49f1fe072d95ea89332449532870afa41",
+      "provider-swift/Tests/DarkbloomCLITests/BenchmarkKVQualityOptionsTests.swift": "7261474e3303a24255e6531a6381a82a4a9ed915d15dc2d02fef1063c811684a",
+      "provider-swift/Tests/DarkbloomCLITests/BenchmarkKVQuantizationOptionsTests.swift": "cd2d706a0fe321b69ff98ecb117965ba109e826d53d52a9a1b500d8a60aacd4b",
+      "provider-swift/Tests/DarkbloomCLITests/BenchmarkTeacherForcedOptionsTests.swift": "fda4c6e1d55144d2ebb13c9a1250e8cf640d1ed6c73684aba85868467da5051d",
+      "provider-swift/Tests/ProviderCoreTests/ConfigTests.swift": "8e00aaa4e4d037856a49852ea19328da17053a09e93ed91747baeb2f346764ef",
+      "provider-swift/Tests/ProviderCoreTests/EngineV2BridgeTests.swift": "119773747b69002b7d4b44f2e513f7f4a02f5991c5072a12b2c4bc8f7a5786d5",
+      "provider-swift/Tests/ProviderCoreTests/EngineV2KVQuantizationPolicyTests.swift": "f84c00f4e612343abc39f863b4d33ac439c655aa542d822919d7995d5f6ba391",
+      "provider-swift/Tests/ProviderCoreTests/EngineV2RoutingCapacityTests.swift": "1deb4a0feaa8829fc1067e80b4c7cee2410a682fdcf03e80dc1ce866381f4094",
+      "provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift": "7e946d72b8272d22e06e9302242c4a91829383b89fceac9eec252118424a92d4",
+      "provider-swift/Tests/ProviderCoreTests/KVQualityDeadlineTests.swift": "2061f5e6537850c82cd3b66ee07bf7bbc3cb2414c6d205bc12ff63d3aabc30c2",
+      "provider-swift/Tests/ProviderCoreTests/KVQualityServingContentTests.swift": "da5ee213c7658ed1a24c32f05cea56dd720080b0996e4cacde58d0ea629bb39d",
+      "provider-swift/Tests/ProviderCoreTests/ThroughputSweepPrefillScopeTests.swift": "efb11efa17f8edd6448b0d874fb0374188b10d9ccc80b5e2f401ae0db6e83e97",
+      "reports/kv-quantization-2026-09-07/validation/kv-quality-deadline-release-check.swift": "89366a7802214bae1349a3c5f2524f2b22d09a1b15e255ce8141fc4a35b95ae2"
+    }
+  },
+  "libs/mlx-swift-lm": {
+    "head": "fd75caa3d30a79c848e9bd5585caf0358f1ef142",
+    "modified_source_sha256": {}
+  },
+  "libs/mlx": {
+    "head": "6005bca7a3ee99f81c043299b1f73327d3755c9c",
+    "modified_source_sha256": {}
+  },
+  "libs/mlx-swift": {
+    "head": "37572f1f10a6c485ac4cc254cad63e8242643a6f",
+    "modified_source_sha256": {}
+  },
+  "libs/mlx-swift/Source/Cmlx/mlx": {
+    "head": "6005bca7a3ee99f81c043299b1f73327d3755c9c",
+    "modified_source_sha256": {}
+  },
+  "libs/mlx-swift/Source/Cmlx/mlx-c": {
+    "head": "9aaf7ff4fb0c2f13b7894d1f7c556850e891559b",
+    "modified_source_sha256": {}
+  }
+}

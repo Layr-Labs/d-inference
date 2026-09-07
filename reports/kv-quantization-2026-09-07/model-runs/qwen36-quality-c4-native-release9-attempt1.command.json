@@ -1,0 +1,16 @@
+[
+  "/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/.build/arm64-apple-macosx/release/darkbloom",
+  "benchmark",
+  "--config",
+  "/Users/gaj/Documents/Builds/d-inference-kv-quant/reports/kv-quantization-2026-09-07/benchmark.toml",
+  "--model",
+  "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+  "--model-directory",
+  "/Users/gaj/Documents/Builds/d-inference-kv-quant/reports/kv-quantization-2026-09-07/models/qwen36",
+  "--kv-backend",
+  "paged",
+  "--kv-quantization",
+  "native",
+  "--kv-quality-input",
+  "/Users/gaj/Documents/Builds/d-inference-kv-quant/reports/kv-quantization-2026-09-07/inputs/qwen36/quality/quality-c4.json"
+]

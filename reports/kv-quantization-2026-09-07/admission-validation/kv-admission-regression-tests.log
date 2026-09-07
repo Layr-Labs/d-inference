@@ -1,0 +1,182 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+Test Suite 'Selected tests' started at 2026-09-07 04:00:45.296.
+Test Suite 'mlx-swift-lmPackageTests.xctest' started at 2026-09-07 04:00:45.297.
+Test Suite 'CBv2FirstTokenDeadlineEngineTests' started at 2026-09-07 04:00:45.297.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCancellationAfterCommitTransfersEngineRowRetirement]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCancellationAfterCommitTransfersEngineRowRetirement]' passed (0.047 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCancellationAfterInitialGuardRetainsOwnershipUntilQueueAcknowledges]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCancellationAfterInitialGuardRetainsOwnershipUntilQueueAcknowledges]' passed (0.003 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCapacityProjectionReleasesRetiredBlockerBeforeTargetReservation]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCapacityProjectionReleasesRetiredBlockerBeforeTargetReservation]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testDeadlineBudgetKeepsRunningWhileAdmissionWaitsForEngineQueue]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testDeadlineBudgetKeepsRunningWhileAdmissionWaitsForEngineQueue]' passed (0.719 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testEngineQueueVerdictChargesLaunchedInFlightPlan]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testEngineQueueVerdictChargesLaunchedInFlightPlan]' passed (0.484 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testForcedTerminalDoesNotAcknowledgeEngineOwnership]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testForcedTerminalDoesNotAcknowledgeEngineOwnership]' passed (0.001 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testLateCancelFromRetiredGenerationDoesNotPoisonImmediateRetry]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testLateCancelFromRetiredGenerationDoesNotPoisonImmediateRetry]' passed (0.010 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testMixedProjectionUsesSeparateRatesAndMissingDecodeRateFailsClosed]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testMixedProjectionUsesSeparateRatesAndMissingDecodeRateFailsClosed]' passed (0.007 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testPausedLedgerOwnerMakesOtherwiseOpenSlotFailClosed]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testPausedLedgerOwnerMakesOtherwiseOpenSlotFailClosed]' passed (0.001 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testPrefixMetadataPrecedesVerdictAndReducesProjectedWork]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testPrefixMetadataPrecedesVerdictAndReducesProjectedWork]' passed (0.006 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testRejectedPagedPrefixHitDoesNotWireOrReserveSlabs]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testRejectedPagedPrefixHitDoesNotWireOrReserveSlabs]' passed (0.416 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testRejectedResidentPrefixPricesReplayWithoutRetainingOrWiringPages]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testRejectedResidentPrefixPricesReplayWithoutRetainingOrWiringPages]' passed (0.238 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testTaskCancellationResumesQueuedAdmissionAndReleasesGauge]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testTaskCancellationResumesQueuedAdmissionAndReleasesGauge]' passed (1.041 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testUnreachableRequestIsRemovedBeforeAnyForward]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testUnreachableRequestIsRemovedBeforeAnyForward]' passed (0.001 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testUnrepresentableServiceDurationsFailClosedWithoutTrapping]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testUnrepresentableServiceDurationsFailClosedWithoutTrapping]' passed (0.001 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testWatchdogResumesAdmissionBehindWedgedEngineQueue]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testWatchdogResumesAdmissionBehindWedgedEngineQueue]' passed (1.016 seconds).
+Test Suite 'CBv2FirstTokenDeadlineEngineTests' passed at 2026-09-07 04:00:49.287.
+	 Executed 16 tests, with 0 failures (0 unexpected) in 3.988 (3.990) seconds
+Test Suite 'CBv2FirstTokenWorkProjectionTests' started at 2026-09-07 04:00:49.287.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFixedZeroMTPPlainFallbackChargesTerminalChain]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFixedZeroMTPPlainFallbackChargesTerminalChain]' passed (0.001 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullLedgerSkipsOptionalTerminalChainBeforeSlotRelease]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullLedgerSkipsOptionalTerminalChainBeforeSlotRelease]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullSlotDecodeStretchChargesTerminalChain]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullSlotDecodeStretchChargesTerminalChain]' passed (0.001 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullSlotTerminalSampleChargesOneStepLateChain]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullSlotTerminalSampleChargesOneStepLateChain]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testMixedDecodeAndTrailingFinalChunkChargeWholeTargetStep]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testMixedDecodeAndTrailingFinalChunkChargeWholeTargetStep]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testMTPInFlightTerminalDoesNotInventChainedDecode]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testMTPInFlightTerminalDoesNotInventChainedDecode]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPausedRunningSlotFailsClosedWhenTargetCannotEnter]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPausedRunningSlotFailsClosedWhenTargetCannotEnter]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPreemptedReplayCancelledRowAndFinalChunkSlotRelease]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPreemptedReplayCancelledRowAndFinalChunkSlotRelease]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPrefixReplayStartIsTheConfirmedCursor]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPrefixReplayStartIsTheConfirmedCursor]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testSpeculativeCapacityRollbackPreventsImpossibleAccumulation]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testSpeculativeCapacityRollbackPreventsImpossibleAccumulation]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testSpeculativeProjectionChargesConfiguredMTPWidthNotStepBudget]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testSpeculativeProjectionChargesConfiguredMTPWidthNotStepBudget]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testT0AndTPlusTwoChargeFullInFlightAssignmentWithoutElapsedCredit]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testT0AndTPlusTwoChargeFullInFlightAssignmentWithoutElapsedCredit]' passed (0.000 seconds).
+Test Suite 'CBv2FirstTokenWorkProjectionTests' passed at 2026-09-07 04:00:49.292.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 0.004 (0.005) seconds
+Test Suite 'CBv2SchedulerAdmissionTests' started at 2026-09-07 04:00:49.292.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testAdoptionReservationChargesFixedRingExactlyOnce]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testAdoptionReservationChargesFixedRingExactlyOnce]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testCanEverFitIsWorstCase]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testCanEverFitIsWorstCase]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testCanEverFitRespectsWatermark]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testCanEverFitRespectsWatermark]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testEstimateRespectsWindowsAndKVSharing]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testEstimateRespectsWindowsAndKVSharing]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testExternalReserveTightensAdmissionAndRefundRestores]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testExternalReserveTightensAdmissionAndRefundRestores]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testFullSequenceAdoptionPrepaysAuxiliaryStateWithoutDoubleChargingKV]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testFullSequenceAdoptionPrepaysAuxiliaryStateWithoutDoubleChargingKV]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testMismatchedElementBytesTableTraps]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testMismatchedElementBytesTableTraps]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testOverflowingCapacityInputsFailWithoutMutatingLedger]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testOverflowingCapacityInputsFailWithoutMutatingLedger]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPagedResidencyTracksPoolPageDemandExactly]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPagedResidencyTracksPoolPageDemandExactly]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPagedShortRequestIsAdmittedWhereWholeRingChargingRejectsIt]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPagedShortRequestIsAdmittedWhereWholeRingChargingRejectsIt]' passed (0.240 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPerLayerElementBytesForMixedPrecision]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPerLayerElementBytesForMixedPrecision]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testQwenWarmAdmissionAcrossResidentBudgetsWithin16GiBGrant]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testQwenWarmAdmissionAcrossResidentBudgetsWithin16GiBGrant]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSnapshotReportsLedgerOrBackendTruth]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSnapshotReportsLedgerOrBackendTruth]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSnapshotReservedIncludesLiveExternalReserve]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSnapshotReservedIncludesLiveExternalReserve]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSoftReserveThrowsAtWatermark]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSoftReserveThrowsAtWatermark]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testTargetReservationsPartitionMaterializedAndWaitingRows]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testTargetReservationsPartitionMaterializedAndWaitingRows]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUndeclaredBackendResidencyDefaultsToWholeRingCharging]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUndeclaredBackendResidencyDefaultsToWholeRingCharging]' passed (0.226 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUnreserveAndReleaseRestoreHeadroom]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUnreserveAndReleaseRestoreHeadroom]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityGrowAdmitsImmediately]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityGrowAdmitsImmediately]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityRecomputesWatermark]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityRecomputesWatermark]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityShrinkUnderLoad]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityShrinkUnderLoad]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedChargeDivergesByBackendStoragePolicy]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedChargeDivergesByBackendStoragePolicy]' passed (0.001 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedLayerIsChargedItsWholeRingBelowTheWindow]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedLayerIsChargedItsWholeRingBelowTheWindow]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedOvershootIsRejectedRatherThanHidden]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedOvershootIsRejectedRatherThanHidden]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedReservationPlateaus]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedReservationPlateaus]' passed (0.002 seconds).
+Test Suite 'CBv2SchedulerAdmissionTests' passed at 2026-09-07 04:00:49.765.
+	 Executed 25 tests, with 0 failures (0 unexpected) in 0.472 (0.473) seconds
+Test Suite 'mlx-swift-lmPackageTests.xctest' passed at 2026-09-07 04:00:49.765.
+	 Executed 53 tests, with 0 failures (0 unexpected) in 4.465 (4.468) seconds
+Test Suite 'Selected tests' passed at 2026-09-07 04:00:49.765.
+	 Executed 53 tests, with 0 failures (0 unexpected) in 4.465 (4.469) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Native process ownership" started.
+◇ Suite "Typed checkpoint admission transfer" started.
+◇ Suite "CBv2 paged physical admission" started.
+◇ Test completeChargePrecedesAllocationAndReleaseWithdrawsCoverage() started.
+◇ Test exactFitTransfersOnlyDestinationAndKeepsOtherOwnersAndScratch() started.
+◇ Test physicalSlackTransfersToRequestsWithoutDiscountingAuxiliaryState() started.
+✔ Test physicalSlackTransfersToRequestsWithoutDiscountingAuxiliaryState() passed after 0.001 seconds.
+◇ Test shrinkDebtCanBeReusedButNotIncreasedOrCrossOffsetBetweenSlots() started.
+✔ Test exactFitTransfersOnlyDestinationAndKeepsOtherOwnersAndScratch() passed after 0.001 seconds.
+◇ Test oneExtraPhysicalByteRefusesWithoutConsumingStage() started.
+✔ Test oneExtraPhysicalByteRefusesWithoutConsumingStage() passed after 0.001 seconds.
+✔ Test shrinkDebtCanBeReusedButNotIncreasedOrCrossOffsetBetweenSlots() passed after 0.001 seconds.
+◇ Test explicitConsumptionStateRejectsZeroDestinationReuseAndForeignPool() started.
+◇ Test detachedOldRequestCannotReleaseReusedIDOrItsPhysicalOffset() started.
+✔ Test detachedOldRequestCannotReleaseReusedIDOrItsPhysicalOffset() passed after 0.001 seconds.
+◇ Test deadlineSimulationMatchesFloorTransfersAndRetainsPhysicalAfterRelease() started.
+✔ Test deadlineSimulationMatchesFloorTransfersAndRetainsPhysicalAfterRelease() passed after 0.001 seconds.
+◇ Test coldFullPromiseSurvivesChunkingAndSpeculationButRollsBackInitialWork() started.
+✔ Test explicitConsumptionStateRejectsZeroDestinationReuseAndForeignPool() passed after 0.001 seconds.
+◇ Test paddedAuxiliaryTransfersAtomicallyAndStaysOutOfTargetTelemetry() started.
+✔ Test coldFullPromiseSurvivesChunkingAndSpeculationButRollsBackInitialWork() passed after 0.001 seconds.
+◇ Test adoptedAndColdRowsPrepayIdenticalTargetAndAuxiliaryCapacity() started.
+✔ Test paddedAuxiliaryTransfersAtomicallyAndStaysOutOfTargetTelemetry() passed after 0.001 seconds.
+◇ Test preemptionReleasesAuxiliaryPartitionBeforeIDReuse() started.
+✔ Test adoptedAndColdRowsPrepayIdenticalTargetAndAuxiliaryCapacity() passed after 0.001 seconds.
+◇ Test qwenLedgerCapacityAcrossCoResidentDeviceEnvelopesHasNoEightGiBCap() started.
+✔ Test preemptionReleasesAuxiliaryPartitionBeforeIDReuse() passed after 0.001 seconds.
+◇ Test paddedAuxiliaryRollbackRemovesItsTypedPartition() started.
+✔ Test paddedAuxiliaryRollbackRemovesItsTypedPartition() passed after 0.001 seconds.
+✔ Suite "Typed checkpoint admission transfer" passed after 0.002 seconds.
+✔ Test qwenLedgerCapacityAcrossCoResidentDeviceEnvelopesHasNoEightGiBCap() passed after 0.001 seconds.
+◇ Test prefillOnlyTerminalDropsLastNativeOwnerBeforeFloorRefund() started.
+✔ Test prefillOnlyTerminalDropsLastNativeOwnerBeforeFloorRefund() passed after 0.542 seconds.
+◇ Test deadlineProbePricesPoisonBeforeAnyNativeAllocation() started.
+✔ Test completeChargePrecedesAllocationAndReleaseWithdrawsCoverage() passed after 0.545 seconds.
+◇ Test sharedRefusalLeavesNativeRequestAndPhysicalStateUntouched() started.
+✔ Test sharedRefusalLeavesNativeRequestAndPhysicalStateUntouched() passed after 0.001 seconds.
+◇ Test partialPreparationDropsEvaluatedCoverageBeforeRollback() started.
+✔ Test deadlineProbePricesPoisonBeforeAnyNativeAllocation() passed after 0.289 seconds.
+◇ Test nativeGrowthReservesPeakBeforeAllocationAndRefusesWithoutSideEffects() started.
+✔ Test partialPreparationDropsEvaluatedCoverageBeforeRollback() passed after 0.289 seconds.
+◇ Test stagedBackingKeepsOneCreditAcrossRebasedWrappers() started.
+✔ Test nativeGrowthReservesPeakBeforeAllocationAndRefusesWithoutSideEffects() passed after 0.298 seconds.
+◇ Test failedPrivateGrowthDropsArraysBeforeFloorRefund(epochRace:) started.
+◇ Test case passing 1 argument epochRace → false to failedPrivateGrowthDropsArraysBeforeFloorRefund(epochRace:) started.
+✔ Test stagedBackingKeepsOneCreditAcrossRebasedWrappers() passed after 0.298 seconds.
+◇ Test retainedReadAliasDoesNotKeepCreditAfterPoolRetirement() started.
+✔ Test retainedReadAliasDoesNotKeepCreditAfterPoolRetirement() passed after 0.310 seconds.
+◇ Test emptyPoolTeardownDoesNotTransactWithRetiredGeneration() started.
+◇ Test case passing 1 argument epochRace → true to failedPrivateGrowthDropsArraysBeforeFloorRefund(epochRace:) started.
+✔ Test emptyPoolTeardownDoesNotTransactWithRetiredGeneration() passed after 0.284 seconds.
+◇ Test detachedPromiseAndClosingOwnerRetainTheirActualCharge() started.
+✔ Test failedPrivateGrowthDropsArraysBeforeFloorRefund(epochRace:) with 2 test cases passed after 0.596 seconds.
+✔ Suite "CBv2 paged physical admission" passed after 1.730 seconds.
+✔ Test detachedPromiseAndClosingOwnerRetainTheirActualCharge() passed after 0.226 seconds.
+✔ Suite "Native process ownership" passed after 1.955 seconds.
+✔ Test run with 24 tests in 3 suites passed after 1.955 seconds.

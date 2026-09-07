@@ -380,8 +380,9 @@ func (r *Registry) qualityCapOvercommitForModelLocked(model string) float64 {
 // chain (registration benchmark, or the model-agnostic sqrt-bandwidth proxy
 // that only dedicated models may be capped from).
 type soloModelTPS struct {
-	tps      float64
-	perModel bool
+	tps                   float64
+	perModel              bool
+	uncalibratedExecution bool
 }
 
 // resolvedSoloModelTPSLocked resolves the static solo decode rate the quality
@@ -471,6 +472,17 @@ type soloModelTPS struct {
 // restoring resolvedDecodeTPS(p) at every wired site exactly. Caller holds
 // r.mu and p.mu.
 func (r *Registry) resolvedSoloModelTPSLocked(p *Provider, model string) soloModelTPS {
+	execution := providerExecutionIdentityLocked(p, model)
+	if execution != "" {
+		if execution != invalidExecutionIdentity {
+			if tps, count := r.tpsRegistry.SoloMedian(model, chipClassKey(p.Hardware), execution); count >= max(1, qualityCapSoloMinSamples) && tps > 0 {
+				return soloModelTPS{tps: tps, perModel: true}
+			}
+		}
+		// Native seeds, cross-class medians and registration benchmarks are
+		// not evidence for this execution. Permit one request to learn.
+		return soloModelTPS{tps: 1, perModel: true, uncalibratedExecution: true}
+	}
 	if qualityCapPerModelTPS {
 		chipClass := chipClassKey(p.Hardware)
 		classTPS, classN := r.tpsRegistry.SoloMedian(model, chipClass)
@@ -553,6 +565,9 @@ func (r *Registry) effectiveMaxConcurrencyForModelResolvedLocked(p *Provider, mo
 // Caller holds r.mu and p.mu.
 func (r *Registry) effectiveMaxConcurrencyForModelRateLocked(p *Provider, model string, rate soloModelTPS) int {
 	base := p.maxConcurrencyForModelLocked(model)
+	if rate.uncalibratedExecution && base > 1 {
+		return 1
+	}
 	if !r.qualityCapEnabled {
 		return base
 	}

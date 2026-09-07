@@ -1,0 +1,163 @@
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin CudaBuild
+Building for debugging...
+[2/15] Write sources
+[3/15] Write swift-version--58304C5D6DBC2206.txt
+[5/12] Compiling ProviderCoreTests LaunchAgentRestartTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:207:17: warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+205 |         // pending an mlx-swift bump. memoryLimit is a soft target on
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+    |                 `- warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+209 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:208:17: warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+    |                 `- warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+209 |     }
+210 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:254:22: warning: no calls to throwing functions occur within 'try' expression
+252 | 
+253 |         let container = try await ModelContainerLoading.loadContainer(from: directory)
+254 |         var sizing = try await SlotSizingSnapshot.build(
+    |                      `- warning: no calls to throwing functions occur within 'try' expression
+255 |             container: container,
+256 |             modelPath: directory,
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[6/12] Compiling ProviderCoreTests LiveInferenceFixtures.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:207:17: warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+205 |         // pending an mlx-swift bump. memoryLimit is a soft target on
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+    |                 `- warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+209 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:208:17: warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+    |                 `- warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+209 |     }
+210 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:254:22: warning: no calls to throwing functions occur within 'try' expression
+252 | 
+253 |         let container = try await ModelContainerLoading.loadContainer(from: directory)
+254 |         var sizing = try await SlotSizingSnapshot.build(
+    |                      `- warning: no calls to throwing functions occur within 'try' expression
+255 |             container: container,
+256 |             modelPath: directory,
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[7/12] Compiling ProviderCoreTests LoadedModelsStoreTests.swift
+[8/12] Emitting module ProviderCoreTests
+[9/12] Compiling ProviderCoreTests EngineV2RoutingCapacityTests.swift
+[10/12] Compiling ProviderCoreTests KVQualityBenchmarkTests.swift
+[11/13] Compiling ProviderCoreTests LocalChatRequestTests.swift
+macro expansion #expect:3:38: warning: '#require(_:_:)' is redundant because 'local.templateControls.promptDate' never equals 'nil' (from macro 'require')
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LocalChatRequestTests.swift:41:74: note: expanded code originates here
+ 37 |         let upstream = try decoder.decode(OpenAIChatCompletionRequest.self, from: data)
+ 38 |         #expect(local.request == upstream)
+ 39 |         #expect(local.templateControls == ChatTemplateControls(
+    |         `- note: in expansion of macro 'expect' here
+ 40 |             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
+ 41 |             promptDate: try #require(local.templateControls.promptDate)))
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkValue(local.templateControls == ChatTemplateControls(
+    |2 |             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
+    |3 |             promptDate: try #require(local.templateControls.promptDate)),expression: .__fromSyntaxNode(#"local.templateControls == ChatTemplateControls(\#n            reasoningEffort: "high", enableThinking: false, preserveThinking: true,\#n            promptDate: try #require(local.templateControls.promptDate))"#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    |  |                                      `- warning: '#require(_:_:)' is redundant because 'local.templateControls.promptDate' never equals 'nil' (from macro 'require')
+    +-------------------------------------------------------------------
+ 42 |         #expect(local.request.reasoning?.enabled == true)
+ 43 |         #expect(local.request.streamOptions?.includeUsage == true)
+[11/13] Write Objects.LinkFileList
+[12/13] Linking DarkbloomProviderPackageTests
+Build complete! (21.19s)
+Test Suite 'Selected tests' started at 2026-09-07 05:22:35.389.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-09-07 05:22:35.389.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-09-07 05:22:35.389.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-07 05:22:35.389.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Bounded free-generation input and collection" started.
+◇ Suite "Benchmark KV quantization selection" started.
+◇ Suite "Teacher-forced benchmark option scope" started.
+◇ Suite "Free-generation benchmark CLI scope" started.
+◇ Suite "Exact benchmark directory identity" started.
+◇ Suite "Workspace-aware routing token capacity" started.
+◇ Test malformedStreamsNeverLookLikeSuccessfulCases() started.
+◇ Test expectedMatchesTrimOnlyOuterWhitespaceAndMissingIsUngraded() started.
+◇ Test ignoredOrAmbiguousSelectionsRefuseBeforeLoading() started.
+◇ Test earlyEOSPreservesRawTokensAndAuthoritativeText() started.
+◇ Test exactDirectoryOverrideRequiresIdentityAndTeacherForcedMode() started.
+◇ Test explicitPagedMeasurementModes(mode:) started.
+◇ Test unknownJSONControlsAreRejected() started.
+◇ Test inputPinsIdentityVocabularyAndFiniteWork() started.
+◇ Test nativeRemainsTheDefault() started.
+◇ Test changedArtifactCannotReturnAPublishableReport() started.
+◇ Test actualDrainKeepsConcurrentStreamsAndReceiptsSeparate() started.
+◇ Test verifiedReportCarriesTheHashBracket() started.
+◇ Test incompatibleModesAndAssistantAreRefused() started.
+◇ Test exactArtifactDirectoryAndQuantizationAreSupported() started.
+◇ Test outOfOrderCompletionRetainsCaseIdentity() started.
+◇ Test normalDiscoveryKeepsItsExistingPublicationPath() started.
+◇ Test beforeMismatchNeverStartsMeasurement() started.
+◇ Test nativeZeroWorkspaceKeepsTheLinearCapacity() started.
+◇ Test cancellingADrainPreservesAnExplicitIncompleteOutcome() started.
+◇ Test unsupportedModesCannotIgnoreTheDirectory() started.
+◇ Test supportedModesRequireExplicitModelAndHash(mode:) started.
+◇ Test explicitOrdinaryModeParsesAndDefaultIsUnchanged() started.
+◇ Test ignoredAndAmbiguousOptionsRefuseBeforeLoading() started.
+◇ Test case passing 1 argument mode → "int8" to explicitPagedMeasurementModes(mode:) started.
+◇ Test unknownOrOverflowedBoundsFailClosed() started.
+◇ Test case passing 1 argument mode → "int4" to explicitPagedMeasurementModes(mode:) started.
+◇ Test aggregateBoundCoversEveryTwoRequestSplit() started.
+◇ Test aggregateProjectionPaysAllRawSplitsUpToItsAdvertisedBudget() started.
+◇ Test case passing 1 argument mode → "k8v4" to explicitPagedMeasurementModes(mode:) started.
+◇ Test lowerAdvertisedCountRetainsOneServiceableRequest() started.
+◇ Test case passing 1 argument mode → "--sweep" to supportedModesRequireExplicitModelAndHash(mode:) started.
+✔ Test expectedMatchesTrimOnlyOuterWhitespaceAndMissingIsUngraded() passed after 0.001 seconds.
+◇ Test case passing 1 argument mode → "--scheduler-prefill" to supportedModesRequireExplicitModelAndHash(mode:) started.
+◇ Test case passing 1 argument mode → "--arrival-invariance" to supportedModesRequireExplicitModelAndHash(mode:) started.
+✔ Test malformedStreamsNeverLookLikeSuccessfulCases() passed after 0.016 seconds.
+✔ Test normalDiscoveryKeepsItsExistingPublicationPath() passed after 0.016 seconds.
+✔ Test earlyEOSPreservesRawTokensAndAuthoritativeText() passed after 0.016 seconds.
+✔ Test nativeZeroWorkspaceKeepsTheLinearCapacity() passed after 0.016 seconds.
+✔ Test beforeMismatchNeverStartsMeasurement() passed after 0.016 seconds.
+✔ Test changedArtifactCannotReturnAPublishableReport() passed after 0.016 seconds.
+✔ Test aggregateBoundCoversEveryTwoRequestSplit() passed after 0.016 seconds.
+✔ Test outOfOrderCompletionRetainsCaseIdentity() passed after 0.016 seconds.
+✔ Test inputPinsIdentityVocabularyAndFiniteWork() passed after 0.016 seconds.
+✔ Test unknownOrOverflowedBoundsFailClosed() passed after 0.016 seconds.
+✔ Test lowerAdvertisedCountRetainsOneServiceableRequest() passed after 0.016 seconds.
+✔ Test unknownJSONControlsAreRejected() passed after 0.016 seconds.
+✔ Test verifiedReportCarriesTheHashBracket() passed after 0.016 seconds.
+✔ Test cancellingADrainPreservesAnExplicitIncompleteOutcome() passed after 0.016 seconds.
+✔ Test nativeRemainsTheDefault() passed after 0.017 seconds.
+✔ Test exactArtifactDirectoryAndQuantizationAreSupported() passed after 0.018 seconds.
+✔ Test aggregateProjectionPaysAllRawSplitsUpToItsAdvertisedBudget() passed after 0.024 seconds.
+✔ Suite "Workspace-aware routing token capacity" passed after 0.024 seconds.
+✔ Test explicitOrdinaryModeParsesAndDefaultIsUnchanged() passed after 0.029 seconds.
+✔ Test unsupportedModesCannotIgnoreTheDirectory() passed after 0.037 seconds.
+✔ Test actualDrainKeepsConcurrentStreamsAndReceiptsSeparate() passed after 0.038 seconds.
+✔ Suite "Bounded free-generation input and collection" passed after 0.038 seconds.
+✔ Test explicitPagedMeasurementModes(mode:) with 3 test cases passed after 0.049 seconds.
+✔ Test ignoredOrAmbiguousSelectionsRefuseBeforeLoading() passed after 0.055 seconds.
+✔ Suite "Benchmark KV quantization selection" passed after 0.055 seconds.
+✔ Test supportedModesRequireExplicitModelAndHash(mode:) with 3 test cases passed after 0.068 seconds.
+✔ Suite "Exact benchmark directory identity" passed after 0.068 seconds.
+✔ Test incompatibleModesAndAssistantAreRefused() passed after 0.076 seconds.
+✔ Test ignoredAndAmbiguousOptionsRefuseBeforeLoading() passed after 0.086 seconds.
+✔ Suite "Free-generation benchmark CLI scope" passed after 0.087 seconds.
+✔ Test exactDirectoryOverrideRequiresIdentityAndTeacherForcedMode() passed after 0.099 seconds.
+✔ Suite "Teacher-forced benchmark option scope" passed after 0.099 seconds.
+✔ Test run with 27 tests in 6 suites passed after 0.100 seconds.

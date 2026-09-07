@@ -1,0 +1,1 @@
+--quantized-prefill requires --sweep, --scheduler-prefill or --kv-quality-input

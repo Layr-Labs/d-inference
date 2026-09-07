@@ -1,0 +1,187 @@
+{
+  "scope": "paired local observations; no significance or SLA qualification",
+  "native_report": "reports/kv-quantization-2026-09-07/model-runs/qwen36-sweep-4k-native-release10-attempt1.json",
+  "candidate_report": "reports/kv-quantization-2026-09-07/model-runs/qwen36-sweep-4k-int4-release10-attempt1.json",
+  "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+  "candidate_format": {
+    "quantizationSelection": "int4",
+    "resolved": [
+      "paged [affine-v1-k4v4-g64-f32-h128-s1]"
+    ],
+    "selection": "paged"
+  },
+  "batches": [
+    {
+      "batch_size": 1,
+      "native": {
+        "samples": 2,
+        "overlap_aggregate_tokens_per_second": {
+          "mean": 94.57251897465414,
+          "minimum": 94.54452832601602,
+          "maximum": 94.60050962329227
+        },
+        "end_to_end_aggregate_tokens_per_second": {
+          "mean": 33.227591674099294,
+          "minimum": 32.05905062005499,
+          "maximum": 34.3961327281436
+        },
+        "peak_mlx_bytes": {
+          "mean": 24017859135,
+          "minimum": 24017844015,
+          "maximum": 24017874255
+        },
+        "maximum_ttft_ms": 2669.149208,
+        "maximum_inter_token_gap_ms": 11.527166999999736
+      },
+      "candidate": {
+        "samples": 2,
+        "overlap_aggregate_tokens_per_second": {
+          "mean": 74.72806453965573,
+          "minimum": 71.50507259889909,
+          "maximum": 77.95105648041238
+        },
+        "end_to_end_aggregate_tokens_per_second": {
+          "mean": 20.345282459376598,
+          "minimum": 19.710001702852473,
+          "maximum": 20.980563215900727
+        },
+        "peak_mlx_bytes": {
+          "mean": 24107094375,
+          "minimum": 24107079255,
+          "maximum": 24107109495
+        },
+        "maximum_ttft_ms": 4754.5605829999995,
+        "maximum_inter_token_gap_ms": 26.569250000000466
+      }
+    },
+    {
+      "batch_size": 2,
+      "native": {
+        "samples": 2,
+        "overlap_aggregate_tokens_per_second": {
+          "mean": 147.23761058578793,
+          "minimum": 144.98384223039523,
+          "maximum": 149.49137894118064
+        },
+        "end_to_end_aggregate_tokens_per_second": {
+          "mean": 35.53605430429235,
+          "minimum": 33.61381725632287,
+          "maximum": 37.458291352261824
+        },
+        "peak_mlx_bytes": {
+          "mean": 24017866695,
+          "minimum": 24017851575,
+          "maximum": 24017881815
+        },
+        "maximum_ttft_ms": 5930.742125,
+        "maximum_inter_token_gap_ms": 442.5112080000008
+      },
+      "candidate": {
+        "samples": 2,
+        "overlap_aggregate_tokens_per_second": {
+          "mean": 118.77259621556956,
+          "minimum": 118.00424218437023,
+          "maximum": 119.5409502467689
+        },
+        "end_to_end_aggregate_tokens_per_second": {
+          "mean": 22.042972802400985,
+          "minimum": 20.885501693982725,
+          "maximum": 23.200443910819246
+        },
+        "peak_mlx_bytes": {
+          "mean": 24107101935,
+          "minimum": 24107086815,
+          "maximum": 24107117055
+        },
+        "maximum_ttft_ms": 10220.926625,
+        "maximum_inter_token_gap_ms": 866.521999999999
+      }
+    },
+    {
+      "batch_size": 4,
+      "native": {
+        "samples": 2,
+        "overlap_aggregate_tokens_per_second": {
+          "mean": 207.55736086155582,
+          "minimum": 200.53515736174808,
+          "maximum": 214.57956436136354
+        },
+        "end_to_end_aggregate_tokens_per_second": {
+          "mean": 35.73584236095036,
+          "minimum": 33.720188815985544,
+          "maximum": 37.751495905915164
+        },
+        "peak_mlx_bytes": {
+          "mean": 24017874255,
+          "minimum": 24017859135,
+          "maximum": 24017889375
+        },
+        "maximum_ttft_ms": 12875.812792,
+        "maximum_inter_token_gap_ms": 839.7676659999997
+      },
+      "candidate": {
+        "samples": 2,
+        "overlap_aggregate_tokens_per_second": {
+          "mean": 169.72611475008705,
+          "minimum": 169.47264320060947,
+          "maximum": 169.9795862995646
+        },
+        "end_to_end_aggregate_tokens_per_second": {
+          "mean": 22.976735415511502,
+          "minimum": 22.94335354524047,
+          "maximum": 23.010117285782535
+        },
+        "peak_mlx_bytes": {
+          "mean": 24107109495,
+          "minimum": 24107094375,
+          "maximum": 24107124615
+        },
+        "maximum_ttft_ms": 19650.090083000003,
+        "maximum_inter_token_gap_ms": 1355.5392919999995
+      }
+    },
+    {
+      "batch_size": 8,
+      "native": {
+        "samples": 2,
+        "overlap_aggregate_tokens_per_second": {
+          "mean": 235.09043951634902,
+          "minimum": 218.1241520052387,
+          "maximum": 252.05672702745937
+        },
+        "end_to_end_aggregate_tokens_per_second": {
+          "mean": 34.4917367620632,
+          "minimum": 32.69426366001751,
+          "maximum": 36.28920986410889
+        },
+        "peak_mlx_bytes": {
+          "mean": 24017881815,
+          "minimum": 24017866695,
+          "maximum": 24017896935
+        },
+        "maximum_ttft_ms": 27512.993082999998,
+        "maximum_inter_token_gap_ms": 867.5956249999981
+      },
+      "candidate": {
+        "samples": 2,
+        "overlap_aggregate_tokens_per_second": {
+          "mean": 212.64826589752536,
+          "minimum": 212.4980327400514,
+          "maximum": 212.79849905499933
+        },
+        "end_to_end_aggregate_tokens_per_second": {
+          "mean": 23.820123504264743,
+          "minimum": 23.58954138576048,
+          "maximum": 24.050705622769005
+        },
+        "peak_mlx_bytes": {
+          "mean": 24107117055,
+          "minimum": 24107101935,
+          "maximum": 24107132175
+        },
+        "maximum_ttft_ms": 39638.017374999996,
+        "maximum_inter_token_gap_ms": 1240.5382499999978
+      }
+    }
+  ]
+}

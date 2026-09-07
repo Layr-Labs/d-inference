@@ -1,6 +1,6 @@
 # Design records — what was decided, and whether it shipped
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-07 · commit `0b46b1618` + working tree
 
 Plans, proposals, and architecture decision records. Each file is frozen at the
 moment it was written except for its **Status** line, which says whether the
@@ -33,6 +33,7 @@ below repeats the vocabulary word only; the file's line 5 carries the evidence.
 
 | Record | Status | Date | One line |
 |---|---|---|---|
+| [paged-kv-quantization-strategy.md](paged-kv-quantization-strategy.md) | In progress | 2026-09-07 | Rotation-assisted packed KV, model-quality controls and physical admission accounting |
 | [release-090-acceptance.md](release-090-acceptance.md) | In progress | 2026-09-06 | Numerical, quality, cache and serving acceptance; backend wording differences and functional routing scope |
 | [release-090-paged-qwen-cache.md](release-090-paged-qwen-cache.md) | In progress | 2026-09-06 | Five-artifact paged migration with Qwen-only default caching, scoped acceptance and independent rollback controls |
 | [qwen-first-paged-ssd-rollout.md](qwen-first-paged-ssd-rollout.md) | Superseded | 2026-09-06 | Earlier three-Qwen paging scope, corrected by the five-artifact release decision |

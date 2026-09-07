@@ -1,0 +1,24 @@
+{
+  "scope": "paired exact-context diagnostic; not quality qualification",
+  "reference": "reports/kv-quantization-2026-09-07/model-runs/qwen36-copy512-native-attempt2.json",
+  "candidate": "reports/kv-quantization-2026-09-07/model-runs/qwen36-copy512-int4-attempt1.json",
+  "reference_summary": {
+    "tokens": 124,
+    "mean_forced_token_nll": 9.828998196509577e-06,
+    "continuation_perplexity": 1.0000098290465014,
+    "format": "native",
+    "format_identity": null
+  },
+  "candidate_summary": {
+    "tokens": 124,
+    "mean_forced_token_nll": 6.506519932900705e-06,
+    "continuation_perplexity": 1.0000065065411003,
+    "format": "int4",
+    "format_identity": "affine-v1-k4v4-g64-f32-h128-s1"
+  },
+  "mean_nll_delta": -3.3224782636088714e-06,
+  "max_token_nll_increase": 3.814697265625e-06,
+  "top1_agreement": 1.0,
+  "input_sha256": "b9d07369ef92bd76b57f95732560f115dde63aa3b44ef3fdc15feed632c4de94",
+  "model_aggregate": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed"
+}

@@ -1,0 +1,14 @@
+{
+  "scope": "Unchanged5ms timing tolerance; quiet model window continues with no task-agent builds/tests",
+  "results": [
+    {
+      "name": "qwen36-arrival-mixed-native-quiet-release11-attempt2",
+      "exitCode": 1
+    },
+    {
+      "name": "qwen36-arrival-mixed-int4-quiet-release11-attempt1",
+      "exitCode": 1
+    }
+  ],
+  "finishedUnixSeconds": 1788796419.147032
+}

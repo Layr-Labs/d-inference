@@ -1,0 +1,84 @@
+{
+  "scope": "authored regression probes; not broad model quality qualification",
+  "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+  "aggregate": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+  "template_sha256": "e84f32a23fdda27689f868aa4a1a5621f41133e51a48d7f3efcbea2839574259",
+  "tokenizer_sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+  "render_settings": {
+    "tools": null,
+    "builtin_tools": [],
+    "add_generation_prompt": true,
+    "enable_thinking": false,
+    "reasoning_effort": "low",
+    "bos_token": "",
+    "eos_token": "<|im_end|>",
+    "unk_token": "",
+    "pad_token": "<|endoftext|>"
+  },
+  "fixed_template_date": "2026-09-07",
+  "cases": [
+    {
+      "name": "inventory-arithmetic",
+      "prompt_tokens": 80,
+      "expected_text": "952",
+      "max_tokens": 96,
+      "rendered_sha256": "f6a3d652cb2f6a0c473ed4f1cad23684d9085e5a972ba08d1848bc536b52548e"
+    },
+    {
+      "name": "ordering-constraints",
+      "prompt_tokens": 81,
+      "expected_text": "amber,birch,cobalt,dahlia",
+      "max_tokens": 96,
+      "rendered_sha256": "8cbca777d38b84f1ff1b0b8cdcdd81ecbbfe9a83600158619c9a756d42c38c6c"
+    },
+    {
+      "name": "set-state",
+      "prompt_tokens": 99,
+      "expected_text": "[2,3,7]",
+      "max_tokens": 96,
+      "rendered_sha256": "7c4f7ebfe9ae14635435814d7ee253c36798c8ebae302c7254a6befcace87e07"
+    },
+    {
+      "name": "code-trace",
+      "prompt_tokens": 117,
+      "expected_text": "[3, 2, 6, 5, 10]",
+      "max_tokens": 96,
+      "rendered_sha256": "bc991776575de486e381818bcb16253715a412f5c7ed780e0ddaa1f8744098b9"
+    },
+    {
+      "name": "scope-negation",
+      "prompt_tokens": 105,
+      "expected_text": "C,E",
+      "max_tokens": 96,
+      "rendered_sha256": "f7c4b5e0c93b3d0e8d63e22e59ac49489e161e7726a75f26a87086bc22b49961"
+    },
+    {
+      "name": "write-python",
+      "prompt_tokens": 74,
+      "expected_text": null,
+      "max_tokens": 160,
+      "rendered_sha256": "19f3e2f722d0d7e687f740faa0642ee44abd0ad6bd734af9fbf39505f86b9bd2"
+    },
+    {
+      "name": "retrieve-4096-early",
+      "prompt_tokens": 4190,
+      "expected_text": "742915",
+      "max_tokens": 96,
+      "rendered_sha256": "38030f0c34186533b8b65f239f24ebd8cea93c8ff776ec407120e510c8d36d4a"
+    },
+    {
+      "name": "retrieve-16384-middle",
+      "prompt_tokens": 16491,
+      "expected_text": "742915",
+      "max_tokens": 96,
+      "rendered_sha256": "36fa4e6e75acad78a7af0de63ac097766f5e13c5bc2f64a371faf0fb0e611d18"
+    },
+    {
+      "name": "retrieve-updated-value",
+      "prompt_tokens": 4959,
+      "expected_text": "6218",
+      "max_tokens": 96,
+      "rendered_sha256": "dd48fbe64dc9a72c02b729d2abbfc47528ec56a5b38b20cd55949e0ccae8d4fe"
+    }
+  ]
+}

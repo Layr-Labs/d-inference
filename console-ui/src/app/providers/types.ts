@@ -22,6 +22,8 @@ export interface MyModelInfo {
   model_type?: string;
   quantization?: string;
   weight_hash?: string;
+  // Declared KV execution policy for a future load; native/legacy omit.
+  execution_identity?: string;
 }
 
 export interface MySystemMetrics {
@@ -40,6 +42,8 @@ export interface MyBackendSlot {
   // Measured provider telemetry, mirrored from the Go BackendSlotCapacity wire
   // type. Both are `omitempty` server-side (omitted when zero/unmeasured), so
   // they are optional here.
+  // Actual loaded execution format and kernel policy; native/legacy omit.
+  execution_identity?: string;
   observed_prefill_tps?: number; // EWMA of measured prefill TPS (admission→first token)
   model_load_time_ms?: number; // measured cold-start load time (ms) for this slot's model
   // Per-slot KV-cache backend the provider's engine was actually built with,

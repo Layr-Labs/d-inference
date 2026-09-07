@@ -1,0 +1,6 @@
+gemma optimizations: prefill_layer18=on weighted_r1=on
+2026-09-07T05:49:21-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for gpt-oss-20b (10 files)...
+2026-09-07T05:49:31-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for gpt-oss-20b: 61bfc04e4016a7fa
+2026-09-07T05:49:32-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for gpt-oss-20b (10 files)...
+2026-09-07T05:49:41-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for gpt-oss-20b: 61bfc04e4016a7fa
+Error: engine_v2: paged KV backend explicitly requested but unavailable — kernel_preflight: paged kernel preflight child exited 1: Error: ambiguous SwiftPM resource pagedattention.metal; matches /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/.build/arm64-apple-macosx/release/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal, /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/.build/arm64-apple-macosx/debug/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal

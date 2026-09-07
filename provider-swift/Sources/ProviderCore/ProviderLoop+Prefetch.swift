@@ -323,11 +323,12 @@ extension ProviderLoop {
         // estimatedMemoryGb == 0, bypassing memory sizing/admission until the
         // real load overcommits. Drop it instead — without a models_update the
         // coordinator simply never routes this build here, which is the safe outcome.
-        guard let (info, maybeHash) = computed else {
+        guard let (scannedInfo, maybeHash) = computed else {
             desiredSwapDrop.removeValue(forKey: modelId)
             logger.error("Prefetch verified \(modelId) but its on-disk snapshot could not be scanned; not advertising (would bypass memory sizing)")
             return
         }
+        let info = KVPerformanceIdentity.declared(model: scannedInfo, settings: loopConfig.config.backend)
         // A nil weight hash is treated exactly like an unscannable snapshot: do
         // NOT advertise, emit, or hard-swap. The coordinator's models_update
         // gate REQUIRES a non-empty matching hash when the catalog pins one, so a

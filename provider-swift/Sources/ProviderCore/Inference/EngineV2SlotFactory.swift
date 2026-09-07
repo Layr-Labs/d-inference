@@ -155,6 +155,7 @@ enum EngineV2SlotFactory {
     /// callers use the empty value and execute only concrete production code.
     struct AssemblyOverrides {
         var gemmaMTPVerification: EngineV2BenchmarkMTPVerification? = nil
+        var quantizedPrefillMode: PagedQuantizedPrefillMode = .direct
         var promptContractID: String? = nil
         var completeCheckpointIdentity: CBv2CompleteCheckpointIdentity? = nil
         var pagedPreflight: (([CBv2LayerKind]) throws -> Void)? = nil
@@ -235,6 +236,8 @@ enum EngineV2SlotFactory {
         kvBudget: GlobalKVCacheBudget?,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
+        kvQuantizationConfig: String = "native",
+        kvQuantizationConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         weightHash: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -256,6 +259,8 @@ enum EngineV2SlotFactory {
             kvBudget: kvBudget,
             kvBackendConfig: kvBackendConfig,
             kvBackendConfigByModel: kvBackendConfigByModel,
+            kvQuantizationConfig: kvQuantizationConfig,
+            kvQuantizationConfigByModel: kvQuantizationConfigByModel,
             prefillDeadlineMode: prefillDeadlineMode,
             weightHash: weightHash,
             specDecPreparation: SpecDecPreparation(
@@ -285,6 +290,8 @@ enum EngineV2SlotFactory {
         activationReserveBytes: UInt64? = nil,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
+        kvQuantizationConfig: String = "native",
+        kvQuantizationConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         weightHash: String? = nil,
         specDecPreparation: SpecDecPreparation,
@@ -310,15 +317,17 @@ enum EngineV2SlotFactory {
         // from a belief held here: the decision has to be made before any
         // pool exists, so it cannot ask a live instance, but it must still
         // ASK rather than assume. A veto is policy, so it is silent even
-        // for an explicit paged request. kv_quant is gone from the product
-        // entirely — it is no longer a veto, no longer a parameter, and no
-        // longer warned about. `auto` uses the exact candidate model ID;
+        // for an explicit paged request. The retired kv_quant knob remains
+        // ignored; the new paged quantization policy is resolved separately
+        // and refuses any native fallback. `auto` uses the exact candidate model ID;
         // that resolution, the fleet kill switch, physical-capacity
         // planning, and the degrade-or-REFUSE decision for an explicit
         // paged request all live in
         // `EngineV2Factory.prepareProductionBackend`. The RESOLVED backend
         // that comes back also decides whether this slot gets an SSD
         // prefix cache at all — see the construction gate below.
+        let kvQuantization = try EngineV2KVQuantizationPolicy.parseSelection(
+            global: kvQuantizationConfig, byModel: kvQuantizationConfigByModel, modelID: modelId)
         let parsedKVBackend = EngineV2KVBackendPolicy.parseSelection(
             global: kvBackendConfig, byModel: kvBackendConfigByModel, modelID: modelId)
         if let unrecognized = parsedKVBackend.unrecognized {
@@ -428,6 +437,8 @@ enum EngineV2SlotFactory {
                     kvBytesCapacity: engineKVBytesCapacity,
                     maxConcurrentRequests: maxConcurrentRequests,
                     kvBackend: kvBackendSelection,
+                    kvQuantization: kvQuantization,
+                    quantizedPrefillMode: assemblyOverrides.quantizedPrefillMode,
                     maxContextLength: sizing.maxContextLength > 0
                         ? sizing.maxContextLength : nil,
                     environment: environment,
@@ -638,12 +649,21 @@ enum EngineV2SlotFactory {
                 resolvedKind: preparedBackend.kind,
                 pagedPoolDType: preparedBackend.pagedPoolDType,
                 pagedLayerDTypes: preparedBackend.pagedLayerDTypes,
+                pagedQuantization: preparedBackend.pagedPoolConfig?.quantization,
                 layerKinds: preparedBackend.layerKinds,
                 nominalFP16BytesPerToken: sizing.fp16KVBytesPerToken,
                 servingModelIsGPTOSS: servingModel is GPTOSSModel)
         } else {
             targetKVBytesPerToken = sizing.fp16KVBytesPerToken
         }
+        if kvQuantization != .native,
+            targetKVBytesPerToken <= 0 || targetKVBytesPerToken == Int.max {
+            throw EngineV2ProductionError.noKVHeadroom
+        }
+        logInfo(
+            "engine_v2: \(modelId) KV quantization="
+                + (preparedBackend?.pagedPoolConfig?.quantization?.identity ?? "native")
+                + " full_owner_bytes_per_token=\(targetKVBytesPerToken)")
         let assistantStateBytesPerToken = assistantHandle?.drafter?.requestStateBytesPerToken ?? 0
         let assistantStateTokenGranularity =
             assistantHandle?.drafter?.requestStateTokenGranularity ?? 1
@@ -764,13 +784,14 @@ enum EngineV2SlotFactory {
         resolvedKind: EngineV2KVBackendKind,
         pagedPoolDType: String?,
         pagedLayerDTypes: [DType]? = nil,
+        pagedQuantization: PagedKVQuantizationConfig? = nil,
         layerKinds: [CBv2LayerKind],
         nominalFP16BytesPerToken: Int,
         servingModelIsGPTOSS: Bool
     ) -> Int {
         if resolvedKind == .paged, let pagedLayerDTypes {
-            return EngineV2Factory.nativeFullKVBytesPerToken(
-                layerKinds: layerKinds, dtypes: pagedLayerDTypes)
+            return EngineV2Factory.fullKVBytesPerToken(
+                layerKinds: layerKinds, dtypes: pagedLayerDTypes, quantization: pagedQuantization)
         }
         let capability = CBv2PrefixReuseCapability.derive(
             layerKinds: layerKinds,

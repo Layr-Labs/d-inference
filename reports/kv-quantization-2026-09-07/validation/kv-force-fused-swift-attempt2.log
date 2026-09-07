@@ -1,0 +1,2492 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+[0/3] Write swift-version--58304C5D6DBC2206.txt
+warning: 'mlx-swift': found 3 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/Example1.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/CustomFunctionExample.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/CustomFunctionExampleSimple.swift
+warning: 'mlx-swift': found 3 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/Tutorial.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/CustomFunctionExample.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/CustomFunctionExampleSimple.swift
+warning: 'mlx-swift': found 3 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/Tutorial.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/Example1.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/CustomFunctionExample.swift
+warning: 'mlx-swift': found 3 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/Tutorial.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/Example1.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/CustomFunctionExampleSimple.swift
+[0/1] Planning build
+[1/1] Compiling plugin CudaBuild
+[2/2] Compiling plugin GenerateManual
+[3/3] Compiling plugin GenerateDoccReference
+Building for debugging...
+[3/36] Compiling cuda.cpp
+[4/36] Compiling compile.cpp
+[5/36] Compiling export.cpp
+[6/36] Compiling fast.cpp
+[7/36] Write swift-version--58304C5D6DBC2206.txt
+[8/36] Compiling format.cc
+[9/36] Write sources
+[11/38] Compiling closure.cpp
+[12/38] Compiling Cmlx.m
+[13/38] Write sources
+[16/38] Compiling ArgumentParserToolInfo ToolInfo.swift
+[17/38] Emitting module ArgumentParserToolInfo
+[17/78] Compiling array.cpp
+[18/80] Write Objects.LinkFileList
+[19/114] Linking encuda-tool
+[20/114] Applying encuda-tool
+[22/114] Compiling MLX Memory.swift
+[23/114] Compiling MLX Nested.swift
+[24/114] Compiling MLX Ops+Array.swift
+[25/114] Compiling MLX Ops.swift
+[26/114] Compiling MLX ParameterTypes.swift
+[27/114] Compiling MLX Protocols.swift
+[28/114] Compiling MLX Random.swift
+[29/114] Compiling ArgumentParser ArgumentVisibility.swift
+[30/114] Compiling ArgumentParser CompletionKind.swift
+[31/114] Compiling ArgumentParser Errors.swift
+[32/114] Compiling ArgumentParser Flag.swift
+[33/114] Compiling ArgumentParser NameSpecification.swift
+[34/114] Compiling ArgumentParser Option.swift
+[35/114] Compiling MLX Cmlx+Util.swift
+[36/114] Compiling MLX ConstantArrayCastCache.swift
+[37/114] Compiling MLX DType.swift
+[38/114] Compiling MLX Device.swift
+[39/114] Compiling MLX ErrorHandler.swift
+[40/114] Compiling MLX EvalProbe.swift
+[41/114] Compiling MLX Export.swift
+[42/114] Compiling MLX FFT.swift
+[43/114] Compiling MLX Factory.swift
+[44/114] Compiling MLX MLXCustomFunction.swift
+[45/114] Compiling MLX MLXFast+FusedAttention.swift
+[46/114] Compiling MLX MLXFast.swift
+[47/114] Compiling MLX MLXFastKernel.swift
+[48/127] Compiling MLX Foundation+Util.swift
+[49/127] Compiling MLX GPU+Metal.swift
+[50/127] Compiling MLX IO.swift
+[51/127] Compiling MLX Linalg.swift
+[52/127] Compiling MLX MLXArray+Bytes.swift
+[53/127] Compiling MLX MLXArray+Indexing.swift
+[54/127] Compiling MLX MLXArray+Init.swift
+[55/127] Compiling MLX MLXArray+Metal.swift
+[56/127] Compiling MLX MLXArray+Normalizer.swift
+[57/127] Compiling MLX MLXArray+Ops.swift
+[58/127] Compiling MLX MLXArray.swift
+[59/127] Compiling MLX AllocationFootprint.swift
+[60/127] Compiling MLX ArrayAt.swift
+[61/127] Emitting module ArgumentParser
+[62/127] Compiling ArgumentParser Foundation.swift
+[63/127] Compiling ArgumentParser Mutex.swift
+[64/127] Compiling ArgumentParser Platform.swift
+[65/127] Compiling ArgumentParser SequenceExtensions.swift
+[66/127] Compiling ArgumentParser StringExtensions.swift
+[67/127] Compiling ArgumentParser SwiftExtensions.swift
+[68/127] Compiling ArgumentParser Tree.swift
+[69/127] Compiling ArgumentParser AsyncCompletionsValidator.swift
+[70/127] Compiling ArgumentParser CodingKeyValidator.swift
+[71/127] Compiling ArgumentParser NonsenseFlagsValidator.swift
+[72/127] Compiling ArgumentParser ParsableArgumentsValidation.swift
+[73/127] Compiling ArgumentParser PositionalArgumentsValidator.swift
+[74/127] Compiling ArgumentParser UniqueNamesValidator.swift
+[75/132] Compiling encuda encuda-link.swift
+[76/132] Compiling encuda encuda-compile.swift
+[77/132] Compiling encuda encuda-error.swift
+[78/132] Emitting module encuda
+[79/132] Compiling encuda encuda-utils.swift
+[102/143] Compiling encuda encuda.swift
+[102/143] Write Objects.LinkFileList
+[103/143] Linking encuda
+[104/143] Applying encuda
+[106/143] Compiling MLX State.swift
+[107/143] Compiling MLX Stream.swift
+[108/143] Compiling MLX Transforms+Compile.swift
+[109/143] Compiling MLX Transforms+CompileOverloads.swift
+[110/143] Compiling MLX Transforms+Eval.swift
+[111/143] Compiling MLX Transforms+Grad.swift
+[112/143] Compiling MLX Transforms+Internal.swift
+[113/143] Compiling MLX Transforms+Vmap.swift
+[114/143] Compiling MLX Transforms.swift
+[115/143] Compiling MLX WiredMemory.swift
+[116/143] Emitting module MLX
+[128/162] Emitting module MLXRandom
+[129/162] Compiling MLXRandom Random.swift
+[130/162] Compiling Tutorial Tutorial.swift
+[131/162] Emitting module Tutorial
+[132/167] Compiling MLXLinalg Linalg.swift
+[133/167] Emitting module MLXLinalg
+[134/167] Compiling MLXFast MLXFastKernel.swift
+[135/167] Compiling MLXFast MLXFast.swift
+[136/167] Emitting module MLXFast
+[137/171] Emitting module MLXFFT
+[138/171] Compiling MLXFFT FFT.swift
+[139/171] Emitting module Example1
+[140/171] Compiling Example1 Example1.swift
+[141/175] Compiling MLXNN Normalization.swift
+[142/175] Compiling MLXNN Pooling.swift
+[143/175] Compiling MLXNN PositionalEncoding.swift
+[144/175] Compiling MLXNN Quantized.swift
+[145/175] Compiling MLXNN Dropout.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLXNN/Module.swift:1411:34: warning: conditional downcast from 'T?' to 'T' does nothing
+1409 |             // note: this gives a warning but it does in fact do something
+1410 |             // in the case where this is e.g. ParameterInfo<MLXArray?>
+1411 |             if let value = value as? T {
+     |                                  `- warning: conditional downcast from 'T?' to 'T' does nothing
+1412 |                 return value
+1413 |             } else {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLXNN/Module.swift:1524:36: warning: conditional downcast from 'T?' to 'T' does nothing
+1522 |             // note: this gives a warning but it does in fact do something
+1523 |             // in the case where this is e.g. ModuleInfo<Linear?>
+1524 |             if let module = module as? T {
+     |                                    `- warning: conditional downcast from 'T?' to 'T' does nothing
+1525 |                 return module
+1526 |             } else {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLXNN/Module.swift:293:13: warning: default will never be executed
+ 291 |                 return isAllNone ? .none : .array(result)
+ 292 | 
+ 293 |             default:
+     |             `- warning: default will never be executed
+ 294 |                 fatalError("Unexpected leaf \(vk) = \(v)")
+ 295 |             }
+[146/175] Compiling MLXNN Embedding.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLXNN/Module.swift:1411:34: warning: conditional downcast from 'T?' to 'T' does nothing
+1409 |             // note: this gives a warning but it does in fact do something
+1410 |             // in the case where this is e.g. ParameterInfo<MLXArray?>
+1411 |             if let value = value as? T {
+     |                                  `- warning: conditional downcast from 'T?' to 'T' does nothing
+1412 |                 return value
+1413 |             } else {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLXNN/Module.swift:1524:36: warning: conditional downcast from 'T?' to 'T' does nothing
+1522 |             // note: this gives a warning but it does in fact do something
+1523 |             // in the case where this is e.g. ModuleInfo<Linear?>
+1524 |             if let module = module as? T {
+     |                                    `- warning: conditional downcast from 'T?' to 'T' does nothing
+1525 |                 return module
+1526 |             } else {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLXNN/Module.swift:293:13: warning: default will never be executed
+ 291 |                 return isAllNone ? .none : .array(result)
+ 292 | 
+ 293 |             default:
+     |             `- warning: default will never be executed
+ 294 |                 fatalError("Unexpected leaf \(vk) = \(v)")
+ 295 |             }
+[147/175] Compiling MLXNN Linear.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLXNN/Module.swift:1411:34: warning: conditional downcast from 'T?' to 'T' does nothing
+1409 |             // note: this gives a warning but it does in fact do something
+1410 |             // in the case where this is e.g. ParameterInfo<MLXArray?>
+1411 |             if let value = value as? T {
+     |                                  `- warning: conditional downcast from 'T?' to 'T' does nothing
+1412 |                 return value
+1413 |             } else {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLXNN/Module.swift:1524:36: warning: conditional downcast from 'T?' to 'T' does nothing
+1522 |             // note: this gives a warning but it does in fact do something
+1523 |             // in the case where this is e.g. ModuleInfo<Linear?>
+1524 |             if let module = module as? T {
+     |                                    `- warning: conditional downcast from 'T?' to 'T' does nothing
+1525 |                 return module
+1526 |             } else {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLXNN/Module.swift:293:13: warning: default will never be executed
+ 291 |                 return isAllNone ? .none : .array(result)
+ 292 | 
+ 293 |             default:
+     |             `- warning: default will never be executed
+ 294 |                 fatalError("Unexpected leaf \(vk) = \(v)")
+ 295 |             }
+[148/175] Compiling MLXNN Losses.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLXNN/Module.swift:1411:34: warning: conditional downcast from 'T?' to 'T' does nothing
+1409 |             // note: this gives a warning but it does in fact do something
+1410 |             // in the case where this is e.g. ParameterInfo<MLXArray?>
+1411 |             if let value = value as? T {
+     |                                  `- warning: conditional downcast from 'T?' to 'T' does nothing
+1412 |                 return value
+1413 |             } else {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLXNN/Module.swift:1524:36: warning: conditional downcast from 'T?' to 'T' does nothing
+1522 |             // note: this gives a warning but it does in fact do something
+1523 |             // in the case where this is e.g. ModuleInfo<Linear?>
+1524 |             if let module = module as? T {
+     |                                    `- warning: conditional downcast from 'T?' to 'T' does nothing
+1525 |                 return module
+1526 |             } else {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLXNN/Module.swift:293:13: warning: default will never be executed
+ 291 |                 return isAllNone ? .none : .array(result)
+ 292 | 
+ 293 |             default:
+     |             `- warning: default will never be executed
+ 294 |                 fatalError("Unexpected leaf \(vk) = \(v)")
+ 295 |             }
+[149/175] Compiling MLXNN Module.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLXNN/Module.swift:1411:34: warning: conditional downcast from 'T?' to 'T' does nothing
+1409 |             // note: this gives a warning but it does in fact do something
+1410 |             // in the case where this is e.g. ParameterInfo<MLXArray?>
+1411 |             if let value = value as? T {
+     |                                  `- warning: conditional downcast from 'T?' to 'T' does nothing
+1412 |                 return value
+1413 |             } else {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLXNN/Module.swift:1524:36: warning: conditional downcast from 'T?' to 'T' does nothing
+1522 |             // note: this gives a warning but it does in fact do something
+1523 |             // in the case where this is e.g. ModuleInfo<Linear?>
+1524 |             if let module = module as? T {
+     |                                    `- warning: conditional downcast from 'T?' to 'T' does nothing
+1525 |                 return module
+1526 |             } else {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLXNN/Module.swift:293:13: warning: default will never be executed
+ 291 |                 return isAllNone ? .none : .array(result)
+ 292 | 
+ 293 |             default:
+     |             `- warning: default will never be executed
+ 294 |                 fatalError("Unexpected leaf \(vk) = \(v)")
+ 295 |             }
+[150/179] Compiling MLXNN Activations.swift
+[151/179] Compiling MLXNN Cache.swift
+[152/179] Compiling MLXNN Containers.swift
+[153/179] Compiling MLXNN Convolution.swift
+[154/179] Compiling MLXNN ConvolutionTransposed.swift
+[155/179] Emitting module CustomFunctionExampleSimple
+[156/179] Compiling CustomFunctionExampleSimple CustomFunctionExampleSimple.swift
+[156/179] Write Objects.LinkFileList
+[159/179] Compiling CustomFunctionExample CustomFunctionExample.swift
+[160/179] Emitting module CustomFunctionExample
+[161/179] Emitting module MLXNN
+[162/179] Compiling MLXNN Recurrent.swift
+[163/179] Compiling MLXNN Transformer.swift
+[164/179] Compiling MLXNN Upsample.swift
+[165/179] Compiling MLXNN ValueAndGrad.swift
+[165/179] Write Objects.LinkFileList
+[167/181] Emitting module MLXOptimizers
+[168/181] Compiling MLXOptimizers Optimizers.swift
+[168/181] Linking Tutorial
+[169/181] Linking Example1
+[170/211] Applying Tutorial
+[172/211] Emitting module CmlxTests
+[173/211] Compiling CmlxTests CmlxTests.swift
+[173/211] Write Objects.LinkFileList
+[174/211] Applying Example1
+[175/211] Linking CustomFunctionExampleSimple
+[176/211] Applying CustomFunctionExampleSimple
+[177/211] Linking CustomFunctionExample
+[179/211] Emitting module MLXTests
+[180/211] Compiling MLXTests AllocationFootprintTests.swift
+[181/211] Compiling MLXTests ArrayAtTests.swift
+[182/211] Compiling MLXTests ConstantArrayCastCacheTests.swift
+[183/211] Compiling MLXTests DTypeTests.swift
+[184/211] Compiling MLXTests ErrorTests.swift
+[185/211] Compiling MLXTests EvalProbeTests.swift
+[186/211] Compiling MLXTests ExportTests.swift
+[187/211] Compiling MLXTests ForcedAttentionTests.swift
+[188/211] Compiling MLXTests GPTOSSMXFP4DecodeTailTests.swift
+[189/211] Compiling MLXTests GPTOSSMXFP4KernelTests.swift
+[189/220] Applying CustomFunctionExample
+[191/220] Compiling MLXTests QwenExpertTilePerfTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/QwenExpertTilePerfTests.swift:74:44: warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+ 72 |             let rhsIndices = MLXArray(expertIndices).asType(.uint32)
+ 73 |             let x = MLXRandom.normal([benchCase.m, 1, benchCase.k]).asType(.bfloat16)
+ 74 |             eval(quantizedWeights, scales, biases, rhsIndices, x)
+    |                                            |- warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+    |                                            |- note: provide a default value to avoid this warning
+    |                                            |- note: force-unwrap the value to avoid this warning
+    |                                            `- note: explicitly cast to 'Any' with 'as Any' to silence this warning
+ 75 | 
+ 76 |             func run() -> MLXArray {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:53:24: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+51 |         for _ in 1 ..< 10000 {
+52 |             let defaultDevice = MLX.Device.defaultDevice()
+53 |             MLX.Device.setDefault(device: .cpu)
+   |                        `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:55:28: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+53 |             MLX.Device.setDefault(device: .cpu)
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+   |                            `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+56 |             }
+57 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/Utils.swift:38:16: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+36 | 
+37 | func setDefaultDevice() {
+38 |     MLX.Device.setDefault(device: .gpu)
+   |                `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+39 | }
+40 | 
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[192/220] Compiling MLXTests SaveTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/QwenExpertTilePerfTests.swift:74:44: warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+ 72 |             let rhsIndices = MLXArray(expertIndices).asType(.uint32)
+ 73 |             let x = MLXRandom.normal([benchCase.m, 1, benchCase.k]).asType(.bfloat16)
+ 74 |             eval(quantizedWeights, scales, biases, rhsIndices, x)
+    |                                            |- warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+    |                                            |- note: provide a default value to avoid this warning
+    |                                            |- note: force-unwrap the value to avoid this warning
+    |                                            `- note: explicitly cast to 'Any' with 'as Any' to silence this warning
+ 75 | 
+ 76 |             func run() -> MLXArray {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:53:24: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+51 |         for _ in 1 ..< 10000 {
+52 |             let defaultDevice = MLX.Device.defaultDevice()
+53 |             MLX.Device.setDefault(device: .cpu)
+   |                        `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:55:28: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+53 |             MLX.Device.setDefault(device: .cpu)
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+   |                            `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+56 |             }
+57 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/Utils.swift:38:16: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+36 | 
+37 | func setDefaultDevice() {
+38 |     MLX.Device.setDefault(device: .gpu)
+   |                `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+39 | }
+40 | 
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[193/220] Compiling MLXTests SortedGatherQuantizedMMTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/QwenExpertTilePerfTests.swift:74:44: warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+ 72 |             let rhsIndices = MLXArray(expertIndices).asType(.uint32)
+ 73 |             let x = MLXRandom.normal([benchCase.m, 1, benchCase.k]).asType(.bfloat16)
+ 74 |             eval(quantizedWeights, scales, biases, rhsIndices, x)
+    |                                            |- warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+    |                                            |- note: provide a default value to avoid this warning
+    |                                            |- note: force-unwrap the value to avoid this warning
+    |                                            `- note: explicitly cast to 'Any' with 'as Any' to silence this warning
+ 75 | 
+ 76 |             func run() -> MLXArray {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:53:24: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+51 |         for _ in 1 ..< 10000 {
+52 |             let defaultDevice = MLX.Device.defaultDevice()
+53 |             MLX.Device.setDefault(device: .cpu)
+   |                        `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:55:28: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+53 |             MLX.Device.setDefault(device: .cpu)
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+   |                            `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+56 |             }
+57 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/Utils.swift:38:16: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+36 | 
+37 | func setDefaultDevice() {
+38 |     MLX.Device.setDefault(device: .gpu)
+   |                `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+39 | }
+40 | 
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[194/220] Compiling MLXTests StreamTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/QwenExpertTilePerfTests.swift:74:44: warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+ 72 |             let rhsIndices = MLXArray(expertIndices).asType(.uint32)
+ 73 |             let x = MLXRandom.normal([benchCase.m, 1, benchCase.k]).asType(.bfloat16)
+ 74 |             eval(quantizedWeights, scales, biases, rhsIndices, x)
+    |                                            |- warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+    |                                            |- note: provide a default value to avoid this warning
+    |                                            |- note: force-unwrap the value to avoid this warning
+    |                                            `- note: explicitly cast to 'Any' with 'as Any' to silence this warning
+ 75 | 
+ 76 |             func run() -> MLXArray {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:53:24: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+51 |         for _ in 1 ..< 10000 {
+52 |             let defaultDevice = MLX.Device.defaultDevice()
+53 |             MLX.Device.setDefault(device: .cpu)
+   |                        `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:55:28: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+53 |             MLX.Device.setDefault(device: .cpu)
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+   |                            `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+56 |             }
+57 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/Utils.swift:38:16: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+36 | 
+37 | func setDefaultDevice() {
+38 |     MLX.Device.setDefault(device: .gpu)
+   |                `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+39 | }
+40 | 
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[195/220] Compiling MLXTests SubclassTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/QwenExpertTilePerfTests.swift:74:44: warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+ 72 |             let rhsIndices = MLXArray(expertIndices).asType(.uint32)
+ 73 |             let x = MLXRandom.normal([benchCase.m, 1, benchCase.k]).asType(.bfloat16)
+ 74 |             eval(quantizedWeights, scales, biases, rhsIndices, x)
+    |                                            |- warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+    |                                            |- note: provide a default value to avoid this warning
+    |                                            |- note: force-unwrap the value to avoid this warning
+    |                                            `- note: explicitly cast to 'Any' with 'as Any' to silence this warning
+ 75 | 
+ 76 |             func run() -> MLXArray {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:53:24: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+51 |         for _ in 1 ..< 10000 {
+52 |             let defaultDevice = MLX.Device.defaultDevice()
+53 |             MLX.Device.setDefault(device: .cpu)
+   |                        `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:55:28: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+53 |             MLX.Device.setDefault(device: .cpu)
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+   |                            `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+56 |             }
+57 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/Utils.swift:38:16: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+36 | 
+37 | func setDefaultDevice() {
+38 |     MLX.Device.setDefault(device: .gpu)
+   |                `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+39 | }
+40 | 
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[196/220] Compiling MLXTests TransformTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/QwenExpertTilePerfTests.swift:74:44: warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+ 72 |             let rhsIndices = MLXArray(expertIndices).asType(.uint32)
+ 73 |             let x = MLXRandom.normal([benchCase.m, 1, benchCase.k]).asType(.bfloat16)
+ 74 |             eval(quantizedWeights, scales, biases, rhsIndices, x)
+    |                                            |- warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+    |                                            |- note: provide a default value to avoid this warning
+    |                                            |- note: force-unwrap the value to avoid this warning
+    |                                            `- note: explicitly cast to 'Any' with 'as Any' to silence this warning
+ 75 | 
+ 76 |             func run() -> MLXArray {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:53:24: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+51 |         for _ in 1 ..< 10000 {
+52 |             let defaultDevice = MLX.Device.defaultDevice()
+53 |             MLX.Device.setDefault(device: .cpu)
+   |                        `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:55:28: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+53 |             MLX.Device.setDefault(device: .cpu)
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+   |                            `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+56 |             }
+57 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/Utils.swift:38:16: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+36 | 
+37 | func setDefaultDevice() {
+38 |     MLX.Device.setDefault(device: .gpu)
+   |                `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+39 | }
+40 | 
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[197/220] Compiling MLXTests UpsampleTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/QwenExpertTilePerfTests.swift:74:44: warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+ 72 |             let rhsIndices = MLXArray(expertIndices).asType(.uint32)
+ 73 |             let x = MLXRandom.normal([benchCase.m, 1, benchCase.k]).asType(.bfloat16)
+ 74 |             eval(quantizedWeights, scales, biases, rhsIndices, x)
+    |                                            |- warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+    |                                            |- note: provide a default value to avoid this warning
+    |                                            |- note: force-unwrap the value to avoid this warning
+    |                                            `- note: explicitly cast to 'Any' with 'as Any' to silence this warning
+ 75 | 
+ 76 |             func run() -> MLXArray {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:53:24: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+51 |         for _ in 1 ..< 10000 {
+52 |             let defaultDevice = MLX.Device.defaultDevice()
+53 |             MLX.Device.setDefault(device: .cpu)
+   |                        `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:55:28: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+53 |             MLX.Device.setDefault(device: .cpu)
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+   |                            `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+56 |             }
+57 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/Utils.swift:38:16: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+36 | 
+37 | func setDefaultDevice() {
+38 |     MLX.Device.setDefault(device: .gpu)
+   |                `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+39 | }
+40 | 
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[198/220] Compiling MLXTests Utils.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/QwenExpertTilePerfTests.swift:74:44: warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+ 72 |             let rhsIndices = MLXArray(expertIndices).asType(.uint32)
+ 73 |             let x = MLXRandom.normal([benchCase.m, 1, benchCase.k]).asType(.bfloat16)
+ 74 |             eval(quantizedWeights, scales, biases, rhsIndices, x)
+    |                                            |- warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+    |                                            |- note: provide a default value to avoid this warning
+    |                                            |- note: force-unwrap the value to avoid this warning
+    |                                            `- note: explicitly cast to 'Any' with 'as Any' to silence this warning
+ 75 | 
+ 76 |             func run() -> MLXArray {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:53:24: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+51 |         for _ in 1 ..< 10000 {
+52 |             let defaultDevice = MLX.Device.defaultDevice()
+53 |             MLX.Device.setDefault(device: .cpu)
+   |                        `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:55:28: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+53 |             MLX.Device.setDefault(device: .cpu)
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+   |                            `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+56 |             }
+57 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/Utils.swift:38:16: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+36 | 
+37 | func setDefaultDevice() {
+38 |     MLX.Device.setDefault(device: .gpu)
+   |                `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+39 | }
+40 | 
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[199/220] Compiling MLXTests WiredMemoryTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/QwenExpertTilePerfTests.swift:74:44: warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+ 72 |             let rhsIndices = MLXArray(expertIndices).asType(.uint32)
+ 73 |             let x = MLXRandom.normal([benchCase.m, 1, benchCase.k]).asType(.bfloat16)
+ 74 |             eval(quantizedWeights, scales, biases, rhsIndices, x)
+    |                                            |- warning: expression implicitly coerced from 'MLXArray?' to 'Any'
+    |                                            |- note: provide a default value to avoid this warning
+    |                                            |- note: force-unwrap the value to avoid this warning
+    |                                            `- note: explicitly cast to 'Any' with 'as Any' to silence this warning
+ 75 | 
+ 76 |             func run() -> MLXArray {
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:53:24: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+51 |         for _ in 1 ..< 10000 {
+52 |             let defaultDevice = MLX.Device.defaultDevice()
+53 |             MLX.Device.setDefault(device: .cpu)
+   |                        `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/StreamTests.swift:55:28: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+53 |             MLX.Device.setDefault(device: .cpu)
+54 |             defer {
+55 |                 MLX.Device.setDefault(device: defaultDevice)
+   |                            `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+56 |             }
+57 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/Utils.swift:38:16: warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+36 | 
+37 | func setDefaultDevice() {
+38 |     MLX.Device.setDefault(device: .gpu)
+   |                `- warning: 'setDefault(device:)' is deprecated: please use withDefaultDevice() [#DeprecatedDeclaration]
+39 | }
+40 | 
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[200/220] Compiling MLXTests MemoryTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MemoryTests.swift:26:16: warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+24 | 
+25 |     func testWiredMemory() {
+26 |         Memory.withWiredLimit(1024 * 1024 * 256) {
+   |                `- warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+27 |             let x = MLXArray(10)
+28 |             print(x * x)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/ModuleTests.swift:591:35: warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+589 |                 case .mismatchedSize(
+590 |                     let
+591 |                         path, let modules, expectedShape: let expectedShape,
+    |                                   `- warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+592 |                     actualShape: let actualShape) =
+593 |                     error
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[201/220] Compiling MLXTests ModuleTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MemoryTests.swift:26:16: warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+24 | 
+25 |     func testWiredMemory() {
+26 |         Memory.withWiredLimit(1024 * 1024 * 256) {
+   |                `- warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+27 |             let x = MLXArray(10)
+28 |             print(x * x)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/ModuleTests.swift:591:35: warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+589 |                 case .mismatchedSize(
+590 |                     let
+591 |                         path, let modules, expectedShape: let expectedShape,
+    |                                   `- warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+592 |                     actualShape: let actualShape) =
+593 |                     error
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[202/220] Compiling MLXTests NestedTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MemoryTests.swift:26:16: warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+24 | 
+25 |     func testWiredMemory() {
+26 |         Memory.withWiredLimit(1024 * 1024 * 256) {
+   |                `- warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+27 |             let x = MLXArray(10)
+28 |             print(x * x)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/ModuleTests.swift:591:35: warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+589 |                 case .mismatchedSize(
+590 |                     let
+591 |                         path, let modules, expectedShape: let expectedShape,
+    |                                   `- warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+592 |                     actualShape: let actualShape) =
+593 |                     error
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[203/220] Compiling MLXTests OpsTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MemoryTests.swift:26:16: warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+24 | 
+25 |     func testWiredMemory() {
+26 |         Memory.withWiredLimit(1024 * 1024 * 256) {
+   |                `- warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+27 |             let x = MLXArray(10)
+28 |             print(x * x)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/ModuleTests.swift:591:35: warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+589 |                 case .mismatchedSize(
+590 |                     let
+591 |                         path, let modules, expectedShape: let expectedShape,
+    |                                   `- warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+592 |                     actualShape: let actualShape) =
+593 |                     error
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[204/220] Compiling MLXTests OptimizerTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MemoryTests.swift:26:16: warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+24 | 
+25 |     func testWiredMemory() {
+26 |         Memory.withWiredLimit(1024 * 1024 * 256) {
+   |                `- warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+27 |             let x = MLXArray(10)
+28 |             print(x * x)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/ModuleTests.swift:591:35: warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+589 |                 case .mismatchedSize(
+590 |                     let
+591 |                         path, let modules, expectedShape: let expectedShape,
+    |                                   `- warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+592 |                     actualShape: let actualShape) =
+593 |                     error
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[205/220] Compiling MLXTests PoolingTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MemoryTests.swift:26:16: warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+24 | 
+25 |     func testWiredMemory() {
+26 |         Memory.withWiredLimit(1024 * 1024 * 256) {
+   |                `- warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+27 |             let x = MLXArray(10)
+28 |             print(x * x)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/ModuleTests.swift:591:35: warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+589 |                 case .mismatchedSize(
+590 |                     let
+591 |                         path, let modules, expectedShape: let expectedShape,
+    |                                   `- warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+592 |                     actualShape: let actualShape) =
+593 |                     error
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[206/220] Compiling MLXTests QuantizationTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MemoryTests.swift:26:16: warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+24 | 
+25 |     func testWiredMemory() {
+26 |         Memory.withWiredLimit(1024 * 1024 * 256) {
+   |                `- warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+27 |             let x = MLXArray(10)
+28 |             print(x * x)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/ModuleTests.swift:591:35: warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+589 |                 case .mismatchedSize(
+590 |                     let
+591 |                         path, let modules, expectedShape: let expectedShape,
+    |                                   `- warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+592 |                     actualShape: let actualShape) =
+593 |                     error
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[207/220] Compiling MLXTests QuantizedBiasAccumulatorTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MemoryTests.swift:26:16: warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+24 | 
+25 |     func testWiredMemory() {
+26 |         Memory.withWiredLimit(1024 * 1024 * 256) {
+   |                `- warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+27 |             let x = MLXArray(10)
+28 |             print(x * x)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/ModuleTests.swift:591:35: warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+589 |                 case .mismatchedSize(
+590 |                     let
+591 |                         path, let modules, expectedShape: let expectedShape,
+    |                                   `- warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+592 |                     actualShape: let actualShape) =
+593 |                     error
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[208/220] Compiling MLXTests QuantizedConstantCastTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MemoryTests.swift:26:16: warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+24 | 
+25 |     func testWiredMemory() {
+26 |         Memory.withWiredLimit(1024 * 1024 * 256) {
+   |                `- warning: 'withWiredLimit' is deprecated: Deprecated. Use WiredMemoryManager and tickets; synchronous variant is a no-op. [#DeprecatedDeclaration]
+27 |             let x = MLXArray(10)
+28 |             print(x * x)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/ModuleTests.swift:591:35: warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+589 |                 case .mismatchedSize(
+590 |                     let
+591 |                         path, let modules, expectedShape: let expectedShape,
+    |                                   `- warning: immutable value 'modules' was never used; consider replacing with '_' or removing it [#no-usage]
+592 |                     actualShape: let actualShape) =
+593 |                     error
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[209/220] Compiling MLXTests IntegrationTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3257:22: warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3255 |             a.sum().item(Float.self), -1.7608224153518677,
+3256 |             accuracy: -0.03521644830703735)
+3257 |         let result = softMax(a)
+     |                      |- warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3258 |         XCTAssertEqual(result.shape, [4, 3])
+3259 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3279:22: warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3277 |             a.sum().item(Float.self), 3.307577610015869,
+3278 |             accuracy: 0.06615155220031739)
+3279 |         let result = softMax(a, axis: -1)
+     |                      |- warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3280 |         XCTAssertEqual(result.shape, [4, 3])
+3281 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3301:22: warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+3299 |             a.sum().item(Float.self), 38.19398498535156,
+3300 |             accuracy: 0.7638796997070313)
+3301 |         let result = softMax(a, axes: [0, -1])
+     |                      |- warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axes:precise:stream:)' instead
+3302 |         XCTAssertEqual(result.shape, [2, 3, 4, 3])
+3303 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6460:22: warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+6458 |             a.sum().item(Float.self), 127.73924255371094,
+6459 |             accuracy: 2.554784851074219)
+6460 |         let result = SoftPlus()(a)
+     |                      |- warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softplus' instead
+6461 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6462 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6482:22: warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+6480 |             a.sum().item(Float.self), 129.6771240234375,
+6481 |             accuracy: 2.59354248046875)
+6482 |         let result = SoftSign()(a)
+     |                      |- warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softsign' instead
+6483 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6484 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6548:22: warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+6546 |             a.sum().item(Float.self), 135.12799072265625,
+6547 |             accuracy: 2.702559814453125)
+6548 |         let result = LogSoftMax()(a)
+     |                      |- warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+     |                      `- note: use 'LogSoftmax' instead
+6549 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6550 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:232:17: warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+230 |     func testArraySubscriptIntAxis() {
+231 |         let a = MLXArray(0 ..< 512, [8, 8, 8])
+232 |         let s = a[1, axis: -1]
+    |                 `- warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+233 |         XCTAssertEqual(s.ndim, 2)
+234 |         XCTAssertEqual(s.shape, [8, 8])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:254:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+252 | 
+253 |         // reverse last dimension (only in this case)
+254 |         assertEqual(a[stride: -1], MLXArray([3, 2, 1, 0]))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:257:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+257 |         assertEqual(a.reshaped(1, 1, 4)[stride: -1, axis: 0], MLXArray(0 ..< 4).reshaped(1, 1, 4))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+258 | 
+259 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:264:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+262 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+263 | 
+264 |         let r = a[stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+265 |         let expected = MLXArray(Array(stride(from: 0, to: 2 * 3 * 4, by: 2)), [2, 3, 2])
+266 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:272:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+270 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+271 | 
+272 |         let r = a[from: 1, stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+273 |         let expected = MLXArray([1, 3, 6, 8, 11, 13, 16, 18, 21, 23, 26, 28], [2, 3, 2])
+274 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:280:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+278 |         let a = MLXArray(0 ..< 6, [2, 3])
+279 | 
+280 |         let r = a[stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+281 |         let expected = MLXArray([2, 1, 0, 5, 4, 3], [2, 3])
+282 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:288:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+286 |         let a = MLXArray(0 ..< 6, [2, 3])
+287 | 
+288 |         let r = a[stride: -1, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+289 |         let expected = MLXArray([3, 4, 5, 0, 1, 2], [2, 3])
+290 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:296:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+294 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+295 | 
+296 |         let r = a[from: 1, stride: -1, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+297 |         let expected = MLXArray(
+298 |             [5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 20, 21, 22, 23, 24, 15, 16, 17, 18, 19], [2, 2, 5])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:305:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+303 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+304 | 
+305 |         let r = a[from: 1, stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+306 |         let expected = MLXArray([1, 0, 6, 5, 11, 10, 16, 15, 21, 20, 26, 25], [2, 3, 2])
+307 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:313:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+311 |         let a = MLXArray(0 ..< (2 * 5 * 3), [2, 5, 3])
+312 | 
+313 |         let r = a[from: 1, stride: -2, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+314 |         let expected = MLXArray([3, 4, 5, 18, 19, 20], [2, 1, 3])
+315 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:321:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+319 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+320 | 
+321 |         let r = a[stride: -2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+322 | 
+323 |         // reverse order, stride by 2
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:339:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+337 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+338 | 
+339 |         let r = a[stride: -2, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+340 | 
+341 |         // last row
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:354:9: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+352 |         let a = MLXArray(Int32(0) ..< (2 * 3 * 4), [2, 3, 4])
+353 | 
+354 |         a[stride: -2, axis: 1] = [99, 88, 77, 66]
+    |         `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+355 | 
+356 |         // array([[[99, 88, 77, 66],
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+OpsTests.swift:19:13: warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 17 |     func testArithmeticSimple() {
+ 18 |         var a = MLXArray([1, 2, 3])
+ 19 |         var b = MLXArray(converting: [-5.0, 37.5, 4])
+    |             `- warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 20 | 
+ 21 |         // example of an expression -- the - 1 is using the 1 as ExpressibleByIntegerLiteral
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[210/220] Compiling MLXTests LinalgTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3257:22: warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3255 |             a.sum().item(Float.self), -1.7608224153518677,
+3256 |             accuracy: -0.03521644830703735)
+3257 |         let result = softMax(a)
+     |                      |- warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3258 |         XCTAssertEqual(result.shape, [4, 3])
+3259 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3279:22: warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3277 |             a.sum().item(Float.self), 3.307577610015869,
+3278 |             accuracy: 0.06615155220031739)
+3279 |         let result = softMax(a, axis: -1)
+     |                      |- warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3280 |         XCTAssertEqual(result.shape, [4, 3])
+3281 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3301:22: warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+3299 |             a.sum().item(Float.self), 38.19398498535156,
+3300 |             accuracy: 0.7638796997070313)
+3301 |         let result = softMax(a, axes: [0, -1])
+     |                      |- warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axes:precise:stream:)' instead
+3302 |         XCTAssertEqual(result.shape, [2, 3, 4, 3])
+3303 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6460:22: warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+6458 |             a.sum().item(Float.self), 127.73924255371094,
+6459 |             accuracy: 2.554784851074219)
+6460 |         let result = SoftPlus()(a)
+     |                      |- warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softplus' instead
+6461 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6462 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6482:22: warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+6480 |             a.sum().item(Float.self), 129.6771240234375,
+6481 |             accuracy: 2.59354248046875)
+6482 |         let result = SoftSign()(a)
+     |                      |- warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softsign' instead
+6483 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6484 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6548:22: warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+6546 |             a.sum().item(Float.self), 135.12799072265625,
+6547 |             accuracy: 2.702559814453125)
+6548 |         let result = LogSoftMax()(a)
+     |                      |- warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+     |                      `- note: use 'LogSoftmax' instead
+6549 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6550 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:232:17: warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+230 |     func testArraySubscriptIntAxis() {
+231 |         let a = MLXArray(0 ..< 512, [8, 8, 8])
+232 |         let s = a[1, axis: -1]
+    |                 `- warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+233 |         XCTAssertEqual(s.ndim, 2)
+234 |         XCTAssertEqual(s.shape, [8, 8])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:254:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+252 | 
+253 |         // reverse last dimension (only in this case)
+254 |         assertEqual(a[stride: -1], MLXArray([3, 2, 1, 0]))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:257:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+257 |         assertEqual(a.reshaped(1, 1, 4)[stride: -1, axis: 0], MLXArray(0 ..< 4).reshaped(1, 1, 4))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+258 | 
+259 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:264:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+262 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+263 | 
+264 |         let r = a[stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+265 |         let expected = MLXArray(Array(stride(from: 0, to: 2 * 3 * 4, by: 2)), [2, 3, 2])
+266 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:272:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+270 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+271 | 
+272 |         let r = a[from: 1, stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+273 |         let expected = MLXArray([1, 3, 6, 8, 11, 13, 16, 18, 21, 23, 26, 28], [2, 3, 2])
+274 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:280:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+278 |         let a = MLXArray(0 ..< 6, [2, 3])
+279 | 
+280 |         let r = a[stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+281 |         let expected = MLXArray([2, 1, 0, 5, 4, 3], [2, 3])
+282 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:288:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+286 |         let a = MLXArray(0 ..< 6, [2, 3])
+287 | 
+288 |         let r = a[stride: -1, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+289 |         let expected = MLXArray([3, 4, 5, 0, 1, 2], [2, 3])
+290 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:296:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+294 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+295 | 
+296 |         let r = a[from: 1, stride: -1, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+297 |         let expected = MLXArray(
+298 |             [5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 20, 21, 22, 23, 24, 15, 16, 17, 18, 19], [2, 2, 5])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:305:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+303 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+304 | 
+305 |         let r = a[from: 1, stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+306 |         let expected = MLXArray([1, 0, 6, 5, 11, 10, 16, 15, 21, 20, 26, 25], [2, 3, 2])
+307 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:313:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+311 |         let a = MLXArray(0 ..< (2 * 5 * 3), [2, 5, 3])
+312 | 
+313 |         let r = a[from: 1, stride: -2, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+314 |         let expected = MLXArray([3, 4, 5, 18, 19, 20], [2, 1, 3])
+315 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:321:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+319 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+320 | 
+321 |         let r = a[stride: -2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+322 | 
+323 |         // reverse order, stride by 2
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:339:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+337 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+338 | 
+339 |         let r = a[stride: -2, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+340 | 
+341 |         // last row
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:354:9: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+352 |         let a = MLXArray(Int32(0) ..< (2 * 3 * 4), [2, 3, 4])
+353 | 
+354 |         a[stride: -2, axis: 1] = [99, 88, 77, 66]
+    |         `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+355 | 
+356 |         // array([[[99, 88, 77, 66],
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+OpsTests.swift:19:13: warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 17 |     func testArithmeticSimple() {
+ 18 |         var a = MLXArray([1, 2, 3])
+ 19 |         var b = MLXArray(converting: [-5.0, 37.5, 4])
+    |             `- warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 20 | 
+ 21 |         // example of an expression -- the - 1 is using the 1 as ExpressibleByIntegerLiteral
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[211/220] Compiling MLXTests LossTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3257:22: warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3255 |             a.sum().item(Float.self), -1.7608224153518677,
+3256 |             accuracy: -0.03521644830703735)
+3257 |         let result = softMax(a)
+     |                      |- warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3258 |         XCTAssertEqual(result.shape, [4, 3])
+3259 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3279:22: warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3277 |             a.sum().item(Float.self), 3.307577610015869,
+3278 |             accuracy: 0.06615155220031739)
+3279 |         let result = softMax(a, axis: -1)
+     |                      |- warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3280 |         XCTAssertEqual(result.shape, [4, 3])
+3281 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3301:22: warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+3299 |             a.sum().item(Float.self), 38.19398498535156,
+3300 |             accuracy: 0.7638796997070313)
+3301 |         let result = softMax(a, axes: [0, -1])
+     |                      |- warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axes:precise:stream:)' instead
+3302 |         XCTAssertEqual(result.shape, [2, 3, 4, 3])
+3303 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6460:22: warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+6458 |             a.sum().item(Float.self), 127.73924255371094,
+6459 |             accuracy: 2.554784851074219)
+6460 |         let result = SoftPlus()(a)
+     |                      |- warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softplus' instead
+6461 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6462 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6482:22: warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+6480 |             a.sum().item(Float.self), 129.6771240234375,
+6481 |             accuracy: 2.59354248046875)
+6482 |         let result = SoftSign()(a)
+     |                      |- warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softsign' instead
+6483 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6484 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6548:22: warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+6546 |             a.sum().item(Float.self), 135.12799072265625,
+6547 |             accuracy: 2.702559814453125)
+6548 |         let result = LogSoftMax()(a)
+     |                      |- warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+     |                      `- note: use 'LogSoftmax' instead
+6549 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6550 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:232:17: warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+230 |     func testArraySubscriptIntAxis() {
+231 |         let a = MLXArray(0 ..< 512, [8, 8, 8])
+232 |         let s = a[1, axis: -1]
+    |                 `- warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+233 |         XCTAssertEqual(s.ndim, 2)
+234 |         XCTAssertEqual(s.shape, [8, 8])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:254:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+252 | 
+253 |         // reverse last dimension (only in this case)
+254 |         assertEqual(a[stride: -1], MLXArray([3, 2, 1, 0]))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:257:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+257 |         assertEqual(a.reshaped(1, 1, 4)[stride: -1, axis: 0], MLXArray(0 ..< 4).reshaped(1, 1, 4))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+258 | 
+259 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:264:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+262 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+263 | 
+264 |         let r = a[stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+265 |         let expected = MLXArray(Array(stride(from: 0, to: 2 * 3 * 4, by: 2)), [2, 3, 2])
+266 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:272:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+270 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+271 | 
+272 |         let r = a[from: 1, stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+273 |         let expected = MLXArray([1, 3, 6, 8, 11, 13, 16, 18, 21, 23, 26, 28], [2, 3, 2])
+274 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:280:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+278 |         let a = MLXArray(0 ..< 6, [2, 3])
+279 | 
+280 |         let r = a[stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+281 |         let expected = MLXArray([2, 1, 0, 5, 4, 3], [2, 3])
+282 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:288:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+286 |         let a = MLXArray(0 ..< 6, [2, 3])
+287 | 
+288 |         let r = a[stride: -1, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+289 |         let expected = MLXArray([3, 4, 5, 0, 1, 2], [2, 3])
+290 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:296:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+294 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+295 | 
+296 |         let r = a[from: 1, stride: -1, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+297 |         let expected = MLXArray(
+298 |             [5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 20, 21, 22, 23, 24, 15, 16, 17, 18, 19], [2, 2, 5])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:305:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+303 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+304 | 
+305 |         let r = a[from: 1, stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+306 |         let expected = MLXArray([1, 0, 6, 5, 11, 10, 16, 15, 21, 20, 26, 25], [2, 3, 2])
+307 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:313:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+311 |         let a = MLXArray(0 ..< (2 * 5 * 3), [2, 5, 3])
+312 | 
+313 |         let r = a[from: 1, stride: -2, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+314 |         let expected = MLXArray([3, 4, 5, 18, 19, 20], [2, 1, 3])
+315 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:321:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+319 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+320 | 
+321 |         let r = a[stride: -2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+322 | 
+323 |         // reverse order, stride by 2
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:339:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+337 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+338 | 
+339 |         let r = a[stride: -2, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+340 | 
+341 |         // last row
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:354:9: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+352 |         let a = MLXArray(Int32(0) ..< (2 * 3 * 4), [2, 3, 4])
+353 | 
+354 |         a[stride: -2, axis: 1] = [99, 88, 77, 66]
+    |         `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+355 | 
+356 |         // array([[[99, 88, 77, 66],
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+OpsTests.swift:19:13: warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 17 |     func testArithmeticSimple() {
+ 18 |         var a = MLXArray([1, 2, 3])
+ 19 |         var b = MLXArray(converting: [-5.0, 37.5, 4])
+    |             `- warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 20 | 
+ 21 |         // example of an expression -- the - 1 is using the 1 as ExpressibleByIntegerLiteral
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[212/220] Compiling MLXTests MLXArray+IndexingTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3257:22: warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3255 |             a.sum().item(Float.self), -1.7608224153518677,
+3256 |             accuracy: -0.03521644830703735)
+3257 |         let result = softMax(a)
+     |                      |- warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3258 |         XCTAssertEqual(result.shape, [4, 3])
+3259 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3279:22: warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3277 |             a.sum().item(Float.self), 3.307577610015869,
+3278 |             accuracy: 0.06615155220031739)
+3279 |         let result = softMax(a, axis: -1)
+     |                      |- warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3280 |         XCTAssertEqual(result.shape, [4, 3])
+3281 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3301:22: warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+3299 |             a.sum().item(Float.self), 38.19398498535156,
+3300 |             accuracy: 0.7638796997070313)
+3301 |         let result = softMax(a, axes: [0, -1])
+     |                      |- warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axes:precise:stream:)' instead
+3302 |         XCTAssertEqual(result.shape, [2, 3, 4, 3])
+3303 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6460:22: warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+6458 |             a.sum().item(Float.self), 127.73924255371094,
+6459 |             accuracy: 2.554784851074219)
+6460 |         let result = SoftPlus()(a)
+     |                      |- warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softplus' instead
+6461 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6462 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6482:22: warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+6480 |             a.sum().item(Float.self), 129.6771240234375,
+6481 |             accuracy: 2.59354248046875)
+6482 |         let result = SoftSign()(a)
+     |                      |- warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softsign' instead
+6483 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6484 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6548:22: warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+6546 |             a.sum().item(Float.self), 135.12799072265625,
+6547 |             accuracy: 2.702559814453125)
+6548 |         let result = LogSoftMax()(a)
+     |                      |- warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+     |                      `- note: use 'LogSoftmax' instead
+6549 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6550 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:232:17: warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+230 |     func testArraySubscriptIntAxis() {
+231 |         let a = MLXArray(0 ..< 512, [8, 8, 8])
+232 |         let s = a[1, axis: -1]
+    |                 `- warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+233 |         XCTAssertEqual(s.ndim, 2)
+234 |         XCTAssertEqual(s.shape, [8, 8])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:254:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+252 | 
+253 |         // reverse last dimension (only in this case)
+254 |         assertEqual(a[stride: -1], MLXArray([3, 2, 1, 0]))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:257:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+257 |         assertEqual(a.reshaped(1, 1, 4)[stride: -1, axis: 0], MLXArray(0 ..< 4).reshaped(1, 1, 4))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+258 | 
+259 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:264:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+262 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+263 | 
+264 |         let r = a[stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+265 |         let expected = MLXArray(Array(stride(from: 0, to: 2 * 3 * 4, by: 2)), [2, 3, 2])
+266 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:272:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+270 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+271 | 
+272 |         let r = a[from: 1, stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+273 |         let expected = MLXArray([1, 3, 6, 8, 11, 13, 16, 18, 21, 23, 26, 28], [2, 3, 2])
+274 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:280:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+278 |         let a = MLXArray(0 ..< 6, [2, 3])
+279 | 
+280 |         let r = a[stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+281 |         let expected = MLXArray([2, 1, 0, 5, 4, 3], [2, 3])
+282 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:288:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+286 |         let a = MLXArray(0 ..< 6, [2, 3])
+287 | 
+288 |         let r = a[stride: -1, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+289 |         let expected = MLXArray([3, 4, 5, 0, 1, 2], [2, 3])
+290 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:296:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+294 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+295 | 
+296 |         let r = a[from: 1, stride: -1, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+297 |         let expected = MLXArray(
+298 |             [5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 20, 21, 22, 23, 24, 15, 16, 17, 18, 19], [2, 2, 5])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:305:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+303 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+304 | 
+305 |         let r = a[from: 1, stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+306 |         let expected = MLXArray([1, 0, 6, 5, 11, 10, 16, 15, 21, 20, 26, 25], [2, 3, 2])
+307 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:313:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+311 |         let a = MLXArray(0 ..< (2 * 5 * 3), [2, 5, 3])
+312 | 
+313 |         let r = a[from: 1, stride: -2, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+314 |         let expected = MLXArray([3, 4, 5, 18, 19, 20], [2, 1, 3])
+315 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:321:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+319 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+320 | 
+321 |         let r = a[stride: -2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+322 | 
+323 |         // reverse order, stride by 2
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:339:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+337 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+338 | 
+339 |         let r = a[stride: -2, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+340 | 
+341 |         // last row
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:354:9: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+352 |         let a = MLXArray(Int32(0) ..< (2 * 3 * 4), [2, 3, 4])
+353 | 
+354 |         a[stride: -2, axis: 1] = [99, 88, 77, 66]
+    |         `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+355 | 
+356 |         // array([[[99, 88, 77, 66],
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+OpsTests.swift:19:13: warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 17 |     func testArithmeticSimple() {
+ 18 |         var a = MLXArray([1, 2, 3])
+ 19 |         var b = MLXArray(converting: [-5.0, 37.5, 4])
+    |             `- warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 20 | 
+ 21 |         // example of an expression -- the - 1 is using the 1 as ExpressibleByIntegerLiteral
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[213/220] Compiling MLXTests MLXArray+InitTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3257:22: warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3255 |             a.sum().item(Float.self), -1.7608224153518677,
+3256 |             accuracy: -0.03521644830703735)
+3257 |         let result = softMax(a)
+     |                      |- warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3258 |         XCTAssertEqual(result.shape, [4, 3])
+3259 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3279:22: warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3277 |             a.sum().item(Float.self), 3.307577610015869,
+3278 |             accuracy: 0.06615155220031739)
+3279 |         let result = softMax(a, axis: -1)
+     |                      |- warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3280 |         XCTAssertEqual(result.shape, [4, 3])
+3281 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3301:22: warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+3299 |             a.sum().item(Float.self), 38.19398498535156,
+3300 |             accuracy: 0.7638796997070313)
+3301 |         let result = softMax(a, axes: [0, -1])
+     |                      |- warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axes:precise:stream:)' instead
+3302 |         XCTAssertEqual(result.shape, [2, 3, 4, 3])
+3303 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6460:22: warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+6458 |             a.sum().item(Float.self), 127.73924255371094,
+6459 |             accuracy: 2.554784851074219)
+6460 |         let result = SoftPlus()(a)
+     |                      |- warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softplus' instead
+6461 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6462 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6482:22: warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+6480 |             a.sum().item(Float.self), 129.6771240234375,
+6481 |             accuracy: 2.59354248046875)
+6482 |         let result = SoftSign()(a)
+     |                      |- warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softsign' instead
+6483 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6484 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6548:22: warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+6546 |             a.sum().item(Float.self), 135.12799072265625,
+6547 |             accuracy: 2.702559814453125)
+6548 |         let result = LogSoftMax()(a)
+     |                      |- warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+     |                      `- note: use 'LogSoftmax' instead
+6549 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6550 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:232:17: warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+230 |     func testArraySubscriptIntAxis() {
+231 |         let a = MLXArray(0 ..< 512, [8, 8, 8])
+232 |         let s = a[1, axis: -1]
+    |                 `- warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+233 |         XCTAssertEqual(s.ndim, 2)
+234 |         XCTAssertEqual(s.shape, [8, 8])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:254:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+252 | 
+253 |         // reverse last dimension (only in this case)
+254 |         assertEqual(a[stride: -1], MLXArray([3, 2, 1, 0]))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:257:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+257 |         assertEqual(a.reshaped(1, 1, 4)[stride: -1, axis: 0], MLXArray(0 ..< 4).reshaped(1, 1, 4))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+258 | 
+259 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:264:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+262 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+263 | 
+264 |         let r = a[stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+265 |         let expected = MLXArray(Array(stride(from: 0, to: 2 * 3 * 4, by: 2)), [2, 3, 2])
+266 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:272:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+270 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+271 | 
+272 |         let r = a[from: 1, stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+273 |         let expected = MLXArray([1, 3, 6, 8, 11, 13, 16, 18, 21, 23, 26, 28], [2, 3, 2])
+274 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:280:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+278 |         let a = MLXArray(0 ..< 6, [2, 3])
+279 | 
+280 |         let r = a[stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+281 |         let expected = MLXArray([2, 1, 0, 5, 4, 3], [2, 3])
+282 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:288:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+286 |         let a = MLXArray(0 ..< 6, [2, 3])
+287 | 
+288 |         let r = a[stride: -1, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+289 |         let expected = MLXArray([3, 4, 5, 0, 1, 2], [2, 3])
+290 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:296:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+294 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+295 | 
+296 |         let r = a[from: 1, stride: -1, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+297 |         let expected = MLXArray(
+298 |             [5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 20, 21, 22, 23, 24, 15, 16, 17, 18, 19], [2, 2, 5])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:305:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+303 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+304 | 
+305 |         let r = a[from: 1, stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+306 |         let expected = MLXArray([1, 0, 6, 5, 11, 10, 16, 15, 21, 20, 26, 25], [2, 3, 2])
+307 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:313:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+311 |         let a = MLXArray(0 ..< (2 * 5 * 3), [2, 5, 3])
+312 | 
+313 |         let r = a[from: 1, stride: -2, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+314 |         let expected = MLXArray([3, 4, 5, 18, 19, 20], [2, 1, 3])
+315 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:321:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+319 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+320 | 
+321 |         let r = a[stride: -2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+322 | 
+323 |         // reverse order, stride by 2
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:339:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+337 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+338 | 
+339 |         let r = a[stride: -2, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+340 | 
+341 |         // last row
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:354:9: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+352 |         let a = MLXArray(Int32(0) ..< (2 * 3 * 4), [2, 3, 4])
+353 | 
+354 |         a[stride: -2, axis: 1] = [99, 88, 77, 66]
+    |         `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+355 | 
+356 |         // array([[[99, 88, 77, 66],
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+OpsTests.swift:19:13: warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 17 |     func testArithmeticSimple() {
+ 18 |         var a = MLXArray([1, 2, 3])
+ 19 |         var b = MLXArray(converting: [-5.0, 37.5, 4])
+    |             `- warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 20 | 
+ 21 |         // example of an expression -- the - 1 is using the 1 as ExpressibleByIntegerLiteral
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[214/220] Compiling MLXTests MLXArray+NormlizerTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3257:22: warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3255 |             a.sum().item(Float.self), -1.7608224153518677,
+3256 |             accuracy: -0.03521644830703735)
+3257 |         let result = softMax(a)
+     |                      |- warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3258 |         XCTAssertEqual(result.shape, [4, 3])
+3259 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3279:22: warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3277 |             a.sum().item(Float.self), 3.307577610015869,
+3278 |             accuracy: 0.06615155220031739)
+3279 |         let result = softMax(a, axis: -1)
+     |                      |- warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3280 |         XCTAssertEqual(result.shape, [4, 3])
+3281 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3301:22: warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+3299 |             a.sum().item(Float.self), 38.19398498535156,
+3300 |             accuracy: 0.7638796997070313)
+3301 |         let result = softMax(a, axes: [0, -1])
+     |                      |- warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axes:precise:stream:)' instead
+3302 |         XCTAssertEqual(result.shape, [2, 3, 4, 3])
+3303 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6460:22: warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+6458 |             a.sum().item(Float.self), 127.73924255371094,
+6459 |             accuracy: 2.554784851074219)
+6460 |         let result = SoftPlus()(a)
+     |                      |- warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softplus' instead
+6461 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6462 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6482:22: warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+6480 |             a.sum().item(Float.self), 129.6771240234375,
+6481 |             accuracy: 2.59354248046875)
+6482 |         let result = SoftSign()(a)
+     |                      |- warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softsign' instead
+6483 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6484 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6548:22: warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+6546 |             a.sum().item(Float.self), 135.12799072265625,
+6547 |             accuracy: 2.702559814453125)
+6548 |         let result = LogSoftMax()(a)
+     |                      |- warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+     |                      `- note: use 'LogSoftmax' instead
+6549 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6550 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:232:17: warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+230 |     func testArraySubscriptIntAxis() {
+231 |         let a = MLXArray(0 ..< 512, [8, 8, 8])
+232 |         let s = a[1, axis: -1]
+    |                 `- warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+233 |         XCTAssertEqual(s.ndim, 2)
+234 |         XCTAssertEqual(s.shape, [8, 8])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:254:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+252 | 
+253 |         // reverse last dimension (only in this case)
+254 |         assertEqual(a[stride: -1], MLXArray([3, 2, 1, 0]))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:257:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+257 |         assertEqual(a.reshaped(1, 1, 4)[stride: -1, axis: 0], MLXArray(0 ..< 4).reshaped(1, 1, 4))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+258 | 
+259 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:264:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+262 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+263 | 
+264 |         let r = a[stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+265 |         let expected = MLXArray(Array(stride(from: 0, to: 2 * 3 * 4, by: 2)), [2, 3, 2])
+266 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:272:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+270 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+271 | 
+272 |         let r = a[from: 1, stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+273 |         let expected = MLXArray([1, 3, 6, 8, 11, 13, 16, 18, 21, 23, 26, 28], [2, 3, 2])
+274 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:280:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+278 |         let a = MLXArray(0 ..< 6, [2, 3])
+279 | 
+280 |         let r = a[stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+281 |         let expected = MLXArray([2, 1, 0, 5, 4, 3], [2, 3])
+282 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:288:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+286 |         let a = MLXArray(0 ..< 6, [2, 3])
+287 | 
+288 |         let r = a[stride: -1, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+289 |         let expected = MLXArray([3, 4, 5, 0, 1, 2], [2, 3])
+290 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:296:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+294 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+295 | 
+296 |         let r = a[from: 1, stride: -1, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+297 |         let expected = MLXArray(
+298 |             [5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 20, 21, 22, 23, 24, 15, 16, 17, 18, 19], [2, 2, 5])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:305:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+303 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+304 | 
+305 |         let r = a[from: 1, stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+306 |         let expected = MLXArray([1, 0, 6, 5, 11, 10, 16, 15, 21, 20, 26, 25], [2, 3, 2])
+307 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:313:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+311 |         let a = MLXArray(0 ..< (2 * 5 * 3), [2, 5, 3])
+312 | 
+313 |         let r = a[from: 1, stride: -2, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+314 |         let expected = MLXArray([3, 4, 5, 18, 19, 20], [2, 1, 3])
+315 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:321:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+319 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+320 | 
+321 |         let r = a[stride: -2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+322 | 
+323 |         // reverse order, stride by 2
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:339:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+337 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+338 | 
+339 |         let r = a[stride: -2, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+340 | 
+341 |         // last row
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:354:9: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+352 |         let a = MLXArray(Int32(0) ..< (2 * 3 * 4), [2, 3, 4])
+353 | 
+354 |         a[stride: -2, axis: 1] = [99, 88, 77, 66]
+    |         `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+355 | 
+356 |         // array([[[99, 88, 77, 66],
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+OpsTests.swift:19:13: warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 17 |     func testArithmeticSimple() {
+ 18 |         var a = MLXArray([1, 2, 3])
+ 19 |         var b = MLXArray(converting: [-5.0, 37.5, 4])
+    |             `- warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 20 | 
+ 21 |         // example of an expression -- the - 1 is using the 1 as ExpressibleByIntegerLiteral
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[215/220] Compiling MLXTests MLXArray+OpsTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3257:22: warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3255 |             a.sum().item(Float.self), -1.7608224153518677,
+3256 |             accuracy: -0.03521644830703735)
+3257 |         let result = softMax(a)
+     |                      |- warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3258 |         XCTAssertEqual(result.shape, [4, 3])
+3259 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3279:22: warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3277 |             a.sum().item(Float.self), 3.307577610015869,
+3278 |             accuracy: 0.06615155220031739)
+3279 |         let result = softMax(a, axis: -1)
+     |                      |- warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3280 |         XCTAssertEqual(result.shape, [4, 3])
+3281 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3301:22: warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+3299 |             a.sum().item(Float.self), 38.19398498535156,
+3300 |             accuracy: 0.7638796997070313)
+3301 |         let result = softMax(a, axes: [0, -1])
+     |                      |- warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axes:precise:stream:)' instead
+3302 |         XCTAssertEqual(result.shape, [2, 3, 4, 3])
+3303 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6460:22: warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+6458 |             a.sum().item(Float.self), 127.73924255371094,
+6459 |             accuracy: 2.554784851074219)
+6460 |         let result = SoftPlus()(a)
+     |                      |- warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softplus' instead
+6461 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6462 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6482:22: warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+6480 |             a.sum().item(Float.self), 129.6771240234375,
+6481 |             accuracy: 2.59354248046875)
+6482 |         let result = SoftSign()(a)
+     |                      |- warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softsign' instead
+6483 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6484 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6548:22: warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+6546 |             a.sum().item(Float.self), 135.12799072265625,
+6547 |             accuracy: 2.702559814453125)
+6548 |         let result = LogSoftMax()(a)
+     |                      |- warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+     |                      `- note: use 'LogSoftmax' instead
+6549 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6550 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:232:17: warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+230 |     func testArraySubscriptIntAxis() {
+231 |         let a = MLXArray(0 ..< 512, [8, 8, 8])
+232 |         let s = a[1, axis: -1]
+    |                 `- warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+233 |         XCTAssertEqual(s.ndim, 2)
+234 |         XCTAssertEqual(s.shape, [8, 8])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:254:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+252 | 
+253 |         // reverse last dimension (only in this case)
+254 |         assertEqual(a[stride: -1], MLXArray([3, 2, 1, 0]))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:257:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+257 |         assertEqual(a.reshaped(1, 1, 4)[stride: -1, axis: 0], MLXArray(0 ..< 4).reshaped(1, 1, 4))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+258 | 
+259 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:264:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+262 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+263 | 
+264 |         let r = a[stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+265 |         let expected = MLXArray(Array(stride(from: 0, to: 2 * 3 * 4, by: 2)), [2, 3, 2])
+266 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:272:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+270 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+271 | 
+272 |         let r = a[from: 1, stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+273 |         let expected = MLXArray([1, 3, 6, 8, 11, 13, 16, 18, 21, 23, 26, 28], [2, 3, 2])
+274 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:280:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+278 |         let a = MLXArray(0 ..< 6, [2, 3])
+279 | 
+280 |         let r = a[stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+281 |         let expected = MLXArray([2, 1, 0, 5, 4, 3], [2, 3])
+282 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:288:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+286 |         let a = MLXArray(0 ..< 6, [2, 3])
+287 | 
+288 |         let r = a[stride: -1, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+289 |         let expected = MLXArray([3, 4, 5, 0, 1, 2], [2, 3])
+290 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:296:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+294 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+295 | 
+296 |         let r = a[from: 1, stride: -1, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+297 |         let expected = MLXArray(
+298 |             [5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 20, 21, 22, 23, 24, 15, 16, 17, 18, 19], [2, 2, 5])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:305:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+303 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+304 | 
+305 |         let r = a[from: 1, stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+306 |         let expected = MLXArray([1, 0, 6, 5, 11, 10, 16, 15, 21, 20, 26, 25], [2, 3, 2])
+307 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:313:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+311 |         let a = MLXArray(0 ..< (2 * 5 * 3), [2, 5, 3])
+312 | 
+313 |         let r = a[from: 1, stride: -2, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+314 |         let expected = MLXArray([3, 4, 5, 18, 19, 20], [2, 1, 3])
+315 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:321:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+319 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+320 | 
+321 |         let r = a[stride: -2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+322 | 
+323 |         // reverse order, stride by 2
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:339:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+337 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+338 | 
+339 |         let r = a[stride: -2, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+340 | 
+341 |         // last row
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:354:9: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+352 |         let a = MLXArray(Int32(0) ..< (2 * 3 * 4), [2, 3, 4])
+353 | 
+354 |         a[stride: -2, axis: 1] = [99, 88, 77, 66]
+    |         `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+355 | 
+356 |         // array([[[99, 88, 77, 66],
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+OpsTests.swift:19:13: warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 17 |     func testArithmeticSimple() {
+ 18 |         var a = MLXArray([1, 2, 3])
+ 19 |         var b = MLXArray(converting: [-5.0, 37.5, 4])
+    |             `- warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 20 | 
+ 21 |         // example of an expression -- the - 1 is using the 1 as ExpressibleByIntegerLiteral
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[216/220] Compiling MLXTests MLXArrayTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3257:22: warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3255 |             a.sum().item(Float.self), -1.7608224153518677,
+3256 |             accuracy: -0.03521644830703735)
+3257 |         let result = softMax(a)
+     |                      |- warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3258 |         XCTAssertEqual(result.shape, [4, 3])
+3259 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3279:22: warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3277 |             a.sum().item(Float.self), 3.307577610015869,
+3278 |             accuracy: 0.06615155220031739)
+3279 |         let result = softMax(a, axis: -1)
+     |                      |- warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3280 |         XCTAssertEqual(result.shape, [4, 3])
+3281 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3301:22: warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+3299 |             a.sum().item(Float.self), 38.19398498535156,
+3300 |             accuracy: 0.7638796997070313)
+3301 |         let result = softMax(a, axes: [0, -1])
+     |                      |- warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axes:precise:stream:)' instead
+3302 |         XCTAssertEqual(result.shape, [2, 3, 4, 3])
+3303 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6460:22: warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+6458 |             a.sum().item(Float.self), 127.73924255371094,
+6459 |             accuracy: 2.554784851074219)
+6460 |         let result = SoftPlus()(a)
+     |                      |- warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softplus' instead
+6461 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6462 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6482:22: warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+6480 |             a.sum().item(Float.self), 129.6771240234375,
+6481 |             accuracy: 2.59354248046875)
+6482 |         let result = SoftSign()(a)
+     |                      |- warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softsign' instead
+6483 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6484 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6548:22: warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+6546 |             a.sum().item(Float.self), 135.12799072265625,
+6547 |             accuracy: 2.702559814453125)
+6548 |         let result = LogSoftMax()(a)
+     |                      |- warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+     |                      `- note: use 'LogSoftmax' instead
+6549 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6550 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:232:17: warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+230 |     func testArraySubscriptIntAxis() {
+231 |         let a = MLXArray(0 ..< 512, [8, 8, 8])
+232 |         let s = a[1, axis: -1]
+    |                 `- warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+233 |         XCTAssertEqual(s.ndim, 2)
+234 |         XCTAssertEqual(s.shape, [8, 8])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:254:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+252 | 
+253 |         // reverse last dimension (only in this case)
+254 |         assertEqual(a[stride: -1], MLXArray([3, 2, 1, 0]))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:257:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+257 |         assertEqual(a.reshaped(1, 1, 4)[stride: -1, axis: 0], MLXArray(0 ..< 4).reshaped(1, 1, 4))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+258 | 
+259 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:264:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+262 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+263 | 
+264 |         let r = a[stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+265 |         let expected = MLXArray(Array(stride(from: 0, to: 2 * 3 * 4, by: 2)), [2, 3, 2])
+266 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:272:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+270 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+271 | 
+272 |         let r = a[from: 1, stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+273 |         let expected = MLXArray([1, 3, 6, 8, 11, 13, 16, 18, 21, 23, 26, 28], [2, 3, 2])
+274 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:280:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+278 |         let a = MLXArray(0 ..< 6, [2, 3])
+279 | 
+280 |         let r = a[stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+281 |         let expected = MLXArray([2, 1, 0, 5, 4, 3], [2, 3])
+282 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:288:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+286 |         let a = MLXArray(0 ..< 6, [2, 3])
+287 | 
+288 |         let r = a[stride: -1, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+289 |         let expected = MLXArray([3, 4, 5, 0, 1, 2], [2, 3])
+290 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:296:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+294 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+295 | 
+296 |         let r = a[from: 1, stride: -1, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+297 |         let expected = MLXArray(
+298 |             [5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 20, 21, 22, 23, 24, 15, 16, 17, 18, 19], [2, 2, 5])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:305:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+303 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+304 | 
+305 |         let r = a[from: 1, stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+306 |         let expected = MLXArray([1, 0, 6, 5, 11, 10, 16, 15, 21, 20, 26, 25], [2, 3, 2])
+307 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:313:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+311 |         let a = MLXArray(0 ..< (2 * 5 * 3), [2, 5, 3])
+312 | 
+313 |         let r = a[from: 1, stride: -2, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+314 |         let expected = MLXArray([3, 4, 5, 18, 19, 20], [2, 1, 3])
+315 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:321:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+319 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+320 | 
+321 |         let r = a[stride: -2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+322 | 
+323 |         // reverse order, stride by 2
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:339:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+337 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+338 | 
+339 |         let r = a[stride: -2, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+340 | 
+341 |         // last row
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:354:9: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+352 |         let a = MLXArray(Int32(0) ..< (2 * 3 * 4), [2, 3, 4])
+353 | 
+354 |         a[stride: -2, axis: 1] = [99, 88, 77, 66]
+    |         `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+355 | 
+356 |         // array([[[99, 88, 77, 66],
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+OpsTests.swift:19:13: warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 17 |     func testArithmeticSimple() {
+ 18 |         var a = MLXArray([1, 2, 3])
+ 19 |         var b = MLXArray(converting: [-5.0, 37.5, 4])
+    |             `- warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 20 | 
+ 21 |         // example of an expression -- the - 1 is using the 1 as ExpressibleByIntegerLiteral
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[217/220] Compiling MLXTests MLXFastKernelTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3257:22: warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3255 |             a.sum().item(Float.self), -1.7608224153518677,
+3256 |             accuracy: -0.03521644830703735)
+3257 |         let result = softMax(a)
+     |                      |- warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3258 |         XCTAssertEqual(result.shape, [4, 3])
+3259 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3279:22: warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3277 |             a.sum().item(Float.self), 3.307577610015869,
+3278 |             accuracy: 0.06615155220031739)
+3279 |         let result = softMax(a, axis: -1)
+     |                      |- warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3280 |         XCTAssertEqual(result.shape, [4, 3])
+3281 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3301:22: warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+3299 |             a.sum().item(Float.self), 38.19398498535156,
+3300 |             accuracy: 0.7638796997070313)
+3301 |         let result = softMax(a, axes: [0, -1])
+     |                      |- warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axes:precise:stream:)' instead
+3302 |         XCTAssertEqual(result.shape, [2, 3, 4, 3])
+3303 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6460:22: warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+6458 |             a.sum().item(Float.self), 127.73924255371094,
+6459 |             accuracy: 2.554784851074219)
+6460 |         let result = SoftPlus()(a)
+     |                      |- warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softplus' instead
+6461 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6462 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6482:22: warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+6480 |             a.sum().item(Float.self), 129.6771240234375,
+6481 |             accuracy: 2.59354248046875)
+6482 |         let result = SoftSign()(a)
+     |                      |- warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softsign' instead
+6483 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6484 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6548:22: warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+6546 |             a.sum().item(Float.self), 135.12799072265625,
+6547 |             accuracy: 2.702559814453125)
+6548 |         let result = LogSoftMax()(a)
+     |                      |- warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+     |                      `- note: use 'LogSoftmax' instead
+6549 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6550 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:232:17: warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+230 |     func testArraySubscriptIntAxis() {
+231 |         let a = MLXArray(0 ..< 512, [8, 8, 8])
+232 |         let s = a[1, axis: -1]
+    |                 `- warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+233 |         XCTAssertEqual(s.ndim, 2)
+234 |         XCTAssertEqual(s.shape, [8, 8])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:254:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+252 | 
+253 |         // reverse last dimension (only in this case)
+254 |         assertEqual(a[stride: -1], MLXArray([3, 2, 1, 0]))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:257:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+257 |         assertEqual(a.reshaped(1, 1, 4)[stride: -1, axis: 0], MLXArray(0 ..< 4).reshaped(1, 1, 4))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+258 | 
+259 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:264:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+262 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+263 | 
+264 |         let r = a[stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+265 |         let expected = MLXArray(Array(stride(from: 0, to: 2 * 3 * 4, by: 2)), [2, 3, 2])
+266 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:272:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+270 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+271 | 
+272 |         let r = a[from: 1, stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+273 |         let expected = MLXArray([1, 3, 6, 8, 11, 13, 16, 18, 21, 23, 26, 28], [2, 3, 2])
+274 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:280:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+278 |         let a = MLXArray(0 ..< 6, [2, 3])
+279 | 
+280 |         let r = a[stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+281 |         let expected = MLXArray([2, 1, 0, 5, 4, 3], [2, 3])
+282 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:288:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+286 |         let a = MLXArray(0 ..< 6, [2, 3])
+287 | 
+288 |         let r = a[stride: -1, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+289 |         let expected = MLXArray([3, 4, 5, 0, 1, 2], [2, 3])
+290 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:296:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+294 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+295 | 
+296 |         let r = a[from: 1, stride: -1, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+297 |         let expected = MLXArray(
+298 |             [5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 20, 21, 22, 23, 24, 15, 16, 17, 18, 19], [2, 2, 5])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:305:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+303 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+304 | 
+305 |         let r = a[from: 1, stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+306 |         let expected = MLXArray([1, 0, 6, 5, 11, 10, 16, 15, 21, 20, 26, 25], [2, 3, 2])
+307 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:313:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+311 |         let a = MLXArray(0 ..< (2 * 5 * 3), [2, 5, 3])
+312 | 
+313 |         let r = a[from: 1, stride: -2, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+314 |         let expected = MLXArray([3, 4, 5, 18, 19, 20], [2, 1, 3])
+315 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:321:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+319 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+320 | 
+321 |         let r = a[stride: -2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+322 | 
+323 |         // reverse order, stride by 2
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:339:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+337 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+338 | 
+339 |         let r = a[stride: -2, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+340 | 
+341 |         // last row
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:354:9: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+352 |         let a = MLXArray(Int32(0) ..< (2 * 3 * 4), [2, 3, 4])
+353 | 
+354 |         a[stride: -2, axis: 1] = [99, 88, 77, 66]
+    |         `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+355 | 
+356 |         // array([[[99, 88, 77, 66],
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+OpsTests.swift:19:13: warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 17 |     func testArithmeticSimple() {
+ 18 |         var a = MLXArray([1, 2, 3])
+ 19 |         var b = MLXArray(converting: [-5.0, 37.5, 4])
+    |             `- warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 20 | 
+ 21 |         // example of an expression -- the - 1 is using the 1 as ExpressibleByIntegerLiteral
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[218/220] Compiling MLXTests MLXRandomTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3257:22: warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3255 |             a.sum().item(Float.self), -1.7608224153518677,
+3256 |             accuracy: -0.03521644830703735)
+3257 |         let result = softMax(a)
+     |                      |- warning: 'softMax(_:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3258 |         XCTAssertEqual(result.shape, [4, 3])
+3259 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3279:22: warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+3277 |             a.sum().item(Float.self), 3.307577610015869,
+3278 |             accuracy: 0.06615155220031739)
+3279 |         let result = softMax(a, axis: -1)
+     |                      |- warning: 'softMax(_:axis:precise:stream:)' is deprecated: renamed to 'softmax(_:axis:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axis:precise:stream:)' instead
+3280 |         XCTAssertEqual(result.shape, [4, 3])
+3281 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:3301:22: warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+3299 |             a.sum().item(Float.self), 38.19398498535156,
+3300 |             accuracy: 0.7638796997070313)
+3301 |         let result = softMax(a, axes: [0, -1])
+     |                      |- warning: 'softMax(_:axes:precise:stream:)' is deprecated: renamed to 'softmax(_:axes:precise:stream:)' [#DeprecatedDeclaration]
+     |                      `- note: use 'softmax(_:axes:precise:stream:)' instead
+3302 |         XCTAssertEqual(result.shape, [2, 3, 4, 3])
+3303 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6460:22: warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+6458 |             a.sum().item(Float.self), 127.73924255371094,
+6459 |             accuracy: 2.554784851074219)
+6460 |         let result = SoftPlus()(a)
+     |                      |- warning: 'SoftPlus' is deprecated: renamed to 'Softplus' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softplus' instead
+6461 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6462 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6482:22: warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+6480 |             a.sum().item(Float.self), 129.6771240234375,
+6481 |             accuracy: 2.59354248046875)
+6482 |         let result = SoftSign()(a)
+     |                      |- warning: 'SoftSign' is deprecated: renamed to 'Softsign' [#DeprecatedDeclaration]
+     |                      `- note: use 'Softsign' instead
+6483 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6484 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/IntegrationTests.swift:6548:22: warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+6546 |             a.sum().item(Float.self), 135.12799072265625,
+6547 |             accuracy: 2.702559814453125)
+6548 |         let result = LogSoftMax()(a)
+     |                      |- warning: 'LogSoftMax' is deprecated: renamed to 'LogSoftmax' [#DeprecatedDeclaration]
+     |                      `- note: use 'LogSoftmax' instead
+6549 |         XCTAssertEqual(result.shape, [2, 8, 16])
+6550 |         XCTAssertEqual(result.dtype, .float32)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:232:17: warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+230 |     func testArraySubscriptIntAxis() {
+231 |         let a = MLXArray(0 ..< 512, [8, 8, 8])
+232 |         let s = a[1, axis: -1]
+    |                 `- warning: 'subscript(_:axis:stream:)' is deprecated: please use subscript(.ellipsis, 3) or equivalent [#DeprecatedDeclaration]
+233 |         XCTAssertEqual(s.ndim, 2)
+234 |         XCTAssertEqual(s.shape, [8, 8])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:254:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+252 | 
+253 |         // reverse last dimension (only in this case)
+254 |         assertEqual(a[stride: -1], MLXArray([3, 2, 1, 0]))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:257:21: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+255 | 
+256 |         // reverse first dimension
+257 |         assertEqual(a.reshaped(1, 1, 4)[stride: -1, axis: 0], MLXArray(0 ..< 4).reshaped(1, 1, 4))
+    |                     `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+258 | 
+259 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:264:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+262 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+263 | 
+264 |         let r = a[stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+265 |         let expected = MLXArray(Array(stride(from: 0, to: 2 * 3 * 4, by: 2)), [2, 3, 2])
+266 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:272:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+270 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+271 | 
+272 |         let r = a[from: 1, stride: 2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+273 |         let expected = MLXArray([1, 3, 6, 8, 11, 13, 16, 18, 21, 23, 26, 28], [2, 3, 2])
+274 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:280:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+278 |         let a = MLXArray(0 ..< 6, [2, 3])
+279 | 
+280 |         let r = a[stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+281 |         let expected = MLXArray([2, 1, 0, 5, 4, 3], [2, 3])
+282 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:288:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+286 |         let a = MLXArray(0 ..< 6, [2, 3])
+287 | 
+288 |         let r = a[stride: -1, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+289 |         let expected = MLXArray([3, 4, 5, 0, 1, 2], [2, 3])
+290 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:296:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+294 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+295 | 
+296 |         let r = a[from: 1, stride: -1, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+297 |         let expected = MLXArray(
+298 |             [5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 20, 21, 22, 23, 24, 15, 16, 17, 18, 19], [2, 2, 5])
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:305:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+303 |         let a = MLXArray(0 ..< (2 * 3 * 5), [2, 3, 5])
+304 | 
+305 |         let r = a[from: 1, stride: -1, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+306 |         let expected = MLXArray([1, 0, 6, 5, 11, 10, 16, 15, 21, 20, 26, 25], [2, 3, 2])
+307 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:313:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+311 |         let a = MLXArray(0 ..< (2 * 5 * 3), [2, 5, 3])
+312 | 
+313 |         let r = a[from: 1, stride: -2, axis: 1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+314 |         let expected = MLXArray([3, 4, 5, 18, 19, 20], [2, 1, 3])
+315 |         assertEqual(r, expected)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:321:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+319 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+320 | 
+321 |         let r = a[stride: -2, axis: -1]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+322 | 
+323 |         // reverse order, stride by 2
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:339:17: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+337 |         let a = MLXArray(0 ..< (2 * 3 * 4), [2, 3, 4])
+338 | 
+339 |         let r = a[stride: -2, axis: 0]
+    |                 `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+340 | 
+341 |         // last row
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+IndexingTests.swift:354:9: warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+352 |         let a = MLXArray(Int32(0) ..< (2 * 3 * 4), [2, 3, 4])
+353 | 
+354 |         a[stride: -2, axis: 1] = [99, 88, 77, 66]
+    |         `- warning: 'subscript(from:to:stride:axis:stream:)' is deprecated: please use subscript(.ellipsis, .stride(by: 2)) or equivalent [#DeprecatedDeclaration]
+355 | 
+356 |         // array([[[99, 88, 77, 66],
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Tests/MLXTests/MLXArray+OpsTests.swift:19:13: warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 17 |     func testArithmeticSimple() {
+ 18 |         var a = MLXArray([1, 2, 3])
+ 19 |         var b = MLXArray(converting: [-5.0, 37.5, 4])
+    |             `- warning: variable 'b' was never mutated; consider changing to 'let' constant
+ 20 | 
+ 21 |         // example of an expression -- the - 1 is using the 1 as ExpressibleByIntegerLiteral
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[219/222] Emitting module mlx_swiftPackageTests
+[220/222] Compiling mlx_swiftPackageTests runner.swift
+[220/222] Write Objects.LinkFileList
+[221/222] Linking mlx-swiftPackageTests
+Build complete! (13.53s)
+Test Suite 'Selected tests' started at 2026-09-07 06:53:33.626.
+Test Suite 'mlx-swiftPackageTests.xctest' started at 2026-09-07 06:53:33.626.
+Test Suite 'ForcedAttentionTests' started at 2026-09-07 06:53:33.626.
+Test Case '-[MLXTests.ForcedAttentionTests testFalsePreservesExistingRouting]' started.
+Test Case '-[MLXTests.ForcedAttentionTests testFalsePreservesExistingRouting]' passed (0.139 seconds).
+Test Case '-[MLXTests.ForcedAttentionTests testFusedDoesNotMaterializeAttentionScores]' started.
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLX/ErrorHandler.swift:273: error: -[MLXTests.ForcedAttentionTests testFusedDoesNotMaterializeAttentionScores] : failed: caught error: "caught("[metal::Device] Unable to load kernel steel_attention_float32_bq32_bk16_bd256_wm4_wn1_maskbool__align_Q_t_align_K_t_has_mask_t_do_causal_n_has_sinks_n\nThreadgroup memory size (53760) exceeds the maximum threadgroup memory allowed (32768)\n at /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx-c/mlx/c/transforms.cpp:73")"
+Test Case '-[MLXTests.ForcedAttentionTests testFusedDoesNotMaterializeAttentionScores]' failed (0.855 seconds).
+Test Case '-[MLXTests.ForcedAttentionTests testFusedPitchedViewsAndSinksMatchDenseReference]' started.
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/MLX/ErrorHandler.swift:273: error: -[MLXTests.ForcedAttentionTests testFusedPitchedViewsAndSinksMatchDenseReference] : failed: caught error: "caught("[metal::Device] Unable to load kernel steel_attention_float32_bq32_bk16_bd256_wm4_wn1_maskbool__align_Q_n_align_K_n_has_mask_t_do_causal_n_has_sinks_t\nThreadgroup memory size (53760) exceeds the maximum threadgroup memory allowed (32768)\n at /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx-c/mlx/c/transforms.cpp:73")"
+Test Case '-[MLXTests.ForcedAttentionTests testFusedPitchedViewsAndSinksMatchDenseReference]' failed (0.198 seconds).
+Test Case '-[MLXTests.ForcedAttentionTests testUnsupportedHeadRefusesInsteadOfFallingBack]' started.
+Test Case '-[MLXTests.ForcedAttentionTests testUnsupportedHeadRefusesInsteadOfFallingBack]' passed (0.000 seconds).
+Test Suite 'ForcedAttentionTests' failed at 2026-09-07 06:53:34.820.
+	 Executed 4 tests, with 2 failures (2 unexpected) in 1.193 (1.193) seconds
+Test Suite 'mlx-swiftPackageTests.xctest' failed at 2026-09-07 06:53:34.820.
+	 Executed 4 tests, with 2 failures (2 unexpected) in 1.193 (1.193) seconds
+Test Suite 'Selected tests' failed at 2026-09-07 06:53:34.820.
+	 Executed 4 tests, with 2 failures (2 unexpected) in 1.193 (1.194) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

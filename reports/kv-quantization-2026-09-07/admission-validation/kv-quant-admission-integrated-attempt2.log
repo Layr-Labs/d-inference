@@ -1,0 +1,273 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+Test Suite 'Selected tests' started at 2026-09-07 04:24:43.437.
+Test Suite 'mlx-swift-lmPackageTests.xctest' started at 2026-09-07 04:24:43.438.
+Test Suite 'CBv2FirstTokenDeadlineEngineTests' started at 2026-09-07 04:24:43.438.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCancellationAfterCommitTransfersEngineRowRetirement]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCancellationAfterCommitTransfersEngineRowRetirement]' passed (0.037 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCancellationAfterInitialGuardRetainsOwnershipUntilQueueAcknowledges]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCancellationAfterInitialGuardRetainsOwnershipUntilQueueAcknowledges]' passed (0.003 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCapacityProjectionReleasesRetiredBlockerBeforeTargetReservation]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCapacityProjectionReleasesRetiredBlockerBeforeTargetReservation]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testDeadlineBudgetKeepsRunningWhileAdmissionWaitsForEngineQueue]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testDeadlineBudgetKeepsRunningWhileAdmissionWaitsForEngineQueue]' passed (0.717 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testEngineQueueVerdictChargesLaunchedInFlightPlan]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testEngineQueueVerdictChargesLaunchedInFlightPlan]' passed (0.483 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testForcedTerminalDoesNotAcknowledgeEngineOwnership]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testForcedTerminalDoesNotAcknowledgeEngineOwnership]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testLateCancelFromRetiredGenerationDoesNotPoisonImmediateRetry]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testLateCancelFromRetiredGenerationDoesNotPoisonImmediateRetry]' passed (0.003 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testMixedProjectionUsesSeparateRatesAndMissingDecodeRateFailsClosed]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testMixedProjectionUsesSeparateRatesAndMissingDecodeRateFailsClosed]' passed (0.006 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testPausedLedgerOwnerMakesOtherwiseOpenSlotFailClosed]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testPausedLedgerOwnerMakesOtherwiseOpenSlotFailClosed]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testPrefixMetadataPrecedesVerdictAndReducesProjectedWork]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testPrefixMetadataPrecedesVerdictAndReducesProjectedWork]' passed (0.003 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testRejectedPagedPrefixHitDoesNotWireOrReserveSlabs]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testRejectedPagedPrefixHitDoesNotWireOrReserveSlabs]' passed (0.390 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testRejectedResidentPrefixPricesReplayWithoutRetainingOrWiringPages]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testRejectedResidentPrefixPricesReplayWithoutRetainingOrWiringPages]' passed (0.231 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testTaskCancellationResumesQueuedAdmissionAndReleasesGauge]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testTaskCancellationResumesQueuedAdmissionAndReleasesGauge]' passed (1.032 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testUnreachableRequestIsRemovedBeforeAnyForward]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testUnreachableRequestIsRemovedBeforeAnyForward]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testUnrepresentableServiceDurationsFailClosedWithoutTrapping]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testUnrepresentableServiceDurationsFailClosedWithoutTrapping]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testWatchdogResumesAdmissionBehindWedgedEngineQueue]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testWatchdogResumesAdmissionBehindWedgedEngineQueue]' passed (1.004 seconds).
+Test Suite 'CBv2FirstTokenDeadlineEngineTests' passed at 2026-09-07 04:24:47.350.
+	 Executed 16 tests, with 0 failures (0 unexpected) in 3.911 (3.912) seconds
+Test Suite 'CBv2FirstTokenWorkProjectionTests' started at 2026-09-07 04:24:47.350.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFixedZeroMTPPlainFallbackChargesTerminalChain]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFixedZeroMTPPlainFallbackChargesTerminalChain]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullLedgerSkipsOptionalTerminalChainBeforeSlotRelease]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullLedgerSkipsOptionalTerminalChainBeforeSlotRelease]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullSlotDecodeStretchChargesTerminalChain]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullSlotDecodeStretchChargesTerminalChain]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullSlotTerminalSampleChargesOneStepLateChain]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullSlotTerminalSampleChargesOneStepLateChain]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testMixedDecodeAndTrailingFinalChunkChargeWholeTargetStep]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testMixedDecodeAndTrailingFinalChunkChargeWholeTargetStep]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testMTPInFlightTerminalDoesNotInventChainedDecode]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testMTPInFlightTerminalDoesNotInventChainedDecode]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPausedRunningSlotFailsClosedWhenTargetCannotEnter]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPausedRunningSlotFailsClosedWhenTargetCannotEnter]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPreemptedReplayCancelledRowAndFinalChunkSlotRelease]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPreemptedReplayCancelledRowAndFinalChunkSlotRelease]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPrefixReplayStartIsTheConfirmedCursor]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPrefixReplayStartIsTheConfirmedCursor]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testSpeculativeCapacityRollbackPreventsImpossibleAccumulation]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testSpeculativeCapacityRollbackPreventsImpossibleAccumulation]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testSpeculativeProjectionChargesConfiguredMTPWidthNotStepBudget]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testSpeculativeProjectionChargesConfiguredMTPWidthNotStepBudget]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testT0AndTPlusTwoChargeFullInFlightAssignmentWithoutElapsedCredit]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testT0AndTPlusTwoChargeFullInFlightAssignmentWithoutElapsedCredit]' passed (0.000 seconds).
+Test Suite 'CBv2FirstTokenWorkProjectionTests' passed at 2026-09-07 04:24:47.352.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 0.001 (0.002) seconds
+Test Suite 'CBv2SchedulerAdmissionTests' started at 2026-09-07 04:24:47.352.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testAdoptionReservationChargesFixedRingExactlyOnce]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testAdoptionReservationChargesFixedRingExactlyOnce]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testCanEverFitIsWorstCase]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testCanEverFitIsWorstCase]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testCanEverFitRespectsWatermark]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testCanEverFitRespectsWatermark]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testEstimateRespectsWindowsAndKVSharing]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testEstimateRespectsWindowsAndKVSharing]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testExternalReserveTightensAdmissionAndRefundRestores]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testExternalReserveTightensAdmissionAndRefundRestores]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testFullSequenceAdoptionPrepaysAuxiliaryStateWithoutDoubleChargingKV]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testFullSequenceAdoptionPrepaysAuxiliaryStateWithoutDoubleChargingKV]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testMismatchedElementBytesTableTraps]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testMismatchedElementBytesTableTraps]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testOverflowingCapacityInputsFailWithoutMutatingLedger]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testOverflowingCapacityInputsFailWithoutMutatingLedger]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPagedResidencyTracksPoolPageDemandExactly]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPagedResidencyTracksPoolPageDemandExactly]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPagedShortRequestIsAdmittedWhereWholeRingChargingRejectsIt]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPagedShortRequestIsAdmittedWhereWholeRingChargingRejectsIt]' passed (0.248 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPerLayerElementBytesForMixedPrecision]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPerLayerElementBytesForMixedPrecision]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testQwenWarmAdmissionAcrossResidentBudgetsWithin16GiBGrant]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testQwenWarmAdmissionAcrossResidentBudgetsWithin16GiBGrant]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSnapshotReportsLedgerOrBackendTruth]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSnapshotReportsLedgerOrBackendTruth]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSnapshotReservedIncludesLiveExternalReserve]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSnapshotReservedIncludesLiveExternalReserve]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSoftReserveThrowsAtWatermark]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSoftReserveThrowsAtWatermark]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testTargetReservationsPartitionMaterializedAndWaitingRows]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testTargetReservationsPartitionMaterializedAndWaitingRows]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUndeclaredBackendResidencyDefaultsToWholeRingCharging]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUndeclaredBackendResidencyDefaultsToWholeRingCharging]' passed (0.233 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUnreserveAndReleaseRestoreHeadroom]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUnreserveAndReleaseRestoreHeadroom]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityGrowAdmitsImmediately]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityGrowAdmitsImmediately]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityRecomputesWatermark]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityRecomputesWatermark]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityShrinkUnderLoad]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityShrinkUnderLoad]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedChargeDivergesByBackendStoragePolicy]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedChargeDivergesByBackendStoragePolicy]' passed (0.001 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedLayerIsChargedItsWholeRingBelowTheWindow]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedLayerIsChargedItsWholeRingBelowTheWindow]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedOvershootIsRejectedRatherThanHidden]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedOvershootIsRejectedRatherThanHidden]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedReservationPlateaus]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedReservationPlateaus]' passed (0.002 seconds).
+Test Suite 'CBv2SchedulerAdmissionTests' passed at 2026-09-07 04:24:47.839.
+	 Executed 25 tests, with 0 failures (0 unexpected) in 0.486 (0.487) seconds
+Test Suite 'mlx-swift-lmPackageTests.xctest' passed at 2026-09-07 04:24:47.839.
+	 Executed 53 tests, with 0 failures (0 unexpected) in 4.399 (4.401) seconds
+Test Suite 'Selected tests' passed at 2026-09-07 04:24:47.839.
+	 Executed 53 tests, with 0 failures (0 unexpected) in 4.399 (4.402) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "CBv2 prepaid attention workspace ownership" started.
+◇ Suite "Paged complete checkpoint codec" started.
+◇ Suite "CBv2 quantized storage admission" started.
+◇ Suite "Packed paged KV quantization" started.
+◇ Suite "Paged native KV dtype layout" started.
+◇ Suite "Loaded native KV dtype probe" started.
+◇ Suite "Typed checkpoint admission transfer" started.
+◇ Suite "Native process ownership" started.
+◇ Test "two waves consume their prepaid credit without a second capacity debit" started.
+◇ Test "packed groups retain native windows and exact page and assistant overhead" started.
+◇ Test "equal geometry preserves separate native dtype and window roots" started.
+◇ Test exactFitTransfersOnlyDestinationAndKeepsOtherOwnersAndScratch() started.
+◇ Test checkedFormatIdentityAndAccounting() started.
+◇ Test "both phases observe actual mixed storage types and release every private row" started.
+◇ Test "Actual-M destinations move into full-N request ownership without byte conversion" started.
+◇ Test completeChargePrecedesAllocationAndReleaseWithdrawsCoverage() started.
+◇ Test case passing 1 argument dtype → .bfloat16 to "Actual-M destinations move into full-N request ownership without byte conversion" started.
+✔ Test "packed groups retain native windows and exact page and assistant overhead" passed after 0.001 seconds.
+✔ Test exactFitTransfersOnlyDestinationAndKeepsOtherOwnersAndScratch() passed after 0.001 seconds.
+✔ Test "two waves consume their prepaid credit without a second capacity debit" passed after 0.001 seconds.
+◇ Test "deadline projection and conservative chained-decode guard use packed byte rates" started.
+◇ Test oneExtraPhysicalByteRefusesWithoutConsumingStage() started.
+◇ Test "finish before GPU completion cannot lend old workspace credit to a new request" started.
+✔ Test oneExtraPhysicalByteRefusesWithoutConsumingStage() passed after 0.001 seconds.
+✔ Test "deadline projection and conservative chained-decode guard use packed byte rates" passed after 0.001 seconds.
+◇ Test explicitConsumptionStateRejectsZeroDestinationReuseAndForeignPool() started.
+◇ Test "explicit native reconstruction scratch remains additive to packed storage" started.
+✔ Test "finish before GPU completion cannot lend old workspace credit to a new request" passed after 0.001 seconds.
+◇ Test "rollback preserves leased scratch and detached old generations cannot release a reused id" started.
+✔ Test "explicit native reconstruction scratch remains additive to packed storage" passed after 0.001 seconds.
+✔ Test "rollback preserves leased scratch and detached old generations cannot release a reused id" passed after 0.001 seconds.
+◇ Test "malformed exact rates never fall back to native or free storage" started.
+◇ Test "private teacher rows prepay workspaces and target physical slack cannot cover scratch" started.
+✔ Test "private teacher rows prepay workspaces and target physical slack cannot cover scratch" passed after 0.001 seconds.
+✔ Test "malformed exact rates never fall back to native or free storage" passed after 0.001 seconds.
+◇ Test "checkpoint transfer prepays fresh workspace without discounting imported auxiliary state" started.
+◇ Test "engine derives admission rates from the actual packed and native groups" started.
+✔ Test "checkpoint transfer prepays fresh workspace without discounting imported auxiliary state" passed after 0.001 seconds.
+✔ Test explicitConsumptionStateRejectsZeroDestinationReuseAndForeignPool() passed after 0.001 seconds.
+◇ Test "prospective bounds cover two live prefill or batched-decode workspaces" started.
+◇ Test paddedAuxiliaryTransfersAtomicallyAndStaysOutOfTargetTelemetry() started.
+✔ Test paddedAuxiliaryTransfersAtomicallyAndStaysOutOfTargetTelemetry() passed after 0.001 seconds.
+◇ Test preemptionReleasesAuxiliaryPartitionBeforeIDReuse() started.
+✔ Test preemptionReleasesAuxiliaryPartitionBeforeIDReuse() passed after 0.001 seconds.
+◇ Test paddedAuxiliaryRollbackRemovesItsTypedPartition() started.
+✔ Test paddedAuxiliaryRollbackRemovesItsTypedPartition() passed after 0.001 seconds.
+✔ Suite "Typed checkpoint admission transfer" passed after 0.001 seconds.
+✔ Test "prospective bounds cover two live prefill or batched-decode workspaces" passed after 0.004 seconds.
+◇ Test "one long decode row prepays the whole rectangular batch partition width" started.
+✔ Test "one long decode row prepays the whole rectangular batch partition width" passed after 0.001 seconds.
+◇ Test "unrelated resident segments cannot inflate a short prefill's reserved workspace" started.
+✔ Test "both phases observe actual mixed storage types and release every private row" passed after 0.039 seconds.
+◇ Test "changed or asymmetric types fail before any paged allocation and unbind all rows" started.
+✔ Test "changed or asymmetric types fail before any paged allocation and unbind all rows" passed after 0.002 seconds.
+✔ Suite "Loaded native KV dtype probe" passed after 0.041 seconds.
+✔ Test completeChargePrecedesAllocationAndReleaseWithdrawsCoverage() passed after 0.686 seconds.
+◇ Test sharedRefusalLeavesNativeRequestAndPhysicalStateUntouched() started.
+✔ Test sharedRefusalLeavesNativeRequestAndPhysicalStateUntouched() passed after 0.001 seconds.
+◇ Test partialPreparationDropsEvaluatedCoverageBeforeRollback() started.
+✔ Test "equal geometry preserves separate native dtype and window roots" passed after 0.697 seconds.
+◇ Test "storage and admission use the same mixed element widths" started.
+✔ Test checkedFormatIdentityAndAccounting() passed after 0.703 seconds.
+◇ Test rotationPreservesDotProductAndInverts(dim:) started.
+◇ Test case passing 1 argument dim → 64 to rotationPreservesDotProductAndInverts(dim:) started.
+✔ Test "engine derives admission rates from the actual packed and native groups" passed after 0.702 seconds.
+◇ Test "quantized engines never read legacy native snapshot prefix entries" started.
+◇ Test case passing 1 argument dim → 128 to rotationPreservesDotProductAndInverts(dim:) started.
+◇ Test case passing 1 argument dim → 256 to rotationPreservesDotProductAndInverts(dim:) started.
+◇ Test case passing 1 argument dim → 512 to rotationPreservesDotProductAndInverts(dim:) started.
+✔ Test rotationPreservesDotProductAndInverts(dim:) with 4 test cases passed after 0.006 seconds.
+◇ Test packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 2 arguments dtype → .float16, dim → 64 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 1 argument dtype → .float16 to "Actual-M destinations move into full-N request ownership without byte conversion" started.
+✔ Test "unrelated resident segments cannot inflate a short prefill's reserved workspace" passed after 0.780 seconds.
+✔ Suite "CBv2 prepaid attention workspace ownership" passed after 0.787 seconds.
+✔ Test partialPreparationDropsEvaluatedCoverageBeforeRollback() passed after 0.413 seconds.
+◇ Test stagedBackingKeepsOneCreditAcrossRebasedWrappers() started.
+✔ Test "storage and admission use the same mixed element widths" passed after 0.406 seconds.
+◇ Test "invalid dtype tables and mismatched borrowed native layouts refuse construction" started.
+✔ Test "quantized engines never read legacy native snapshot prefix entries" passed after 0.417 seconds.
+◇ Test "workspace covers image block snapping and solo stripes beyond the plain prefill chunk" started.
+◇ Test case passing 1 argument dtype → .float32 to "Actual-M destinations move into full-N request ownership without byte conversion" started.
+✔ Test "invalid dtype tables and mismatched borrowed native layouts refuse construction" passed after 0.394 seconds.
+✔ Suite "Paged native KV dtype layout" passed after 1.498 seconds.
+✔ Test stagedBackingKeepsOneCreditAcrossRebasedWrappers() passed after 0.399 seconds.
+◇ Test retainedReadAliasDoesNotKeepCreditAfterPoolRetirement() started.
+✔ Test "Actual-M destinations move into full-N request ownership without byte conversion" with 3 test cases passed after 1.556 seconds.
+◇ Test destinationBoundRefusesBeforeAnyNativeAllocation() started.
+✔ Test "workspace covers image block snapping and solo stripes beyond the plain prefill chunk" passed after 0.737 seconds.
+✔ Suite "CBv2 quantized storage admission" passed after 1.858 seconds.
+✔ Test retainedReadAliasDoesNotKeepCreditAfterPoolRetirement() passed after 0.358 seconds.
+◇ Test emptyPoolTeardownDoesNotTransactWithRetiredGeneration() started.
+✔ Test destinationBoundRefusesBeforeAnyNativeAllocation() passed after 0.355 seconds.
+◇ Test "Backend identity and dtype mismatches reject before allocations" started.
+◇ Test case passing 2 arguments dtype → .float16, dim → 256 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+✔ Test emptyPoolTeardownDoesNotTransactWithRetiredGeneration() passed after 0.316 seconds.
+◇ Test detachedPromiseAndClosingOwnerRetainTheirActualCharge() started.
+✔ Test detachedPromiseAndClosingOwnerRetainTheirActualCharge() passed after 0.316 seconds.
+✔ Suite "Native process ownership" passed after 2.492 seconds.
+✔ Test "Backend identity and dtype mismatches reject before allocations" passed after 0.658 seconds.
+◇ Test "Window and borrowed layers remain outside the complete codec contract" started.
+◇ Test case passing 1 argument borrowed → false to "Window and borrowed layers remain outside the complete codec contract" started.
+◇ Test case passing 1 argument borrowed → true to "Window and borrowed layers remain outside the complete codec contract" started.
+✔ Test "Window and borrowed layers remain outside the complete codec contract" with 2 test cases passed after 0.517 seconds.
+◇ Test "Native and auxiliary allocation faults drop arrays before returning stage capacity" started.
+◇ Test case passing 1 argument failAt → 1 to "Native and auxiliary allocation faults drop arrays before returning stage capacity" started.
+◇ Test case passing 2 arguments dtype → .float16, dim → 512 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 1 argument failAt → 2 to "Native and auxiliary allocation faults drop arrays before returning stage capacity" started.
+✔ Test "Native and auxiliary allocation faults drop arrays before returning stage capacity" with 2 test cases passed after 0.519 seconds.
+◇ Test "Auxiliary eval-then-throw drains before refund and preserves native error priority" started.
+◇ Test case passing 1 argument failureKind → 0 to "Auxiliary eval-then-throw drains before refund and preserves native error priority" started.
+◇ Test case passing 1 argument failureKind → 1 to "Auxiliary eval-then-throw drains before refund and preserves native error priority" started.
+◇ Test case passing 1 argument failureKind → 2 to "Auxiliary eval-then-throw drains before refund and preserves native error priority" started.
+✔ Test "Auxiliary eval-then-throw drains before refund and preserves native error priority" with 3 test cases passed after 0.825 seconds.
+◇ Test "Close racing consumption cannot refund an in-flight adoption payload" started.
+◇ Test case passing 2 arguments dtype → .bfloat16, dim → 64 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+✔ Test "Close racing consumption cannot refund an in-flight adoption payload" passed after 0.264 seconds.
+◇ Test "Failed recurrent restoration refunds pages only after candidate aliases drain" started.
+✔ Test "Failed recurrent restoration refunds pages only after candidate aliases drain" passed after 0.276 seconds.
+◇ Test "Packed codes and FP32 metadata survive complete stage/adopt/export without requantization" started.
+◇ Test case passing 1 argument quantization → PagedKVQuantizationConfig(keyBits: 4, valueBits: 4, groupSize: 64, rotationBlockSize: 128, version: 1) to "Packed codes and FP32 metadata survive complete stage/adopt/export without requantization" started.
+◇ Test case passing 2 arguments dtype → .bfloat16, dim → 256 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 1 argument quantization → PagedKVQuantizationConfig(keyBits: 8, valueBits: 4, groupSize: 64, rotationBlockSize: 128, version: 1) to "Packed codes and FP32 metadata survive complete stage/adopt/export without requantization" started.
+◇ Test case passing 1 argument quantization → PagedKVQuantizationConfig(keyBits: 8, valueBits: 8, groupSize: 64, rotationBlockSize: 128, version: 1) to "Packed codes and FP32 metadata survive complete stage/adopt/export without requantization" started.
+◇ Test case passing 2 arguments dtype → .bfloat16, dim → 512 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 1 argument quantization → PagedKVQuantizationConfig(keyBits: 4, valueBits: 4, groupSize: 64, rotationBlockSize: 0, version: 1) to "Packed codes and FP32 metadata survive complete stage/adopt/export without requantization" started.
+✔ Test "Packed codes and FP32 metadata survive complete stage/adopt/export without requantization" with 4 test cases passed after 2.177 seconds.
+◇ Test quantizedManifestBindsFormatBeforeAllocation() started.
+◇ Test case passing 2 arguments dtype → .float32, dim → 64 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+✔ Test quantizedManifestBindsFormatBeforeAllocation() passed after 1.342 seconds.
+◇ Test packedMetadataCannotBeRelabeledNative() started.
+✔ Test packedMetadataCannotBeRelabeledNative() passed after 0.274 seconds.
+✔ Suite "Paged complete checkpoint codec" passed after 8.768 seconds.
+◇ Test case passing 2 arguments dtype → .float32, dim → 256 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 2 arguments dtype → .float32, dim → 512 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+✔ Test packedStorageGatherAndNewestDecode(dtype:dim:) with 9 test cases passed after 10.362 seconds.
+◇ Test directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) started.
+◇ Test case passing 2 arguments tokens → 33, negativeLogits → false to directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) started.
+◇ Test case passing 2 arguments tokens → 33, negativeLogits → true to directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) started.
+◇ Test case passing 2 arguments tokens → 273, negativeLogits → false to directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) started.
+◇ Test case passing 2 arguments tokens → 273, negativeLogits → true to directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) started.
+✔ Test directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) with 4 test cases passed after 2.350 seconds.
+◇ Test constantOutlierRowsAndAsymmetricDiagnosticFormat() started.
+✔ Test constantOutlierRowsAndAsymmetricDiagnosticFormat() passed after 0.483 seconds.
+◇ Test packedVisionSpanMaskMatchesIndependentDenseAttention() started.
+✔ Test packedVisionSpanMaskMatchesIndependentDenseAttention() passed after 0.252 seconds.
+✔ Suite "Packed paged KV quantization" passed after 14.160 seconds.
+✔ Test run with 50 tests in 8 suites passed after 14.160 seconds.

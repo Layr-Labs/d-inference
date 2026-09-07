@@ -62,6 +62,8 @@ public enum CapacityHeartbeatMateriality {
             // material — these are exactly the events the coordinator's
             // ledger debits against.
             if before.state != slot.state { return true }
+            if KVPerformanceIdentity.normalized(before.executionIdentity) !=
+                KVPerformanceIdentity.normalized(slot.executionIdentity) { return true }
             if before.numRunning != slot.numRunning { return true }
             if before.numWaiting != slot.numWaiting { return true }
             // Token budget drifting without an admission-count change

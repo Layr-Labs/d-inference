@@ -30,7 +30,7 @@ struct Benchmark: AsyncParsableCommand {
         """)
     var schedulerPrefillDecision = false
 
-    @Option(name: .long, help: "Signed decision: expected registered model aggregate SHA-256.")
+    @Option(name: .long, help: "Expected registered model aggregate SHA-256 for signed decisions or --model-directory performance measurements.")
     var expectedModelAggregateSHA256: String?
 
     @Option(name: .long, help: "Signed decision: expected registered signed darkbloom binary SHA-256.")
@@ -107,6 +107,12 @@ struct Benchmark: AsyncParsableCommand {
         """)
     var kvBackend = "auto"
 
+    @Option(name: .long, help: "Experimental full-attention KV format: native|int4|k8v4|int8 (default native). Non-native requires --kv-backend paged and --sweep, --scheduler-prefill, --arrival-invariance --teacher-forced-input or --kv-quality-input. Quantized --sweep omits prefill; use --scheduler-prefill to measure it.")
+    var kvQuantization = "native"
+
+    @Option(name: .long, help: "Packed KV benchmark prefill policy: direct or opportunistic. Requires packed paged KV and --sweep, --scheduler-prefill or --kv-quality-input. Default direct; actual route decisions and fallback counts are reported.")
+    var quantizedPrefill: String?
+
     @Flag(name: .long, help: """
         Run the cold-prefill TTFT benchmark through the production \
         ContinuousBatchingV2 engine and print a JSON report (engine-internal \
@@ -163,12 +169,34 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Score bounded exact token contexts from JSON with an explicit --model and --kv-backend; ordinary target only, cache and MTP off.")
     var teacherForcedInput: String?
 
+    @Option(name: .long, help: "Run bounded free-generation cases from JSON with explicit --model and --kv-backend. Input tokens and expected artifact hash are pinned; MTP and caching are off.")
+    var kvQualityInput: String?
+
+    @Option(name: .long, help: "Load this exact directory with explicit --model for teacher-forced/free-generation scoring, sweep, scheduler-prefill or arrival-invariance. Performance modes require --expected-model-aggregate-sha256; hashes are verified before and after measurement.")
+    var modelDirectory: String?
+
     mutating func run() async throws {
         if let conflict = benchmarkModeConflict() {
             printError(conflict)
             throw ExitCode(2)
         }
+        if let error = modelDirectoryOptionError() {
+            printError(error)
+            throw ExitCode(2)
+        }
         if let error = teacherForcedOptionError() {
+            printError(error)
+            throw ExitCode(2)
+        }
+        if let error = kvQualityOptionError() {
+            printError(error)
+            throw ExitCode(2)
+        }
+        if let error = kvQuantizationOptionError() {
+            printError(error)
+            throw ExitCode(2)
+        }
+        if let error = quantizedPrefillOptionError() {
             printError(error)
             throw ExitCode(2)
         }
@@ -224,35 +252,41 @@ struct Benchmark: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let models = advertisedModels(from: snapshot.models, config: snapshot.config)
-
-        guard let selectedModel = ModelBenchmark.selectModel(
-            models: models,
-            preferredModel: model ?? snapshot.config.backend.model
-        ) else {
-            printError("no suitable model found for benchmarking. Download an MLX model first.")
-            throw ExitCode.failure
+        let selectedModelID: String
+        let modelPath: URL
+        if let directory = exactModelDirectoryOverride(), let model {
+            selectedModelID = model
+            modelPath = directory
+        } else {
+            let models = advertisedModels(from: snapshot.models, config: snapshot.config)
+            guard let selectedModel = ModelBenchmark.selectModel(
+                models: models, preferredModel: model ?? snapshot.config.backend.model) else {
+                printError("no suitable model found for benchmarking. Download an MLX model first.")
+                throw ExitCode.failure
+            }
+            guard let directory = ModelScanner.resolveLocalPath(modelID: selectedModel.id) else {
+                printError("could not resolve local path for model '\(selectedModel.id)'")
+                throw ExitCode.failure
+            }
+            selectedModelID = selectedModel.id
+            modelPath = directory
         }
 
-        guard let modelPath = ModelScanner.resolveLocalPath(modelID: selectedModel.id) else {
-            printError("could not resolve local path for model '\(selectedModel.id)'")
-            throw ExitCode.failure
+        if let kvQualityInput {
+            try await runKVQuality(modelID: selectedModelID, directory: modelPath, inputPath: kvQualityInput)
+            return
         }
 
         if let teacherForcedInput {
-            let result = try await TeacherForcedBenchmark.run(
-                modelID: selectedModel.id, modelDirectory: modelPath,
-                inputURL: URL(fileURLWithPath: teacherForcedInput), backend: kvBackend,
-                gemmaOptimizations: gemmaSettings)
-            // Preserve nonfinite/neutrality evidence even when inconclusive.
-            print(result.json)
-            if !result.controlsPassed { throw ExitCode(2) }
+            try await runTeacherForcedScoring(
+                modelID: selectedModelID, modelDirectory: modelPath,
+                inputPath: teacherForcedInput, gemmaOptimizations: gemmaSettings)
             return
         }
 
         if parity {
             try await runBackendParity(
-                modelID: selectedModel.id,
+                modelID: selectedModelID,
                 modelDirectory: modelPath
             )
             return
@@ -260,7 +294,7 @@ struct Benchmark: AsyncParsableCommand {
 
         if sweep {
             try await runThroughputSweep(
-                modelID: selectedModel.id,
+                modelID: selectedModelID,
                 modelDirectory: modelPath,
                 hardware: hardware,
                 gemmaOptimizations: gemmaSettings
@@ -270,7 +304,7 @@ struct Benchmark: AsyncParsableCommand {
 
         if schedulerPrefill {
             try await runSchedulerPrefillBenchmark(
-                modelID: selectedModel.id,
+                modelID: selectedModelID,
                 modelDirectory: modelPath,
                 gemmaOptimizations: gemmaSettings
             )
@@ -279,7 +313,7 @@ struct Benchmark: AsyncParsableCommand {
 
         if arrivalInvariance {
             try await runArrivalInvarianceBenchmark(
-                modelID: selectedModel.id,
+                modelID: selectedModelID,
                 modelDirectory: modelPath,
                 gemmaOptimizations: gemmaSettings
             )
@@ -290,7 +324,7 @@ struct Benchmark: AsyncParsableCommand {
         print("")
 
         let report = try await ModelBenchmark.run(
-            modelID: selectedModel.id,
+            modelID: selectedModelID,
             modelDirectory: modelPath,
             prompt: prompt,
             iterations: iterations,
@@ -309,6 +343,7 @@ struct Benchmark: AsyncParsableCommand {
             (arrivalInvariance, "--arrival-invariance"),
             (parity, "--parity"),
             (teacherForcedInput != nil, "--teacher-forced-input"),
+            (kvQualityInput != nil, "--kv-quality-input"),
         ].compactMap { $0.0 ? $0.1 : nil }
         guard selected.count <= 1 else {
             return "benchmark modes are mutually exclusive: \(selected.joined(separator: ", "))"
@@ -320,6 +355,9 @@ struct Benchmark: AsyncParsableCommand {
         guard let teacherForcedInput else { return nil }
         guard !teacherForcedInput.isEmpty, let model, !model.isEmpty else {
             return "--teacher-forced-input requires a file and explicit --model"
+        }
+        guard expectedModelAggregateSHA256 == nil else {
+            return "--teacher-forced-input binds the expected aggregate in its input file; --expected-model-aggregate-sha256 does not apply"
         }
         guard assistantModel == nil, output == nil else {
             return "--teacher-forced-input uses ordinary target scoring and JSON stdout; assistant and signed-decision output options do not apply"

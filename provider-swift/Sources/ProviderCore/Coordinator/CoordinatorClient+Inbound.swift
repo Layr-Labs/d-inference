@@ -114,11 +114,13 @@ extension CoordinatorClient {
             let slot = published?.slots.first { $0.model == probe.model }
             let ttft = state.ttftTracker.estimate(
                 model: probe.model,
-                warm: slot != nil,
+                warm: slot?.state == "running" || slot?.state == "idle",
                 promptBucket: TTFTQuantileTracker.promptBucket(
                     forPromptTokens: probe.promptTokensBucket),
                 batchBucket: TTFTQuantileTracker.batchBucket(
-                    forActiveRequests: Int(slot?.numRunning ?? 0)))
+                    forActiveRequests: Int(slot?.numRunning ?? 0)),
+                executionIdentity: KVPerformanceIdentity.resolved(slot: slot,
+                    declared: advertisedModelStore.models.first { $0.id == probe.model }))
             let quote = CapacityQuoteEngine.quote(CapacityQuoteEngine.Inputs(
                 probe: probe,
                 capacity: published,

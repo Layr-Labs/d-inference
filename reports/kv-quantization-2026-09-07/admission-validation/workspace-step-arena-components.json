@@ -1,0 +1,281 @@
+{
+  "scope": "Analytic exact decomposition of tested scoped shared partial/meta arenas; totals asserted equal native getter diagnostics in kv-workspace-step-arena-attempt1.log. Conservative FP32 output charge; no output discount. This is admission capacity arithmetic, not measured heap, quality, throughput, or total process memory. Weights, native windows, recurrent state, page tails, detached owners and other model slots are excluded from the full-KV comparison and remain separately charged. 2048prefill,16tokenpages,256tokenpartitions,8tokenlookahead,B4.",
+  "base": {
+    "repository": "0b46b1618d43cae3ae3d8e0fde1a9cc6d974e9d0",
+    "native": "6aa60eeb51881eed53a457a4edf1d94918eff89f"
+  },
+  "rows": [
+    {
+      "model": "Qwen3.6",
+      "full_layers": 10,
+      "tokens": 32768,
+      "batch": 4,
+      "serial": 1,
+      "branch": "prefill+decode",
+      "bytes": 401626606,
+      "components_bytes": {
+        "gpu_metadata": 3768280,
+        "host_metadata": 15686400,
+        "output": 336855020,
+        "fences_seqinfo": 3730750,
+        "write_metadata": 6032880,
+        "fixed": 1310720,
+        "shared_partials": 33882110,
+        "shared_meta": 360446
+      },
+      "native_full_kv_bytes": 671088640,
+      "packed_full_kv_bytes": 209715200,
+      "packed_full_kv_plus_workspace_bytes": 611341806
+    },
+    {
+      "model": "Qwen3.6",
+      "full_layers": 10,
+      "tokens": 32768,
+      "batch": 4,
+      "serial": 8,
+      "branch": "prefill+decode",
+      "bytes": 401626606,
+      "components_bytes": {
+        "gpu_metadata": 3768280,
+        "host_metadata": 15686400,
+        "output": 336855020,
+        "fences_seqinfo": 3730750,
+        "write_metadata": 6032880,
+        "fixed": 1310720,
+        "shared_partials": 33882110,
+        "shared_meta": 360446
+      },
+      "native_full_kv_bytes": 671088640,
+      "packed_full_kv_bytes": 209715200,
+      "packed_full_kv_plus_workspace_bytes": 611341806
+    },
+    {
+      "model": "Qwen3.6",
+      "full_layers": 10,
+      "tokens": 131072,
+      "batch": 4,
+      "serial": 1,
+      "branch": "prefill+decode",
+      "bytes": 562657774,
+      "components_bytes": {
+        "gpu_metadata": 9666520,
+        "host_metadata": 62380800,
+        "output": 336855020,
+        "fences_seqinfo": 10719550,
+        "write_metadata": 6032880,
+        "fixed": 1310720,
+        "shared_partials": 134545406,
+        "shared_meta": 1146878
+      },
+      "native_full_kv_bytes": 2684354560,
+      "packed_full_kv_bytes": 838860800,
+      "packed_full_kv_plus_workspace_bytes": 1401518574
+    },
+    {
+      "model": "Qwen3.6",
+      "full_layers": 10,
+      "tokens": 131072,
+      "batch": 4,
+      "serial": 8,
+      "branch": "prefill+decode",
+      "bytes": 562657774,
+      "components_bytes": {
+        "gpu_metadata": 9666520,
+        "host_metadata": 62380800,
+        "output": 336855020,
+        "fences_seqinfo": 10719550,
+        "write_metadata": 6032880,
+        "fixed": 1310720,
+        "shared_partials": 134545406,
+        "shared_meta": 1146878
+      },
+      "native_full_kv_bytes": 2684354560,
+      "packed_full_kv_bytes": 838860800,
+      "packed_full_kv_plus_workspace_bytes": 1401518574
+    },
+    {
+      "model": "GPT-OSS",
+      "full_layers": 12,
+      "tokens": 32768,
+      "batch": 4,
+      "serial": 1,
+      "branch": "prefill+decode",
+      "bytes": 475889848,
+      "components_bytes": {
+        "gpu_metadata": 4521936,
+        "host_metadata": 18823680,
+        "output": 404226024,
+        "fences_seqinfo": 4476900,
+        "write_metadata": 7239456,
+        "fixed": 1572864,
+        "shared_partials": 33882110,
+        "shared_meta": 1146878
+      },
+      "native_full_kv_bytes": 1610612736,
+      "packed_full_kv_bytes": 251658240,
+      "packed_full_kv_plus_workspace_bytes": 727548088
+    },
+    {
+      "model": "GPT-OSS",
+      "full_layers": 12,
+      "tokens": 32768,
+      "batch": 4,
+      "serial": 8,
+      "branch": "prefill+decode",
+      "bytes": 475889848,
+      "components_bytes": {
+        "gpu_metadata": 4521936,
+        "host_metadata": 18823680,
+        "output": 404226024,
+        "fences_seqinfo": 4476900,
+        "write_metadata": 7239456,
+        "fixed": 1572864,
+        "shared_partials": 33882110,
+        "shared_meta": 1146878
+      },
+      "native_full_kv_bytes": 1610612736,
+      "packed_full_kv_bytes": 251658240,
+      "packed_full_kv_plus_workspace_bytes": 727548088
+    },
+    {
+      "model": "GPT-OSS",
+      "full_layers": 12,
+      "tokens": 131072,
+      "batch": 4,
+      "serial": 1,
+      "branch": "prefill+decode",
+      "bytes": 651196600,
+      "components_bytes": {
+        "gpu_metadata": 11599824,
+        "host_metadata": 74856960,
+        "output": 404226024,
+        "fences_seqinfo": 12863460,
+        "write_metadata": 7239456,
+        "fixed": 1572864,
+        "shared_partials": 134545406,
+        "shared_meta": 4292606
+      },
+      "native_full_kv_bytes": 6442450944,
+      "packed_full_kv_bytes": 1006632960,
+      "packed_full_kv_plus_workspace_bytes": 1657829560
+    },
+    {
+      "model": "GPT-OSS",
+      "full_layers": 12,
+      "tokens": 131072,
+      "batch": 4,
+      "serial": 8,
+      "branch": "prefill+decode",
+      "bytes": 651196600,
+      "components_bytes": {
+        "gpu_metadata": 11599824,
+        "host_metadata": 74856960,
+        "output": 404226024,
+        "fences_seqinfo": 12863460,
+        "write_metadata": 7239456,
+        "fixed": 1572864,
+        "shared_partials": 134545406,
+        "shared_meta": 4292606
+      },
+      "native_full_kv_bytes": 6442450944,
+      "packed_full_kv_bytes": 1006632960,
+      "packed_full_kv_plus_workspace_bytes": 1657829560
+    },
+    {
+      "model": "Gemma4",
+      "full_layers": 5,
+      "tokens": 32768,
+      "batch": 4,
+      "serial": 1,
+      "branch": "prefill+decode",
+      "bytes": 419850997,
+      "components_bytes": {
+        "gpu_metadata": 1884140,
+        "host_metadata": 7843200,
+        "output": 336527350,
+        "fences_seqinfo": 1865375,
+        "write_metadata": 3016440,
+        "fixed": 655360,
+        "shared_partials": 67698686,
+        "shared_meta": 360446
+      },
+      "native_full_kv_bytes": 671088640,
+      "packed_full_kv_bytes": 209715200,
+      "packed_full_kv_plus_workspace_bytes": 629566197
+    },
+    {
+      "model": "Gemma4",
+      "full_layers": 5,
+      "tokens": 32768,
+      "batch": 4,
+      "serial": 8,
+      "branch": "prefill+decode",
+      "bytes": 419850997,
+      "components_bytes": {
+        "gpu_metadata": 1884140,
+        "host_metadata": 7843200,
+        "output": 336527350,
+        "fences_seqinfo": 1865375,
+        "write_metadata": 3016440,
+        "fixed": 655360,
+        "shared_partials": 67698686,
+        "shared_meta": 360446
+      },
+      "native_full_kv_bytes": 671088640,
+      "packed_full_kv_bytes": 209715200,
+      "packed_full_kv_plus_workspace_bytes": 629566197
+    },
+    {
+      "model": "Gemma4",
+      "full_layers": 5,
+      "tokens": 131072,
+      "batch": 4,
+      "serial": 1,
+      "branch": "prefill+decode",
+      "bytes": 651754741,
+      "components_bytes": {
+        "gpu_metadata": 4833260,
+        "host_metadata": 31190400,
+        "output": 336527350,
+        "fences_seqinfo": 5359775,
+        "write_metadata": 3016440,
+        "fixed": 655360,
+        "shared_partials": 269025278,
+        "shared_meta": 1146878
+      },
+      "native_full_kv_bytes": 2684354560,
+      "packed_full_kv_bytes": 838860800,
+      "packed_full_kv_plus_workspace_bytes": 1490615541
+    },
+    {
+      "model": "Gemma4",
+      "full_layers": 5,
+      "tokens": 131072,
+      "batch": 4,
+      "serial": 8,
+      "branch": "prefill+decode",
+      "bytes": 651754741,
+      "components_bytes": {
+        "gpu_metadata": 4833260,
+        "host_metadata": 31190400,
+        "output": 336527350,
+        "fences_seqinfo": 5359775,
+        "write_metadata": 3016440,
+        "fixed": 655360,
+        "shared_partials": 269025278,
+        "shared_meta": 1146878
+      },
+      "native_full_kv_bytes": 2684354560,
+      "packed_full_kv_bytes": 838860800,
+      "packed_full_kv_plus_workspace_bytes": 1490615541
+    }
+  ],
+  "source_sha256": {
+    "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedQuantizedAttentionWorkspace.swift": "d821cfeea4bca4724b967e9b61443c14e3e58943044843177294e24bd9e588fa",
+    "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedQuantizedStepScratch.swift": "517ddbdae85e27c1f1586ab18bd430dd4741374796f6512f9bdefa25cd462f9e",
+    "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/QuantizedWorkspaceProjection.swift": "0df1b6b844b9a423a3bee18b6ee971f85246c7436d303fcb49f5530944d297c4",
+    "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/QuantizedWorkspaceCostEnvelope.swift": "8dc43a4e3d7d74a1376ba8cece6d822a17ea71cb93ead3f5c67cd43f74226b3c",
+    "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/WorkspaceOverlapPolicy.swift": "36b1febb132bd11b9a60920f0cb722ad98edc0be4b821ece70f86d9e2e61d514",
+    "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2+QuantizedScratch.swift": "89e5b41623ce3da6ce08e6502b240a791b91a383362aa19257804c6cfc217790"
+  }
+}

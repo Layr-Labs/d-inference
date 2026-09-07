@@ -1,0 +1,66 @@
+{
+  "original_go_attempt2_log_window": {
+    "created": "2026-09-07T08:11:17-07:00",
+    "modified": "2026-09-07T08:11:37-07:00",
+    "overlapped_root_intermediate_model_run": true
+  },
+  "logs": [
+    {
+      "path": "reports/kv-quantization-2026-09-07/validation/execution-identity-api-monitor-attempt1.log",
+      "created_at": "2026-09-07T08:38:14.159421-07:00",
+      "modified_at": "2026-09-07T08:38:20.426819-07:00",
+      "bytes": 2898
+    },
+    {
+      "path": "reports/kv-quantization-2026-09-07/validation/execution-identity-go-attempt1-wrong-cwd.log",
+      "created_at": "2026-09-07T08:31:09.892096-07:00",
+      "modified_at": "2026-09-07T08:31:09.892479-07:00",
+      "bytes": 261
+    },
+    {
+      "path": "reports/kv-quantization-2026-09-07/validation/execution-identity-go-attempt2-pass.log",
+      "created_at": "2026-09-07T08:31:09.897238-07:00",
+      "modified_at": "2026-09-07T08:31:09.897386-07:00",
+      "bytes": 143
+    },
+    {
+      "path": "reports/kv-quantization-2026-09-07/validation/execution-identity-go-focused-attempt1-pass.log",
+      "created_at": "2026-09-07T08:31:09.900290-07:00",
+      "modified_at": "2026-09-07T08:31:09.900436-07:00",
+      "bytes": 142
+    },
+    {
+      "path": "reports/kv-quantization-2026-09-07/validation/execution-identity-go-full-attempt1.log",
+      "created_at": "2026-09-07T08:31:16.847341-07:00",
+      "modified_at": "2026-09-07T08:34:03.489972-07:00",
+      "bytes": 2160
+    },
+    {
+      "path": "reports/kv-quantization-2026-09-07/validation/execution-identity-go-race-attempt1.log",
+      "created_at": "2026-09-07T08:35:49.964125-07:00",
+      "modified_at": "2026-09-07T08:35:55.105877-07:00",
+      "bytes": 1632
+    },
+    {
+      "path": "reports/kv-quantization-2026-09-07/validation/execution-identity-provider-attempt1.log",
+      "created_at": "2026-09-07T08:33:40.022784-07:00",
+      "modified_at": "2026-09-07T08:35:03.002945-07:00",
+      "bytes": 702818
+    },
+    {
+      "path": "reports/kv-quantization-2026-09-07/validation/execution-identity-provider-pure-attempt2.log",
+      "created_at": "2026-09-07T08:35:25.397426-07:00",
+      "modified_at": "2026-09-07T08:35:46.682263-07:00",
+      "bytes": 33440
+    },
+    {
+      "path": "reports/kv-quantization-2026-09-07/validation/execution-identity-ts-lint-attempt1.log",
+      "created_at": "2026-09-07T08:38:15.346082-07:00",
+      "modified_at": "2026-09-07T08:38:17.165703-07:00",
+      "bytes": 153
+    }
+  ],
+  "provider_expanded_filter_note": "The expanded filter included helper names and selected a passing superset:95 tests/25 suites including real tiny model backend GPU fixtures. It ran only in the validation window, never during quiet timing comparisons.",
+  "full_go_note": "Full go test ./... passed before the final additive API detector exclusion/accessor and TypeScript mirror change. Focused API anomaly and registry identity tests passed after those changes.",
+  "race_test_count": 11
+}

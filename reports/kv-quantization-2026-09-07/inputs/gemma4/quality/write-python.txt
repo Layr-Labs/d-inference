@@ -1,0 +1,7 @@
+<bos><|turn>system
+Follow the user's output format exactly. Do not include an explanation unless requested.<turn|>
+<|turn>user
+Write a Python function stable_unique(values) returning a list with duplicate hashable items removed while preserving first occurrence order. Do not mutate the input. Return only Python source without Markdown. Include no example calls.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>

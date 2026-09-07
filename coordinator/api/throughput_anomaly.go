@@ -121,7 +121,15 @@ func (s *Server) collectThroughputBuckets() map[string]*throughputBucket {
 		hw := p.Hardware
 		var slots []protocol.BackendSlotCapacity
 		if p.BackendCapacity != nil {
-			slots = append(slots, p.BackendCapacity.Slots...)
+			for _, slot := range p.BackendCapacity.Slots {
+				// The detector's active-parameter bandwidth expectation is a
+				// native-KV control. Quantized execution has different kernel
+				// cost and must not train or trigger these native buckets. Use
+				// declaration fallback for nonresident stale placeholders too.
+				if p.ExecutionIdentityForModelLocked(slot.Model) == "" {
+					slots = append(slots, slot)
+				}
+			}
 		}
 		p.Mu().Unlock()
 

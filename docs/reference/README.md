@@ -1,6 +1,6 @@
 # Reference — exact shapes and values
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-07 · commit `0b46b1618` + working tree
 
 Tables and schemas for Darkbloom's public interfaces, wire protocol,
 configuration, and formats. Consult these; do not read them front to back.
@@ -29,6 +29,7 @@ Every row cites the code that defines it. For how and why things work, use
 | Page | Content |
 |---|---|
 | [ssd-kv-cache.md](ssd-kv-cache.md) | DBK3 on-disk format, paths, identity binding, env knobs, eviction rules, per-family reuse capability, status and outcome vocabularies |
+| [paged-kv-quantization.md](paged-kv-quantization.md) | Packed KV formats, configuration, physical admission, checkpoint identity and benchmark scope |
 
 ## Vocabulary
 

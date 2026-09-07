@@ -93,6 +93,8 @@ extension EngineV2Factory {
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         kvBackend: EngineV2KVBackendSelection = .auto,
+        kvQuantization: EngineV2KVQuantizationSelection = .native,
+        quantizedPrefillMode: PagedQuantizedPrefillMode = .direct,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         residentPrefixCache: CBv2PagedPrefixCacheConfig? = nil,
@@ -110,6 +112,12 @@ extension EngineV2Factory {
         }
         let layerKinds = adapter.layerKinds
         let modelCapabilities = adapter.modelCapabilities
+        if kvQuantization != .native, !layerKinds.contains(where: { kind in
+            guard kind.sharesKVWithLayer == nil, case .full = kind.attention else { return false }
+            return true
+        }) {
+            throw CBv2KVError.backendIneligible(reason: "quantized KV requires an owning full-attention layer")
+        }
         var resolvedKind = EngineV2KVBackendPolicy.preferredBackend(
             selection: kvBackend, modelID: modelID)
         var fallbackReason: String?
@@ -152,7 +160,8 @@ extension EngineV2Factory {
 
         // Unlike policy overrides, paged failures must reject explicit requests.
         func degradeOrRefuse(_ reason: String) throws -> String {
-            guard EngineV2KVBackendPolicy.degradesPagedFailure(selection: kvBackend)
+            guard kvQuantization == .native,
+                EngineV2KVBackendPolicy.degradesPagedFailure(selection: kvBackend)
             else {
                 throw EngineV2ProductionError.pagedUnavailable(reason)
             }
@@ -165,6 +174,8 @@ extension EngineV2Factory {
             environment: environment)
 
         func contiguousPreparation() throws -> ProductionBackendPreparation {
+            try EngineV2KVQuantizationPolicy.requireResolvedBackend(
+                .contiguous, selection: kvQuantization, reason: fallbackReason)
             var contiguousCapacity = cappedCapacity
             let configuredHybridCache: CBv2HybridPrefixCacheConfig?
             if modelCapabilities.supportsRecurrentCheckpointReuse,
@@ -240,7 +251,9 @@ extension EngineV2Factory {
                     maxContextLength: maxContextLength,
                     maxBufferLength: MLX.GPU.deviceInfo().maxBufferSize,
                     residentPrefixCache: modelCapabilities.supportsPrefixReuse
-                        ? residentPrefixCache : nil)
+                        ? residentPrefixCache : nil,
+                    quantization: kvQuantization.configuration,
+                    quantizedPrefillMode: quantizedPrefillMode)
                 let pagedCaches = paged.makeLayerCaches()
                 // Hybrid models number caches by model layer, while paged storage
                 // is dense over attending layers. Convert before indexing the pool.

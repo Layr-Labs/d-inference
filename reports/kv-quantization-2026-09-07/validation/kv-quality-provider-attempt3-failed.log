@@ -1,0 +1,784 @@
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin CudaBuild
+Building for debugging...
+[2/16] Write sources
+[4/16] Write swift-version--58304C5D6DBC2206.txt
+[6/11] Compiling ProviderBenchmark KVQualityCollection.swift
+[7/11] Emitting module ProviderBenchmark
+[8/13] Compiling ProviderBenchmark KVQualityBenchmark+Execution.swift
+[9/13] Compiling ProviderBenchmark KVQualityBenchmark.swift
+[10/34] Emitting module darkbloom
+[10/34] Write Objects.LinkFileList
+[11/34] Linking darkbloom
+[12/34] Applying darkbloom
+[14/35] Emitting module DarkbloomCLITests
+[15/35] Compiling ProviderCoreTests MTPConfigTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/MediaIngestTests.swift:161:9: warning: variable 'pixels' was never mutated; consider changing to 'let' constant
+159 |     // a sideways crop and hallucinates a different scene.
+160 |     let colorSpace = CGColorSpaceCreateDeviceRGB()
+161 |     var pixels: [UInt8] = [
+    |         `- warning: variable 'pixels' was never mutated; consider changing to 'let' constant
+162 |         255, 0, 0, 255,
+163 |         0, 255, 0, 255,
+[16/35] Compiling ProviderCoreTests MTPPostureTelemetryTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/MediaIngestTests.swift:161:9: warning: variable 'pixels' was never mutated; consider changing to 'let' constant
+159 |     // a sideways crop and hallucinates a different scene.
+160 |     let colorSpace = CGColorSpaceCreateDeviceRGB()
+161 |     var pixels: [UInt8] = [
+    |         `- warning: variable 'pixels' was never mutated; consider changing to 'let' constant
+162 |         255, 0, 0, 255,
+163 |         0, 255, 0, 255,
+[17/35] Compiling ProviderCoreTests MTPProductionLiveFixtures.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/MediaIngestTests.swift:161:9: warning: variable 'pixels' was never mutated; consider changing to 'let' constant
+159 |     // a sideways crop and hallucinates a different scene.
+160 |     let colorSpace = CGColorSpaceCreateDeviceRGB()
+161 |     var pixels: [UInt8] = [
+    |         `- warning: variable 'pixels' was never mutated; consider changing to 'let' constant
+162 |         255, 0, 0, 255,
+163 |         0, 255, 0, 255,
+[18/35] Compiling ProviderCoreTests MTPResliceFallbackTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/MediaIngestTests.swift:161:9: warning: variable 'pixels' was never mutated; consider changing to 'let' constant
+159 |     // a sideways crop and hallucinates a different scene.
+160 |     let colorSpace = CGColorSpaceCreateDeviceRGB()
+161 |     var pixels: [UInt8] = [
+    |         `- warning: variable 'pixels' was never mutated; consider changing to 'let' constant
+162 |         255, 0, 0, 255,
+163 |         0, 255, 0, 255,
+[19/35] Compiling ProviderCoreTests MediaIngestTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/MediaIngestTests.swift:161:9: warning: variable 'pixels' was never mutated; consider changing to 'let' constant
+159 |     // a sideways crop and hallucinates a different scene.
+160 |     let colorSpace = CGColorSpaceCreateDeviceRGB()
+161 |     var pixels: [UInt8] = [
+    |         `- warning: variable 'pixels' was never mutated; consider changing to 'let' constant
+162 |         255, 0, 0, 255,
+163 |         0, 255, 0, 255,
+[20/35] Compiling ProviderCoreTests MetallibHashTests.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/MediaIngestTests.swift:161:9: warning: variable 'pixels' was never mutated; consider changing to 'let' constant
+159 |     // a sideways crop and hallucinates a different scene.
+160 |     let colorSpace = CGColorSpaceCreateDeviceRGB()
+161 |     var pixels: [UInt8] = [
+    |         `- warning: variable 'pixels' was never mutated; consider changing to 'let' constant
+162 |         255, 0, 0, 255,
+163 |         0, 255, 0, 255,
+[21/35] Compiling ProviderCoreTests LocalModeTests.swift
+[22/35] Compiling ProviderCoreTests LocalReservationCounterTests.swift
+[23/35] Compiling ProviderCoreTests MDMEnrollmentTests.swift
+[24/35] Compiling ProviderCoreTests MDMTrustDiagnosisTests.swift
+[25/35] Compiling ProviderCoreTests MLXMemoryGuardTests.swift
+[26/35] Compiling ProviderCoreTests MTPBenchmarkTests.swift
+[27/35] Emitting module ProviderCoreTests
+[28/35] Compiling ProviderCoreTests EngineV2RoutingCapacityTests.swift
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:46:86: note: expanded code originates here
+ 44 |     @Test func earlyEOSPreservesRawTokensAndAuthoritativeText() {
+ 45 |         var collector = KVQualityEventCollector(maximumTokens: 8)
+ 46 |         #expect(collector.append(.delta(text: "2", tokens: [42, 99], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(collector.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "2", tokens: [42, 99], logprobs: nil),expression: .__fromFunctionCall(.__fromSyntaxNode("collector"),"append",(nil,.__fromSyntaxNode(#".delta(text: "2", tokens: [42, 99], logprobs: nil)"#))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 47 |         #expect(collector.append(.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))))
+ 48 |         collector.close(cancelled: false)
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:47:112: note: expanded code originates here
+ 45 |         var collector = KVQualityEventCollector(maximumTokens: 8)
+ 46 |         #expect(collector.append(.delta(text: "2", tokens: [42, 99], logprobs: nil)))
+ 47 |         #expect(collector.append(.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(collector.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2)),expression: .__fromFunctionCall(.__fromSyntaxNode("collector"),"append",(nil,.__fromSyntaxNode(".finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))"))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 48 |         collector.close(cancelled: false)
+ 49 |         #expect(collector.tokens == [42, 99])
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:69:86: note: expanded code originates here
+ 67 |         #expect(missing.issues == ["missing_terminal"])
+ 68 |         var excessive = KVQualityEventCollector(maximumTokens: 1)
+ 69 |         #expect(!excessive.append(.delta(text: "ab", tokens: [1, 2], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(excessive.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "ab", tokens: [1, 2], logprobs: nil),expression: .__fromNegation(.__fromFunctionCall(.__fromSyntaxNode("excessive"),"append",(nil,.__fromSyntaxNode(#".delta(text: "ab", tokens: [1, 2], logprobs: nil)"#))), false),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 70 |         #expect(excessive.issues == ["output_limit_exceeded"])
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:72:113: note: expanded code originates here
+ 70 |         #expect(excessive.issues == ["output_limit_exceeded"])
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+ 72 |         #expect(terminal.append(.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(terminal.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1)),expression: .__fromFunctionCall(.__fromSyntaxNode("terminal"),"append",(nil,.__fromSyntaxNode(".finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))"))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 73 |         #expect(!terminal.append(.delta(text: "late", tokens: [1], logprobs: nil)))
+ 74 |         #expect(terminal.issues == ["delta_after_terminal"])
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:73:84: note: expanded code originates here
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+ 72 |         #expect(terminal.append(.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))))
+ 73 |         #expect(!terminal.append(.delta(text: "late", tokens: [1], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(terminal.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "late", tokens: [1], logprobs: nil),expression: .__fromNegation(.__fromFunctionCall(.__fromSyntaxNode("terminal"),"append",(nil,.__fromSyntaxNode(#".delta(text: "late", tokens: [1], logprobs: nil)"#))), false),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 74 |         #expect(terminal.issues == ["delta_after_terminal"])
+ 75 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:207:17: warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+205 |         // pending an mlx-swift bump. memoryLimit is a soft target on
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+    |                 `- warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+209 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:208:17: warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+    |                 `- warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+209 |     }
+210 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:254:22: warning: no calls to throwing functions occur within 'try' expression
+252 | 
+253 |         let container = try await ModelContainerLoading.loadContainer(from: directory)
+254 |         var sizing = try await SlotSizingSnapshot.build(
+    |                      `- warning: no calls to throwing functions occur within 'try' expression
+255 |             container: container,
+256 |             modelPath: directory,
+
+macro expansion #expect:3:38: warning: '#require(_:_:)' is redundant because 'local.templateControls.promptDate' never equals 'nil' (from macro 'require')
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LocalChatRequestTests.swift:41:74: note: expanded code originates here
+ 37 |         let upstream = try decoder.decode(OpenAIChatCompletionRequest.self, from: data)
+ 38 |         #expect(local.request == upstream)
+ 39 |         #expect(local.templateControls == ChatTemplateControls(
+    |         `- note: in expansion of macro 'expect' here
+ 40 |             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
+ 41 |             promptDate: try #require(local.templateControls.promptDate)))
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkValue(local.templateControls == ChatTemplateControls(
+    |2 |             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
+    |3 |             promptDate: try #require(local.templateControls.promptDate)),expression: .__fromSyntaxNode(#"local.templateControls == ChatTemplateControls(\#n            reasoningEffort: "high", enableThinking: false, preserveThinking: true,\#n            promptDate: try #require(local.templateControls.promptDate))"#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    |  |                                      `- warning: '#require(_:_:)' is redundant because 'local.templateControls.promptDate' never equals 'nil' (from macro 'require')
+    +-------------------------------------------------------------------
+ 42 |         #expect(local.request.reasoning?.enabled == true)
+ 43 |         #expect(local.request.streamOptions?.includeUsage == true)
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[29/35] Compiling ProviderCoreTests KVQualityBenchmarkTests.swift
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:46:86: note: expanded code originates here
+ 44 |     @Test func earlyEOSPreservesRawTokensAndAuthoritativeText() {
+ 45 |         var collector = KVQualityEventCollector(maximumTokens: 8)
+ 46 |         #expect(collector.append(.delta(text: "2", tokens: [42, 99], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(collector.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "2", tokens: [42, 99], logprobs: nil),expression: .__fromFunctionCall(.__fromSyntaxNode("collector"),"append",(nil,.__fromSyntaxNode(#".delta(text: "2", tokens: [42, 99], logprobs: nil)"#))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 47 |         #expect(collector.append(.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))))
+ 48 |         collector.close(cancelled: false)
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:47:112: note: expanded code originates here
+ 45 |         var collector = KVQualityEventCollector(maximumTokens: 8)
+ 46 |         #expect(collector.append(.delta(text: "2", tokens: [42, 99], logprobs: nil)))
+ 47 |         #expect(collector.append(.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(collector.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2)),expression: .__fromFunctionCall(.__fromSyntaxNode("collector"),"append",(nil,.__fromSyntaxNode(".finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))"))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 48 |         collector.close(cancelled: false)
+ 49 |         #expect(collector.tokens == [42, 99])
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:69:86: note: expanded code originates here
+ 67 |         #expect(missing.issues == ["missing_terminal"])
+ 68 |         var excessive = KVQualityEventCollector(maximumTokens: 1)
+ 69 |         #expect(!excessive.append(.delta(text: "ab", tokens: [1, 2], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(excessive.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "ab", tokens: [1, 2], logprobs: nil),expression: .__fromNegation(.__fromFunctionCall(.__fromSyntaxNode("excessive"),"append",(nil,.__fromSyntaxNode(#".delta(text: "ab", tokens: [1, 2], logprobs: nil)"#))), false),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 70 |         #expect(excessive.issues == ["output_limit_exceeded"])
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:72:113: note: expanded code originates here
+ 70 |         #expect(excessive.issues == ["output_limit_exceeded"])
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+ 72 |         #expect(terminal.append(.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(terminal.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1)),expression: .__fromFunctionCall(.__fromSyntaxNode("terminal"),"append",(nil,.__fromSyntaxNode(".finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))"))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 73 |         #expect(!terminal.append(.delta(text: "late", tokens: [1], logprobs: nil)))
+ 74 |         #expect(terminal.issues == ["delta_after_terminal"])
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:73:84: note: expanded code originates here
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+ 72 |         #expect(terminal.append(.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))))
+ 73 |         #expect(!terminal.append(.delta(text: "late", tokens: [1], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(terminal.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "late", tokens: [1], logprobs: nil),expression: .__fromNegation(.__fromFunctionCall(.__fromSyntaxNode("terminal"),"append",(nil,.__fromSyntaxNode(#".delta(text: "late", tokens: [1], logprobs: nil)"#))), false),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 74 |         #expect(terminal.issues == ["delta_after_terminal"])
+ 75 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:207:17: warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+205 |         // pending an mlx-swift bump. memoryLimit is a soft target on
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+    |                 `- warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+209 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:208:17: warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+    |                 `- warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+209 |     }
+210 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:254:22: warning: no calls to throwing functions occur within 'try' expression
+252 | 
+253 |         let container = try await ModelContainerLoading.loadContainer(from: directory)
+254 |         var sizing = try await SlotSizingSnapshot.build(
+    |                      `- warning: no calls to throwing functions occur within 'try' expression
+255 |             container: container,
+256 |             modelPath: directory,
+
+macro expansion #expect:3:38: warning: '#require(_:_:)' is redundant because 'local.templateControls.promptDate' never equals 'nil' (from macro 'require')
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LocalChatRequestTests.swift:41:74: note: expanded code originates here
+ 37 |         let upstream = try decoder.decode(OpenAIChatCompletionRequest.self, from: data)
+ 38 |         #expect(local.request == upstream)
+ 39 |         #expect(local.templateControls == ChatTemplateControls(
+    |         `- note: in expansion of macro 'expect' here
+ 40 |             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
+ 41 |             promptDate: try #require(local.templateControls.promptDate)))
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkValue(local.templateControls == ChatTemplateControls(
+    |2 |             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
+    |3 |             promptDate: try #require(local.templateControls.promptDate)),expression: .__fromSyntaxNode(#"local.templateControls == ChatTemplateControls(\#n            reasoningEffort: "high", enableThinking: false, preserveThinking: true,\#n            promptDate: try #require(local.templateControls.promptDate))"#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    |  |                                      `- warning: '#require(_:_:)' is redundant because 'local.templateControls.promptDate' never equals 'nil' (from macro 'require')
+    +-------------------------------------------------------------------
+ 42 |         #expect(local.request.reasoning?.enabled == true)
+ 43 |         #expect(local.request.streamOptions?.includeUsage == true)
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[30/35] Compiling ProviderCoreTests LaunchAgentRestartTests.swift
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:46:86: note: expanded code originates here
+ 44 |     @Test func earlyEOSPreservesRawTokensAndAuthoritativeText() {
+ 45 |         var collector = KVQualityEventCollector(maximumTokens: 8)
+ 46 |         #expect(collector.append(.delta(text: "2", tokens: [42, 99], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(collector.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "2", tokens: [42, 99], logprobs: nil),expression: .__fromFunctionCall(.__fromSyntaxNode("collector"),"append",(nil,.__fromSyntaxNode(#".delta(text: "2", tokens: [42, 99], logprobs: nil)"#))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 47 |         #expect(collector.append(.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))))
+ 48 |         collector.close(cancelled: false)
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:47:112: note: expanded code originates here
+ 45 |         var collector = KVQualityEventCollector(maximumTokens: 8)
+ 46 |         #expect(collector.append(.delta(text: "2", tokens: [42, 99], logprobs: nil)))
+ 47 |         #expect(collector.append(.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(collector.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2)),expression: .__fromFunctionCall(.__fromSyntaxNode("collector"),"append",(nil,.__fromSyntaxNode(".finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))"))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 48 |         collector.close(cancelled: false)
+ 49 |         #expect(collector.tokens == [42, 99])
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:69:86: note: expanded code originates here
+ 67 |         #expect(missing.issues == ["missing_terminal"])
+ 68 |         var excessive = KVQualityEventCollector(maximumTokens: 1)
+ 69 |         #expect(!excessive.append(.delta(text: "ab", tokens: [1, 2], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(excessive.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "ab", tokens: [1, 2], logprobs: nil),expression: .__fromNegation(.__fromFunctionCall(.__fromSyntaxNode("excessive"),"append",(nil,.__fromSyntaxNode(#".delta(text: "ab", tokens: [1, 2], logprobs: nil)"#))), false),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 70 |         #expect(excessive.issues == ["output_limit_exceeded"])
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:72:113: note: expanded code originates here
+ 70 |         #expect(excessive.issues == ["output_limit_exceeded"])
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+ 72 |         #expect(terminal.append(.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(terminal.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1)),expression: .__fromFunctionCall(.__fromSyntaxNode("terminal"),"append",(nil,.__fromSyntaxNode(".finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))"))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 73 |         #expect(!terminal.append(.delta(text: "late", tokens: [1], logprobs: nil)))
+ 74 |         #expect(terminal.issues == ["delta_after_terminal"])
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:73:84: note: expanded code originates here
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+ 72 |         #expect(terminal.append(.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))))
+ 73 |         #expect(!terminal.append(.delta(text: "late", tokens: [1], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(terminal.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "late", tokens: [1], logprobs: nil),expression: .__fromNegation(.__fromFunctionCall(.__fromSyntaxNode("terminal"),"append",(nil,.__fromSyntaxNode(#".delta(text: "late", tokens: [1], logprobs: nil)"#))), false),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 74 |         #expect(terminal.issues == ["delta_after_terminal"])
+ 75 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:207:17: warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+205 |         // pending an mlx-swift bump. memoryLimit is a soft target on
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+    |                 `- warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+209 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:208:17: warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+    |                 `- warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+209 |     }
+210 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:254:22: warning: no calls to throwing functions occur within 'try' expression
+252 | 
+253 |         let container = try await ModelContainerLoading.loadContainer(from: directory)
+254 |         var sizing = try await SlotSizingSnapshot.build(
+    |                      `- warning: no calls to throwing functions occur within 'try' expression
+255 |             container: container,
+256 |             modelPath: directory,
+
+macro expansion #expect:3:38: warning: '#require(_:_:)' is redundant because 'local.templateControls.promptDate' never equals 'nil' (from macro 'require')
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LocalChatRequestTests.swift:41:74: note: expanded code originates here
+ 37 |         let upstream = try decoder.decode(OpenAIChatCompletionRequest.self, from: data)
+ 38 |         #expect(local.request == upstream)
+ 39 |         #expect(local.templateControls == ChatTemplateControls(
+    |         `- note: in expansion of macro 'expect' here
+ 40 |             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
+ 41 |             promptDate: try #require(local.templateControls.promptDate)))
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkValue(local.templateControls == ChatTemplateControls(
+    |2 |             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
+    |3 |             promptDate: try #require(local.templateControls.promptDate)),expression: .__fromSyntaxNode(#"local.templateControls == ChatTemplateControls(\#n            reasoningEffort: "high", enableThinking: false, preserveThinking: true,\#n            promptDate: try #require(local.templateControls.promptDate))"#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    |  |                                      `- warning: '#require(_:_:)' is redundant because 'local.templateControls.promptDate' never equals 'nil' (from macro 'require')
+    +-------------------------------------------------------------------
+ 42 |         #expect(local.request.reasoning?.enabled == true)
+ 43 |         #expect(local.request.streamOptions?.includeUsage == true)
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[31/35] Compiling ProviderCoreTests LiveInferenceFixtures.swift
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:46:86: note: expanded code originates here
+ 44 |     @Test func earlyEOSPreservesRawTokensAndAuthoritativeText() {
+ 45 |         var collector = KVQualityEventCollector(maximumTokens: 8)
+ 46 |         #expect(collector.append(.delta(text: "2", tokens: [42, 99], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(collector.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "2", tokens: [42, 99], logprobs: nil),expression: .__fromFunctionCall(.__fromSyntaxNode("collector"),"append",(nil,.__fromSyntaxNode(#".delta(text: "2", tokens: [42, 99], logprobs: nil)"#))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 47 |         #expect(collector.append(.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))))
+ 48 |         collector.close(cancelled: false)
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:47:112: note: expanded code originates here
+ 45 |         var collector = KVQualityEventCollector(maximumTokens: 8)
+ 46 |         #expect(collector.append(.delta(text: "2", tokens: [42, 99], logprobs: nil)))
+ 47 |         #expect(collector.append(.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(collector.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2)),expression: .__fromFunctionCall(.__fromSyntaxNode("collector"),"append",(nil,.__fromSyntaxNode(".finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))"))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 48 |         collector.close(cancelled: false)
+ 49 |         #expect(collector.tokens == [42, 99])
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:69:86: note: expanded code originates here
+ 67 |         #expect(missing.issues == ["missing_terminal"])
+ 68 |         var excessive = KVQualityEventCollector(maximumTokens: 1)
+ 69 |         #expect(!excessive.append(.delta(text: "ab", tokens: [1, 2], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(excessive.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "ab", tokens: [1, 2], logprobs: nil),expression: .__fromNegation(.__fromFunctionCall(.__fromSyntaxNode("excessive"),"append",(nil,.__fromSyntaxNode(#".delta(text: "ab", tokens: [1, 2], logprobs: nil)"#))), false),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 70 |         #expect(excessive.issues == ["output_limit_exceeded"])
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:72:113: note: expanded code originates here
+ 70 |         #expect(excessive.issues == ["output_limit_exceeded"])
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+ 72 |         #expect(terminal.append(.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(terminal.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1)),expression: .__fromFunctionCall(.__fromSyntaxNode("terminal"),"append",(nil,.__fromSyntaxNode(".finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))"))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 73 |         #expect(!terminal.append(.delta(text: "late", tokens: [1], logprobs: nil)))
+ 74 |         #expect(terminal.issues == ["delta_after_terminal"])
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:73:84: note: expanded code originates here
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+ 72 |         #expect(terminal.append(.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))))
+ 73 |         #expect(!terminal.append(.delta(text: "late", tokens: [1], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(terminal.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "late", tokens: [1], logprobs: nil),expression: .__fromNegation(.__fromFunctionCall(.__fromSyntaxNode("terminal"),"append",(nil,.__fromSyntaxNode(#".delta(text: "late", tokens: [1], logprobs: nil)"#))), false),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 74 |         #expect(terminal.issues == ["delta_after_terminal"])
+ 75 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:207:17: warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+205 |         // pending an mlx-swift bump. memoryLimit is a soft target on
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+    |                 `- warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+209 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:208:17: warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+    |                 `- warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+209 |     }
+210 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:254:22: warning: no calls to throwing functions occur within 'try' expression
+252 | 
+253 |         let container = try await ModelContainerLoading.loadContainer(from: directory)
+254 |         var sizing = try await SlotSizingSnapshot.build(
+    |                      `- warning: no calls to throwing functions occur within 'try' expression
+255 |             container: container,
+256 |             modelPath: directory,
+
+macro expansion #expect:3:38: warning: '#require(_:_:)' is redundant because 'local.templateControls.promptDate' never equals 'nil' (from macro 'require')
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LocalChatRequestTests.swift:41:74: note: expanded code originates here
+ 37 |         let upstream = try decoder.decode(OpenAIChatCompletionRequest.self, from: data)
+ 38 |         #expect(local.request == upstream)
+ 39 |         #expect(local.templateControls == ChatTemplateControls(
+    |         `- note: in expansion of macro 'expect' here
+ 40 |             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
+ 41 |             promptDate: try #require(local.templateControls.promptDate)))
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkValue(local.templateControls == ChatTemplateControls(
+    |2 |             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
+    |3 |             promptDate: try #require(local.templateControls.promptDate)),expression: .__fromSyntaxNode(#"local.templateControls == ChatTemplateControls(\#n            reasoningEffort: "high", enableThinking: false, preserveThinking: true,\#n            promptDate: try #require(local.templateControls.promptDate))"#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    |  |                                      `- warning: '#require(_:_:)' is redundant because 'local.templateControls.promptDate' never equals 'nil' (from macro 'require')
+    +-------------------------------------------------------------------
+ 42 |         #expect(local.request.reasoning?.enabled == true)
+ 43 |         #expect(local.request.streamOptions?.includeUsage == true)
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[32/35] Compiling ProviderCoreTests LoadedModelsStoreTests.swift
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:46:86: note: expanded code originates here
+ 44 |     @Test func earlyEOSPreservesRawTokensAndAuthoritativeText() {
+ 45 |         var collector = KVQualityEventCollector(maximumTokens: 8)
+ 46 |         #expect(collector.append(.delta(text: "2", tokens: [42, 99], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(collector.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "2", tokens: [42, 99], logprobs: nil),expression: .__fromFunctionCall(.__fromSyntaxNode("collector"),"append",(nil,.__fromSyntaxNode(#".delta(text: "2", tokens: [42, 99], logprobs: nil)"#))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 47 |         #expect(collector.append(.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))))
+ 48 |         collector.close(cancelled: false)
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:47:112: note: expanded code originates here
+ 45 |         var collector = KVQualityEventCollector(maximumTokens: 8)
+ 46 |         #expect(collector.append(.delta(text: "2", tokens: [42, 99], logprobs: nil)))
+ 47 |         #expect(collector.append(.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(collector.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2)),expression: .__fromFunctionCall(.__fromSyntaxNode("collector"),"append",(nil,.__fromSyntaxNode(".finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))"))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 48 |         collector.close(cancelled: false)
+ 49 |         #expect(collector.tokens == [42, 99])
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:69:86: note: expanded code originates here
+ 67 |         #expect(missing.issues == ["missing_terminal"])
+ 68 |         var excessive = KVQualityEventCollector(maximumTokens: 1)
+ 69 |         #expect(!excessive.append(.delta(text: "ab", tokens: [1, 2], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(excessive.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "ab", tokens: [1, 2], logprobs: nil),expression: .__fromNegation(.__fromFunctionCall(.__fromSyntaxNode("excessive"),"append",(nil,.__fromSyntaxNode(#".delta(text: "ab", tokens: [1, 2], logprobs: nil)"#))), false),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 70 |         #expect(excessive.issues == ["output_limit_exceeded"])
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:72:113: note: expanded code originates here
+ 70 |         #expect(excessive.issues == ["output_limit_exceeded"])
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+ 72 |         #expect(terminal.append(.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(terminal.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1)),expression: .__fromFunctionCall(.__fromSyntaxNode("terminal"),"append",(nil,.__fromSyntaxNode(".finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))"))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 73 |         #expect(!terminal.append(.delta(text: "late", tokens: [1], logprobs: nil)))
+ 74 |         #expect(terminal.issues == ["delta_after_terminal"])
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:73:84: note: expanded code originates here
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+ 72 |         #expect(terminal.append(.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))))
+ 73 |         #expect(!terminal.append(.delta(text: "late", tokens: [1], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(terminal.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "late", tokens: [1], logprobs: nil),expression: .__fromNegation(.__fromFunctionCall(.__fromSyntaxNode("terminal"),"append",(nil,.__fromSyntaxNode(#".delta(text: "late", tokens: [1], logprobs: nil)"#))), false),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 74 |         #expect(terminal.issues == ["delta_after_terminal"])
+ 75 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:207:17: warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+205 |         // pending an mlx-swift bump. memoryLimit is a soft target on
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+    |                 `- warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+209 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:208:17: warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+    |                 `- warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+209 |     }
+210 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:254:22: warning: no calls to throwing functions occur within 'try' expression
+252 | 
+253 |         let container = try await ModelContainerLoading.loadContainer(from: directory)
+254 |         var sizing = try await SlotSizingSnapshot.build(
+    |                      `- warning: no calls to throwing functions occur within 'try' expression
+255 |             container: container,
+256 |             modelPath: directory,
+
+macro expansion #expect:3:38: warning: '#require(_:_:)' is redundant because 'local.templateControls.promptDate' never equals 'nil' (from macro 'require')
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LocalChatRequestTests.swift:41:74: note: expanded code originates here
+ 37 |         let upstream = try decoder.decode(OpenAIChatCompletionRequest.self, from: data)
+ 38 |         #expect(local.request == upstream)
+ 39 |         #expect(local.templateControls == ChatTemplateControls(
+    |         `- note: in expansion of macro 'expect' here
+ 40 |             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
+ 41 |             promptDate: try #require(local.templateControls.promptDate)))
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkValue(local.templateControls == ChatTemplateControls(
+    |2 |             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
+    |3 |             promptDate: try #require(local.templateControls.promptDate)),expression: .__fromSyntaxNode(#"local.templateControls == ChatTemplateControls(\#n            reasoningEffort: "high", enableThinking: false, preserveThinking: true,\#n            promptDate: try #require(local.templateControls.promptDate))"#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    |  |                                      `- warning: '#require(_:_:)' is redundant because 'local.templateControls.promptDate' never equals 'nil' (from macro 'require')
+    +-------------------------------------------------------------------
+ 42 |         #expect(local.request.reasoning?.enabled == true)
+ 43 |         #expect(local.request.streamOptions?.includeUsage == true)
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[33/35] Compiling ProviderCoreTests LocalChatRequestTests.swift
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:46:86: note: expanded code originates here
+ 44 |     @Test func earlyEOSPreservesRawTokensAndAuthoritativeText() {
+ 45 |         var collector = KVQualityEventCollector(maximumTokens: 8)
+ 46 |         #expect(collector.append(.delta(text: "2", tokens: [42, 99], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(collector.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "2", tokens: [42, 99], logprobs: nil),expression: .__fromFunctionCall(.__fromSyntaxNode("collector"),"append",(nil,.__fromSyntaxNode(#".delta(text: "2", tokens: [42, 99], logprobs: nil)"#))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 47 |         #expect(collector.append(.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))))
+ 48 |         collector.close(cancelled: false)
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:47:112: note: expanded code originates here
+ 45 |         var collector = KVQualityEventCollector(maximumTokens: 8)
+ 46 |         #expect(collector.append(.delta(text: "2", tokens: [42, 99], logprobs: nil)))
+ 47 |         #expect(collector.append(.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(collector.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2)),expression: .__fromFunctionCall(.__fromSyntaxNode("collector"),"append",(nil,.__fromSyntaxNode(".finished(reason: .stop, usage: .init(promptTokens: 2, completionTokens: 2))"))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 48 |         collector.close(cancelled: false)
+ 49 |         #expect(collector.tokens == [42, 99])
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:69:86: note: expanded code originates here
+ 67 |         #expect(missing.issues == ["missing_terminal"])
+ 68 |         var excessive = KVQualityEventCollector(maximumTokens: 1)
+ 69 |         #expect(!excessive.append(.delta(text: "ab", tokens: [1, 2], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(excessive.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "ab", tokens: [1, 2], logprobs: nil),expression: .__fromNegation(.__fromFunctionCall(.__fromSyntaxNode("excessive"),"append",(nil,.__fromSyntaxNode(#".delta(text: "ab", tokens: [1, 2], logprobs: nil)"#))), false),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 70 |         #expect(excessive.issues == ["output_limit_exceeded"])
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:72:113: note: expanded code originates here
+ 70 |         #expect(excessive.issues == ["output_limit_exceeded"])
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+ 72 |         #expect(terminal.append(.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(terminal.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1)),expression: .__fromFunctionCall(.__fromSyntaxNode("terminal"),"append",(nil,.__fromSyntaxNode(".finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))"))),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 73 |         #expect(!terminal.append(.delta(text: "late", tokens: [1], logprobs: nil)))
+ 74 |         #expect(terminal.issues == ["delta_after_terminal"])
+
+macro expansion #expect:2:6: error: cannot use mutating member on immutable value: '$0' is immutable
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/KVQualityBenchmarkTests.swift:73:84: note: expanded code originates here
+ 71 |         var terminal = KVQualityEventCollector(maximumTokens: 1)
+ 72 |         #expect(terminal.append(.finished(reason: .length, usage: .init(promptTokens: 1, completionTokens: 1))))
+ 73 |         #expect(!terminal.append(.delta(text: "late", tokens: [1], logprobs: nil)))
+    |         `- note: in expansion of macro 'expect' here
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkFunctionCall(terminal.self,calling: {
+    |2 |   $0.append($1)
+    |  |      `- error: cannot use mutating member on immutable value: '$0' is immutable
+    |3 | },.delta(text: "late", tokens: [1], logprobs: nil),expression: .__fromNegation(.__fromFunctionCall(.__fromSyntaxNode("terminal"),"append",(nil,.__fromSyntaxNode(#".delta(text: "late", tokens: [1], logprobs: nil)"#))), false),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    +-------------------------------------------------------------------
+ 74 |         #expect(terminal.issues == ["delta_after_terminal"])
+ 75 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:207:17: warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+205 |         // pending an mlx-swift bump. memoryLimit is a soft target on
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+    |                 `- warning: 'set(cacheLimit:)' is deprecated: use Memory.cacheLimit property [#DeprecatedDeclaration]
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+209 |     }
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:208:17: warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+206 |         // active+cache.
+207 |         MLX.GPU.set(cacheLimit: maxBytes)
+208 |         MLX.GPU.set(memoryLimit: maxBytes)
+    |                 `- warning: 'set(memoryLimit:relaxed:)' is deprecated: use Memory.memoryLimit property [#DeprecatedDeclaration]
+209 |     }
+210 | 
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LiveInferenceFixtures.swift:254:22: warning: no calls to throwing functions occur within 'try' expression
+252 | 
+253 |         let container = try await ModelContainerLoading.loadContainer(from: directory)
+254 |         var sizing = try await SlotSizingSnapshot.build(
+    |                      `- warning: no calls to throwing functions occur within 'try' expression
+255 |             container: container,
+256 |             modelPath: directory,
+
+macro expansion #expect:3:38: warning: '#require(_:_:)' is redundant because 'local.templateControls.promptDate' never equals 'nil' (from macro 'require')
+`- /Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Tests/ProviderCoreTests/LocalChatRequestTests.swift:41:74: note: expanded code originates here
+ 37 |         let upstream = try decoder.decode(OpenAIChatCompletionRequest.self, from: data)
+ 38 |         #expect(local.request == upstream)
+ 39 |         #expect(local.templateControls == ChatTemplateControls(
+    |         `- note: in expansion of macro 'expect' here
+ 40 |             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
+ 41 |             promptDate: try #require(local.templateControls.promptDate)))
+    +--- macro expansion #expect ---------------------------------------
+    |1 | Testing.__checkValue(local.templateControls == ChatTemplateControls(
+    |2 |             reasoningEffort: "high", enableThinking: false, preserveThinking: true,
+    |3 |             promptDate: try #require(local.templateControls.promptDate)),expression: .__fromSyntaxNode(#"local.templateControls == ChatTemplateControls(\#n            reasoningEffort: "high", enableThinking: false, preserveThinking: true,\#n            promptDate: try #require(local.templateControls.promptDate))"#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+    |  |                                      `- warning: '#require(_:_:)' is redundant because 'local.templateControls.promptDate' never equals 'nil' (from macro 'require')
+    +-------------------------------------------------------------------
+ 42 |         #expect(local.request.reasoning?.enabled == true)
+ 43 |         #expect(local.request.streamOptions?.includeUsage == true)
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[34/41] Compiling ProviderCoreTests ModelCatalogTests.swift
+[35/41] Compiling ProviderCoreTests ModelLoadAdmissionTests.swift
+[36/41] Compiling ProviderCoreTests ModelPrefetchCoordinatorTests.swift
+[37/41] Compiling ProviderCoreTests ModelPrefetchDownloaderTests.swift
+[38/41] Compiling ProviderCoreTests ModelRequirementDisplayTests.swift
+[39/41] Compiling ProviderCoreTests ModelRuntimeRequirementsTests.swift
+error: fatalError

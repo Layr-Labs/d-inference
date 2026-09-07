@@ -171,7 +171,7 @@ import Testing
     #expect(!toml.contains("engine_v2 ="))
     #expect(!toml.contains("continuous_batching"))
     #expect(!toml.contains("legacy_compiled_decode"))
-    #expect(!toml.contains("kv_quant"))
+    #expect(!toml.contains("kv_quant ="))
     #expect(decoded.backend.retiredKeysPresent.isEmpty)
 }
 

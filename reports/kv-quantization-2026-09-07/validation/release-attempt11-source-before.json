@@ -1,0 +1,79 @@
+{
+  ".": {
+    "head": "cbd206b242470362347e8cc5c0180b24b4f89b0f",
+    "modified_source_sha256": {
+      "coordinator/api/throughput_anomaly.go": "50dcb1fb417d5e84a999769c890c6b1ad666ae7da2fc139225b12821c4133cc3",
+      "coordinator/api/throughput_anomaly_test.go": "122672368d78c924cad9d1a281fe2dce20c8d81edf3fa3442e64b67e7c2bf89e",
+      "coordinator/protocol/execution_identity_test.go": "9b579a783f1a6b22418b97e1f3deeb43f11f33fb51d735063ab33c6b75b99f25",
+      "coordinator/protocol/messages.go": "b40b268d606dd0099a548013379eb7a2298ea47443fcb50590a936a5f8efd679",
+      "coordinator/registry/concurrency_cap.go": "b0a070f6b94d12f0943e9153e48e6190fff550269afabbf4cb8d96263b499724",
+      "coordinator/registry/dispatch_plan.go": "afbb37eb0771a93875fb29f4ebec51b39375a476190697425fda9f2bee6b148d",
+      "coordinator/registry/heartbeat.go": "b383c82bab207f5e2a74224f343ce6efc78e228d0d60d852947b2e529da0f993",
+      "coordinator/registry/model_capacity.go": "9dba057df22d785711c978152a2913c18eb05b9d2294e7a15ab0e21b454bc06c",
+      "coordinator/registry/performance_execution.go": "496e20f8939e7532f9faacde8baa2e6709603d35f8a8898071ae5f3d02954cf2",
+      "coordinator/registry/performance_execution_calibration_test.go": "2296715537c088eda04cbe09ad6dc1f9a97647d3ca0ee0ff5d7aae2460d1f82b",
+      "coordinator/registry/performance_execution_routing_test.go": "18b42a526a5e5e136177d52bc8d95a7d304040b4bab03773624621e3ba7311a4",
+      "coordinator/registry/performance_execution_test.go": "8925d4abf3790f99defd2456a02c788ca9e4a4d4db37ef28f20b53f65de0188a",
+      "coordinator/registry/provider_lifecycle.go": "a9cd81e1bf1be8921254919e07f0cc70bd11ef6ad3fa868259eebee6022af6ac",
+      "coordinator/registry/provider_models.go": "4d208da5ec31af4cee38eaaabe5c101bee59dfca2a49e5449396cef2a40c860c",
+      "coordinator/registry/scheduler.go": "543f00eb81b256e2cd144115fb328b2ef0e325831a21ff52f90e3d1d76219bb4",
+      "coordinator/registry/solo_tps.go": "a212a451ca919cc4197bbaa49834039b792441ca8e9026320918293bc475dce7",
+      "coordinator/registry/tps_median_cache.go": "06815dc4997d3fea5f4c6c4be8cb07ca6441319f01051b22aa77636371f556f9",
+      "coordinator/registry/tps_registry.go": "3c1b652315767e3a05d97191e796823a5dc79522c3fa4c9af9fcca88990d88fa",
+      "coordinator/registry/ttft_calibration.go": "64e820d5b2d88912d02eaafb2f46c9dcd4c78444ed2556291566fcb22109db91",
+      "coordinator/registry/utilization.go": "08fbeed3cad4f6ee1630931b8b61975ef0f442eb4563cbc200d235ebc5edd5f3",
+      "coordinator/registry/warm_pool_controller.go": "b0f8ff31207ad20abe6c3a03f8e80018ce00e6afa28a26dbeff909086425a5b7",
+      "provider-swift/Sources/ProviderBenchmark/BenchmarkQuantizedPrefillReceipt.swift": "5824661ea0f9cb83080f41601f5e40573d7e755c852015f09e5c52774ccbdc43",
+      "provider-swift/Sources/ProviderBenchmark/KVQualityBenchmark.swift": "d6ba99542a02d6ee348cdc7105b1bdfe08f81382cd62080f08bd09e1d15f35fd",
+      "provider-swift/Sources/ProviderBenchmark/SchedulerPrefillBenchmark.swift": "d0244fdb1c0c5b6e3a7dd85860b4b5d198d55caaf363564129414d77c27f41c3",
+      "provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift": "962af349af3ad57a850042f9cf01a2e7e7681555020ec5f722a523971482f4ec",
+      "provider-swift/Sources/ProviderBenchmark/ThroughputSweepReport.swift": "505bbcd17a7e1e86a3e081611f279bc19225a011218f7f86ffd64ea13145643a",
+      "provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift": "ada144957cc6f6785db38cdf5a1209e4987bf4f732de2fd406bd50cd484b663e",
+      "provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift": "7b7436dfbedfb7d7521c9fa0f5a517d759f2b66bdbf1a3994b2ba07528d15c79",
+      "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Inbound.swift": "67216b94c61d9dbe87baf41fa4672fd799f9202c45f2bad293b055c146f8d50c",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Capacity.swift": "d36e02752a00717a235b86d57e355e2cd08be8b76f95beb25c1a98486cfde07b",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift": "462bb4a5169dd1109ef1f9518fca4d974c5ed72a75edc525f8bd940d2471f971",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Config.swift": "24f2ec67b2e4dadf8613b9d6163fe9e73eeaf3fa9e237c658b99832ecce31670",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BackendPreparation.swift": "ac2b505e180535b55ff86cc70bd87a55a4866ee59ef9452a82185b2e5b5778bd",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift": "c1430923781c9190f7654ff54dcf223242e86dc8fe1a08e82212269f3936e7c1",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift": "621ce8c4628de7df900c191558cec0a3c38b472d4f863816c2e0d634f97bb259",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+SegmentedBackend.swift": "16ff6d94ccad83a16dee740eb3be429fdd8c5d4b4276f7949042855381bac2aa",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift": "cf3a9dd34a3425ee1540dd58f91695e7689bc2fe979522ab778980a2814c2b2f",
+      "provider-swift/Sources/ProviderCore/Inference/KVPerformanceIdentity.swift": "6670535d881c2668bc49a651f3e360a729d98b206fc17b0acf8d652dd9fb0c9e",
+      "provider-swift/Sources/ProviderCore/Inference/TTFTQuantileTracker.swift": "f55f7d2ec3ae572bf1a522dd89167752968721b7c3ebf1cfcd0468ce06a8fed1",
+      "provider-swift/Sources/ProviderCore/Protocol/Types.swift": "ed24e047f00a6117b738d58aae7514deddf5aede738aa53f6d0a2298bba31dec",
+      "provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift": "1f6b9d7cd49e86afe19ea99d13277d7b956f9a716641bce37c1fbfb1c5ec13cc",
+      "provider-swift/Sources/ProviderCore/ProviderLoop+Prefetch.swift": "7b8daae89a460bd651f225a594b1005b1cde8e2c82112bffb299db52ab330880",
+      "provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift": "599defd46b425824f32653ba12df3d5fdb902d052ddacf4e341527df54059840",
+      "provider-swift/Sources/ProviderCore/ProviderLoop.swift": "4083fcd57fc2c0d05ba175eab0cf36c731d9928f34b62dc1aa32cdaa6baaa6cc",
+      "provider-swift/Sources/darkbloom/BenchmarkCommand+KVQuality.swift": "f82aa63b90cb630be93eca4039c923751fe0c4635baa9045620e053b268e42a3",
+      "provider-swift/Sources/darkbloom/BenchmarkCommand+QuantizedPrefill.swift": "c4335f1f385778a78c99d9d6d3ff6d9f462983abf4b285380b5b3fcb1461ef3e",
+      "provider-swift/Sources/darkbloom/BenchmarkCommand+Sweep.swift": "727f6febbb10dbeb7dc7bd6df7c2b3f2dffd90da61d781bc9683331cf845fdbf",
+      "provider-swift/Sources/darkbloom/BenchmarkCommand.swift": "2f55f0dfa952d48eaecb7a55f28ae9baac17c1b4e153349ae979bcee199f7e49",
+      "provider-swift/Tests/DarkbloomCLITests/BenchmarkQuantizedPrefillOptionsTests.swift": "a5c7677c06d67c6e1b20c51262c93ff230bdf3517339aef9f46a507c2f867681",
+      "provider-swift/Tests/ProviderCoreTests/BenchmarkQuantizedPrefillReceiptTests.swift": "09a4b7b937b85aefd82d0e43f93d8fa1b59291bd203e40eca39bc17b0c0f2e84",
+      "provider-swift/Tests/ProviderCoreTests/EngineV2KVQuantizationPolicyTests.swift": "faea8fc6d92702a4d57f61d448c59d09c07817dfd195a79fbf9af9002260f4d5",
+      "provider-swift/Tests/ProviderCoreTests/KVPerformanceIdentityTests.swift": "f4a4f431fcb0c801383c180eeb4be3fd42eeceb6419cb8007205a6d094302830"
+    }
+  },
+  "libs/mlx-swift-lm": {
+    "head": "da524e55451445a5e545e64903c226fcc39b14bc",
+    "modified_source_sha256": {}
+  },
+  "libs/mlx": {
+    "head": "b4b016a0ea0baaa0a04815b3107330ddb67f2ca4",
+    "modified_source_sha256": {}
+  },
+  "libs/mlx-swift": {
+    "head": "e9fde834e5de020310fd39a637b6eb767b5d5021",
+    "modified_source_sha256": {}
+  },
+  "libs/mlx-swift/Source/Cmlx/mlx": {
+    "head": "b4b016a0ea0baaa0a04815b3107330ddb67f2ca4",
+    "modified_source_sha256": {}
+  },
+  "libs/mlx-swift/Source/Cmlx/mlx-c": {
+    "head": "e63a16af69f31b77ea47570d224659ce4b44bf9c",
+    "modified_source_sha256": {}
+  }
+}

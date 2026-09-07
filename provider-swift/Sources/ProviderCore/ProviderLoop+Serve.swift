@@ -139,6 +139,7 @@ extension ProviderLoop {
         // defaults, minus any model the startup self-test retired when the
         // operator opted into startup_selftest_fail_closed.
         let registrationModels = loopConfig.models.filter { advertisedModels[$0.id] != nil }
+            .map { KVPerformanceIdentity.declared(model: $0, settings: loopConfig.config.backend) }
         let coordinatorConfig = CoordinatorClientConfig(
             url: loopConfig.coordinatorURL,
             hardware: loopConfig.hardware,

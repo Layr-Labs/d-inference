@@ -1,0 +1,332 @@
+Fetching https://github.com/apple/swift-numerics from cache
+Fetching https://github.com/apple/swift-argument-parser from cache
+Fetched https://github.com/apple/swift-numerics from cache (0.74s)
+Fetched https://github.com/apple/swift-argument-parser from cache (0.91s)
+Computing version for https://github.com/apple/swift-numerics
+Computed https://github.com/apple/swift-numerics at 1.1.1 (1.38s)
+Computing version for https://github.com/apple/swift-argument-parser
+Computed https://github.com/apple/swift-argument-parser at 1.8.2 (0.44s)
+Creating working copy for https://github.com/apple/swift-numerics
+Working copy of https://github.com/apple/swift-numerics resolved at 1.1.1
+Creating working copy for https://github.com/apple/swift-argument-parser
+Working copy of https://github.com/apple/swift-argument-parser resolved at 1.8.2
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+[0/8] Write sources
+[1/8] Write encuda-tool-entitlement.plist
+[1/8] Write sources
+[4/8] Write swift-version--58304C5D6DBC2206.txt
+[6/10] Emitting module ArgumentParserToolInfo
+[7/10] Compiling ArgumentParserToolInfo ToolInfo.swift
+[8/50] Compiling ArgumentParser OptionGroup.swift
+[9/50] Compiling ArgumentParser ParentCommand.swift
+[10/50] Compiling ArgumentParser AsyncParsableCommand.swift
+[11/50] Compiling ArgumentParser CommandConfiguration.swift
+[12/50] Compiling ArgumentParser CommandGroup.swift
+[13/50] Compiling ArgumentParser EnumerableFlag.swift
+[14/50] Compiling ArgumentParser ExpressibleByArgument.swift
+[15/50] Compiling ArgumentParser ParsableArguments.swift
+[16/50] Compiling ArgumentParser ParsableCommand.swift
+[17/50] Compiling ArgumentParser ArgumentDecoder.swift
+[18/50] Compiling ArgumentParser ArgumentDefinition.swift
+[19/50] Compiling ArgumentParser ArgumentSet.swift
+[20/50] Compiling ArgumentParser CommandParser.swift
+[21/63] Compiling ArgumentParser BashCompletionsGenerator.swift
+[22/63] Compiling ArgumentParser CompletionsGenerator.swift
+[23/63] Compiling ArgumentParser FishCompletionsGenerator.swift
+[24/63] Compiling ArgumentParser ZshCompletionsGenerator.swift
+[25/63] Compiling ArgumentParser Argument.swift
+[26/63] Compiling ArgumentParser ArgumentDiscussion.swift
+[27/63] Compiling ArgumentParser ArgumentHelp.swift
+[28/63] Compiling ArgumentParser ArgumentVisibility.swift
+[29/63] Compiling ArgumentParser CompletionKind.swift
+[30/63] Compiling ArgumentParser Errors.swift
+[31/63] Compiling ArgumentParser Flag.swift
+[32/63] Compiling ArgumentParser NameSpecification.swift
+[33/63] Compiling ArgumentParser Option.swift
+[34/63] Compiling ArgumentParser InputKey.swift
+[35/63] Compiling ArgumentParser InputOrigin.swift
+[36/63] Compiling ArgumentParser Name.swift
+[37/63] Compiling ArgumentParser Parsed.swift
+[38/63] Compiling ArgumentParser ParsedValues.swift
+[39/63] Compiling ArgumentParser ParserError.swift
+[40/63] Compiling ArgumentParser SplitArguments.swift
+[41/63] Compiling ArgumentParser DumpHelpGenerator.swift
+[42/63] Compiling ArgumentParser HelpCommand.swift
+[43/63] Compiling ArgumentParser HelpGenerator.swift
+[44/63] Compiling ArgumentParser MessageInfo.swift
+[45/63] Compiling ArgumentParser UsageGenerator.swift
+[46/63] Compiling ArgumentParser CollectionExtensions.swift
+[47/63] Emitting module ArgumentParser
+[48/63] Compiling ArgumentParser Foundation.swift
+[49/63] Compiling ArgumentParser Mutex.swift
+[50/63] Compiling ArgumentParser Platform.swift
+[51/63] Compiling ArgumentParser SequenceExtensions.swift
+[52/63] Compiling ArgumentParser StringExtensions.swift
+[53/63] Compiling ArgumentParser SwiftExtensions.swift
+[54/63] Compiling ArgumentParser Tree.swift
+[55/63] Compiling ArgumentParser AsyncCompletionsValidator.swift
+[56/63] Compiling ArgumentParser CodingKeyValidator.swift
+[57/63] Compiling ArgumentParser NonsenseFlagsValidator.swift
+[58/63] Compiling ArgumentParser ParsableArgumentsValidation.swift
+[59/63] Compiling ArgumentParser PositionalArgumentsValidator.swift
+[60/63] Compiling ArgumentParser UniqueNamesValidator.swift
+[61/68] Compiling encuda encuda-compile.swift
+[62/68] Compiling encuda encuda-error.swift
+[63/68] Compiling encuda encuda-utils.swift
+[64/68] Emitting module encuda
+[65/68] Compiling encuda encuda-link.swift
+[66/69] Compiling encuda encuda.swift
+[66/69] Write Objects.LinkFileList
+[67/69] Linking encuda-tool
+[68/69] Applying encuda-tool
+warning: 'mlx-swift': found 3 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/CustomFunctionExampleSimple.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/CustomFunctionExample.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/Example1.swift
+warning: 'mlx-swift': found 3 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/CustomFunctionExampleSimple.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/CustomFunctionExample.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/Tutorial.swift
+warning: 'mlx-swift': found 3 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/Tutorial.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/CustomFunctionExample.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/Example1.swift
+warning: 'mlx-swift': found 3 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/CustomFunctionExampleSimple.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/Example1.swift
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Examples/Tutorial.swift
+[1/1] Compiling plugin CudaBuild
+[2/2] Compiling plugin GenerateManual
+[3/3] Compiling plugin GenerateDoccReference
+Building for debugging...
+[3/243] /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/.build/arm64-apple-macosx/debug/mlx-swiftPackageTests.derived/runner.swift
+[4/243] Compiling error.cpp
+[5/243] Write swift-version--58304C5D6DBC2206.txt
+[6/243] Write sources
+[9/243] Write encuda-tool-entitlement.plist
+[10/243] Write encuda-entitlement.plist
+[11/243] Compiling _NumericsShims _NumericsShims.c
+[12/243] Write sources
+[13/243] Write Tutorial-entitlement.plist
+[14/243] Write sources
+[16/253] Compiling distributed.cpp
+[17/253] Write sources
+[17/253] Compiling distributed_group.cpp
+[17/253] Write sources
+[20/253] Write Example1-entitlement.plist
+[20/253] Write CustomFunctionExampleSimple-entitlement.plist
+[20/253] Write sources
+[30/253] Write CustomFunctionExample-entitlement.plist
+[32/253] Write sources
+[34/253] Compiling device.cpp
+[35/253] Compiling RealModule Float16+Real.swift
+[37/253] Compiling RealModule Float80+Real.swift
+[38/253] Compiling RealModule Real.swift
+[38/255] Compiling version.cpp
+[40/255] Compiling RealModule AlgebraicField.swift
+[41/255] Compiling RealModule ApproximateEquality.swift
+[42/255] Compiling RealModule AugmentedArithmetic.swift
+[43/255] Emitting module RealModule
+[44/255] Compiling RealModule Double+Real.swift
+[45/255] Compiling RealModule ElementaryFunctions.swift
+[46/255] Compiling RealModule Float+Real.swift
+[47/255] Compiling RealModule RealFunctions.swift
+[48/255] Compiling RealModule RelaxedArithmetic.swift
+[48/255] Compiling utils.cpp
+[49/265] Compiling stream.cpp
+[50/265] Compiling scheduler.cpp
+[52/265] Emitting module ComplexModule
+[53/267] Compiling ComplexModule Complex+Numeric.swift
+[54/267] Compiling ComplexModule Complex+StringConvertible.swift
+[55/267] Compiling ComplexModule Complex.swift
+[56/267] Compiling ComplexModule Complex+AdditiveArithmetic.swift
+[57/267] Compiling ComplexModule Complex+AlgebraicField.swift
+[58/267] Compiling ComplexModule Complex+Codable.swift
+[59/267] Compiling ComplexModule Complex+ElementaryFunctions.swift
+[60/267] Compiling ComplexModule Complex+Hashable.swift
+[61/267] Compiling ComplexModule Complex+IntegerLiteral.swift
+[62/267] Compiling ComplexModule Polar.swift
+[63/267] Compiling ComplexModule Scale.swift
+[63/267] Compiling transforms.cpp
+[65/269] Compiling Numerics Numerics.swift
+[66/269] Emitting module Numerics
+[66/269] Compiling random.cpp
+[67/269] Compiling primitives.cpp
+[68/269] Compiling linalg.cpp
+[69/269] Compiling no_gguf.cpp
+[70/269] Compiling safetensors.cpp
+[71/269] Compiling ops.cpp
+[72/269] Compiling load.cpp
+[73/269] Compiling graph_utils.cpp
+[74/269] Compiling fft.cpp
+[75/269] Compiling fast.cpp
+[76/269] Compiling dtype_utils.cpp
+[77/269] Compiling einsum.cpp
+[78/269] Compiling dtype.cpp
+[79/269] Compiling utils.cpp
+[80/269] Compiling no_ring.cpp
+[81/269] Compiling primitives.cpp
+[82/269] Compiling no_nccl.cpp
+[83/269] Compiling ops.cpp
+[84/269] Compiling no_mpi.cpp
+[85/269] Compiling device.cpp
+[86/269] Compiling distributed.cpp
+[87/269] Compiling export.cpp
+[88/269] Compiling utils.cpp
+[89/269] Compiling unary.cpp
+[90/269] Compiling compile.cpp
+[91/269] Compiling ternary.cpp
+[92/269] Compiling softmax.cpp
+[93/269] Compiling sort.cpp
+[94/269] Compiling slicing.cpp
+[95/269] Compiling scan.cpp
+[96/269] Compiling resident.cpp
+[97/269] Compiling rope.cpp
+[98/269] Compiling scaled_dot_product_attention.cpp
+[99/269] Compiling reduce.cpp
+[100/269] Compiling primitives.cpp
+[101/269] Compiling quantized.cpp
+[102/269] Compiling normalization.cpp
+[103/269] Compiling metal.cpp
+[104/269] Compiling logsumexp.cpp
+[105/269] Compiling jit_kernels.cpp
+[106/269] Compiling matmul.cpp
+[107/269] Compiling indexing.cpp
+[108/269] Compiling hadamard.cpp
+[109/269] Compiling fence.cpp
+[110/269] Compiling event.cpp
+[111/269] Compiling fft.cpp
+[112/269] Compiling distributed.cpp
+[113/269] Compiling eval.cpp
+[114/269] Compiling device_info.cpp
+[115/269] Compiling copy.cpp
+[116/269] Compiling custom_kernel.cpp
+[117/269] Compiling device.cpp
+[118/269] Compiling conv.cpp
+[119/269] Compiling slicing.cpp
+[120/269] Compiling allocator.cpp
+[121/269] Compiling binary.cpp
+[122/269] Compiling compiled.cpp
+[123/269] Compiling primitives.cpp
+[124/269] Compiling no_cuda.cpp
+[125/269] Compiling dirs.cpp
+[126/269] Compiling threefry.cpp
+[127/269] Compiling copy.cpp
+[128/269] Compiling softmax.cpp
+[129/269] Compiling svd.cpp
+[130/269] Compiling unary.cpp
+[131/269] Compiling sort.cpp
+[132/269] Compiling select.cpp
+[133/269] Compiling scan.cpp
+[134/269] Compiling quantized.cpp
+[135/269] Compiling reduce.cpp
+[136/269] Compiling qrf.cpp
+[137/269] Compiling primitives.cpp
+[138/269] Compiling matmul.cpp
+[139/269] Compiling masked_mm.cpp
+[140/269] Compiling logsumexp.cpp
+[141/269] Compiling luf.cpp
+[142/269] Compiling jit_compiler.cpp
+[143/269] Compiling hadamard.cpp
+[144/269] Compiling inverse.cpp
+[145/269] Compiling cblas.cpp
+[146/269] Compiling bnns.cpp
+[147/269] Compiling eval.cpp
+[148/269] Compiling indexing.cpp
+[149/269] Compiling fft.cpp
+[150/269] Compiling encoder.cpp
+[151/269] Compiling device_info.cpp
+[152/269] Compiling distributed.cpp
+[153/269] Compiling eigh.cpp
+[154/269] Compiling eig.cpp
+[155/269] Compiling conv.cpp
+[156/269] Compiling cholesky.cpp
+[157/269] Compiling copy.cpp
+[158/269] Compiling utils.cpp
+[159/269] Compiling arg_reduce.cpp
+[160/269] Compiling slicing.cpp
+[161/269] Compiling reduce.cpp
+[162/269] Compiling metal_kernel.cpp
+[163/269] Compiling load.cpp
+[164/269] Compiling compiled.cpp
+[165/269] Compiling broadcasting.cpp
+[166/269] Compiling utils.cpp
+[167/269] Compiling unary_ops.cpp
+[168/269] Compiling unary.cpp
+[169/269] Compiling ternary_ops.cpp
+[170/269] Compiling ternary.cpp
+[171/269] Compiling steel_gemm_splitk_nax.cpp
+[172/269] Compiling common.cpp
+[173/269] Compiling steel_gemm_splitk.cpp
+[174/269] Compiling steel_gemm_segmented_nax.cpp
+[175/269] Compiling steel_gemm_segmented.cpp
+[176/269] Compiling steel_gemm_masked.cpp
+[177/269] Compiling steel_gemm_gather_nax.cpp
+[178/269] Compiling steel_gemm_gather.cpp
+[179/269] Compiling steel_gemm_fused_nax.cpp
+[180/269] Compiling steel_gemm_fused.cpp
+[181/269] Compiling steel_conv_general.cpp
+[182/269] Compiling steel_conv_3d.cpp
+[183/269] Compiling steel_conv.cpp
+[184/269] Compiling steel_attention_nax.cpp
+[185/269] Compiling steel_attention.cpp
+[186/269] Compiling sort.cpp
+[187/269] Compiling softmax.cpp
+[188/269] Compiling searchsorted.cpp
+[189/269] Compiling scatter_axis.cpp
+[190/269] Compiling scatter.cpp
+[191/269] Compiling scan.cpp
+[192/269] Compiling reduce_utils.cpp
+[193/269] Compiling reduce.cpp
+[194/269] Compiling quantized_utils.cpp
+[195/269] Compiling quantized_nax.cpp
+[196/269] Compiling quantized.cpp
+[197/269] Compiling masked_scatter.cpp
+[198/269] Compiling logsumexp.cpp
+[199/269] Compiling hadamard.cpp
+[200/269] Compiling gemv_masked.cpp
+[201/269] Compiling gemv.cpp
+[202/269] Compiling gemm_nax.cpp
+[203/269] Compiling gemm.cpp
+[204/269] Compiling gather_front.cpp
+[205/269] Compiling gather_axis.cpp
+[206/269] Compiling gather.cpp
+[207/269] Compiling fp_quantized_nax.cpp
+[208/269] Compiling fp_quantized.cpp
+[209/269] Compiling fft.cpp
+[210/269] Compiling copy.cpp
+[211/269] Compiling conv.cpp
+[212/269] Compiling binary.cpp
+[213/269] Compiling compiled_preamble.cpp
+[214/269] Compiling binary_two.cpp
+[215/269] Compiling binary_ops.cpp
+[216/269] Compiling binary.cpp
+[217/269] Compiling arange.cpp
+[218/269] Compiling array.cpp
+[219/269] Compiling jaccl_conditional.cpp
+[220/269] Compiling version.cpp
+[221/269] Compiling compiled_conditional.cpp
+[222/269] Compiling vector.cpp
+[223/269] Compiling transforms_impl.cpp
+[224/269] Compiling transforms.cpp
+[225/269] Compiling string.cpp
+[226/269] Compiling stream.cpp
+[227/269] Compiling random.cpp
+[228/269] Compiling metal.cpp
+[229/269] Compiling ops.cpp
+[230/269] Compiling memory.cpp
+[231/269] Compiling map.cpp
+[232/269] Compiling linalg.cpp
+[233/269] Compiling io_types.cpp
+[234/269] Compiling io.cpp
+[235/269] Compiling graph_utils.cpp
+[236/269] Compiling fft.cpp
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx-c/mlx/c/fast.cpp:614:10: error: use of undeclared identifier 'mlx_fast_scaled_dot_product_attention_with_force_fused'
+  614 |   return mlx_fast_scaled_dot_product_attention_with_force_fused(
+      |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+1 error generated.
+[237/269] Compiling fast.cpp
+[237/269] Compiling compile.cpp
+[237/269] Compiling cuda.cpp
+[237/269] Compiling export.cpp
+error: fatalError

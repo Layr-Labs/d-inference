@@ -1,0 +1,34 @@
+[1/1] Compiling plugin CudaBuild
+[2/2] Compiling plugin GenerateManual
+[3/3] Compiling plugin GenerateDoccReference
+Building for debugging...
+[3/18] Write sources
+[4/18] Write swift-version--58304C5D6DBC2206.txt
+[6/8] Emitting module MLXTests
+[7/8] Compiling MLXTests ForcedAttentionTests.swift
+[7/9] Write Objects.LinkFileList
+[8/9] Linking mlx-swiftPackageTests
+Build complete! (3.76s)
+Test Suite 'Selected tests' started at 2026-09-07 07:10:24.183.
+Test Suite 'mlx-swiftPackageTests.xctest' started at 2026-09-07 07:10:24.183.
+Test Suite 'ForcedAttentionTests' started at 2026-09-07 07:10:24.183.
+Test Case '-[MLXTests.ForcedAttentionTests testFalsePreservesExistingRouting]' started.
+Test Case '-[MLXTests.ForcedAttentionTests testFalsePreservesExistingRouting]' passed (0.042 seconds).
+Test Case '-[MLXTests.ForcedAttentionTests testFusedDoesNotMaterializeAttentionScores]' started.
+Test Case '-[MLXTests.ForcedAttentionTests testFusedDoesNotMaterializeAttentionScores]' passed (0.357 seconds).
+Test Case '-[MLXTests.ForcedAttentionTests testFusedPitchedViewsAndSinksMatchDenseReference]' started.
+Test Case '-[MLXTests.ForcedAttentionTests testFusedPitchedViewsAndSinksMatchDenseReference]' passed (0.023 seconds).
+Test Case '-[MLXTests.ForcedAttentionTests testUnsupportedHeadRefusesInsteadOfFallingBack]' started.
+Test Case '-[MLXTests.ForcedAttentionTests testUnsupportedHeadRefusesInsteadOfFallingBack]' passed (0.002 seconds).
+Test Case '-[MLXTests.ForcedAttentionTests testWideHeadGQA8MatchesDenseReference]' started.
+Test Case '-[MLXTests.ForcedAttentionTests testWideHeadGQA8MatchesDenseReference]' passed (0.046 seconds).
+Test Suite 'ForcedAttentionTests' passed at 2026-09-07 07:10:24.653.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.469 (0.470) seconds
+Test Suite 'mlx-swiftPackageTests.xctest' passed at 2026-09-07 07:10:24.653.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.469 (0.470) seconds
+Test Suite 'Selected tests' passed at 2026-09-07 07:10:24.653.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.469 (0.470) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

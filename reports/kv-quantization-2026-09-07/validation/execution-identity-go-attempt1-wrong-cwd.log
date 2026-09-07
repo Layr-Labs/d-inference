@@ -1,0 +1,7 @@
+# ./registry
+stat /Users/gaj/Documents/Builds/d-inference-kv-quant/registry: directory not found
+FAIL	./registry [setup failed]
+# ./protocol
+stat /Users/gaj/Documents/Builds/d-inference-kv-quant/protocol: directory not found
+FAIL	./protocol [setup failed]
+FAIL

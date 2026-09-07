@@ -1,0 +1,339 @@
+COMMAND: ['swift', 'test', '--skip-build', '--filter', 'KVPerformanceIdentityTests|EngineV2CapacityTests|bucketingMatchesProbeContract|exactBucketQuantilesReachHighConfidence|fallbackChainWalksWarmAggregateThenModelAggregateThenNil|warmAndColdDistributionsNeverMix|ringsOverwriteOldestAndStayFixedSize|bucketCountIsBoundedByLRUEviction|probeWorkStaysBoundedRegardlessOfBucketCount|rejectsNonFiniteAndNegativeSamples|probe|slot|capacity|model|quote|warmIdleSlotIsAdmissibleWithSnapshotSeqAndBudget|advertisedButUnloadedModelIsAdmissibleOnlyWhenColdLoadFits|coldQuoteNeverDoubleChargesTheLoadHeadroom|measuredTTFTQuantilesRideTheQuoteWithConfidence|unknownModelRejectsCapability|visionProbeAgainstTextOnlyModelRejectsCapability|brokenTemplateSelfCheckRejectsTemplate|degenerateVisionTowerRejectsMemoryCap|missingSnapshotOrZeroSeqRejectsSlotState|crashedReloadingAndDrainingRejectSlotState|requestExceedingWholeGrantRejectsKVHeadroom|busySlotRejectsTokenBudgetWithQueueEstimate|concurrencyFullRejectsTokenBudgetNotSlotState|unmeasuredDecodeRateRejectsTokenBudgetWithoutInventedEstimate|waitBeyondDeadlineRejectsDeadline|expiredDeadlineRejectsDeadlineEvenWhenIdle']
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/gaj/documents/builds/d-inference-kv-quant/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/gaj/documents/builds/d-inference-kv-quant/provider-swift->/users/gaj/documents/builds/d-inference-kv-quant/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/gaj/documents/builds/d-inference-kv-quant/provider-swift->/users/gaj/documents/builds/d-inference-kv-quant/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-09-07 08:35:38.835.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-09-07 08:35:38.836.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-09-07 08:35:38.836.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-07 08:35:38.836.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "GPUEnforcement" started.
+◇ Suite "EngineV2KVBackendPolicy" started.
+◇ Suite "CoordinatorIntegrationTests" started.
+◇ Suite "kv backend posture (status + doctor)" started.
+◇ Suite "EngineV2 admission-error mapping" started.
+◇ Test rejectsNonFiniteAndNegativeSamples() started.
+◇ Suite "Complete checkpoint identity" started.
+◇ Suite "KV pool sweep wiring" started.
+◇ Suite "GPTOSS gate/up fusion" started.
+◇ Test warmIdleSlotIsAdmissibleWithSnapshotSeqAndBudget() started.
+◇ Suite "Startup preload no-evict enforcement (production load path)" started.
+◇ Test modelsUpdateRoundTripsAndReusesModelInfoEncoding() started.
+◇ Suite "EngineV2 fp32 paged pages: KV rate wiring" started.
+◇ Test modelFitVerdictReflectsPerModelFloor() started.
+◇ Suite "EngineV2 capacity: CBv2CapacitySnapshot → BackendSlotCapacity" started.
+◇ Test "a failure for a model removed from the enabled set is suppressed" started.
+◇ Suite "EngineV2 KV-backend gate (real tiny models)" started.
+◇ Test "an unrecognized backend value is recorded as the auto it resolves to" started.
+◇ Suite "SSD load hashing follows model capability" started.
+◇ Suite "EngineV2 production wiring: runtime guards" started.
+◇ Suite "Paged kernel process preflight" started.
+◇ Test modelFitVerdictTreatsAnEmptyLiveServingSetAsOpenWorld() started.
+◇ Test modelFitSuggestsFittingAlternatives() started.
+◇ Suite "Benchmark production grant uses loaded slot facts" started.
+◇ Suite "CBv2MultimodalError → multimodal_rejected mapping" started.
+◇ Test modelFitMatchesRuntimeGateNotRawAvailable() started.
+◇ Test degenerateVisionTowerRejectsMemoryCap() started.
+◇ Test unmeasuredDecodeRateRejectsTokenBudgetWithoutInventedEstimate() started.
+◇ Suite "SSD prefix cache: DBK3 block store" started.
+◇ Suite "EngineV2 production wiring: v2-only slot build" started.
+◇ Suite "ModelDownloader.prefetch (resume + verify)" started.
+◇ Suite "Qwen partial-prefill policy evaluator" started.
+◇ Test "a refused load becomes a slot entry instead of a hole in the inventory" started.
+◇ Suite "Durable cache heartbeat telemetry" started.
+◇ Test busySlotRejectsTokenBudgetWithQueueEstimate() started.
+◇ Test capacityProbeDecodesGoWireFormWithExactKeys() started.
+◇ Test capacityQuoteEncodesExactKeysAndOmitsReasonWhenAdmissible() started.
+◇ Test concurrencyFullRejectsTokenBudgetNotSlotState() started.
+◇ Suite "KV execution performance identity" started.
+◇ Test expiredDeadlineRejectsDeadlineEvenWhenIdle() started.
+◇ Test capacityRejectionReasonEnumMatchesGoConstants() started.
+◇ Test ringsOverwriteOldestAndStayFixedSize() started.
+◇ Suite "MTP + paged-pool posture telemetry" started.
+◇ Test brokenTemplateSelfCheckRejectsTemplate() started.
+◇ Test advertisedButUnloadedModelIsAdmissibleOnlyWhenColdLoadFits() started.
+◇ Test bucketCountIsBoundedByLRUEviction() started.
+◇ Test modelFitRequiredUsesPerModelActivationFloor() started.
+◇ Test probeWorkStaysBoundedRegardlessOfBucketCount() started.
+◇ Test crashedReloadingAndDrainingRejectSlotState() started.
+◇ Test "posture builder pairs each live slot with the selection its config asked for" started.
+◇ Test "a model that failed once and then loaded reports as serving, not failed" started.
+◇ Test modelInfoTemplateRenderOKTriState() started.
+◇ Test "slot posture survives the state file and stays absent for old daemons" started.
+◇ Test measuredTTFTQuantilesRideTheQuoteWithConfidence() started.
+◇ Test visionProbeAgainstTextOnlyModelRejectsCapability() started.
+◇ Suite "PrefixCachePolicy" started.
+◇ Test modelFitPassesWhenItFits() started.
+◇ Test fallbackChainWalksWarmAggregateThenModelAggregateThenNil() started.
+◇ Test requestExceedingWholeGrantRejectsKVHeadroom() started.
+◇ Test bucketingMatchesProbeContract() started.
+◇ Test coldQuoteNeverDoubleChargesTheLoadHeadroom() started.
+◇ Test modelFitTierArithmeticIsDerivedFromTheLiveGate() started.
+◇ Test "a failure expires after the idle-unload horizon; a fresh one never does" started.
+◇ Test modelFitFailsWhenTooLarge() started.
+◇ Test unknownModelRejectsCapability() started.
+◇ Test "the expiry horizon follows the CONFIGURED idle timeout, not the fixed default" started.
+◇ Test warmAndColdDistributionsNeverMix() started.
+◇ Test exactReleaseArtifactAutoPolicy(modelID:) started.
+◇ Test "VLM is vetoed only while the paged cache does not vouch for spans" started.
+◇ Test missingSnapshotOrZeroSeqRejectsSlotState() started.
+◇ Test "capacityExhausted → canonical token_budget_exhausted string → retryable class" started.
+◇ Test "Qwen auto reports the served backend and accepts contiguous fallback" started.
+◇ Test exactBucketQuantilesReachHighConfidence() started.
+◇ Test "probeMetal reports an available Metal device on this host" started.
+◇ Test "ModelCatalogClient fetches and decodes the mock catalog" started.
+◇ Test waitBeyondDeadlineRejectsDeadline() started.
+◇ Test modelFitVerdictUsesTheServingSetFloorNotTheTargetsOwn() started.
+◇ Test "ProviderLoop.capacityRefreshTick signals the proactive pool sweep" started.
+◇ Test "model layout follows split/fused loads and aliases preserve checkpoint policies" started.
+✔ Test rejectsNonFiniteAndNegativeSamples() passed after 0.001 seconds.
+◇ Test "slot-cap: no-evict load refuses instead of evicting an idle resident model" started.
+◇ Test otherIDsRemainContiguous(modelID:) started.
+◇ Test "the slot rate follows the CONSTRUCTED pool's dtype, not the request" started.
+◇ Test "fixed and block-rounded request bytes are reflected in heartbeat tokens" started.
+◇ Test "finished requests release their committed budget from the heartbeat" started.
+◇ Test "budget fields follow the legacy committed/worst-case contract; activeTokens stays engine truth" started.
+◇ Test "wedge trips only when the engine step counter flatlines under hanging admits" started.
+◇ Test "wedge counters flow into the slot (admits / first tokens / engine steps)" started.
+◇ Test "budget max clamps to the live fleet budget; nil clamp preserves the raw grant" started.
+◇ Test uncachedReleaseModelsSkipSSDHashing(modelID:) started.
+◇ Test "runtime summary recomputes each bridge's budget from live fleet residency" started.
+◇ Test "idle when nothing runs; budget gate disengaged when kvBytesPerToken unknown" started.
+◇ Test "capacity summary is the ONLY slot source; v2 slot folds into the heartbeat" started.
+✔ Test warmIdleSlotIsAdmissibleWithSnapshotSeqAndBudget() passed after 0.001 seconds.
+◇ Test candidateAutoBuild(modelID:) started.
+◇ Test "runtime capacity summary aggregates registered bridges" started.
+◇ Test "capacity errors are unaffected by the new prefix check" started.
+✔ Test degenerateVisionTowerRejectsMemoryCap() passed after 0.001 seconds.
+◇ Test "child probe sees every model-specific variant before parent pre-JIT" started.
+◇ Test "descriptor-relative root creation rejects a concurrent symlink replacement" started.
+◇ Test "Model optimization changes separate persistent checkpoint namespaces" started.
+✔ Test unmeasuredDecodeRateRejectsTokenBudgetWithoutInventedEstimate() passed after 0.001 seconds.
+◇ Test modelFloorAndOperatorCapRemainIndependentOfAllocatorObservation() started.
+◇ Test "legacy capacity omits new fields; heartbeat round trip retains typed counters" started.
+◇ Test case passing 1 argument modelID → "gpt-oss-20b" to exactReleaseArtifactAutoPolicy(modelID:) started.
+◇ Test "model identity requires Qwen config and the expected aggregate hash" started.
+◇ Test case passing 1 argument modelID → "qwen3.6-35b-a3b-vl-mtp-mxfp8" to exactReleaseArtifactAutoPolicy(modelID:) started.
+◇ Test case passing 1 argument modelID → "EigenLabs/Qwen3.8-27B-4bit-mtp" to exactReleaseArtifactAutoPolicy(modelID:) started.
+◇ Test case passing 1 argument modelID → "gemma-4-26b-qat-4bit" to exactReleaseArtifactAutoPolicy(modelID:) started.
+◇ Test case passing 1 argument modelID → "qwen3.5-35b-a3b" to exactReleaseArtifactAutoPolicy(modelID:) started.
+◇ Test "slot build is unconditional: builds, registers, and streams translated events" started.
+◇ Test "disk capacity pre-check counts only the bytes still to fetch on a resume" started.
+✔ Test "a failure for a model removed from the enabled set is suppressed" passed after 0.001 seconds.
+✔ Test modelFitVerdictTreatsAnEmptyLiveServingSetAsOpenWorld() passed after 0.001 seconds.
+◇ Test case passing 1 argument modelID → "qwen3.5-35b-a3b" to "Qwen auto reports the served backend and accepts contiguous fallback" started.
+◇ Test case passing 1 argument modelID → "qwen3.6-35b-a3b-vl-mtp-mxfp8" to "Qwen auto reports the served backend and accepts contiguous fallback" started.
+✔ Test busySlotRejectsTokenBudgetWithQueueEstimate() passed after 0.001 seconds.
+◇ Test case passing 1 argument modelID → "EigenLabs/Qwen3.8-27B-4bit-mtp" to "Qwen auto reports the served backend and accepts contiguous fallback" started.
+◇ Test formatReplacementTriggersCapacityPublication() started.
+✔ Test modelFitMatchesRuntimeGateNotRawAvailable() passed after 0.001 seconds.
+✔ Test "a refused load becomes a slot entry instead of a hole in the inventory" passed after 0.001 seconds.
+◇ Test completionKeepsTheExecutionCapturedAtDispatch() started.
+◇ Test nativeOmissionAndBoundedMalformedValues() started.
+◇ Test quantileExactAndBothFallbackTiersArePartitioned() started.
+◇ Test loadedNativeWinsButPlaceholdersKeepDeclaration() started.
+◇ Test declarationUsesExactKVPolicyAndActualMode() started.
+✔ Test "an unrecognized backend value is recorded as the auto it resolves to" passed after 0.002 seconds.
+✔ Test capacityRejectionReasonEnumMatchesGoConstants() passed after 0.001 seconds.
+◇ Test "a slot torn down inside its first interval still reports exactly once" started.
+✔ Test modelFitVerdictReflectsPerModelFloor() passed after 0.002 seconds.
+✔ Test modelFitSuggestsFittingAlternatives() passed after 0.002 seconds.
+✔ Test crashedReloadingAndDrainingRejectSlotState() passed after 0.001 seconds.
+✔ Test brokenTemplateSelfCheckRejectsTemplate() passed after 0.001 seconds.
+✔ Test concurrencyFullRejectsTokenBudgetNotSlotState() passed after 0.001 seconds.
+✔ Test expiredDeadlineRejectsDeadlineEvenWhenIdle() passed after 0.002 seconds.
+✔ Test "a model that failed once and then loaded reports as serving, not failed" passed after 0.001 seconds.
+✔ Test advertisedButUnloadedModelIsAdmissibleOnlyWhenColdLoadFits() passed after 0.002 seconds.
+◇ Test case passing 1 argument modelID → nil to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → "" to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → "unknown" to otherIDsRemainContiguous(modelID:) started.
+✔ Test modelFitRequiredUsesPerModelActivationFloor() passed after 0.002 seconds.
+◇ Test case passing 1 argument modelID → "gemma-4-26b-8bit" to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → "gemma-4-31b" to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → "gemma-4-26b-qat-4bit-other" to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → "gemma-4-26b" to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → "qwen3.5-9b" to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → "qwen3.6-35b-a3b" to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → "gpt-oss-20b-other" to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → "qwen3.5-27b" to otherIDsRemainContiguous(modelID:) started.
+✔ Test "posture builder pairs each live slot with the selection its config asked for" passed after 0.002 seconds.
+◇ Test case passing 1 argument modelID → "Qwen3.8-27B-4bit-mtp" to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → "eigenlabs/qwen3.8-27b-4bit-mtp" to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → "EigenLabs/Qwen3.8-27B-4bit" to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → " qwen3.5-35b-a3b" to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → "qwen3.5-35b-a3b " to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → "org/qwen3.5-35b-a3b" to otherIDsRemainContiguous(modelID:) started.
+✔ Test measuredTTFTQuantilesRideTheQuoteWithConfidence() passed after 0.002 seconds.
+◇ Test case passing 1 argument modelID → "qwen3.5-35b-a3b-other" to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → "QWEN3.5-35B-A3B" to otherIDsRemainContiguous(modelID:) started.
+◇ Test case passing 1 argument modelID → "qwen3.6-35b-a3b-vl-mtp-mxfp8-other" to otherIDsRemainContiguous(modelID:) started.
+◇ Test qwenDefaultSSD(modelID:) started.
+✔ Test visionProbeAgainstTextOnlyModelRejectsCapability() passed after 0.002 seconds.
+◇ Test case passing 1 argument modelID → "EigenLabs/Qwen3.8-27B-4bit-mtp-other" to otherIDsRemainContiguous(modelID:) started.
+✔ Test modelsUpdateRoundTripsAndReusesModelInfoEncoding() passed after 0.003 seconds.
+◇ Test case passing 1 argument modelID → "gpt-oss-20b" to uncachedReleaseModelsSkipSSDHashing(modelID:) started.
+✔ Test capacityProbeDecodesGoWireFormWithExactKeys() passed after 0.002 seconds.
+◇ Test case passing 1 argument modelID → "gemma-4-26b-qat-4bit" to uncachedReleaseModelsSkipSSDHashing(modelID:) started.
+✔ Test requestExceedingWholeGrantRejectsKVHeadroom() passed after 0.002 seconds.
+◇ Test otherArtifactsRequireExplicitSSDOptIn(modelID:) started.
+◇ Test case passing 1 argument modelID → "gemma-4-26b" to uncachedReleaseModelsSkipSSDHashing(modelID:) started.
+✔ Test modelInfoTemplateRenderOKTriState() passed after 0.002 seconds.
+◇ Test case passing 1 argument modelID → "gemma-4-26b-8bit" to uncachedReleaseModelsSkipSSDHashing(modelID:) started.
+✔ Test coldQuoteNeverDoubleChargesTheLoadHeadroom() passed after 0.002 seconds.
+◇ Test case passing 1 argument modelID → "qwen3.5-35b-a3b" to candidateAutoBuild(modelID:) started.
+✔ Test capacityQuoteEncodesExactKeysAndOmitsReasonWhenAdmissible() passed after 0.003 seconds.
+✔ Test "a failure expires after the idle-unload horizon; a fresh one never does" passed after 0.003 seconds.
+✔ Test unknownModelRejectsCapability() passed after 0.003 seconds.
+✔ Test bucketingMatchesProbeContract() passed after 0.003 seconds.
+✔ Test modelFitTierArithmeticIsDerivedFromTheLiveGate() passed after 0.003 seconds.
+✔ Test "the expiry horizon follows the CONFIGURED idle timeout, not the fixed default" passed after 0.003 seconds.
+◇ Test case passing 1 argument key → "DARKBLOOM_GPTOSS_FUSED_GATE_UP" to "Model optimization changes separate persistent checkpoint namespaces" started.
+◇ Test case passing 1 argument key → "DARKBLOOM_GPTOSS_COMPILED_EXPERTS" to "Model optimization changes separate persistent checkpoint namespaces" started.
+◇ Test case passing 1 argument key → "DARKBLOOM_GPTOSS_PREFILL_OUTPUT" to "Model optimization changes separate persistent checkpoint namespaces" started.
+◇ Test case passing 1 argument key → "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL" to "Model optimization changes separate persistent checkpoint namespaces" started.
+✔ Test fallbackChainWalksWarmAggregateThenModelAggregateThenNil() passed after 0.004 seconds.
+◇ Test case passing 1 argument key → "DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY" to "Model optimization changes separate persistent checkpoint namespaces" started.
+◇ Test case passing 1 argument key → "DARKBLOOM_GEMMA4_PREFILL_TAIL_MIN_CHUNK" to "Model optimization changes separate persistent checkpoint namespaces" started.
+◇ Test case passing 1 argument key → "DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS" to "Model optimization changes separate persistent checkpoint namespaces" started.
+✔ Test modelFitPassesWhenItFits() passed after 0.004 seconds.
+✔ Test "VLM is vetoed only while the paged cache does not vouch for spans" passed after 0.004 seconds.
+✔ Test modelFitFailsWhenTooLarge() passed after 0.005 seconds.
+✔ Test warmAndColdDistributionsNeverMix() passed after 0.005 seconds.
+✔ Test exactReleaseArtifactAutoPolicy(modelID:) with 5 test cases passed after 0.005 seconds.
+✔ Test missingSnapshotOrZeroSeqRejectsSlotState() passed after 0.005 seconds.
+✔ Test ringsOverwriteOldestAndStayFixedSize() passed after 0.005 seconds.
+✔ Test exactBucketQuantilesReachHighConfidence() passed after 0.006 seconds.
+✔ Test "Qwen auto reports the served backend and accepts contiguous fallback" with 3 test cases passed after 0.005 seconds.
+✔ Test waitBeyondDeadlineRejectsDeadline() passed after 0.006 seconds.
+✔ Test modelFitVerdictUsesTheServingSetFloorNotTheTargetsOwn() passed after 0.006 seconds.
+✔ Test "the slot rate follows the CONSTRUCTED pool's dtype, not the request" passed after 0.005 seconds.
+✔ Test "capacityExhausted → canonical token_budget_exhausted string → retryable class" passed after 0.006 seconds.
+✔ Test otherIDsRemainContiguous(modelID:) with 21 test cases passed after 0.005 seconds.
+✔ Test "fixed and block-rounded request bytes are reflected in heartbeat tokens" passed after 0.005 seconds.
+◇ Test case passing 1 argument modelID → "qwen3.5-35b-a3b" to qwenDefaultSSD(modelID:) started.
+◇ Test case passing 1 argument modelID → "qwen3.6-35b-a3b-vl-mtp-mxfp8" to qwenDefaultSSD(modelID:) started.
+✔ Test "budget fields follow the legacy committed/worst-case contract; activeTokens stays engine truth" passed after 0.005 seconds.
+◇ Test case passing 1 argument modelID → "EigenLabs/Qwen3.8-27B-4bit-mtp" to qwenDefaultSSD(modelID:) started.
+✔ Test "budget max clamps to the live fleet budget; nil clamp preserves the raw grant" passed after 0.005 seconds.
+◇ Test case passing 1 argument modelID → "gpt-oss-20b" to otherArtifactsRequireExplicitSSDOptIn(modelID:) started.
+◇ Test case passing 1 argument modelID → "gemma-4-26b-qat-4bit" to otherArtifactsRequireExplicitSSDOptIn(modelID:) started.
+◇ Test case passing 1 argument modelID → "gemma-4-26b" to otherArtifactsRequireExplicitSSDOptIn(modelID:) started.
+◇ Test case passing 1 argument modelID → "gemma-4-26b-8bit" to otherArtifactsRequireExplicitSSDOptIn(modelID:) started.
+◇ Test case passing 1 argument modelID → "unknown" to otherArtifactsRequireExplicitSSDOptIn(modelID:) started.
+◇ Test case passing 1 argument modelID → "" to otherArtifactsRequireExplicitSSDOptIn(modelID:) started.
+◇ Test case passing 1 argument modelID → "qwen3.5-35b-a3b-other" to otherArtifactsRequireExplicitSSDOptIn(modelID:) started.
+◇ Test case passing 1 argument modelID → "QWEN3.5-35B-A3B" to otherArtifactsRequireExplicitSSDOptIn(modelID:) started.
+◇ Test case passing 1 argument modelID → "qwen3.6-35b-a3b" to otherArtifactsRequireExplicitSSDOptIn(modelID:) started.
+◇ Test case passing 1 argument modelID → "EigenLabs/Qwen3.8-27B-4bit" to otherArtifactsRequireExplicitSSDOptIn(modelID:) started.
+✔ Test "runtime summary recomputes each bridge's budget from live fleet residency" passed after 0.005 seconds.
+✔ Test "idle when nothing runs; budget gate disengaged when kvBytesPerToken unknown" passed after 0.005 seconds.
+✔ Test "runtime capacity summary aggregates registered bridges" passed after 0.005 seconds.
+✔ Test "capacity errors are unaffected by the new prefix check" passed after 0.005 seconds.
+✔ Test probeWorkStaysBoundedRegardlessOfBucketCount() passed after 0.007 seconds.
+◇ Test case passing 1 argument modelID → " qwen3.5-35b-a3b" to otherArtifactsRequireExplicitSSDOptIn(modelID:) started.
+✔ Test bucketCountIsBoundedByLRUEviction() passed after 0.006 seconds.
+✔ Test "Model optimization changes separate persistent checkpoint namespaces" with 7 test cases passed after 0.005 seconds.
+✔ Test "wedge trips only when the engine step counter flatlines under hanging admits" passed after 0.006 seconds.
+2026-09-07T08:35:39-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for fixture (2 files)...
+✔ Test "slot posture survives the state file and stays absent for old daemons" passed after 0.006 seconds.
+✔ Test uncachedReleaseModelsSkipSSDHashing(modelID:) with 4 test cases passed after 0.005 seconds.
+✔ Test "legacy capacity omits new fields; heartbeat round trip retains typed counters" passed after 0.005 seconds.
+✔ Test modelFloorAndOperatorCapRemainIndependentOfAllocatorObservation() passed after 0.005 seconds.
+✔ Test completionKeepsTheExecutionCapturedAtDispatch() passed after 0.005 seconds.
+✔ Test formatReplacementTriggersCapacityPublication() passed after 0.005 seconds.
+✔ Test nativeOmissionAndBoundedMalformedValues() passed after 0.005 seconds.
+✔ Test declarationUsesExactKVPolicyAndActualMode() passed after 0.005 seconds.
+✔ Test loadedNativeWinsButPlaceholdersKeepDeclaration() passed after 0.005 seconds.
+✔ Test qwenDefaultSSD(modelID:) with 3 test cases passed after 0.004 seconds.
+✔ Test "descriptor-relative root creation rejects a concurrent symlink replacement" passed after 0.005 seconds.
+✔ Test otherArtifactsRequireExplicitSSDOptIn(modelID:) with 11 test cases passed after 0.004 seconds.
+✔ Suite "kv backend posture (status + doctor)" passed after 0.007 seconds.
+✔ Suite "EngineV2KVBackendPolicy" passed after 0.007 seconds.
+✔ Suite "EngineV2 admission-error mapping" passed after 0.007 seconds.
+✔ Suite "EngineV2 fp32 paged pages: KV rate wiring" passed after 0.007 seconds.
+✔ Test "finished requests release their committed budget from the heartbeat" passed after 0.006 seconds.
+✔ Suite "Complete checkpoint identity" passed after 0.007 seconds.
+✔ Test "wedge counters flow into the slot (admits / first tokens / engine steps)" passed after 0.006 seconds.
+✔ Suite "Durable cache heartbeat telemetry" passed after 0.007 seconds.
+✔ Suite "SSD load hashing follows model capability" passed after 0.007 seconds.
+✔ Suite "CBv2MultimodalError → multimodal_rejected mapping" passed after 0.007 seconds.
+✔ Suite "SSD prefix cache: DBK3 block store" passed after 0.007 seconds.
+✔ Suite "PrefixCachePolicy" passed after 0.007 seconds.
+✔ Suite "EngineV2 capacity: CBv2CapacitySnapshot → BackendSlotCapacity" passed after 0.007 seconds.
+✔ Suite "Benchmark production grant uses loaded slot facts" passed after 0.007 seconds.
+✔ Test quantileExactAndBothFallbackTiersArePartitioned() passed after 0.005 seconds.
+2026-09-07T08:35:39-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for fixture: 31c6e8b0ba2b2d25
+✔ Suite "KV execution performance identity" passed after 0.007 seconds.
+2026-09-07T08:35:39-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for EigenLabs/Qwen3.6-35B (2 files)...
+2026-09-07T08:35:39-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for EigenLabs/Qwen3.6-35B: 31c6e8b0ba2b2d25
+2026-09-07T08:35:39-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for EigenLabs/Qwen3.6-35B (2 files)...
+2026-09-07T08:35:39-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for EigenLabs/Qwen3.6-35B: 31c6e8b0ba2b2d25
+2026-09-07T08:35:39-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for fixture-mislabeled (2 files)...
+2026-09-07T08:35:39-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for fixture-mislabeled: dc21bb679ab8c16f
+2026-09-07T08:35:39-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for fixture-qwen3-vl (2 files)...
+2026-09-07T08:35:39-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for fixture-qwen3-vl: 6b94f273e5bbd50a
+✔ Test "model identity requires Qwen config and the expected aggregate hash" passed after 0.009 seconds.
+✔ Suite "Qwen partial-prefill policy evaluator" passed after 0.011 seconds.
+✔ Test "probeMetal reports an available Metal device on this host" passed after 0.031 seconds.
+✔ Suite "GPUEnforcement" passed after 0.032 seconds.
+✔ Test "ModelCatalogClient fetches and decodes the mock catalog" passed after 0.037 seconds.
+✔ Suite "CoordinatorIntegrationTests" passed after 0.038 seconds.
+✔ Test "disk capacity pre-check counts only the bytes still to fetch on a resume" passed after 0.044 seconds.
+✔ Suite "ModelDownloader.prefetch (resume + verify)" passed after 0.046 seconds.
+✔ Test "slot build is unconditional: builds, registers, and streams translated events" passed after 0.047 seconds.
+✔ Suite "EngineV2 production wiring: v2-only slot build" passed after 0.049 seconds.
+✔ Test "capacity summary is the ONLY slot source; v2 slot folds into the heartbeat" passed after 0.048 seconds.
+◇ Test "model_load_time_ms rides the slot after recordModelLoadTime" started.
+✔ Test "ProviderLoop.capacityRefreshTick signals the proactive pool sweep" passed after 0.049 seconds.
+✔ Suite "KV pool sweep wiring" passed after 0.050 seconds.
+✔ Test "model_load_time_ms rides the slot after recordModelLoadTime" passed after 0.001 seconds.
+✔ Suite "EngineV2 production wiring: runtime guards" passed after 0.050 seconds.
+2026-09-07T08:35:39-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for darkbloom-tests/noevict-slot-A90F59CA (1 files)...
+2026-09-07T08:35:39-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for darkbloom-tests/noevict-slot-A90F59CA: c74f3008fdd2f7c5
+✔ Test "slot-cap: no-evict load refuses instead of evicting an idle resident model" passed after 0.052 seconds.
+✔ Suite "Startup preload no-evict enforcement (production load path)" passed after 0.053 seconds.
+[INFO] fuseSwitchGLUGateUpWeights: keeping model.layers.0.mlp.experts split — gate and up resolve to different quantization policies
+✔ Test "model layout follows split/fused loads and aliases preserve checkpoint policies" passed after 0.101 seconds.
+✔ Suite "GPTOSS gate/up fusion" passed after 0.102 seconds.
+✔ Test "a slot torn down inside its first interval still reports exactly once" passed after 0.134 seconds.
+✔ Suite "MTP + paged-pool posture telemetry" passed after 0.136 seconds.
+✔ Test "child probe sees every model-specific variant before parent pre-JIT" passed after 1.127 seconds.
+✔ Suite "Paged kernel process preflight" passed after 1.128 seconds.
+◇ Test case passing 1 argument modelID → "qwen3.6-35b-a3b-vl-mtp-mxfp8" to candidateAutoBuild(modelID:) started.
+◇ Test case passing 1 argument modelID → "EigenLabs/Qwen3.8-27B-4bit-mtp" to candidateAutoBuild(modelID:) started.
+✔ Test candidateAutoBuild(modelID:) with 3 test cases passed after 2.563 seconds.
+◇ Test candidateAutoDegradesFailures(modelID:invalidDType:) started.
+◇ Test case passing 2 arguments modelID → "qwen3.5-35b-a3b", invalidDType → false to candidateAutoDegradesFailures(modelID:invalidDType:) started.
+◇ Test case passing 2 arguments modelID → "qwen3.5-35b-a3b", invalidDType → true to candidateAutoDegradesFailures(modelID:invalidDType:) started.
+◇ Test case passing 2 arguments modelID → "qwen3.6-35b-a3b-vl-mtp-mxfp8", invalidDType → false to candidateAutoDegradesFailures(modelID:invalidDType:) started.
+◇ Test case passing 2 arguments modelID → "qwen3.6-35b-a3b-vl-mtp-mxfp8", invalidDType → true to candidateAutoDegradesFailures(modelID:invalidDType:) started.
+◇ Test case passing 2 arguments modelID → "EigenLabs/Qwen3.8-27B-4bit-mtp", invalidDType → false to candidateAutoDegradesFailures(modelID:invalidDType:) started.
+◇ Test case passing 2 arguments modelID → "EigenLabs/Qwen3.8-27B-4bit-mtp", invalidDType → true to candidateAutoDegradesFailures(modelID:invalidDType:) started.
+✔ Test candidateAutoDegradesFailures(modelID:invalidDType:) with 6 test cases passed after 0.027 seconds.
+◇ Test releaseAttentionModelsDefaultToPaged(modelID:) started.
+◇ Test case passing 1 argument modelID → "gpt-oss-20b" to releaseAttentionModelsDefaultToPaged(modelID:) started.
+◇ Test case passing 1 argument modelID → "gemma-4-26b-qat-4bit" to releaseAttentionModelsDefaultToPaged(modelID:) started.
+✔ Test releaseAttentionModelsDefaultToPaged(modelID:) with 2 test cases passed after 1.171 seconds.
+◇ Test "slot factory binds complete historical SSD state to the resolved paged backend" started.
+✔ Test "slot factory binds complete historical SSD state to the resolved paged backend" passed after 0.499 seconds.
+◇ Test "slot factory REFUSES an explicit paged request it cannot serve" started.
+✔ Test "slot factory REFUSES an explicit paged request it cannot serve" passed after 0.003 seconds.
+◇ Test "slot factory publishes GPT-OSS native contiguous rate without SSD staging" started.
+✔ Test "slot factory publishes GPT-OSS native contiguous rate without SSD staging" passed after 0.003 seconds.
+◇ Test releasePagedModelsDefaultToNoSSD(modelID:) started.
+◇ Test case passing 1 argument modelID → "gpt-oss-20b" to releasePagedModelsDefaultToNoSSD(modelID:) started.
+◇ Test case passing 1 argument modelID → "gemma-4-26b-qat-4bit" to releasePagedModelsDefaultToNoSSD(modelID:) started.
+✔ Test releasePagedModelsDefaultToNoSSD(modelID:) with 2 test cases passed after 0.971 seconds.
+◇ Test "slot factory routes eligible VLM slots without rewriting auto" started.
+◇ Test case passing 1 argument modelID → "qwen3.5-35b-a3b" to "slot factory routes eligible VLM slots without rewriting auto" started.
+◇ Test case passing 1 argument modelID → "qwen3.6-35b-a3b-vl-mtp-mxfp8" to "slot factory routes eligible VLM slots without rewriting auto" started.
+◇ Test case passing 1 argument modelID → "EigenLabs/Qwen3.8-27B-4bit-mtp" to "slot factory routes eligible VLM slots without rewriting auto" started.
+◇ Test case passing 1 argument modelID → "tiny-gemma-vlm" to "slot factory routes eligible VLM slots without rewriting auto" started.
+✔ Test "slot factory routes eligible VLM slots without rewriting auto" with 4 test cases passed after 2.007 seconds.
+✔ Suite "EngineV2 KV-backend gate (real tiny models)" passed after 7.249 seconds.
+✔ Test run with 95 tests in 25 suites passed after 7.249 seconds.

@@ -46,6 +46,7 @@ extension EngineV2Factory {
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
         kvBackend: EngineV2KVBackendSelection = .auto,
+        kvQuantization: EngineV2KVQuantizationSelection = .native,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> any CBv2Engine {
@@ -64,6 +65,7 @@ extension EngineV2Factory {
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
             kvBackend: kvBackend,
+            kvQuantization: kvQuantization,
             maxContextLength: maxContextLength,
             environment: environment
         ).engine
@@ -74,33 +76,42 @@ extension EngineV2Factory {
         public let engine: any CBv2Engine
         /// Concrete engine residency, including MTP expansion.
         public let fixedRequestBytes: Int
+        /// Window backing and page-tail allowance used only for routing.
+        public let kvRoutingRequestOverheadBytes: Int
         public let kvBackendKind: EngineV2KVBackendKind
         /// Policy override or automatic degradation; explicit paged failures throw.
         public let kvBackendFallbackReason: String?
         /// Dtype read from the constructed pool; nil for contiguous storage.
         public let pagedPoolDType: String?
+        /// Actual immutable packed format identity, nil for native storage.
+        public let kvQuantizationIdentity: String?
         /// The engine's native Admission owns its complete process charge.
         public let usesProcessMemoryOwner: Bool
 
         /// Stable spelling consumed by benchmark artifact readers.
         public var resolvedKVBackendDescriptor: String {
-            kvBackendFallbackReason.map { "\(kvBackendKind.rawValue) (fallback: \($0))" }
+            let kind = kvBackendFallbackReason.map { "\(kvBackendKind.rawValue) (fallback: \($0))" }
                 ?? kvBackendKind.rawValue
+            return kvQuantizationIdentity.map { "\(kind) [\($0)]" } ?? kind
         }
 
         public init(
             engine: any CBv2Engine,
             fixedRequestBytes: Int,
+            kvRoutingRequestOverheadBytes: Int = 0,
             kvBackendKind: EngineV2KVBackendKind,
             kvBackendFallbackReason: String?,
             pagedPoolDType: String? = nil,
+            kvQuantizationIdentity: String? = nil,
             usesProcessMemoryOwner: Bool = false
         ) {
             self.engine = engine
             self.fixedRequestBytes = fixedRequestBytes
+            self.kvRoutingRequestOverheadBytes = kvRoutingRequestOverheadBytes
             self.kvBackendKind = kvBackendKind
             self.kvBackendFallbackReason = kvBackendFallbackReason
             self.pagedPoolDType = pagedPoolDType
+            self.kvQuantizationIdentity = kvQuantizationIdentity
             self.usesProcessMemoryOwner = usesProcessMemoryOwner
         }
     }
@@ -122,6 +133,8 @@ extension EngineV2Factory {
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
         kvBackend: EngineV2KVBackendSelection = .auto,
+        kvQuantization: EngineV2KVQuantizationSelection = .native,
+        quantizedPrefillMode: PagedQuantizedPrefillMode = .direct,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
@@ -132,6 +145,8 @@ extension EngineV2Factory {
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: maxConcurrentRequests,
             kvBackend: kvBackend,
+            kvQuantization: kvQuantization,
+            quantizedPrefillMode: quantizedPrefillMode,
             maxContextLength: maxContextLength,
             environment: environment,
             residentPrefixCache: residentPrefixCache,
@@ -213,9 +228,11 @@ extension EngineV2Factory {
         return ProductionBuild(
             engine: engine,
             fixedRequestBytes: engine.resolvedFixedBytesPerRequest,
+            kvRoutingRequestOverheadBytes: engine.resolvedKVRequestOverheadBytes,
             kvBackendKind: preparedBackend.kind,
             kvBackendFallbackReason: preparedBackend.fallbackReason,
             pagedPoolDType: preparedBackend.pagedPoolDType,
+            kvQuantizationIdentity: preparedBackend.pagedPoolConfig?.quantization?.identity,
             usesProcessMemoryOwner: processOwner != nil)
     }
 }

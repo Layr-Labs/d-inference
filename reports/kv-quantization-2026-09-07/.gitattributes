@@ -1,0 +1,8 @@
+# Preserve exact chat-template rendering and captured CLI output.
+inputs/**/*.txt whitespace=-blank-at-eof
+validation/kv-quality-cli-help1.txt whitespace=-blank-at-eof
+validation/quantized-prefill-cli-help1.txt whitespace=-blank-at-eof
+validation/*.log -whitespace linguist-generated=true
+admission-validation/*.log -whitespace linguist-generated=true
+model-runs/*.stderr -whitespace linguist-generated=true
+model-runs/*.json linguist-generated=true

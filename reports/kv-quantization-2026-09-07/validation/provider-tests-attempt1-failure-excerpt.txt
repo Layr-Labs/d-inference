@@ -1,0 +1,10 @@
+Provenance: exact failure excerpts captured by tool reads of /tmp/darkbloom-kv-quant-provider-final-tests.log before the corrected rerun. The full first-attempt log was overwritten before the instruction to preserve attempts; this file is an excerpt, not a reconstructed full log.
+
+✘ Test "segmented reslice follows shrink and regrow while retaining live ownership" recorded an issue at EngineV2BridgeTests.swift:3008:9: Expectation failed: await bridge.backendSlotCapacity().activeTokenBudgetMax == 100
+✘ Test "segmented reslice follows shrink and regrow while retaining live ownership" failed after 0.001 seconds with 1 issue.
+✘ Suite "EngineV2Bridge paged KV backend" failed after 0.050 seconds with 1 issue.
+✔ Test productionConstructorPreservesGrantAndNativeWindows() passed after 0.458 seconds.
+✔ Suite "Paged KV quantization configuration and accounting" passed after 0.464 seconds.
+✘ Test run with 55 tests in 9 suites failed after 0.465 seconds with 1 issue.
+
+Correction: fixture reports a 100000-byte grant with 40000 bytes still natively reserved and no bridge raw-token commitments, at 1000 bytes/token. Available token maximum is 60, not 100. The updated test also checks that shrinking the grant to 20000 with the same 40000-byte obligation advertises zero token capacity.

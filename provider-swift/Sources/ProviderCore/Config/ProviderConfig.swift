@@ -173,6 +173,12 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// under `[backend]`, TOML table of model id → "auto" | "paged" |
     /// "contiguous"). Missing ids use `engineV2KVBackend`.
     public var engineV2KVBackendByModel: [String: String]
+    /// Experimental full-attention page format: native (default), int4, k8v4 or int8.
+    /// Non-native selections require a working paged backend and never change
+    /// the model weights, recurrent state, window caches or concurrency caps.
+    public var engineV2KVQuantization: String
+    /// Exact model ID overrides for `engineV2KVQuantization`.
+    public var engineV2KVQuantizationByModel: [String: String]
     /// Startup model preload (default true). On boot the provider loads the
     /// `preload_models` set (or, when that is empty, the models it was serving
     /// before the last restart — see `LoadedModelsStore`) BEFORE registering
@@ -265,6 +271,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
+        engineV2KVQuantization: String = "native",
+        engineV2KVQuantizationByModel: [String: String] = [:],
         startupPreload: Bool = true,
         preloadModels: [String] = [],
         startupPreloadTimeoutSecs: UInt64 = 120,
@@ -284,6 +292,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.engineV2KVBackend = engineV2KVBackend
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
+        self.engineV2KVQuantization = engineV2KVQuantization
+        self.engineV2KVQuantizationByModel = engineV2KVQuantizationByModel
         self.startupPreload = startupPreload
         self.preloadModels = preloadModels
         self.startupPreloadTimeoutSecs = startupPreloadTimeoutSecs
@@ -304,6 +314,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case engineV2MaxConcurrentByModel = "engine_v2_max_concurrent_by_model"
         case engineV2KVBackend = "engine_v2_kv_backend"
         case engineV2KVBackendByModel = "engine_v2_kv_backend_by_model"
+        case engineV2KVQuantization = "engine_v2_kv_quantization"
+        case engineV2KVQuantizationByModel = "engine_v2_kv_quantization_by_model"
         case startupPreload = "startup_preload"
         case preloadModels = "preload_models"
         case startupPreloadTimeoutSecs = "startup_preload_timeout_secs"
@@ -345,6 +357,11 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.engineV2KVBackendByModel =
             try container.decodeIfPresent(
                 [String: String].self, forKey: .engineV2KVBackendByModel) ?? [:]
+        self.engineV2KVQuantization =
+            try container.decodeIfPresent(String.self, forKey: .engineV2KVQuantization) ?? "native"
+        self.engineV2KVQuantizationByModel =
+            try container.decodeIfPresent(
+                [String: String].self, forKey: .engineV2KVQuantizationByModel) ?? [:]
         self.startupPreload = try container.decodeIfPresent(Bool.self, forKey: .startupPreload) ?? true
         self.preloadModels = try container.decodeIfPresent([String].self, forKey: .preloadModels) ?? []
         self.startupPreloadTimeoutSecs =
@@ -383,6 +400,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         try container.encode(engineV2MaxConcurrentByModel, forKey: .engineV2MaxConcurrentByModel)
         try container.encode(engineV2KVBackend, forKey: .engineV2KVBackend)
         try container.encode(engineV2KVBackendByModel, forKey: .engineV2KVBackendByModel)
+        try container.encode(engineV2KVQuantization, forKey: .engineV2KVQuantization)
+        try container.encode(engineV2KVQuantizationByModel, forKey: .engineV2KVQuantizationByModel)
         try container.encode(startupPreload, forKey: .startupPreload)
         try container.encode(preloadModels, forKey: .preloadModels)
         try container.encode(startupPreloadTimeoutSecs, forKey: .startupPreloadTimeoutSecs)

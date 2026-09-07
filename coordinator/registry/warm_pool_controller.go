@@ -579,7 +579,11 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 				decodeSamples[model] = append(decodeSamples[model], r.resolvedSoloModelTPSLocked(p, model).tps)
 				serviceSamples[model] = append(serviceSamples[model], serviceTPS)
 				prefillSamples[model] = append(prefillSamples[model], prefillTPS)
-				concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
+				concurrency := p.maxConcurrencyForModelLocked(model)
+				if providerExecutionIdentityLocked(p, model) != "" {
+					concurrency = r.effectiveMaxConcurrencyForModelResolvedLocked(p, model)
+				}
+				concSamples[model] = append(concSamples[model], float64(concurrency))
 				continue
 			}
 			candidate, reason := r.warmPoolCandidateReasonLocked(p, model, now)
@@ -742,7 +746,11 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	case "fair":
 		thermalPenalty = 250
 	}
-	score := freeGB*100 + resolvedDecodeTPS(p)*10 - p.SystemMetrics.MemoryPressure*500 - p.SystemMetrics.CPUUsage*100 - thermalPenalty
+	decodeRate := resolvedDecodeTPS(p)
+	if providerExecutionIdentityLocked(p, model) != "" {
+		decodeRate, _ = resolvedModelTPSLocked(p, model)
+	}
+	score := freeGB*100 + decodeRate*10 - p.SystemMetrics.MemoryPressure*500 - p.SystemMetrics.CPUUsage*100 - thermalPenalty
 	return warmPoolCandidate{providerID: p.ID, score: score}, warmColdEligible
 }
 

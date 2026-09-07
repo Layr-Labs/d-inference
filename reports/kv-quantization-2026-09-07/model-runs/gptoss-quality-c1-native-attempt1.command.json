@@ -1,0 +1,16 @@
+[
+  "provider-swift/.build/arm64-apple-macosx/release/darkbloom",
+  "benchmark",
+  "--config",
+  "reports/kv-quantization-2026-09-07/benchmark.toml",
+  "--model",
+  "gpt-oss-20b",
+  "--model-directory",
+  "reports/kv-quantization-2026-09-07/models/gptoss",
+  "--kv-backend",
+  "paged",
+  "--kv-quantization",
+  "native",
+  "--kv-quality-input",
+  "reports/kv-quantization-2026-09-07/inputs/gptoss/quality/quality-c1.json"
+]

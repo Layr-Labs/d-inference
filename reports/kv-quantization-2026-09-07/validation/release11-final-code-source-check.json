@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "scope": "Final committed code retains the source hashes recorded around release11 build",
+  "codeCommit": "47da6bf264c22f594e753263fc58bffcc46b1b98",
+  "buildSnapshot": "release-attempt11-source-after.json",
+  "checkedModifiedSourceFiles": 52,
+  "dependencyHeads": {
+    "libs/mlx-swift-lm": "da524e55451445a5e545e64903c226fcc39b14bc",
+    "libs/mlx": "b4b016a0ea0baaa0a04815b3107330ddb67f2ca4",
+    "libs/mlx-swift": "e9fde834e5de020310fd39a637b6eb767b5d5021",
+    "libs/mlx-swift/Source/Cmlx/mlx": "b4b016a0ea0baaa0a04815b3107330ddb67f2ca4",
+    "libs/mlx-swift/Source/Cmlx/mlx-c": "e63a16af69f31b77ea47570d224659ce4b44bf9c"
+  },
+  "mismatches": [],
+  "passed": true
+}

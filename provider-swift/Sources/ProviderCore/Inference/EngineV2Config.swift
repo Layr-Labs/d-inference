@@ -195,7 +195,16 @@ public enum EngineV2Factory {
                 partialPrefillCap: EngineV2Factory.maxConcurrentPartialPrefills(
                     environment: runtimePolicyEnvironment),
                 kvBytesPerToken: kvBytesPerToken,
+                kvQuantizationIdentity: build.kvQuantizationIdentity,
+                executionIdentity: KVPerformanceIdentity.actual(
+                    format: build.kvQuantizationIdentity,
+                    prefillMode: (build.engine as? EngineV2)?.quantizedPrefillStatisticsSnapshot()?.mode ?? .direct),
                 fixedRequestBytes: build.fixedRequestBytes,
+                kvRoutingRequestOverheadBytes: build.kvRoutingRequestOverheadBytes,
+                kvRoutingWorkspaceBytes: { [engine = build.engine as? EngineV2] tokens, maximumRequests in
+                    guard let engine else { return 0 }
+                    return engine.routingWorkspaceBytes(totalTokens: tokens, maximumRequests: maximumRequests)
+                },
                 auxiliaryBytesPerToken: auxiliaryBytesPerToken,
                 auxiliaryTokenGranularity: auxiliaryTokenGranularity,
                 auxiliaryTokenAllocationPadding: auxiliaryTokenAllocationPadding,

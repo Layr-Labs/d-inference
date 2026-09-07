@@ -86,15 +86,24 @@ public actor EngineV2Bridge {
     let partialPrefillCap: Int?
     /// Per-token KV byte cost for bytes→tokens capacity derivation
     /// (0 = unknown; capacity then falls back to the engine's token counts).
-    /// This is the resolved native serving rate. Contiguous GPT-OSS adds the
-    /// fp32 owning-full-row delta to the nominal fp16 sizing rate; Gemma and
-    /// paged slots remain fp16. Heartbeats and process-wide reservations use
-    /// the same value so neither can overstate capacity.
+    /// This is the resolved storage rate, including packed metadata when
+    /// quantized. Native contiguous GPT-OSS adds its fp32 owning-full-row
+    /// delta to nominal fp16 sizing. Heartbeats and process-wide reservations
+    /// use the same value so neither can overstate capacity.
     let kvBytesPerToken: Int
+    /// Immutable format read from the built backend; nil is native KV.
+    public let kvQuantizationIdentity: String?
+    public let executionIdentity: String?
     /// Peak request-owned residency outside attention KV (Qwen recurrent
     /// committed + transactional conv/SSM generations). Zero preserves the
     /// historical attention-only charge.
     let fixedRequestBytes: Int
+    /// Conservative window/page overhead for routing, separate from the actual
+    /// native allocator charge and shared request reservation.
+    let kvRoutingRequestOverheadBytes: Int
+    /// Aggregate workspace bound for total raw tokens distributed among at
+    /// most the specified number of new requests. One request is exact.
+    let kvRoutingWorkspaceBytes: @Sendable (Int, Int) -> Int?
     /// Assistant-cache allocation geometry. The per-token rate includes target
     /// KV and assistant logical rows; these fields account for the assistant's
     /// block-rounded physical allocation and staged proposal high-water mark.
@@ -301,7 +310,11 @@ public actor EngineV2Bridge {
         prefillDeadlineProjectionEnabled: Bool = true,
         partialPrefillCap: Int? = nil,
         kvBytesPerToken: Int = 0,
+        kvQuantizationIdentity: String? = nil,
+        executionIdentity: String? = nil,
         fixedRequestBytes: Int = 0,
+        kvRoutingRequestOverheadBytes: Int = 0,
+        kvRoutingWorkspaceBytes: @escaping @Sendable (Int, Int) -> Int? = { _, _ in 0 },
         auxiliaryBytesPerToken: Int = 0,
         auxiliaryTokenGranularity: Int = 1,
         auxiliaryTokenAllocationPadding: Int = 0,
@@ -333,7 +346,13 @@ public actor EngineV2Bridge {
         self.prefillDeadlineProjectionEnabled = prefillDeadlineProjectionEnabled
         self.partialPrefillCap = partialPrefillCap
         self.kvBytesPerToken = kvBytesPerToken
+        self.kvQuantizationIdentity = kvQuantizationIdentity
+        self.executionIdentity = KVPerformanceIdentity.normalized(executionIdentity)
+            ?? KVPerformanceIdentity.actual(format: kvQuantizationIdentity,
+                prefillMode: (engine as? EngineV2)?.quantizedPrefillStatisticsSnapshot()?.mode ?? .direct)
         self.fixedRequestBytes = max(0, fixedRequestBytes)
+        self.kvRoutingRequestOverheadBytes = max(0, kvRoutingRequestOverheadBytes)
+        self.kvRoutingWorkspaceBytes = kvRoutingWorkspaceBytes
         self.auxiliaryBytesPerToken = max(0, auxiliaryBytesPerToken)
         self.auxiliaryTokenGranularity = max(1, auxiliaryTokenGranularity)
         self.auxiliaryTokenAllocationPadding = max(

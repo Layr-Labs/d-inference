@@ -1,0 +1,11 @@
+<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-09-07
+
+Reasoning: low
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|><|start|>developer<|message|># Instructions
+
+Follow the user's output format exactly. Do not include an explanation unless requested.
+
+<|end|><|start|>user<|message|>Policy: archive every record that is closed and not starred. Records: A is closed and starred; B is open and unstarred; C is closed and unstarred; D is open and starred; E is closed and unstarred. Which records are archived? Return only their uppercase IDs sorted alphabetically, separated by a comma with no spaces.<|end|><|start|>assistant

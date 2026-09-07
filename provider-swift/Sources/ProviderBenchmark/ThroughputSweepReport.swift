@@ -18,7 +18,7 @@ public struct ThroughputSweepReport: Codable, Sendable {
     /// for versus which ones actually produced a measurement.
     /// 5 adds required effective config-projected Gemma settings.
     /// 6 adds raw decode timing and the shared all-row decode overlap metric.
-    /// 7 records deterministic row-index decode submission.
+    /// 7 records deterministic row-index decode submission and prefill scope.
     public static let currentSchemaVersion = 7
 
     public struct Hardware: Codable, Sendable {
@@ -36,7 +36,8 @@ public struct ThroughputSweepReport: Codable, Sendable {
     }
 
     /// One prefill-throughput data point: feed a `promptTokens`-long prompt
-    /// through the model in a single forward pass and time it.
+    /// through the model in a single forward pass with its native cache and
+    /// time it. Quantized sweeps omit these rows; inspect `prefillExecution`.
     public struct PrefillSample: Codable, Sendable {
         public let promptTokens: Int
         public let prefillTokensPerSecond: Double
@@ -71,6 +72,9 @@ public struct ThroughputSweepReport: Codable, Sendable {
         public let resolvedKVBackend: String?
         /// Raw host-observed token timing. Nil on legacy/synthesized samples.
         public let decodeTiming: DecodeTiming?
+        /// Includes this decode cell's prompt prefills, with separate warmup
+        /// engines excluded. These are graph-built layer-row decisions.
+        public let quantizedPrefill: BenchmarkQuantizedPrefillReceipt?
 
         public init(
             batchSize: Int,
@@ -79,7 +83,8 @@ public struct ThroughputSweepReport: Codable, Sendable {
             perSequenceTokensPerSecond: Double,
             elapsedMs: Double,
             resolvedKVBackend: String? = nil,
-            decodeTiming: DecodeTiming? = nil
+            decodeTiming: DecodeTiming? = nil,
+            quantizedPrefill: BenchmarkQuantizedPrefillReceipt? = nil
         ) {
             self.batchSize = batchSize
             self.decodeTokensPerSequence = decodeTokensPerSequence
@@ -88,6 +93,7 @@ public struct ThroughputSweepReport: Codable, Sendable {
             self.elapsedMs = elapsedMs
             self.resolvedKVBackend = resolvedKVBackend
             self.decodeTiming = decodeTiming
+            self.quantizedPrefill = quantizedPrefill
         }
     }
 
@@ -237,6 +243,9 @@ public struct ThroughputSweepReport: Codable, Sendable {
     public let modelPath: String
     public let hardware: Hardware
     public let prefill: [PrefillSample]
+    /// Missing only in historical/synthesized records. Native model-forward
+    /// controls are never labelled as production or quantized prefill.
+    public let prefillExecution: PrefillExecution?
     public let decode: [DecodeSample]
     public let derived: Derived
     public let notes: [String]
@@ -262,6 +271,7 @@ public struct ThroughputSweepReport: Codable, Sendable {
         modelPath: String,
         hardware: Hardware,
         prefill: [PrefillSample],
+        prefillExecution: PrefillExecution? = nil,
         decode: [DecodeSample],
         derived: Derived,
         notes: [String],
@@ -277,6 +287,7 @@ public struct ThroughputSweepReport: Codable, Sendable {
         self.modelPath = modelPath
         self.hardware = hardware
         self.prefill = prefill
+        self.prefillExecution = prefillExecution
         self.decode = decode
         self.derived = derived
         self.notes = notes

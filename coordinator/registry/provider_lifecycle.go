@@ -52,7 +52,10 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		}
 	}
 
-	models := msg.Models
+	models := append([]protocol.ModelInfo(nil), msg.Models...)
+	for i := range models {
+		models[i].ExecutionIdentity = normalizeExecutionIdentity(models[i].ExecutionIdentity)
+	}
 	modelInventory, _ := uniqueProviderModels(models)
 	cacheStatuses, cacheStatusReported := sanitizePrefixCacheStatuses(
 		msg.PrefixCacheStatuses, modelInventory)

@@ -70,7 +70,7 @@ func appendRingSample(samples []float64, tps float64, maxSamples int) []float64 
 // refreshSoloAllChipsLocked recomputes the cached cross-class aggregate for
 // model from the per-class stats. O(classes for the model). Caller holds r.mu
 // for writing.
-func (r *TPSRegistry) refreshSoloAllChipsLocked(model string) {
+func (r *TPSRegistry) refreshSoloAllChipsLocked(model modelExecutionKey) {
 	var agg soloAllChipsStat
 	for _, stat := range r.soloByModel[model] {
 		if stat.n == 0 {
@@ -86,7 +86,7 @@ func (r *TPSRegistry) refreshSoloAllChipsLocked(model string) {
 		agg.classes++
 	}
 	if r.soloAllChips == nil {
-		r.soloAllChips = make(map[string]soloAllChipsStat)
+		r.soloAllChips = make(map[modelExecutionKey]soloAllChipsStat)
 	}
 	r.soloAllChips[model] = agg
 }

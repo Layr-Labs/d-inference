@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-07 · commit `32a756317`
+> Last updated: 2026-09-07 · commit `47da6bf26`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,7 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Paged KV quantization implementation](2026-09-07-paged-kv-quantization-implementation.md) — experimental packed formats, bounded optional prefill, authored quality observations and matched timing evidence; final serving gates remain open.
 - [Final cache routing checks](2026-09-07-final-cache-routing.md) — twenty cache-off/SSD cases pass with two isolated providers, including holder selection, tenant isolation, cancellation and cold fallback.
 - [0.9.0 implementation and validation readiness](2026-09-07-release090-readiness.md) — consolidated model, cache and routing evidence; code review readiness with signed production-key restart remaining.
 - [QAT sustained generation and matched prompt control](2026-09-07-qat-sustained-followup.md) — combined long-generation evidence satisfies sustained exposure, while original refusals, exact-cap failures and literary limits remain preserved.

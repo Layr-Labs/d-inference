@@ -34,6 +34,7 @@ public final class TTFTQuantileTracker: @unchecked Sendable {
     /// aggregate → caller-supplied floor.
     public struct Key: Hashable, Sendable {
         public let model: String
+        public let executionIdentity: String
         /// Whether the model was resident when the dispatch arrived. Cold
         /// samples include the model-load latency and must never calibrate
         /// warm quotes (different distributions).
@@ -47,8 +48,9 @@ public final class TTFTQuantileTracker: @unchecked Sendable {
         /// ``batchBucket(forActiveRequests:)``.
         public let batchBucket: Int
 
-        public init(model: String, warm: Bool, promptBucket: Int, batchBucket: Int) {
+        public init(model: String, warm: Bool, promptBucket: Int, batchBucket: Int, executionIdentity: String? = nil) {
             self.model = model
+            self.executionIdentity = KVPerformanceIdentity.normalized(executionIdentity) ?? ""
             self.warm = warm
             self.promptBucket = promptBucket
             self.batchBucket = batchBucket
@@ -95,6 +97,12 @@ public final class TTFTQuantileTracker: @unchecked Sendable {
     private struct ModelWarmKey: Hashable {
         let model: String
         let warm: Bool
+        let executionIdentity: String
+    }
+
+    private struct ModelExecutionKey: Hashable {
+        let model: String
+        let executionIdentity: String
     }
 
     private let lock = OSAllocatedUnfairLock()
@@ -108,7 +116,7 @@ public final class TTFTQuantileTracker: @unchecked Sendable {
     /// O(ringCapacity) worst-case: nearest-rank over the freshest ≤ 64
     /// samples, the same estimator quality every other tier gets.
     private var modelWarmAggregates: [ModelWarmKey: Ring] = [:]
-    private var modelAggregates: [String: Ring] = [:]
+    private var modelAggregates: [ModelExecutionKey: Ring] = [:]
     private var touchCounter: UInt64 = 0
 
     public init() {}
@@ -137,15 +145,18 @@ public final class TTFTQuantileTracker: @unchecked Sendable {
         warm: Bool,
         promptTokens: Int,
         activeRequestsAtDispatch: Int,
-        ttftMs: Double
+        ttftMs: Double,
+        executionIdentity: String? = nil
     ) {
         guard ttftMs.isFinite, ttftMs >= 0 else { return }
+        let execution = KVPerformanceIdentity.normalized(executionIdentity) ?? ""
+        guard execution != KVPerformanceIdentity.quarantine else { return }
         let key = Key(
             model: model,
             warm: warm,
             promptBucket: Self.promptBucket(forPromptTokens: promptTokens),
-            batchBucket: Self.batchBucket(forActiveRequests: activeRequestsAtDispatch))
-        let tierKey = ModelWarmKey(model: model, warm: warm)
+            batchBucket: Self.batchBucket(forActiveRequests: activeRequestsAtDispatch), executionIdentity: execution)
+        let tierKey = ModelWarmKey(model: model, warm: warm, executionIdentity: execution)
         lock.withLock {
             touchCounter &+= 1
             var ring = buckets[key] ?? Ring()
@@ -163,7 +174,8 @@ public final class TTFTQuantileTracker: @unchecked Sendable {
             // smaller than the bucket key space, but cap them identically so
             // a hostile model-id mix can never outgrow the bucket bound.
             appendToAggregate(&modelWarmAggregates, key: tierKey, value: ttftMs)
-            appendToAggregate(&modelAggregates, key: model, value: ttftMs)
+            appendToAggregate(&modelAggregates,
+                key: ModelExecutionKey(model: model, executionIdentity: execution), value: ttftMs)
         }
     }
 
@@ -200,11 +212,14 @@ public final class TTFTQuantileTracker: @unchecked Sendable {
         model: String,
         warm: Bool,
         promptBucket: Int,
-        batchBucket: Int
+        batchBucket: Int,
+        executionIdentity: String? = nil
     ) -> Estimate? {
+        let execution = KVPerformanceIdentity.normalized(executionIdentity) ?? ""
+        guard execution != KVPerformanceIdentity.quarantine else { return nil }
         let key = Key(
             model: model, warm: warm,
-            promptBucket: promptBucket, batchBucket: batchBucket)
+            promptBucket: promptBucket, batchBucket: batchBucket, executionIdentity: execution)
         let resolved = lock.withLock {
             () -> ([Double], CapacityQuoteConfidence)? in
             if let ring = buckets[key], !ring.samples.isEmpty {
@@ -212,12 +227,12 @@ public final class TTFTQuantileTracker: @unchecked Sendable {
                     ring.samples.count >= Self.highConfidenceMinSamples ? .high : .low
                 return (ring.samples, confidence)
             }
-            if let ring = modelWarmAggregates[ModelWarmKey(model: model, warm: warm)],
+            if let ring = modelWarmAggregates[ModelWarmKey(model: model, warm: warm, executionIdentity: execution)],
                 !ring.samples.isEmpty
             {
                 return (ring.samples, .low)
             }
-            if let ring = modelAggregates[model], !ring.samples.isEmpty {
+            if let ring = modelAggregates[ModelExecutionKey(model: model, executionIdentity: execution)], !ring.samples.isEmpty {
                 return (ring.samples, .low)
             }
             return nil
@@ -230,10 +245,11 @@ public final class TTFTQuantileTracker: @unchecked Sendable {
     /// held by each fallback tier for `model`. Lets tests assert a probe can
     /// only ever touch bounded work (≤ ``ringCapacity`` per tier) without
     /// timing assertions.
-    func aggregateSampleCounts(model: String, warm: Bool) -> (modelWarm: Int, model: Int) {
-        lock.withLock {
-            (modelWarmAggregates[ModelWarmKey(model: model, warm: warm)]?.samples.count ?? 0,
-             modelAggregates[model]?.samples.count ?? 0)
+    func aggregateSampleCounts(model: String, warm: Bool, executionIdentity: String? = nil) -> (modelWarm: Int, model: Int) {
+        let execution = KVPerformanceIdentity.normalized(executionIdentity) ?? ""
+        return lock.withLock {
+            (modelWarmAggregates[ModelWarmKey(model: model, warm: warm, executionIdentity: execution)]?.samples.count ?? 0,
+             modelAggregates[ModelExecutionKey(model: model, executionIdentity: execution)]?.samples.count ?? 0)
         }
     }
 

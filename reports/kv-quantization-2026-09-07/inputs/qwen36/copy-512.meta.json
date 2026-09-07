@@ -1,0 +1,9 @@
+{
+  "scope": "authored copy diagnostic; not general quality qualification",
+  "requested_minimum_tokens": 512,
+  "actual_prompt_tokens": 545,
+  "continuation_tokens": 124,
+  "template_sha256": "e84f32a23fdda27689f868aa4a1a5621f41133e51a48d7f3efcbea2839574259",
+  "tokenizer_sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+  "continuation": "A cache stores previously computed results so later work can reuse them. Its usefulness depends on both the cost of recomputing a result and how often that result is reused. A smaller representation can hold more entries, but reconstructing an entry also takes time. An experiment should therefore measure memory, latency, and completed work separately. The inputs must remain identical between the reference and candidate runs. Each run should record the exact model, software version, and hardware used. If a result cannot be reproduced, the discrepancy should be investigated rather than discarded. A successful unit test establishes the behavior it exercises; broader conclusions need broader evidence."
+}

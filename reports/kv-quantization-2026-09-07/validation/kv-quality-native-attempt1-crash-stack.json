@@ -1,0 +1,106 @@
+{
+  "scope": "diagnostic crash stack; original .ips retained locally",
+  "exception": {
+    "codes": "0x0000000000000000, 0x0000000000000000",
+    "rawCodes": [
+      0,
+      0
+    ],
+    "type": "EXC_CRASH",
+    "signal": "SIGABRT"
+  },
+  "termination": {
+    "flags": 0,
+    "code": 6,
+    "namespace": "SIGNAL",
+    "indicator": "Abort trap: 6",
+    "byProc": "darkbloom",
+    "byPid": 50840
+  },
+  "faulting_thread_index": 13,
+  "frames": [
+    {
+      "imageOffset": 38376,
+      "symbol": "__pthread_kill",
+      "symbolLocation": 8,
+      "imageIndex": 2
+    },
+    {
+      "imageOffset": 26840,
+      "symbol": "pthread_kill",
+      "symbolLocation": 296,
+      "imageIndex": 8
+    },
+    {
+      "imageOffset": 493124,
+      "symbol": "abort",
+      "symbolLocation": 148,
+      "imageIndex": 10
+    },
+    {
+      "imageOffset": 486940,
+      "symbol": "swift::swift_Concurrency_fatalErrorv(unsigned int, char const*, char*)",
+      "symbolLocation": 32,
+      "imageIndex": 4
+    },
+    {
+      "imageOffset": 486972,
+      "symbol": "swift::swift_Concurrency_fatalError(unsigned int, char const*, ...)",
+      "symbolLocation": 32,
+      "imageIndex": 4
+    },
+    {
+      "imageOffset": 487476,
+      "symbol": "<deduplicated_symbol>",
+      "symbolLocation": 84,
+      "imageIndex": 4
+    },
+    {
+      "imageOffset": 57460,
+      "symbol": "swift_task_dealloc",
+      "symbolLocation": 124,
+      "imageIndex": 4
+    },
+    {
+      "imageOffset": 25156864,
+      "sourceFile": "/<compiler-generated>",
+      "symbol": "specialized static Task<>.sleep<A>(for:tolerance:clock:)",
+      "imageIndex": 0,
+      "symbolLocation": 24,
+      "inline": true
+    },
+    {
+      "imageOffset": 25156864,
+      "sourceLine": 55,
+      "sourceFile": "KVQualityBenchmark+Execution.swift",
+      "symbol": "closure #2 in static KVQualityBenchmark.collectOne(row:maximumTokens:session:)",
+      "imageIndex": 0,
+      "symbolLocation": 44
+    },
+    {
+      "imageOffset": 25162569,
+      "symbol": "partial apply for closure #2 in static KVQualityBenchmark.collectOne(row:maximumTokens:session:)",
+      "symbolLocation": 1,
+      "imageIndex": 0
+    },
+    {
+      "imageOffset": 721601,
+      "sourceFile": "/<compiler-generated>",
+      "symbol": "specialized thunk for @escaping @isolated(any) @callee_guaranteed @async () -> (@out A)",
+      "symbolLocation": 1,
+      "imageIndex": 0
+    },
+    {
+      "imageOffset": 728005,
+      "symbol": "partial apply for specialized thunk for @escaping @isolated(any) @callee_guaranteed @async () -> (@out A)",
+      "symbolLocation": 1,
+      "imageIndex": 0
+    },
+    {
+      "imageOffset": 52933,
+      "symbol": "completeTaskWithClosure(swift::AsyncContext*, swift::SwiftError*)",
+      "symbolLocation": 1,
+      "imageIndex": 4
+    }
+  ]
+}

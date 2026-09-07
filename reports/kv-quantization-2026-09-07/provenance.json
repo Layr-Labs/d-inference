@@ -1,0 +1,9 @@
+{
+  "retrieved_at_utc": "2026-09-07T10:08:20.019645+00:00",
+  "source": "https://api.darkbloom.dev/v1/models/catalog",
+  "catalog_sha256": "1009bb2144ffb17844dc01f2ef8e8b8067f111469ecb5a3fad324a12956573e9",
+  "head": "0b46b1618d43cae3ae3d8e0fde1a9cc6d974e9d0",
+  "mlx_swift_lm": "6aa60eeb51881eed53a457a4edf1d94918eff89f",
+  "catalog_count": 9,
+  "note": "Read-only catalog snapshot, including beta and rollback entries; not live routable-capacity evidence. No quantized KV benchmark run."
+}

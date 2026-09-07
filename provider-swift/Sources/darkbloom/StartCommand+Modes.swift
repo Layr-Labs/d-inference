@@ -98,6 +98,8 @@ extension Start {
                 engineV2MaxConcurrentByModel: config.backend.engineV2MaxConcurrentByModel,
                 engineV2KVBackend: config.backend.engineV2KVBackend,
                 engineV2KVBackendByModel: config.backend.engineV2KVBackendByModel,
+                engineV2KVQuantization: config.backend.engineV2KVQuantization,
+                engineV2KVQuantizationByModel: config.backend.engineV2KVQuantizationByModel,
                 prefillDeadlineMode: config.backend.prefillDeadlineMode,
                 mtpMode: config.backend.mtpMode,
                 mtpDrafterPath: config.backend.mtpDrafterPath

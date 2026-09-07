@@ -81,6 +81,10 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 	}
 	for i := range bc.Slots {
 		s := &bc.Slots[i]
+		s.ExecutionIdentity = normalizeExecutionIdentity(s.ExecutionIdentity)
+		if s.ExecutionIdentity == invalidExecutionIdentity {
+			s.ObservedDecodeTPS, s.ObservedPrefillTPS = 0, 0
+		}
 		s.PrefixCache = clampPrefixCacheTelemetry(s.PrefixCache)
 		s.PagedStorage = clampPagedStorageTelemetry(s.PagedStorage)
 		if s.MaxTokensPotential < 0 || s.MaxTokensPotential > maxTokensPotential {
@@ -338,10 +342,14 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 		// rate (resolvedSoloModelTPSLocked). See solo_tps.go.
 		soloEligible := soloSampleEligible(p.BackendCapacity)
 		for _, slot := range p.BackendCapacity.Slots {
+			execution := providerExecutionIdentityLocked(p, slot.Model)
+			if execution != "" && !slotStateModelLoaded(slot.State) {
+				continue
+			}
 			if slot.ObservedDecodeTPS > 0 {
-				r.tpsRegistry.Record(slot.Model, chipFamily, slot.ObservedDecodeTPS)
+				r.tpsRegistry.Record(slot.Model, chipFamily, slot.ObservedDecodeTPS, execution)
 				if soloEligible && slot.NumRunning > 0 {
-					r.tpsRegistry.RecordSolo(slot.Model, chipClass, slot.ObservedDecodeTPS)
+					r.tpsRegistry.RecordSolo(slot.Model, chipClass, slot.ObservedDecodeTPS, execution)
 				}
 			}
 		}

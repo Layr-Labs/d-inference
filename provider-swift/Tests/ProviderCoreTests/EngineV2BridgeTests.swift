@@ -372,6 +372,8 @@ private func makeBridge(
     defaultMaxTokens: Int = 4096,
     kvBytesPerToken: Int = 0,
     fixedRequestBytes: Int = 0,
+    kvRoutingRequestOverheadBytes: Int = 0,
+    kvRoutingWorkspaceBytes: @escaping @Sendable (Int, Int) -> Int? = { _, _ in 0 },
     auxiliaryBytesPerToken: Int = 0,
     auxiliaryTokenGranularity: Int = 1,
     auxiliaryTokenAllocationPadding: Int = 0,
@@ -391,6 +393,8 @@ private func makeBridge(
         maxConcurrentRequests: 4,
         kvBytesPerToken: kvBytesPerToken,
         fixedRequestBytes: fixedRequestBytes,
+        kvRoutingRequestOverheadBytes: kvRoutingRequestOverheadBytes,
+        kvRoutingWorkspaceBytes: kvRoutingWorkspaceBytes,
         auxiliaryBytesPerToken: auxiliaryBytesPerToken,
         auxiliaryTokenGranularity: auxiliaryTokenGranularity,
         auxiliaryTokenAllocationPadding: auxiliaryTokenAllocationPadding,
@@ -1343,8 +1347,10 @@ struct EngineV2CapacityTests {
         #expect(await bridge.requestReservationBytes(tokenCount: 5) == 810)
         let slot = await bridge.backendSlotCapacity()
         #expect(slot.maxTokensPotential == 5)
-        #expect(slot.activeTokenBudgetUsed == 9)
-        #expect(slot.activeTokenBudgetMax == 390)
+        // Used stays in raw tokens for coordinator heartbeat-gap dedup.
+        // Excess 310 active bytes and 3 * 330 prospective bytes lower max.
+        #expect(slot.activeTokenBudgetUsed == 5)
+        #expect(slot.activeTokenBudgetMax == 387)
     }
 
     @Test("finished requests release their committed budget from the heartbeat")
@@ -2995,11 +3001,16 @@ struct EngineV2BridgePagedKVTests {
         #expect(engine.capacity().pagedStorage?.committedBytes == 40_000)
         #expect(engine.capacity().pagedStorage?.overGrantBytes == 20_000)
         #expect(await bridge.pagedPoolResizeShortfall() == nil)
+        #expect(await bridge.backendSlotCapacity().activeTokenBudgetMax == 0)
         await bridge.updateKVBytesCapacity(100_000)
         #expect(engine.capacity().kvBytesCapacity == 100_000)
         #expect(engine.capacity().pagedStorage?.committedBytes == 40_000)
         #expect(await bridge.kvBackendPoolBytes() == 100_000)
-        #expect(await bridge.backendSlotCapacity().activeTokenBudgetMax == 100)
+        // The grant grew, but the retained 40 KB native commitment is not
+        // free routing capacity and cannot masquerade as raw-token progress.
+        let capacity = await bridge.backendSlotCapacity()
+        #expect(capacity.activeTokenBudgetUsed == 0)
+        #expect(capacity.activeTokenBudgetMax == 60)
         #expect(await bridge.pagedPoolResizeShortfall() == nil)
     }
 
@@ -3050,5 +3061,85 @@ struct EngineV2BridgePagedKVTests {
         _ = await record(await pagedBridge.submit(
             request: makeRequest(), requestId: "req-gate-2"))
         #expect(pagedEngine.submitted.count == 1)
+    }
+}
+
+
+@Suite("Paged routing physical overhead")
+struct EngineV2PagedRoutingOverheadTests {
+    @Test func nativeWindowAndPageAllowanceReducesEveryProspectiveSlot() async {
+        let engine = ScriptedCBv2Engine(script: .manual, capacity: .init(
+            activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
+            kvBytesCapacity: 1024, activeTokens: 0))
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 10,
+            fixedRequestBytes: 8, kvRoutingRequestOverheadBytes: 32,
+            kvBackendKind: .paged)
+        // Four available request slots each hold back 8 recurrent + 32
+        // window/page bytes. The physical grant and concurrency stay unchanged.
+        let slot = await bridge.backendSlotCapacity()
+        #expect(slot.activeTokenBudgetMax == 86)
+        #expect(slot.maxConcurrency == 4)
+        #expect(slot.kvBytesPerToken == 10)
+        // Routing allowance is not a duplicate native allocator reservation.
+        #expect(await bridge.requestReservationBytes(tokenCount: 10) == 108)
+        await bridge.shutdown()
+    }
+
+    @Test func nativeCommitmentsIncludeDetachedPagesAndScratch() async {
+        let engine = ScriptedCBv2Engine(script: .manual, capacity: .init(
+            activeRequests: 0, waitingRequests: 0, kvBytesInUse: 100,
+            kvBytesCapacity: 1024, kvBytesReserved: 801, activeTokens: 0))
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 10,
+            kvRoutingRequestOverheadBytes: 32, kvBackendKind: .paged)
+        let slot = await bridge.backendSlotCapacity()
+        #expect(slot.activeTokenBudgetUsed == 0)
+        #expect(slot.activeTokenBudgetMax == 9) // (1024 - 801 - 4 * 32) / 10
+        #expect(slot.activeTokens == 0)
+        await bridge.shutdown()
+    }
+
+    @Test func activeOverheadCannotMasqueradeAsHeartbeatProgress() async {
+        let engine = ScriptedCBv2Engine(script: .manual, capacity: .init(
+            activeRequests: 1, waitingRequests: 0, kvBytesInUse: 0,
+            kvBytesCapacity: 4000, activeTokens: 1))
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 10,
+            fixedRequestBytes: 100, kvRoutingRequestOverheadBytes: 200,
+            kvBackendKind: .paged)
+        _ = await bridge.submitTokenized(promptTokens: [1],
+            request: makeRequest(maxTokens: 4), requestId: "quant-routing-raw")
+        let slot = await bridge.backendSlotCapacity()
+        #expect(slot.maxTokensPotential == 5)
+        #expect(slot.activeTokenBudgetUsed == 5) // not 35 equivalent tokens
+        #expect(slot.activeTokenBudgetMax == 280) // 300 active + 900 prospective bytes
+        await bridge.shutdown()
+    }
+
+    @Test func activeAndProspectiveWorkspaceAreBothReservedInTheHeartbeat() async {
+        let engine = ScriptedCBv2Engine(script: .manual, capacity: .init(
+            activeRequests: 1, waitingRequests: 0, kvBytesInUse: 0,
+            kvBytesCapacity: 1000, activeTokens: 1))
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 10,
+            kvRoutingWorkspaceBytes: { tokens, _ in tokens * 2 }, kvBackendKind: .paged)
+        _ = await bridge.submitTokenized(promptTokens: [1],
+            request: makeRequest(maxTokens: 4), requestId: "quant-routing-workspace")
+        let slot = await bridge.backendSlotCapacity()
+        #expect(slot.activeTokenBudgetUsed == 5)
+        // Existing row: 50 KV + 10 workspace. New aggregate T reserves
+        // 10*T KV plus an aggregate 2*T workspace across any three new
+        // requests, so T <= floor(940/12) = 78. Current W(5) stays charged.
+        #expect(slot.activeTokenBudgetMax == 83)
+        #expect(slot.maxConcurrency == 4)
+        await bridge.shutdown()
+    }
+
+    @Test func overflowingRoutingOverheadAdvertisesNoCapacity() async {
+        let engine = ScriptedCBv2Engine(script: .manual, capacity: .init(
+            activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
+            kvBytesCapacity: 1024, activeTokens: 0))
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 10,
+            fixedRequestBytes: 1, kvRoutingRequestOverheadBytes: Int.max,
+            kvBackendKind: .paged)
+        #expect(await bridge.backendSlotCapacity().activeTokenBudgetMax == 0)
+        await bridge.shutdown()
     }
 }

@@ -1,0 +1,23 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+Test Suite 'Selected tests' started at 2026-09-07 07:02:40.240.
+Test Suite 'mlx-swift-lmPackageTests.xctest' started at 2026-09-07 07:02:40.241.
+Test Suite 'mlx-swift-lmPackageTests.xctest' passed at 2026-09-07 07:02:40.241.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-07 07:02:40.241.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "CBv2 opportunistic workspace admission" started.
+◇ Test "unused direct credits and future KV cannot fund optional acceleration" started.
+✔ Test "unused direct credits and future KV cannot fund optional acceleration" passed after 0.001 seconds.
+◇ Test "the complete fast candidate is additive and refunded before direct fallback" started.
+✔ Test "the complete fast candidate is additive and refunded before direct fallback" passed after 0.001 seconds.
+◇ Test "shared fast arena is charged once while each call keeps its output owner" started.
+✔ Test "shared fast arena is charged once while each call keeps its output owner" passed after 0.001 seconds.
+◇ Test "two fast steps survive cancellation and a capacity reduction until their own retirement" started.
+✔ Test "two fast steps survive cancellation and a capacity reduction until their own retirement" passed after 0.001 seconds.
+◇ Test "physical target slack cannot hide optional workspace and private scoring keeps its lease" started.
+✔ Test "physical target slack cannot hide optional workspace and private scoring keeps its lease" passed after 0.001 seconds.
+✔ Suite "CBv2 opportunistic workspace admission" passed after 0.001 seconds.
+✔ Test run with 5 tests in 1 suite passed after 0.001 seconds.

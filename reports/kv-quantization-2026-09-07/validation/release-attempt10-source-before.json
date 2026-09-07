@@ -1,0 +1,44 @@
+{
+  ".": {
+    "head": "cbd206b242470362347e8cc5c0180b24b4f89b0f",
+    "modified_source_sha256": {
+      "provider-swift/Sources/ProviderBenchmark/BenchmarkQuantizedPrefillReceipt.swift": "5824661ea0f9cb83080f41601f5e40573d7e755c852015f09e5c52774ccbdc43",
+      "provider-swift/Sources/ProviderBenchmark/KVQualityBenchmark.swift": "d6ba99542a02d6ee348cdc7105b1bdfe08f81382cd62080f08bd09e1d15f35fd",
+      "provider-swift/Sources/ProviderBenchmark/SchedulerPrefillBenchmark.swift": "d0244fdb1c0c5b6e3a7dd85860b4b5d198d55caaf363564129414d77c27f41c3",
+      "provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift": "962af349af3ad57a850042f9cf01a2e7e7681555020ec5f722a523971482f4ec",
+      "provider-swift/Sources/ProviderBenchmark/ThroughputSweepReport.swift": "505bbcd17a7e1e86a3e081611f279bc19225a011218f7f86ffd64ea13145643a",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BackendPreparation.swift": "ac2b505e180535b55ff86cc70bd87a55a4866ee59ef9452a82185b2e5b5778bd",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift": "c1430923781c9190f7654ff54dcf223242e86dc8fe1a08e82212269f3936e7c1",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift": "621ce8c4628de7df900c191558cec0a3c38b472d4f863816c2e0d634f97bb259",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+SegmentedBackend.swift": "16ff6d94ccad83a16dee740eb3be429fdd8c5d4b4276f7949042855381bac2aa",
+      "provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift": "cf3a9dd34a3425ee1540dd58f91695e7689bc2fe979522ab778980a2814c2b2f",
+      "provider-swift/Sources/darkbloom/BenchmarkCommand+KVQuality.swift": "f82aa63b90cb630be93eca4039c923751fe0c4635baa9045620e053b268e42a3",
+      "provider-swift/Sources/darkbloom/BenchmarkCommand+QuantizedPrefill.swift": "c4335f1f385778a78c99d9d6d3ff6d9f462983abf4b285380b5b3fcb1461ef3e",
+      "provider-swift/Sources/darkbloom/BenchmarkCommand+Sweep.swift": "727f6febbb10dbeb7dc7bd6df7c2b3f2dffd90da61d781bc9683331cf845fdbf",
+      "provider-swift/Sources/darkbloom/BenchmarkCommand.swift": "2f55f0dfa952d48eaecb7a55f28ae9baac17c1b4e153349ae979bcee199f7e49",
+      "provider-swift/Tests/DarkbloomCLITests/BenchmarkQuantizedPrefillOptionsTests.swift": "a5c7677c06d67c6e1b20c51262c93ff230bdf3517339aef9f46a507c2f867681",
+      "provider-swift/Tests/ProviderCoreTests/BenchmarkQuantizedPrefillReceiptTests.swift": "09a4b7b937b85aefd82d0e43f93d8fa1b59291bd203e40eca39bc17b0c0f2e84",
+      "provider-swift/Tests/ProviderCoreTests/EngineV2KVQuantizationPolicyTests.swift": "faea8fc6d92702a4d57f61d448c59d09c07817dfd195a79fbf9af9002260f4d5"
+    }
+  },
+  "libs/mlx-swift-lm": {
+    "head": "276ca93bb50e02782e04989d7d34c03841afd9fa",
+    "modified_source_sha256": {}
+  },
+  "libs/mlx": {
+    "head": "b4b016a0ea0baaa0a04815b3107330ddb67f2ca4",
+    "modified_source_sha256": {}
+  },
+  "libs/mlx-swift": {
+    "head": "e9fde834e5de020310fd39a637b6eb767b5d5021",
+    "modified_source_sha256": {}
+  },
+  "libs/mlx-swift/Source/Cmlx/mlx": {
+    "head": "b4b016a0ea0baaa0a04815b3107330ddb67f2ca4",
+    "modified_source_sha256": {}
+  },
+  "libs/mlx-swift/Source/Cmlx/mlx-c": {
+    "head": "e63a16af69f31b77ea47570d224659ce4b44bf9c",
+    "modified_source_sha256": {}
+  }
+}

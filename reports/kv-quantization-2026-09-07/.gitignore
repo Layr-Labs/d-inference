@@ -1,0 +1,10 @@
+# Local exact-artifact views link to model bytes outside the repository.
+models/
+# Full macOS diagnostics retain unrelated machine identifiers locally.
+validation/*.ips
+# Mutable task handoff notes are not a measurement report.
+implementation-status.md
+# Keep the raw validation evidence despite the repository-wide *.log rule.
+!validation/*.log
+!admission-validation/*.log
+!inputs/**/quality-512-generation.log

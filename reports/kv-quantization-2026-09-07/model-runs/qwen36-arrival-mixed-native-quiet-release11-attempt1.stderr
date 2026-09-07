@@ -1,0 +1,16 @@
+gemma optimizations: prefill_layer18=on weighted_r1=on
+2026-09-07T08:47:51-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for qwen3.6-35b-a3b-vl-mtp-mxfp8 (13 files)...
+2026-09-07T08:48:07-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for qwen3.6-35b-a3b-vl-mtp-mxfp8: d932e96b00404b05
+[arrival-invariance] arrival tolerance 5.00 ms, up to 3 attempt(s) per sample
+[arrival-invariance] loading model qwen3.6-35b-a3b-vl-mtp-mxfp8
+[arrival-invariance]   path: /Users/gaj/Documents/Builds/d-inference-kv-quant/reports/kv-quantization-2026-09-07/models/qwen36
+[arrival-invariance] kv backend selection paged, engine resolved paged
+[arrival-invariance] warming burst
+[arrival-invariance] warming stagger-25ms
+[arrival-invariance] warming stagger-100ms
+[arrival-invariance] warming rolling-250ms
+[arrival-invariance]   burst i=1: aggregate 166.4 tok/s, makespan 3632.3 ms, arrival err 0.02 ms
+[arrival-invariance]   stagger-25ms i=1: discarding attempt 1/3, arrival error 9.87 ms > 5.00 ms tolerance
+[arrival-invariance]   stagger-25ms i=1: discarding attempt 2/3, arrival error 8.54 ms > 5.00 ms tolerance
+[arrival-invariance]   stagger-25ms i=1: discarding attempt 3/3, arrival error 8.93 ms > 5.00 ms tolerance
+Error: arrival topology stagger-25ms iteration 1 could not be delivered within 5.00 ms in 3 attempt(s) (worst arrival error 9.87 ms); host scheduling is too noisy for this measurement

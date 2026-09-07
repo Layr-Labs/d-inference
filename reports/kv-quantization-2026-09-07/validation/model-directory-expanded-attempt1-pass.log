@@ -1,0 +1,133 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/gaj/documents/builds/d-inference-kv-quant/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/gaj/documents/builds/d-inference-kv-quant/provider-swift->/users/gaj/documents/builds/d-inference-kv-quant/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/gaj/documents/builds/d-inference-kv-quant/provider-swift->/users/gaj/documents/builds/d-inference-kv-quant/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+[0/3] Write swift-version--58304C5D6DBC2206.txt
+[0/1] Planning build
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin CudaBuild
+Building for debugging...
+[2/17] Write sources
+[4/17] Write swift-version--58304C5D6DBC2206.txt
+[6/15] Emitting module darkbloom
+[7/15] Compiling darkbloom BenchmarkCommand+Sweep.swift
+[8/15] Compiling darkbloom BenchmarkArtifactIdentity.swift
+[9/15] Compiling darkbloom BenchmarkCommand+ModelDirectory.swift
+[10/15] Compiling darkbloom BenchmarkCommand+TeacherForced.swift
+[11/19] Compiling darkbloom BenchmarkCommand+Parity.swift
+[12/19] Compiling darkbloom BenchmarkCommand+SchedulerPrefillDecision.swift
+[13/19] Compiling darkbloom BenchmarkCommand+KVQuantization.swift
+[14/20] Compiling darkbloom BenchmarkCommand.swift
+[15/20] Compiling darkbloom Darkbloom.swift
+[15/20] Write Objects.LinkFileList
+[16/20] Linking darkbloom
+[17/20] Applying darkbloom
+[19/41] Compiling DarkbloomCLITests BenchmarkArrivalPromptTests.swift
+[20/41] Compiling DarkbloomCLITests BenchmarkArtifactIdentityTests.swift
+[21/41] Compiling DarkbloomCLITests BenchmarkKVQuantizationOptionsTests.swift
+[22/41] Compiling DarkbloomCLITests BenchmarkParityExitTests.swift
+[23/41] Compiling DarkbloomCLITests BenchmarkSchedulerPrefillDecisionTests.swift
+[24/41] Compiling DarkbloomCLITests BenchmarkSweepExitTests.swift
+[25/41] Compiling DarkbloomCLITests BenchmarkTeacherForcedOptionsTests.swift
+[26/47] Compiling DarkbloomCLITests ReportCommandTests.swift
+[27/47] Compiling DarkbloomCLITests RestartCommandTests.swift
+[28/47] Compiling DarkbloomCLITests RuntimeSnapshotConfigTests.swift
+[29/47] Compiling DarkbloomCLITests StartCommandTests.swift
+[30/47] Compiling DarkbloomCLITests StatusCommandTests.swift
+[31/47] Compiling DarkbloomCLITests WatchdogCommandTests.swift
+[32/47] Compiling DarkbloomCLITests BetaCommandTests.swift
+[33/47] Compiling DarkbloomCLITests BootSecurityWarningTests.swift
+[34/47] Compiling DarkbloomCLITests ConfigVersionStampTests.swift
+[35/47] Compiling DarkbloomCLITests DiagnosticReportRendererTests.swift
+[36/47] Compiling DarkbloomCLITests DoctorAttestationTests.swift
+[37/47] Compiling DarkbloomCLITests DoctorChecksTests.swift
+[38/47] Compiling DarkbloomCLITests DoctorClearBackendGuardTests.swift
+[39/47] Compiling DarkbloomCLITests FanCommandTests.swift
+[40/47] Compiling DarkbloomCLITests IdleCommandTests.swift
+[41/47] Compiling DarkbloomCLITests KVBackendGuardDiagnosticsTests.swift
+[42/47] Compiling DarkbloomCLITests KVBackendPostureTests.swift
+[43/47] Compiling DarkbloomCLITests LogsCommandArgvTests.swift
+[44/47] Compiling DarkbloomCLITests PickerEntryTests.swift
+[45/47] Emitting module DarkbloomCLITests
+[45/47] Write Objects.LinkFileList
+[46/47] Linking DarkbloomProviderPackageTests
+Build complete! (18.62s)
+Test Suite 'Selected tests' started at 2026-09-07 04:49:25.385.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-09-07 04:49:25.386.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-09-07 04:49:25.386.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-07 04:49:25.386.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "benchmark sweep exit status" started.
+◇ Suite "signed scheduler-prefill benchmark CLI" started.
+◇ Suite "Teacher-forced benchmark option scope" started.
+◇ Suite "Exact benchmark directory identity" started.
+◇ Suite "Benchmark KV quantization selection" started.
+◇ Test "backend help describes exact-model auto selection and its fallback contract" started.
+◇ Test "local-path-shaped model identifiers are rejected" started.
+◇ Test "auto with an unmeasured cell still exits 0" started.
+◇ Test "a fully measured sweep succeeds for every selection" started.
+◇ Test "explicit paged fails when a REQUESTED cell went unmeasured" started.
+◇ Test "explicit contiguous with zero decode cells also fails" started.
+◇ Test "every unmeasured cell is named, not just the first" started.
+◇ Test "a sweep that produced cells succeeds for every selection" started.
+◇ Test verifiedReportCarriesTheHashBracket() started.
+◇ Test "exit mapping distinguishes pass, policy failure, and invalid evidence" started.
+◇ Test "parses the complete signed mode contract" started.
+◇ Test beforeMismatchNeverStartsMeasurement() started.
+◇ Test changedArtifactCannotReturnAPublishableReport() started.
+◇ Test supportedModesRequireExplicitModelAndHash(mode:) started.
+◇ Test unsupportedModesCannotIgnoreTheDirectory() started.
+◇ Test "a total refusal reports the refusal, not a list of every cell" started.
+◇ Test "auto keeps its old exit status even with zero decode cells" started.
+◇ Test normalDiscoveryKeepsItsExistingPublicationPath() started.
+◇ Test "hashes, source, and minimum iterations are strict" started.
+◇ Test ignoredOrAmbiguousSelectionsRefuseBeforeLoading() started.
+◇ Test nativeRemainsTheDefault() started.
+◇ Test "benchmark modes conflict fail closed" started.
+◇ Test incompatibleModesAndAssistantAreRefused() started.
+◇ Test explicitOrdinaryModeParsesAndDefaultIsUnchanged() started.
+◇ Test explicitPagedMeasurementModes(mode:) started.
+◇ Test case passing 1 argument mode → "--arrival-invariance" to supportedModesRequireExplicitModelAndHash(mode:) started.
+◇ Test exactDirectoryOverrideRequiresIdentityAndTeacherForcedMode() started.
+◇ Test case passing 1 argument mode → "--sweep" to supportedModesRequireExplicitModelAndHash(mode:) started.
+◇ Test "explicit paged with zero decode cells fails and names the reason" started.
+◇ Test case passing 1 argument mode → "--scheduler-prefill" to supportedModesRequireExplicitModelAndHash(mode:) started.
+◇ Test case passing 1 argument mode → "int4" to explicitPagedMeasurementModes(mode:) started.
+◇ Test case passing 1 argument mode → "k8v4" to explicitPagedMeasurementModes(mode:) started.
+◇ Test case passing 1 argument mode → "int8" to explicitPagedMeasurementModes(mode:) started.
+✔ Test "a sweep that produced cells succeeds for every selection" passed after 0.018 seconds.
+✔ Test "a fully measured sweep succeeds for every selection" passed after 0.018 seconds.
+✔ Test "auto with an unmeasured cell still exits 0" passed after 0.018 seconds.
+✔ Test "exit mapping distinguishes pass, policy failure, and invalid evidence" passed after 0.021 seconds.
+✔ Test "explicit contiguous with zero decode cells also fails" passed after 0.021 seconds.
+✔ Test "explicit paged fails when a REQUESTED cell went unmeasured" passed after 0.021 seconds.
+✔ Test normalDiscoveryKeepsItsExistingPublicationPath() passed after 0.021 seconds.
+✔ Test "every unmeasured cell is named, not just the first" passed after 0.021 seconds.
+✔ Test "a total refusal reports the refusal, not a list of every cell" passed after 0.021 seconds.
+✔ Test "auto keeps its old exit status even with zero decode cells" passed after 0.021 seconds.
+✔ Test beforeMismatchNeverStartsMeasurement() passed after 0.021 seconds.
+✔ Test changedArtifactCannotReturnAPublishableReport() passed after 0.021 seconds.
+✔ Test "parses the complete signed mode contract" passed after 0.021 seconds.
+✔ Test "benchmark modes conflict fail closed" passed after 0.021 seconds.
+✔ Test "explicit paged with zero decode cells fails and names the reason" passed after 0.021 seconds.
+✔ Test nativeRemainsTheDefault() passed after 0.021 seconds.
+✔ Test explicitOrdinaryModeParsesAndDefaultIsUnchanged() passed after 0.029 seconds.
+✔ Test verifiedReportCarriesTheHashBracket() passed after 0.032 seconds.
+✔ Test "backend help describes exact-model auto selection and its fallback contract" passed after 0.032 seconds.
+✔ Suite "benchmark sweep exit status" passed after 0.032 seconds.
+✔ Test "hashes, source, and minimum iterations are strict" passed after 0.038 seconds.
+✔ Test unsupportedModesCannotIgnoreTheDirectory() passed after 0.040 seconds.
+✔ Test explicitPagedMeasurementModes(mode:) with 3 test cases passed after 0.053 seconds.
+✔ Test ignoredOrAmbiguousSelectionsRefuseBeforeLoading() passed after 0.053 seconds.
+✔ Suite "Benchmark KV quantization selection" passed after 0.054 seconds.
+✔ Test supportedModesRequireExplicitModelAndHash(mode:) with 3 test cases passed after 0.070 seconds.
+✔ Suite "Exact benchmark directory identity" passed after 0.070 seconds.
+✔ Test "local-path-shaped model identifiers are rejected" passed after 0.078 seconds.
+✔ Suite "signed scheduler-prefill benchmark CLI" passed after 0.078 seconds.
+✔ Test incompatibleModesAndAssistantAreRefused() passed after 0.078 seconds.
+✔ Test exactDirectoryOverrideRequiresIdentityAndTeacherForcedMode() passed after 0.103 seconds.
+✔ Suite "Teacher-forced benchmark option scope" passed after 0.103 seconds.
+✔ Test run with 27 tests in 5 suites passed after 0.103 seconds.

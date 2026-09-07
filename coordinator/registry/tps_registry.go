@@ -33,16 +33,17 @@ type TPSRegistry struct {
 	// soloByModel caches the solo median + count per model → chip class;
 	// refreshed by RecordSolo. soloAllChips is the per-model cross-class
 	// aggregate derived from it.
-	soloByModel  map[string]map[string]tpsSampleStat
-	soloAllChips map[string]soloAllChipsStat
+	soloByModel  map[modelExecutionKey]map[string]tpsSampleStat
+	soloAllChips map[modelExecutionKey]soloAllChipsStat
 	// scratch is the write-side sort buffer (cap maxSamples), used only under
 	// the write lock so no read ever allocates or sorts.
 	scratch []float64
 }
 
 type tpsKey struct {
-	Model      string
-	ChipFamily string
+	Model             string
+	ChipFamily        string
+	ExecutionIdentity string
 }
 
 func NewTPSRegistry() *TPSRegistry {
@@ -52,19 +53,23 @@ func NewTPSRegistry() *TPSRegistry {
 		soloSamples:  make(map[tpsKey][]float64),
 		maxSamples:   maxSamples,
 		medians:      make(map[tpsKey]float64),
-		soloByModel:  make(map[string]map[string]tpsSampleStat),
-		soloAllChips: make(map[string]soloAllChipsStat),
+		soloByModel:  make(map[modelExecutionKey]map[string]tpsSampleStat),
+		soloAllChips: make(map[modelExecutionKey]soloAllChipsStat),
 		scratch:      make([]float64, 0, maxSamples),
 	}
 }
 
 // Record adds an observed TPS value for the given model and chip family.
 // Called from heartbeat processing when a provider reports ObservedDecodeTPS > 0.
-func (r *TPSRegistry) Record(model, chipFamily string, tps float64) {
+func (r *TPSRegistry) Record(model, chipFamily string, tps float64, executionIdentity ...string) {
+	execution := optionalExecutionIdentity(executionIdentity)
+	if execution == invalidExecutionIdentity {
+		return
+	}
 	if tps <= 0 || model == "" {
 		return
 	}
-	key := tpsKey{Model: model, ChipFamily: chipFamily}
+	key := tpsKey{Model: model, ChipFamily: chipFamily, ExecutionIdentity: execution}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.samples == nil { // zero-value registry
@@ -81,8 +86,8 @@ func (r *TPSRegistry) Record(model, chipFamily string, tps float64) {
 // Median returns the median observed TPS for the given model and chip family.
 // Returns 0 if no observations exist. O(1), allocation-free (the value is
 // maintained by Record).
-func (r *TPSRegistry) Median(model, chipFamily string) float64 {
-	key := tpsKey{Model: model, ChipFamily: chipFamily}
+func (r *TPSRegistry) Median(model, chipFamily string, executionIdentity ...string) float64 {
+	key := tpsKey{Model: model, ChipFamily: chipFamily, ExecutionIdentity: optionalExecutionIdentity(executionIdentity)}
 	r.mu.RLock()
 	median := r.medians[key]
 	r.mu.RUnlock()

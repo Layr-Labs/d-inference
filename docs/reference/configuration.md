@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-06 · commit `23e6f986f`
+> Last updated: 2026-09-07 · commit `47da6bf26`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -19,6 +19,7 @@ read once at process start and a restart applies a change.
 | Provider CLI, `darkbloom start --foreground` | The invoking shell's environment, minus the 13 variables scrubbed by `provider-swift/Sources/ProviderCore/Security/EnvironmentScrubber.swift`. Every `DARKBLOOM_*` row below applies. |
 | Provider CLI, installed LaunchAgent | `darkbloom start` (daemon mode) writes a launchd plist whose `EnvironmentVariables` are built by `passthroughEnvironment` in `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`: only the allow-list `passthroughEnvKeys` + `inferencePassthroughEnvKeys` is copied from the operator's shell (`DARKBLOOM_PREFIX_CACHE`, `DARKBLOOM_PREFIX_CACHE_MEMORY`, `DARKBLOOM_MLX_RESOURCE_DEBUG`, `DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`, `DARKBLOOM_KV_BACKEND_GUARD`, `DARKBLOOM_MLX_CACHE_LIMIT_GB`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`, `DARKBLOOM_PREFILL_DEADLINE_MODE`), plus `MLX_GATHER_QMM_EXPERT_SLICES` only when it is exactly `1`. `PATH` is deliberately dropped. The watchdog plist (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`) additionally forwards `DARKBLOOM_NO_UPDATE_CHECK`. Every other provider variable is inert under launchd. |
 | Provider CLI, `provider.toml` | `~/.config/darkbloom/provider.toml` (`ConfigManager` in `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`) is the durable configuration; a variable that overrides a config key says so in its Effect cell (`DARKBLOOM_CBV2_PAGED_KV`, `DARKBLOOM_CBV2_MTP`, `DARKBLOOM_MLX_MEMORY_RESERVE_GB`, `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL`). |
+| Benchmark-only prefill selection | `--quantized-prefill` has no environment or `provider.toml` equivalent. Its accepted modes and validation live in the [benchmark CLI reference](../provider/cli-reference.md#darkbloom-benchmark) and `provider-swift/Sources/darkbloom/BenchmarkCommand+QuantizedPrefill.swift` (`quantizedPrefillOptionError`). |
 | console-ui | Next.js `.env*` files or the hosting build environment (Vercel-style). Every console-ui variable is `NEXT_PUBLIC_*` or build-tooling: inlined at **build** time, so changing one requires a rebuild. There is no server-only secret; a gitignored `.env.local` in `console-ui/` is the only local file and no `.env.example` exists. |
 | admin-ui | Server-only **runtime** variables read by React Server Components on each request; set them in `.env*` or the host environment. `NODE_ENV` is set by Next. |
 
@@ -165,8 +166,8 @@ Quality concurrency cap:
 | `EIGENINFERENCE_QUALITY_CONCURRENCY_CAP` | bool | `true` | `coordinator/registry/config.go` (`ReadConfig`) | Per-provider admission cap derived from each model's quality concurrency instead of the flat cap. |
 | `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT` | float ≥ 0 | `1.2` (`defaultQualityCapOvercommit`; the `2.0` fallback in `ReadConfig` is replaced when the variable is unset) | `coordinator/registry/config.go` (`ReadConfig`); `coordinator/registry/concurrency_cap.go` (`SetQualityConcurrencyCap`) | Multiplier on the strict decode-floor batch. |
 | `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT_BY_MODEL` | `model=factor,…` | unset | `coordinator/registry/concurrency_cap.go` (`SetQualityConcurrencyCap`) | Per-model overcommit overrides. |
-| `EIGENINFERENCE_QUALITY_CAP_PER_MODEL_TPS` | bool | `true` | `coordinator/registry/concurrency_cap.go` | Use per-model solo decode rates (not the provider-level rate) for the cap. |
-| `EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES` | integer | `5` | `coordinator/registry/concurrency_cap.go` | Solo samples required before a per-model median is trusted. |
+| `EIGENINFERENCE_QUALITY_CAP_PER_MODEL_TPS` | bool | `true` | `coordinator/registry/concurrency_cap.go` (`resolvedSoloModelTPSLocked`) | Use per-model solo decode rates for the native cap. Packed execution always requires its own scoped solo evidence and never borrows provider registration rates; see [execution identity](paged-kv-quantization.md#execution-identity-and-performance-history). |
+| `EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES` | integer; values below `1` clamp to `1` | `5` | `coordinator/registry/concurrency_cap.go` (`qualityCapSoloMinSamples`) | Solo observations required before a per-model median is trusted. Packed execution requires the same model, execution identity and chip class; heartbeat observations are not independent request experiments. |
 | `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` | `model[@chip-class]=tok/s,…` | unset | `coordinator/registry/concurrency_cap.go` (`soloTPSSeedForClass`) | Cold-start decode-rate seed until solo samples accumulate. |
 
 #### Warm pool

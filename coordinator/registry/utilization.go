@@ -145,7 +145,7 @@ func (r *Registry) FleetCapacitySnapshot() FleetCapacity {
 			p.mu.Unlock()
 			continue
 		}
-		fc.DecodeTPS += resolvedDecodeTPS(p)
+		fc.DecodeTPS += providerRatedDecodeTPSLocked(p)
 		// Reconstruct the provider's true pooled KV/token budget using the slot
 		// reporting layout shipped by its provider version.
 		if p.BackendCapacity != nil {

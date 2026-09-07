@@ -1,0 +1,249 @@
+{
+  "allocator": {
+    "small4": 7,
+    "small96": 191,
+    "maximum_extra": 49150
+  },
+  "rows": [
+    {
+      "model": "Qwen3.6",
+      "full_layers": 10,
+      "tokens": 32768,
+      "batch": 4,
+      "serial": 1,
+      "branch": "prefill+decode",
+      "bytes": 624594820,
+      "components_bytes": {
+        "partials": 254279660,
+        "meta": 2949100,
+        "gpu_metadata": 3768280,
+        "host_metadata": 15686400,
+        "output": 336855020,
+        "fences_seqinfo": 3712760,
+        "write_metadata": 6032880,
+        "fixed": 1310720
+      }
+    },
+    {
+      "model": "Qwen3.6",
+      "full_layers": 10,
+      "tokens": 32768,
+      "batch": 4,
+      "serial": 8,
+      "branch": "verification",
+      "bytes": 821694800,
+      "components_bytes": {
+        "partials": 678952880,
+        "meta": 9174960,
+        "gpu_metadata": 19660640,
+        "host_metadata": 100392960,
+        "output": 7864240,
+        "fences_seqinfo": 312160,
+        "write_metadata": 94080,
+        "fixed": 5242880
+      }
+    },
+    {
+      "model": "Qwen3.6",
+      "full_layers": 10,
+      "tokens": 131072,
+      "batch": 4,
+      "serial": 1,
+      "branch": "prefill+decode",
+      "bytes": 1445049220,
+      "components_bytes": {
+        "partials": 1009254380,
+        "meta": 8847340,
+        "gpu_metadata": 9666520,
+        "host_metadata": 62380800,
+        "output": 336855020,
+        "fences_seqinfo": 10701560,
+        "write_metadata": 6032880,
+        "fixed": 1310720
+      }
+    },
+    {
+      "model": "Qwen3.6",
+      "full_layers": 10,
+      "tokens": 131072,
+      "batch": 4,
+      "serial": 8,
+      "branch": "verification",
+      "bytes": 3188404560,
+      "components_bytes": {
+        "partials": 2692218800,
+        "meta": 24903600,
+        "gpu_metadata": 57671520,
+        "host_metadata": 399237120,
+        "output": 7864240,
+        "fences_seqinfo": 1172320,
+        "write_metadata": 94080,
+        "fixed": 5242880
+      }
+    },
+    {
+      "model": "GPT-OSS",
+      "full_layers": 12,
+      "tokens": 32768,
+      "batch": 4,
+      "serial": 1,
+      "branch": "prefill+decode",
+      "bytes": 756591672,
+      "components_bytes": {
+        "partials": 305135592,
+        "meta": 10616808,
+        "gpu_metadata": 4521936,
+        "host_metadata": 18823680,
+        "output": 404226024,
+        "fences_seqinfo": 4455312,
+        "write_metadata": 7239456,
+        "fixed": 1572864
+      }
+    },
+    {
+      "model": "GPT-OSS",
+      "full_layers": 12,
+      "tokens": 32768,
+      "batch": 4,
+      "serial": 8,
+      "branch": "verification",
+      "bytes": 1004908128,
+      "components_bytes": {
+        "partials": 814743456,
+        "meta": 29884320,
+        "gpu_metadata": 23592768,
+        "host_metadata": 120471552,
+        "output": 9437088,
+        "fences_seqinfo": 374592,
+        "write_metadata": 112896,
+        "fixed": 6291456
+      }
+    },
+    {
+      "model": "GPT-OSS",
+      "full_layers": 12,
+      "tokens": 131072,
+      "batch": 4,
+      "serial": 1,
+      "branch": "prefill+decode",
+      "bytes": 1762370616,
+      "components_bytes": {
+        "partials": 1211105256,
+        "meta": 38928360,
+        "gpu_metadata": 11599824,
+        "host_metadata": 74856960,
+        "output": 404226024,
+        "fences_seqinfo": 12841872,
+        "write_metadata": 7239456,
+        "fixed": 1572864
+      }
+    },
+    {
+      "model": "GPT-OSS",
+      "full_layers": 12,
+      "tokens": 131072,
+      "batch": 4,
+      "serial": 8,
+      "branch": "verification",
+      "bytes": 3901582944,
+      "components_bytes": {
+        "partials": 3230662560,
+        "meta": 105381792,
+        "gpu_metadata": 69205824,
+        "host_metadata": 479084544,
+        "output": 9437088,
+        "fences_seqinfo": 1406784,
+        "write_metadata": 112896,
+        "fixed": 6291456
+      }
+    },
+    {
+      "model": "Gemma4",
+      "full_layers": 5,
+      "tokens": 32768,
+      "batch": 4,
+      "serial": 1,
+      "branch": "prefill+decode",
+      "bytes": 607209410,
+      "components_bytes": {
+        "partials": 253951990,
+        "meta": 1474550,
+        "gpu_metadata": 1884140,
+        "host_metadata": 7843200,
+        "output": 336527350,
+        "fences_seqinfo": 1856380,
+        "write_metadata": 3016440,
+        "fixed": 655360
+      }
+    },
+    {
+      "model": "Gemma4",
+      "full_layers": 5,
+      "tokens": 32768,
+      "batch": 4,
+      "serial": 8,
+      "branch": "verification",
+      "bytes": 751634600,
+      "components_bytes": {
+        "partials": 677642200,
+        "meta": 4587480,
+        "gpu_metadata": 9830320,
+        "host_metadata": 50196480,
+        "output": 6553560,
+        "fences_seqinfo": 156080,
+        "write_metadata": 47040,
+        "fixed": 2621440
+      }
+    },
+    {
+      "model": "Gemma4",
+      "full_layers": 5,
+      "tokens": 131072,
+      "batch": 4,
+      "serial": 1,
+      "branch": "prefill+decode",
+      "bytes": 1394923970,
+      "components_bytes": {
+        "partials": 1008926710,
+        "meta": 4423670,
+        "gpu_metadata": 4833260,
+        "host_metadata": 31190400,
+        "output": 336527350,
+        "fences_seqinfo": 5350780,
+        "write_metadata": 3016440,
+        "fixed": 655360
+      }
+    },
+    {
+      "model": "Gemma4",
+      "full_layers": 5,
+      "tokens": 131072,
+      "batch": 4,
+      "serial": 8,
+      "branch": "verification",
+      "bytes": 2941622440,
+      "components_bytes": {
+        "partials": 2690908120,
+        "meta": 12451800,
+        "gpu_metadata": 28835760,
+        "host_metadata": 199618560,
+        "output": 6553560,
+        "fences_seqinfo": 586160,
+        "write_metadata": 47040,
+        "fixed": 2621440
+      }
+    }
+  ],
+  "scope": "Analytic decomposition of the tested first broadcast/topology-arena optimization, matching native projection output. Not measured physical heap, not a model quality result. Conservative FP32 query-output width; 2048-token prefill,16-token pages,256-token partitions,8-token lookahead,4-request maximum batch. Before per-step shared partial/meta arenas.",
+  "base": {
+    "repository": "0b46b1618d43cae3ae3d8e0fde1a9cc6d974e9d0",
+    "native": "6aa60eeb51881eed53a457a4edf1d94918eff89f"
+  },
+  "source_sha256": {
+    "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedQuantizedAttentionWorkspace.swift": "ab84160e9ec7e928f07681c1510e5e662e4d5a0b96f5675b69e0a2becf466dd3",
+    "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/QuantizedWorkspaceProjection.swift": "ed00323e1820fca578ca1d62b9d002ea6c6e009fd9007cf3019f6aa7c29b1879",
+    "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/QuantizedWorkspaceCostEnvelope.swift": "86e06921d60cc939d7390bf2b0af906114f2c25645e0cb86932c8209570acc95",
+    "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/WorkspaceOverlapPolicy.swift": "a77b49af9f70dd3860d90b46b085e0467a1ea1d450080ab31177b7dba8c2fe95",
+    "libs/mlx-swift/Source/Cmlx/mlx/mlx/memory.h": "f223dfe03a0d083b520a87663ba1cbe01d9aeb813523151fffa4220f2b1b9872"
+  }
+}

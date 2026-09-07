@@ -147,6 +147,7 @@ type routingSnapshot struct {
 	availableOnDisk bool    // model is in provider's Models list but not currently loaded
 
 	observedDecodeTPS     float64
+	executionIdentity     string
 	observedPrefillTPS    float64 // measured per-slot prefill EWMA; 0 = unreported (fall back to prefillTPS chain)
 	activeTokenBudgetUsed int64
 	activeTokenBudgetMax  int64
@@ -784,7 +785,7 @@ func (r *Registry) commitProviderReservation(
 	if !pr.RequiresVision && candidate.breakdown.RawTTFTMs > 0 && candidate.breakdown.StateMs == 0 {
 		ttftCalibration.notePrediction(
 			pr.RequestID, pr.Attempt, model, candidate.snapshot.chipFamily,
-			candidate.breakdown.RawTTFTMs)
+			candidate.breakdown.RawTTFTMs, candidate.snapshot.executionIdentity)
 	}
 	if candidate.breakdown.CacheDiscountMs > 0 {
 		pr.CacheSelectionMode = "active"
@@ -1721,7 +1722,8 @@ func (r *Registry) snapshotProviderIntoPLockedEx(dst *routingSnapshot, p *Provid
 	}
 	snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 	snap.availableOnDisk = !snap.modelLoaded
-	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
+	applyExecutionPerformanceSnapshot(snap, p, model)
+	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily, snap.executionIdentity)
 
 	// Gray-box budget clamp (budget_clamp.go): when a capacity-503 has proven
 	// the pair's live gate is rejecting, admission must not believe the
@@ -1822,11 +1824,7 @@ func freeMemoryAdmits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) 
 		// provider's heartbeat. Avoid double-counting active/queued backend
 		// budgets that are still present in the coordinator pending set until
 		// completion/cancellation removes them.
-		coordinatorExtra := int64(snap.pendingMaxTokens) - committedTokenBudget(snap)
-		if coordinatorExtra < 0 {
-			coordinatorExtra = 0
-		}
-		if snap.activeTokenBudgetUsed+snap.queuedTokenBudget+coordinatorExtra+requestTokens > snap.activeTokenBudgetMax {
+		if requestTokens < 0 || requestTokens > remainingSlotTokenBudget(snap) {
 			return false
 		}
 		// The per-slot max encodes this model's own context/KV ceiling. Through
@@ -2121,8 +2119,14 @@ func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, n
 	}
 	// Read the calibration ratio once and score with it, so the ratio the
 	// profiler records is exactly the one this candidate was gated on.
-	calibrationRatio := ttftCalibration.appliedRatio(snap.model, snap.chipFamily)
+	calibrationRatio := ttftCalibration.appliedRatio(snap.model, snap.chipFamily, snap.executionIdentity)
 	ttftMs := calibratedTTFTMsWithRatio(snap, rawTTFTMs, calibrationRatio)
+	if executionPrefillUncalibrated(snap) {
+		// The compute forecast remains unknown, but a known model-load cost
+		// still cannot fit a deadline shorter than loading alone. Keep raw
+		// zero so this lower bound never trains the TTFT calibrator.
+		ttftMs = max(ttftMs, statePenalty)
+	}
 
 	c.provider = snap.provider
 	// The ratio the profiler records is exactly the one this candidate was
@@ -2232,6 +2236,9 @@ func resolvePrefillTPS(snap *routingSnapshot) float64 {
 	if tps > maxPrefillTPS {
 		tps = maxPrefillTPS
 	}
+	if tps <= 0 && snap.executionIdentity != "" {
+		return 1
+	} // ranking floor, never a measured forecast
 	return tps
 }
 
@@ -2297,13 +2304,15 @@ func resolvedDecodeTPS(p *Provider) float64 {
 // registration benchmarks. Non-positive observed values are treated as missing.
 // Caller must hold p.mu.
 func resolvedModelTPSLocked(p *Provider, model string) (decodeTPS, prefillTPS float64) {
-	decodeTPS = resolvedDecodeTPS(p)
-	prefillTPS = resolvedPrefillTPS(p)
+	decodeTPS, prefillTPS = modelBootstrapTPSLocked(p, model)
+	if providerExecutionIdentityLocked(p, model) == invalidExecutionIdentity {
+		return
+	}
 	if p.BackendCapacity == nil {
 		return decodeTPS, prefillTPS
 	}
 	for _, slot := range p.BackendCapacity.Slots {
-		if slot.Model != model {
+		if slot.Model != model || !executionSlotRatesCompatible(providerExecutionIdentityLocked(p, model), slot.State) {
 			continue
 		}
 		if slot.ObservedDecodeTPS > 0 {
@@ -2788,7 +2797,8 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		}
 		snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 		snap.availableOnDisk = !snap.modelLoaded
-		snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
+		applyExecutionPerformanceSnapshot(&snap, p, model)
+		snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily, snap.executionIdentity)
 
 		// Gray-box budget clamp — same evaluation as snapshotProviderLockedEx
 		// (including the budgetless-snapshot hold for reconnecting sessions)
@@ -2820,7 +2830,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		}
 
 		candidateCount++
-		if snap.hasBackendCapacity {
+		if snap.hasBackendCapacity && !executionPrefillUncalibrated(&snap) {
 			ttft := estimatedTTFTFromSnapshot(&snap, estimatedPromptTokens)
 			if !hasTTFT || ttft < bestTTFT {
 				bestTTFT = ttft
@@ -2861,6 +2871,12 @@ func estimatedTTFTFromSnapshot(snap *routingSnapshot, reqPromptTokens int) time.
 // and this request's own prefill instead of treating active_token_budget_used as
 // a serial decode backlog.
 func ttftMsFromSnapshot(snap *routingSnapshot, reqPromptTokens int) float64 {
+	// Unknown quantized prefill must neither borrow a native rate nor invent a
+	// 1-TPS forecast that prevents its first request from ever calibrating.
+	// Zero preserves existing unknown-TTFT admission under real deadlines.
+	if executionPrefillUncalibrated(snap) {
+		return 0
+	}
 	if !snap.hasBackendCapacity {
 		return 0
 	}

@@ -1,0 +1,697 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+[0/3] Write swift-version--58304C5D6DBC2206.txt
+warning: 'mlx-swift-lm': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Tests/MLXLMTests/ContinuousBatchingTestPlan.md
+warning: 'mlx-swift-lm': found 301 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-v2-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-dispatch-fused-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-v2-eager-postfix-e4158bc.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-stock-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-kernel-opt.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-stock-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-stock-source-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-mtp-k1-router-combine-serial-20260824.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-ar-source-final-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen3-vl-30b-a3b/text-generation.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-v2-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-ar-source-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-byte-exact-source-final-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-mtp-k3-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c8192-s8192-L32768-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-rep2-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-ar-source-final-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-v2-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-fast-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/contexts/python-coding-context-65536.txt
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-stock-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-stock-L1024-20260824T2142.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-stock-source-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/python-prompt.txt
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/cbv2-paged-attention.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-fast-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c4096-s4096-L128-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-stock-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-fast-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-stock-source-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-a4b-qat4bit-legacy-compiled-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c2048-s2048-L1024-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-fast-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-source-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-fast-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-byte-exact-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-main.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c16384-s16384-L8192-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-fast-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-mtp-k2-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-byte-exact-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c8192-L32768-rep3-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-v2-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-byte-exact-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-byte-exact-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-fast-source-final-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-byte-exact-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-v2-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-matched-ar-metal0322-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen3-vl-30b-a3b/README.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-stock-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-mtp-k2-20260824.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-hotpath-clean-rep1-20260824.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-stock-L128-20260824T2142.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-fast-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-fast-source-final-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-mlx0322-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-matched-ar-metal0322-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-mtp-k4-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-stock-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-source-final-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-source-final-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-matched-ar-mlx0322-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-rep1-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-stock-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-byte-exact-source-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-source-final-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-fast-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-stock-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-byte-exact-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-fast-flag-smoke-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-source-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-matched-ar-metal0322-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-stock-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-dispatch-fused-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/contexts/python-coding-context-16384.txt
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-fast-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c1024-s1024-L128-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c4096-s4096-L32768-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-a4b-8bit-legacy-compiled.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-a4b-8bit-v2-paged-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-a4b-qat4bit-correctness.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c8192-L32768-rep1-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-fast-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-paged-gate-2026-07-09.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-matched-ar-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-stock-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-hotpath-clean-rep3-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-stock-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-fast-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen3-vl-30b-a3b/generation-1024x16384.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-fast-source-final-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-v2-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-ar-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-ar-source-final-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/FINAL_REPORT.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-source-final-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-stock-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-rep3-20260824.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-stock-L32768-rep2-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-fast-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-fast-source-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c8192-L8192-rep3-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-qat4bit-paged-gate-2026-07-09.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-fast-source-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-stock-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-stock-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-fast-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-dispatch-fused-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-matched-ar-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-stock-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-byte-exact-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-stock-L8192-rep3-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-fast-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-decode-profile.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/contexts/python-coding-context-32768.txt
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-dispatch-fused-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-matched-ar-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-fast-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-ar-source-final-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-fast-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-dispatch-fused-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-fast-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-fast-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-byte-exact-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-a4b-qat4bit-v2-paged-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-ar-source-final-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-byte-exact-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-stock-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-v2-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-v2-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-fast-source-final-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-matched-ar-metal0322-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-fast-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c1024-s1024-L8192-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-ar-source-final-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-source-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-v2-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-v2-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-stock-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-rep1-20260824.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c8192-L8192-rep2-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-hotpath-clean-rep1-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-legacy-eager-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-v2-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-hotpath-clean-rep2-20260824.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-byte-exact-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-stock-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-v2-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-stock-L8192-rep1-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen3-vl-30b-a3b/image-generation.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-source-final-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-v2-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-stock-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-byte-exact-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-fast-flag-smoke-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-matched-ar-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-ar-source-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-a4b-8bit-correctness-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-fast-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-a4b-qat4bit-v2-eager-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-stock-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-fast-source-final-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-fast-mlx0322-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-v2-compiled-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-mtp-k2-router-combine-20260824.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-stock-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-fast-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-stock-L32768-rep1-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/OPTIMIZATION_LEDGER.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-fast-source-final-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-ar-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-mtp-k1-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-mtp-k2-router-combine-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c1024-s1024-L32768-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-fast-source-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-byte-exact-source-final-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c8192-L32768-rep2-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-fast-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-matched-ar-metal0322-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-matched-ar-metal0322-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/contexts/python-coding-context-1024.txt
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-fast-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-fast-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-fast-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-correctness-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-stock-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-matched-ar-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-mtp-k1-20260824.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-legacy-compiled-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-matched-ar-metal0322-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c2048-s2048-sweep-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-a4b-8bit-v2-eager-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-stock-20260824T2137.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-matched-ar-mlx0322-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c2048-s2048-L32768-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-stock-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-fast-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-stock-L32768-20260824T2142.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-fast-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-dispatch-fused-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-a4b-8bit-v2-compiled-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-a4b-qat4bit-v2-compiled-b1-repeat.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-ar-source-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-stock-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-a4b-8bit-legacy-compiled-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-fast-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-fast-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-mlx0322-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-stock-source-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-fast-source-final-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-stock-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-stock-L32768-rep3-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-v2-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-fast-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-byte-exact-dispatch-fused-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-a4b-8bit-main.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-fast-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-v2-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-byte-exact-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-byte-exact-dispatch-fused-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-mtp-k2-router-combine-serial-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-v2-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-fast-source-final-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-mtp-k1-router-combine-serial-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-matched-ar-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-byte-exact-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-ar-source-final-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-ar-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-matched-ar-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-ar-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c8192-s8192-L128-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-stock-20260824T2137.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-stock-source-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-matched-ar-metal0322-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-a4b-qat4bit-v2-compiled-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-fast-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-v2-paged-postfix-e4158bc-repeat.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-stock-L8192-20260824T2142.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-a4b-8bit-legacy-eager-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c2048-s2048-L8192-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-byte-exact-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-mtp-k2-router-combine-serial-20260824.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-stock-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-hotpath-clean-rep2-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-v2-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-rep3-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-mtp-k4-20260824.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-fast-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-fast-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-source-final-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c4096-s4096-L8192-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c8192-s8192-L8192-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-rep2-20260824.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/decode-mtp-k3-20260824.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-stock-rep2-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c16384-s16384-L32768-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-fast-source-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-matched-ar-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/full-k2-c8192-hotpath-clean-rep3-20260824.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-byte-exact-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-a4b-8bit-kernel-opt.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-v2-eager-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-v2-paged-postfix-e4158bc.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-final-rep1-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-byte-exact-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-fast-rep3-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-byte-exact-v2-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L65536-byte-exact-rep3-20260825.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-c8192-L8192-rep1-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/prefill-stock-L8192-rep2-20260824.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-legacy-compiled.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/reports/gptoss-20b-mxfp4q8-v2-paged-composed-final.md
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-fast-final-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L32768-ar-source-final-rep2-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L1024-fast-mlx0322-rep1-20260825.json
+    /Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/benchmarks/qwen36-a3b/context-matrix/context-L16384-ar-source-final-rep1-20260825.md
+[1/1] Compiling plugin BenchRevisionStamp
+[2/2] Compiling plugin CudaBuild
+[3/3] Compiling plugin GenerateManual
+[4/4] Compiling plugin GenerateDoccReference
+Building for debugging...
+[4/19] Write sources
+[6/19] Write swift-version--58304C5D6DBC2206.txt
+[8/21] Compiling MLXLMCommon EngineLoopV2.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:3696:52: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 218 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 219 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 220 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 221 |     /// Append confirmed tokens; returns text now safe to emit.
+ 222 |     func push(_ tokens: [Int]) -> String
+     :
+3694 |                     firstEmissionArmedNanos: firstToken ? readbackDoneNanos : 0)
+3695 |                 detokQueue.async {
+3696 |                     let text = isStopToken ? "" : (detokenizer?.push([token]) ?? "")
+     |                                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+3697 |                     stream?.emit(
+3698 |                         .delta(text: text, tokens: [token], logprobs: logprobs),
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:3943:36: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 218 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 219 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 220 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 221 |     /// Append confirmed tokens; returns text now safe to emit.
+ 222 |     func push(_ tokens: [Int]) -> String
+     :
+3941 |             if usesAsyncDetokenization {
+3942 |                 terminalQueue.async {
+3943 |                     let trailing = detokenizer?.flush() ?? ""
+     |                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+3944 |                     if !trailing.isEmpty {
+3945 |                         stream?.emit(.delta(text: trailing, tokens: [], logprobs: nil))
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[9/21] Compiling MLXLMCommon EngineV2.swift
+[10/21] Emitting module MLXLMCommon
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:275:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+273 |                 let allTokens = kept
+274 |                 detokQueue.async {
+275 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+276 |                     stream?.emit(
+277 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:220:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 218 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 219 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 220 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 221 |     /// Append confirmed tokens; returns text now safe to emit.
+ 222 |     func push(_ tokens: [Int]) -> String
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[10/27] Write Objects.LinkFileList
+[16/29] Compiling MLXLMTests CBv2QuantizedAdmissionTests.swift
+[16/29] Linking BenchSegmentedDecode
+[17/29] Linking CBv2Benchmark
+[18/29] Applying BenchSegmentedDecode
+[19/29] Applying CBv2Benchmark
+[20/29] Linking mlx-server
+[21/29] Applying mlx-server
+[22/29] Linking BenchLoad
+[23/29] Applying BenchLoad
+[24/29] Linking BenchCBv2
+[25/29] Applying BenchCBv2
+[27/29] Emitting module MLXLMTests
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Tests/MLXLMTests/CBv2PagedBackendTests.swift:1196:23: warning: no calls to throwing functions occur within 'try' expression
+1194 |             let state = try backend.makeSequenceState(
+1195 |                 layerKinds: kinds, promptLength: 0, maxLength: 128)
+1196 |             let row = try #require(state[0] as? PagedSequenceKV)
+     |                       `- warning: no calls to throwing functions occur within 'try' expression
+1197 |             let (k, v) = canary(tag)
+1198 |             row.write(keys: k, values: v)
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Tests/MLXLMTests/CBv2PrefillOutputTests.swift:126:7: warning: class 'CBv2PrefillNarrowingModel' must restate inherited '@unchecked Sendable' conformance
+124 | /// `TinyTestModel.forward` by `testNarrowingFixtureTrunkMatchesFullForward`),
+125 | /// so any KV/numeric divergence is the seam's, not the fixture's.
+126 | class CBv2PrefillNarrowingModel: CBv2PrefillFallbackModel, CBv2PrefillSteppableModel {
+    |       `- warning: class 'CBv2PrefillNarrowingModel' must restate inherited '@unchecked Sendable' conformance
+127 | 
+128 |     func prefill(
+[27/29] Write Objects.LinkFileList
+[28/29] Linking mlx-swift-lmPackageTests
+Build complete! (15.51s)
+Test Suite 'Selected tests' started at 2026-09-07 04:20:56.441.
+Test Suite 'mlx-swift-lmPackageTests.xctest' started at 2026-09-07 04:20:56.442.
+Test Suite 'CBv2FirstTokenDeadlineEngineTests' started at 2026-09-07 04:20:56.442.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCancellationAfterCommitTransfersEngineRowRetirement]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCancellationAfterCommitTransfersEngineRowRetirement]' passed (0.064 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCancellationAfterInitialGuardRetainsOwnershipUntilQueueAcknowledges]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCancellationAfterInitialGuardRetainsOwnershipUntilQueueAcknowledges]' passed (0.003 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCapacityProjectionReleasesRetiredBlockerBeforeTargetReservation]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testCapacityProjectionReleasesRetiredBlockerBeforeTargetReservation]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testDeadlineBudgetKeepsRunningWhileAdmissionWaitsForEngineQueue]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testDeadlineBudgetKeepsRunningWhileAdmissionWaitsForEngineQueue]' passed (0.715 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testEngineQueueVerdictChargesLaunchedInFlightPlan]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testEngineQueueVerdictChargesLaunchedInFlightPlan]' passed (0.475 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testForcedTerminalDoesNotAcknowledgeEngineOwnership]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testForcedTerminalDoesNotAcknowledgeEngineOwnership]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testLateCancelFromRetiredGenerationDoesNotPoisonImmediateRetry]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testLateCancelFromRetiredGenerationDoesNotPoisonImmediateRetry]' passed (0.003 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testMixedProjectionUsesSeparateRatesAndMissingDecodeRateFailsClosed]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testMixedProjectionUsesSeparateRatesAndMissingDecodeRateFailsClosed]' passed (0.006 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testPausedLedgerOwnerMakesOtherwiseOpenSlotFailClosed]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testPausedLedgerOwnerMakesOtherwiseOpenSlotFailClosed]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testPrefixMetadataPrecedesVerdictAndReducesProjectedWork]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testPrefixMetadataPrecedesVerdictAndReducesProjectedWork]' passed (0.002 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testRejectedPagedPrefixHitDoesNotWireOrReserveSlabs]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testRejectedPagedPrefixHitDoesNotWireOrReserveSlabs]' passed (0.925 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testRejectedResidentPrefixPricesReplayWithoutRetainingOrWiringPages]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testRejectedResidentPrefixPricesReplayWithoutRetainingOrWiringPages]' passed (0.238 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testTaskCancellationResumesQueuedAdmissionAndReleasesGauge]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testTaskCancellationResumesQueuedAdmissionAndReleasesGauge]' passed (1.038 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testUnreachableRequestIsRemovedBeforeAnyForward]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testUnreachableRequestIsRemovedBeforeAnyForward]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testUnrepresentableServiceDurationsFailClosedWithoutTrapping]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testUnrepresentableServiceDurationsFailClosedWithoutTrapping]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testWatchdogResumesAdmissionBehindWedgedEngineQueue]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenDeadlineEngineTests testWatchdogResumesAdmissionBehindWedgedEngineQueue]' passed (1.008 seconds).
+Test Suite 'CBv2FirstTokenDeadlineEngineTests' passed at 2026-09-07 04:21:00.923.
+	 Executed 16 tests, with 0 failures (0 unexpected) in 4.480 (4.481) seconds
+Test Suite 'CBv2FirstTokenWorkProjectionTests' started at 2026-09-07 04:21:00.923.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFixedZeroMTPPlainFallbackChargesTerminalChain]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFixedZeroMTPPlainFallbackChargesTerminalChain]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullLedgerSkipsOptionalTerminalChainBeforeSlotRelease]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullLedgerSkipsOptionalTerminalChainBeforeSlotRelease]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullSlotDecodeStretchChargesTerminalChain]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullSlotDecodeStretchChargesTerminalChain]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullSlotTerminalSampleChargesOneStepLateChain]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testFullSlotTerminalSampleChargesOneStepLateChain]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testMixedDecodeAndTrailingFinalChunkChargeWholeTargetStep]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testMixedDecodeAndTrailingFinalChunkChargeWholeTargetStep]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testMTPInFlightTerminalDoesNotInventChainedDecode]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testMTPInFlightTerminalDoesNotInventChainedDecode]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPausedRunningSlotFailsClosedWhenTargetCannotEnter]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPausedRunningSlotFailsClosedWhenTargetCannotEnter]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPreemptedReplayCancelledRowAndFinalChunkSlotRelease]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPreemptedReplayCancelledRowAndFinalChunkSlotRelease]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPrefixReplayStartIsTheConfirmedCursor]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testPrefixReplayStartIsTheConfirmedCursor]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testSpeculativeCapacityRollbackPreventsImpossibleAccumulation]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testSpeculativeCapacityRollbackPreventsImpossibleAccumulation]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testSpeculativeProjectionChargesConfiguredMTPWidthNotStepBudget]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testSpeculativeProjectionChargesConfiguredMTPWidthNotStepBudget]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testT0AndTPlusTwoChargeFullInFlightAssignmentWithoutElapsedCredit]' started.
+Test Case '-[MLXLMTests.CBv2FirstTokenWorkProjectionTests testT0AndTPlusTwoChargeFullInFlightAssignmentWithoutElapsedCredit]' passed (0.000 seconds).
+Test Suite 'CBv2FirstTokenWorkProjectionTests' passed at 2026-09-07 04:21:00.925.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 0.002 (0.002) seconds
+Test Suite 'CBv2SchedulerAdmissionTests' started at 2026-09-07 04:21:00.925.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testAdoptionReservationChargesFixedRingExactlyOnce]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testAdoptionReservationChargesFixedRingExactlyOnce]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testCanEverFitIsWorstCase]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testCanEverFitIsWorstCase]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testCanEverFitRespectsWatermark]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testCanEverFitRespectsWatermark]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testEstimateRespectsWindowsAndKVSharing]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testEstimateRespectsWindowsAndKVSharing]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testExternalReserveTightensAdmissionAndRefundRestores]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testExternalReserveTightensAdmissionAndRefundRestores]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testFullSequenceAdoptionPrepaysAuxiliaryStateWithoutDoubleChargingKV]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testFullSequenceAdoptionPrepaysAuxiliaryStateWithoutDoubleChargingKV]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testMismatchedElementBytesTableTraps]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testMismatchedElementBytesTableTraps]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testOverflowingCapacityInputsFailWithoutMutatingLedger]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testOverflowingCapacityInputsFailWithoutMutatingLedger]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPagedResidencyTracksPoolPageDemandExactly]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPagedResidencyTracksPoolPageDemandExactly]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPagedShortRequestIsAdmittedWhereWholeRingChargingRejectsIt]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPagedShortRequestIsAdmittedWhereWholeRingChargingRejectsIt]' passed (0.250 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPerLayerElementBytesForMixedPrecision]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testPerLayerElementBytesForMixedPrecision]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testQwenWarmAdmissionAcrossResidentBudgetsWithin16GiBGrant]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testQwenWarmAdmissionAcrossResidentBudgetsWithin16GiBGrant]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSnapshotReportsLedgerOrBackendTruth]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSnapshotReportsLedgerOrBackendTruth]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSnapshotReservedIncludesLiveExternalReserve]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSnapshotReservedIncludesLiveExternalReserve]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSoftReserveThrowsAtWatermark]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testSoftReserveThrowsAtWatermark]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testTargetReservationsPartitionMaterializedAndWaitingRows]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testTargetReservationsPartitionMaterializedAndWaitingRows]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUndeclaredBackendResidencyDefaultsToWholeRingCharging]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUndeclaredBackendResidencyDefaultsToWholeRingCharging]' passed (0.229 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUnreserveAndReleaseRestoreHeadroom]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUnreserveAndReleaseRestoreHeadroom]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityGrowAdmitsImmediately]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityGrowAdmitsImmediately]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityRecomputesWatermark]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityRecomputesWatermark]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityShrinkUnderLoad]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testUpdateBytesCapacityShrinkUnderLoad]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedChargeDivergesByBackendStoragePolicy]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedChargeDivergesByBackendStoragePolicy]' passed (0.001 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedLayerIsChargedItsWholeRingBelowTheWindow]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedLayerIsChargedItsWholeRingBelowTheWindow]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedOvershootIsRejectedRatherThanHidden]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedOvershootIsRejectedRatherThanHidden]' passed (0.000 seconds).
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedReservationPlateaus]' started.
+Test Case '-[MLXLMTests.CBv2SchedulerAdmissionTests testWindowedReservationPlateaus]' passed (0.002 seconds).
+Test Suite 'CBv2SchedulerAdmissionTests' passed at 2026-09-07 04:21:01.410.
+	 Executed 25 tests, with 0 failures (0 unexpected) in 0.484 (0.485) seconds
+Test Suite 'mlx-swift-lmPackageTests.xctest' passed at 2026-09-07 04:21:01.410.
+	 Executed 53 tests, with 0 failures (0 unexpected) in 4.966 (4.968) seconds
+Test Suite 'Selected tests' passed at 2026-09-07 04:21:01.410.
+	 Executed 53 tests, with 0 failures (0 unexpected) in 4.966 (4.969) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Native process ownership" started.
+◇ Suite "Typed checkpoint admission transfer" started.
+◇ Suite "Paged complete checkpoint codec" started.
+◇ Suite "Loaded native KV dtype probe" started.
+◇ Suite "CBv2 prepaid attention workspace ownership" started.
+◇ Suite "CBv2 quantized storage admission" started.
+◇ Suite "Paged native KV dtype layout" started.
+◇ Suite "Packed paged KV quantization" started.
+◇ Suite "CBv2 paged physical admission" started.
+◇ Test exactFitTransfersOnlyDestinationAndKeepsOtherOwnersAndScratch() started.
+◇ Test completeChargePrecedesAllocationAndReleaseWithdrawsCoverage() started.
+◇ Test "packed groups retain native windows and exact page and assistant overhead" started.
+◇ Test "equal geometry preserves separate native dtype and window roots" started.
+◇ Test "both phases observe actual mixed storage types and release every private row" started.
+◇ Test physicalSlackTransfersToRequestsWithoutDiscountingAuxiliaryState() started.
+◇ Test "two waves consume their prepaid credit without a second capacity debit" started.
+◇ Test checkedFormatIdentityAndAccounting() started.
+◇ Test "Actual-M destinations move into full-N request ownership without byte conversion" started.
+◇ Test case passing 1 argument dtype → .bfloat16 to "Actual-M destinations move into full-N request ownership without byte conversion" started.
+✔ Test "packed groups retain native windows and exact page and assistant overhead" passed after 0.001 seconds.
+✔ Test exactFitTransfersOnlyDestinationAndKeepsOtherOwnersAndScratch() passed after 0.001 seconds.
+✔ Test "two waves consume their prepaid credit without a second capacity debit" passed after 0.001 seconds.
+✔ Test physicalSlackTransfersToRequestsWithoutDiscountingAuxiliaryState() passed after 0.001 seconds.
+◇ Test "deadline projection and conservative chained-decode guard use packed byte rates" started.
+◇ Test oneExtraPhysicalByteRefusesWithoutConsumingStage() started.
+◇ Test shrinkDebtCanBeReusedButNotIncreasedOrCrossOffsetBetweenSlots() started.
+◇ Test "finish before GPU completion cannot lend old workspace credit to a new request" started.
+✔ Test "deadline projection and conservative chained-decode guard use packed byte rates" passed after 0.001 seconds.
+◇ Test "explicit native reconstruction scratch remains additive to packed storage" started.
+✔ Test oneExtraPhysicalByteRefusesWithoutConsumingStage() passed after 0.001 seconds.
+◇ Test explicitConsumptionStateRejectsZeroDestinationReuseAndForeignPool() started.
+✔ Test shrinkDebtCanBeReusedButNotIncreasedOrCrossOffsetBetweenSlots() passed after 0.001 seconds.
+✔ Test "finish before GPU completion cannot lend old workspace credit to a new request" passed after 0.001 seconds.
+✔ Test "explicit native reconstruction scratch remains additive to packed storage" passed after 0.001 seconds.
+◇ Test detachedOldRequestCannotReleaseReusedIDOrItsPhysicalOffset() started.
+◇ Test "malformed exact rates never fall back to native or free storage" started.
+◇ Test "rollback preserves leased scratch and detached old generations cannot release a reused id" started.
+✔ Test detachedOldRequestCannotReleaseReusedIDOrItsPhysicalOffset() passed after 0.001 seconds.
+✔ Test "rollback preserves leased scratch and detached old generations cannot release a reused id" passed after 0.001 seconds.
+◇ Test deadlineSimulationMatchesFloorTransfersAndRetainsPhysicalAfterRelease() started.
+✔ Test "malformed exact rates never fall back to native or free storage" passed after 0.001 seconds.
+◇ Test "private teacher rows prepay workspaces and target physical slack cannot cover scratch" started.
+◇ Test "engine derives admission rates from the actual packed and native groups" started.
+✔ Test "private teacher rows prepay workspaces and target physical slack cannot cover scratch" passed after 0.001 seconds.
+✔ Test deadlineSimulationMatchesFloorTransfersAndRetainsPhysicalAfterRelease() passed after 0.001 seconds.
+◇ Test "checkpoint transfer prepays fresh workspace without discounting imported auxiliary state" started.
+◇ Test coldFullPromiseSurvivesChunkingAndSpeculationButRollsBackInitialWork() started.
+✔ Test "checkpoint transfer prepays fresh workspace without discounting imported auxiliary state" passed after 0.001 seconds.
+◇ Test "prospective bounds cover two live prefill or batched-decode workspaces" started.
+✔ Test explicitConsumptionStateRejectsZeroDestinationReuseAndForeignPool() passed after 0.001 seconds.
+◇ Test paddedAuxiliaryTransfersAtomicallyAndStaysOutOfTargetTelemetry() started.
+✔ Test paddedAuxiliaryTransfersAtomicallyAndStaysOutOfTargetTelemetry() passed after 0.001 seconds.
+◇ Test preemptionReleasesAuxiliaryPartitionBeforeIDReuse() started.
+✔ Test coldFullPromiseSurvivesChunkingAndSpeculationButRollsBackInitialWork() passed after 0.001 seconds.
+✔ Test preemptionReleasesAuxiliaryPartitionBeforeIDReuse() passed after 0.001 seconds.
+◇ Test adoptedAndColdRowsPrepayIdenticalTargetAndAuxiliaryCapacity() started.
+◇ Test paddedAuxiliaryRollbackRemovesItsTypedPartition() started.
+✔ Test paddedAuxiliaryRollbackRemovesItsTypedPartition() passed after 0.001 seconds.
+✔ Test adoptedAndColdRowsPrepayIdenticalTargetAndAuxiliaryCapacity() passed after 0.001 seconds.
+◇ Test qwenLedgerCapacityAcrossCoResidentDeviceEnvelopesHasNoEightGiBCap() started.
+✔ Suite "Typed checkpoint admission transfer" passed after 0.002 seconds.
+✔ Test qwenLedgerCapacityAcrossCoResidentDeviceEnvelopesHasNoEightGiBCap() passed after 0.001 seconds.
+◇ Test prefillOnlyTerminalDropsLastNativeOwnerBeforeFloorRefund() started.
+✔ Test "prospective bounds cover two live prefill or batched-decode workspaces" passed after 0.005 seconds.
+◇ Test "one long decode row prepays the whole rectangular batch partition width" started.
+✔ Test "one long decode row prepays the whole rectangular batch partition width" passed after 0.001 seconds.
+◇ Test "unrelated resident segments cannot inflate a short prefill's reserved workspace" started.
+✔ Test "both phases observe actual mixed storage types and release every private row" passed after 0.044 seconds.
+◇ Test "changed or asymmetric types fail before any paged allocation and unbind all rows" started.
+✔ Test "changed or asymmetric types fail before any paged allocation and unbind all rows" passed after 0.004 seconds.
+✔ Suite "Loaded native KV dtype probe" passed after 0.049 seconds.
+✔ Test checkedFormatIdentityAndAccounting() passed after 0.778 seconds.
+◇ Test rotationPreservesDotProductAndInverts(dim:) started.
+◇ Test case passing 1 argument dim → 64 to rotationPreservesDotProductAndInverts(dim:) started.
+✔ Test "engine derives admission rates from the actual packed and native groups" passed after 0.777 seconds.
+◇ Test "quantized engines never read legacy native snapshot prefix entries" started.
+✘ Test prefillOnlyTerminalDropsLastNativeOwnerBeforeFloorRefund() recorded an issue at CBv2PagedAdmissionTests.swift:252:17: Expectation failed: (Memory.activeMemory → 121124) <= (probe.activeBytesBeforeRelease - probe.expectedPhysical → 88356)
+↳ // This suite runs alone on the exclusive native GPU lane.
+↳ // C++ graphs can retain buffers after a Swift wrapper dies;
+↳ // verify actual active allocation release, not cache/RSS.
+✘ Test prefillOnlyTerminalDropsLastNativeOwnerBeforeFloorRefund() failed after 0.778 seconds with 1 issue.
+◇ Test deadlineProbePricesPoisonBeforeAnyNativeAllocation() started.
+◇ Test case passing 1 argument dim → 128 to rotationPreservesDotProductAndInverts(dim:) started.
+◇ Test case passing 1 argument dim → 256 to rotationPreservesDotProductAndInverts(dim:) started.
+✔ Test completeChargePrecedesAllocationAndReleaseWithdrawsCoverage() passed after 0.790 seconds.
+◇ Test sharedRefusalLeavesNativeRequestAndPhysicalStateUntouched() started.
+✔ Test sharedRefusalLeavesNativeRequestAndPhysicalStateUntouched() passed after 0.001 seconds.
+◇ Test partialPreparationDropsEvaluatedCoverageBeforeRollback() started.
+◇ Test case passing 1 argument dim → 512 to rotationPreservesDotProductAndInverts(dim:) started.
+✔ Test rotationPreservesDotProductAndInverts(dim:) with 4 test cases passed after 0.017 seconds.
+◇ Test packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 2 arguments dtype → .float16, dim → 64 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 1 argument dtype → .float16 to "Actual-M destinations move into full-N request ownership without byte conversion" started.
+✔ Test "equal geometry preserves separate native dtype and window roots" passed after 0.800 seconds.
+◇ Test "storage and admission use the same mixed element widths" started.
+✔ Test "unrelated resident segments cannot inflate a short prefill's reserved workspace" passed after 0.905 seconds.
+✔ Suite "CBv2 prepaid attention workspace ownership" passed after 0.913 seconds.
+✔ Test deadlineProbePricesPoisonBeforeAnyNativeAllocation() passed after 0.470 seconds.
+◇ Test nativeGrowthReservesPeakBeforeAllocationAndRefusesWithoutSideEffects() started.
+✔ Test "quantized engines never read legacy native snapshot prefix entries" passed after 0.473 seconds.
+◇ Test "workspace covers image block snapping and solo stripes beyond the plain prefill chunk" started.
+✔ Test "storage and admission use the same mixed element widths" passed after 0.480 seconds.
+◇ Test "invalid dtype tables and mismatched borrowed native layouts refuse construction" started.
+✔ Test partialPreparationDropsEvaluatedCoverageBeforeRollback() passed after 0.491 seconds.
+◇ Test stagedBackingKeepsOneCreditAcrossRebasedWrappers() started.
+◇ Test case passing 1 argument dtype → .float32 to "Actual-M destinations move into full-N request ownership without byte conversion" started.
+✔ Test nativeGrowthReservesPeakBeforeAllocationAndRefusesWithoutSideEffects() passed after 0.444 seconds.
+◇ Test failedPrivateGrowthDropsArraysBeforeFloorRefund(epochRace:) started.
+◇ Test case passing 1 argument epochRace → false to failedPrivateGrowthDropsArraysBeforeFloorRefund(epochRace:) started.
+✔ Test "invalid dtype tables and mismatched borrowed native layouts refuse construction" passed after 0.471 seconds.
+✔ Suite "Paged native KV dtype layout" passed after 1.753 seconds.
+✔ Test stagedBackingKeepsOneCreditAcrossRebasedWrappers() passed after 0.471 seconds.
+◇ Test retainedReadAliasDoesNotKeepCreditAfterPoolRetirement() started.
+✔ Test "Actual-M destinations move into full-N request ownership without byte conversion" with 3 test cases passed after 1.769 seconds.
+◇ Test destinationBoundRefusesBeforeAnyNativeAllocation() started.
+✔ Test "workspace covers image block snapping and solo stripes beyond the plain prefill chunk" passed after 0.835 seconds.
+✔ Suite "CBv2 quantized storage admission" passed after 2.088 seconds.
+◇ Test case passing 1 argument epochRace → true to failedPrivateGrowthDropsArraysBeforeFloorRefund(epochRace:) started.
+✔ Test retainedReadAliasDoesNotKeepCreditAfterPoolRetirement() passed after 0.377 seconds.
+◇ Test emptyPoolTeardownDoesNotTransactWithRetiredGeneration() started.
+✔ Test destinationBoundRefusesBeforeAnyNativeAllocation() passed after 0.375 seconds.
+◇ Test "Backend identity and dtype mismatches reject before allocations" started.
+◇ Test case passing 2 arguments dtype → .float16, dim → 256 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+✔ Test failedPrivateGrowthDropsArraysBeforeFloorRefund(epochRace:) with 2 test cases passed after 0.740 seconds.
+✘ Suite "CBv2 paged physical admission" failed after 2.437 seconds with 1 issue.
+✔ Test emptyPoolTeardownDoesNotTransactWithRetiredGeneration() passed after 0.349 seconds.
+◇ Test detachedPromiseAndClosingOwnerRetainTheirActualCharge() started.
+✔ Test detachedPromiseAndClosingOwnerRetainTheirActualCharge() passed after 0.323 seconds.
+✔ Suite "Native process ownership" passed after 2.805 seconds.
+✔ Test "Backend identity and dtype mismatches reject before allocations" passed after 0.698 seconds.
+◇ Test "Window and borrowed layers remain outside the complete codec contract" started.
+◇ Test case passing 1 argument borrowed → false to "Window and borrowed layers remain outside the complete codec contract" started.
+◇ Test case passing 1 argument borrowed → true to "Window and borrowed layers remain outside the complete codec contract" started.
+✔ Test "Window and borrowed layers remain outside the complete codec contract" with 2 test cases passed after 0.537 seconds.
+◇ Test "Native and auxiliary allocation faults drop arrays before returning stage capacity" started.
+◇ Test case passing 1 argument failAt → 1 to "Native and auxiliary allocation faults drop arrays before returning stage capacity" started.
+◇ Test case passing 2 arguments dtype → .float16, dim → 512 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 1 argument failAt → 2 to "Native and auxiliary allocation faults drop arrays before returning stage capacity" started.
+✔ Test "Native and auxiliary allocation faults drop arrays before returning stage capacity" with 2 test cases passed after 0.513 seconds.
+◇ Test "Auxiliary eval-then-throw drains before refund and preserves native error priority" started.
+◇ Test case passing 1 argument failureKind → 0 to "Auxiliary eval-then-throw drains before refund and preserves native error priority" started.
+◇ Test case passing 1 argument failureKind → 1 to "Auxiliary eval-then-throw drains before refund and preserves native error priority" started.
+◇ Test case passing 1 argument failureKind → 2 to "Auxiliary eval-then-throw drains before refund and preserves native error priority" started.
+✔ Test "Auxiliary eval-then-throw drains before refund and preserves native error priority" with 3 test cases passed after 0.962 seconds.
+◇ Test "Close racing consumption cannot refund an in-flight adoption payload" started.
+◇ Test case passing 2 arguments dtype → .bfloat16, dim → 64 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+✔ Test "Close racing consumption cannot refund an in-flight adoption payload" passed after 0.290 seconds.
+◇ Test "Failed recurrent restoration refunds pages only after candidate aliases drain" started.
+✔ Test "Failed recurrent restoration refunds pages only after candidate aliases drain" passed after 0.293 seconds.
+◇ Test "Packed codes and FP32 metadata survive complete stage/adopt/export without requantization" started.
+◇ Test case passing 1 argument quantization → PagedKVQuantizationConfig(keyBits: 4, valueBits: 4, groupSize: 64, rotationBlockSize: 128, version: 1) to "Packed codes and FP32 metadata survive complete stage/adopt/export without requantization" started.
+◇ Test case passing 2 arguments dtype → .bfloat16, dim → 256 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 1 argument quantization → PagedKVQuantizationConfig(keyBits: 8, valueBits: 4, groupSize: 64, rotationBlockSize: 128, version: 1) to "Packed codes and FP32 metadata survive complete stage/adopt/export without requantization" started.
+◇ Test case passing 1 argument quantization → PagedKVQuantizationConfig(keyBits: 8, valueBits: 8, groupSize: 64, rotationBlockSize: 128, version: 1) to "Packed codes and FP32 metadata survive complete stage/adopt/export without requantization" started.
+◇ Test case passing 1 argument quantization → PagedKVQuantizationConfig(keyBits: 4, valueBits: 4, groupSize: 64, rotationBlockSize: 0, version: 1) to "Packed codes and FP32 metadata survive complete stage/adopt/export without requantization" started.
+◇ Test case passing 2 arguments dtype → .bfloat16, dim → 512 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+✔ Test "Packed codes and FP32 metadata survive complete stage/adopt/export without requantization" with 4 test cases passed after 2.189 seconds.
+◇ Test quantizedManifestBindsFormatBeforeAllocation() started.
+◇ Test case passing 2 arguments dtype → .float32, dim → 64 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+✔ Test quantizedManifestBindsFormatBeforeAllocation() passed after 1.345 seconds.
+◇ Test packedMetadataCannotBeRelabeledNative() started.
+✔ Test packedMetadataCannotBeRelabeledNative() passed after 0.265 seconds.
+✔ Suite "Paged complete checkpoint codec" passed after 9.242 seconds.
+◇ Test case passing 2 arguments dtype → .float32, dim → 256 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 2 arguments dtype → .float32, dim → 512 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+✔ Test packedStorageGatherAndNewestDecode(dtype:dim:) with 9 test cases passed after 10.889 seconds.
+◇ Test directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) started.
+◇ Test case passing 2 arguments tokens → 33, negativeLogits → false to directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) started.
+◇ Test case passing 2 arguments tokens → 33, negativeLogits → true to directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) started.
+◇ Test case passing 2 arguments tokens → 273, negativeLogits → false to directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) started.
+◇ Test case passing 2 arguments tokens → 273, negativeLogits → true to directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) started.
+✔ Test directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) with 4 test cases passed after 2.367 seconds.
+◇ Test constantOutlierRowsAndAsymmetricDiagnosticFormat() started.
+✔ Test constantOutlierRowsAndAsymmetricDiagnosticFormat() passed after 0.503 seconds.
+◇ Test packedVisionSpanMaskMatchesIndependentDenseAttention() started.
+✔ Test packedVisionSpanMaskMatchesIndependentDenseAttention() passed after 0.261 seconds.
+✔ Suite "Packed paged KV quantization" passed after 14.818 seconds.
+✘ Test run with 61 tests in 9 suites failed after 14.819 seconds with 1 issue.

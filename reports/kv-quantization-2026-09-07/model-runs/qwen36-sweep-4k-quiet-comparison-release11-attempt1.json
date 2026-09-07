@@ -1,0 +1,101 @@
+{
+  "scope": "paired local observations; no significance or SLA qualification",
+  "native_report": "reports/kv-quantization-2026-09-07/model-runs/qwen36-sweep-4k-native-quiet-release11-attempt1.json",
+  "candidate_report": "reports/kv-quantization-2026-09-07/model-runs/qwen36-sweep-4k-int4-quiet-release11-attempt1.json",
+  "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+  "candidate_format": {
+    "quantizationSelection": "int4",
+    "resolved": [
+      "paged [affine-v1-k4v4-g64-f32-h128-s1]"
+    ],
+    "selection": "paged"
+  },
+  "batches": [
+    {
+      "batch_size": 1,
+      "native": {
+        "samples": 2,
+        "overlap_aggregate_tokens_per_second": {
+          "mean": 95.67291681592395,
+          "minimum": 95.38438614337642,
+          "maximum": 95.96144748847149
+        },
+        "end_to_end_aggregate_tokens_per_second": {
+          "mean": 37.00018750500813,
+          "minimum": 36.91112054085008,
+          "maximum": 37.08925446916618
+        },
+        "peak_mlx_bytes": {
+          "mean": 24017836455,
+          "minimum": 24017828895,
+          "maximum": 24017844015
+        },
+        "maximum_ttft_ms": 2151.427708,
+        "maximum_inter_token_gap_ms": 11.450874999999996
+      },
+      "candidate": {
+        "samples": 2,
+        "overlap_aggregate_tokens_per_second": {
+          "mean": 76.03691585283119,
+          "minimum": 75.8459845862673,
+          "maximum": 76.22784711939507
+        },
+        "end_to_end_aggregate_tokens_per_second": {
+          "mean": 20.68156622687333,
+          "minimum": 20.55571458127382,
+          "maximum": 20.807417872472836
+        },
+        "peak_mlx_bytes": {
+          "mean": 24107071695,
+          "minimum": 24107064135,
+          "maximum": 24107079255
+        },
+        "maximum_ttft_ms": 4587.699584,
+        "maximum_inter_token_gap_ms": 13.732375000000502
+      }
+    },
+    {
+      "batch_size": 4,
+      "native": {
+        "samples": 2,
+        "overlap_aggregate_tokens_per_second": {
+          "mean": 224.13806559234973,
+          "minimum": 223.78250329101942,
+          "maximum": 224.49362789368
+        },
+        "end_to_end_aggregate_tokens_per_second": {
+          "mean": 43.59318840284127,
+          "minimum": 43.352302030867364,
+          "maximum": 43.83407477481518
+        },
+        "peak_mlx_bytes": {
+          "mean": 24017844015,
+          "minimum": 24017836455,
+          "maximum": 24017851575
+        },
+        "maximum_ttft_ms": 9725.996625,
+        "maximum_inter_token_gap_ms": 623.1398749999998
+      },
+      "candidate": {
+        "samples": 2,
+        "overlap_aggregate_tokens_per_second": {
+          "mean": 168.01244597105807,
+          "minimum": 167.7315478489349,
+          "maximum": 168.29334409318128
+        },
+        "end_to_end_aggregate_tokens_per_second": {
+          "mean": 24.193353923815028,
+          "minimum": 23.858601995275002,
+          "maximum": 24.528105852355054
+        },
+        "peak_mlx_bytes": {
+          "mean": 24107079255,
+          "minimum": 24107071695,
+          "maximum": 24107086815
+        },
+        "maximum_ttft_ms": 18749.206625,
+        "maximum_inter_token_gap_ms": 1158.1930420000008
+      }
+    }
+  ]
+}

@@ -220,7 +220,8 @@ enum CapacityQuoteEngine {
         slot: BackendSlotCapacity?
     ) -> TTFTQuantileTracker.Estimate {
         if let ttft = inputs.ttft { return ttft }
-        if let slot, slot.observedPrefillTps > 0 {
+        if let slot, slot.observedPrefillTps > 0,
+           KVPerformanceIdentity.observedRatesCompatible(slot: slot, declared: inputs.model) {
             let promptTokens = Double(max(
                 inputs.probe.promptTokensBucket,
                 CoordinatorMessage.CapacityProbe.promptBucketTokens))

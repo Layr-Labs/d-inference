@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-05 · commit `1a9c78d84`
+> Last updated: 2026-09-07 · commit `47da6bf26`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -232,12 +232,22 @@ fast prefill is dwarfed by the load. The setters are
 **TTFT estimate.** Separately from cost, each candidate carries an estimated
 time-to-first-token (`ttftMsFromSnapshot`): slot state penalty + prefill of
 tokens queued ahead + this request's prefill + one decode step
-(`1000 / effectiveTPS`), then multiplied by the per-(model, chip family)
+(`1000 / effectiveTPS`), then multiplied by the per-(model, execution identity, chip family)
 calibration ratio learned from settled requests
 (`ttftCalibration.appliedRatio`, `coordinator/registry/ttft_calibration.go`).
 `ttftOccupancyAlpha` (default `0.0`, `SetTTFTOccupancyAlpha`) optionally
 blends in occupancy. This estimate drives the `ttft_ceiling` gate, hedge
 timing and the `Retry-After` header; it is not a cost term.
+
+**Execution identity.** Packed KV storage and prefill policy have separate
+performance histories from native execution. Actual loaded-slot identity takes
+precedence over a model's declared future-load policy, including native field
+omission (`coordinator/registry/performance_execution.go`,
+`providerExecutionIdentityLocked`). Predictions capture this identity before
+later calibration. An unmeasured packed prefill is unknown; native rate seeds
+do not fill that gap, while known cold-load lower bounds and actual memory and
+deadline checks still apply. The complete wire, bootstrap and coordinator-first
+rollout rules are in [KV execution identity](../reference/paged-kv-quantization.md#execution-identity-and-performance-history).
 
 **Cache service cost.** After pricing, `applyCacheRoutingCost` compares the
 request's avoidable prefill work with the confirmed endpoint's restore cost.

@@ -1,0 +1,37 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+Test Suite 'Selected tests' started at 2026-09-07 05:39:34.770.
+Test Suite 'mlx-swift-lmPackageTests.xctest' started at 2026-09-07 05:39:34.771.
+Test Suite 'mlx-swift-lmPackageTests.xctest' passed at 2026-09-07 05:39:34.771.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-07 05:39:34.771.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "CBv2 paged physical admission" started.
+◇ Test physicalSlackTransfersToRequestsWithoutDiscountingAuxiliaryState() started.
+✔ Test physicalSlackTransfersToRequestsWithoutDiscountingAuxiliaryState() passed after 0.001 seconds.
+◇ Test shrinkDebtCanBeReusedButNotIncreasedOrCrossOffsetBetweenSlots() started.
+✔ Test shrinkDebtCanBeReusedButNotIncreasedOrCrossOffsetBetweenSlots() passed after 0.001 seconds.
+◇ Test detachedOldRequestCannotReleaseReusedIDOrItsPhysicalOffset() started.
+✔ Test detachedOldRequestCannotReleaseReusedIDOrItsPhysicalOffset() passed after 0.001 seconds.
+◇ Test deadlineSimulationMatchesFloorTransfersAndRetainsPhysicalAfterRelease() started.
+✔ Test deadlineSimulationMatchesFloorTransfersAndRetainsPhysicalAfterRelease() passed after 0.001 seconds.
+◇ Test coldFullPromiseSurvivesChunkingAndSpeculationButRollsBackInitialWork() started.
+✔ Test coldFullPromiseSurvivesChunkingAndSpeculationButRollsBackInitialWork() passed after 0.001 seconds.
+◇ Test adoptedAndColdRowsPrepayIdenticalTargetAndAuxiliaryCapacity() started.
+✔ Test adoptedAndColdRowsPrepayIdenticalTargetAndAuxiliaryCapacity() passed after 0.001 seconds.
+◇ Test qwenLedgerCapacityAcrossCoResidentDeviceEnvelopesHasNoEightGiBCap() started.
+✔ Test qwenLedgerCapacityAcrossCoResidentDeviceEnvelopesHasNoEightGiBCap() passed after 0.001 seconds.
+◇ Test prefillOnlyTerminalDropsLastNativeOwnerBeforeFloorRefund() started.
+✔ Test prefillOnlyTerminalDropsLastNativeOwnerBeforeFloorRefund() passed after 0.381 seconds.
+◇ Test deadlineProbePricesPoisonBeforeAnyNativeAllocation() started.
+✔ Test deadlineProbePricesPoisonBeforeAnyNativeAllocation() passed after 0.239 seconds.
+◇ Test nativeGrowthReservesPeakBeforeAllocationAndRefusesWithoutSideEffects() started.
+✔ Test nativeGrowthReservesPeakBeforeAllocationAndRefusesWithoutSideEffects() passed after 0.234 seconds.
+◇ Test failedPrivateGrowthDropsArraysBeforeFloorRefund(epochRace:) started.
+◇ Test case passing 1 argument epochRace → false to failedPrivateGrowthDropsArraysBeforeFloorRefund(epochRace:) started.
+◇ Test case passing 1 argument epochRace → true to failedPrivateGrowthDropsArraysBeforeFloorRefund(epochRace:) started.
+✔ Test failedPrivateGrowthDropsArraysBeforeFloorRefund(epochRace:) with 2 test cases passed after 0.504 seconds.
+✔ Suite "CBv2 paged physical admission" passed after 1.362 seconds.
+✔ Test run with 11 tests in 1 suite passed after 1.362 seconds.

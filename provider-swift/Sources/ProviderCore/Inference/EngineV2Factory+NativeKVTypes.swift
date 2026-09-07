@@ -3,10 +3,11 @@ import MLXLMCommon
 
 extension EngineV2Factory {
     /// The same full-row marginal rate as slot sizing, using the constructed
-    /// pool's exact native types. Borrowing rows own no bytes; window storage
+    /// pool's exact storage format (including quantization metadata). Borrowing rows own no bytes; window storage
     /// remains outside this marginal rate. Invalid arithmetic refuses capacity.
-    static func nativeFullKVBytesPerToken(
-        layerKinds: [CBv2LayerKind], dtypes: [DType]
+    static func fullKVBytesPerToken(
+        layerKinds: [CBv2LayerKind], dtypes: [DType],
+        quantization: PagedKVQuantizationConfig? = nil
     ) -> Int {
         guard layerKinds.count == dtypes.count else { return Int.max }
         var total = 0
@@ -14,17 +15,31 @@ extension EngineV2Factory {
             guard [.float16, .bfloat16, .float32].contains(dtype),
                 kind.kvHeads > 0, kind.headDim > 0 else { return Int.max }
             guard kind.sharesKVWithLayer == nil, case .full = kind.attention else { continue }
-            var bytes = 2
-            for factor in [kind.kvHeads, kind.headDim, dtype.size] {
-                let (value, overflow) = bytes.multipliedReportingOverflow(by: factor)
-                guard !overflow else { return Int.max }
-                bytes = value
+            let bytes: Int
+            if let quantization {
+                guard let quantized = try? quantization.bytesPerToken(
+                    kvHeads: kind.kvHeads, headDim: kind.headDim) else { return Int.max }
+                bytes = quantized
+            } else {
+                var nativeBytes = 2
+                for factor in [kind.kvHeads, kind.headDim, dtype.size] {
+                    let (value, overflow) = nativeBytes.multipliedReportingOverflow(by: factor)
+                    guard !overflow else { return Int.max }
+                    nativeBytes = value
+                }
+                bytes = nativeBytes
             }
             let (value, overflow) = total.addingReportingOverflow(bytes)
             guard !overflow else { return Int.max }
             total = value
         }
         return total
+    }
+
+    static func nativeFullKVBytesPerToken(
+        layerKinds: [CBv2LayerKind], dtypes: [DType]
+    ) -> Int {
+        fullKVBytesPerToken(layerKinds: layerKinds, dtypes: dtypes)
     }
 
     /// Observe the same loaded target and cache entry point used by serving.

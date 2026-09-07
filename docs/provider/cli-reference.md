@@ -1,12 +1,12 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-07 · commit `47da6bf26`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
 defaults, the environment variables it forwards to the daemon, and its runtime
 constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
-version `ProviderCore.version` = `0.8.16` in
+version `ProviderCore.version` = `0.9.0` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 
@@ -162,6 +162,10 @@ Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 |---|---|
 | Throughput | `--model <id>` (`String?`), `--prompt <text>` (`ModelBenchmark.defaultPrompt`), `--iterations <n>` (`ModelBenchmark.defaultIterations`), `--max-tokens <n>` (`ModelBenchmark.defaultMaxTokens`) |
 | Ordinary token scores | `--teacher-forced-input <json>` (`String?`, unset), explicit `--model <id>` and `--kv-backend contiguous\|paged` (`BenchmarkCommand.swift`, `teacherForcedOptionError`) |
+| KV generation observations | `--kv-quality-input <json>` (`String?`, unset), explicit `--model <id>` and backend (`BenchmarkCommand+KVQuality.swift`) |
+| KV format | `--kv-quantization native\|int4\|k8v4\|int8` (`"native"`); packed choices require paged execution (`BenchmarkCommand+KVQuantization.swift`) |
+| Packed prefill experiment | `--quantized-prefill direct\|opportunistic` (`String?`, unset resolves to `direct`); benchmark-only and requires a packed format plus explicit paged execution (`BenchmarkCommand+QuantizedPrefill.swift`) |
+| Exact local artifact | `--model-directory <path>` requires explicit model and a matching aggregate hash; supported by teacher-forced, KV quality, sweep, scheduler-prefill and arrival-invariance modes (`BenchmarkCommand+ModelDirectory.swift`) |
 | Scheduler prefill decision | `--scheduler-prefill-decision`, `--expected-model-aggregate-sha256`, `--expected-registered-binary-sha256`, `--expected-version`, `--source-sha`, `--decision-iterations` (`SchedulerPrefillDecisionReport.minimumLiveIterations`), `--output <path>` (`BenchmarkCommand+SchedulerPrefillDecision.swift`) |
 | Sweep | `--sweep`, `--prefill-lengths` (`"128,512,2048"`), `--max-batch` (`6`), `--batch-sizes` (`String?`), `--decode-tokens`, `--decode-prompt-tokens`, `--decode-iterations` (`ThroughputSweep` defaults), `--kv-backend` (`"auto"`) (`BenchmarkCommand+Sweep.swift`) |
 | Scheduler prefill | `--scheduler-prefill`, `--prefill-iterations` (`2`) |
@@ -524,6 +528,72 @@ or speculative verification
 (`provider-swift/Sources/ProviderBenchmark/TeacherForcedBenchmark.swift`).
 See the [developer test procedure](../developer/test.md#ordinary-teacher-forced-score-diagnostics).
 
+### KV generation observations and exact artifacts
+
+`--kv-quality-input <json>` runs natural greedy generation with MTP and prefix
+caching disabled. It records the exact tokens, streamed text, finish reason,
+actual KV format and artifact/runtime hashes. The input contract is declared in
+`provider-swift/Sources/ProviderBenchmark/KVQualityInput.swift`:
+
+| Field | Contract |
+|---|---|
+| `modelID` | Exact selected model ID |
+| `expectedModelAggregateSHA256` | 64 lowercase hexadecimal characters |
+| `concurrency` | Optional `1`, `2`, or `4`; defaults to `1` |
+| `cases` | 1–16 cases with unique nonempty `name` values |
+| `cases[].promptTokens` | 1–32,768 exact token IDs, including the caller's template |
+| `cases[].maxTokens` | Generation ceiling of 1–512 tokens; normal EOS may end earlier |
+| `cases[].expectedText` | Optional; exact and outer-whitespace-only comparisons use production streamed text; omitted expectations are ungraded |
+
+The file limit is 8 MiB; unknown fields are rejected. A 300-second case limit or
+an engine/stream failure produces an inconclusive observation. Generated code
+is recorded without execution. These authored observations do not certify
+general quality (`KVQualityBenchmark.swift`, `KVQualityCollection.swift`).
+
+Reports additionally expose `servingContent` and `servingExpectedExactMatch` /
+`servingExpectedOuterWhitespaceMatch`, using the same model-type selection and
+streaming reasoning parser as production. This separates Harmony or Gemma
+reasoning from the final answer while retaining raw text and raw grades. An
+analysis-only output has no serving answer (`BenchmarkServingContent.swift`).
+
+`--model-directory` selects an exact local artifact without changing the model
+scanner or the user cache. Teacher-forced and KV-quality modes take the expected
+hash from their input JSON; the other supported modes require
+`--expected-model-aggregate-sha256`. Hashes are checked before and after
+measurement, and results are published only after the final check
+(`BenchmarkArtifactIdentity.swift`, `BenchmarkCommand+ModelDirectory.swift`).
+
+Packed `--sweep` measurements omit the raw native-model prefill microbenchmark;
+use `--scheduler-prefill` to measure the selected packed backend. See the
+[format and accounting reference](../reference/paged-kv-quantization.md).
+
+For decode sweeps, `decodeTiming.overlapAggregateTokensPerSecond` measures the
+common all-row decode interval and `decodeTiming.endToEndTokensPerSecond`
+includes prompt processing and completion. The legacy `aggregateTokensPerSecond`
+can include other rows' prefill and batch drain; it is not an isolated steady
+decode rate (`provider-swift/Sources/ProviderBenchmark/ThroughputSweepDecodeTiming.swift`,
+`DecodeTiming`; `ThroughputSweepReport.swift`, `DecodeSample`). Check
+`decodeCoverage` and `overlapMeetsMinimumSupport` before comparing cells.
+
+`--quantized-prefill direct|opportunistic` is accepted only with `--sweep`,
+`--scheduler-prefill` or `--kv-quality-input`, and requires explicit
+`--kv-backend paged` plus `--kv-quantization int4`, `k8v4` or `int8`.
+It is rejected for teacher-forced scoring, arrival invariance, parity and
+scheduler-prefill decision reports. It is not a `start` flag, environment
+variable or `provider.toml` setting; production prefill remains `direct`
+(`provider-swift/Sources/darkbloom/BenchmarkCommand+QuantizedPrefill.swift`,
+`quantizedPrefillOptionError`).
+
+The `opportunistic` spelling selects native policy `opportunisticSDPA`.
+Eligible calls reserve additional memory before writing KV and fall back to
+direct attention if that reservation fails. Selecting the option therefore
+does not prove the fused route ran. Packed reports include a `quantizedPrefill`
+receipt with graph-built route/token counts, fallback counts, accepted extra
+reservation bytes and a separate terminal-control result. Successful controls
+require `currentAdditionalWorkspaceBytes == 0` after the measured engine's
+shutdown (`provider-swift/Sources/ProviderBenchmark/BenchmarkQuantizedPrefillReceipt.swift`,
+`BenchmarkQuantizedPrefillReceipt.make`); see the [receipt fields](../reference/paged-kv-quantization.md#prefill-receipts).
+
 ## `darkbloom update`
 
 Check for and apply provider updates.
@@ -757,6 +827,7 @@ override `provider.toml` for one process, are in
 | `[backend] max_model_slots` | `3` | Resident models |
 | `[backend] engine_v2_max_concurrent` | `4` (clamped to `[1, 8]`) | Concurrent requests per engine |
 | `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Candidate `auto` tries paged only for the [exact five-artifact allowlist](../architecture/prefix-cache.md#kv-layouts), with contiguous fallback; all other IDs remain contiguous (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
+| `[backend] engine_v2_kv_quantization` | `"native"` | Optional `native` / `int4` / `k8v4` / `int8`; exact `engine_v2_kv_quantization_by_model` entries take precedence. Packed selections require the paged backend and refuse native fallback (`EngineV2KVQuantizationPolicy`); see [physical format and admission](../reference/paged-kv-quantization.md) |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
 | `[backend] startup_preload` | `true` | Load advertised models at start |
 | `[coordinator] url` | `"wss://api.darkbloom.dev/ws/provider"` | |

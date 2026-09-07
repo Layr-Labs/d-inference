@@ -1,0 +1,11 @@
+<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2026-09-07
+
+Reasoning: low
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|><|start|>developer<|message|># Instructions
+
+Follow the user's output format exactly. Do not include an explanation unless requested.
+
+<|end|><|start|>user<|message|>Write a Python function stable_unique(values) returning a list with duplicate hashable items removed while preserving first occurrence order. Do not mutate the input. Return only Python source without Markdown. Include no example calls.<|end|><|start|>assistant

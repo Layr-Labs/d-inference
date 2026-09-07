@@ -1,0 +1,100 @@
+{
+  "artifactIdentity" : {
+    "afterModelAggregateSHA256" : "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+    "beforeModelAggregateSHA256" : "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+    "expectedModelAggregateSHA256" : "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+    "modelDirectory" : "\/Users\/gaj\/Documents\/Builds\/d-inference-kv-quant\/reports\/kv-quantization-2026-09-07\/models\/qwen36",
+    "modelID" : "qwen3.6-35b-a3b-vl-mtp-mxfp8"
+  },
+  "gemmaOptimizations" : {
+    "environment" : {
+      "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL" : "18",
+      "MLX_GATHER_QMM_EXPERT_SLICES" : "trust",
+      "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT" : "1"
+    },
+    "prefillLayer18" : true,
+    "weightedR1" : true
+  },
+  "iterations" : 2,
+  "kvBackend" : {
+    "quantizationSelection" : "native",
+    "resolved" : [
+      "paged"
+    ],
+    "selection" : "paged"
+  },
+  "modelID" : "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+  "modelPath" : "\/Users\/gaj\/Documents\/Builds\/d-inference-kv-quant\/reports\/kv-quantization-2026-09-07\/models\/qwen36",
+  "promptLengths" : [
+    512,
+    4096,
+    16384
+  ],
+  "samples" : [
+    {
+      "activeMemoryBytes" : 20916656661,
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.61227796868884543,
+      "peakMemoryBytes" : 21698061661,
+      "promptTokens" : 512,
+      "resolvedKVBackend" : "paged",
+      "strategy" : "cbv2",
+      "ttftMs" : 312.87404200000003
+    },
+    {
+      "activeMemoryBytes" : 20935636893,
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.61611676320939335,
+      "peakMemoryBytes" : 21698069221,
+      "promptTokens" : 512,
+      "resolvedKVBackend" : "paged",
+      "strategy" : "cbv2",
+      "ttftMs" : 314.835666
+    },
+    {
+      "activeMemoryBytes" : 21225126205,
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.52221737875457874,
+      "peakMemoryBytes" : 24015179719,
+      "promptTokens" : 4096,
+      "resolvedKVBackend" : "paged",
+      "strategy" : "cbv2",
+      "ttftMs" : 2138.4801659999998
+    },
+    {
+      "activeMemoryBytes" : 21153732293,
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.52368958095238094,
+      "peakMemoryBytes" : 24015187279,
+      "promptTokens" : 4096,
+      "resolvedKVBackend" : "paged",
+      "strategy" : "cbv2",
+      "ttftMs" : 2144.5088339999998
+    },
+    {
+      "activeMemoryBytes" : 21189575629,
+      "iteration" : 1,
+      "msPerPrefillToken" : 0.62355419489714947,
+      "peakMemoryBytes" : 24583686437,
+      "promptTokens" : 16384,
+      "resolvedKVBackend" : "paged",
+      "strategy" : "cbv2",
+      "ttftMs" : 10215.688375
+    },
+    {
+      "activeMemoryBytes" : 21544493397,
+      "iteration" : 2,
+      "msPerPrefillToken" : 0.63341849020325947,
+      "peakMemoryBytes" : 24583693997,
+      "promptTokens" : 16384,
+      "resolvedKVBackend" : "paged",
+      "strategy" : "cbv2",
+      "ttftMs" : 10377.295125000001
+    }
+  ],
+  "schemaVersion" : 4,
+  "soloPrefillStripeTokens" : 2048,
+  "strategies" : [
+    "cbv2"
+  ]
+}

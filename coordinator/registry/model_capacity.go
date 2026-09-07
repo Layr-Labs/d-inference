@@ -25,17 +25,17 @@ type ModelCapacity struct {
 // providerCapSnap is a per-provider snapshot collected under the registry
 // lock, then aggregated into ModelCapacity outside the lock.
 type providerCapSnap struct {
-	model                 string
-	warm                  bool
-	running               bool
-	hasHeadroom           bool // pending < maxConcurrency
-	effectiveTPS          float64
-	prefillTPS            float64
-	activeRequests        int // numRunning + numWaiting from backend slot, or pendingCount
-	backlogTokens         float64
-	activeTokenBudgetMax  int64
-	activeTokenBudgetUsed int64
-	queuedTokenBudget     int64
+	executionIdentity          string
+	model                      string
+	warm                       bool
+	running                    bool
+	hasHeadroom                bool // pending < maxConcurrency
+	effectiveTPS               float64
+	prefillTPS                 float64
+	activeRequests             int // numRunning + numWaiting from backend slot, or pendingCount
+	backlogTokens              float64
+	activeTokenBudgetMax       int64
+	activeTokenBudgetRemaining int64
 	// tokenBudgetKnownZero distinguishes an Engine V2 model whose positive KV
 	// rate makes max==0 authoritative from a legacy model that omitted both.
 	tokenBudgetKnownZero bool
@@ -113,9 +113,11 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			// total across all models. Using the total inflates
 			// activeRequests for multi-model providers.
 			modelPending := 0
+			modelPendingTokens := 0
 			for _, pr := range p.pendingReqs {
 				if pr.Model == m.ID {
 					modelPending++
+					modelPendingTokens += pendingTokenBudget(pr)
 				}
 			}
 
@@ -135,12 +137,16 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			)
 
 			snap := providerCapSnap{
+				executionIdentity:     providerExecutionIdentityLocked(p, m.ID),
 				model:                 m.ID,
 				hasHeadroom:           hasHeadroom,
 				effectiveTPS:          decodeTPS,
 				prefillTPS:            prefillTPS,
 				activeRequests:        modelPending,
 				pooledBudgetRemaining: pooledRemaining,
+			}
+			if providerExecutionIdentityLocked(p, m.ID) != "" {
+				snap.effectiveTPS, snap.prefillTPS = 0, 0
 			}
 
 			// Check backend capacity for this model's slot.
@@ -155,18 +161,26 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 					if slotActive > snap.activeRequests {
 						snap.activeRequests = slotActive
 					}
-					if slot.ObservedDecodeTPS > 0 {
+					if slot.ObservedDecodeTPS > 0 && executionSlotRatesCompatible(snap.executionIdentity, slot.State) {
 						snap.effectiveTPS = slot.ObservedDecodeTPS
 					}
 					// Prefer the measured per-slot prefill EWMA over the ×12
 					// fallback for the capacity TTFT estimate, mirroring the
 					// routing path (resolvePrefillTPS). 0 = unreported.
-					if slot.ObservedPrefillTPS > 0 {
+					if slot.ObservedPrefillTPS > 0 && executionSlotRatesCompatible(snap.executionIdentity, slot.State) {
 						snap.prefillTPS = slot.ObservedPrefillTPS
 					}
 					snap.activeTokenBudgetMax = slot.ActiveTokenBudgetMax
-					snap.activeTokenBudgetUsed = slot.ActiveTokenBudgetUsed
-					snap.queuedTokenBudget = slot.QueuedTokenBudget
+					// The pooled check alone can hide this slot's exhausted
+					// private grant behind an idle co-resident's headroom. Use
+					// the same pending debit as freeMemoryAdmits before pooling.
+					snap.activeTokenBudgetRemaining = remainingSlotTokenBudget(&routingSnapshot{
+						activeTokenBudgetMax:  slot.ActiveTokenBudgetMax,
+						activeTokenBudgetUsed: slot.ActiveTokenBudgetUsed,
+						queuedTokenBudget:     slot.QueuedTokenBudget,
+						maxTokensPotential:    slot.MaxTokensPotential,
+						pendingMaxTokens:      modelPendingTokens,
+					})
 					snap.tokenBudgetKnownZero = knownZeroTokenBudget(slot.ActiveTokenBudgetMax, slot.KVBytesPerToken)
 					snap.backlogTokens = float64(slot.MaxTokensPotential)
 					break
@@ -214,10 +228,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		a.activeRequests += s.activeRequests
 		a.aggregateTPS += s.effectiveTPS
 		if s.activeTokenBudgetMax > 0 {
-			headroom := s.activeTokenBudgetMax - s.activeTokenBudgetUsed - s.queuedTokenBudget
-			if headroom < 0 {
-				headroom = 0
-			}
+			headroom := s.activeTokenBudgetRemaining
 			// Per-slot headroom cannot exceed the provider's pooled remaining
 			// after all-model pending charges. Without the clamp this surface can
 			// advertise capacity pooledBudgetAdmits rejects.
@@ -234,7 +245,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		// box, cold ones included: the admission gate charges those against the
 		// whole-box pool too (freeMemoryAdmits' cold-slot pooled gate).
 		hasBudgetHeadroom := !s.tokenBudgetKnownZero && (s.activeTokenBudgetMax <= 0 ||
-			s.activeTokenBudgetUsed+s.queuedTokenBudget < s.activeTokenBudgetMax) &&
+			s.activeTokenBudgetRemaining > 0) &&
 			s.pooledBudgetRemaining != 0
 		if s.hasHeadroom && hasBudgetHeadroom {
 			a.routable++
@@ -242,6 +253,9 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		}
 
 		// Estimate TTFT for this provider: prefill 500 tokens + backlog drain.
+		if s.executionIdentity != "" && s.prefillTPS <= 0 {
+			continue
+		} // unknown, not a zero-latency forecast
 		const defaultPromptTokens = 500
 		ttftMs := int64(0)
 		if s.prefillTPS > 0 {

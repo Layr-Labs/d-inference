@@ -104,15 +104,17 @@ func ttftCalibrationEnabled() bool {
 }
 
 type ttftCalibrationKey struct {
-	model string
-	chip  string // "" = model-level aggregate
+	model     string
+	chip      string // "" = model-level aggregate
+	execution string
 }
 
 type ttftPendingPrediction struct {
-	model string
-	chip  string
-	rawMs float64
-	at    time.Time
+	model     string
+	chip      string
+	execution string
+	rawMs     float64
+	at        time.Time
 }
 
 // ttftRatioWindow is a fixed-size ring of actual/predicted ratio samples with a
@@ -194,7 +196,11 @@ func ttftPendingKey(requestID string, attempt int) ttftPendingID {
 
 // notePrediction records the RAW (pre-calibration) warm-slot TTFT estimate for
 // a reserved attempt so a later first-content observation can be joined to it.
-func (c *ttftCalibrator) notePrediction(requestID string, attempt int, model, chip string, rawMs float64) {
+func (c *ttftCalibrator) notePrediction(requestID string, attempt int, model, chip string, rawMs float64, executionIdentity ...string) {
+	execution := optionalExecutionIdentity(executionIdentity)
+	if execution == invalidExecutionIdentity {
+		return
+	}
 	if requestID == "" || model == "" || rawMs <= 0 || math.IsNaN(rawMs) || math.IsInf(rawMs, 0) {
 		return
 	}
@@ -220,10 +226,11 @@ func (c *ttftCalibrator) notePrediction(requestID string, attempt int, model, ch
 		c.evictOneLocked(now)
 	}
 	c.pending[ttftPendingKey(requestID, attempt)] = ttftPendingPrediction{
-		model: model,
-		chip:  chip,
-		rawMs: rawMs,
-		at:    now,
+		model:     model,
+		chip:      chip,
+		execution: execution,
+		rawMs:     rawMs,
+		at:        now,
 	}
 }
 
@@ -305,15 +312,15 @@ func (c *ttftCalibrator) recordActual(requestID string, attempt int, actualMs fl
 	if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio <= 0 {
 		return 0, false
 	}
-	c.windowLocked(pred.model, "").add(ratio)
+	c.windowLocked(pred.model, "", pred.execution).add(ratio)
 	if pred.chip != "" {
-		c.windowLocked(pred.model, pred.chip).add(ratio)
+		c.windowLocked(pred.model, pred.chip, pred.execution).add(ratio)
 	}
-	return c.learnedRatioLocked(pred.model, pred.chip), true
+	return c.learnedRatioLocked(pred.model, pred.chip, pred.execution), true
 }
 
-func (c *ttftCalibrator) windowLocked(model, chip string) *ttftRatioWindow {
-	key := ttftCalibrationKey{model: model, chip: chip}
+func (c *ttftCalibrator) windowLocked(model, chip string, executionIdentity ...string) *ttftRatioWindow {
+	key := ttftCalibrationKey{model: model, chip: chip, execution: optionalExecutionIdentity(executionIdentity)}
 	w := c.windows[key]
 	if w == nil {
 		w = &ttftRatioWindow{}
@@ -325,13 +332,14 @@ func (c *ttftCalibrator) windowLocked(model, chip string) *ttftRatioWindow {
 // learnedRatioLocked is the clamped median for (model, chip) with hierarchical
 // fallback: the chip-keyed window once it clears warm-up, else the model-level
 // window once it clears warm-up, else 1.0. Caller holds c.mu (read or write).
-func (c *ttftCalibrator) learnedRatioLocked(model, chip string) float64 {
+func (c *ttftCalibrator) learnedRatioLocked(model, chip string, executionIdentity ...string) float64 {
+	execution := optionalExecutionIdentity(executionIdentity)
 	if chip != "" {
-		if w := c.windows[ttftCalibrationKey{model: model, chip: chip}]; w != nil && w.total >= ttftCalibrationWarmupObs {
+		if w := c.windows[ttftCalibrationKey{model: model, chip: chip, execution: execution}]; w != nil && w.total >= ttftCalibrationWarmupObs {
 			return clampTTFTCalibrationRatio(w.median)
 		}
 	}
-	if w := c.windows[ttftCalibrationKey{model: model}]; w != nil && w.total >= ttftCalibrationWarmupObs {
+	if w := c.windows[ttftCalibrationKey{model: model, execution: execution}]; w != nil && w.total >= ttftCalibrationWarmupObs {
 		return clampTTFTCalibrationRatio(w.median)
 	}
 	return 1.0
@@ -339,13 +347,13 @@ func (c *ttftCalibrator) learnedRatioLocked(model, chip string) float64 {
 
 // appliedRatio is the ratio the live estimate is scaled by: the learned ratio,
 // or 1.0 when the kill switch is off.
-func (c *ttftCalibrator) appliedRatio(model, chip string) float64 {
+func (c *ttftCalibrator) appliedRatio(model, chip string, executionIdentity ...string) float64 {
 	if !ttftCalibrationEnabled() {
 		return 1.0
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.learnedRatioLocked(model, chip)
+	return c.learnedRatioLocked(model, chip, executionIdentity...)
 }
 
 func (c *ttftCalibrator) reset() {
@@ -362,7 +370,7 @@ func (c *ttftCalibrator) reset() {
 // ratio measures, and scaling it would collapse the deliberate cold-route bias
 // (e.g. 30s × 0.33 ≈ 10s would let a cold box pass gates it should not).
 func calibratedTTFTMs(snap *routingSnapshot, rawMs float64) float64 {
-	return calibratedTTFTMsWithRatio(snap, rawMs, ttftCalibration.appliedRatio(snap.model, snap.chipFamily))
+	return calibratedTTFTMsWithRatio(snap, rawMs, ttftCalibration.appliedRatio(snap.model, snap.chipFamily, snap.executionIdentity))
 }
 
 // calibratedTTFTMsWithRatio is calibratedTTFTMs with the ratio already read,
@@ -394,10 +402,10 @@ func RecordTTFTObservation(requestID string, attempt int, actualMs float64) (flo
 // TTFTCalibrationRatio returns the learned ratio the calibrator would apply
 // for (model, chip): clamped median with chip→model→1.0 fallback, independent
 // of the kill switch. Exposed for ops introspection and tests.
-func TTFTCalibrationRatio(model, chip string) float64 {
+func TTFTCalibrationRatio(model, chip string, executionIdentity ...string) float64 {
 	ttftCalibration.mu.RLock()
 	defer ttftCalibration.mu.RUnlock()
-	return ttftCalibration.learnedRatioLocked(model, chip)
+	return ttftCalibration.learnedRatioLocked(model, chip, executionIdentity...)
 }
 
 // ResetTTFTCalibration clears all calibration state. Test hook.

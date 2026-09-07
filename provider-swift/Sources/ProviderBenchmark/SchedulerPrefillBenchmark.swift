@@ -30,6 +30,9 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
         /// L=28k, and a TTFT curve averaged across that describes neither
         /// backend.
         public let resolvedKVBackend: String
+        /// Nil for native/historical samples; graph-built decisions from this
+        /// measured engine only, excluding separate warmup engines.
+        public var quantizedPrefill: BenchmarkQuantizedPrefillReceipt? = nil
     }
 
     public let schemaVersion: Int
@@ -86,8 +89,11 @@ public enum SchedulerPrefillBenchmark {
         promptLengths: [Int],
         iterations: Int,
         kvBackend: EngineV2KVBackendSelection = .auto,
+        kvQuantization: EngineV2KVQuantizationSelection = .native,
+        quantizedPrefillMode: PagedQuantizedPrefillMode = .direct,
         gemmaOptimizations: GemmaOptimizationSettings
     ) async throws -> SchedulerPrefillBenchmarkReport {
+        try BenchmarkQuantizedPrefillReceipt.validateSelection(quantization: kvQuantization, mode: quantizedPrefillMode)
         let lengths = promptLengths.filter { $0 > 1 }.sorted()
         let iterations = max(1, iterations)
         Memory.peakMemory = 0
@@ -148,7 +154,8 @@ public enum SchedulerPrefillBenchmark {
             weightBytes: facts.weightBytes,
             isVLM: isVLM,
             modelDirectory: modelDirectory,
-            kvBackend: kvBackend
+            kvBackend: kvBackend, kvQuantization: kvQuantization,
+            quantizedPrefillMode: quantizedPrefillMode
         )
 
         var samples: [SchedulerPrefillBenchmarkReport.Sample] = []
@@ -160,7 +167,8 @@ public enum SchedulerPrefillBenchmark {
             _ = try await measureOne(
                 container: container, modelID: modelID, baseTokens: baseTokens,
                 promptTokens: length, iteration: 0, weightBytes: facts.weightBytes,
-                isVLM: isVLM, modelDirectory: modelDirectory, kvBackend: kvBackend)
+                isVLM: isVLM, modelDirectory: modelDirectory, kvBackend: kvBackend, kvQuantization: kvQuantization,
+                quantizedPrefillMode: quantizedPrefillMode)
         }
         for length in lengths {
             for iteration in 1 ... iterations {
@@ -173,7 +181,8 @@ public enum SchedulerPrefillBenchmark {
                     weightBytes: facts.weightBytes,
                     isVLM: isVLM,
                     modelDirectory: modelDirectory,
-                    kvBackend: kvBackend
+                    kvBackend: kvBackend, kvQuantization: kvQuantization,
+                    quantizedPrefillMode: quantizedPrefillMode
                 )
                 if !resolved.contains(sample.resolvedKVBackend) {
                     resolved.append(sample.resolvedKVBackend)
@@ -194,7 +203,7 @@ public enum SchedulerPrefillBenchmark {
             gemmaOptimizations: BenchmarkGemmaOptimizations(
                 settings: gemmaOptimizations),
             kvBackend: BenchmarkKVBackend(
-                selection: kvBackend.rawValue, resolved: resolved),
+                selection: kvBackend.rawValue, quantizationSelection: kvQuantization.rawValue, resolved: resolved),
             soloPrefillStripeTokens: effectiveSoloPrefillStripeTokens,
             samples: samples
         )
@@ -209,7 +218,9 @@ public enum SchedulerPrefillBenchmark {
         weightBytes: Int,
         isVLM: Bool,
         modelDirectory: URL,
-        kvBackend: EngineV2KVBackendSelection
+        kvBackend: EngineV2KVBackendSelection,
+        kvQuantization: EngineV2KVQuantizationSelection = .native,
+        quantizedPrefillMode: PagedQuantizedPrefillMode = .direct
     ) async throws -> SchedulerPrefillBenchmarkReport.Sample {
         // Same KV-ceiling derivation as a single-model serving slot; far
         // above what one row needs, so admission never binds.
@@ -238,7 +249,8 @@ public enum SchedulerPrefillBenchmark {
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: 1,
                 kvBudget: BenchmarkMemoryBudget.shared,
-                kvBackend: kvBackend)
+                kvBackend: kvBackend, kvQuantization: kvQuantization,
+                quantizedPrefillMode: quantizedPrefillMode)
             return EngineParts(
                 engine: build.engine,
                 resolvedBackend: build.resolvedKVBackendDescriptor)
@@ -285,6 +297,9 @@ public enum SchedulerPrefillBenchmark {
         let ttftMs = ThroughputSweep.seconds(elapsed) * 1000.0
         let prefillTokens = max(1, promptTokens - 1)
         await stopAndReclaim(engine)
+        let quantizedPrefill = try BenchmarkQuantizedPrefillReceipt.capture(
+            engine: engine, quantization: kvQuantization, mode: quantizedPrefillMode,
+            successfulTerminalControls: true)
         return SchedulerPrefillBenchmarkReport.Sample(
             strategy: strategyLabel,
             promptTokens: promptTokens,
@@ -293,7 +308,8 @@ public enum SchedulerPrefillBenchmark {
             peakMemoryBytes: peakMemoryBytes,
             activeMemoryBytes: activeMemoryBytes,
             msPerPrefillToken: ttftMs / Double(prefillTokens),
-            resolvedKVBackend: parts.resolvedBackend
+            resolvedKVBackend: parts.resolvedBackend,
+            quantizedPrefill: quantizedPrefill
         )
     }
 

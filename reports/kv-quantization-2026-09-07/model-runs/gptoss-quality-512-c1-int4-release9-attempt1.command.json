@@ -1,0 +1,16 @@
+[
+  "/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/.build/arm64-apple-macosx/release/darkbloom",
+  "benchmark",
+  "--config",
+  "/Users/gaj/Documents/Builds/d-inference-kv-quant/reports/kv-quantization-2026-09-07/benchmark.toml",
+  "--model",
+  "gpt-oss-20b",
+  "--model-directory",
+  "/Users/gaj/Documents/Builds/d-inference-kv-quant/reports/kv-quantization-2026-09-07/models/gptoss",
+  "--kv-backend",
+  "paged",
+  "--kv-quantization",
+  "int4",
+  "--kv-quality-input",
+  "/Users/gaj/Documents/Builds/d-inference-kv-quant/reports/kv-quantization-2026-09-07/inputs/gptoss/quality-512/quality-c1.json"
+]

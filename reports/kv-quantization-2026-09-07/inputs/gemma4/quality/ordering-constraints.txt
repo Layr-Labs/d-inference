@@ -1,0 +1,7 @@
+<bos><|turn>system
+Follow the user's output format exactly. Do not include an explanation unless requested.<turn|>
+<|turn>user
+Four jobs are amber, birch, cobalt, and dahlia. Dahlia is last. Birch is immediately after amber. Cobalt is after birch. List the unique order using lowercase names separated by commas with no spaces.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>

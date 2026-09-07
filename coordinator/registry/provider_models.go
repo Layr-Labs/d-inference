@@ -88,6 +88,7 @@ func (r *Registry) mergeProviderModels(
 	present := make(map[string]struct{}, len(models))
 	cacheStateInvalidated := make(map[string]struct{})
 	for _, m := range models {
+		m.ExecutionIdentity = normalizeExecutionIdentity(m.ExecutionIdentity)
 		if m.ID == "" {
 			continue
 		}

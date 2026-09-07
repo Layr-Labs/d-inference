@@ -92,6 +92,9 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     public var sizeBytes: UInt64
     public var estimatedMemoryGb: Double
     public var weightHash: String?
+    /// Declared policy for cold-model performance estimates; a loaded slot
+    /// reports actual execution. Omitted for native/legacy KV.
+    public var executionIdentity: String?
     /// True when this build can serve image/video (VLM) input. Encoded only when
     /// true (matches the coordinator's `is_vision,omitempty`), so pre-0.6.0
     /// providers and text-only builds omit it and are never routed media requests.
@@ -117,6 +120,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         case sizeBytes = "size_bytes"
         case estimatedMemoryGb = "estimated_memory_gb"
         case weightHash = "weight_hash"
+        case executionIdentity = "execution_identity"
         case isVision = "is_vision"
         case templateRenderOK = "template_render_ok"
         case toolConstraintTemplateHash = "tool_constraint_template_hash"
@@ -132,7 +136,8 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         weightHash: String? = nil,
         isVision: Bool? = nil,
         templateRenderOK: Bool? = nil,
-        toolConstraintTemplateHash: String? = nil
+        toolConstraintTemplateHash: String? = nil,
+        executionIdentity: String? = nil
     ) {
         self.id = id
         self.modelType = modelType
@@ -141,9 +146,26 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         self.sizeBytes = sizeBytes
         self.estimatedMemoryGb = estimatedMemoryGb
         self.weightHash = weightHash
+        self.executionIdentity = KVPerformanceIdentity.normalized(executionIdentity)
         self.isVision = isVision
         self.templateRenderOK = templateRenderOK
         self.toolConstraintTemplateHash = toolConstraintTemplateHash
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        modelType = try container.decodeIfPresent(String.self, forKey: .modelType)
+        parameters = try container.decodeIfPresent(UInt64.self, forKey: .parameters)
+        quantization = try container.decodeIfPresent(String.self, forKey: .quantization)
+        sizeBytes = try container.decode(UInt64.self, forKey: .sizeBytes)
+        estimatedMemoryGb = try container.decode(Double.self, forKey: .estimatedMemoryGb)
+        weightHash = try container.decodeIfPresent(String.self, forKey: .weightHash)
+        executionIdentity = KVPerformanceIdentity.normalized(
+            try container.decodeIfPresent(String.self, forKey: .executionIdentity))
+        isVision = try container.decodeIfPresent(Bool.self, forKey: .isVision)
+        templateRenderOK = try container.decodeIfPresent(Bool.self, forKey: .templateRenderOK)
+        toolConstraintTemplateHash = try container.decodeIfPresent(String.self, forKey: .toolConstraintTemplateHash)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -155,6 +177,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         try container.encode(sizeBytes, forKey: .sizeBytes)
         try container.encode(estimatedMemoryGb, forKey: .estimatedMemoryGb)
         try container.encodeIfPresent(weightHash, forKey: .weightHash)
+        try container.encodeIfPresent(KVPerformanceIdentity.normalized(executionIdentity), forKey: .executionIdentity)
         // Encode only when true so text-only builds stay byte-compatible on the wire.
         if isVision == true {
             try container.encode(true, forKey: .isVision)
@@ -490,6 +513,9 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public var maxTokensPotential: Int64
     public var observedDecodeTps: Double
     public var observedPrefillTps: Double
+    /// Actual loaded execution identity for performance histories. Independent
+    /// of weight precision; native/legacy providers omit this field.
+    public var executionIdentity: String?
     public var activeTokenBudgetUsed: Int64
     public var activeTokenBudgetMax: Int64
     public var queuedTokenBudget: Int64
@@ -598,6 +624,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case maxTokensPotential = "max_tokens_potential"
         case observedDecodeTps = "observed_decode_tps"
         case observedPrefillTps = "observed_prefill_tps"
+        case executionIdentity = "execution_identity"
         case activeTokenBudgetUsed = "active_token_budget_used"
         case activeTokenBudgetMax = "active_token_budget_max"
         case queuedTokenBudget = "queued_token_budget"
@@ -629,6 +656,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         maxConcurrency: UInt32 = 0,
         observedDecodeTps: Double = 0,
         observedPrefillTps: Double = 0,
+        executionIdentity: String? = nil,
         activeTokenBudgetUsed: Int64 = 0,
         activeTokenBudgetMax: Int64 = 0,
         queuedTokenBudget: Int64 = 0,
@@ -657,6 +685,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.maxConcurrency = maxConcurrency
         self.observedDecodeTps = observedDecodeTps
         self.observedPrefillTps = observedPrefillTps
+        self.executionIdentity = KVPerformanceIdentity.normalized(executionIdentity)
         self.activeTokenBudgetUsed = activeTokenBudgetUsed
         self.activeTokenBudgetMax = activeTokenBudgetMax
         self.queuedTokenBudget = queuedTokenBudget
@@ -688,6 +717,8 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         maxConcurrency = try container.decodeIfPresent(UInt32.self, forKey: .maxConcurrency) ?? 0
         observedDecodeTps = try container.decodeIfPresent(Double.self, forKey: .observedDecodeTps) ?? 0
         observedPrefillTps = try container.decodeIfPresent(Double.self, forKey: .observedPrefillTps) ?? 0
+        executionIdentity = KVPerformanceIdentity.normalized(
+            try container.decodeIfPresent(String.self, forKey: .executionIdentity))
         activeTokenBudgetUsed = try container.decodeIfPresent(Int64.self, forKey: .activeTokenBudgetUsed) ?? 0
         activeTokenBudgetMax = try container.decodeIfPresent(Int64.self, forKey: .activeTokenBudgetMax) ?? 0
         queuedTokenBudget = try container.decodeIfPresent(Int64.self, forKey: .queuedTokenBudget) ?? 0
@@ -727,6 +758,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         try encodeIfNonZero(maxConcurrency, forKey: .maxConcurrency, into: &container)
         try encodeIfNonZero(observedDecodeTps, forKey: .observedDecodeTps, into: &container)
         try encodeIfNonZero(observedPrefillTps, forKey: .observedPrefillTps, into: &container)
+        try container.encodeIfPresent(KVPerformanceIdentity.normalized(executionIdentity), forKey: .executionIdentity)
         try encodeIfNonZero(activeTokenBudgetUsed, forKey: .activeTokenBudgetUsed, into: &container)
         try encodeIfNonZero(activeTokenBudgetMax, forKey: .activeTokenBudgetMax, into: &container)
         try encodeIfNonZero(queuedTokenBudget, forKey: .queuedTokenBudget, into: &container)

@@ -1,0 +1,1 @@
+PASS: one expiry and 25,600 cancelled/awaited production timers under Swift -O in 0.049336667s

@@ -1,0 +1,217 @@
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin CudaBuild
+Building for debugging...
+[2/14] Write sources
+[3/14] Write swift-version--58304C5D6DBC2206.txt
+[4/10] Write sources
+[6/13] Emitting module MLXLMCommon
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:275:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+273 |                 let allTokens = kept
+274 |                 detokQueue.async {
+275 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+276 |                     stream?.emit(
+277 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:220:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 218 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 219 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 220 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 221 |     /// Append confirmed tokens; returns text now safe to emit.
+ 222 |     func push(_ tokens: [Int]) -> String
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[7/13] Compiling MLXLMCommon EngineV2.swift
+[8/13] Compiling MLXLMCommon QuantizedWorkspaceProjection.swift
+[9/14] Emitting module ProviderCore
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift:350:24: warning: no 'async' operations occur within 'await' expression
+348 |             let sample = budget.memoryHeadroomSnapshot()
+349 |             postBuildHeadroom = sample.runtimeRemainingBytes
+350 |             let kind = await bundle.bridge.kvBackendKind
+    |                        `- warning: no 'async' operations occur within 'await' expression
+351 |             let ceiling = await bundle.bridge.kvBackendPoolBytes()
+352 |             guard KVHeadroomProbe.postBuildServeable(kvBackendKind: kind, pagedPoolBytes: ceiling,
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift:361:23: warning: no 'async' operations occur within 'await' expression
+359 |             }
+360 |         }
+361 |         let backend = await bundle.bridge.kvBackendKind.rawValue
+    |                       `- warning: no 'async' operations occur within 'await' expression
+362 |         let fallback = await bundle.bridge.kvBackendFallbackReason
+363 |         return EngineV2BenchmarkSession(
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift:362:24: warning: no 'async' operations occur within 'await' expression
+360 |         }
+361 |         let backend = await bundle.bridge.kvBackendKind.rawValue
+362 |         let fallback = await bundle.bridge.kvBackendFallbackReason
+    |                        `- warning: no 'async' operations occur within 'await' expression
+363 |         return EngineV2BenchmarkSession(
+364 |             bundle: bundle, engine: engine,
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkSession.swift:366:37: warning: no 'async' operations occur within 'await' expression
+364 |             bundle: bundle, engine: engine,
+365 |             backend: backend, fallback: fallback,
+366 |             kvQuantizationIdentity: await bundle.bridge.kvQuantizationIdentity,
+    |                                     `- warning: no 'async' operations occur within 'await' expression
+367 |             memoryEnabled: PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment),
+368 |             activationReserveBytes: reserve, postLoadMaximumKVBytes: maximumKVBytes,
+[9/16] Write Objects.LinkFileList
+[11/17] Emitting module ProviderBenchmark
+[11/17] Write Objects.LinkFileList
+[12/19] Linking darkbloom-enclave
+[13/19] Applying darkbloom-enclave
+[14/19] Linking darkbloom
+[15/19] Applying darkbloom
+[17/19] Compiling ProviderCoreTests EngineV2BridgeTests.swift
+[18/19] Emitting module ProviderCoreTests
+[18/20] Write Objects.LinkFileList
+[19/20] Linking DarkbloomProviderPackageTests
+Build complete! (24.89s)
+Test Suite 'Selected tests' started at 2026-09-07 04:10:38.308.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-09-07 04:10:38.309.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-09-07 04:10:38.309.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-07 04:10:38.309.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Workspace-aware routing token capacity" started.
+◇ Suite "Benchmark KV quantization selection" started.
+◇ Suite "benchmark sweep exit status" started.
+◇ Suite "Paged routing physical overhead" started.
+◇ Suite "Sweep prefill numerical scope" started.
+◇ Test configSerializationDropsRetiredKeys() started.
+◇ Suite "EngineV2 capacity: CBv2CapacitySnapshot → BackendSlotCapacity" started.
+◇ Test lowerAdvertisedCountRetainsOneServiceableRequest() started.
+◇ Suite "Paged KV quantization configuration and accounting" started.
+◇ Test configParsingRetiresKVQuantWithoutLosingNeighbours() started.
+◇ Test activeOverheadCannotMasqueradeAsHeartbeatProgress() started.
+◇ Test overflowingRoutingOverheadAdvertisesNoCapacity() started.
+◇ Suite "EngineV2Bridge paged KV backend" started.
+◇ Test unknownOrOverflowedBoundsFailClosed() started.
+◇ Test nativeControlRetainsMeasurementsAndNamesItsActualScope() started.
+◇ Test "finished requests release their committed budget from the heartbeat" started.
+◇ Test aggregateBoundCoversEveryTwoRequestSplit() started.
+◇ Test "wedge counters flow into the slot (admits / first tokens / engine steps)" started.
+◇ Test "explicit contiguous with zero decode cells also fails" started.
+◇ Test "auto keeps its old exit status even with zero decode cells" started.
+◇ Test "every unmeasured cell is named, not just the first" started.
+◇ Test nativeZeroWorkspaceKeepsTheLinearCapacity() started.
+◇ Suite "throughput sweep: report assembly + JSON" started.
+◇ Test activeAndProspectiveWorkspaceAreBothReservedInTheHeartbeat() started.
+◇ Test nativeWindowAndPageAllowanceReducesEveryProspectiveSlot() started.
+◇ Test "idle when nothing runs; budget gate disengaged when kvBytesPerToken unknown" started.
+◇ Test nativeCommitmentsIncludeDetachedPagesAndScratch() started.
+◇ Test "explicit paged fails when a REQUESTED cell went unmeasured" started.
+◇ Test "budget fields follow the legacy committed/worst-case contract; activeTokens stays engine truth" started.
+◇ Test quantizedSweepDoesNotRunTheNativePrefillClosure(selection:) started.
+◇ Test "a sweep that produced cells succeeds for every selection" started.
+◇ Test "runtime capacity summary aggregates registered bridges" started.
+◇ Test "a total refusal reports the refusal, not a list of every cell" started.
+◇ Test "budget max clamps to the live fleet budget; nil clamp preserves the raw grant" started.
+◇ Test "fixed and block-rounded request bytes are reflected in heartbeat tokens" started.
+◇ Test "backend help describes exact-model auto selection and its fallback contract" started.
+◇ Test "auto with an unmeasured cell still exits 0" started.
+◇ Test explicitPagedMeasurementModes(mode:) started.
+◇ Test "runtime summary recomputes each bridge's budget from live fleet residency" started.
+◇ Test "explicit paged with zero decode cells fails and names the reason" started.
+◇ Test nativeRemainsTheDefault() started.
+◇ Test ignoredOrAmbiguousSelectionsRefuseBeforeLoading() started.
+◇ Test "wedge trips only when the engine step counter flatlines under hanging admits" started.
+◇ Test "a fully measured sweep succeeds for every selection" started.
+✔ Test lowerAdvertisedCountRetainsOneServiceableRequest() passed after 0.001 seconds.
+◇ Test defaultsAndRetiredKnobRemainNative() started.
+◇ Test "fixed-reference reslice never claims physical reclaim or grows past the pool" started.
+◇ Test "other terminal engine errors pass through unmapped" started.
+◇ Test case passing 1 argument selection → .k8v4 to quantizedSweepDoesNotRunTheNativePrefillClosure(selection:) started.
+◇ Test "unknown backend capacity (0) does not bind" started.
+◇ Test case passing 1 argument selection → .int8 to quantizedSweepDoesNotRunTheNativePrefillClosure(selection:) started.
+◇ Test case passing 1 argument selection → .int4 to quantizedSweepDoesNotRunTheNativePrefillClosure(selection:) started.
+◇ Test "heartbeat binds advertised capacity to backend pool truth" started.
+◇ Test "terminal kv_capacity_exhausted maps to the retryable capacity error" started.
+◇ Test "segmented reslice follows shrink and regrow while retaining live ownership" started.
+◇ Test "paged slots skip the per-request shared-KV reserve" started.
+◇ Test case passing 1 argument mode → "int4" to explicitPagedMeasurementModes(mode:) started.
+◇ Test case passing 1 argument mode → "k8v4" to explicitPagedMeasurementModes(mode:) started.
+◇ Test case passing 1 argument mode → "int8" to explicitPagedMeasurementModes(mode:) started.
+✔ Test unknownOrOverflowedBoundsFailClosed() passed after 0.002 seconds.
+◇ Test "report JSON round-trips and carries the headline fields" started.
+◇ Test "makeDerived flags a dense-decoding MoE" started.
+◇ Test "a partially measured sweep records WHICH requested cell is missing" started.
+◇ Test "a fully measured sweep reports empty coverage, not an absent block" started.
+◇ Test "makeDerived flags a genuinely sparse MoE" started.
+◇ Test "selection and resolved backend are recorded separately, per cell" started.
+◇ Test "a refused sweep carries the reason, not just an empty curve" started.
+✔ Test nativeZeroWorkspaceKeepsTheLinearCapacity() passed after 0.002 seconds.
+✔ Test aggregateBoundCoversEveryTwoRequestSplit() passed after 0.002 seconds.
+✔ Test "auto keeps its old exit status even with zero decode cells" passed after 0.002 seconds.
+✔ Test "explicit contiguous with zero decode cells also fails" passed after 0.002 seconds.
+✔ Test "a sweep that produced cells succeeds for every selection" passed after 0.002 seconds.
+✔ Test "every unmeasured cell is named, not just the first" passed after 0.002 seconds.
+✔ Test nativeControlRetainsMeasurementsAndNamesItsActualScope() passed after 0.002 seconds.
+✔ Test "a total refusal reports the refusal, not a list of every cell" passed after 0.002 seconds.
+✔ Test "explicit paged fails when a REQUESTED cell went unmeasured" passed after 0.002 seconds.
+✔ Test "auto with an unmeasured cell still exits 0" passed after 0.002 seconds.
+✔ Test nativeCommitmentsIncludeDetachedPagesAndScratch() passed after 0.002 seconds.
+✔ Test configParsingRetiresKVQuantWithoutLosingNeighbours() passed after 0.003 seconds.
+✔ Test overflowingRoutingOverheadAdvertisesNoCapacity() passed after 0.003 seconds.
+✔ Test nativeWindowAndPageAllowanceReducesEveryProspectiveSlot() passed after 0.003 seconds.
+✔ Test "budget max clamps to the live fleet budget; nil clamp preserves the raw grant" passed after 0.003 seconds.
+✔ Test "idle when nothing runs; budget gate disengaged when kvBytesPerToken unknown" passed after 0.003 seconds.
+✔ Test quantizedSweepDoesNotRunTheNativePrefillClosure(selection:) with 3 test cases passed after 0.002 seconds.
+✔ Test "explicit paged with zero decode cells fails and names the reason" passed after 0.003 seconds.
+✔ Test "runtime capacity summary aggregates registered bridges" passed after 0.003 seconds.
+✔ Test "a fully measured sweep succeeds for every selection" passed after 0.002 seconds.
+✔ Test "runtime summary recomputes each bridge's budget from live fleet residency" passed after 0.003 seconds.
+✔ Test "fixed and block-rounded request bytes are reflected in heartbeat tokens" passed after 0.003 seconds.
+✔ Test "budget fields follow the legacy committed/worst-case contract; activeTokens stays engine truth" passed after 0.003 seconds.
+✔ Test "heartbeat binds advertised capacity to backend pool truth" passed after 0.002 seconds.
+✔ Test defaultsAndRetiredKnobRemainNative() passed after 0.002 seconds.
+✔ Test "unknown backend capacity (0) does not bind" passed after 0.002 seconds.
+✔ Test "segmented reslice follows shrink and regrow while retaining live ownership" passed after 0.002 seconds.
+✔ Test configSerializationDropsRetiredKeys() passed after 0.004 seconds.
+✔ Test "makeDerived flags a genuinely sparse MoE" passed after 0.001 seconds.
+✔ Test "makeDerived flags a dense-decoding MoE" passed after 0.001 seconds.
+✔ Suite "Workspace-aware routing token capacity" passed after 0.004 seconds.
+✔ Suite "Sweep prefill numerical scope" passed after 0.004 seconds.
+✔ Test "a refused sweep carries the reason, not just an empty curve" passed after 0.001 seconds.
+✔ Test "report JSON round-trips and carries the headline fields" passed after 0.001 seconds.
+✔ Test activeOverheadCannotMasqueradeAsHeartbeatProgress() passed after 0.004 seconds.
+✔ Test "selection and resolved backend are recorded separately, per cell" passed after 0.001 seconds.
+✔ Test activeAndProspectiveWorkspaceAreBothReservedInTheHeartbeat() passed after 0.004 seconds.
+✔ Test "finished requests release their committed budget from the heartbeat" passed after 0.004 seconds.
+✔ Test "wedge counters flow into the slot (admits / first tokens / engine steps)" passed after 0.004 seconds.
+✔ Suite "Paged routing physical overhead" passed after 0.004 seconds.
+✔ Test "a partially measured sweep records WHICH requested cell is missing" passed after 0.001 seconds.
+◇ Test exactModelOverrideAndRoundTrip() started.
+✔ Test "a fully measured sweep reports empty coverage, not an absent block" passed after 0.001 seconds.
+✔ Suite "throughput sweep: report assembly + JSON" passed after 0.004 seconds.
+✔ Test "other terminal engine errors pass through unmapped" passed after 0.004 seconds.
+✔ Test "terminal kv_capacity_exhausted maps to the retryable capacity error" passed after 0.004 seconds.
+✔ Test exactModelOverrideAndRoundTrip() passed after 0.001 seconds.
+◇ Test explicitFormatNeverFallsBackToNative(selection:) started.
+◇ Test case passing 1 argument selection → .int4 to explicitFormatNeverFallsBackToNative(selection:) started.
+◇ Test case passing 1 argument selection → .k8v4 to explicitFormatNeverFallsBackToNative(selection:) started.
+✔ Test "fixed-reference reslice never claims physical reclaim or grows past the pool" passed after 0.004 seconds.
+✔ Test "wedge trips only when the engine step counter flatlines under hanging admits" passed after 0.005 seconds.
+◇ Test case passing 1 argument selection → .int8 to explicitFormatNeverFallsBackToNative(selection:) started.
+✔ Suite "EngineV2 capacity: CBv2CapacitySnapshot → BackendSlotCapacity" passed after 0.005 seconds.
+✔ Test explicitFormatNeverFallsBackToNative(selection:) with 3 test cases passed after 0.001 seconds.
+◇ Test marginalRateIncludesFP32MetadataAndOnlyFullOwners() started.
+✔ Test marginalRateIncludesFP32MetadataAndOnlyFullOwners() passed after 0.001 seconds.
+◇ Test checkpointNamespaceBindsTheExactPackedFormat() started.
+✔ Test checkpointNamespaceBindsTheExactPackedFormat() passed after 0.001 seconds.
+◇ Test productionConstructorPreservesGrantAndNativeWindows() started.
+✔ Test nativeRemainsTheDefault() passed after 0.011 seconds.
+✔ Test "backend help describes exact-model auto selection and its fallback contract" passed after 0.019 seconds.
+✔ Suite "benchmark sweep exit status" passed after 0.019 seconds.
+✔ Test explicitPagedMeasurementModes(mode:) with 3 test cases passed after 0.028 seconds.
+✔ Test ignoredOrAmbiguousSelectionsRefuseBeforeLoading() passed after 0.031 seconds.
+✔ Suite "Benchmark KV quantization selection" passed after 0.032 seconds.
+✔ Test "paged slots skip the per-request shared-KV reserve" passed after 0.046 seconds.
+✔ Suite "EngineV2Bridge paged KV backend" passed after 0.047 seconds.
+✔ Test productionConstructorPreservesGrantAndNativeWindows() passed after 0.381 seconds.
+✔ Suite "Paged KV quantization configuration and accounting" passed after 0.387 seconds.
+✔ Test run with 55 tests in 9 suites passed after 0.388 seconds.

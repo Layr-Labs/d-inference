@@ -1,0 +1,7 @@
+<bos><|turn>system
+Follow the user's output format exactly. Do not include an explanation unless requested.<turn|>
+<|turn>user
+Policy: archive every record that is closed and not starred. Records: A is closed and starred; B is open and unstarred; C is closed and unstarred; D is open and starred; E is closed and unstarred. Which records are archived? Return only their uppercase IDs sorted alphabetically, separated by a comma with no spaces.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>

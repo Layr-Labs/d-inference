@@ -125,3 +125,45 @@ func TestThroughputAnomalySweep_EmitsDatadog(t *testing.T) {
 		t.Errorf("missing chip_family tag; got packets: %v", packets)
 	}
 }
+
+func TestThroughputAnomalyBucketsExcludeQuantizedExecution(t *testing.T) {
+	reg := registry.New(quietLogger())
+	const model = "gpt-oss-20b"
+	const k4 = "kvq-v1:affine-v1-k4v4-g64-f32-h128-s1:prefill=direct"
+	const k8v4 = "kvq-v1:affine-v1-k8v4-g64-f32-h128-s1:prefill=direct"
+	cases := []struct {
+		id, state, declared, actual string
+		rate                        float64
+	}{
+		{"native", "idle", "", "", 60},
+		{"k4", "idle", k4, k4, 10},
+		{"k8v4", "running", k8v4, k8v4, 20},
+		{"placeholder", "reloading", k4, "", 1000},
+		{"native-overrides-declared", "running", k4, "", 70},
+		{"legacy-unknown", "unknown", "", "", 80},
+		{"malformed", "idle", "", "invalid", 1000},
+	}
+	for _, c := range cases {
+		makeDecodeProvider(t, reg, c.id, "M4", "Max", 400, c.rate, model)
+		reg.ForEachProvider(func(p *registry.Provider) {
+			if p.ID != c.id {
+				return
+			}
+			p.Mu().Lock()
+			p.Models[0].ExecutionIdentity = c.declared
+			p.BackendCapacity.Slots[0].ExecutionIdentity = c.actual
+			p.BackendCapacity.Slots[0].State = c.state
+			p.Mu().Unlock()
+		})
+	}
+	srv := NewServer(reg, store.NewMemory(store.Config{AdminKey: "test-key"}), ServerConfig{}, quietLogger())
+	buckets := srv.collectThroughputBuckets()
+	if len(buckets) != 1 {
+		t.Fatalf("buckets=%v", buckets)
+	}
+	for _, b := range buckets {
+		if len(b.tpsSamples) != 3 || medianFloat(b.tpsSamples) != 70 {
+			t.Fatalf("quantized or stale samples entered native expectation: %v", b.tpsSamples)
+		}
+	}
+}

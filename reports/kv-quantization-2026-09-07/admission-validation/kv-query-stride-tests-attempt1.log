@@ -1,0 +1,119 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+Test Suite 'Selected tests' started at 2026-09-07 05:51:03.095.
+Test Suite 'mlx-swift-lmPackageTests.xctest' started at 2026-09-07 05:51:03.096.
+Test Suite 'mlx-swift-lmPackageTests.xctest' passed at 2026-09-07 05:51:03.096.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-07 05:51:03.096.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "CBv2 cached segmented execution" started.
+◇ Suite "Packed attention explicit tensor strides" started.
+◇ Suite "Packed paged KV quantization" started.
+◇ Suite "Loaded native KV dtype probe" started.
+◇ Suite "CBv2 segmented paged storage" started.
+◇ Suite "Paged native KV dtype layout" started.
+◇ Test prefillAndBatchedDecodeRespectAllStrides(dtype:layout:) started.
+◇ Suite "Packed attention step arena ownership" started.
+◇ Test checkedFormatIdentityAndAccounting() started.
+◇ Test lazySuccessorsKeepRecordsAndLiveWriteFenceAcrossReplacement(dtype:) started.
+◇ Test groupsAndSerialColumnsShareOneArenaWithoutChangingOutputs() started.
+◇ Test "both phases observe actual mixed storage types and release every private row" started.
+◇ Test "equal geometry preserves separate native dtype and window roots" started.
+◇ Test layoutDoesNotCapSegmentCountOrExceedBufferLimit() started.
+◇ Test case passing 1 argument dtype → .bfloat16 to lazySuccessorsKeepRecordsAndLiveWriteFenceAcrossReplacement(dtype:) started.
+◇ Test case passing 2 arguments dtype → .float16, layout → .featureTwo to prefillAndBatchedDecodeRespectAllStrides(dtype:layout:) started.
+✔ Test "both phases observe actual mixed storage types and release every private row" passed after 0.054 seconds.
+◇ Test "changed or asymmetric types fail before any paged allocation and unbind all rows" started.
+✔ Test "changed or asymmetric types fail before any paged allocation and unbind all rows" passed after 0.002 seconds.
+✔ Suite "Loaded native KV dtype probe" passed after 0.057 seconds.
+✔ Test layoutDoesNotCapSegmentCountOrExceedBufferLimit() passed after 0.115 seconds.
+◇ Test wholePartitionMappingFitsEveryPageOffsetAndMetalBindingLimit() started.
+✔ Test wholePartitionMappingFitsEveryPageOffsetAndMetalBindingLimit() passed after 0.052 seconds.
+◇ Test rejectedGrowthLeavesExistingBackingAndReservationUntouched(inSecondGroup:) started.
+◇ Test case passing 1 argument inSecondGroup → false to rejectedGrowthLeavesExistingBackingAndReservationUntouched(inSecondGroup:) started.
+✔ Test checkedFormatIdentityAndAccounting() passed after 0.712 seconds.
+◇ Test rotationPreservesDotProductAndInverts(dim:) started.
+◇ Test case passing 1 argument dim → 64 to rotationPreservesDotProductAndInverts(dim:) started.
+◇ Test case passing 1 argument dim → 128 to rotationPreservesDotProductAndInverts(dim:) started.
+◇ Test case passing 1 argument dim → 256 to rotationPreservesDotProductAndInverts(dim:) started.
+◇ Test case passing 1 argument dim → 512 to rotationPreservesDotProductAndInverts(dim:) started.
+✔ Test rotationPreservesDotProductAndInverts(dim:) with 4 test cases passed after 0.210 seconds.
+◇ Test packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 2 arguments dtype → .float16, dim → 64 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+✔ Test "equal geometry preserves separate native dtype and window roots" passed after 0.923 seconds.
+◇ Test "storage and admission use the same mixed element widths" started.
+◇ Test case passing 1 argument inSecondGroup → true to rejectedGrowthLeavesExistingBackingAndReservationUntouched(inSecondGroup:) started.
+✔ Test "storage and admission use the same mixed element widths" passed after 0.412 seconds.
+◇ Test "invalid dtype tables and mismatched borrowed native layouts refuse construction" started.
+✔ Test "invalid dtype tables and mismatched borrowed native layouts refuse construction" passed after 0.238 seconds.
+✔ Suite "Paged native KV dtype layout" passed after 1.575 seconds.
+◇ Test case passing 1 argument dtype → .float32 to lazySuccessorsKeepRecordsAndLiveWriteFenceAcrossReplacement(dtype:) started.
+✔ Test groupsAndSerialColumnsShareOneArenaWithoutChangingOutputs() passed after 1.758 seconds.
+◇ Test scopeCannotGrowOrBeReplacedBeforeDetach() started.
+◇ Test case passing 2 arguments dtype → .float16, layout → .broadcastRows to prefillAndBatchedDecodeRespectAllStrides(dtype:layout:) started.
+✔ Test rejectedGrowthLeavesExistingBackingAndReservationUntouched(inSecondGroup:) with 2 test cases passed after 1.861 seconds.
+◇ Test nativeTransfersGrowWithoutCopyAndRetireAfterRelease(dtype:) started.
+◇ Test case passing 1 argument dtype → .bfloat16 to nativeTransfersGrowWithoutCopyAndRetireAfterRelease(dtype:) started.
+✔ Test scopeCannotGrowOrBeReplacedBeforeDetach() passed after 0.287 seconds.
+✔ Suite "Packed attention step arena ownership" passed after 2.046 seconds.
+◇ Test case passing 1 argument dtype → .float16 to nativeTransfersGrowWithoutCopyAndRetireAfterRelease(dtype:) started.
+✔ Test lazySuccessorsKeepRecordsAndLiveWriteFenceAcrossReplacement(dtype:) with 2 test cases passed after 2.499 seconds.
+◇ Test adoptedSharedPrefixGetsPrivateTailAndFreshRowIdentity() started.
+◇ Test case passing 2 arguments dtype → .float16, layout → .broadcastFeatures to prefillAndBatchedDecodeRespectAllStrides(dtype:layout:) started.
+◇ Test case passing 1 argument dtype → .float32 to nativeTransfersGrowWithoutCopyAndRetireAfterRelease(dtype:) started.
+✔ Test adoptedSharedPrefixGetsPrivateTailAndFreshRowIdentity() passed after 0.378 seconds.
+✔ Suite "CBv2 cached segmented execution" passed after 2.877 seconds.
+◇ Test case passing 2 arguments dtype → .float16, dim → 256 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+✔ Test nativeTransfersGrowWithoutCopyAndRetireAfterRelease(dtype:) with 3 test cases passed after 1.106 seconds.
+◇ Test segmentedDecodeMatchesDirectSlabBitsAcrossBuckets(dtype:) started.
+◇ Test case passing 1 argument dtype → .bfloat16 to segmentedDecodeMatchesDirectSlabBitsAcrossBuckets(dtype:) started.
+◇ Test case passing 2 arguments dtype → .float16, layout → .reversed to prefillAndBatchedDecodeRespectAllStrides(dtype:layout:) started.
+◇ Test case passing 1 argument dtype → .float16 to segmentedDecodeMatchesDirectSlabBitsAcrossBuckets(dtype:) started.
+◇ Test case passing 2 arguments dtype → .bfloat16, layout → .featureTwo to prefillAndBatchedDecodeRespectAllStrides(dtype:layout:) started.
+◇ Test case passing 1 argument dtype → .float32 to segmentedDecodeMatchesDirectSlabBitsAcrossBuckets(dtype:) started.
+◇ Test case passing 2 arguments dtype → .float16, dim → 512 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 2 arguments dtype → .bfloat16, layout → .broadcastRows to prefillAndBatchedDecodeRespectAllStrides(dtype:layout:) started.
+✔ Test segmentedDecodeMatchesDirectSlabBitsAcrossBuckets(dtype:) with 3 test cases passed after 1.961 seconds.
+◇ Test fusedWindowDecodePreservesBitsAcrossUnalignedSeventeenPageSpans(dtype:queryHeads:) started.
+◇ Test case passing 2 arguments dtype → .bfloat16, queryHeads → 1 to fusedWindowDecodePreservesBitsAcrossUnalignedSeventeenPageSpans(dtype:queryHeads:) started.
+◇ Test case passing 2 arguments dtype → .bfloat16, layout → .broadcastFeatures to prefillAndBatchedDecodeRespectAllStrides(dtype:layout:) started.
+◇ Test case passing 2 arguments dtype → .bfloat16, layout → .reversed to prefillAndBatchedDecodeRespectAllStrides(dtype:layout:) started.
+◇ Test case passing 2 arguments dtype → .bfloat16, queryHeads → 2 to fusedWindowDecodePreservesBitsAcrossUnalignedSeventeenPageSpans(dtype:queryHeads:) started.
+◇ Test case passing 2 arguments dtype → .float32, layout → .featureTwo to prefillAndBatchedDecodeRespectAllStrides(dtype:layout:) started.
+◇ Test case passing 2 arguments dtype → .bfloat16, queryHeads → 4 to fusedWindowDecodePreservesBitsAcrossUnalignedSeventeenPageSpans(dtype:queryHeads:) started.
+◇ Test case passing 2 arguments dtype → .bfloat16, dim → 64 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 2 arguments dtype → .float32, layout → .broadcastRows to prefillAndBatchedDecodeRespectAllStrides(dtype:layout:) started.
+◇ Test case passing 2 arguments dtype → .float16, queryHeads → 1 to fusedWindowDecodePreservesBitsAcrossUnalignedSeventeenPageSpans(dtype:queryHeads:) started.
+◇ Test case passing 2 arguments dtype → .bfloat16, dim → 256 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 2 arguments dtype → .float32, layout → .broadcastFeatures to prefillAndBatchedDecodeRespectAllStrides(dtype:layout:) started.
+◇ Test case passing 2 arguments dtype → .float16, queryHeads → 2 to fusedWindowDecodePreservesBitsAcrossUnalignedSeventeenPageSpans(dtype:queryHeads:) started.
+◇ Test case passing 2 arguments dtype → .float32, layout → .reversed to prefillAndBatchedDecodeRespectAllStrides(dtype:layout:) started.
+✔ Test prefillAndBatchedDecodeRespectAllStrides(dtype:layout:) with 12 test cases passed after 9.923 seconds.
+✔ Suite "Packed attention explicit tensor strides" passed after 9.924 seconds.
+◇ Test case passing 2 arguments dtype → .float16, queryHeads → 4 to fusedWindowDecodePreservesBitsAcrossUnalignedSeventeenPageSpans(dtype:queryHeads:) started.
+◇ Test case passing 2 arguments dtype → .bfloat16, dim → 512 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 2 arguments dtype → .float32, queryHeads → 1 to fusedWindowDecodePreservesBitsAcrossUnalignedSeventeenPageSpans(dtype:queryHeads:) started.
+◇ Test case passing 2 arguments dtype → .float32, queryHeads → 2 to fusedWindowDecodePreservesBitsAcrossUnalignedSeventeenPageSpans(dtype:queryHeads:) started.
+◇ Test case passing 2 arguments dtype → .float32, dim → 64 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 2 arguments dtype → .float32, queryHeads → 4 to fusedWindowDecodePreservesBitsAcrossUnalignedSeventeenPageSpans(dtype:queryHeads:) started.
+✔ Test fusedWindowDecodePreservesBitsAcrossUnalignedSeventeenPageSpans(dtype:queryHeads:) with 9 test cases passed after 8.247 seconds.
+✔ Suite "CBv2 segmented paged storage" passed after 13.345 seconds.
+◇ Test case passing 2 arguments dtype → .float32, dim → 256 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+◇ Test case passing 2 arguments dtype → .float32, dim → 512 to packedStorageGatherAndNewestDecode(dtype:dim:) started.
+✔ Test packedStorageGatherAndNewestDecode(dtype:dim:) with 9 test cases passed after 15.787 seconds.
+◇ Test directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) started.
+◇ Test case passing 2 arguments tokens → 33, negativeLogits → false to directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) started.
+◇ Test case passing 2 arguments tokens → 33, negativeLogits → true to directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) started.
+◇ Test case passing 2 arguments tokens → 273, negativeLogits → false to directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) started.
+◇ Test case passing 2 arguments tokens → 273, negativeLogits → true to directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) started.
+✔ Test directPackedPrefillEqualsSerialDecodeAcrossQueryBlocks(tokens:negativeLogits:) with 4 test cases passed after 2.646 seconds.
+◇ Test constantOutlierRowsAndAsymmetricDiagnosticFormat() started.
+✔ Test constantOutlierRowsAndAsymmetricDiagnosticFormat() passed after 0.556 seconds.
+◇ Test packedVisionSpanMaskMatchesIndependentDenseAttention() started.
+✔ Test packedVisionSpanMaskMatchesIndependentDenseAttention() passed after 0.238 seconds.
+◇ Test stridedInputsAndSharedTopologyArenas() started.
+✔ Test stridedInputsAndSharedTopologyArenas() passed after 0.756 seconds.
+✔ Suite "Packed paged KV quantization" passed after 20.910 seconds.
+✔ Test run with 23 tests in 7 suites passed after 20.910 seconds.

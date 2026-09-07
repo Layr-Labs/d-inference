@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-07 · commit `47da6bf26`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -227,7 +227,13 @@ is set explicitly (`SetQualityConcurrencyCap` ignores the legacy fallback that
 from `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT_BY_MODEL`; the solo
 decode rate is the provider's median solo sample (at least
 `defaultQualityCapSoloMinSamples`, the default of
-`EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES`), or a seeded/benchmark rate.
+`EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES`), or a seeded/benchmark rate for
+native execution. Packed execution uses its own model/format/chip-class samples
+and starts at one until its solo trust floor is met; it does not borrow native
+seeds (`coordinator/registry/concurrency_cap.go`, `resolvedSoloModelTPSLocked`).
+The [execution-identity reference](../reference/paged-kv-quantization.md#execution-identity-and-performance-history)
+defines field precedence, malformed-identity quarantine and rollout constraints.
+Packed storage does not increase the configured compute-concurrency ceiling.
 
 ### Model slots, pending loads and swaps
 

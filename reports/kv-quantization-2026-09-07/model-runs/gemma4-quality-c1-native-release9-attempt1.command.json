@@ -1,0 +1,16 @@
+[
+  "/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/.build/arm64-apple-macosx/release/darkbloom",
+  "benchmark",
+  "--config",
+  "/Users/gaj/Documents/Builds/d-inference-kv-quant/reports/kv-quantization-2026-09-07/benchmark.toml",
+  "--model",
+  "gemma-4-26b-qat-4bit",
+  "--model-directory",
+  "/Users/gaj/Documents/Builds/d-inference-kv-quant/reports/kv-quantization-2026-09-07/models/gemma4",
+  "--kv-backend",
+  "paged",
+  "--kv-quantization",
+  "native",
+  "--kv-quality-input",
+  "/Users/gaj/Documents/Builds/d-inference-kv-quant/reports/kv-quantization-2026-09-07/inputs/gemma4/quality/quality-c1.json"
+]

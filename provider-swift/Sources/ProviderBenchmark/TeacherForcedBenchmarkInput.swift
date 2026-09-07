@@ -40,6 +40,7 @@ struct TeacherForcedBenchmarkInput: Codable, Equatable {
     }
 
     struct Declaration: Decodable {
+        let modelType: String?
         let vocabSize: Int?
         let textConfig: Text?
         let visionConfig: Vision?
@@ -49,7 +50,8 @@ struct TeacherForcedBenchmarkInput: Codable, Equatable {
         }
         struct Vision: Decodable {}
         enum CodingKeys: String, CodingKey {
-            case vocabSize = "vocab_size", textConfig = "text_config", visionConfig = "vision_config"
+            case modelType = "model_type", vocabSize = "vocab_size"
+            case textConfig = "text_config", visionConfig = "vision_config"
         }
         var vocabularySize: Int? { textConfig?.vocabSize ?? vocabSize }
     }

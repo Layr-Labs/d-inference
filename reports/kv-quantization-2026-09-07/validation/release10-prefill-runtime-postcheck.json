@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "scope": "Runtime identity observed after matched scheduler-prefill batch; release10 build snapshots record source identity",
+  "observedUnixSeconds": 1788793188.368912,
+  "sha256": {
+    "/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/.build/arm64-apple-macosx/release/darkbloom": "7529f66e0ed940a0009c2eda33fcb807d96fb5b52bd85dffaf5f03c3eaceddd6",
+    "/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/.build/arm64-apple-macosx/release/mlx.metallib": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb",
+    "/Users/gaj/Documents/Builds/d-inference-kv-quant/provider-swift/.build/arm64-apple-macosx/release/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": "bc4642f50f5cf6dd0e65741337b43443ba602d1b45046f86b7e1abb8fccfe09b"
+  },
+  "reports": [
+    "model-runs/qwen36-prefill-native-release10-attempt1.json",
+    "model-runs/qwen36-prefill-int4-release10-attempt1.json",
+    "model-runs/qwen36-prefill-int4-opportunistic-release10-attempt1.json"
+  ]
+}

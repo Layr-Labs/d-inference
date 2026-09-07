@@ -1,0 +1,17 @@
+gemma optimizations: prefill_layer18=on weighted_r1=on
+2026-09-07T08:44:15-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for qwen3.6-35b-a3b-vl-mtp-mxfp8 (13 files)...
+2026-09-07T08:44:32-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for qwen3.6-35b-a3b-vl-mtp-mxfp8: d932e96b00404b05
+[sweep] loading model qwen3.6-35b-a3b-vl-mtp-mxfp8
+[sweep]   path: /Users/gaj/Documents/Builds/d-inference-kv-quant/reports/kv-quantization-2026-09-07/models/qwen36
+[sweep] load memory: active_bytes=20402603752 peak_bytes=33361881832
+[sweep]   weights: 20.40 GB across 5865901936 params
+[sweep] decode sweep: batch sizes [1, 4], 128 tok/seq, prompt 4096 tok/seq, 2 repetition(s), kv backend selection paged
+[sweep] warming decode shape: B=1, prompt=4096, decode=128 (unmeasured)
+[sweep] warming decode shape: B=4, prompt=4096, decode=128 (unmeasured)
+[sweep]   engine resolved kv backend: paged [affine-v1-k4v4-g64-f32-h128-s1]
+[sweep]   [1/2] B=1: aggregate 75.8 tok/s, per-seq 75.8 tok/s
+[sweep]   [1/2] B=4: aggregate 30.5 tok/s, per-seq 7.6 tok/s
+[sweep]   [2/2] B=1: aggregate 76.2 tok/s, per-seq 76.2 tok/s
+[sweep]   [2/2] B=4: aggregate 31.4 tok/s, per-seq 7.8 tok/s
+2026-09-07T08:46:04-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for qwen3.6-35b-a3b-vl-mtp-mxfp8 (13 files)...
+2026-09-07T08:46:20-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for qwen3.6-35b-a3b-vl-mtp-mxfp8: d932e96b00404b05

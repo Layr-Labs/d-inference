@@ -2,11 +2,10 @@
 //
 // Per-token KV byte-cost resolution for the ContinuousBatchingV2 bridge.
 //
-// The v2 engine builds UNQUANTIZED native-float `CBv2LayerCache`s: KV
-// quantization was removed from the product in v0.8.0, so there is exactly
-// one per-token cost. The sizing snapshot is an all-fp16 baseline; slot
-// assembly adds GPT-OSS's fp32 owning-full-row delta before
-// heartbeat/shared-budget publication.
+// Slot grants remain byte-based and independent of cache precision. The
+// sizing snapshot is an all-fp16 baseline; slot assembly derives the marginal
+// full-row rate from the actual native or packed layout before heartbeat and
+// shared-budget publication. Quantization never expands the physical grant.
 
 import Foundation
 

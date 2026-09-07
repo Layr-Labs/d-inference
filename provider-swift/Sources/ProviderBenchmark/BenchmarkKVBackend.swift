@@ -23,9 +23,12 @@ public struct BenchmarkKVBackend: Codable, Sendable {
     /// More than one entry means the phase measured a MIXED population and
     /// its numbers cannot be read as one backend's.
     public let resolved: [String]
+    /// Nil in historical reports and modes that do not select a cache format.
+    public let quantizationSelection: String?
 
-    public init(selection: String, resolved: [String]) {
+    public init(selection: String, quantizationSelection: String? = nil, resolved: [String]) {
         self.selection = selection
         self.resolved = resolved
+        self.quantizationSelection = quantizationSelection
     }
 }

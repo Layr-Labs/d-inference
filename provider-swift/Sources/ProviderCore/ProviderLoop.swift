@@ -622,7 +622,7 @@ public actor ProviderLoop {
                 continue
             }
             if EngineV2SupportedModels.isSupported(modelType: model.modelType) {
-                advertised[model.id] = model
+                advertised[model.id] = KVPerformanceIdentity.declared(model: model, settings: config.config.backend)
             } else {
                 unsupportedModelIds.append(model.id)
             }

@@ -1,0 +1,155 @@
+warning: 'mlx-swift': Invalid Exclude '/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift/Source/Cmlx/mlx/mlx/distributed/nccl/nccl_stub': File not found.
+warning: 'mlx-swift-lm': Conflicting identity for mlx-swift: dependency 'github.com/layr-labs/mlx-swift' and dependency '/users/gaj/documents/builds/d-inference-kv-quant/libs/mlx-swift' both point to the same package identity 'mlx-swift'. The dependencies are introduced through the following chains: (A) /users/gaj/documents/builds/d-inference-kv-quant/provider-swift->/users/gaj/documents/builds/d-inference-kv-quant/libs/mlx-swift-lm->github.com/layr-labs/mlx-swift (B) /users/gaj/documents/builds/d-inference-kv-quant/provider-swift->/users/gaj/documents/builds/d-inference-kv-quant/libs/mlx-swift. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'provider-swift': dependency 'eventsource' is not used by any target
+[0/3] Write swift-version--58304C5D6DBC2206.txt
+[0/1] Planning build
+[1/1] Compiling plugin GenerateManual
+[2/2] Compiling plugin CudaBuild
+Building for debugging...
+[2/18] Write swift-version--58304C5D6DBC2206.txt
+[3/17] Write sources
+[7/16] Emitting module MLXLMCommon
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift:275:59: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+273 |                 let allTokens = kept
+274 |                 detokQueue.async {
+275 |                     let text = pushTokens.isEmpty ? "" : (detokenizer?.push(pushTokens) ?? "")
+    |                                                           `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+276 |                     stream?.emit(
+277 |                         .delta(text: text, tokens: allTokens, logprobs: nil),
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:220:17: note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 218 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 219 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 220 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 221 |     /// Append confirmed tokens; returns text now safe to emit.
+ 222 |     func push(_ tokens: [Int]) -> String
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[8/16] Compiling MLXLMCommon EngineLoopV2.swift
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:3696:52: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 218 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 219 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 220 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 221 |     /// Append confirmed tokens; returns text now safe to emit.
+ 222 |     func push(_ tokens: [Int]) -> String
+     :
+3694 |                     firstEmissionArmedNanos: firstToken ? readbackDoneNanos : 0)
+3695 |                 detokQueue.async {
+3696 |                     let text = isStopToken ? "" : (detokenizer?.push([token]) ?? "")
+     |                                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+3697 |                     stream?.emit(
+3698 |                         .delta(text: text, tokens: [token], logprobs: logprobs),
+
+/Users/gaj/Documents/Builds/d-inference-kv-quant/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift:3943:36: warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+ 218 | /// Incremental per-request detokenizer with UTF-8 + stop-string holdback.
+ 219 | /// See CONTRACT-ISSUES-B-scheduler.md §3.
+ 220 | public protocol CBv2IncrementalDetokenizer: AnyObject {
+     |                 `- note: protocol 'CBv2IncrementalDetokenizer' does not conform to the 'Sendable' protocol
+ 221 |     /// Append confirmed tokens; returns text now safe to emit.
+ 222 |     func push(_ tokens: [Int]) -> String
+     :
+3941 |             if usesAsyncDetokenization {
+3942 |                 terminalQueue.async {
+3943 |                     let trailing = detokenizer?.flush() ?? ""
+     |                                    `- warning: capture of 'detokenizer' with non-Sendable type '(any CBv2IncrementalDetokenizer)?' in a '@Sendable' closure [#SendableClosureCaptures]
+3944 |                     if !trailing.isEmpty {
+3945 |                         stream?.emit(.delta(text: trailing, tokens: [], logprobs: nil))
+
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[9/16] Compiling MLXLMCommon EngineV2.swift
+[9/17] Write Objects.LinkFileList
+[11/20] Compiling darkbloom BenchmarkCommand.swift
+[12/20] Compiling darkbloom BenchmarkCommand+TeacherForced.swift
+[13/20] Emitting module darkbloom
+[14/25] Compiling darkbloom BenchmarkCommand+SchedulerPrefillDecision.swift
+[15/25] Compiling darkbloom BenchmarkCommand+KVQuantization.swift
+[16/25] Compiling darkbloom BenchmarkCommand+Parity.swift
+[17/25] Compiling darkbloom BenchmarkCommand+Sweep.swift
+[18/25] Compiling darkbloom Darkbloom.swift
+[18/25] Write Objects.LinkFileList
+[19/25] Linking darkbloom-enclave
+[20/25] Applying darkbloom-enclave
+[21/25] Linking darkbloom
+[22/25] Applying darkbloom
+[24/45] Emitting module DarkbloomCLITests
+[25/45] Compiling DarkbloomCLITests BenchmarkArrivalPromptTests.swift
+[26/45] Compiling DarkbloomCLITests BenchmarkKVQuantizationOptionsTests.swift
+[27/45] Compiling DarkbloomCLITests BenchmarkParityExitTests.swift
+[28/45] Compiling DarkbloomCLITests BenchmarkSchedulerPrefillDecisionTests.swift
+[29/45] Compiling DarkbloomCLITests BenchmarkSweepExitTests.swift
+[30/45] Compiling DarkbloomCLITests BenchmarkTeacherForcedOptionsTests.swift
+[31/45] Compiling DarkbloomCLITests BetaCommandTests.swift
+[32/45] Compiling DarkbloomCLITests FanCommandTests.swift
+[33/45] Compiling DarkbloomCLITests IdleCommandTests.swift
+[34/45] Compiling DarkbloomCLITests KVBackendGuardDiagnosticsTests.swift
+[35/45] Compiling DarkbloomCLITests KVBackendPostureTests.swift
+[36/45] Compiling DarkbloomCLITests LogsCommandArgvTests.swift
+[37/45] Compiling DarkbloomCLITests PickerEntryTests.swift
+[38/45] Compiling DarkbloomCLITests BootSecurityWarningTests.swift
+[39/45] Compiling DarkbloomCLITests ConfigVersionStampTests.swift
+[40/45] Compiling DarkbloomCLITests DiagnosticReportRendererTests.swift
+[41/45] Compiling DarkbloomCLITests DoctorAttestationTests.swift
+[42/45] Compiling DarkbloomCLITests DoctorChecksTests.swift
+[43/45] Compiling DarkbloomCLITests DoctorClearBackendGuardTests.swift
+[44/51] Compiling DarkbloomCLITests ReportCommandTests.swift
+[45/51] Compiling DarkbloomCLITests RestartCommandTests.swift
+[46/51] Compiling DarkbloomCLITests RuntimeSnapshotConfigTests.swift
+[47/51] Compiling DarkbloomCLITests StartCommandTests.swift
+[48/51] Compiling DarkbloomCLITests StatusCommandTests.swift
+[49/51] Compiling DarkbloomCLITests WatchdogCommandTests.swift
+[49/51] Write Objects.LinkFileList
+[50/51] Linking DarkbloomProviderPackageTests
+Build complete! (20.49s)
+Test Suite 'Selected tests' started at 2026-09-07 04:30:24.578.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-09-07 04:30:24.579.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-09-07 04:30:24.579.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-07 04:30:24.579.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1743
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "benchmark sweep exit status" started.
+◇ Suite "Benchmark KV quantization selection" started.
+◇ Suite "Teacher-forced benchmark option scope" started.
+◇ Test "explicit paged with zero decode cells fails and names the reason" started.
+◇ Test "auto with an unmeasured cell still exits 0" started.
+◇ Test "explicit contiguous with zero decode cells also fails" started.
+◇ Test "auto keeps its old exit status even with zero decode cells" started.
+◇ Test exactDirectoryOverrideRequiresIdentityAndTeacherForcedMode() started.
+◇ Test "backend help describes exact-model auto selection and its fallback contract" started.
+◇ Test "every unmeasured cell is named, not just the first" started.
+◇ Test "a total refusal reports the refusal, not a list of every cell" started.
+◇ Test "a fully measured sweep succeeds for every selection" started.
+◇ Test explicitOrdinaryModeParsesAndDefaultIsUnchanged() started.
+◇ Test ignoredOrAmbiguousSelectionsRefuseBeforeLoading() started.
+◇ Test "a sweep that produced cells succeeds for every selection" started.
+◇ Test "explicit paged fails when a REQUESTED cell went unmeasured" started.
+◇ Test nativeRemainsTheDefault() started.
+◇ Test explicitPagedMeasurementModes(mode:) started.
+◇ Test incompatibleModesAndAssistantAreRefused() started.
+◇ Test case passing 1 argument mode → "k8v4" to explicitPagedMeasurementModes(mode:) started.
+◇ Test case passing 1 argument mode → "int4" to explicitPagedMeasurementModes(mode:) started.
+◇ Test case passing 1 argument mode → "int8" to explicitPagedMeasurementModes(mode:) started.
+✔ Test "explicit paged with zero decode cells fails and names the reason" passed after 0.001 seconds.
+✔ Test "auto with an unmeasured cell still exits 0" passed after 0.001 seconds.
+✔ Test "explicit contiguous with zero decode cells also fails" passed after 0.001 seconds.
+✔ Test "a sweep that produced cells succeeds for every selection" passed after 0.001 seconds.
+✔ Test "explicit paged fails when a REQUESTED cell went unmeasured" passed after 0.001 seconds.
+✔ Test "a total refusal reports the refusal, not a list of every cell" passed after 0.001 seconds.
+✔ Test "every unmeasured cell is named, not just the first" passed after 0.001 seconds.
+✔ Test "a fully measured sweep succeeds for every selection" passed after 0.001 seconds.
+✔ Test "auto keeps its old exit status even with zero decode cells" passed after 0.001 seconds.
+✔ Test nativeRemainsTheDefault() passed after 0.012 seconds.
+✔ Test explicitOrdinaryModeParsesAndDefaultIsUnchanged() passed after 0.020 seconds.
+✔ Test "backend help describes exact-model auto selection and its fallback contract" passed after 0.022 seconds.
+✔ Suite "benchmark sweep exit status" passed after 0.022 seconds.
+✔ Test explicitPagedMeasurementModes(mode:) with 3 test cases passed after 0.031 seconds.
+✔ Test ignoredOrAmbiguousSelectionsRefuseBeforeLoading() passed after 0.039 seconds.
+✔ Suite "Benchmark KV quantization selection" passed after 0.039 seconds.
+✔ Test incompatibleModesAndAssistantAreRefused() passed after 0.053 seconds.
+✔ Test exactDirectoryOverrideRequiresIdentityAndTeacherForcedMode() passed after 0.070 seconds.
+✔ Suite "Teacher-forced benchmark option scope" passed after 0.071 seconds.
+✔ Test run with 16 tests in 3 suites passed after 0.071 seconds.

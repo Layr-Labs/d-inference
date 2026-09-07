@@ -1,0 +1,19 @@
+gemma optimizations: prefill_layer18=on weighted_r1=on
+2026-09-07T06:24:45-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for qwen3.6-35b-a3b-vl-mtp-mxfp8 (13 files)...
+2026-09-07T06:25:01-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for qwen3.6-35b-a3b-vl-mtp-mxfp8: d932e96b00404b05
+[scheduler-prefill] loading model qwen3.6-35b-a3b-vl-mtp-mxfp8
+[scheduler-prefill]   path: /Users/gaj/Documents/Builds/d-inference-kv-quant/reports/kv-quantization-2026-09-07/models/qwen36
+[scheduler-prefill] load memory: active_bytes=20402603752 peak_bytes=33361881832
+[scheduler-prefill] kv backend selection paged
+[scheduler-prefill] warming prefill shape: prompt=512, maxTokens=1 (unmeasured)
+[scheduler-prefill] warming prefill shape: prompt=4096, maxTokens=1 (unmeasured)
+[scheduler-prefill] warming prefill shape: prompt=16384, maxTokens=1 (unmeasured)
+[scheduler-prefill]   engine resolved kv backend: paged
+[scheduler-prefill]   cbv2 L=512 i=1: 0.612 ms/t (312.9 ms)
+[scheduler-prefill]   cbv2 L=512 i=2: 0.616 ms/t (314.8 ms)
+[scheduler-prefill]   cbv2 L=4096 i=1: 0.522 ms/t (2138.5 ms)
+[scheduler-prefill]   cbv2 L=4096 i=2: 0.524 ms/t (2144.5 ms)
+[scheduler-prefill]   cbv2 L=16384 i=1: 0.624 ms/t (10215.7 ms)
+[scheduler-prefill]   cbv2 L=16384 i=2: 0.633 ms/t (10377.3 ms)
+2026-09-07T06:25:54-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Computing weight hash for qwen3.6-35b-a3b-vl-mtp-mxfp8 (13 files)...
+2026-09-07T06:26:10-0700 info darkbloom.WeightHasher: [ProviderCoreFoundation] Weight hash for qwen3.6-35b-a3b-vl-mtp-mxfp8: d932e96b00404b05

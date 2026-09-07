@@ -1,4 +1,4 @@
-import { Activity, Code2, Coins, Cpu, CreditCard, MessageSquare, Server, Settings, Trophy, type LucideIcon } from "lucide-react";
+import { Activity, Code2, Coins, Cpu, CreditCard, Gift, MessageSquare, Server, Settings, Trophy, type LucideIcon } from "lucide-react";
 import type { Workspace, ProviderAccount } from "../console-entry/workspaces";
 
 export interface NavigationItem { href: string; icon: LucideIcon; label: string }
@@ -15,6 +15,7 @@ const CONSUMER_GROUPS: Array<{ label: string; items: NavigationItem[] }> = [
 ];
 const ACCOUNT_ITEMS: NavigationItem[] = [
   { href: "/billing", icon: CreditCard, label: "Billing" },
+  { href: "/referrals", icon: Gift, label: "Referrals" },
   { href: "/settings", icon: Settings, label: "Settings" },
 ];
 export function navigationGroups(mode: Workspace, account: ProviderAccount) {

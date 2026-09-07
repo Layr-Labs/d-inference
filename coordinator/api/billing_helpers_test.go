@@ -44,8 +44,7 @@ func billingTestServer(t *testing.T) (*Server, *store.MemoryStore, *payments.Led
 
 	// Enable billing with mock mode (no on-chain verification).
 	billingSvc := billing.NewService(st, ledger, logger, billing.Config{
-		MockMode:             true,
-		ReferralSharePercent: 20,
+		MockMode: true,
 	})
 	srv.SetBilling(billingSvc)
 

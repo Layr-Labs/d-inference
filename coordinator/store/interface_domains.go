@@ -293,6 +293,9 @@ type LedgerStore interface {
 // BillingStore covers referrals, billing (deposit) sessions, custom per-account
 // model pricing, and Stripe Connect withdrawals.
 type BillingStore interface {
+	// FinalizeConsumerCharge atomically settles a job and its 5% consumer referral reward.
+	FinalizeConsumerCharge(ConsumerChargeSettlement) (ConsumerChargeResult, error)
+
 	// --- Referral System ---
 
 	// CreateReferrer registers an account as a referrer with the given code.

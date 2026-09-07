@@ -28,7 +28,6 @@ EIGENINFERENCE_CONSOLE_URL=https://console.dev.darkbloom.xyz
 CORS_ORIGIN=https://console.dev.darkbloom.xyz
 EIGENINFERENCE_R2_CDN_URL=$(fetch eigeninference-r2-cdn-url)
 EIGENINFERENCE_ADMIN_EMAILS=gajesh@eigenlabs.org
-EIGENINFERENCE_REFERRAL_SHARE_PCT=15
 DOMAIN=api.dev.darkbloom.xyz
 APP_PORT=8080
 EIGENINFERENCE_MDM_URL=https://localhost:9002

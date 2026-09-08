@@ -115,9 +115,11 @@ type MDAResult struct {
 	DeviceUDID   string
 
 	// Security properties from the device-attest OID set (100.8.13.*).
-	SIPEnabled        bool
-	SecureBootEnabled bool
-	ThirdPartyKexts   bool
+	SIPEnabled            bool
+	SecureBootEnabled     bool
+	SIPStatusKnown        bool
+	SecureBootStatusKnown bool
+	ThirdPartyKexts       bool
 
 	// Device properties from DevicePropertiesAttestation OIDs.
 	OSVersion    string
@@ -209,9 +211,9 @@ func VerifyMDADeviceAttestation(certChainDER [][]byte) (*MDAResult, error) {
 
 		// Device-attest OIDs (100.8.13.*) — may also be present
 		case ext.Id.Equal(OIDSIPStatus):
-			result.SIPEnabled = parseBoolOID(ext.Value)
+			result.SIPEnabled, result.SIPStatusKnown = parseSIPMeasurement(ext.Value)
 		case ext.Id.Equal(OIDSecureBootStatus):
-			result.SecureBootEnabled = parseBoolOID(ext.Value)
+			result.SecureBootEnabled, result.SecureBootStatusKnown = parseSecureBootMeasurement(ext.Value)
 		case ext.Id.Equal(OIDKextStatus):
 			result.ThirdPartyKexts = parseBoolOID(ext.Value)
 		}
@@ -265,9 +267,9 @@ func VerifyMDACertChain(certChainPEM []byte, appleRootCA *x509.Certificate) (*MD
 	for _, ext := range leaf.Extensions {
 		switch {
 		case ext.Id.Equal(OIDSIPStatus):
-			result.SIPEnabled = parseBoolOID(ext.Value)
+			result.SIPEnabled, result.SIPStatusKnown = parseSIPMeasurement(ext.Value)
 		case ext.Id.Equal(OIDSecureBootStatus):
-			result.SecureBootEnabled = parseBoolOID(ext.Value)
+			result.SecureBootEnabled, result.SecureBootStatusKnown = parseSecureBootMeasurement(ext.Value)
 		case ext.Id.Equal(OIDKextStatus):
 			result.ThirdPartyKexts = parseBoolOID(ext.Value)
 		case ext.Id.Equal(OIDDeviceSerialNumber):

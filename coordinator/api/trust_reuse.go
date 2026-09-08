@@ -14,33 +14,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// defaultTrustReuseWindow is how long a successful FULL live MDM verification is
-// honored for a NEW connection from the same device — without re-running the live
-// MDM SecurityInfo round-trip — provided a fresh live SE challenge re-proves the
-// SAME identity, binary, and good posture. It bounds the staleness of the MDM
-// proof. Kept SHORT (Threat-Model #3): the reuse must not be able to span a
-// SIP-disable reboot cycle (where a box reboots into Recovery, disables SIP, and
-// reconnects), so a window comfortably under a realistic reboot+reconnect is used.
-// Tightened from 10m to 5m once connection-continuity reuse (see
-// trustReuseReconnectGapFromEnv) started covering the legitimate operational
-// reconnect cases, so the pure wall-clock staleness bound can be stricter.
-// Overridable via EIGENINFERENCE_TRUST_REUSE_WINDOW.
+// Timing metadata is retained for scheduling and the shadow compatibility path.
+// Enforced process posture never uses these windows to authorize hardware trust.
 const defaultTrustReuseWindow = 5 * time.Minute
-
-// Connection-continuity reuse (the "continuity" decision): a provider that was
-// live-verified, stayed continuously connected and hardware-trusted (the
-// coordinator advances a durable ContinuousCoverageUntil watermark while it
-// observes the live SE-challenged connection), and reconnects after a
-// coordinator-MEASURED offline gap of at most the reconnect-gap allowance may
-// reuse its device evidence even when HardwareProofVerifiedAt has fallen out
-// of the wall-clock window. SECURITY INVARIANT (Threat-Model T-036):
-// SIP/Secure Boot can only change in RecoveryOS; entering and leaving Recovery
-// on Apple Silicon (One True Recovery: manual power-button entry, credentialed
-// csrutil/bputil, two boot transitions) takes >= ~3 minutes and drops any
-// WebSocket, so a contiguous coordinator-measured offline gap <= 120s cannot
-// span a posture flip. The gap is never provider-claimed. The 120s ceiling is
-// therefore a HARD security bound: EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP
-// values above it clamp DOWN (with a warning), never up.
 const defaultTrustReuseReconnectGap = 90 * time.Second
 const maxTrustReuseReconnectGap = 120 * time.Second
 
@@ -143,12 +119,8 @@ func newTrustReuseCache() *trustReuseCache {
 	return newTrustReuseCacheWithWindow(trustReuseWindowFromEnv())
 }
 
-// newTrustReuseCacheWithWindow pins the fast-skip freshness window verbatim.
-// Tests use it to model a specific deployment window; production goes through
-// newTrustReuseCache, i.e. the reviewed 5-minute default (Threat-Model #3 /
-// T-036: must not span a SIP-disable reboot cycle) or the operator's
-// EIGENINFERENCE_TRUST_REUSE_WINDOW override. The continuity reconnect-gap
-// allowance always comes from the (hard-clamped) environment default.
+// newTrustReuseCacheWithWindow pins the legacy scheduling/reuse window.
+// Enforced process posture does not use this value for authorization.
 func newTrustReuseCacheWithWindow(window time.Duration) *trustReuseCache {
 	if window <= 0 {
 		window = defaultTrustReuseWindow
@@ -173,12 +145,8 @@ func trustReuseWindowFromEnv() time.Duration {
 	return defaultTrustReuseWindow
 }
 
-// trustReuseReconnectGapFromEnv reads EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP
-// (a Go duration), falling back to defaultTrustReuseReconnectGap when
-// unset/invalid, and hard-clamps the result into [0, maxTrustReuseReconnectGap].
-// The 120s ceiling is the RecoveryOS-physics security bound (see the constant
-// docs above): values above it clamp DOWN, reported via the second return so
-// the caller can log a warning. A zero allowance disables continuity reuse.
+// trustReuseReconnectGapFromEnv preserves the bounded legacy timing knob.
+// It applies to scheduling and the shadow compatibility path only.
 func trustReuseReconnectGapFromEnv() (time.Duration, bool) {
 	gap := defaultTrustReuseReconnectGap
 	if v := os.Getenv("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP"); v != "" {
@@ -195,6 +163,8 @@ func trustReuseReconnectGapFromEnv() (time.Duration, bool) {
 	return gap, false
 }
 
+// decideTrustReuse classifies historical cache metadata for diagnostics and
+// shadow compatibility. Enforced grants use process_posture.go.
 func (c *trustReuseCache) decideTrustReuse(input trustReuseInput) trustReuseResult {
 	if input.SEPubKey == "" || input.Serial == "" || input.FreshBinaryHash == "" {
 		return trustReuseResult{Reason: trustReuseReasonMissingIdentity}
@@ -761,12 +731,19 @@ func (s *Server) recordLateTrustReuse(provider *registry.Provider, seKey, serial
 	return s.recordTrustReuseAtGeneration(provider, seKey, serial, binaryHash, sipEnabled, secureBootFull, udid, false)
 }
 
-func (s *Server) recordTrustReuseAtGeneration(provider *registry.Provider, seKey, serial, binaryHash string, sipEnabled, secureBootFull bool, udid string, allowRecovery bool) bool {
+func (s *Server) recordTrustReuseAtGeneration(provider *registry.Provider, seKey, serial, binaryHash string, sipEnabled, secureBootFull bool, udid string, allowRecovery bool, proofGenerations ...uint64) bool {
 	if s == nil || s.trustReuseCache == nil || provider == nil ||
 		seKey == "" || serial == "" {
 		return false
 	}
+	if s.processPostureEnforced() && !allowRecovery && s.trustReuseCache.isRevoked(seKey) {
+		return false
+	}
 	if blocked, _ := s.trustSafetyStatus(); blocked || s.trustReuseIdentityPending(seKey) {
+		return false
+	}
+	expectedRevocationGeneration, revocationEventID := s.trustReuseCache.revocationState(seKey)
+	if len(proofGenerations) > 0 && proofGenerations[0] != expectedRevocationGeneration {
 		return false
 	}
 	if binaryHash == "" {
@@ -782,7 +759,6 @@ func (s *Server) recordTrustReuseAtGeneration(provider *registry.Provider, seKey
 	if err != nil {
 		return false
 	}
-	expectedRevocationGeneration, revocationEventID := s.trustReuseCache.revocationState(seKey)
 	now := s.trustReuseCache.now()
 	var applicationVerifiedAt *time.Time
 	if evidence, ok := provider.ApplicationEvidenceSnapshot(); ok {
@@ -1086,165 +1062,30 @@ func (s *Server) trustReuseMetric(decision trustReuseDecision, reason trustReuse
 	}
 }
 
-// tryTrustReuseFastSkip consumes durable device evidence only after the caller
-// has verified a fresh registration-bound signed challenge. A changed binary is
-// admitted solely through the optional immutable server-derived release fact.
+// tryTrustReuseFastSkip uses process posture in enforce mode. Shadow observes
+// that policy separately while retaining the baseline trust-reuse decision.
 func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Provider, resp *protocol.AttestationResponseMessage, statusFieldsTrusted bool, facts ...approvedReleaseTransitionFact) bool {
-	reject := func(reason trustReuseReason) bool {
-		s.trustReuseMetric("", reason)
+	if s != nil && !s.processPostureEnforced() {
+		if provider != nil {
+			if ar := provider.GetAttestationResult(); ar != nil {
+				s.observeProcessPosture(provider, *ar, "", provider.StagedMDAChain(), false, "trust_reuse")
+			}
+		}
+		return s.legacyTryTrustReuseFastSkip(providerID, provider, resp, statusFieldsTrusted, facts...)
+	}
+	if s == nil || provider == nil || resp == nil || !statusFieldsTrusted ||
+		!provider.GetFreshCodeAttested() {
 		return false
 	}
-	if s == nil || s.trustReuseCache == nil || provider == nil || resp == nil {
+	ar := provider.GetAttestationResult()
+	if ar == nil {
 		return false
 	}
-	if blocked, _ := s.trustSafetyStatus(); blocked {
-		return reject(trustReuseReasonRevocationSafety)
-	}
-	if s.mdmClient == nil {
-		return reject(trustReuseReasonNoDeviceEvidence)
-	}
-	if !statusFieldsTrusted ||
-		resp.SIPEnabled == nil || !*resp.SIPEnabled ||
-		resp.SecureBootEnabled == nil || !*resp.SecureBootEnabled {
-		return reject(trustReuseReasonRecordedPostureBad)
-	}
-	if provider.ChallengeShouldStop() {
-		return reject(trustReuseReasonRevoked)
-	}
-	provider.Mu().Lock()
-	var seKey, serial string
-	if provider.AttestationResult != nil {
-		seKey = provider.AttestationResult.PublicKey
-		serial = provider.AttestationResult.SerialNumber
-	}
-	provider.Mu().Unlock()
-	if seKey == "" || serial == "" {
-		return reject(trustReuseReasonMissingIdentity)
-	}
-	if s.trustReuseIdentityPending(seKey) {
-		return reject(trustReuseReasonRevocationSafety)
-	}
-	freshBinaryHash, err := normalizeSHA256Hex(resp.BinaryHash, "binary_hash")
-	if err != nil {
-		return reject(trustReuseReasonMissingIdentity)
-	}
-	var fact approvedReleaseTransitionFact
-	if len(facts) > 0 {
-		fact = facts[0]
-	}
-	result := s.trustReuseCache.decideTrustReuse(trustReuseInput{
-		SEPubKey:          seKey,
-		Serial:            serial,
-		FreshBinaryHash:   freshBinaryHash,
-		ReleaseTransition: fact,
-	})
-	if result.Decision == "" {
-		return reject(result.Reason)
-	}
-	record := result.Record
-	if result.Decision == trustReuseDecisionApprovedReleaseTransition ||
-		result.Decision == trustReuseDecisionContinuityReleaseTransition {
-		evidence, ok := provider.ApplicationEvidenceSnapshot()
-		if !ok || evidence.BinaryHash != freshBinaryHash ||
-			evidence.Version != fact.Version ||
-			evidence.Platform != fact.Platform ||
-			evidence.Backend != fact.Backend {
-			return reject(trustReuseReasonTransitionUnapproved)
-		}
-		// The approved A→B transition has just proven binary B (fresh signed
-		// challenge + verified application evidence). Advance the cached and
-		// durable application identity to B so a later deactivation of
-		// release A (ApprovedFromBinaryHashes only lists ACTIVE predecessors)
-		// cannot orphan the record and force this device back to live MDM.
-		// The hardware-proof timestamp is deliberately NOT refreshed — it
-		// still dates the last live device verification, so the reuse window
-		// keeps expiring on the hardware proof, not on binary churn.
-		record.lastVerifiedBinaryHash = freshBinaryHash
-		at := evidence.VerifiedAt
-		record.applicationProofVerifiedAt = &at
-	}
-	// Every valid reuse grant (window-fresh OR continuity) re-anchors the
-	// continuity chain at the grant instant: a continuity fast-skip is itself
-	// proof of a normal-OS boot (the live SE challenge just ran), so chained
-	// sub-allowance gaps each extend coverage. The hardware-proof timestamp is
-	// NEVER advanced by reuse — only a full live MDM verification moves it.
-	record.continuousCoverageUntil = s.trustReuseCache.now()
-	epoch := provider.HardUntrustEpoch()
-	rec := store.ProviderTrustReuse{
-		SEPubKey:                   seKey,
-		Serial:                     record.serial,
-		TrustLevel:                 record.trustLevel,
-		LastVerifiedBinaryHash:     record.lastVerifiedBinaryHash,
-		SIPEnabled:                 record.sipEnabled,
-		SecureBootFull:             record.secureBootFull,
-		MDAUDID:                    record.mdaUDID,
-		HardwareProofVerifiedAt:    record.hardwareProofVerifiedAt,
-		ApplicationProofVerifiedAt: record.applicationProofVerifiedAt,
-		ContinuousCoverageUntil:    coverageToStore(record.continuousCoverageUntil),
-		EvidenceGeneration:         record.evidenceGeneration,
-		RevocationGeneration:       record.revocationGeneration,
-		RevocationEventID:          record.revocationEventID,
-	}
-	if st := s.trustReuseCache.store; st != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		writeResult, persistErr := st.UpsertProviderTrustReuse(
-			ctx, rec, record.revocationGeneration)
-		cancel()
-		if persistErr != nil || !writeResult.Applied {
-			if persistErr != nil {
-				s.logger.Warn("trust-reuse: durable grant CAS failed", "error", persistErr)
-			}
-			if !writeResult.Applied {
-				s.trustReuseCache.installRevocationGeneration(
-					seKey, writeResult.RevocationGeneration)
-			}
-			return reject(trustReuseReasonRevoked)
-		}
-		record.evidenceGeneration = writeResult.EvidenceGeneration
-		record.revocationGeneration = writeResult.RevocationGeneration
-		rec.EvidenceGeneration = writeResult.EvidenceGeneration
-		rec.RevocationGeneration = writeResult.RevocationGeneration
-	}
-	s.trustReuseCache.recordTrust(rec)
-	if !provider.GrantHardwareEvidenceAtEpochIfNotUntrusted(registry.DeviceEvidence{
-		SEPublicKey:          seKey,
-		Serial:               serial,
-		VerifiedAt:           record.hardwareProofVerifiedAt,
-		EvidenceGeneration:   record.evidenceGeneration,
-		RevocationGeneration: record.revocationGeneration,
-	}, epoch) {
-		return reject(trustReuseReasonRevoked)
-	}
-	s.markTrustCoverage(seKey, providerID)
-	provider.SetMDMFailureReason("")
-	s.sendTrustStatus(provider, registry.TrustHardware, "online", string(result.Decision))
-	s.registry.PersistProvider(provider)
-	s.trustReuseMetric(result.Decision, trustReuseReasonAllowed)
-	s.logger.Info("trust-reuse granted hardware without live MDM or APNs",
-		"provider_id", providerID,
-		"decision", result.Decision,
-		"mda_udid", result.Record.mdaUDID,
-	)
-	return true
+	return s.attachCachedMDAProof(providerID, provider, *ar)
 }
 
-// --- Connection-continuity coverage tracking ---
-//
-// The coordinator advances a durable ContinuousCoverageUntil watermark for
-// every provider it currently observes connected AND hardware-trusted on a
-// live SE-challenged connection anchored at a full live verification or a
-// valid reuse grant. Writes are batched (one upsert pass every
-// trustCoverageWriteInterval — no per-provider goroutines) plus exact-time
-// sweeps on provider disconnect and graceful coordinator shutdown. A
-// coordinator crash simply leaves the last periodic write standing, so the
-// measured gap is only ever OVER-estimated (fail-safe: continuity refuses,
-// full live verification runs).
-
-// trustCoverageWriteInterval is the batched periodic coverage-write cadence.
-// Also the crash slack: after a coordinator crash the watermark lags the true
-// disconnect by at most one interval, which the 90s reconnect allowance and
-// the 120s security ceiling both comfortably absorb without ever admitting a
-// RecoveryOS round-trip (>= ~3 minutes).
+// --- Historical connection coverage for scheduling and shadow compatibility ---
+// Enforced hardware authorization does not depend on these timestamps.
 const trustCoverageWriteInterval = 30 * time.Second
 
 // markTrustCoverage registers seKey as covered by providerID's live

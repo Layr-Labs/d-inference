@@ -198,6 +198,7 @@ type releaseTrustPolicySnapshot struct {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
+	processPostureMode            ProcessPostureMode
 	registry                      *registry.Registry
 	store                         store.Store
 	ledger                        *payments.Ledger
@@ -802,6 +803,9 @@ func setRequestRateLimitHeaders(w http.ResponseWriter, st ratelimit.Stat) {
 
 // NewServer creates a configured Server with all routes mounted.
 func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger *slog.Logger) *Server {
+	if err := cfg.ProcessPostureMode.Check(); err != nil {
+		panic(err)
+	}
 	// Wire the store into the registry for provider fleet persistence.
 	reg.SetStore(st)
 
@@ -817,6 +821,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	}
 
 	s := &Server{
+		processPostureMode:       cfg.ProcessPostureMode.normalized(),
 		registry:                 reg,
 		store:                    st,
 		ledger:                   payments.NewLedger(st),
@@ -839,8 +844,14 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		firstContentDeadlineBase: firstContentDeadlineBase,
 		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
 	}
+	s.codeAttestThrottle.legacyReuse = !s.processPostureEnforced()
+	logger.Info("process posture policy configured", "mode", s.processPostureMode, "enforced", s.processPostureEnforced())
+	if s.metrics != nil {
+		mode := s.processPostureMode
+		s.metrics.RegisterGaugeLabels("process_posture_policy_mode", func() float64 { return 1 }, MetricLabel{"mode", string(mode)})
+	}
 	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
-		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s security ceiling; clamping DOWN",
+		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s legacy scheduling ceiling; clamping DOWN",
 			"requested", os.Getenv("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP"),
 			"allowance", maxTrustReuseReconnectGap,
 			"reason", "a contiguous offline gap must stay below the RecoveryOS round-trip floor (Threat-Model T-036)",

@@ -1,10 +1,6 @@
 package api
 
 import (
-	"bytes"
-	"crypto/sha256"
-
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -271,18 +267,15 @@ func (s *mdmVerificationScheduler) applyLateMDA(
 	attemptCancel := job.attemptCancel
 	s.mu.Unlock()
 
-	mdaResult, err := attestation.VerifyMDADeviceAttestation(certChain)
-	if err != nil || mdaResult == nil || !mdaResult.Valid {
-		s.metricCounter("mda_verification_total", "outcome", "invalid")
-		return true
-	}
-	wantFreshness := sha256.Sum256([]byte(bound.attestation.PublicKey))
-	if len(mdaResult.FreshnessCode) == 0 ||
-		!bytes.Equal(mdaResult.FreshnessCode, wantFreshness[:]) ||
-		(mdaResult.DeviceSerial != "" &&
-			mdaResult.DeviceSerial != bound.attestation.SerialNumber) ||
-		(mdaResult.DeviceUDID != "" && mdaResult.DeviceUDID != udid) {
-		s.metricCounter("mda_verification_total", "outcome", "binding_mismatch")
+	// Verification and observation can take time; recheck callback ownership
+	// afterward so a replacement connection cannot inherit this completion.
+	proof, err := s.deps.verifyMDA(certChain)
+	if !s.server.processPostureEnforced() {
+		s.server.observeProcessPosture(bound.provider, bound.attestation, udid, certChain, true, "late_mda")
+		if err != nil || !s.server.legacyValidateLateMDA(bound.attestation, udid, proof) {
+			return true
+		}
+	} else if err != nil || proof == nil || !proof.Valid {
 		return true
 	}
 
@@ -305,9 +298,16 @@ func (s *mdmVerificationScheduler) applyLateMDA(
 	if !stillCurrent {
 		return true
 	}
-	if !bound.provider.SetMDAProofIfHardwareBound(certChain, mdaResult, true) {
+	installed := false
+	if s.server.processPostureEnforced() {
+		installed = s.server.installVerifiedProcessPosture(bound.provider, bound.attestation, udid, certChain, proof, true)
+	} else {
+		installed = bound.provider.SetMDAProofIfHardwareBound(certChain, proof, true)
+	}
+	if !installed {
 		return true
 	}
+
 	if attemptCancel != nil {
 		attemptCancel()
 	}

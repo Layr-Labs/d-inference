@@ -55,11 +55,12 @@ type mdmSchedulerAttemptResult struct {
 }
 
 type mdmSchedulerDeps struct {
-	now      func() time.Time
-	newTimer func(time.Duration) mdmSchedulerTimer
-	jitter   func(time.Duration, time.Duration) time.Duration
-	execute  func(context.Context, mdmLiveBinding, store.VerificationTaskKind, string) mdmSchedulerAttemptResult
-	reuseMDA func(mdmLiveBinding) bool
+	verifyMDA func([][]byte) (*attestation.MDAResult, error)
+	now       func() time.Time
+	newTimer  func(time.Duration) mdmSchedulerTimer
+	jitter    func(time.Duration, time.Duration) time.Duration
+	execute   func(context.Context, mdmLiveBinding, store.VerificationTaskKind, string) mdmSchedulerAttemptResult
+	reuseMDA  func(mdmLiveBinding) bool
 }
 
 type verificationDuePageStore interface {
@@ -151,6 +152,9 @@ func newMDMVerificationScheduler(s *Server, cfg MDMSchedulerConfig, deps mdmSche
 			}
 			return minimum + rand.N(maximum-minimum+1)
 		}
+	}
+	if deps.verifyMDA == nil {
+		deps.verifyMDA = attestation.VerifyMDADeviceAttestation
 	}
 	if deps.execute == nil {
 		deps.execute = s.executeScheduledVerification

@@ -63,21 +63,8 @@ func (s *Server) codeAttestMetric(outcome string) {
 // Providers with no APNs device token (legacy <0.6.0, or headless boxes with no
 // GUI session) can never attest, so the loop exits immediately — they are derouted
 // once enforcement begins, the intended "everyone must update" outcome.
-// tryCrossVersionReuse combines a genuine cached APNs proof (same SE identity,
-// same exact APNs token — the process key MAY differ, since the provider mints
-// a fresh ephemeral NodeKeyPair every process start) with CURRENT generation-
-// bound application evidence (a fresh SE-signed challenge attesting this exact
-// process key and approved binary) only to authorize a live encrypted resume
-// challenge to the current process key. The cached proof must additionally
-// have been EARNED by the same binary this process now runs, or by an APPROVED
-// active predecessor of the current release (the exact approved-transition
-// derivation) — a proof earned by a since-deactivated or unknown release falls
-// through to a real APNs challenge under the durable floor (Codex 05:55Z P1).
-// Decrypting that challenge is the sole possession proof for the new key; the
-// persisted proof never grants code trust by itself. This is what lets a
-// routine upgrade/restart re-attest over the live WebSocket instead of falling
-// to a fresh APNs push behind the durable per-device floor while queued
-// requests expire (Codex 05:33Z #1).
+// tryCrossVersionReuse requires the original process key in enforce mode.
+// Shadow preserves the baseline transition behavior for rollout comparison.
 func (s *Server) tryCrossVersionReuse(
 	ctx context.Context,
 	providerID string,
@@ -97,6 +84,9 @@ func (s *Server) tryCrossVersionReuse(
 	nodeKey := provider.PublicKey
 	provider.Mu().Unlock()
 	if nodeKey == "" || evidence.ProcessPublicKey != nodeKey {
+		return false
+	}
+	if s.processPostureEnforced() && !s.codeAttestThrottle.reuseProcessIdentity(evidence.SEPublicKey, evidence.APNsToken, nodeKey) {
 		return false
 	}
 	cachedBinaryHash, ok := s.codeAttestThrottle.reuseAttestationForTransition(
@@ -749,6 +739,7 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 			sePubKey, version, apnsToken, nodeKey, attestedBinaryHash)
 		// The APNs challenge was atomically consumed after signature verification.
 	}
+	s.processCodeProofSettled(providerID, provider)
 	s.codeAttestMetric("attested")
 	s.logger.Info("provider code-attested via APNs")
 	// Newly eligible for private routing — drain requests that queued waiting for an

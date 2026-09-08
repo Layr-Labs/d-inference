@@ -21,10 +21,8 @@ package api
 //   - hardware: MDA certificate chain verified against Apple Root CA (future)
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -402,6 +400,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				return
 			}
 			provider = s.registry.Register(providerID, conn, regMsg)
+			if s.processPostureEnforced() {
+				provider.RequireProcessPosture()
+			}
 			s.attachProviderLocation(providerID, provider, r)
 			s.verifyProviderAttestation(providerID, provider, regMsg)
 
@@ -1623,21 +1624,13 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	provider.Mu().Unlock()
 
 	if trustLevel == registry.TrustSelfSigned {
-		// DAR-326 Phase 0: trust-reuse fast-skip. The live SE challenge above just
-		// re-proved this connection's identity + posture. If this device recently
-		// passed a FULL live MDM verification (a fresh trust-reuse record) and the
-		// fresh SIGNED challenge re-proves the SAME identity, an unchanged binary,
-		// and good posture within the window, grant hardware now and complete the
-		// scheduler fallback before any worker/command. The live SE challenge
-		// always ran; any gate miss falls through to durable live verification.
+		// Enforce requires exact process continuity. Shadow retains baseline
+		// reuse while recording the independent posture evaluation.
 		if s.tryTrustReuseFastSkip(providerID, provider, resp, statusFieldsTrusted, releaseFact) {
-			// The fast-skip granted hardware WITHOUT running the full live MDM verify,
-			// so verifyAppleDeviceAttestation never ran on this connection. Reuse the
-			// durable MDA proof (re-verified locally against Apple's root + re-bound to
-			// this SE key) so a restart keeps mda_verified green with zero MDM/APNs
-			// traffic — the whole point of the fast-skip is to avoid that round-trip.
-			if ar := provider.GetAttestationResult(); ar != nil {
-				s.attachCachedMDAProof(providerID, provider, *ar)
+			if !s.processPostureEnforced() {
+				if ar := provider.GetAttestationResult(); ar != nil {
+					s.attachCachedMDAProof(providerID, provider, *ar)
+				}
 			}
 			if s.mdmScheduler != nil {
 				s.mdmScheduler.ChallengeSettled(provider, true)
@@ -1657,7 +1650,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			// inside the 120s dispatch-queue deadline, not on the refresh
 			// spread. Durable due time, priority, and retry stage then decide
 			// when SecurityInfo runs.
-			if s.mdmScheduler != nil {
+			if s.mdmScheduler != nil && (!s.processPostureEnforced() || provider.GetFreshCodeAttested()) {
 				s.mdmScheduler.PromoteFailedFastSkip(provider)
 				s.mdmScheduler.ChallengeSettled(provider, false)
 			}
@@ -3257,13 +3250,13 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 type mdmVerifyOutcome int
 
 const (
-	mdmVerifyGranted   mdmVerifyOutcome = iota // hardware trust granted — stop
-	mdmVerifyTransient                         // not-enrolled / not-found / timeout / error — retry
-	mdmVerifyTerminal                          // posture mismatch (hard untrust) — stop
+	mdmVerifySecurityInfoPassed mdmVerifyOutcome = iota // OS query passed; Apple posture still required
+	mdmVerifyTransient                                  // not-enrolled / not-found / timeout / error — retry
+	mdmVerifyTerminal                                   // posture mismatch (hard untrust) — stop
 )
 
 // verifyProviderViaMDM runs one MDM SecurityInfo attempt and, on success,
-// upgrades the live provider to hardware trust. It records a bucketed
+// advances to Apple posture verification. It records a bucketed
 // MDMFailureReason and returns a fixed outcome to the scheduler. Transient
 // transport/enrollment failures never hard-untrust; proven posture mismatch does.
 func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, provider *registry.Provider, attestResult attestation.VerificationResult) mdmVerifyOutcome {
@@ -3381,41 +3374,27 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 		provider.SetMDMFailureReason("securityinfo-timeout")
 		return mdmVerifyTransient
 	}
-	binaryHash := providerApplicationBinaryHash(
-		provider, attestResult.PublicKey, attestResult.BinaryHash,
-	)
-
-	// Durable revocation is authoritative. Persist/recover the verified device
-	// evidence at the expected generation before touching live hardware trust;
-	// then the helper atomically rechecks the provider epoch/status while granting.
-	if !s.recordTrustReuse(
-		provider,
-		attestResult.PublicKey,
-		attestResult.SerialNumber,
-		binaryHash,
-		mdmResult.MDMSIPEnabled,
-		mdmResult.MDMSecureBootFull,
-		mdmResult.UDID,
-	) {
-		s.ddIncr("mdm.verification", []string{"outcome:deferred-revocation-cas"})
+	if provider.ChallengeShouldStop() {
 		return mdmVerifyTransient
 	}
-	provider.SetMDMFailureReason("")
-	s.sendTrustStatus(provider, registry.TrustHardware, "online", "MDM verification passed")
-	s.ddIncr("mdm.verification", []string{"outcome:granted"})
-	s.logger.Info("MDM verification passed; upgraded live provider to hardware trust",
-		"mdm_sip", mdmResult.MDMSIPEnabled,
-		"mdm_secure_boot", mdmResult.MDMSecureBootFull,
-		"mdm_auth_root_volume", mdmResult.MDMAuthRootVolume,
-	)
-	s.registry.PersistProvider(provider)
+	if !s.processPostureEnforced() {
+		s.observeProcessPosture(provider, attestResult, mdmResult.UDID, provider.StagedMDAChain(), false, "security_info")
+		if !s.legacyGrantSecurityInfo(provider, attestResult, mdmResult.UDID, false) {
+			return mdmVerifyTransient
+		}
+	} else {
+		// SecurityInfo comes from the OS under test; only Apple's process-bound
+		// posture certificate may promote hardware trust.
+		provider.SetMDMFailureReason("apple-posture-pending")
+		s.sendTrustStatus(provider, registry.TrustSelfSigned, "online", processPosturePending)
+	}
 
 	// Direct attempt-level callers retain the historical synchronous MDA behavior.
 	// Scheduler workers enqueue MDA behind the same global budget instead.
 	if _, scheduled := ctx.Value(mdmSchedulerAttemptContextKey{}).(*mdmSchedulerAttemptMetadata); !scheduled {
 		s.verifyAppleDeviceAttestation(ctx, providerID, provider, attestResult, mdmResult.UDID)
 	}
-	return mdmVerifyGranted
+	return mdmVerifySecurityInfoPassed
 }
 
 // ApplyLateSecurityInfo accepts a delayed response only for the exact current
@@ -3447,23 +3426,15 @@ func (s *Server) ApplyLateSecurityInfo(
 		)
 		return
 	}
-	ar := binding.attestation
-	binaryHash := providerApplicationBinaryHash(
-		binding.provider, ar.PublicKey, ar.BinaryHash,
-	)
-	if !s.recordLateTrustReuse(
-		binding.provider, ar.PublicKey, ar.SerialNumber, binaryHash,
-		true, true, udid,
-	) {
-		return
+	if !s.processPostureEnforced() {
+		s.observeProcessPosture(binding.provider, binding.attestation, udid, binding.provider.StagedMDAChain(), false, "late_security_info")
+		if !s.legacyGrantSecurityInfo(binding.provider, binding.attestation, udid, true) {
+			return
+		}
+	} else {
+		binding.provider.SetMDMFailureReason("apple-posture-pending")
+		s.sendTrustStatus(binding.provider, registry.TrustSelfSigned, "online", processPosturePending)
 	}
-	binding.provider.SetMDMFailureReason("")
-	s.sendTrustStatus(binding.provider, registry.TrustHardware, "online", "MDM verification passed (late SecurityInfo)")
-	s.registry.PersistProvider(binding.provider)
-	if s.metrics != nil {
-		s.metrics.IncCounter("mdm_late_securityinfo_upgrade_total")
-	}
-	s.ddIncr("mdm.verification", []string{"outcome:granted-late"})
 	s.mdmScheduler.CompleteLateSecurityInfo(
 		*binding, udid, commandUUID,
 	)
@@ -3495,73 +3466,30 @@ func (s *Server) stageDurableMDAChain(provider *registry.Provider, serial string
 	provider.StageMDAChainFromJSON(chain)
 }
 
-// attachCachedMDAProof tries to satisfy the Apple Device Attestation (MDA) leg
-// from the durable cert chain restored on reconnect, WITHOUT a fresh
-// DevicePropertiesAttestation round-trip. Apple rate-limits a fresh attestation to
-// ≈1/device/7d and it rides the same throttled MicroMDM→APNs channel as
-// SecurityInfo, so re-fetching on every reconnect is the reason restarted
-// providers show "Apple Device Attestation incomplete". The cached chain is
-// re-verified here against Apple's pinned Enterprise Attestation Root CA (an
-// expired or tampered chain is rejected) and re-bound to THIS connection's SE key
-// via the FreshnessCode OID (anti-relay). Returns true if a valid, bound proof was
-// attached — which requires the provider to already hold hardware trust.
-func (s *Server) attachCachedMDAProof(providerID string, provider *registry.Provider, attestResult attestation.VerificationResult) bool {
+// attachCachedMDAProof selects strict process resumption or baseline cache
+// compatibility according to the immutable server policy mode.
+func (s *Server) attachCachedMDAProof(providerID string, provider *registry.Provider, ar attestation.VerificationResult) bool {
+	if !s.processPostureEnforced() {
+		s.observeProcessPosture(provider, ar, "", provider.StagedMDAChain(), false, "cached_mda")
+		return s.legacyAttachCachedMDAProof(providerID, provider, ar)
+	}
+	if !provider.GetFreshCodeAttested() {
+		return false
+	}
 	chain := provider.StagedMDAChain()
 	if len(chain) == 0 {
 		return false
 	}
-	mdaResult, err := attestation.VerifyMDADeviceAttestation(chain)
-	if err != nil || mdaResult == nil || !mdaResult.Valid {
-		// Chain no longer verifies (expired / not Apple-signed) — fall through to a
-		// fresh request.
-		return false
-	}
-
-	// Cached reuse REQUIRES the strong SE-key binding: the FreshnessCode OID in the
-	// Apple-signed chain must equal SHA-256 of THIS connection's SE public key. A
-	// serial-only match is deliberately NOT sufficient to reuse a stored chain — if
-	// the SE key rotated (re-image / keychain reset) the old chain no longer binds
-	// this key, so we fall through to a fresh attestation rather than letting a new
-	// key inherit the prior device's Apple proof. (A live challenge has already
-	// proven possession of this SE key, so the binding is meaningful.)
-	if attestResult.PublicKey == "" || len(mdaResult.FreshnessCode) == 0 {
-		return false
-	}
-	// INVARIANT: this must use the exact same input as the fresh path's nonce
-	// (verifyAppleDeviceAttestation computes expectedFreshness = sha256([]byte(
-	// attestResult.PublicKey)) and sends its base64 as the DeviceAttestationNonce).
-	// Apple echoes the decoded nonce as the FreshnessCode, so a chain earned fresh
-	// has FreshnessCode == this digest. Keep the two formulas identical.
-	want := sha256.Sum256([]byte(attestResult.PublicKey))
-	if !bytes.Equal(mdaResult.FreshnessCode, want[:]) {
-		return false
-	}
-	// Defense in depth: when Apple included a serial, it must match this machine's
-	// attested serial (privacy-enrolled chains omit the serial — the SE-key binding
-	// above carries the proof in that case).
-	if mdaResult.DeviceSerial != "" && mdaResult.DeviceSerial != attestResult.SerialNumber {
-		return false
-	}
-
-	if !provider.SetMDAProofIfHardwareBound(chain, mdaResult, true) {
-		// Not hardware-trusted (yet) — nothing to attach the proof to.
-		return false
-	}
-	// Persist immediately under THIS connection's record. The grant-path
-	// PersistProvider ran before this attach, so without this write the new
-	// session's row would carry an empty mda_cert_chain until the next throttled
-	// heartbeat — and a disconnect in that window would lose the chain (serial now
-	// indexes this session's row), forcing a fresh, rate-limited refetch on the
-	// next reconnect. Mirrors the fresh-MDA path's immediate persist.
-	s.registry.PersistProvider(provider)
-	s.logger.Info("MDA reused from durable SE-key-bound certificate chain")
-	s.ddIncr("mda.verification", []string{"outcome:reused"})
-	return true
+	return s.installProcessPosture(provider, ar, "", chain, false)
 }
 
 // verifyAppleDeviceAttestation sends a DeviceInformation command requesting
 // DevicePropertiesAttestation and verifies the Apple-signed certificate chain.
 func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID string, provider *registry.Provider, attestResult attestation.VerificationResult, udid string) {
+	if !s.processPostureEnforced() {
+		s.legacyVerifyAppleDeviceAttestation(ctx, providerID, provider, attestResult, udid)
+		return
+	}
 	setOutcome := func(outcome string) {
 		if metadata, ok := ctx.Value(mdmSchedulerAttemptContextKey{}).(*mdmSchedulerAttemptMetadata); ok {
 			metadata.mdaOutcome = outcome
@@ -3582,18 +3510,17 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 		return
 	}
 
-	// Compute SE key hash for nonce-based key binding.
-	// If the provider has an SE public key, include its hash as the
-	// DeviceAttestationNonce (base64-encoded). Apple decodes the nonce and
-	// embeds the raw bytes as FreshnessCode (OID 1.2.840.113635.100.8.11.1)
-	// in the signed cert, cryptographically binding the SE key to genuine hardware.
-	var seKeyNonce string
-	var expectedFreshness [32]byte
-	if attestResult.PublicKey != "" {
-		seKeyHash := sha256.Sum256([]byte(attestResult.PublicKey))
-		seKeyNonce = base64.StdEncoding.EncodeToString(seKeyHash[:])
-		expectedFreshness = seKeyHash
+	provider.Mu().Lock()
+	processKey := provider.PublicKey
+	provider.Mu().Unlock()
+	generation, _ := s.trustReuseCache.revocationState(attestResult.PublicKey)
+	nonce, err := attestation.ProcessPostureNonce(attestResult.PublicKey, processKey, generation)
+	if err != nil || !provider.GetFreshCodeAttested() {
+		setOutcome("binding_mismatch")
+		return
 	}
+	seKeyNonce := base64.StdEncoding.EncodeToString(nonce)
+
 	s.logger.Info("requesting Apple Device Attestation",
 		"se_key_binding_requested", seKeyNonce != "",
 	)
@@ -3623,61 +3550,21 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 		return
 	}
 
-	// Verify the certificate chain against Apple's Enterprise Attestation Root CA
-	mdaResult, err := attestation.VerifyMDADeviceAttestation(attestResp.CertChain)
-	if err != nil {
-		setOutcome("invalid")
-		s.logger.Error("MDA certificate chain parse error", "error", err)
+	if ctx.Err() != nil {
+		setOutcome("cancelled")
 		return
 	}
-
-	if !mdaResult.Valid {
-		setOutcome("invalid")
-		s.logger.Warn("MDA certificate chain verification failed")
-		return
-	}
-
-	// Cross-check: MDA serial must match the provider's self-reported serial
-	if mdaResult.DeviceSerial != "" && mdaResult.DeviceSerial != attestResult.SerialNumber {
-		setOutcome("binding_mismatch")
-		s.logger.Error("MDA serial binding mismatch")
-		s.registry.MarkUntrusted(providerID)
-		return
-	}
-
-	// Apple Device Attestation verified — store the proof for coordinator-side
-	// trust decisions and reuse. Public APIs expose only the redacted verdict.
-	// Acquire provider lock since these fields are read by HTTP handlers
-	// (handleProviderAttestation, handleChatCompletions) concurrently.
-	seKeyBound := false
-	if seKeyNonce != "" && len(mdaResult.FreshnessCode) > 0 {
-		seKeyBound = bytes.Equal(mdaResult.FreshnessCode, expectedFreshness[:])
-	}
-
-	if seKeyNonce != "" && !seKeyBound {
-		setOutcome("binding_mismatch")
-		s.logger.Warn("MDA FreshnessCode did not bind the current Secure Enclave key")
-		return
-	}
-	if !provider.SetMDAProofIfHardwareBound(attestResp.CertChain, mdaResult, seKeyBound) {
-		setOutcome("invalid")
+	if !s.installProcessPosture(provider, attestResult, udid, attestResp.CertChain, true) {
+		if provider.GetMDMFailureReason() == "apple-posture-unavailable" {
+			setOutcome("transient")
+		} else {
+			setOutcome("invalid")
+		}
 		return
 	}
 	setOutcome("verified")
+	s.registry.DrainQueuedRequestsForProviderWithReason(provider, registry.DrainTriggerChallenge)
 
-	// Persist the freshly-earned chain NOW so it is durable for reuse. The
-	// hardware-grant PersistProvider ran before this MDA leg, so without an explicit
-	// write here the chain would only reach the store on the next throttled
-	// heartbeat persist — and would be lost (and re-fetched, hitting Apple's
-	// ~1/device/7d rate limit) if the provider disconnects in that window. With a
-	// durable (Postgres) store this is what makes the proof recoverable across a
-	// coordinator restart.
-	s.registry.PersistProvider(provider)
-
-	s.logger.Info("MDA verified",
-		"se_key_bound", seKeyBound,
-		"freshness_code_present", len(mdaResult.FreshnessCode) > 0,
-	)
 }
 
 // providerAttestationCacheTTL bounds staleness of the public trust listing. It

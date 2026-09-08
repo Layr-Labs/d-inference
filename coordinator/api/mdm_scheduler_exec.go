@@ -398,7 +398,7 @@ func (s *Server) executeScheduledVerification(ctx context.Context, binding mdmLi
 	if kind == store.VerificationTaskSecurityInfo {
 		outcome := s.verifyProviderViaMDM(ctx, binding.providerID, binding.provider, binding.attestation)
 		switch outcome {
-		case mdmVerifyGranted:
+		case mdmVerifySecurityInfoPassed:
 			return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomeSuccess, granted: true, udid: metadata.udid}
 		case mdmVerifyTerminal:
 			return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomePostureMismatch, terminal: true, udid: metadata.udid}

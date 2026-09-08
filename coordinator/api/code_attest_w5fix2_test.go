@@ -783,16 +783,9 @@ func TestCrossVersionReuseCurrentApplicationEvidenceSameProcessReuses(t *testing
 	}
 }
 
-// TestRestartFreshProcessKeyTransitionsViaResumeWithoutPush reproduces the
-// routine upgrade/restart (Codex 05:33Z #1): the provider mints a fresh
-// ephemeral NodeKeyPair every process start, so K2 reconnects with the same SE
-// identity + APNs token, current generation-bound application evidence
-// attesting K2, and a cached genuine proof recorded under K1. That must
-// authorize a live encrypted resume challenge to K2 — decrypting it is the
-// possession proof for the new key — and re-attest with ZERO new APNs pushes,
-// so the device never sits behind the durable 20-minute push floor while
-// queued requests expire at 120s.
-func TestRestartFreshProcessKeyTransitionsViaResumeWithoutPush(t *testing.T) {
+// A new process cannot inherit a prior APNs proof even when current signed
+// release metadata matches. It must bootstrap through an actual APNs delivery.
+func TestRestartFreshProcessKeyRequiresFreshAPNs(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
 	fastBudgets(srv)
@@ -837,11 +830,11 @@ func TestRestartFreshProcessKeyTransitionsViaResumeWithoutPush(t *testing.T) {
 	}
 	srv.codeAttestLoop(context.Background(), "k2", k2)
 
-	if got := atomic.LoadInt32(&pushes); got != 0 {
-		t.Fatalf("restart transition sent %d APNs pushes, want 0 (resume path)", got)
+	if got := atomic.LoadInt32(&pushes); got == 0 {
+		t.Fatal("new process skipped fresh APNs")
 	}
-	if !k2.GetCodeAttested() || !k2.GetFreshCodeAttested() {
-		t.Fatal("restarted process did not re-attest via the live resume proof")
+	if k2.GetCodeAttested() || k2.GetFreshCodeAttested() {
+		t.Fatal("new key inherited code trust")
 	}
 }
 
@@ -941,7 +934,7 @@ func TestRestartTransitionWrongSESignatureRefused(t *testing.T) {
 	_, _, wrongSE, _ := providerKeyMaterial(t)
 	provider := crossVersionProvider(kPub, sePub, "0.6.14")
 	seedFreshProcessAttestation(
-		srv, sePub, "0.6.13", provider.APNsDeviceToken, "old-process-key",
+		srv, sePub, "0.6.13", provider.APNsDeviceToken, provider.PublicKey,
 		trHashB)
 	armCrossVersionApplicationEvidence(t, srv, provider, sePub)
 	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error {
@@ -1109,9 +1102,8 @@ func TestHashlessRegistrationPersistsApplicationEvidenceHashForRestartReuse(t *t
 		t.Fatalf("restart-seeded APNs proof binary hash = %q, ok=%v; want %q", got, ok, trHashA)
 	}
 
-	// Restart with a fresh process key. The persisted proof must compose with
-	// current generation-bound application evidence and authorize a live resume;
-	// exact-key reuse would not exercise the binary identity carried by this fix.
+	// A fresh process key must not inherit the durable proof, even with the
+	// same release metadata. The retained hash is evidence, not authorization.
 	k2Pub, k2Priv, _, _ := providerKeyMaterial(t)
 	reconnected := crossVersionProvider(k2Pub, sePubB64, provider.Version)
 	reconnected.AttestationResult.BinaryHash = ""
@@ -1131,11 +1123,11 @@ func TestHashlessRegistrationPersistsApplicationEvidenceHashForRestartReuse(t *t
 			t, restarted, reconnected, "p1", k2Priv, seKey, message)
 	}
 	restarted.codeAttestLoop(context.Background(), "p1", reconnected)
-	if got := atomic.LoadInt32(&pushes); got != 0 {
-		t.Fatalf("restart-seeded proof sent %d APNs pushes, want 0", got)
+	if got := atomic.LoadInt32(&pushes); got == 0 {
+		t.Fatal("durable evidence authorized a new process key")
 	}
-	if !reconnected.GetCodeAttested() || !reconnected.GetFreshCodeAttested() {
-		t.Fatal("restart-seeded proof did not complete the live process-key resume")
+	if reconnected.GetCodeAttested() || reconnected.GetFreshCodeAttested() {
+		t.Fatal("new key inherited durable code trust")
 	}
 }
 
@@ -1243,12 +1235,8 @@ func TestRestartTransitionDeactivatedReleaseProofForcesFreshAPNsChallenge(t *tes
 	}
 }
 
-// TestRestartSameBinaryTransitionsViaResumeWithoutPush: a routine process
-// restart on the SAME approved binary (fresh ephemeral process key, same SE
-// identity + token + binary) still rides the cached genuine proof into a live
-// resume challenge — zero new APNs pushes — even when the policy lists no
-// predecessor releases at all.
-func TestRestartSameBinaryTransitionsViaResumeWithoutPush(t *testing.T) {
+// Unchanged binary hashes do not prove survival of the old process key.
+func TestRestartSameBinaryCannotResumeWithNewProcessKey(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
 	fastBudgets(srv)
@@ -1276,10 +1264,10 @@ func TestRestartSameBinaryTransitionsViaResumeWithoutPush(t *testing.T) {
 	}
 	srv.codeAttestLoop(context.Background(), "p1", provider)
 
-	if got := atomic.LoadInt32(&pushes); got != 0 {
-		t.Fatalf("same-binary restart sent %d APNs pushes, want 0 (resume path)", got)
+	if got := atomic.LoadInt32(&pushes); got == 0 {
+		t.Fatal("same binary/new key skipped fresh APNs")
 	}
-	if !provider.GetCodeAttested() || !provider.GetFreshCodeAttested() {
-		t.Fatal("same-binary restart did not re-attest via the live resume proof")
+	if provider.GetCodeAttested() || provider.GetFreshCodeAttested() {
+		t.Fatal("same binary/new key inherited code trust")
 	}
 }

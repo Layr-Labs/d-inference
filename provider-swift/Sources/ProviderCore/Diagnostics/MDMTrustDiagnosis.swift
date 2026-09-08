@@ -1,26 +1,8 @@
 import Foundation
 
-/// Pure decision for the "enrolled but the coordinator's live MDM check hasn't
-/// completed" diagnosis — the silent stall that `darkbloom doctor` used to miss.
-///
-/// The operative hardware-trust path is the coordinator's LIVE MDM SecurityInfo
-/// check, re-earned per connection (the coordinator retries with a bounded
-/// backoff — roughly the first retry within a couple minutes, then ~every 15 min
-/// — not a fixed 5-min poll). Apple throttles SecurityInfo, so on a flaky/sleeping
-/// box that check can keep timing out: the
-/// device is genuinely enrolled in Darkbloom MDM, yet the coordinator never
-/// upgrades it past `self_signed`, so it stays ONLINE but receives NO traffic.
-///
-/// The coordinator does NOT emit a distinct "MDM timed out" trust reason — at
-/// registration it sends "SE attestation verified, awaiting MDM verification"
-/// and stays there. So this state can only be INFERRED locally, by combining
-/// the daemon's last trust level (`self_signed`) with this Mac's actual MDM
-/// enrollment (`profiles status` says it IS enrolled in Darkbloom). That pair —
-/// "we're enrolled, but trust is still self_signed" — is the unresponsive-MDM
-/// signature, and it must read differently from "not enrolled at all".
-///
-/// Pure value logic so it is unit-testable without spawning `profiles` or
-/// reading the daemon state file.
+/// Enrollment and trust are separate: a managed Mac may still be waiting for
+/// SecurityInfo, Apple posture or process identity verification. Local enrollment
+/// does not establish which remote step is pending.
 public enum MDMTrustDiagnosis {
     /// Decide the MDM-enrollment trust diagnostic for the operator, given the
     /// daemon's last-known coordinator trust level and this Mac's MDM enrollment
@@ -70,8 +52,9 @@ public enum MDMTrustDiagnosis {
             guard trustLevel == "self_signed", status == "online" else { return nil }
             return Diagnostic(
                 section: .trust, name: "mdm verification", level: .warn,
-                message: "this Mac IS enrolled in Darkbloom MDM, but the coordinator's live MDM SecurityInfo check hasn't completed — trust is still self_signed, so you're ONLINE but will receive NO traffic until that check passes (this network requires hardware trust). Apple throttles SecurityInfo, so a sleeping or flaky machine can keep this pending.",
-                fix: "keep the Mac awake and APNs reachable (don't let it sleep / drop network), then wait a few minutes for the coordinator's next SecurityInfo check (it retries within ~2 min, then about every 15 min). If it's still self_signed after >15 min, open System Settings → General → Device Management (Profiles) and confirm the Darkbloom profile is installed and NOT showing as Pending; if it's pending, approve it, otherwise re-run `darkbloom enroll`.")
+                message: "this Mac IS enrolled in Darkbloom MDM, but SecurityInfo, Apple posture or process identity verification is still pending. Trust remains self_signed: you're ONLINE but receive NO traffic until verification completes.",
+                fix: "keep the provider running, the Mac awake and APNs reachable. Check that the Darkbloom profile is approved rather than Pending. Verification retries automatically; fresh Apple attestations are rate limited, so repeated restarts or re-enrollment will not speed it up.")
+
         case .enrolledOtherMDM(let serverURL):
             return Diagnostic(
                 section: .trust, name: "mdm enrollment", level: .warn,

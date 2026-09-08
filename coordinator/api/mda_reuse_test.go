@@ -5,7 +5,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -31,7 +30,12 @@ func mintMDALeafChain(t *testing.T, serial string, freshness []byte) (chain [][]
 
 // mintMDALeafChainExp is mintMDALeafChain with an explicit leaf NotAfter, so tests
 // can exercise reuse behavior across the cert's validity window over time.
-func mintMDALeafChainExp(t *testing.T, serial string, freshness []byte, notAfter time.Time) (chain [][]byte, root *x509.Certificate) {
+type mdaTestIssuer struct {
+	key  *ecdsa.PrivateKey
+	root *x509.Certificate
+}
+
+func newMDATestIssuer(t *testing.T) *mdaTestIssuer {
 	t.Helper()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -50,13 +54,20 @@ func mintMDALeafChainExp(t *testing.T, serial string, freshness []byte, notAfter
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, err = x509.ParseCertificate(caDER)
+	root, err := x509.ParseCertificate(caDER)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return &mdaTestIssuer{caKey, root}
+}
+func (issuer *mdaTestIssuer) mint(t *testing.T, serial string, freshness []byte, notAfter time.Time, omitPosture ...bool) [][]byte {
+	t.Helper()
 	leafKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	serialBytes, _ := asn1.Marshal(serial)
 	freshBytes, _ := asn1.Marshal(freshness)
+	udidBytes, _ := asn1.Marshal("UDID-1")
+	sipBytes, _ := asn1.Marshal(0)
+	bootBytes, _ := asn1.Marshal("Full Security")
 	leafTmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
 		Subject:      pkix.Name{CommonName: "Leaf"},
@@ -66,51 +77,53 @@ func mintMDALeafChainExp(t *testing.T, serial string, freshness []byte, notAfter
 		ExtraExtensions: []pkix.Extension{
 			{Id: attestation.OIDDeviceSerialNumber, Value: serialBytes},
 			{Id: attestation.OIDFreshnessCode, Value: freshBytes},
+			{Id: attestation.OIDDeviceUDID, Value: udidBytes},
+			{Id: attestation.OIDSIPStatus, Value: sipBytes},
+			{Id: attestation.OIDSecureBootStatus, Value: bootBytes},
 		},
 	}
-	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, root, &leafKey.PublicKey, caKey)
+	if len(omitPosture) > 0 && omitPosture[0] {
+		filtered := leafTmpl.ExtraExtensions[:0]
+		for _, ext := range leafTmpl.ExtraExtensions {
+			if !ext.Id.Equal(attestation.OIDSIPStatus) && !ext.Id.Equal(attestation.OIDSecureBootStatus) {
+				filtered = append(filtered, ext)
+			}
+		}
+		leafTmpl.ExtraExtensions = filtered
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, issuer.root, &leafKey.PublicKey, issuer.key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return [][]byte{leafDER}, root
+	return [][]byte{leafDER}
+}
+func mintMDALeafChainExp(t *testing.T, serial string, freshness []byte, notAfter time.Time) ([][]byte, *x509.Certificate) {
+	issuer := newMDATestIssuer(t)
+	return issuer.mint(t, serial, freshness, notAfter), issuer.root
 }
 
 // reconnectWithStagedChain mints a chain bound to (serial, sePubKey), installs the
 // test CA, and drives a provider through the reconnect → re-grant sequence so the
 // durable chain is staged and hardware is held — exactly the state the reuse path
 // runs in. Returns the live server + provider.
-func reconnectWithStagedChain(t *testing.T, serial, sePubKey string) (*Server, *registry.Provider, func()) {
+func reconnectWithStagedChain(t *testing.T, serial, _ string) (*Server, *registry.Provider, func()) {
 	t.Helper()
-	seHash := sha256.Sum256([]byte(sePubKey))
-	chain, root := mintMDALeafChain(t, serial, seHash[:])
-	restore := attestation.OverrideRootCAForTest(root)
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	reg := registry.New(logger)
-	// mdmClient deliberately nil: the reuse path must never touch it. A fresh
-	// DevicePropertiesAttestation send would deref nil and panic, so a green result
-	// here proves the rate-limited APNs round-trip was skipped.
-	srv := &Server{registry: reg, logger: logger}
-
-	regMsg := &protocol.RegisterMessage{
-		Type:     protocol.TypeRegister,
-		Hardware: protocol.Hardware{ChipName: "M4 Max", MemoryGB: 64},
-		Models:   []protocol.ModelInfo{{ID: "m", ModelType: "chat"}},
-		Backend:  "mlx-swift",
+	node, _, _, se := providerKeyMaterial(t)
+	nonce, err := attestation.ProcessPostureNonce(se, node)
+	if err != nil {
+		t.Fatal(err)
 	}
-	p := reg.Register("prov-mda", nil, regMsg)
-	p.SetAttestationResult(&attestation.VerificationResult{SerialNumber: serial, PublicKey: sePubKey})
-
-	// Simulate reconnect: the store has a durable chain; RestoreProviderState stages
-	// it (capping trust to self_signed). Hardware is then re-earned live.
-	chainJSON, _ := json.Marshal(chain)
-	reg.RestoreProviderState(p, &store.ProviderRecord{
-		ID:           "prov-mda",
-		TrustLevel:   string(registry.TrustHardware),
-		MDAVerified:  true,
-		MDACertChain: chainJSON,
-	})
-	p.SetAttested(true, registry.TrustHardware)
+	chain, root := mintMDALeafChain(t, serial, nonce)
+	restore := attestation.OverrideRootCAForTest(root)
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	p := processPostureProvider(t, srv, "prov-mda", node, se)
+	ar := *p.GetAttestationResult()
+	ar.SerialNumber = serial
+	p.SetAttestationResult(&ar)
+	p.SetFreshCodeAttested()
+	data, _ := json.Marshal(chain)
+	p.StageMDAChainFromJSON(data)
 	return srv, p, restore
 }
 
@@ -170,58 +183,28 @@ func mdaVerified(p *registry.Provider) bool {
 // storedProviders snapshot), so a provider that earned MDA in a prior connection
 // keeps mda_verified green on reconnect — with no fresh MDM/APNs round-trip.
 func TestStageDurableMDAChain_LiveStoreReusedAcrossReconnect(t *testing.T) {
-	const serial, sePub = "SERIAL-LIVE", "se-pub-live"
-	seHash := sha256.Sum256([]byte(sePub))
-	chain, root := mintMDALeafChain(t, serial, seHash[:])
-	defer attestation.OverrideRootCAForTest(root)()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	mem := store.NewMemory(store.Config{AdminKey: "k"})
-	chainJSON, _ := json.Marshal(chain)
-	// A previous connection earned MDA and persisted it; the record survives the
-	// provider's disconnect.
-	if err := mem.UpsertProvider(context.Background(), store.ProviderRecord{
-		ID:           "old-session",
-		SerialNumber: serial,
-		TrustLevel:   string(registry.TrustHardware),
-		MDAVerified:  true,
-		MDACertChain: chainJSON,
-	}); err != nil {
-		t.Fatal(err)
+	srv, p, restore := reconnectWithStagedChain(t, "SERIAL-LIVE", "")
+	defer restore()
+	if !srv.attachCachedMDAProof(p.ID, p, *p.GetAttestationResult()) {
+		t.Fatal("initial certificate failed")
+	}
+	restarted := NewServer(registry.New(quietLogger()), srv.store, ServerConfig{}, quietLogger())
+	next := processPostureProvider(t, restarted, "next", p.PublicKey, p.GetAttestationResult().PublicKey)
+	ar := *next.GetAttestationResult()
+	ar.SerialNumber = "SERIAL-LIVE"
+	next.SetAttestationResult(&ar)
+	next.SetFreshCodeAttested()
+	restarted.stageDurableMDAChain(next, ar.SerialNumber)
+	if !restarted.attachCachedMDAProof(next.ID, next, ar) {
+		t.Fatal("durable same-process certificate failed")
+	}
+	if !waitForCond(time.Second, func() bool {
+		rec, err := srv.store.GetProviderBySerial(context.Background(), ar.SerialNumber)
+		return err == nil && rec != nil && rec.MDAVerified && len(rec.MDACertChain) > 0
+	}) {
+		t.Fatal("resumed certificate not persisted")
 	}
 
-	reg := registry.New(logger)
-	srv := &Server{registry: reg, logger: logger, store: mem}
-
-	// New reconnect session: storedProviders is nil/empty (startup snapshot), so the
-	// chain must come from the live store read.
-	p := reg.Register("new-session", nil, &protocol.RegisterMessage{Type: protocol.TypeRegister, Backend: "mlx-swift"})
-	p.SetAttestationResult(&attestation.VerificationResult{SerialNumber: serial, PublicKey: sePub})
-
-	srv.stageDurableMDAChain(p, serial)
-	if len(p.StagedMDAChain()) == 0 {
-		t.Fatal("expected the durable chain to be staged from the live store read")
-	}
-
-	p.SetAttested(true, registry.TrustHardware)
-	if !srv.attachCachedMDAProof("new-session", p, *p.GetAttestationResult()) {
-		t.Fatal("expected reuse of the live-store chain")
-	}
-	if !mdaVerified(p) {
-		t.Error("MDAVerified must be true after reuse via the live store path")
-	}
-
-	// The reuse must persist the chain under THIS session's record, so a later
-	// reconnect can reuse it again instead of re-hitting Apple's rate limit. Look
-	// it up by serial (which now indexes this session) and confirm the chain is
-	// durable.
-	rec, err := mem.GetProviderBySerial(context.Background(), serial)
-	if err != nil || rec == nil {
-		t.Fatalf("expected a persisted record for serial after reuse: %v", err)
-	}
-	if !rec.MDAVerified || len(rec.MDACertChain) == 0 {
-		t.Errorf("reuse must persist the chain: mda_verified=%v chain_len=%d", rec.MDAVerified, len(rec.MDACertChain))
-	}
 }
 
 // TestAttachCachedMDAProof_ExpiredChainNotReused proves the time dimension: an
@@ -230,26 +213,16 @@ func TestStageDurableMDAChain_LiveStoreReusedAcrossReconnect(t *testing.T) {
 // freshness model rather than a fixed expiry; this is the relying-party staleness
 // check.)
 func TestAttachCachedMDAProof_ExpiredChainNotReused(t *testing.T) {
-	const serial, sePub = "SERIAL-EXP", "se-pub-exp"
-	seHash := sha256.Sum256([]byte(sePub))
-	// Leaf already expired.
-	chain, root := mintMDALeafChainExp(t, serial, seHash[:], time.Now().Add(-time.Minute))
+	srv, p, restore := reconnectWithStagedChain(t, "SERIAL-EXP", "")
+	defer restore()
+	ar := p.GetAttestationResult()
+	nonce, _ := attestation.ProcessPostureNonce(ar.PublicKey, p.PublicKey)
+	chain, root := mintMDALeafChainExp(t, ar.SerialNumber, nonce, time.Now().Add(-time.Minute))
 	defer attestation.OverrideRootCAForTest(root)()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	reg := registry.New(logger)
-	srv := &Server{registry: reg, logger: logger}
-	p := reg.Register("p", nil, &protocol.RegisterMessage{Type: protocol.TypeRegister, Backend: "mlx-swift"})
-	p.SetAttestationResult(&attestation.VerificationResult{SerialNumber: serial, PublicKey: sePub})
-	chainJSON, _ := json.Marshal(chain)
-	p.StageMDAChainFromJSON(chainJSON)
-	p.SetAttested(true, registry.TrustHardware)
-
-	if srv.attachCachedMDAProof("p", p, *p.GetAttestationResult()) {
-		t.Fatal("expected an expired cached chain NOT to be reused")
-	}
-	if mdaVerified(p) {
-		t.Error("MDAVerified must stay false when the cached chain is expired")
+	data, _ := json.Marshal(chain)
+	p.StageMDAChainFromJSON(data)
+	if srv.attachCachedMDAProof(p.ID, p, *ar) || p.GetTrustLevel() == registry.TrustHardware {
+		t.Fatal("expired posture certificate authorized routing")
 	}
 }
 

@@ -29,7 +29,8 @@ import Testing
         let fix = try #require(diag.fix)
         #expect(fix.lowercased().contains("awake"))
         #expect(fix.lowercased().contains("apns"))
-        #expect(fix.lowercased().contains("15 min"))
+        #expect(fix.lowercased().contains("rate limited"))
+        #expect(fix.lowercased().contains("repeated restarts"))
         #expect(fix.contains("Pending"))
         #expect(fix.lowercased().contains("profile"))
     }

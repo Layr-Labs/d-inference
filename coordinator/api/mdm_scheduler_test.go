@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1395,10 +1394,14 @@ func TestMDMSchedulerMDAUsesSharedCapAndLowerPriority(t *testing.T) {
 
 func TestMDMSchedulerLateMDACompletesExactUDIDAndSEJob(t *testing.T) {
 	srv, st, sch := newSchedulerTestServer(t, MDMSchedulerConfig{Workers: 1, QueueCapacity: 8}, mdmSchedulerDeps{})
-	exact := schedulerTestProvider(t, srv, "late-mda-exact", "se-late-mda")
+	_, _, _, se := providerKeyMaterial(t)
+	exact := schedulerTestProvider(t, srv, "late-mda-exact", se)
 	other := schedulerTestProvider(t, srv, "late-mda-other", "se-other-mda")
 	exact.Mu().Lock()
-	exact.TrustLevel = registry.TrustHardware
+	exact.TrustLevel = registry.TrustSelfSigned
+	exact.CodeAttested, exact.FreshCodeAttested = true, true
+	exact.ChallengeVerifiedSIP = true
+	exact.AttestationResult.BinaryHash = trHashA
 	exact.Mu().Unlock()
 	other.Mu().Lock()
 	other.TrustLevel = registry.TrustHardware
@@ -1411,23 +1414,23 @@ func TestMDMSchedulerLateMDACompletesExactUDIDAndSEJob(t *testing.T) {
 		challengeSettled: false, allowMDA: true,
 	}
 	sch.mu.Lock()
-	sch.bindings["se-late-mda"] = &binding
+	sch.bindings[se] = &binding
 	sch.mu.Unlock()
-	sch.enqueueMDA(binding, "udid-late-mda")
-	mdaKey := verificationSchedulerKey("se-late-mda", store.VerificationTaskMDA)
+	sch.enqueueMDA(binding, "UDID-1")
+	mdaKey := verificationSchedulerKey(se, store.VerificationTaskMDA)
 	sch.mu.Lock()
 	sch.jobs[mdaKey].callbackGen = mdaGeneration
 	sch.jobs[mdaKey].callbackUUID = "mda-command"
-	sch.byUDID["udid-late-mda"] = mdaKey
+	sch.byUDID["UDID-1"] = mdaKey
 	sch.mu.Unlock()
-	freshness := sha256.Sum256([]byte("se-late-mda"))
-	chain, root := mintMDALeafChain(t, "serial-late-mda-exact", freshness[:])
+	freshness, _ := attestation.ProcessPostureNonce(se, exact.PublicKey)
+	chain, root := mintMDALeafChain(t, "serial-late-mda-exact", freshness)
 	restore := attestation.OverrideRootCAForTest(root)
 	defer restore()
 	if sch.applyLateMDA("different-udid", "mda-command", chain) {
 		t.Fatal("late MDA attached without exact scheduler UDID ownership")
 	}
-	if !sch.applyLateMDA("udid-late-mda", "mda-command", chain) {
+	if !sch.applyLateMDA("UDID-1", "mda-command", chain) {
 		t.Fatal("exact but unchallenged late MDA callback was not consumed and dropped")
 	}
 	exact.Mu().Lock()
@@ -1437,9 +1440,9 @@ func TestMDMSchedulerLateMDACompletesExactUDIDAndSEJob(t *testing.T) {
 		t.Fatal("late MDA granted before the current challenge settled")
 	}
 	sch.mu.Lock()
-	sch.bindings["se-late-mda"].challengeSettled = true
+	sch.bindings[se].challengeSettled = true
 	sch.mu.Unlock()
-	if !sch.applyLateMDA("udid-late-mda", "mda-command", chain) {
+	if !sch.applyLateMDA("UDID-1", "mda-command", chain) {
 		t.Fatal("exact challenged scheduled late MDA was not consumed")
 	}
 	exact.Mu().Lock()
@@ -1451,7 +1454,7 @@ func TestMDMSchedulerLateMDACompletesExactUDIDAndSEJob(t *testing.T) {
 	if !exactVerified || otherVerified {
 		t.Fatalf("late MDA attachment exact=%v other=%v", exactVerified, otherVerified)
 	}
-	rec, err := st.GetVerificationJob(context.Background(), "se-late-mda", store.VerificationTaskMDA)
+	rec, err := st.GetVerificationJob(context.Background(), se, store.VerificationTaskMDA)
 	if err != nil || rec == nil || rec.State != store.VerificationStateCompleted {
 		t.Fatalf("late MDA durable completion = %+v, %v", rec, err)
 	}

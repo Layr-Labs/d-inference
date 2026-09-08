@@ -56,11 +56,8 @@ type codeAttestPushBudgetStore interface {
 //
 // All maps are keyed by the Secure Enclave public key — the stable per-device
 // identity that survives reconnects and process restarts. Three knobs:
-//   - reuseWindow: how long a successful attestation is honored for a NEW
-//     connection with the same device, version, APNs token, and exact process
-//     node key without re-pushing. A process-key rotation always forces a fresh
-//     challenge. Within a single live connection the proof is exact regardless
-//     of this window.
+//   - reuseWindow: a bound on optional release-metadata transitions. Exact
+//     same-version process-key resumption is independent of elapsed downtime.
 //   - push budget (backgroundPushCooldown / alertPushCooldown): minimum spacing
 //     between pushes to the same device — the hard rate-limit backstop, chosen by
 //     delivery mode. Background stays <= 3 pushes/hour/device; alert can be much
@@ -70,6 +67,7 @@ type codeAttestPushBudgetStore interface {
 //     (within budget) instead of being pinned to the 20-minute background budget,
 //     and jitter de-synchronises fleet-wide reconnects (e.g. post-deploy).
 type codeAttestThrottle struct {
+	legacyReuse            bool // fixed at server construction; preserves baseline cache policy in shadow
 	mu                     sync.Mutex
 	attested               map[string]codeAttestRecord          // seKey -> last successful attestation (reuse cache)
 	lastPush               map[string]time.Time                 // seKey -> last push (device-level rate limit)
@@ -201,11 +199,9 @@ func defaultJitter(max time.Duration) time.Duration {
 	return time.Duration(rand.Int64N(int64(max)))
 }
 
-// reuseAttestation reports whether the device attested recently with the same
-// binary version, exact current non-empty APNs token, and exact registration-
-// bound process node key that decrypted E_K(nonce). Legacy token-less or
-// process-key-less rows are never reusable authorization inputs; they must
-// bootstrap a real push.
+// reuseAttestation authorizes a fresh encrypted challenge ONLY to the original
+// process key and token. No clock window is needed to prove process continuity;
+// hardware resumption separately verifies the process-bound Apple certificate.
 func (t *codeAttestThrottle) reuseAttestation(
 	seKey, version, token, nodeKey string,
 ) bool {
@@ -219,28 +215,32 @@ func (t *codeAttestThrottle) reuseAttestation(
 		r.version == version &&
 		r.token == token &&
 		r.nodeKey == nodeKey &&
-		t.now().Sub(r.at) < t.reuseWindow
+		t.reusableProcessTime(r.at, t.now())
 }
 
-// reuseAttestationForTransition supplies the genuine Apple/APNs half of an
-// approved release transition, returning the SE-attested binary identity the
-// cached proof was earned under. Version may differ, and — unlike same-version
-// reuseAttestation — the cached proof's process key may differ from the current
-// one: the provider generates a fresh ephemeral NodeKeyPair on every process
-// start, so requiring key equality here would push the whole fleet on every
-// routine upgrade/restart and strand providers behind the durable APNs floor
-// while queued requests expire. The proof must still be fresh, bound to the
-// same SE identity and exact current non-empty token, must itself carry a
-// process-key binding, and must record WHICH binary earned it (a legacy
-// unbound or identity-less row never authorizes a transition). The CALLER
-// (tryCrossVersionReuse) then decides whether that recorded identity — same
-// binary, or an APPROVED active predecessor of the current release — may
-// transition; a proof earned by a deactivated/unknown release falls through to
-// a real APNs challenge (Codex 05:55Z P1).
-// SECURITY: this only authorizes SENDING a live encrypted resume challenge to
-// the CURRENT registration process key; possession of that new key is proven
-// solely by decrypting E_K(nonce), and the SE signature over the recovered
-// nonce is still verified — the cached record never grants trust by itself.
+// reusableProcessTime keeps the legacy cache age policy confined to shadow.
+func (t *codeAttestThrottle) reusableProcessTime(at, now time.Time) bool {
+	if t.legacyReuse {
+		return now.Sub(at) < t.reuseWindow
+	}
+	return !at.After(now.Add(clockSkewTolerance))
+}
+
+// reuseProcessIdentity permits metadata transitions only for the exact key
+// that received the original APNs challenge. New-key possession is insufficient.
+func (t *codeAttestThrottle) reuseProcessIdentity(seKey, token, nodeKey string) bool {
+	if seKey == "" || token == "" || nodeKey == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r, ok := t.attested[seKey]
+	return ok && r.token == token && r.nodeKey == nodeKey && !r.at.After(t.now().Add(clockSkewTolerance))
+}
+
+// reuseAttestationForTransition returns cached release metadata, not authority.
+// tryCrossVersionReuse must first check reuseProcessIdentity against the exact
+// original process key. The short window here only bounds metadata transitions.
 func (t *codeAttestThrottle) reuseAttestationForTransition(
 	seKey, token string,
 ) (string, bool) {
@@ -674,8 +674,8 @@ func (t *codeAttestThrottle) seed(rows []store.CodeAttestation) int {
 		if r.SEPubKey == "" {
 			continue
 		}
-		if now.Sub(r.AttestedAt) >= t.reuseWindow {
-			continue // already outside the reuse window — would never be reused
+		if !t.reusableProcessTime(r.AttestedAt, now) {
+			continue // honor the active mode before durable cache rows are seeded
 		}
 		if cur, ok := t.attested[r.SEPubKey]; ok && !r.AttestedAt.After(cur.at) {
 			continue // keep the fresher in-memory record

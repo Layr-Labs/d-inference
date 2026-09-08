@@ -37,8 +37,14 @@ public enum TrustReasonCatalog {
         case "SE attestation verified, awaiting MDM verification",
              "SE attestation verified, awaiting MDM/ACME upgrade":
             return DiagnosticAdvice(
-                message: "verified by Secure Enclave, but NOT yet hardware-trusted. You're ONLINE but receive NO traffic until the coordinator's MDM verification completes (this network requires hardware trust).",
-                fix: "run `darkbloom enroll`, then wait ~5 min for MDM verification.")
+                message: "registration verified, but device and process verification is still pending. You're ONLINE but receive NO traffic until hardware trust is established.",
+                fix: "run `darkbloom doctor` to check enrollment. If already enrolled, keep the provider running and wait for automatic verification; repeated restarts will not speed it up.")
+        case "awaiting Apple posture verification for this provider process":
+            return DiagnosticAdvice(
+                message: "connected, but Apple posture verification for this provider process is pending. No hardware-trusted traffic is assigned yet.",
+                fix: "keep the provider running and the Mac awake with APNs reachable. Verification retries automatically; Apple limits fresh attestations, so repeated restarts or re-enrollment will not speed it up.")
+        case "Apple posture and process identity verified":
+            return DiagnosticAdvice(message: "Apple posture and process identity verified; eligible for traffic when model capacity is ready.")
         case "MDM verification passed":
             return DiagnosticAdvice(
                 message: "hardware-trusted and eligible for traffic.",

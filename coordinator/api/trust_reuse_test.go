@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -416,72 +417,6 @@ func TestTrustReuseCacheInvalidate(t *testing.T) {
 		t.Fatal("invalidated record must not be a candidate")
 	}
 }
-func TestApprovedTransitionGrantsWithoutMDMOrAPNs(t *testing.T) {
-	srv, provider, clock := trustReuseFastSkipProvider(t)
-	processKey, processPrivate, sePrivate, sePublic := providerKeyMaterial(t)
-	provider.Mu().Lock()
-	provider.PublicKey = processKey
-	provider.AttestationResult.PublicKey = sePublic
-	provider.APNsDeviceToken = "token-current"
-	provider.Version = "0.8.15"
-	provider.ApplicationEvidence = registry.ApplicationEvidence{
-		SEPublicKey: sePublic, Serial: "SERIAL-1",
-		ProcessPublicKey: processKey, APNsToken: "token-current",
-		BinaryHash: trHashB,
-		Version:    "0.8.15", Platform: "macos-arm64", Backend: "mlx-swift",
-		VerifiedAt:         (*clock)(),
-		EvidenceGeneration: 1,
-		PolicyGeneration:   1,
-	}
-	provider.Mu().Unlock()
-	srv.releaseTrustPolicy.Store(&releaseTrustPolicySnapshot{
-		Generation: 1, Required: true,
-		// Release A (trHashA, 0.8.14) stays ACTIVE: the cached APNs proof
-		// earned under it may authorize the B transition resume below.
-		ByBinaryHash: map[string][]approvedReleasePolicy{
-			trHashA: {{Version: "0.8.14", Platform: "macos-arm64", Backend: "mlx-swift"}},
-		},
-	})
-	srv.trustReuseCache.recordTrust(
-		hardwareReuseRecord(sePublic, "SERIAL-1", trHashA, (*clock)()))
-	resp := goodFastSkipResp()
-	resp.BinaryHash = trHashB
-	fact := approvedReleaseTransitionFact{
-		Approved: true, BinaryHash: trHashB, Version: "0.8.15",
-		Platform: "macos-arm64", Backend: "mlx-swift", PolicyGeneration: 1,
-		ApprovedFromBinaryHashes: map[string]struct{}{trHashA: {}},
-	}
-	if !srv.tryTrustReuseFastSkip("prov-fs", provider, resp, true, fact) {
-		t.Fatal("approved transition should grant from fresh device evidence")
-	}
-
-	pushes := 0
-	srv.SetCodeAttestor(&fakeCodeAttestor{
-		onSend: func(_, _, _, _ string) error {
-			pushes++
-			return nil
-		},
-	})
-	srv.codeResumeSender = func(
-		_ string, message protocol.CodeAttestationResumeChallenge,
-	) error {
-		return completeResumeRoundTrip(
-			t, srv, provider, "prov-fs",
-			processPrivate, sePrivate, message,
-		)
-	}
-	// The no-new-push path is authorized only by this prior genuine APNs proof,
-	// then completed by a live encrypted process-key possession challenge.
-	srv.codeAttestThrottle.recordAttestedForProcess(
-		sePublic, "0.8.14", "token-current", processKey, trHashA)
-	provider.SignalApplicationProofSettled()
-	srv.codeAttestLoopWithResume(context.Background(), "prov-fs", provider, true)
-	if pushes != 0 || !provider.GetCodeAttested() ||
-		!provider.GetFreshCodeAttested() {
-		t.Fatalf("combined reusable APNs proof: pushes=%d code=%v fresh=%v",
-			pushes, provider.GetCodeAttested(), provider.GetFreshCodeAttested())
-	}
-}
 
 func TestSelfReportedActiveHashAloneCannotGrantCodeIdentity(t *testing.T) {
 	srv, provider, clock := trustReuseFastSkipProvider(t)
@@ -859,20 +794,6 @@ func goodFastSkipResp() *protocol.AttestationResponseMessage {
 	}
 }
 
-// TestTrustReuseFastSkipGrantsOnAllGates: all gates pass → hardware granted, MDM
-// round-trip skipped (the loop returns on hardware).
-func TestTrustReuseFastSkipGrantsOnAllGates(t *testing.T) {
-	srv, p, _ := trustReuseFastSkipProvider(t)
-	srv.trustReuseCache.recordTrust(hardwareReuseRecord("se-pub-key-bytes", "SERIAL-1", trHashA, srv.trustReuseCache.now()))
-
-	if !srv.tryTrustReuseFastSkip("prov-fs", p, goodFastSkipResp(), true /*statusFieldsTrusted*/) {
-		t.Fatal("all gates pass → fast-skip must grant")
-	}
-	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
-		t.Fatalf("trust = %q, want hardware after fast-skip grant", lvl)
-	}
-}
-
 // TestTrustReuseFastSkipDurableCASBlocksStaleCoordinator proves a cache seed is
 // never authoritative over a newer durable tombstone.
 func TestTrustReuseFastSkipDurableCASBlocksStaleCoordinator(t *testing.T) {
@@ -1126,11 +1047,11 @@ func TestRecordTrustReuseDurableBothOrderings(t *testing.T) {
 
 // --- FIX B: late-SecurityInfo grants are cached too ---
 
-// TestApplyLateSecurityInfoCachesReuse proves FIX B: a self_signed→hardware upgrade
+// TestApplyLateSecurityInfoDoesNotAuthorizeReuse proves FIX B: a self_signed→hardware upgrade
 // via a late SecurityInfo persists a trust-reuse record (same epoch-checked
 // write-through as the synchronous MDM path) so it gets restart-survivable
 // fast-skip.
-func TestApplyLateSecurityInfoCachesReuse(t *testing.T) {
+func TestApplyLateSecurityInfoDoesNotAuthorizeReuse(t *testing.T) {
 	fake := &fakeMDMServer{device: &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true}}
 	srv, p := mdmReliabilityServer(t, fake)
 	srv.SeedTrustReuseCache(context.Background()) // wire store + hook
@@ -1148,15 +1069,13 @@ func TestApplyLateSecurityInfoCachesReuse(t *testing.T) {
 		},
 	)
 
-	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
-		t.Fatalf("late SecurityInfo must upgrade to hardware, got %q", lvl)
+	if p.GetTrustLevel() != registry.TrustSelfSigned {
+		t.Fatal("late OS report granted hardware")
 	}
-	if _, ok := srv.trustReuseCache.reuseTrust("se-pub-key-bytes", "SERIAL-1", trHashA); !ok {
-		t.Fatal("late SecurityInfo grant must cache a reusable trust-reuse record (FIX B)")
+	if rows, _ := srv.store.ListProviderTrustReuse(context.Background()); len(rows) != 0 {
+		t.Fatal("late OS report persisted authorizing evidence")
 	}
-	if rows, _ := srv.store.ListProviderTrustReuse(context.Background()); len(rows) != 1 {
-		t.Fatalf("late grant must persist exactly one reuse row, got %d", len(rows))
-	}
+
 }
 
 // --- FIX C: fast-skip requires a configured MDM client ---
@@ -1261,12 +1180,12 @@ func TestRecordLateTrustReuseWithoutBinaryHashRespectsTombstone(t *testing.T) {
 	}
 }
 
-// TestApplyLateSecurityInfoGrantsWithoutBinaryHashPersistsNothing (review
+// TestApplyLateSecurityInfoHashlessRemainsPending (review
 // finding 2, late MDM path): a late SecurityInfo callback for a provider that
 // never self-reported a binary hash still upgrades the live connection to
 // hardware — the device proof is complete — while persisting/caching no
 // unbindable reuse record.
-func TestApplyLateSecurityInfoGrantsWithoutBinaryHashPersistsNothing(t *testing.T) {
+func TestApplyLateSecurityInfoHashlessRemainsPending(t *testing.T) {
 	fake := &fakeMDMServer{device: &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true}}
 	srv, p := mdmReliabilityServer(t, fake)
 	srv.SeedTrustReuseCache(context.Background())
@@ -1281,8 +1200,8 @@ func TestApplyLateSecurityInfoGrantsWithoutBinaryHashPersistsNothing(t *testing.
 		},
 	)
 
-	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
-		t.Fatalf("late SecurityInfo without optional binary hash must still grant hardware, got %q", lvl)
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
+		t.Fatalf("late SecurityInfo without optional binary hash must wait for Apple posture, got %q", lvl)
 	}
 	if rows, _ := srv.store.ListProviderTrustReuse(context.Background()); len(rows) != 0 {
 		t.Fatalf("no reuse record may be cached without a binary hash, got %d rows", len(rows))
@@ -1292,11 +1211,11 @@ func TestApplyLateSecurityInfoGrantsWithoutBinaryHashPersistsNothing(t *testing.
 	}
 }
 
-// TestApplyLateSecurityInfoHashlessEvidencePersistsForRestart covers the
+// TestApplyLateSecurityInfoHashlessEvidenceCannotAuthorizeReuse covers the
 // scheduler callback sibling of synchronous MDM verification. A production-
 // shape hashless registration with current SE/process-bound application
 // evidence must persist the approved hash and reseed reusable device evidence.
-func TestApplyLateSecurityInfoHashlessEvidencePersistsForRestart(t *testing.T) {
+func TestApplyLateSecurityInfoHashlessEvidenceCannotAuthorizeReuse(t *testing.T) {
 	fake := &fakeMDMServer{device: &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true}}
 	srv, p := mdmReliabilityServer(t, fake)
 	srv.SeedTrustReuseCache(context.Background())
@@ -1319,20 +1238,10 @@ func TestApplyLateSecurityInfoHashlessEvidencePersistsForRestart(t *testing.T) {
 	)
 
 	rows, err := srv.store.ListProviderTrustReuse(context.Background())
-	if err != nil || len(rows) != 1 || rows[0].LastVerifiedBinaryHash != trHashA {
-		t.Fatalf("late hashless grant rows=%+v err=%v, want one row bound to %q", rows, err, trHashA)
-	}
-	if _, ok := srv.trustReuseCache.reuseTrust("se-pub-key-bytes", "SERIAL-1", trHashA); !ok {
-		t.Fatal("late hashless grant did not install reusable device evidence")
+	if err != nil || len(rows) != 0 || p.GetTrustLevel() == registry.TrustHardware {
+		t.Fatalf("late OS report plus hash authorized hardware: rows=%d err=%v", len(rows), err)
 	}
 
-	restarted := NewServer(registry.New(quietLogger()), srv.store, ServerConfig{}, quietLogger())
-	if err := restarted.SeedTrustReuseCache(context.Background()); err != nil {
-		t.Fatalf("restart seed: %v", err)
-	}
-	if _, ok := restarted.trustReuseCache.reuseTrust("se-pub-key-bytes", "SERIAL-1", trHashA); !ok {
-		t.Fatal("late hashless device evidence did not survive restart reseeding")
-	}
 }
 
 // --- Round 2 FIX 2: post-write epoch recheck (check-then-write TOCTOU) ---
@@ -1447,6 +1356,12 @@ func TestVerifyChallengeFastSkipGrantDrainsQueue(t *testing.T) {
 	// Seed a fresh trust-reuse record so the fast-skip can grant.
 	srv.trustReuseCache.recordTrust(hardwareReuseRecord(seKey, "SER-DRAIN", binHash, time.Now()))
 
+	postureNonce, _ := attestation.ProcessPostureNonce(seKey, pubKey)
+	chain, root := mintMDALeafChain(t, "SER-DRAIN", postureNonce)
+	defer attestation.OverrideRootCAForTest(root)()
+	chainJSON, _ := json.Marshal(chain)
+	p.StageMDAChainFromJSON(chainJSON)
+	p.SetFreshCodeAttested()
 	// Enqueue work for the model.
 	req := &registry.QueuedRequest{
 		RequestID:  "queued-fast-skip",
@@ -1479,88 +1394,6 @@ func TestVerifyChallengeFastSkipGrantDrainsQueue(t *testing.T) {
 }
 
 // --- Codex P1: approved transition must advance the durable binary identity ---
-
-// TestApprovedTransitionAdvancesDurableBinaryIdentity: after an approved A→B
-// release transition granted hardware via reuse, the cached AND durable
-// application identity must read B — with the ORIGINAL hardware-proof
-// timestamp (binary churn must not extend the device-proof window). Otherwise,
-// once release A is deactivated (ApprovedFromBinaryHashes only lists ACTIVE
-// predecessors), the next B reconnect matches neither the same-binary nor the
-// transition path and the fleet falls back to live MDM — including on a fresh
-// coordinator seeded from the store during a blue-green deploy.
-func TestApprovedTransitionAdvancesDurableBinaryIdentity(t *testing.T) {
-	srv, provider, clock := trustReuseFastSkipProvider(t)
-	mem := srv.store.(*store.MemoryStore)
-	srv.trustReuseCache.store = mem
-
-	proofAt := (*clock)()
-	rec := hardwareReuseRecord("se-pub-key-bytes", "SERIAL-1", trHashA, proofAt)
-	srv.trustReuseCache.recordTrust(rec)
-	if _, err := mem.UpsertProviderTrustReuse(context.Background(), rec, 0); err != nil {
-		t.Fatalf("seed durable evidence: %v", err)
-	}
-
-	evidenceAt := proofAt.Add(30 * time.Minute)
-	provider.Mu().Lock()
-	provider.ApplicationEvidence = registry.ApplicationEvidence{
-		SEPublicKey: "se-pub-key-bytes", Serial: "SERIAL-1",
-		ProcessPublicKey: "proc-key",
-		BinaryHash:       trHashB,
-		Version:          "0.9.0", Platform: "macos-arm64", Backend: "mlx-swift",
-		VerifiedAt:         evidenceAt,
-		EvidenceGeneration: 1,
-		PolicyGeneration:   1,
-	}
-	provider.Mu().Unlock()
-
-	resp := goodFastSkipResp()
-	resp.BinaryHash = trHashB
-	fact := approvedReleaseTransitionFact{
-		Approved: true, BinaryHash: trHashB, Version: "0.9.0",
-		Platform: "macos-arm64", Backend: "mlx-swift", PolicyGeneration: 1,
-		ApprovedFromBinaryHashes: map[string]struct{}{trHashA: {}},
-	}
-	if !srv.tryTrustReuseFastSkip("prov-fs", provider, resp, true, fact) {
-		t.Fatal("approved A→B transition should grant from fresh device evidence")
-	}
-
-	rows := mustList(t, mem)
-	if len(rows) != 1 || rows[0].LastVerifiedBinaryHash != trHashB {
-		t.Fatalf("durable identity must advance to B, got %+v", rows)
-	}
-	if !rows[0].HardwareProofVerifiedAt.Equal(proofAt) {
-		t.Fatalf("hardware-proof timestamp must not be refreshed by a binary transition: got %v, want %v",
-			rows[0].HardwareProofVerifiedAt, proofAt)
-	}
-	if rows[0].ApplicationProofVerifiedAt == nil ||
-		!rows[0].ApplicationProofVerifiedAt.Equal(evidenceAt) {
-		t.Fatalf("application-proof timestamp must reflect the fresh B proof, got %v",
-			rows[0].ApplicationProofVerifiedAt)
-	}
-
-	// Release A deactivated: no fact lists A as an approved predecessor
-	// anymore. A B reconnect must reuse via the same-binary path — no fact,
-	// no live MDM.
-	result := srv.trustReuseCache.decideTrustReuse(trustReuseInput{
-		SEPubKey: "se-pub-key-bytes", Serial: "SERIAL-1", FreshBinaryHash: trHashB,
-	})
-	if result.Decision != trustReuseDecisionSameBinary {
-		t.Fatalf("post-transition decision = %q (reason %q), want same_binary",
-			result.Decision, result.Reason)
-	}
-
-	// Blue-green deploy: a fresh coordinator seeded from the SAME store must
-	// reuse on B and refuse the retired A.
-	restarted := newTrustReuseCacheWithWindow(defaultTrustReuseWindow)
-	restarted.now = *clock
-	restarted.seed(rows)
-	if _, ok := restarted.reuseTrust("se-pub-key-bytes", "SERIAL-1", trHashB); !ok {
-		t.Fatal("restart-seeded cache must reuse on B after A is deactivated")
-	}
-	if _, ok := restarted.reuseTrust("se-pub-key-bytes", "SERIAL-1", trHashA); ok {
-		t.Fatal("retired A hash must no longer reuse after the identity advanced")
-	}
-}
 
 // --- Connection-continuity reuse (RecoveryOS-physics premise) ---
 
@@ -1611,44 +1444,6 @@ func TestTrustReuseReconnectGapFromEnv(t *testing.T) {
 	}
 }
 
-// TestTrustReuseContinuityFastSkip: a provider whose wall-clock window is
-// STALE but whose coordinator-measured offline gap (45s) is within the
-// reconnect allowance fast-skips with the distinct "continuity" decision and
-// no live MDM round. Fails on the pre-continuity behavior (proof_expired).
-func TestTrustReuseContinuityFastSkip(t *testing.T) {
-	srv, p, _ := trustReuseFastSkipProvider(t)
-	now := srv.trustReuseCache.now()
-	provedAt := now.Add(-20 * time.Minute) // far beyond the 5m window
-	srv.trustReuseCache.recordTrust(coveredReuseRecord(
-		"se-pub-key-bytes", "SERIAL-1", trHashA, provedAt, now.Add(-45*time.Second)))
-
-	if result := srv.trustReuseCache.decideTrustReuse(trustReuseInput{
-		SEPubKey: "se-pub-key-bytes", Serial: "SERIAL-1", FreshBinaryHash: trHashA,
-	}); result.Decision != trustReuseDecisionContinuity {
-		t.Fatalf("decision = %q reason = %q, want %q",
-			result.Decision, result.Reason, trustReuseDecisionContinuity)
-	}
-	if !srv.tryTrustReuseFastSkip("prov-fs", p, goodFastSkipResp(), true) {
-		t.Fatal("stale window + 45s coordinator-measured gap must continuity fast-skip")
-	}
-	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
-		t.Fatalf("trust = %q, want hardware via continuity", lvl)
-	}
-	// The grant re-anchors coverage at the grant instant (chain continues) but
-	// NEVER advances the hardware-proof timestamp.
-	srv.trustReuseCache.mu.Lock()
-	rec := srv.trustReuseCache.records["se-pub-key-bytes"]
-	srv.trustReuseCache.mu.Unlock()
-	if !rec.hardwareProofVerifiedAt.Equal(provedAt) {
-		t.Fatalf("hardware proof advanced to %s by reuse; must stay %s",
-			rec.hardwareProofVerifiedAt, provedAt)
-	}
-	if !rec.continuousCoverageUntil.Equal(now) {
-		t.Fatalf("coverage = %s, want re-anchored at grant time %s",
-			rec.continuousCoverageUntil, now)
-	}
-}
-
 // TestTrustReuseContinuityRefusesLongGap: a 3-minute coordinator-measured gap
 // exceeds the allowance (and could span a RecoveryOS round-trip), so the
 // fast-skip declines and the provider falls back to full live verification.
@@ -1669,69 +1464,6 @@ func TestTrustReuseContinuityRefusesLongGap(t *testing.T) {
 	}
 	if lvl := p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
 		t.Fatalf("trust = %q after declined fast path, want self_signed", lvl)
-	}
-}
-
-// TestTrustReuseContinuityChainedGaps: three consecutive 50s reconnect gaps
-// each fast-skip — every continuity grant re-proves a normal-OS boot via the
-// live SE challenge and re-anchors coverage, so chaining is intended. The
-// hardware-proof timestamp never moves.
-func TestTrustReuseContinuityChainedGaps(t *testing.T) {
-	srv, p, _ := trustReuseFastSkipProvider(t)
-	cur := srv.trustReuseCache.now()
-	srv.trustReuseCache.now = func() time.Time { return cur }
-	provedAt := cur.Add(-20 * time.Minute)
-	srv.trustReuseCache.recordTrust(coveredReuseRecord(
-		"se-pub-key-bytes", "SERIAL-1", trHashA, provedAt, cur))
-
-	for i := range 3 {
-		cur = cur.Add(50 * time.Second) // offline gap since the last coverage anchor
-		if !srv.tryTrustReuseFastSkip("prov-fs", p, goodFastSkipResp(), true) {
-			t.Fatalf("chained gap #%d (50s) must continuity fast-skip", i+1)
-		}
-		srv.trustReuseCache.mu.Lock()
-		rec := srv.trustReuseCache.records["se-pub-key-bytes"]
-		srv.trustReuseCache.mu.Unlock()
-		if !rec.continuousCoverageUntil.Equal(cur) {
-			t.Fatalf("gap #%d: coverage = %s, want re-anchored at %s", i+1, rec.continuousCoverageUntil, cur)
-		}
-		if !rec.hardwareProofVerifiedAt.Equal(provedAt) {
-			t.Fatalf("gap #%d: hardware proof advanced by reuse", i+1)
-		}
-	}
-}
-
-// TestTrustReuseContinuityCrashSlack: after a coordinator crash the watermark
-// lags the true disconnect by up to one periodic pass (25s here). The measured
-// gap therefore INCLUDES that slack: a reconnect is admitted only when
-// slack + offline time fits the allowance, and refused beyond it (gap only
-// ever over-estimated — fail-safe).
-func TestTrustReuseContinuityCrashSlack(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		offline time.Duration
-		want    bool
-	}{
-		{"slack_plus_60s_admits", 60 * time.Second, true},   // 25+60 = 85s <= 90s
-		{"slack_plus_70s_refuses", 70 * time.Second, false}, // 25+70 = 95s > 90s
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			srv, p, _ := trustReuseFastSkipProvider(t)
-			disconnectAt := srv.trustReuseCache.now()
-			// Crash-style coverage: the last periodic write landed 25s before
-			// the (unstamped) disconnect.
-			srv.trustReuseCache.recordTrust(coveredReuseRecord(
-				"se-pub-key-bytes", "SERIAL-1", trHashA,
-				disconnectAt.Add(-20*time.Minute), disconnectAt.Add(-25*time.Second)))
-			reconnectAt := disconnectAt.Add(tc.offline)
-			srv.trustReuseCache.now = func() time.Time { return reconnectAt }
-
-			got := srv.tryTrustReuseFastSkip("prov-fs", p, goodFastSkipResp(), true)
-			if got != tc.want {
-				t.Fatalf("fast-skip = %v, want %v (measured gap %s, allowance %s)",
-					got, tc.want, tc.offline+25*time.Second, defaultTrustReuseReconnectGap)
-			}
-		})
 	}
 }
 
@@ -1939,5 +1671,19 @@ func TestSeedRetainsExpiredRowGenerationForRecoveryCAS(t *testing.T) {
 		rows[0].RevocationGeneration != 1 ||
 		rows[0].TrustLevel != string(registry.TrustHardware) {
 		t.Fatalf("post-grant row = %+v, want live hardware at generation 1", rows)
+	}
+}
+
+func TestTrustReuseTimestampsNeverAuthorizeHardware(t *testing.T) {
+	for _, age := range []time.Duration{0, time.Minute, 20 * time.Minute} {
+		for _, gap := range []time.Duration{0, 45 * time.Second, 85 * time.Second, 3 * time.Minute} {
+			srv, p, _ := trustReuseFastSkipProvider(t)
+			now := srv.trustReuseCache.now()
+			srv.trustReuseCache.recordTrust(coveredReuseRecord("se-pub-key-bytes", "SERIAL-1", trHashA, now.Add(-age), now.Add(-gap)))
+			fact := approvedReleaseTransitionFact{Approved: true, BinaryHash: trHashA, ApprovedFromBinaryHashes: map[string]struct{}{trHashA: {}}}
+			if srv.tryTrustReuseFastSkip(p.ID, p, goodFastSkipResp(), true, fact) || p.GetTrustLevel() == registry.TrustHardware {
+				t.Fatalf("timestamps/release fact granted hardware: age=%v gap=%v", age, gap)
+			}
+		}
 	}
 }

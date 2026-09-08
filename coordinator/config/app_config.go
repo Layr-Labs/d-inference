@@ -52,6 +52,9 @@ type AppConfig struct {
 
 // Check runs validation on every per-package config.
 func (c AppConfig) Check() error {
+	if err := c.ServerConfig.ProcessPostureMode.Check(); err != nil {
+		return fmt.Errorf("server: %w", err)
+	}
 	if err := c.StoreConfig.Check(); err != nil {
 		return fmt.Errorf("store: %w", err)
 	}

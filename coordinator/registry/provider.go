@@ -265,8 +265,11 @@ type Provider struct {
 	// is created on every (re)connect (default false) and discarded on Disconnect,
 	// so a SIP downgrade — which needs a reboot that drops the WS — forces
 	// re-attestation. Never persisted.
-	CodeAttested      bool
-	FreshCodeAttested bool
+	CodeAttested             bool
+	FreshCodeAttested        bool
+	processPostureFresh      bool // true only for this process's live Apple response
+	processPostureGeneration uint64
+	requireProcessPosture    bool // armed by the live provider registration handler
 
 	desiredModelsSent                 bool
 	runtimeCapabilitiesReconciled     bool

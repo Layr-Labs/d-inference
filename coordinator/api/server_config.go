@@ -12,6 +12,7 @@ import (
 // ServerConfig holds coordinator HTTP server and URL configuration applied
 // when NewServer constructs an instance.
 type ServerConfig struct {
+	ProcessPostureMode  ProcessPostureMode
 	Port                string
 	ConsoleURL          string
 	CORSOrigin          string
@@ -70,6 +71,7 @@ type BaseRewardsConfig struct {
 // ReadServerConfig reads server configuration from environment variables.
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
+		ProcessPostureMode:    ProcessPostureMode(os.Getenv(ProcessPostureModeEnv)),
 		Port:                  env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
 		ConsoleURL:            os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
 		CORSOrigin:            os.Getenv("CORS_ORIGIN"),

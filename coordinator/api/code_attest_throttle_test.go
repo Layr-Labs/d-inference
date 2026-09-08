@@ -43,8 +43,8 @@ func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
 		t.Fatal("must NOT reuse across a binary version change")
 	}
 	cur = cur.Add(th.reuseWindow) // window elapsed
-	if th.reuseAttestation(se, "0.6.0", "token", nodeKey) {
-		t.Fatal("reuse must expire after the window")
+	if !th.reuseAttestation(se, "0.6.0", "token", nodeKey) {
+		t.Fatal("surviving process must be able to prove continuity after a long outage")
 	}
 }
 

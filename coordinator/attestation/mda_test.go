@@ -25,8 +25,16 @@ func createTestMDACert(t *testing.T, sipEnabled, secureBootEnabled, kextsAllowed
 	}
 
 	// Encode boolean values as ASN.1
-	sipBytes, _ := asn1.Marshal(sipEnabled)
-	bootBytes, _ := asn1.Marshal(secureBootEnabled)
+	sipValue := 1
+	if sipEnabled {
+		sipValue = 0
+	}
+	sipBytes, _ := asn1.Marshal(sipValue)
+	bootValue := "Reduced Security"
+	if secureBootEnabled {
+		bootValue = "Full Security"
+	}
+	bootBytes, _ := asn1.Marshal(bootValue)
 	kextBytes, _ := asn1.Marshal(kextsAllowed)
 
 	template := &x509.Certificate{
@@ -112,8 +120,16 @@ func createTestMDACertChain(t *testing.T, sipEnabled, secureBootEnabled, kextsAl
 		t.Fatal(err)
 	}
 
-	sipBytes, _ := asn1.Marshal(sipEnabled)
-	bootBytes, _ := asn1.Marshal(secureBootEnabled)
+	sipValue := 1
+	if sipEnabled {
+		sipValue = 0
+	}
+	sipBytes, _ := asn1.Marshal(sipValue)
+	bootValue := "Reduced Security"
+	if secureBootEnabled {
+		bootValue = "Full Security"
+	}
+	bootBytes, _ := asn1.Marshal(bootValue)
 	kextBytes, _ := asn1.Marshal(kextsAllowed)
 
 	leafTemplate := &x509.Certificate{

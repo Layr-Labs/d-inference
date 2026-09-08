@@ -38,6 +38,7 @@ type fakeMDMServer struct {
 	failMDARawCommand bool
 
 	mdaCommandUUID string
+	mdaCommandBody string
 
 	// failSecurityInfoCommand makes POST /v1/commands (the SecurityInfo enqueue)
 	// return a 500 so mdm.SendSecurityInfoCommand errors — simulating a transient
@@ -116,6 +117,7 @@ func (f *fakeMDMServer) handler() http.Handler {
 		f.mu.Lock()
 		fail := f.failMDARawCommand
 		f.mdaCommandUUID = commandUUID
+		f.mdaCommandBody = string(body)
 		f.mu.Unlock()
 		if fail {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -202,12 +204,16 @@ func deviceAttestationWebhook(udid, commandUUID string, certChain ...[]byte) []b
 // registers one provider holding a valid attestation result (serial + SIP +
 // SecureBoot + SE public key), at self_signed trust. It returns the server, the
 // fake, and the live *registry.Provider.
-func mdmReliabilityServer(t *testing.T, fake *fakeMDMServer) (*Server, *registry.Provider) {
+func mdmReliabilityServer(t *testing.T, fake *fakeMDMServer, configs ...ServerConfig) (*Server, *registry.Provider) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
+	cfg := ServerConfig{}
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
+	srv := NewServer(reg, st, cfg, logger)
 	t.Cleanup(srv.Close)
 
 	ts := httptest.NewServer(fake.handler())
@@ -381,12 +387,12 @@ func TestVerifyProviderViaMDM_DeviceNotFoundTransient(t *testing.T) {
 	}
 }
 
-// TestVerifyProviderViaMDM_SuccessGranted: device enrolled + SecurityInfo
+// TestVerifyProviderViaMDM_SecurityInfoRequiresApplePosture: device enrolled + SecurityInfo
 // confirms SIP enabled & Secure Boot full matching attestation → granted
 // outcome, trust upgrades to hardware, and the failure reason is cleared. The
 // fake fails the downstream MDA raw command so verifyAppleDeviceAttestation
 // returns immediately (the upgrade has already happened by then).
-func TestVerifyProviderViaMDM_SuccessGranted(t *testing.T) {
+func TestVerifyProviderViaMDM_SecurityInfoRequiresApplePosture(t *testing.T) {
 	fake := &fakeMDMServer{
 		device:            &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
 		commandUUID:       "cmd-ok",
@@ -404,24 +410,24 @@ func TestVerifyProviderViaMDM_SuccessGranted(t *testing.T) {
 
 	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 
-	if outcome != mdmVerifyGranted {
-		t.Errorf("outcome = %v, want mdmVerifyGranted", outcome)
+	if outcome != mdmVerifySecurityInfoPassed {
+		t.Errorf("outcome = %v, want mdmVerifySecurityInfoPassed", outcome)
 	}
-	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
-		t.Errorf("trust = %q, want %q after success", lvl, registry.TrustHardware)
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
+		t.Errorf("trust = %q, want %q after success", lvl, registry.TrustSelfSigned)
 	}
-	if got := p.GetMDMFailureReason(); got != "" {
+	if got := p.GetMDMFailureReason(); got != "apple-posture-pending" {
 		t.Errorf("MDMFailureReason = %q, want empty after success", got)
 	}
 }
 
-// TestVerifyProviderViaMDM_SuccessGrantedWithoutBinaryHashOrApplicationEvidence
+// TestVerifyProviderViaMDM_HashlessSecurityInfoDoesNotGrant
 // (review finding 2, synchronous path): the self-reported binary hash is
 // OPTIONAL — a provider omitting it that passes the full live MDM SecurityInfo
 // check must still be upgraded to hardware trust. Without current bound
 // application evidence, only the durable reuse record lacks a hash, so nothing
 // is persisted or cached and every reconnect re-runs the full verification.
-func TestVerifyProviderViaMDM_SuccessGrantedWithoutBinaryHashOrApplicationEvidence(t *testing.T) {
+func TestVerifyProviderViaMDM_HashlessSecurityInfoDoesNotGrant(t *testing.T) {
 	fake := &fakeMDMServer{
 		device:            &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
 		commandUUID:       "cmd-ok",
@@ -435,11 +441,11 @@ func TestVerifyProviderViaMDM_SuccessGrantedWithoutBinaryHashOrApplicationEviden
 
 	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 
-	if outcome != mdmVerifyGranted {
-		t.Errorf("outcome = %v, want mdmVerifyGranted for a hashless provider", outcome)
+	if outcome != mdmVerifySecurityInfoPassed {
+		t.Errorf("outcome = %v, want mdmVerifySecurityInfoPassed for a hashless provider", outcome)
 	}
-	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
-		t.Errorf("trust = %q, want %q for a hashless provider passing full MDM", lvl, registry.TrustHardware)
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
+		t.Errorf("trust = %q, want %q for a hashless provider passing full MDM", lvl, registry.TrustSelfSigned)
 	}
 	if rows, _ := srv.store.ListProviderTrustReuse(context.Background()); len(rows) != 0 {
 		t.Fatalf("hashless grant must not persist reuse rows, got %d", len(rows))
@@ -478,29 +484,20 @@ func TestVerifyProviderViaMDM_HashlessRegistrationUsesBoundApplicationEvidence(t
 
 	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 
-	if outcome != mdmVerifyGranted {
-		t.Errorf("outcome = %v, want mdmVerifyGranted for bound application evidence", outcome)
+	if outcome != mdmVerifySecurityInfoPassed {
+		t.Errorf("outcome = %v, want mdmVerifySecurityInfoPassed for bound application evidence", outcome)
 	}
 	rows, err := srv.store.ListProviderTrustReuse(context.Background())
 	if err != nil {
 		t.Fatalf("list trust reuse: %v", err)
 	}
-	if len(rows) != 1 {
-		t.Fatalf("persisted reuse rows = %d, want 1", len(rows))
+	if len(rows) != 0 {
+		t.Fatalf("SecurityInfo persisted authorizing evidence: %d rows", len(rows))
 	}
-	if got := rows[0].LastVerifiedBinaryHash; got != binaryHash {
-		t.Fatalf("LastVerifiedBinaryHash = %q, want application hash %q", got, binaryHash)
+	if p.GetTrustLevel() == registry.TrustHardware {
+		t.Fatal("release hash plus SecurityInfo granted hardware without Apple posture")
 	}
-	if rows[0].ApplicationProofVerifiedAt == nil || !rows[0].ApplicationProofVerifiedAt.Equal(verifiedAt) {
-		t.Fatalf("ApplicationProofVerifiedAt = %v, want %v", rows[0].ApplicationProofVerifiedAt, verifiedAt)
-	}
-	cached, ok := srv.trustReuseCache.reuseTrust("se-pub-key-bytes", "SERIAL-1", binaryHash)
-	if !ok {
-		t.Fatal("bound application hash did not cache reusable hardware proof")
-	}
-	if cached.lastVerifiedBinaryHash != binaryHash {
-		t.Fatalf("cached binary hash = %q, want %q", cached.lastVerifiedBinaryHash, binaryHash)
-	}
+
 }
 
 func waitForMDACommand(t *testing.T, fake *fakeMDMServer) string {
@@ -516,7 +513,13 @@ func waitForMDACommand(t *testing.T, fake *fakeMDMServer) string {
 	return ""
 }
 
-func scheduledMDABinding(provider *registry.Provider) mdmLiveBinding {
+func scheduledMDABinding(t *testing.T, provider *registry.Provider) mdmLiveBinding {
+	_, _, _, se := providerKeyMaterial(t)
+	provider.Mu().Lock()
+	provider.AttestationResult.PublicKey = se
+	provider.CodeAttested, provider.FreshCodeAttested = true, true
+	provider.ChallengeVerifiedSIP = true
+	provider.Mu().Unlock()
 	return mdmLiveBinding{
 		providerID:       provider.ID,
 		provider:         provider,
@@ -533,7 +536,7 @@ func TestExecuteScheduledMDARequestFailureIsTransient(t *testing.T) {
 	srv, provider := mdmReliabilityServer(t, fake)
 
 	result := srv.executeScheduledVerification(
-		context.Background(), scheduledMDABinding(provider),
+		context.Background(), scheduledMDABinding(t, provider),
 		store.VerificationTaskMDA, "UDID-1",
 	)
 	if result.terminal || result.granted || result.outcome != store.VerificationOutcomeTransient {
@@ -555,7 +558,7 @@ func TestExecuteScheduledMDAWaiterOwnershipFailureIsTransient(t *testing.T) {
 	waitForMDACommand(t, fake)
 
 	result := srv.executeScheduledVerification(
-		context.Background(), scheduledMDABinding(provider),
+		context.Background(), scheduledMDABinding(t, provider),
 		store.VerificationTaskMDA, "UDID-1",
 	)
 	cancelFirst()
@@ -575,7 +578,7 @@ func TestExecuteScheduledMDAReceivedInvalidProofIsTerminal(t *testing.T) {
 	resultCh := make(chan mdmSchedulerAttemptResult, 1)
 	go func() {
 		resultCh <- srv.executeScheduledVerification(
-			context.Background(), scheduledMDABinding(provider),
+			context.Background(), scheduledMDABinding(t, provider),
 			store.VerificationTaskMDA, "UDID-1",
 		)
 	}()
@@ -811,7 +814,7 @@ func TestVerifyProviderViaMDM_InvalidAttestationNotPromoted(t *testing.T) {
 
 	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
 
-	if outcome == mdmVerifyGranted {
+	if outcome == mdmVerifySecurityInfoPassed {
 		t.Error("invalid attestation must NOT be granted hardware via MDM")
 	}
 	if lvl := p.GetTrustLevel(); lvl == registry.TrustHardware {
@@ -838,10 +841,10 @@ func TestVerifyProviderViaMDM_LookupFailureBucketsAsError(t *testing.T) {
 	}
 }
 
-// TestApplyLateSecurityInfo_GrantsAndClears: a late SecurityInfo (after the sync
+// TestApplyLateSecurityInfo_RequiresApplePosture: a late SecurityInfo (after the sync
 // wait timed out) for a self_signed, online, valid-attestation provider upgrades
 // it to hardware and clears the failure reason — mirroring the sync success path.
-func TestApplyLateSecurityInfo_GrantsAndClears(t *testing.T) {
+func TestApplyLateSecurityInfo_RequiresApplePosture(t *testing.T) {
 	fake := &fakeMDMServer{
 		device:      &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
 		commandUUID: "unused",
@@ -862,10 +865,10 @@ func TestApplyLateSecurityInfo_GrantsAndClears(t *testing.T) {
 		},
 	)
 
-	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
 		t.Errorf("trust = %q, want hardware after late SecurityInfo", lvl)
 	}
-	if got := p.GetMDMFailureReason(); got != "" {
+	if got := p.GetMDMFailureReason(); got != "apple-posture-pending" {
 		t.Errorf("MDMFailureReason = %q, want cleared", got)
 	}
 }

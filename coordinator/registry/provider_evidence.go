@@ -79,6 +79,12 @@ func (p *Provider) GrantHardwareIfNotUntrusted() bool {
 // the live provider unless a hard untrust already won the provider lock.
 func (p *Provider) GrantHardwareEvidenceIfNotUntrusted(evidence DeviceEvidence) bool {
 	p.mu.Lock()
+	if p.requireProcessPosture {
+		if _, _, ok := p.processPostureReadyLocked(); !ok {
+			p.mu.Unlock()
+			return false
+		}
+	}
 	if p.Status == StatusUntrusted {
 		p.mu.Unlock()
 		return false
@@ -99,6 +105,12 @@ func (p *Provider) GrantHardwareEvidenceIfNotUntrusted(evidence DeviceEvidence) 
 // afterward; it can never be overwritten by a stale persistence result.
 func (p *Provider) GrantHardwareEvidenceAtEpochIfNotUntrusted(evidence DeviceEvidence, expectedEpoch uint64) bool {
 	p.mu.Lock()
+	if p.requireProcessPosture {
+		if _, _, ok := p.processPostureReadyLocked(); !ok {
+			p.mu.Unlock()
+			return false
+		}
+	}
 	if p.Status == StatusUntrusted || p.untrustEpoch.Load() != expectedEpoch {
 		p.mu.Unlock()
 		return false

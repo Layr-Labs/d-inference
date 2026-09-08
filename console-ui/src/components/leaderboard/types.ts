@@ -24,3 +24,34 @@ export interface LeaderboardResponse {
   entries: LeaderboardEntry[];
   updated_at: string;
 }
+
+// Wire types mirroring coordinator/api/public_provider_handlers.go:
+// GET /v1/providers/{pseudonym} → /api/providers/profile/{pseudonym}
+
+export interface PublicHardware {
+  machine_model?: string;
+  chip_name?: string;
+  chip_family?: string;
+  chip_tier?: string;
+  memory_gb?: number;
+  gpu_cores?: number;
+}
+
+export interface PublicReputation {
+  score: number;
+  total_jobs: number;
+  successful_jobs: number;
+  avg_response_time_ms?: number;
+  challenges_passed: number;
+}
+
+export interface PublicProviderProfile {
+  pseudonym: string;
+  status: "online" | "serving" | "offline" | "untrusted" | string;
+  trust_level: "hardware" | "self_signed" | "none" | string;
+  hardware: PublicHardware;
+  warm_models: string[];
+  max_concurrency: number;
+  reputation: PublicReputation;
+  lifetime_tokens_generated: number;
+}

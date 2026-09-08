@@ -6,6 +6,8 @@ package api
 // transient-store-error handling, schedule-heal abort, and unlink auth.
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -1116,5 +1118,159 @@ func TestConnectWebhookStaleSweepPaidForFailedPayoutNoClaim(t *testing.T) {
 	wd, _ := st.GetStripeWithdrawal("wd-stale-sweep")
 	if wd.Status != "transferred" {
 		t.Errorf("status = %q, want transferred (live payout status is failed — nothing claimed)", wd.Status)
+	}
+}
+
+// --- Post-merge fast-follow (deferred round-12 review items) ---
+
+// TestStripeWithdrawInstantRejectedOnRecipientAccount: recipient-agreement
+// transfers take +24h to become available, so an instant payout created
+// right after the transfer can never draw on the funds — it would always
+// fail and fall back to the sweep with fee churn. Reject up front, before
+// any debit.
+func TestStripeWithdrawInstantRejectedOnRecipientAccount(t *testing.T) {
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/accounts/") && r.Method == http.MethodGet {
+			id := strings.TrimPrefix(r.URL.Path, "/v1/accounts/")
+			_, _ = w.Write([]byte(healthyAccountJSON(id, "AU", "recipient", true)))
+			return
+		}
+		t.Errorf("unexpected Stripe call: %s %s", r.Method, r.URL.Path)
+	}))
+	defer fakeStripe.Close()
+
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := readyUser(t, st, "acct-rec-instant", "alice@example.com", true)
+	st.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerDeposit, "seed")
+
+	body := `{"amount_usd":"5.00","method":"instant"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe", strings.NewReader(body))
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeWithdraw(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "instant_unavailable") {
+		t.Errorf("body = %s, want instant_unavailable", w.Body.String())
+	}
+	if bal := st.GetBalance(user.AccountID); bal != 10_000_000 {
+		t.Errorf("balance = %d, want untouched", bal)
+	}
+	if wds, _ := st.ListStripeWithdrawals(user.AccountID, 0); len(wds) != 0 {
+		t.Errorf("no withdrawal row should exist, got %d", len(wds))
+	}
+}
+
+// TestStripeStatusRefreshGoneAccountClearsResponseFields: when refresh=1
+// discovers the account is gone and auto-unlinks, the response must not
+// carry the pre-unlink country/destination snapshot for one page load.
+func TestStripeStatusRefreshGoneAccountClearsResponseFields(t *testing.T) {
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/accounts/") && r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"No such account","code":"account_invalid"}}`))
+			return
+		}
+	}))
+	defer fakeStripe.Close()
+
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := seedUser(t, st, "acct-gone-fields", "alice@example.com")
+	if err := st.SetUserStripeAccount(user.AccountID, "acct_gone_fields", "ready", "DE", "bank", "6789", true); err != nil {
+		t.Fatal(err)
+	}
+	user, _ = st.GetUserByAccountID(user.AccountID)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/billing/stripe/status?refresh=1", nil)
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["has_account"] != false {
+		t.Errorf("has_account = %v, want false", resp["has_account"])
+	}
+	for field, want := range map[string]any{
+		"stripe_account_id": "", "status": "", "stripe_account_country": "",
+		"destination_type": "", "destination_last4": "",
+	} {
+		if resp[field] != want {
+			t.Errorf("%s = %v, want %q (stale pre-unlink value must not leak)", field, resp[field], want)
+		}
+	}
+	if resp["instant_eligible"] != false {
+		t.Errorf("instant_eligible = %v, want false", resp["instant_eligible"])
+	}
+	// And the store itself is unlinked with no stale country.
+	refreshed, _ := st.GetUserByAccountID(user.AccountID)
+	if refreshed.StripeAccountID != "" || refreshed.StripeAccountCountry != "" {
+		t.Errorf("store = id %q country %q, want both empty", refreshed.StripeAccountID, refreshed.StripeAccountCountry)
+	}
+}
+
+// TestStripeReconcilerWeeklyScheduleInTransitNotWarned: JP accounts sweep
+// weekly, so rows past the 48h base threshold but inside the 10-day weekly
+// bound are normal transit — the reconciler must log them at info, not fire
+// the stuck-account warning (and must never try to heal a weekly schedule).
+func TestStripeReconcilerWeeklyScheduleInTransitNotWarned(t *testing.T) {
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/accounts/") && r.Method == http.MethodGet:
+			acct := strings.Replace(healthyAccountJSON("acct_jp_weekly", "JP", "recipient", false),
+				`"interval":"daily"`, `"interval":"weekly"`, 1)
+			_, _ = w.Write([]byte(acct))
+		default:
+			t.Errorf("unexpected Stripe call (weekly schedule must not be healed): %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer fakeStripe.Close()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	t.Cleanup(setStripeAPIBase(fakeStripe.URL))
+	srv.SetBilling(billing.NewService(st, payments.NewLedger(st), logger, billing.Config{
+		StripeSecretKey:              "sk_test_fake",
+		StripeConnectWebhookSecret:   "whsec_test",
+		StripeConnectPlatformCountry: "US",
+	}))
+
+	user := readyUser(t, st, "acct-jp-user", "jp@example.com", false)
+	// 4 days old: past the 48h base threshold, inside the 10-day weekly bound.
+	_ = st.CreateStripeWithdrawal(&store.StripeWithdrawal{
+		ID: "wd-jp-transit", AccountID: user.AccountID, StripeAccountID: "acct_jp_weekly",
+		TransferID: "tr_jp_1", AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "standard", Status: "transferred", CreatedAt: time.Now().Add(-4 * 24 * time.Hour),
+	})
+
+	srv.sweepStuckStripeWithdrawals()
+
+	logs := logBuf.String()
+	if strings.Contains(logs, "stuck withdrawals on auto-schedule account") {
+		t.Errorf("weekly in-transit rows fired the stuck warning:\n%s", logs)
+	}
+	if !strings.Contains(logs, "normal weekly-payout transit") {
+		t.Errorf("expected the weekly-transit info log, got:\n%s", logs)
+	}
+
+	// A row past the weekly bound DOES warn.
+	_ = st.CreateStripeWithdrawal(&store.StripeWithdrawal{
+		ID: "wd-jp-stuck", AccountID: user.AccountID, StripeAccountID: "acct_jp_weekly",
+		TransferID: "tr_jp_2", AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "standard", Status: "transferred", CreatedAt: time.Now().Add(-12 * 24 * time.Hour),
+	})
+	logBuf.Reset()
+	srv.sweepStuckStripeWithdrawals()
+	if !strings.Contains(logBuf.String(), "stuck withdrawals on auto-schedule account") {
+		t.Errorf("row past the weekly bound must warn, got:\n%s", logBuf.String())
 	}
 }

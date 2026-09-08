@@ -7,7 +7,7 @@ protocol BootHardwareKey {
     func sign(_ message: Data) throws -> Data
 }
 
-protocol BootKeyEngine {
+protocol BootKeyEngine: Sendable {
     var isAvailable: Bool { get }
     func create() throws -> any BootHardwareKey
     func recover(handle: Data) throws -> any BootHardwareKey

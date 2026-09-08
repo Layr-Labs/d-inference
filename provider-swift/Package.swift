@@ -19,6 +19,7 @@ let package = Package(
         .executable(name: "darkbloom-publish", targets: ["darkbloom-publish"]),
     ],
     dependencies: [
+        .package(path: "Packages/BootContinuity"),
         .package(path: "../libs/mlx-swift"),
         .package(path: "../libs/mlx-swift-lm"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.4.0"),
@@ -112,6 +113,7 @@ let package = Package(
         .target(
             name: "ProviderCore",
             dependencies: [
+                .product(name: "BootContinuity", package: "BootContinuity"),
                 "ProviderCoreFoundation",
                 "ProviderMetallibControl",
                 .product(name: "MLX", package: "mlx-swift"),

@@ -4,14 +4,20 @@ enum BootContinuationTranscript {
     static func encode(context: BootContinuityContext, publicKey: Data,
                        challenge: BootContinuationChallenge) -> Data {
         var result = Data("darkbloom/boot-continuation/v1\0".utf8)
+        result.append(contextFields(context))
+        append(publicKey, to: &result)
+        append(challenge.nonce, to: &result)
+        append(challenge.processPublicKey, to: &result)
+        return result
+    }
+
+    static func contextFields(_ context: BootContinuityContext) -> Data {
+        var result = Data()
         for value in [context.accountID, context.deviceID, context.coordinatorOrigin, context.releaseID] {
             append(Data(value.utf8), to: &result)
         }
         var generation = context.policyGeneration.bigEndian
         withUnsafeBytes(of: &generation) { result.append(contentsOf: $0) }
-        append(publicKey, to: &result)
-        append(challenge.nonce, to: &result)
-        append(challenge.processPublicKey, to: &result)
         return result
     }
 

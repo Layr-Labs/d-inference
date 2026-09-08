@@ -115,7 +115,7 @@ func assertError(_ error: BootContinuityError, file: StaticString = #filePath, l
     }
 }
 
-final class MemoryEngine: BootKeyEngine {
+final class MemoryEngine: BootKeyEngine, @unchecked Sendable {
     var isAvailable = true
     var creates = 0
     var recovers = 0

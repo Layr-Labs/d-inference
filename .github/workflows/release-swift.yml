@@ -586,6 +586,7 @@ jobs:
             exit 1
           fi
           echo "Entitlement verification passed: $EXPECTED_ACCESS_GROUP authorized via embedded provisioning profile"
+          python3 scripts/check-provider-keychain-scope.py "$APP"
 
           # Flat layout alongside the .app bundle. Coordinator's release
           # artifact verifier (release_handlers.go:413) requires bin/darkbloom

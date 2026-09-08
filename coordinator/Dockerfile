@@ -72,7 +72,8 @@ RUN chmod +x /usr/local/bin/start.sh
 
 ENV EIGENINFERENCE_PORT=8080
 ENV EIGENINFERENCE_MDM_URL=https://localhost:9002
-ENV EIGENINFERENCE_MDM_API_KEY=eigeninference-micromdm-api
+# EIGENINFERENCE_MDM_API_KEY must be injected at runtime via GCP Secret Manager or --env flag.
+# Do NOT set a default here — a hardcoded value is a security risk (see issue #707).
 ENV EIGENINFERENCE_PROMPT_SIDECAR_BINARY=/usr/local/bin/promptsidecar
 
 EXPOSE 8080

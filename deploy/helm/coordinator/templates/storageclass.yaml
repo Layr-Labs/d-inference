@@ -1,0 +1,14 @@
+{{- if .Values.persistence.createStorageClass }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ include "coordinator.storageClassName" . }}
+  labels:
+    {{- include "coordinator.labels" . | nindent 4 }}
+provisioner: pd.csi.storage.gke.io
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: {{ .Values.persistence.diskType | quote }}
+{{- end }}

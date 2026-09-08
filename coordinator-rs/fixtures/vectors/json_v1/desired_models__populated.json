@@ -1,0 +1,1 @@
+{"type":"desired_models","models":[{"model_name":"gemma-4-26b","desired_build":"gemma-4-26b-8bit-r2","previous_build":"gemma-4-26b-8bit"},{"model_name":"qwen-3-8b","desired_build":"qwen-3-8b-4bit"}]}

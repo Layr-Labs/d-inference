@@ -1,0 +1,1 @@
+{"type":"inference_response_chunk","request_id":"req-42","data":"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"}

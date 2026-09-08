@@ -1,0 +1,1 @@
+{"type":"inference_complete","request_id":"req-42","usage":{"prompt_tokens":128,"completion_tokens":512,"reasoning_tokens":64},"se_signature":"MEUCIQDexample==","response_hash":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}

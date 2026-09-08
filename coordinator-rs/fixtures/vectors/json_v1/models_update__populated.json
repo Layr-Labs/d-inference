@@ -1,0 +1,1 @@
+{"type":"models_update","models":[{"id":"qwen-3-8b-4bit","size_bytes":4831838208,"model_type":"text","quantization":"4bit","weight_hash":"0be6ff1c9e3a8d5f"},{"id":"gemma-4-26b-8bit","size_bytes":27917287424,"model_type":"text","quantization":"8bit","is_vision":true,"template_render_ok":false}]}

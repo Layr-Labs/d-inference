@@ -1,0 +1,141 @@
+# PROD build+deploy pipeline for the coordinator.
+
+timeout: 3600s
+
+substitutions:
+  _IMAGE: us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator
+  _INSTANCE: darkbloom-coordinator
+  _ZONE: us-east4-a
+  _HEALTH_URL: https://api.darkbloom.dev/health
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+steps:
+  - id: release-integrity
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        ./scripts/check-release-version.sh
+        ./scripts/sync-install-embed.sh check
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    env:
+      - TRIGGER_COMMIT=$COMMIT_SHA
+      - TRIGGER_TAG=$SHORT_SHA
+    args:
+      - -ceu
+      - |
+        VERSION=$(awk -F'"' '/public static let version =/ { print $$2 }' \
+          provider-swift/Sources/ProviderCore/ProviderCore.swift)
+        BUILD_COMMIT="$${TRIGGER_COMMIT}"
+        IMAGE_TAG="$${TRIGGER_TAG}"
+        [[ "$${BUILD_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || {
+          echo "production builds require a repository trigger with COMMIT_SHA" >&2
+          exit 1
+        }
+        [[ "$${IMAGE_TAG}" =~ ^[0-9a-f]{7}$ ]] || {
+          echo "production builds require a repository trigger with SHORT_SHA" >&2
+          exit 1
+        }
+        [ "$${IMAGE_TAG}" = "$${BUILD_COMMIT:0:7}" ] || {
+          echo "image tag is not the checked-out trigger commit prefix" >&2
+          exit 1
+        }
+        BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        printf 'BUILD_COMMIT=%s\nIMAGE_TAG=%s\n' \
+          "$${BUILD_COMMIT}" "$${IMAGE_TAG}" > /workspace/release-build.env
+        docker build \
+          --build-arg "BUILD_VERSION=$${VERSION}" \
+          --build-arg "BUILD_COMMIT=$${BUILD_COMMIT}" \
+          --build-arg "BUILD_DATE=$${BUILD_DATE}" \
+          --tag="${_IMAGE}:$${IMAGE_TAG}" \
+          --file=coordinator/Dockerfile \
+          .
+
+  - id: smoke
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        source /workspace/release-build.env
+        docker inspect "${_IMAGE}:$${IMAGE_TAG}" \
+          --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+          | grep -Fx "$${BUILD_COMMIT}"
+        docker run --rm --entrypoint /bin/sh "${_IMAGE}:$${IMAGE_TAG}" \
+          -c 'test -x /usr/local/bin/coordinator && test -x /usr/local/bin/promptsidecar'
+
+  - id: push-and-resolve-digest
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        source /workspace/release-build.env
+        docker push "${_IMAGE}:$${IMAGE_TAG}"
+        DIGEST=$(docker inspect "${_IMAGE}:$${IMAGE_TAG}" \
+          --format '{{ index .RepoDigests 0 }}')
+        [[ "$${DIGEST}" == "${_IMAGE}@sha256:"* ]] || {
+          echo "failed to resolve pushed digest, got: $${DIGEST}" >&2
+          exit 1
+        }
+        printf 'IMAGE_DIGEST=%s\n' "$${DIGEST}" >> /workspace/release-build.env
+        echo "resolved: $${DIGEST}"
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        source /workspace/release-build.env
+
+        # Install the deploy + env-refresh inputs from this checkout so the VM
+        # always runs the reviewed version.
+        tar -C deploy/gcp/prod -cf /tmp/deploy-inputs.tar \
+          deploy-coordinator.sh refresh-env.sh required-env-keys.txt release-env-defaults
+        gcloud compute ssh ${_INSTANCE} --zone=${_ZONE} --tunnel-through-iap \
+          --command "sudo mkdir -p /usr/local/lib/darkbloom-env" < /dev/null
+        gcloud compute scp /tmp/deploy-inputs.tar ${_INSTANCE}:/tmp/ \
+          --zone=${_ZONE} --tunnel-through-iap
+        gcloud compute ssh ${_INSTANCE} --zone=${_ZONE} --tunnel-through-iap --command "
+          sudo tar -C /tmp -xf /tmp/deploy-inputs.tar &&
+          sudo install -m 0755 /tmp/deploy-coordinator.sh /usr/local/sbin/darkbloom-deploy-coordinator &&
+          sudo install -m 0755 /tmp/refresh-env.sh /usr/local/sbin/darkbloom-refresh-env &&
+          sudo install -m 0644 /tmp/required-env-keys.txt /usr/local/lib/darkbloom-env/required-env-keys.txt &&
+          sudo install -m 0644 /tmp/release-env-defaults /usr/local/lib/darkbloom-env/release-env-defaults &&
+          rm -f /tmp/deploy-inputs.tar /tmp/deploy-coordinator.sh /tmp/refresh-env.sh /tmp/required-env-keys.txt /tmp/release-env-defaults
+        " < /dev/null
+
+        gcloud compute ssh ${_INSTANCE} --zone=${_ZONE} --tunnel-through-iap --command "
+          sudo IMAGE='$${IMAGE_DIGEST}' EXPECTED_COMMIT='$${IMAGE_TAG}' \
+            /usr/local/sbin/darkbloom-deploy-coordinator
+        " < /dev/null
+
+  - id: verify-public
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        source /workspace/release-build.env
+        for i in $(seq 1 24); do
+          body=$(curl -sk --max-time 10 "${_HEALTH_URL}" || true)
+          if echo "$$body" | grep -q "\"build_commit\":\"$${BUILD_COMMIT}\""; then
+            echo "public health serving the deployed commit after $$((i*5))s"
+            exit 0
+          fi
+          sleep 5
+        done
+        echo "public health never reported the deployed commit within 2 minutes" >&2
+        echo "last response: $$body" >&2
+        exit 1
+
+images:
+  - '${_IMAGE}:$SHORT_SHA'

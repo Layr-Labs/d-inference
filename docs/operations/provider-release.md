@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-09 · commit `87a13daf7`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -8,6 +8,12 @@ environment, and let [`.github/workflows/release-swift.yml`](../../.github/workf
 build, sign, notarize, hash, upload, and register the bundle. The coordinator
 verifies every registered artifact by re-downloading it, so a release either
 lands fully or not at all.
+
+The prepared version is **0.9.1**; its source changes since `v0.9.0` are
+collected in [`CHANGELOG.md`](../../CHANGELOG.md). The version bump prepares
+the source for the provider bundle. Publication and coordinator deployment remain
+separate operations; the bump alone does not change the registered release
+returned by `GET /v1/releases/latest`.
 
 ## Environment-free signing validation
 
@@ -103,8 +109,8 @@ Coordinator deploys are a separate runbook:
 
 The provider and coordinator versions must be identical strings:
 
-- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.0"`
-- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.0"`
+- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.1"`
+- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.1"`
 
 ```bash
 ./scripts/check-release-version.sh          # provider == coordinator, semver
@@ -112,8 +118,8 @@ The provider and coordinator versions must be identical strings:
 ```
 
 `check-release-version.sh` accepts an optional expected version
-(`check-release-version.sh v0.9.0`) and an optional reported string from a
-built binary (`darkbloom 0.9.0` or `0.9.0`); the workflow calls it in all
+(`check-release-version.sh v0.9.1`) and an optional reported string from a
+built binary (`darkbloom 0.9.1` or `0.9.1`); the workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
 push. Do not touch `minProviderVersionForDesiredModels` (`"0.5.17"`, same file)
 for a routine release; it is the floor for desired-model fan-out, not the
@@ -142,10 +148,10 @@ change that is not fixture-synced will fail the release, not just CI.
 
 ```bash
 git checkout master && git pull --ff-only
-git tag -a v0.8.17 -m "v0.8.17 — <one-line theme>
+git tag -a v0.9.1 -m "v0.9.1 — <one-line theme>
 
 <body: the changelog bullets for this release>"
-git push origin v0.8.17
+git push origin v0.9.1
 ```
 
 Accepted tag patterns (`on.push.tags`): `v*.*.*`, `v*-swift`, `v*-swift.*`.
@@ -159,7 +165,7 @@ this before writing job outputs or requesting environment approval.
 
 ```bash
 gh workflow run release-swift.yml --ref <branch> -f environment=dev
-# optional: -f version_override=0.8.17
+# optional: -f version_override=0.9.1
 ```
 
 Without a tag the version is read from `ProviderCore.swift` (or

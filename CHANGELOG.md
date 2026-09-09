@@ -1,56 +1,32 @@
 # Changelog
 
-## Unreleased — checkpoint write recovery
+## Release candidate v0.9.1 — cache reliability and recovery (not shipped; 2026-09-09)
 
-- Preserve unrelated valid cache checkpoints when atomic creation of a new checkpoint fails; a later donation can retry without an unnecessary cache-epoch reset. Existing files that fail reauthentication still revoke their cache evidence.
-- Distinguish complete-checkpoint host-memory, epoch, maintenance, disk-space, unsafe-path, I/O and eviction outcomes in bounded provider/coordinator telemetry.
+Source changes since `v0.9.0`. Provider changes require a new signed bundle;
+coordinator and console changes require their own deployments.
 
-## Unreleased — cache prompt parity and coverage
+### Provider
 
-- Match provider JSON response-format instructions and Qwen/Harmony system-turn folding in cache planning so structured-output requests do not generate a false prompt-anchor mismatch. Exercise the real service preparation path in shared tokenizer/hash parity tests.
-- Measure per-model saved-prefill percentages using matched prompt-token denominators, separately for provider usage, accepted evidence and cache-selected terminals. Add bounded per-model receipt rejection and prompt-length/hash mismatch diagnostics.
-- Stop queued provider slot-posture callbacks after cancellation and wait for the sampler during shutdown, preventing telemetry from being emitted after teardown returns.
+- **Request completion during recovery** — Keep completion/error delivery working after cache shutdown or deallocation, deliver each terminal once, and drain accepted cache evidence before its terminal. Preserve secondary-tier terminal suppression.
+- **Duplicate checkpoint reuse** — Keep an existing complete checkpoint when another request reaches the same prefix with a different valid prefill chunk size. Reauthenticate its original bytes, metadata and complete encrypted payload; preserve identity, tenant, state-layout and corruption checks.
+- **Checkpoint write recovery** — Preserve unrelated valid checkpoints when atomic creation of a new checkpoint fails, allowing a later donation to retry without an unnecessary cache-epoch reset. Existing files that fail reauthentication still revoke their cache evidence.
+- **SSD disk budget** — Size the shared cache at half of currently available disk space without a fixed 100 GiB ceiling. Keep a fixed 20 GiB low-disk write reserve instead of 5% of the whole disk, and check the full pending donation against space above the reserve. Preserve encryption, eviction, daily write limits and ENOSPC handling.
+- **Cache failure attribution** — Distinguish complete-checkpoint host-memory, epoch, maintenance, disk-space, unsafe-path, I/O and eviction outcomes in bounded provider/coordinator telemetry.
+- **Telemetry shutdown** — Stop queued slot-posture callbacks after cancellation and wait for the sampler during shutdown, preventing telemetry after teardown returns.
+- **Deadline diagnostics** — Report the received prediction policy, reservation ceiling and encoded deadline budget alongside the provider's prediction and decision, distinguishing refusal from acceptance followed by expiry.
 
-## Unreleased — coordinator startup
+### Companion coordinator and console changes
 
-- Fix startup recovery around live summary creation and transient store failures: pin history before the attempt marker, retry verified provider recovery with a shared deadline, and exclude pending recovery from routing until it succeeds. Exhaustion closes the new registration for retry before evicting an existing provider session.
-- Add a read-only post-stop startup observer that separates candidate health/readiness and per-model routable capacity from optional disposable-test inference. Keep successful inference and synthetic-answer correctness distinct, and omit response text, usage and credentials from reports.
-
-- Recover provider history on reconnect through indexed identity lookups instead of scanning every historical session before serving. Select the newest prior session and preserve live attestation requirements.
-- Capture missing earnings-summary history once and resume per-key additions safely alongside existing live settlement; keep base-reward money separate from inference counts/tokens. Exclude incomplete and live reconnect records from history recovery, including late async writes. Publish completed provider records and reputation atomically, preserving legacy missing-reputation behavior while refusing failed reads. Maintain summaries on record-only inserts as well as account settlement. Add startup phase timings and a database-only migration command for approved preparation before cutover.
-
-## Unreleased — partial network geography
-
-- Keep network stats loading when request-location or route analytics time out. Refresh geography independently, expose unavailable sections explicitly, and show a map notice while the rest of the overview remains usable. Preserve valid empty maps and restore geography automatically after recovery.
-
-
-## Unreleased — per-model cache reporting
-
-- Add internal model breakdowns for provider-reported cache hits/misses, cached and avoided-prefill tokens, accepted V2 proofs, cache-selected terminals and timing samples. Keep invalid/missing usage distinct from misses and retain the aggregate public status.
-
-## Unreleased — cache evidence and coordinator reconnect recovery
-
-- Preserve unchanged models' cache holders and receipts when another model loads or changes, and keep proof-mismatch fences across unrelated capability updates. Report bounded receipt rejection reasons and separate proof mismatch from ordinary holder changes.
-- Persist verified same-process APNs continuity for bounded coordinator reconnects without refreshing the original Apple proof timestamp. Preserve encrypted resume challenges, token/process/binary binding, new-process freshness checks and Apple push budgets. Stamp final continuity after the socket is marked offline while keeping periodic updates online-only.
-
-## Unreleased — provider SSD cache disk policy
-
-- Size the shared SSD cache at half of currently available disk space without a fixed 100 GiB ceiling. Keep a fixed 20 GiB low-disk write reserve instead of reserving 5% of the whole disk, so large disks with ample free space can cache. Preserve encryption, eviction, daily write limits and ENOSPC handling.
-- Check the full pending SSD donation against free space above the reserve before writing, so a donation cannot pass merely because free space starts above 20 GiB.
-
-## Unreleased: prediction decisions and backup deadlines
-
-- Record the coordinator's prediction policy, reservation ceiling and encoded deadline budget alongside each provider's returned prediction and decision. Distinguish refusals from acceptance followed by expiry without changing error codes or prediction policy.
-- Refresh remaining time after registry/provider lock waits before reserving a retained backup candidate. Skip expired reservations and shrink an enabled prediction ceiling.
-
-## Unreleased - pending-prompt admission estimates
-
-- Estimate unreflected pending prefill from each request's own prompt size, excluding requests that already produced content. Preserve the existing proxy for unknown cache work and reflected queues, so short and long arrivals no longer inherit each other's prompt lengths when the heartbeat is idle.
-
-## Unreleased: incoming request accounting
-
-- Add the unsampled request-outcome ledger and bounded admin inspection with explicit coverage and completion evidence.
-- Record recovered HTTP errors and parsed streaming mode accurately. Distinguish completed, incomplete and error response terminals after successful writes, preserving contradictory evidence and earlier content progress.
+- **Cache prompt parity** — Match provider JSON response-format instructions and Qwen/Harmony system-turn folding in cache planning so structured-output requests do not generate false prompt-anchor mismatches. Exercise the real service preparation path in shared tokenizer/hash parity tests.
+- **Per-model cache reporting** — Add internal breakdowns of provider-reported hits/misses, cached and avoided-prefill tokens, accepted V2 proofs, cache-selected terminals and timing samples. Measure saved-prefill percentages with matched prompt-token denominators for each population; retain invalid/missing usage separately from misses. Add bounded receipt rejection and prompt-length/hash mismatch diagnostics while preserving aggregate public status.
+- **Cache evidence continuity** — Preserve unchanged models' holders and receipts when another model loads or changes, retain proof-mismatch fences across unrelated capability updates, and distinguish proof mismatch from ordinary holder changes.
+- **APNs reconnect recovery** — Persist verified same-process continuity for bounded coordinator reconnects without refreshing the original Apple proof timestamp. Preserve encrypted resume challenges, token/process/binary binding, new-process freshness checks and Apple push budgets. Stamp final continuity after the socket is offline while keeping periodic updates online-only.
+- **Indexed startup recovery** — Recover history through indexed identity lookups instead of scanning every historical session before serving. Select the newest prior session, exclude live/incomplete records and late async writes, preserve live attestation requirements, and publish provider records and reputation atomically. Retry transient store failures within a shared deadline; pending recovery cannot route, and exhausted recovery closes the new registration before evicting an existing session. Preserve legacy missing-reputation behavior while refusing failed reads.
+- **Earnings-summary preparation** — Pin missing history before the durable attempt marker and resume per-key additions safely alongside live settlement. Keep base-reward money separate from inference counts/tokens and maintain summaries on record-only inserts as well as account settlement. Add a database-only migration command for approved pre-cutover preparation.
+- **Startup measurements** — Add startup phase timings and a read-only post-stop observer that separates candidate health/readiness and per-model routable capacity from optional disposable-test inference. Keep successful inference distinct from answer correctness and omit response text, usage and credentials from reports.
+- **Routing deadlines and admission** — Refresh remaining time after registry/provider lock waits before reserving a retained backup, skip expired reservations and shrink an enabled prediction ceiling. Estimate unreflected pending prefill from each request's own prompt size, excluding requests that already produced content, while preserving the proxy for unknown cache work and reflected queues.
+- **Incoming request accounting** — Add an unsampled request-outcome ledger and bounded admin inspection with explicit coverage and completion evidence. Record recovered HTTP errors and parsed streaming mode, and distinguish completed, incomplete and error response terminals after successful writes while preserving contradictory evidence and earlier content progress.
+- **Partial network geography** — Keep the stats overview available when request-location or route analytics time out. Refresh geography independently, expose unavailable sections, preserve valid empty maps and restore geography after recovery.
 
 ## Unreleased — stats request-flow refresh
 

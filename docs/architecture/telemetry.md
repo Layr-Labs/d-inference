@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-07 · commit `efcde6334`
+> Last updated: 2026-09-08 · commit `ada6fcea1`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -288,6 +288,14 @@ distinguish rejected evidence from provider-reported hits. APNs recovery emits
 `code_attest.proof_verified{kind:apns|resume}` and
 `code_attest.coverage_persist{outcome:success|error}`. These are aggregate
 operational metrics; they add no fields to the provider telemetry wire schema.
+
+Per-model cache reporting is a separate internal `routing.cache_model.*`
+family, mirrored by `cache_model_*` admin metrics. It distinguishes reported
+usage, accepted proofs and cache-selected terminals without altering the public
+aggregate cache response. Model IDs must be present in the active catalog;
+other IDs use `unknown`. Timing sums and sample counts work over HTTPS as well
+as DogStatsD. See the [metric inventory](../reference/telemetry-inventory.md#cache-results-by-model-internal)
+for populations, labels and reset semantics (`coordinator/api/cache_model_telemetry.go`).
 
 ## Code map
 

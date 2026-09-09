@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-07 · commit `efcde6334`
+> Last updated: 2026-09-08 · commit `ada6fcea1`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -594,6 +594,14 @@ The closed reasons come from `coordinator/registry/cache_receipt_result.go`;
 `exact_cache.receipt` and `exact_cache_receipt_total` label type, outcome and reason.
 Provider-reported usage remains separate from accepted proof-backed lookup hits.
 No nonce, scope, prompt or prefix hash is emitted by these counters.
+
+Per-model internal metrics use `routing.cache_model.*` / `cache_model_*`.
+They keep provider-reported reuse, accepted V2 proofs and cache-selected
+terminals separate. `selected=true` is an expected routing benefit, not proof
+of reuse; the terminal must also report `result=hit`. Missing/invalid usage is
+not a miss, and cache usage is not a consumer-success verdict. See the
+[metric inventory](../reference/telemetry-inventory.md#cache-results-by-model-internal)
+and `coordinator/api/cache_model_telemetry.go`.
 
 ## Code map
 

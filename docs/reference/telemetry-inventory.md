@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-07 · commit `5ce1d0cd0`
+> Last updated: 2026-09-08 · commit `ada6fcea1`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -130,6 +130,37 @@ lists every name).
 | `routing.ttft_calibration_ratio` | gauge | `model` | each TTFT observation (`coordinator/api/settlement.go`) |
 | `routing.unservable_reclassified`, `routing.first_chunk_timeout_reclassified`, `routing.client_error_passthrough`, `routing.oversized_request_rejected`, `routing.deadline_unreachable_rejected`, `routing.invalid_ttft`, `routing.dispatch_client_error_stop`, `routing.first_chunk_timeout_ladder_capped`, `routing.hedge_governor_suppressed`, `routing.pending_load_backoff`, `routing.scan_admission_timeout`, `routing.ttft_admission`, `routing.ttft_spread`, `routing.provider_selected`, `routing.load_model_rejects` | count | mostly `model` | routing edge cases |
 | `http.requests` (count), `http.latency_ms` (histogram) | — | `method`, `path`, `status_code` | every HTTP request (`loggingMiddleware`, `coordinator/api/server.go`) |
+
+### Cache results by model (internal)
+
+`coordinator/api/cache_model_telemetry.go` emits the following Datadog counters
+under `d_inference.routing.cache_model.`. Their admin counterparts are
+`cache_model_<suffix>_total` in `GET /v1/admin/metrics`. The `model` label is the
+resolved active catalog ID (`coordinator/registry/model_catalog.go`,
+`CatalogModelID`), never the requested alias or a provider-supplied arbitrary
+model. Off-catalog/removed IDs, an unconfigured catalog and malformed labels
+collapse to `unknown`. No account, provider, request, cache scope, nonce, weight
+hash or prompt-derived identity is attached. Existing `exact_cache.*` metrics
+and the public cache status retain their aggregate-only contract.
+
+| Suffix | Labels besides `model` | Population / interpretation |
+|---|---|---|
+| `usage` | `outcome`, `tier` | Completion terminals with retained pending/parked ownership, at the same seam as aggregate cache usage. Outcome is `hit`, `miss_absent`, `miss_corrupt`, `skipped_capacity`, `skipped_cost`, `skipped_policy`, `invalid` or `unreported`. `invalid`/`unreported` use tier `none`; they are coverage gaps, not misses. Duplicate and unknown terminals do not count. |
+| `cached_tokens`, `prefill_tokens_saved` | `tier` | Validated provider-reported token totals. Cached tokens may exceed saved prefill tokens when replay is required. Neither count requires an accepted routing proof. |
+| `provider_stage_us`, `provider_stage_samples` | `outcome`, `tier` | Sum of provider-reported staging microseconds (rounded per sample) and sample count for valid usage. Divide to obtain mean stage time. This is overhead, not time saved. |
+| `lookup` | `outcome`, `tier` | Only coordinator-accepted V2 lookup proofs; distinct from terminal provider usage. Rejected proofs remain in aggregate reason counters. |
+| `donation` | `tier` | Accepted V2 ready receipts, not number of files, unique prefixes or requests. |
+| `selection` | `mode`, `tier`, `selected`, `result`, `lookup_outcome`, `cache_read` | Existing exactly-once cache terminal population. `selected=true` identifies cache-favored routing; combine with `result=hit` for reported reuse. `result` describes cache usage, not consumer request success. Here `tier` is the selected routing tier (`none` for an unselected provider); `usage.tier` instead describes actual reported reuse. Error terminals can be `unreported`. |
+| `ttft_us`, `ttft_samples` | Same as `selection` | Coordinator-measured first-content latency for valid reported usage in active cache routing. Compare hit/miss and selected/unselected populations; this is observed latency, not estimated savings. |
+| `estimated_ttft_saved_us`, `estimated_ttft_saved_samples` | Same as `selection` | Positive finite scheduler estimates, split by the terminal cache outcome. These are not measured counterfactual savings or success-only totals. |
+
+Timing sums/sample counters work with both HTTPS and DogStatsD. The admin
+registry additionally exposes `cache_model_provider_stage_ms` and
+`cache_model_ttft_ms` and `cache_model_estimated_ttft_saved_ms` histograms with the corresponding labels.
+Admin counters reset on coordinator restart; all model breakdowns begin only
+when this instrumentation is deployed. Historical aggregate hits cannot be
+backfilled into models. Provider usage, receipt counts and selection counts
+have different populations and must not be summed together.
 
 ### Telemetry pipeline and platform gauges
 

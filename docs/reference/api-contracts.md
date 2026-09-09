@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-07 · commit `efcde6334`
+> Last updated: 2026-09-08 · commit `ada6fcea1`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -258,6 +258,12 @@ The exact-cache lifecycle `holder_removed` map includes `proof_mismatch`, separa
 from `capability_change`. Updating one model preserves unchanged models' holders,
 pending receipts and proof fences. See `coordinator/registry/cache_model_changes.go`
 and `coordinator/registry/cache_receipt_result.go`.
+
+Per-model cache usage, accepted lookup and selection metrics are available only
+through the existing authenticated `GET /v1/admin/metrics` endpoint and Datadog.
+They add no model identifiers or fields to `GET /v1/cache/status`. See the
+[internal cache metric inventory](telemetry-inventory.md#cache-results-by-model-internal)
+for `cache_model_*` labels and populations (`coordinator/api/cache_model_telemetry.go`).
 
 ## Provider capacity observations
 

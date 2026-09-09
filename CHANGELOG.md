@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — per-model cache reporting
+
+- Add internal model breakdowns for provider-reported cache hits/misses, cached and avoided-prefill tokens, accepted V2 proofs, cache-selected terminals and timing samples. Keep invalid/missing usage distinct from misses and retain the aggregate public status.
+
 ## Unreleased — cache evidence and coordinator reconnect recovery
 
 - Preserve unchanged models' cache holders and receipts when another model loads or changes, and keep proof-mismatch fences across unrelated capability updates. Report bounded receipt rejection reasons and separate proof mismatch from ordinary holder changes.

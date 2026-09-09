@@ -706,6 +706,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			receipt := s.registry.ApplyPrefixCacheLookupV2Result(providerID, lookupMsg)
 			s.emitCacheReceiptResult("lookup_v2", receipt)
 			if receipt.Accepted {
+				s.emitModelCacheLookup(lookupMsg, receipt)
 				s.ddIncr("routing.cache_lookup_receipt", []string{
 					"protocol:v2",
 					"outcome:" + lookupMsg.Outcome,
@@ -723,6 +724,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			receipt := s.registry.ApplyPrefixCacheReadyV2Result(providerID, readyMsg)
 			s.emitCacheReceiptResult("ready_v2", receipt)
 			if receipt.Accepted {
+				s.emitModelCacheDonation(readyMsg, receipt)
 				s.ddIncr("routing.cache_ready_receipt", []string{
 					"protocol:v2",
 					"tier:" + lowCardinalityCacheTier(readyMsg.Tier),
@@ -897,6 +899,7 @@ func (s *Server) emitCacheSelectionTerminal(pr *registry.PendingRequest, usage p
 		return false
 	}
 	tags := cacheSelectionTerminalTags(pr, usage, usageValid, usagePresent)
+	s.emitModelCacheSelection(pr, tags)
 	s.ddIncr("routing.cache_selection_terminal", tags)
 	if pr.CacheSelectionDiscountMs > 0 {
 		s.ddHistogram("routing.cache_selection_discount_ms", pr.CacheSelectionDiscountMs, tags)
@@ -923,6 +926,7 @@ func (s *Server) emitCacheSelectionTTFT(pr *registry.PendingRequest, usage proto
 	if !ok {
 		return
 	}
+	s.cacheModelTiming("ttft", value, s.cacheModelSelectionLabels(pr.Model, tags)...)
 	s.ddHistogram("routing.cache_selection_ttft_ms", value, tags)
 }
 
@@ -2304,6 +2308,7 @@ func (s *Server) handleCompleteAt(
 		s.emitExactCacheUsage(msg.Usage.CacheOutcome, lowCardinalityCacheTier(msg.Usage.CacheTier),
 			msg.Usage.CachedTokens, msg.Usage.PrefillTokensSaved, msg.Usage.CacheStageMs)
 	}
+	s.emitModelCacheUsage(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
 	cacheTerminalClaimed := s.emitCacheSelectionTerminal(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
 	s.reconcileOutputAdmission(pr, msg.Usage.CompletionTokens)
 

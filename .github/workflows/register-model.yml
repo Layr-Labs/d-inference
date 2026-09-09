@@ -48,7 +48,7 @@ on:
         required: false
         default: ''
       runtime_parameters_json:
-        description: Runtime parameters JSON object
+        description: 'Runtime parameters JSON object; min_input_tokens defaults to 32 (set 0 for small-input testing)'
         required: false
         default: '{}'
       hugging_face_artifact_json:

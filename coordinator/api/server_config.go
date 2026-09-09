@@ -22,6 +22,9 @@ type ServerConfig struct {
 	AdminEmails         []string
 	ReleaseKey          string
 	ServiceReservations bool
+	// DefaultMinInputTokens is overridden by a model's runtime_parameters.min_input_tokens.
+	// ReadServerConfig defaults to 32; an explicit programmatic zero disables the default.
+	DefaultMinInputTokens int
 	// DurableTrustReuse enables the fsync-backed local hard-untrust journal.
 	// Production enables it when the coordinator uses its durable Postgres store.
 	DurableTrustReuse     bool
@@ -70,6 +73,7 @@ type BaseRewardsConfig struct {
 // ReadServerConfig reads server configuration from environment variables.
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
+		DefaultMinInputTokens: readDefaultMinInputTokens(),
 		Port:                  env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
 		ConsoleURL:            os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
 		CORSOrigin:            os.Getenv("CORS_ORIGIN"),

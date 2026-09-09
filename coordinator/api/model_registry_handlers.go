@@ -243,6 +243,10 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "runtime_parameters is required"))
 			return
 		}
+		if err := validateInputTokenFloor(req.RuntimeParameters); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error(), withParam("runtime_parameters.min_input_tokens")))
+			return
+		}
 		rec, err := s.store.GetModelRegistryRecord(modelID)
 		if err != nil {
 			s.writeModelRegistryStoreError(w, "get model for runtime_parameters update", err)
@@ -575,6 +579,9 @@ func parseAdminModelActionPath(p string) (string, string, bool) {
 }
 
 func validateRegisterModelRequest(req registerModelRequest) error {
+	if err := validateInputTokenFloor(req.RuntimeParameters); err != nil {
+		return err
+	}
 	if err := req.HuggingFaceArtifact.Validate(); err != nil {
 		return err
 	}

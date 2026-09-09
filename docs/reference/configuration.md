@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-10 · commit `5a3ffc27f`
+> Last updated: 2026-09-10 · commit `c09499b5e`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -28,6 +28,7 @@ read once at process start and a restart applies a change.
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
+| `EIGENINFERENCE_MIN_INPUT_TOKENS` | integer 0–2147483647 | `32` | `coordinator/api/input_token_floor.go` (`readDefaultMinInputTokens`); `coordinator/api/server_config.go` | Default minimum estimated input tokens; `0` disables the default. Per-model `runtime_parameters.min_input_tokens` overrides it. Invalid values fall back to 32. |
 | `EIGENINFERENCE_PORT` | TCP port | `8080` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Listen port for the HTTP API and the provider WebSocket. |
 | `EIGENINFERENCE_BASE_URL` | URL | unset — derived per request from `Host` and `X-Forwarded-Proto` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/server.go` (`resolveBaseURL`) | Public origin templated into the served `/install.sh` and other self-referencing URLs. |
 | `EIGENINFERENCE_CONSOLE_URL` | URL | unset — `<scheme>://<Host>/link` is derived per request | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/device_auth.go` | Console origin used to build the device-code `verification_uri` (`<console>/link`). |

@@ -2029,6 +2029,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
 	}
+	if s.rejectShortInput(w, r, parsed, publicModel, model, estimatedPromptTokens, resolvedRuntimeParameters) {
+		return
+	}
 
 	// Single serialization point: every rewrite above (stop, stripped fields,
 	// alias, reasoning policy, runtime defaults, max_tokens) landed in parsed;
@@ -2277,6 +2280,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			runtimeDefaults.apply(parsed, runtimeParameters)
 		} else {
 			runtimeDefaults.apply(parsed, nil)
+		}
+		if s.rejectShortInput(w, r, parsed, publicModel, newModel, estimatedPromptTokens, runtimeParameters) {
+			refundReservation()
+			return false
 		}
 		if err := validateResolvedToolConstraintParser(
 			parsed, validatedMode, newModel, s.registry.ModelType(newModel),
@@ -2772,7 +2779,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// unset so the pre-flight reservation bounds the generation.
 	genericMaxOutput := defaultMaxOutputTokens
 	modelMaxContext := 0
+	var resolvedRuntimeParameters map[string]any
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		resolvedRuntimeParameters = rec.RuntimeParameters
 		// Keep generic endpoints aligned with chat completions: parser defaults
 		// are catalog-owned request semantics, not provider inference guesses.
 		runtimeDefaults.apply(parsed, rec.RuntimeParameters)
@@ -2791,6 +2800,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	timing.ParsedAt = time.Now()
 	rp.Mark(registry.StampReqParsed)
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
+		return
+	}
+	if s.rejectShortInput(w, r, parsed, publicModel, model, estimatedPromptTokens, resolvedRuntimeParameters) {
 		return
 	}
 
@@ -2876,6 +2888,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			runtimeDefaults.apply(parsed, runtimeParameters)
 		} else {
 			runtimeDefaults.apply(parsed, nil)
+		}
+		if s.rejectShortInput(w, r, parsed, publicModel, newModel, estimatedPromptTokens, runtimeParameters) {
+			refundReservation()
+			return false
 		}
 		if err := validateResolvedToolConstraintParser(
 			parsed, validatedMode, newModel, s.registry.ModelType(newModel),

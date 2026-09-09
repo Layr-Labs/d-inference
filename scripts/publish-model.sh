@@ -51,6 +51,17 @@ R2_BUCKET="${R2_BUCKET:-darkbloom-models}"
 read -r -p "Model directory: " MODEL_DIR
 read -r -p "Model id (for example mlx-community/foo): " MODEL_ID
 read -r -p "Version (no slashes): " VERSION
+read -r -p "Minimum estimated input tokens [32; 0 allows small-input testing]: " MIN_INPUT_TOKENS
+MIN_INPUT_TOKENS="${MIN_INPUT_TOKENS:-32}"
+if ! [[ "$MIN_INPUT_TOKENS" =~ ^[0-9]+$ ]] || ! python3 - "$MIN_INPUT_TOKENS" <<'PYMIN'
+import sys
+raise SystemExit(0 if 0 <= int(sys.argv[1]) <= 2147483647 else 1)
+PYMIN
+then
+  printf 'Minimum input tokens must be an integer between 0 and 2147483647.\n' >&2
+  exit 1
+fi
+MIN_INPUT_TOKENS="$(python3 -c 'import sys; print(int(sys.argv[1]))' "$MIN_INPUT_TOKENS")"
 
 DEFAULT_REQUIRED_PROVIDER_CAPABILITIES=""
 if [[ "$MODEL_ID" == "EigenLabs/Qwen3.8-27B-4bit" ]]; then
@@ -171,7 +182,7 @@ Register with GitHub Actions:
     -f max_output_length="<max output tokens>" \
     -f min_ram_gb="<minimum RAM GB>" \
     -f description="" \
-    -f runtime_parameters_json='{}' \
+    -f runtime_parameters_json='{"min_input_tokens":$MIN_INPUT_TOKENS}' \
     -f hugging_face_artifact_json='$HUGGING_FACE_ARTIFACT_JSON' \
     -f metadata_json='{}' \
     -f promote="false" \

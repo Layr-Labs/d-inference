@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-08 · commit `efb5517fc`
+> Last updated: 2026-09-10 · commit `c09499b5e`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -8,6 +8,48 @@ the stored rows, alias rules, and the public catalog responses. Every table
 cites the code that defines or validates the field. How the pieces fit together
 is explained in [`../architecture/model-registry.md`](../architecture/model-registry.md);
 the operator procedure is [`../operations/model-migration.md`](../operations/model-migration.md).
+
+## Minimum input tokens
+
+`runtime_parameters.min_input_tokens` is a per-concrete-model admission control
+(`coordinator/api/input_token_floor.go`, `minimumInputTokens`). It applies to
+chat completions, Responses, completions, and Anthropic messages, for all callers.
+Public aliases inherit the selected build's setting; a fallback to another build
+rechecks that build's minimum and refunds any prior balance reservation on rejection.
+
+| Value | Behavior |
+|---|---|
+| omitted or `null` | Inherit `EIGENINFERENCE_MIN_INPUT_TOKENS` (default **32**) |
+| `0` | Disable the floor for this model, allowing small-input testing |
+| positive integer | Override the default minimum for this model |
+
+Registration and runtime-parameter updates reject negative, fractional, nonnumeric,
+and out-of-range values with 400. The maximum is 2147483647. Invalid legacy stored
+values inherit the deployment default. A consumer's request body cannot change
+this catalog-owned policy.
+
+The count is the coordinator's existing **media-aware routing estimate** over the
+conversation/input, not an exact tokenizer count or just the last user message.
+For example, a provider-reported 27-token prompt can estimate to 19 tokens.
+Tool definitions are not added to this routing estimate. At initial admission, a
+below-minimum request returns HTTP **400**, `error.type = "invalid_request_error"`, and
+`error.code = "input_too_short"`, before token admission, billing reservation,
+provider dispatch, or starting the response stream (`rejectShortInput`).
+The error message reports both the estimate and effective minimum.
+
+To register a test model through the existing publishing workflow, include:
+
+```json
+{"runtime_parameters":{"min_input_tokens":0}}
+```
+
+In `register-model.yml`, supply `runtime_parameters_json='{"min_input_tokens":0}'`.
+For an existing concrete model, use the authenticated
+`POST /v1/admin/models/<model-id>/runtime-parameters` endpoint with the same body.
+Other runtime parameters are preserved by this partial update. Set the value to
+`null` to restore inheritance, or to `32` to pin that minimum. Changes made through
+this endpoint invalidate the model cache; no coordinator restart is needed.
+Production registry changes follow the normal human approval requirement.
 
 ## Manifest (`manifest.json`)
 
@@ -91,7 +133,7 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 | `capabilities` | array of string | no | free-form OpenRouter-style feature names (`tools`, `reasoning`, …) |
 | `required_provider_capabilities` | array of string | no | each must be `apple_m5` or `mlx_nax`, trimmed, unique (`validateRequiredProviderCapabilities`); `EigenLabs/Qwen3.8-27B-4bit` must list both |
 | `description` | string | no | |
-| `runtime_parameters` | object | no | merged into provider requests at dispatch |
+| `runtime_parameters` | object | no | catalog-owned controls; only allowlisted parser defaults are forwarded (`modelRuntimeDefaults.apply`). `min_input_tokens` is validated by `validateInputTokenFloor`. |
 | `metadata` | object | no | opaque; see [metadata keys](#metadata-keys) |
 | `promote` | boolean | no | activate this version immediately |
 | `input_price` | integer | yes | > 0, micro-USD per 1M tokens |

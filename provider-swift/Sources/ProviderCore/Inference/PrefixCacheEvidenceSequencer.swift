@@ -17,24 +17,6 @@ actor PrefixCacheEvidenceSequencer {
         let hasExpiry: Bool
     }
 
-    private final class EnqueueGate: @unchecked Sendable {
-        private let lock = NSLock()
-        private var nextID: UInt64 = 1
-        private var closed = false
-
-        func claim() -> UInt64? {
-            lock.withLock {
-                guard !closed, nextID < UInt64.max else { return nil }
-                defer { nextID += 1 }
-                return nextID
-            }
-        }
-
-        func close() {
-            lock.withLock { closed = true }
-        }
-    }
-
     private struct Context: Sendable, Equatable {
         let requestID: String
         let nonce: String
@@ -65,7 +47,7 @@ actor PrefixCacheEvidenceSequencer {
     private let receiptTier: PrefixCacheTier
     private let capabilityProvider: @Sendable () -> PrefixCacheV2Capability?
     private let sequenceProvider: (@Sendable (String) -> UInt64?)?
-    private nonisolated let enqueueGate = EnqueueGate()
+    private nonisolated let enqueueGate = PrefixCacheEvidenceEnqueueGate()
     private var activeCapability: PrefixCacheV2Capability?
     private var nextSequence: UInt64 = 1
     private var nextCommandID: UInt64 = 1
@@ -96,6 +78,9 @@ actor PrefixCacheEvidenceSequencer {
     }
 
     nonisolated func shutdown() {
+        // Recovery may close the cache before an outer inference handler sends
+        // its final completion/error. Stop accepting optional evidence, but let
+        // terminal messages follow all commands accepted before this boundary.
         enqueueGate.close()
     }
 
@@ -106,7 +91,7 @@ actor PrefixCacheEvidenceSequencer {
         forwardTerminal: Bool = true,
         readyBoundaryMode: String? = nil
     ) -> PrefixCacheV2EvidenceCallbacks? {
-        guard let capability = capabilityProvider() else { return nil }
+        guard enqueueGate.isOpen, let capability = capabilityProvider() else { return nil }
         // The echo is absent on old coordinators. Local SSD reuse may still
         // proceed, but its checkpoint receipts must not be misread as legacy
         // durable coverage through the full prompt floor.
@@ -119,6 +104,7 @@ actor PrefixCacheEvidenceSequencer {
             nonce: nonce,
             capability: capability,
             forwardTerminal: forwardTerminal)
+        let terminalGate = PrefixCacheTerminalDeliveryGate()
         return PrefixCacheV2EvidenceCallbacks(
             lookup: { [weak self] result in
                 self?.enqueue(.lookup(context, result, send))
@@ -127,14 +113,26 @@ actor PrefixCacheEvidenceSequencer {
                 self?.enqueue(.ready(context, result, send))
             },
             terminal: { [weak self] message in
-                self?.enqueue(.terminal(context, message, send))
+                guard terminalGate.claim() else { return }
+                if let self {
+                    self.enqueue(.terminal(context, message, send))
+                } else if context.forwardTerminal {
+                    // Accepted commands retain the sequencer until they have
+                    // drained, so deallocation means there is no queued proof
+                    // left for this direct fallback to overtake.
+                    send.send(message)
+                }
             })
     }
 
     private nonisolated func enqueue(_ command: Command) {
-        guard let id = enqueueGate.claim() else { return }
-        Task { [weak self] in
-            await self?.receive(id: id, command: command)
+        let terminal: Bool
+        if case .terminal = command { terminal = true } else { terminal = false }
+        guard let id = enqueueGate.claim(terminal: terminal) else { return }
+        // Do not let model/bridge teardown drop an already accepted command or
+        // leave a hole that prevents later command IDs from draining.
+        Task {
+            await self.receive(id: id, command: command)
         }
     }
 
@@ -142,7 +140,7 @@ actor PrefixCacheEvidenceSequencer {
         pendingCommands[id] = command
         while let next = pendingCommands.removeValue(forKey: nextCommandID) {
             sweepExpired(now: .now)
-            nextCommandID += 1
+            nextCommandID &+= 1
             switch next {
             case .lookup(let context, let result, let send):
                 handleLookup(context, result: result, send: send)

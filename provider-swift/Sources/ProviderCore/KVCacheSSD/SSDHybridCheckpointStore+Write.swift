@@ -187,23 +187,7 @@ extension SSDHybridCheckpointStore {
                 // A ready receipt must never rely on an advisory index entry.
                 // Reauthenticate changed timestamps too: another legitimate
                 // hit may have updated sliding recency since this stage.
-                statsBox.update { $0.filesRead += 1 }
-                try SSDBlockStore.readStreaming(
-                    from: url, kekKey: kekKey,
-                    maximumChunkBytes: CBv2CompleteCheckpointManifest.maximumSegmentBytes,
-                    maximumPlaintextBytes: config.maxReadBytes,
-                    maximumMetadataBytes: 1 << 20, maximumWrappedDEKBytes: 60, requireEOF: true,
-                    checkCancellation: { try self.checkWrite(job) },
-                    onBytesRead: { count in self.statsBox.update { $0.bytesRead += count; $0.donationReadBytes += count } },
-                    validateMetadata: {
-                        guard envelope.matches($0, tag: job.tag, identity: self.identity, backendLayout: self.config.backendLayout) else {
-                            throw CBv2CompleteCheckpointError.incompatibleCheckpoint
-                        }
-                    }, consumeChunk: { index, bytes in
-                        if index == 0, bytes != envelope.manifestBytes {
-                            throw CBv2CompleteCheckpointError.incompatibleCheckpoint
-                        }
-                    })
+                try validateDurableCheckpoint(job, at: url)
             } else {
                 guard rateLimiter.tryConsume(bytes: envelope.plaintextBytes) else {
                     result.outcome = .writeRateLimited; return

@@ -9,7 +9,7 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
     let modelRoot: URL
     let key = SymmetricKey(size: .bits256)
     let identity = CBv2CompleteCheckpointIdentity(modelAggregateHash: "fixture-weights", promptContractID: "fixture-template", buildID: "fixture-build", numericsFingerprint: "fixture-numerics")
-    let tokens = (0..<513).map { $0 % 31 }
+    let tokens: [Int]
     let codec: CBv2CompleteCheckpointCodec
     let budget: GlobalKVCacheBudget
     let backend: PagedKVBackend?
@@ -18,8 +18,10 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
         backend != nil ? CBv2CompleteCheckpointManifest.pagedLayout : CBv2CompleteCheckpointManifest.layout
     }
 
-    init(sharedPaged: Bool = false, paged: Bool = false, budget: GlobalKVCacheBudget? = nil) throws {
+    init(sharedPaged: Bool = false, paged: Bool = false, budget: GlobalKVCacheBudget? = nil,
+         tokenCount: Int = 513) throws {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
+        tokens = (0..<tokenCount).map { $0 % 31 }
         self.sharedPaged = sharedPaged
         let usesPaged = sharedPaged || paged
         self.budget = budget ?? GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 0, memorySnapshot: {
@@ -79,14 +81,14 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
         return store
     }
 
-    func manifest(position: Int = 256, scope: String = "tenant-a") throws -> CBv2CompleteCheckpointManifest {
-        .init(identity: identity, position: position, chunkSize: 256, prefixTokens: Array(tokens.prefix(position)),
+    func manifest(position: Int = 256, scope: String = "tenant-a", chunkSize: Int = 256) throws -> CBv2CompleteCheckpointManifest {
+        .init(identity: identity, position: position, chunkSize: chunkSize, prefixTokens: Array(tokens.prefix(position)),
               cacheSalt: scope, assistantCodecID: nil, tensors: try codec.tensorDescriptors(position: position),
               backendLayout: backendLayout)
     }
 
-    func source(position: Int = 256, scope: String = "tenant-a") throws -> CBv2CompleteCheckpointExport {
-        let manifest = try manifest(position: position, scope: scope)
+    func source(position: Int = 256, scope: String = "tenant-a", chunkSize: Int = 256) throws -> CBv2CompleteCheckpointExport {
+        let manifest = try manifest(position: position, scope: scope, chunkSize: chunkSize)
         let arrays = manifest.tensors.enumerated().map { index, tensor in
             MLXArray(Array(repeating: Float(index + 1), count: tensor.byteCount / 4)).reshaped(tensor.shape)
         }
@@ -110,8 +112,9 @@ final class SSDHybridCheckpointTestFixture: @unchecked Sendable {
         try codec.plan(manifest: manifest, request: request(), minimumChunkSize: 256, maximumChunkSize: 256)
     }
 
-    func donate(_ store: SSDHybridCheckpointStore, receipt: UInt64 = 10, position: Int = 256) async throws -> [Int] {
-        let source = try source(position: position)
+    func donate(_ store: SSDHybridCheckpointStore, receipt: UInt64 = 10, position: Int = 256,
+                chunkSize: Int = 256) async throws -> [Int] {
+        let source = try source(position: position, chunkSize: chunkSize)
         return await withCheckedContinuation { continuation in
             store.donate(source, requestID: .init(receipt), tokens: tokens, cacheSalt: "tenant-a") { continuation.resume(returning: $0) }
         }

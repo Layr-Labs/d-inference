@@ -15,6 +15,8 @@ package registry
 import (
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // derivedParams: floor comes from the measured ramp, no operator override.
@@ -282,25 +284,299 @@ func TestHeadroomNeverShrinksPool(t *testing.T) {
 
 // foldOccupancyRamp: only INCREASES are folded, so a draining spike does not
 // shrink headroom right when the next spike is most likely.
+//
+// interval/minInterval are 0 here, which disables the elapsed-time gate and
+// normalization so this exercises the fold arithmetic alone. Timing behaviour is
+// covered by TestFoldOccupancyRampNormalizesIrregularTicks.
 func TestFoldOccupancyRampIgnoresDecreases(t *testing.T) {
 	s := newWarmPoolState()
+	now := time.Now()
 	// first observation only seeds the baseline
-	s.foldOccupancyRamp(map[string]int{"m": 100}, 1.0)
+	s.foldOccupancyRamp(map[string]int{"m": 100}, now, 0, 0, 1.0)
 	if got := s.models["m"].occupancyRampEWMA; got != 0 {
 		t.Fatalf("after seed, ramp = %v, want 0", got)
 	}
 	// +50 rise, alpha=1 -> ramp == 50
-	s.foldOccupancyRamp(map[string]int{"m": 150}, 1.0)
+	s.foldOccupancyRamp(map[string]int{"m": 150}, now, 0, 0, 1.0)
 	if got := s.models["m"].occupancyRampEWMA; got != 50 {
 		t.Fatalf("after +50, ramp = %v, want 50", got)
 	}
 	// big DROP must fold as 0, not negative
-	s.foldOccupancyRamp(map[string]int{"m": 10}, 1.0)
+	s.foldOccupancyRamp(map[string]int{"m": 10}, now, 0, 0, 1.0)
 	if got := s.models["m"].occupancyRampEWMA; got != 0 {
 		t.Fatalf("after drop, ramp = %v, want 0 (floored, not negative)", got)
 	}
 	if got := s.models["m"].lastOccupancy; got != 10 {
 		t.Fatalf("lastOccupancy = %d, want 10 (baseline still tracks the drop)", got)
+	}
+}
+
+// OccupancyRamp is slots per CONTROL INTERVAL, but coalesced hot-path triggers
+// (RequestWarmPoolTrigger from the queue/rejection paths) make planning passes
+// irregular. Pre-fix the raw per-pass delta was folded, so one interval's growth
+// split across N triggers measured ~1/N of the true ramp — under-warming during
+// exactly the bursts that produce the extra triggers.
+func TestFoldOccupancyRampNormalizesIrregularTicks(t *testing.T) {
+	const interval = 30 * time.Second
+	base := time.Now()
+
+	// Six trigger-driven passes 5s apart, occupancy climbing 10 slots each: the
+	// true growth is 60 slots over the 30s interval.
+	burst := newWarmPoolState()
+	burst.foldOccupancyRamp(map[string]int{"m": 0}, base, interval, interval/2, 1.0)
+	for i := 1; i <= 6; i++ {
+		at := base.Add(time.Duration(i) * 5 * time.Second)
+		burst.foldOccupancyRamp(map[string]int{"m": i * 10}, at, interval, interval/2, 1.0)
+	}
+	if got := burst.models["m"].occupancyRampEWMA; got != 60 {
+		t.Fatalf("bursty ticks: ramp = %v, want 60 (one interval of growth)", got)
+	}
+
+	// The same growth observed as a single on-interval pass must measure the same.
+	steady := newWarmPoolState()
+	steady.foldOccupancyRamp(map[string]int{"m": 0}, base, interval, interval/2, 1.0)
+	steady.foldOccupancyRamp(map[string]int{"m": 60}, base.Add(interval), interval, interval/2, 1.0)
+	if got := steady.models["m"].occupancyRampEWMA; got != 60 {
+		t.Fatalf("steady tick: ramp = %v, want 60", got)
+	}
+
+	// A pass that arrives at half the interval is scaled UP, not counted raw:
+	// 20 slots in 15s is a 40-slot/interval growth rate.
+	half := newWarmPoolState()
+	half.foldOccupancyRamp(map[string]int{"m": 0}, base, interval, interval/2, 1.0)
+	half.foldOccupancyRamp(map[string]int{"m": 20}, base.Add(interval/2), interval, interval/2, 1.0)
+	if got := half.models["m"].occupancyRampEWMA; got != 40 {
+		t.Fatalf("half-interval tick: ramp = %v, want 40 (normalized)", got)
+	}
+}
+
+// The pressure window expiring must NOT destroy the occupancy baseline.
+//
+// Pre-fix both lived on lastEventAt, which only pressure/load events advance. Once
+// the last event aged out, every snapshot cleared haveOccupancy — and plan() calls
+// snapshot twice per pass — so foldOccupancyRamp could only ever re-seed the
+// baseline and never measure another rise until a new failure arrived. Proactive
+// warming switched itself off ~2 minutes after the last shed request, which is the
+// failure-triggered behaviour this whole change removes.
+func TestOccupancyBaselineSurvivesPressureExpiry(t *testing.T) {
+	const (
+		window   = 2 * time.Minute
+		interval = 30 * time.Second
+	)
+	s := newWarmPoolState()
+	t0 := time.Now()
+
+	// One pressure event, then it ages out completely.
+	s.recordEvent("m", warmPoolEventCapacityReject, t0)
+	stale := t0.Add(10 * time.Minute)
+
+	// Reproduce a planning pass: fold, snapshot, fold, snapshot (as plan() does).
+	for i := 0; i < 3; i++ {
+		at := stale.Add(time.Duration(i) * interval)
+		s.foldOccupancyRamp(map[string]int{"m": 100 + i*40}, at, interval, interval/2, 1.0)
+		s.snapshot(at, window)
+		s.snapshot(at, window)
+	}
+
+	b := s.models["m"]
+	if !b.haveOccupancy {
+		t.Fatal("haveOccupancy was cleared by pressure expiry: the baseline can never difference again")
+	}
+	if b.occupancyRampEWMA != 40 {
+		t.Fatalf("ramp = %v, want 40 (measured across passes with no pressure at all)", b.occupancyRampEWMA)
+	}
+	// Pressure counters, on their own clock, must still have expired.
+	snap := s.snapshot(stale, window)
+	if snap["m"].capacityRejects != 0 {
+		t.Fatalf("capacityRejects = %d, want 0 (pressure still expires on lastEventAt)", snap["m"].capacityRejects)
+	}
+	if snap["m"].occupancyRampEWMA != 40 {
+		t.Fatalf("snapshot ramp = %v, want 40 (occupancy is not pressure)", snap["m"].occupancyRampEWMA)
+	}
+}
+
+// The occupancy baseline has its OWN staleness clock: a model the controller stops
+// reporting altogether does eventually lose its ramp, so a stale growth figure
+// cannot keep warming providers forever.
+func TestOccupancyBaselineExpiresOnItsOwnClock(t *testing.T) {
+	const (
+		window   = 2 * time.Minute
+		interval = 30 * time.Second
+	)
+	s := newWarmPoolState()
+	t0 := time.Now()
+	s.foldOccupancyRamp(map[string]int{"m": 10}, t0, interval, interval/2, 1.0)
+	s.foldOccupancyRamp(map[string]int{"m": 60}, t0.Add(interval), interval, interval/2, 1.0)
+	if got := s.models["m"].occupancyRampEWMA; got != 50 {
+		t.Fatalf("ramp = %v, want 50", got)
+	}
+	// No occupancy observed for well over the window.
+	snap := s.snapshot(t0.Add(30*time.Minute), window)
+	if snap["m"].occupancyRampEWMA != 0 || snap["m"].haveOccupancy {
+		t.Fatalf("stale occupancy not expired: ramp=%v haveOccupancy=%v",
+			snap["m"].occupancyRampEWMA, snap["m"].haveOccupancy)
+	}
+}
+
+// A provider saturated by a CO-RESIDENT model is counted in Warm but can serve
+// nothing for this model, and the requests consuming its capacity are absent from
+// this model's occupancy. Pre-fix ceil(occupied/qc)+headroom could therefore sit
+// below Warm and issue NO loads while every warm provider was unusable.
+func TestHeadroomAccountsForCrossModelSaturation(t *testing.T) {
+	p := derivedParams(64, 1)
+	// 10 warm, all blocked by another model: zero of this model's requests are in
+	// flight, so occupied = 0 and the uncorrected floor is just the ramp (2).
+	in := warmTargetInputs{
+		Model: "m", Warm: 10, WarmSaturated: 10, WarmForeignBlocked: 10,
+		EligibleCold: 20, RunningRequests: 0, OccupancyRamp: 14, // ceil(14/7)=2
+		SoloDecodeTPS: 60, MaxProviderConc: 8, DemandPressure: false,
+	}
+	// 0 + 2 + 10 blocked = 12, above warm=10, so loads are actually issued.
+	if got := warmTarget(in, p, time.Second); got != 12 {
+		t.Fatalf("warmTarget = %d, want 12 (2 headroom + 10 foreign-blocked)", got)
+	}
+
+	// Self-saturation is NOT added: that load is already inside `occupied`.
+	self := in
+	self.WarmForeignBlocked = 0
+	self.RunningRequests = 70 // == warm*qc, fully busy with its OWN traffic
+	// ceil(70/7)=10 + 2 = 12, and nothing extra for the 10 saturated providers.
+	if got := warmTarget(self, p, time.Second); got != 12 {
+		t.Fatalf("warmTarget(self-saturated) = %d, want 12 (no double-count)", got)
+	}
+
+	// Partial: 4 of 10 blocked by a co-resident model, 6 busy with this model.
+	partial := in
+	partial.WarmForeignBlocked = 4
+	partial.RunningRequests = 42 // 6 providers * qc 7
+	// ceil(42/7)=6 + 2 + 4 = 12.
+	if got := warmTarget(partial, p, time.Second); got != 12 {
+		t.Fatalf("warmTarget(partial) = %d, want 12", got)
+	}
+}
+
+// A no-pressure fleet whose warm providers are ALL blocked by a co-resident model
+// must issue loads end-to-end through the controller. This is the shape that
+// produced no actions at all pre-fix.
+//
+// The pool is deliberately sized so the foreign-blocked term is the DECIDING one:
+// several warm providers against a small measured ramp, so ceil(occupied/qc) +
+// headroom lands BELOW warm and only the blocked count lifts the target above it.
+// With one warm provider the derived headroom alone clears the bar and the test
+// would pass against the unfixed formula, asserting nothing.
+func TestControllerWarmsWhenWarmPoolIsForeignBlocked(t *testing.T) {
+	reg := New(testLogger())
+	model := "foreign-blocked-e2e"
+	other := "co-resident-model"
+	warmProviders := []*Provider{
+		makeSchedulerProvider(t, reg, "warm-a", model, 80),
+		makeSchedulerProvider(t, reg, "warm-b", model, 80),
+		makeSchedulerProvider(t, reg, "warm-c", model, 80),
+	}
+	for _, id := range []string{"cold-a", "cold-b", "cold-c"} {
+		makeWarmPoolColdProvider(t, reg, id, model, 80, 64, 8)
+	}
+	cfg := testWarmPoolConfig()
+	cfg.HeadroomEnabled = true
+	cfg.HeadroomMaxProviders = 64
+	cfg.HeadroomLoadWindows = 1
+	cfg.MaxLoadsPerTick = 3
+	cfg.MaxLoadsPerTickCeiling = 3
+	reg.ConfigureWarmPool(cfg)
+	sent := captureWarmPoolLoads(reg)
+
+	// Seed the occupancy baseline, then a SMALL rise so a modest ramp is measured.
+	t0 := time.Now()
+	reg.warmPool.tick(t0)
+	warmProviders[0].mu.Lock()
+	warmProviders[0].BackendCapacity.Slots[0].NumRunning = 1
+	warmProviders[0].mu.Unlock()
+	reg.warmPool.tick(t0.Add(cfg.Interval))
+
+	// Now every warm box's capacity is consumed by a DIFFERENT resident model.
+	// This model's slots report zero load, so that traffic is invisible in
+	// `occupied` while each box still contributes qc to nominal warm capacity.
+	for _, p := range warmProviders {
+		p.mu.Lock()
+		p.BackendCapacity.Slots[0].NumRunning = 0
+		p.BackendCapacity.Slots[0].NumWaiting = 0
+		p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, protocol.BackendSlotCapacity{
+			Model: other, State: "running", NumRunning: 64, MaxConcurrency: 1,
+		})
+		p.mu.Unlock()
+	}
+	*sent = nil
+	snaps := reg.warmPool.tick(t0.Add(2 * cfg.Interval))
+
+	var snap *WarmPoolSnapshot
+	for i := range snaps {
+		if snaps[i].Model == model {
+			snap = &snaps[i]
+		}
+	}
+	if snap == nil {
+		t.Fatalf("no snapshot for %q in %+v", model, snaps)
+	}
+	if snap.WarmForeignBlocked != len(warmProviders) {
+		t.Fatalf("WarmForeignBlocked = %d, want %d (all warm boxes saturated by %q with no load of their own)",
+			snap.WarmForeignBlocked, len(warmProviders), other)
+	}
+	// Guard that the foreign term is what decides it: without it the floor is
+	// ceil(occupied/qc)+headroom, which must be at or below warm here.
+	if unfixed := snap.HeadroomProviders + snap.RunningRequests + snap.WaitingRequests + snap.QueueDepth; unfixed > snap.WarmProviders {
+		t.Fatalf("test does not isolate the fix: unfixed floor bound %d already exceeds warm %d",
+			unfixed, snap.WarmProviders)
+	}
+	if snap.TargetWarm <= snap.WarmProviders {
+		t.Fatalf("target_warm=%d warm=%d: no growth despite every warm provider being unusable",
+			snap.TargetWarm, snap.WarmProviders)
+	}
+	if len(*sent) == 0 {
+		t.Fatal("no loads issued while the entire warm pool was blocked by a co-resident model")
+	}
+}
+
+// HEADROOM=false must be a TRUE opt-out, not just a suppressed floor.
+//
+// Both halves of proactive growth are new here: the headroom floor AND sizing to
+// already-served load without a pressure signal. Pre-fix the kill switch only
+// removed the first, so the unconditional Little's Law target still grew the pool
+// with nothing failing — an operator reaching for the documented revert during an
+// incident would not have got the previous behaviour.
+func TestHeadroomDisabledGatesAllNoPressureGrowth(t *testing.T) {
+	p := derivedParams(64, 1)
+	p.HeadroomEnabledParams = false
+	p.BurstBuffer = 1
+
+	// Served load with NO pressure: pre-change this returned in.Warm.
+	in := warmTargetInputs{
+		Model: "m", Warm: 1, EligibleCold: 20, RunningRequests: 8,
+		OccupancyRamp: 700, SoloDecodeTPS: 20, MaxProviderConc: 6,
+		DemandPressure: false,
+	}
+	if got := warmTarget(in, p, time.Second); got != 1 {
+		t.Fatalf("warmTarget = %d, want 1 (disabled: no growth without pressure)", got)
+	}
+	// Spill arrivals with no pressure flag must not grow it either.
+	spill := in
+	spill.RunningRequests = 0
+	spill.SpillArrivalRate = 2.0
+	if got := warmTarget(spill, p, 5*time.Second); got != 1 {
+		t.Fatalf("warmTarget(spill) = %d, want 1 (disabled)", got)
+	}
+	// With pressure, the pre-change reactive path is intact: demand-sized target
+	// (ceil(8/qc=1) = 8, plus BurstBuffer 1).
+	withPressure := in
+	withPressure.DemandPressure = true
+	if got := warmTarget(withPressure, p, time.Second); got != 9 {
+		t.Fatalf("warmTarget(pressure) = %d, want 9 (reactive Little's Law + burst buffer)", got)
+	}
+	// And with the floor ENABLED the same no-pressure input does grow, so the
+	// switch is what makes the difference rather than the inputs.
+	on := p
+	on.HeadroomEnabledParams = true
+	if got := warmTarget(in, on, time.Second); got <= 1 {
+		t.Fatalf("warmTarget(enabled) = %d, want > 1 (the switch is the only difference)", got)
 	}
 }
 
@@ -324,13 +600,17 @@ func TestControllerWarmsProactivelyWithoutPressure(t *testing.T) {
 
 	// Tick once at zero load to seed the occupancy baseline, then raise occupancy
 	// so the controller MEASURES a ramp (no pressure events recorded at all).
-	reg.warmPool.tick(time.Now())
+	// The second tick must be a full control interval later: foldOccupancyRamp
+	// gates on half the interval so coalesced hot-path triggers cannot fragment
+	// one interval's growth into understated samples.
+	t0 := time.Now()
+	reg.warmPool.tick(t0)
 	warm.mu.Lock()
 	warm.BackendCapacity.Slots[0].Model = model
 	warm.BackendCapacity.Slots[0].State = "running"
 	warm.BackendCapacity.Slots[0].NumRunning = 20
 	warm.mu.Unlock()
-	snaps := reg.warmPool.tick(time.Now())
+	snaps := reg.warmPool.tick(t0.Add(cfg.Interval))
 
 	var snap *WarmPoolSnapshot
 	for i := range snaps {

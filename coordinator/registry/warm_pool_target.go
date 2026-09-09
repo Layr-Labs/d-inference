@@ -81,11 +81,24 @@ type warmTargetInputs struct {
 	// (measured in warmPoolFleetSnapshot). Warm counts weights-resident
 	// providers including those actively serving, so this is what separates
 	// "resident" from "able to accept work": available = Warm - WarmSaturated.
-	WarmSaturated   int
-	EligibleCold    int // cold providers that could be warmed this tick
-	RunningRequests int // Σ NumRunning across warm providers (served, decoding)
-	WaitingRequests int // Σ NumWaiting across warm providers (provider-queued)
-	QueueDepth      int // coordinator-side queued requests for the model
+	WarmSaturated int
+	// WarmForeignBlocked is the subset of WarmSaturated that is saturated by a
+	// CO-RESIDENT model rather than by this model's own traffic: weights resident,
+	// no concurrency headroom, and zero of this model's requests in flight.
+	//
+	// It is the one saturation term the capacity identity does NOT already
+	// account for. This model's own load is inside `occupied`, so a
+	// self-saturated provider needs no correction. A foreign-blocked provider is
+	// different: it contributes qc to warm·qc while the requests consuming that
+	// capacity belong to another model and therefore never appear in `occupied`,
+	// so the floor can sit below Warm and issue no loads even when every
+	// nominally warm provider can serve nothing. Subtracting it from usable warm
+	// capacity is exactly the missing term, and does not double-count.
+	WarmForeignBlocked int
+	EligibleCold       int // cold providers that could be warmed this tick
+	RunningRequests    int // Σ NumRunning across warm providers (served, decoding)
+	WaitingRequests    int // Σ NumWaiting across warm providers (provider-queued)
+	QueueDepth         int // coordinator-side queued requests for the model
 	// SpillArrivalRate is the EWMA arrival rate (requests/sec) of demand the warm
 	// pool failed to serve at quality this window — the capacity_reject, ttft_miss
 	// and cold_dispatch signals, including the W3 preflight-fed near-misses. This
@@ -204,7 +217,17 @@ func demandConcurrency(in warmTargetInputs, svc time.Duration) float64 {
 // the shortfall, so the pool was smallest exactly when load was rising. The
 // headroom floor below replaces that with anticipatory growth; the pressure
 // signals still accelerate it through demandConcurrency's spill term.
+//
+// HeadroomEnabledParams=false is a TRUE opt-out: it restores the pressure gate as
+// well as suppressing the floor. Both halves of proactive growth — the headroom
+// floor AND sizing to already-served load without a failure — are new in this
+// change, so leaving the second one live would grow the pool with no pressure on
+// a config that advertises the previous reactive behaviour, and an operator
+// reaching for the kill switch during an incident would not get what it says.
 func warmTarget(in warmTargetInputs, p warmTargetParams, svc time.Duration) int {
+	if !p.HeadroomEnabledParams && !in.DemandPressure {
+		return in.Warm
+	}
 	qc := qualityConcurrency(in.SoloDecodeTPS, p.DecodeFloorTPS, p.LoadFactorK, in.MaxProviderConc, p.FallbackQualityConcurrency)
 	if qc < 1 {
 		qc = 1
@@ -245,12 +268,25 @@ func warmTarget(in warmTargetInputs, p warmTargetParams, svc time.Duration) int 
 //	warm·qc - occupied >= headroom·qc
 //	warm             >= ceil(occupied/qc) + headroom
 //
-// Note what is deliberately NOT in that expression: WarmSaturated. A saturated
-// provider's capacity is already counted inside warm·qc and the requests
-// occupying it are already counted inside `occupied`, so adding it again
-// double-counts — on a fully-busy pool that inflated the floor by one provider
-// per saturated provider. WarmSaturated remains plumbed through for the pressure
-// gate and the tick log, where it is a genuine signal.
+// with one correction. That identity assumes every warm provider's qc is usable
+// for THIS model, which is false for a provider whose concurrency is consumed by a
+// CO-RESIDENT model: it contributes qc to warm·qc, but the requests consuming that
+// capacity belong to another model and so are NOT in `occupied`. Left uncorrected
+// the floor could sit below Warm and issue no loads while every nominally warm
+// provider was unable to serve anything. WarmForeignBlocked is the measured count
+// of those providers, so the usable identity is
+//
+//	(warm - foreignBlocked)·qc - occupied >= headroom·qc
+//	warm >= ceil(occupied/qc) + headroom + foreignBlocked
+//
+// Note what is still deliberately NOT in that expression: WarmSaturated as a
+// whole. A provider saturated by THIS model's own requests is already accounted
+// for on both sides — its capacity inside warm·qc, its requests inside `occupied`
+// — so adding it double-counts, which on a fully-busy pool inflated the floor by
+// one provider per saturated provider. Only the foreign-blocked subset, whose load
+// is invisible to `occupied`, is a genuinely missing term. WarmSaturated remains
+// plumbed through for the pressure gate and the tick log, where it is a signal in
+// its own right.
 //
 // `headroom` itself is DERIVED per model, not configured: it is the measured
 // occupancy ramp (slots of growth per control interval, EWMA) scaled by how many
@@ -268,7 +304,14 @@ func headroomTarget(in warmTargetInputs, p warmTargetParams, qc int) int {
 	if occupied < 0 {
 		occupied = 0
 	}
-	return int(math.Ceil(float64(occupied)/float64(qc))) + headroom
+	foreignBlocked := in.WarmForeignBlocked
+	if foreignBlocked < 0 {
+		foreignBlocked = 0
+	}
+	if foreignBlocked > in.Warm {
+		foreignBlocked = in.Warm
+	}
+	return int(math.Ceil(float64(occupied)/float64(qc))) + headroom + foreignBlocked
 }
 
 // headroomProviders resolves how many providers' worth of FREE capacity this model

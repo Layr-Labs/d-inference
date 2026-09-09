@@ -63,10 +63,14 @@ type WarmPoolSnapshot struct {
 	// Little's Law diagnostics (Layer 3, routing-v2.md). DemandConcurrency is
 	// L = λ·E[S]; QualityConcurrency is the per-provider batch ceiling at the
 	// decode floor; SpillArrivalRate is the EWMA arrivals/sec the pool shed.
-	RunningRequests  int
-	WaitingRequests  int
-	WarmSaturated    int // warm providers with NO concurrency headroom left
-	SpillArrivalRate float64
+	RunningRequests int
+	WaitingRequests int
+	WarmSaturated   int // warm providers with NO concurrency headroom left
+	// WarmForeignBlocked is the subset of WarmSaturated saturated by a CO-RESIDENT
+	// model (no headroom, none of THIS model's requests in flight). It is added to
+	// the headroom floor because that load never appears in running/waiting.
+	WarmForeignBlocked int
+	SpillArrivalRate   float64
 	// OccupancyRamp is the measured demand-growth EWMA (slots/interval) and
 	// HeadroomProviders the floor derived from it — the two numbers needed to
 	// audit why a model's proactive target is what it is.
@@ -89,6 +93,13 @@ type warmPoolModelSnapshot struct {
 	model         string
 	warm          int
 	warmSaturated int
+	// warmForeignBlocked is the subset of warmSaturated whose saturation is NOT
+	// explained by this model's own load: the provider has the weights resident
+	// but zero concurrency headroom while running NONE of this model's requests,
+	// so a co-resident model consumed its capacity. Those requests are absent
+	// from this model's running/waiting, so such a provider contributes qc to
+	// nominal capacity while being able to serve nothing — see headroomTarget.
+	warmForeignBlocked int
 	// running / waiting are the in-flight load summed across warm providers'
 	// backend slots for this model (the observable L in Little's Law).
 	running int
@@ -254,6 +265,7 @@ func (c *warmPoolController) tick(now time.Time) []WarmPoolSnapshot {
 				"target_warm", snap.TargetWarm,
 				"warm", snap.WarmProviders,
 				"warm_saturated", snap.WarmSaturated,
+				"warm_foreign_blocked", snap.WarmForeignBlocked,
 				"occupancy_ramp", snap.OccupancyRamp,
 				"headroom_providers", snap.HeadroomProviders,
 				"eligible_cold", snap.EligibleCold,
@@ -307,11 +319,16 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 	// snapshot (it is the source of running/waiting) but BEFORE targets are
 	// computed, so the floor sees the current ramp. Re-snapshot the pressure
 	// buckets afterwards to pick up the folded value.
+	//
+	// Same interval gate as foldArrivalRates, plus elapsed-time normalization:
+	// the ramp is slots per CONTROL INTERVAL, and coalesced hot-path triggers make
+	// planning passes irregular, so a raw per-pass delta would understate growth
+	// during exactly the bursts this floor exists to absorb.
 	occupancy := make(map[string]int, len(fleet))
 	for model, f := range fleet {
 		occupancy[model] = f.running + f.waiting + queue[model].Depth
 	}
-	c.state.foldOccupancyRamp(occupancy, warmPoolArrivalEWMAAlpha)
+	c.state.foldOccupancyRamp(occupancy, now, c.config.Interval, c.config.Interval/2, warmPoolArrivalEWMAAlpha)
 	pressure = c.state.snapshot(now, stateWindow)
 
 	models := make(map[string]struct{})
@@ -424,6 +441,7 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 			RunningRequests:    f.running,
 			WaitingRequests:    f.waiting,
 			WarmSaturated:      f.warmSaturated,
+			WarmForeignBlocked: f.warmForeignBlocked,
 			OccupancyRamp:      p.occupancyRampEWMA,
 			HeadroomProviders:  headroomProviders(c.targetInputs(f, p, q), params, qualityConcurrency(f.soloDecodeTPS, params.DecodeFloorTPS, params.LoadFactorK, f.maxProviderConc, params.FallbackQualityConcurrency)),
 			SpillArrivalRate:   p.arrivalRateEWMA,
@@ -462,19 +480,20 @@ func (c *warmPoolController) targetParams() warmTargetParams {
 // target from the fleet, pressure, and queue snapshots.
 func (c *warmPoolController) targetInputs(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, queue warmPoolQueuePressure) warmTargetInputs {
 	return warmTargetInputs{
-		Model:            fleet.model,
-		Warm:             fleet.warm,
-		WarmSaturated:    fleet.warmSaturated,
-		EligibleCold:     len(fleet.eligibleCold),
-		RunningRequests:  fleet.running,
-		WaitingRequests:  fleet.waiting,
-		QueueDepth:       queue.Depth,
-		SpillArrivalRate: pressure.arrivalRateEWMA,
-		OccupancyRamp:    pressure.occupancyRampEWMA,
-		SoloDecodeTPS:    fleet.soloDecodeTPS,
-		PrefillTPS:       fleet.prefillTPS,
-		MaxProviderConc:  fleet.maxProviderConc,
-		DemandPressure:   c.hasDemandPressure(fleet, pressure, queue),
+		Model:              fleet.model,
+		Warm:               fleet.warm,
+		WarmSaturated:      fleet.warmSaturated,
+		WarmForeignBlocked: fleet.warmForeignBlocked,
+		EligibleCold:       len(fleet.eligibleCold),
+		RunningRequests:    fleet.running,
+		WaitingRequests:    fleet.waiting,
+		QueueDepth:         queue.Depth,
+		SpillArrivalRate:   pressure.arrivalRateEWMA,
+		OccupancyRamp:      pressure.occupancyRampEWMA,
+		SoloDecodeTPS:      fleet.soloDecodeTPS,
+		PrefillTPS:         fleet.prefillTPS,
+		MaxProviderConc:    fleet.maxProviderConc,
+		DemandPressure:     c.hasDemandPressure(fleet, pressure, queue),
 	}
 }
 
@@ -596,6 +615,14 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 				s.waiting += waiting
 				if !r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model) || warmPoolBackendSlotBusyLocked(p) {
 					s.warmSaturated++
+					// Saturated while serving NONE of this model's requests means
+					// a co-resident model is holding the capacity. That load is
+					// invisible in s.running/s.waiting, so the warm-pool target
+					// must not treat this provider as usable capacity for this
+					// model (see headroomTarget).
+					if running+waiting == 0 {
+						s.warmForeignBlocked++
+					}
 				}
 				out[model] = s
 				// decodeSamples feed soloDecodeTPS → qualityConcurrency in the

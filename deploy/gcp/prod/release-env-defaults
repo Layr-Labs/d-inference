@@ -48,3 +48,18 @@ EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=true
 # It is also the upper bound on cross-class solo-median transfer. Keep the
 # unqualified entries conservative: they apply to every class not named here.
 EIGENINFERENCE_MODEL_SOLO_TPS_SEED=gemma-4-26b-qat-4bit=14,gemma-4-26b-qat-4bit@M4|Max=70,gpt-oss-20b=30,gpt-oss-20b@M4|Max=70
+
+# v0.9 proactive warm-pool headroom. These are in required-env-keys.txt, and an
+# existing production host's /etc/d-inference/env predates them, so they MUST ship
+# a release default: without one the pre-merge required-value check would fail on
+# every box that has not been hand-edited, and darkbloom-env-refresh.service is
+# ordered before Docker — a failed refresh blocks the coordinator from starting.
+# The checked-in deploy/environments/prod.env is a sanitized reference and is
+# never copied to the host, so it cannot bootstrap anything.
+#
+# Values match prod.env. HEADROOM_PROVIDERS is deliberately absent from both
+# manifests: it is an empty-by-default per-model override, and a required key
+# whose normal value is empty could never satisfy the non-empty check.
+EIGENINFERENCE_WARM_POOL_HEADROOM=true
+EIGENINFERENCE_WARM_POOL_HEADROOM_MAX_PROVIDERS=64
+EIGENINFERENCE_WARM_POOL_HEADROOM_LOAD_WINDOWS=1

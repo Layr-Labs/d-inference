@@ -593,9 +593,16 @@ func TestQualityConcurrencyFromDecodeFloor(t *testing.T) {
 
 func TestWarmTargetLittlesLaw(t *testing.T) {
 	params := warmTargetParams{
-		DecodeFloorTPS:             15,
-		LoadFactorK:                effectiveTPSLoadFactor,
-		BurstBuffer:                0,
+		DecodeFloorTPS: 15,
+		LoadFactorK:    effectiveTPSLoadFactor,
+		BurstBuffer:    0,
+		// Proactive growth on, as in prod. No input here carries an OccupancyRamp,
+		// so the headroom floor itself contributes 0 and these cases isolate the
+		// Little's Law math. The disabled-switch behaviour is asserted in
+		// TestHeadroomDisabledGatesAllNoPressureGrowth.
+		HeadroomEnabledParams:      true,
+		HeadroomMaxProviders:       64,
+		HeadroomLoadWindows:        1,
 		FallbackQualityConcurrency: 4,
 		MinServiceTime:             warmPoolMinServiceTime,
 		MaxServiceTime:             warmPoolMaxServiceTime,

@@ -426,11 +426,20 @@ func emittedIdentity(mp *myProvider) string {
 // is live state that does not survive disconnect, and a stale verdict on an
 // offline card would be worse than none.
 //
+// PRESENCE IN THE REGISTRY is the connected test, NOT mp.Online. Online is
+// routability-oriented — buildMyProvider clears it for StatusUntrusted as well
+// as StatusOffline — so gating on it withheld the diagnostic from exactly the
+// machine that most needs it: a connected but untrusted box could never surface
+// its own offline_untrusted_private blocker, contradicting this field's
+// connected-machine contract. WarmPoolEligibility returns nil for an id that is
+// not in the registry, and disconnectProvider deletes the entry, so the nil
+// result is itself the authoritative liveness check.
+//
 // Called AFTER buildMyProvider returns rather than inside it, because
 // WarmPoolEligibility acquires r.mu and p.mu itself and buildMyProvider holds
 // p.mu across its overlay block.
 func (s *Server) attachWarmPoolEligibility(mp *myProvider, now time.Time) {
-	if mp == nil || mp.ID == "" || !mp.Online {
+	if mp == nil || mp.ID == "" {
 		return
 	}
 	if s.registry == nil {

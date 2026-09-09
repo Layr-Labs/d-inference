@@ -2,6 +2,7 @@ package registry
 
 import (
 	"math"
+	"sort"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -334,6 +335,64 @@ func computeNetworkUtilization(caps []ModelCapacity, snaps []WarmPoolSnapshot, f
 		out.ActiveRequests += c.ActiveRequests
 		out.QueuedRequests += c.QueuedRequests
 		out.Models = append(out.Models, mu)
+	}
+
+	// Warm-pool-only models. The loop above walks CAPACITY rows, but
+	// ModelCapacitySnapshot admits only publicly-routable providers, so a model
+	// whose every provider is private, untrusted, or carrying a stale challenge
+	// produces no capacity row at all — while warmPoolFleetSnapshot still records
+	// it along with the disqualifiers explaining exactly that. Iterating capacity
+	// alone dropped the model and its cold_disqualifiers from
+	// /v1/admin/utilization precisely when the aggregate diagnosis is most
+	// useful: "why is this model serving nothing?" is unanswerable if the model
+	// is absent from the report.
+	//
+	// So emit a snapshot-only row for each warm-pool model with no capacity row,
+	// preserving the diagnostic fields. Deliberately NOT folded into the
+	// network-wide aggregates (sumDemand/sumServing/ActiveRequests/
+	// QueuedRequests/bottleneck): those are defined over observable serving
+	// capacity, and a model with no routable provider contributes none. Adding it
+	// would change existing headline numbers, which is a separate decision from
+	// fixing a reporting omission.
+	if len(snaps) > 0 {
+		haveCapacityRow := make(map[string]struct{}, len(caps))
+		for _, c := range caps {
+			haveCapacityRow[c.ModelID] = struct{}{}
+		}
+		missing := make([]string, 0, len(snaps))
+		for _, s := range snaps {
+			if s.Model == "" {
+				continue
+			}
+			if _, ok := haveCapacityRow[s.Model]; ok {
+				continue
+			}
+			missing = append(missing, s.Model)
+		}
+		// Deterministic order: caps arrive sorted, and a map walk would otherwise
+		// shuffle these rows between polls.
+		sort.Strings(missing)
+		for _, model := range missing {
+			s := bySnap[model]
+			mu := ModelUtilization{
+				Model:              model,
+				HasWarmData:        true,
+				DemandConcurrency:  nonNeg(s.DemandConcurrency),
+				QualityConcurrency: s.QualityConcurrency,
+				TargetWarm:         s.TargetWarm,
+				SpillArrivalRate:   nonNeg(s.SpillArrivalRate),
+				WarmProviders:      s.WarmProviders,
+				EligibleCold:       s.EligibleCold,
+				ColdIneligible:     s.ColdIneligible,
+				ColdDisqualifiers:  s.ColdDisqualifiers,
+			}
+			// ServingCapacity/WarmUtilization stay zero: with no capacity row
+			// there is no routable serving capacity to divide by. Leaving
+			// Utilization at 0 rather than the per-model "demand but no capacity
+			// = saturated" rule keeps this row out of the bottleneck comparison,
+			// which is scoped to models that can actually serve.
+			out.Models = append(out.Models, mu)
+		}
 	}
 
 	// Network-wide throughput and token budget come from the provider-deduped

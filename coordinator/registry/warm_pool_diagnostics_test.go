@@ -430,3 +430,226 @@ func TestNetworkUtilizationCarriesColdDisqualifiers(t *testing.T) {
 		t.Fatalf("cold_providers = %d, want the unchanged raw count 9", row.ColdProviders)
 	}
 }
+
+// --- Review follow-up: the published threshold must match the enforced one ----
+
+// The no_free_for_load gate compares PADDED GiB (weights x 1.2 scanner overhead,
+// decimal GB -> GiB), but weights_gb is the raw decimal catalog size. Publishing
+// only the raw figure made the diagnostic contradict its own verdict near the
+// boundary: 30 GB weights on a box reporting 32 GiB free reads as "30 needed, 32
+// free" and yet is correctly refused, because the gate compares 33.5 > 32.
+//
+// This is the exact case from the review. It asserts the contradiction is gone:
+// the row carries a threshold that is directly comparable to free_for_load_gb and
+// that is ABOVE it, so the numbers now explain the verdict.
+func TestWarmPoolEligibilityPublishesPaddedLoadThreshold(t *testing.T) {
+	reg := New(testLogger())
+	model := "diag-near-boundary"
+	// Fits statically (64 GB box vs 40 GB min_ram_gb) so only the live gate fires.
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, MinRAMGB: 40, SizeGB: 30}})
+	p := makeWarmPoolDiagProvider(t, reg, "boundary-box", model, 64)
+	setDiagFreeForLoad(p, 32)
+
+	diag := reg.WarmPoolEligibility(p.ID, time.Now())
+	row := modelRow(t, diag, model)
+
+	// Precondition: this is the near-boundary shape, i.e. raw size LOOKS like it
+	// fits. Without this the test could pass for the wrong reason.
+	if !(row.WeightsGB < *diag.FreeForLoadGB) {
+		t.Fatalf("test shape wrong: raw weights %v must look like it fits free %v",
+			row.WeightsGB, *diag.FreeForLoadGB)
+	}
+	if row.Blocker != WarmPoolBlockerNoFreeForLoad {
+		t.Fatalf("blocker = %q, want %q", row.Blocker, WarmPoolBlockerNoFreeForLoad)
+	}
+	// The published threshold must be the one the gate applied, and must explain
+	// the refusal by exceeding the reported free memory.
+	if row.LoadThresholdGiB <= *diag.FreeForLoadGB {
+		t.Fatalf("load_threshold_gib = %v must exceed free_for_load_gb = %v to explain no_free_for_load",
+			row.LoadThresholdGiB, *diag.FreeForLoadGB)
+	}
+	// And it must equal the gate's own arithmetic exactly, not an approximation.
+	want := 30 * coldLoadCatalogGBToMemGiB
+	if row.LoadThresholdGiB != want {
+		t.Fatalf("load_threshold_gib = %v, want %v (the gate's own conversion)", row.LoadThresholdGiB, want)
+	}
+	// Raw catalog size is still reported: it is what the operator sees on disk.
+	if row.WeightsGB != 30 {
+		t.Fatalf("weights_gb = %v, want the raw catalog 30", row.WeightsGB)
+	}
+}
+
+// The published threshold must agree with the gate across the boundary in BOTH
+// directions, including the admit side, so the two cannot drift apart.
+func TestLoadThresholdAgreesWithTheGate(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		sizeGB    float64
+		freeGB    float64
+		wantAdmit bool
+	}{
+		{"raw fits but padded does not", 30, 32, false},
+		{"padded fits with margin", 28, 32, true},
+		{"exactly at the padded threshold", 10, 10 * coldLoadCatalogGBToMemGiB, true},
+		{"a hair under the padded threshold", 10, 10*coldLoadCatalogGBToMemGiB - 0.01, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			free := tc.freeGB
+			admit, reported := reportedFreeForLoadAdmits(tc.sizeGB, &free)
+			if !reported {
+				t.Fatalf("gate did not evaluate")
+			}
+			if admit != tc.wantAdmit {
+				t.Fatalf("gate admit = %v, want %v", admit, tc.wantAdmit)
+			}
+			// The published threshold alone must predict the gate's verdict.
+			threshold := loadThresholdGiB(tc.sizeGB)
+			if predicted := threshold <= free; predicted != admit {
+				t.Fatalf("published threshold %v vs free %v predicts admit=%v, gate says %v",
+					threshold, free, predicted, admit)
+			}
+		})
+	}
+}
+
+// An unpublished catalog size disables the live gate, so there is no threshold to
+// publish. It must be omitted rather than reported as 0, which would read as
+// "needs no memory".
+func TestLoadThresholdOmittedWhenSizeUnpublished(t *testing.T) {
+	if got := loadThresholdGiB(0); got != 0 {
+		t.Fatalf("loadThresholdGiB(0) = %v, want 0", got)
+	}
+	reg := New(testLogger())
+	model := "diag-no-size"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, MinRAMGB: 40}})
+	p := makeWarmPoolDiagProvider(t, reg, "no-size-box", model, 64)
+	setDiagFreeForLoad(p, 48)
+
+	row := modelRow(t, reg.WarmPoolEligibility(p.ID, time.Now()), model)
+	if row.LoadThresholdGiB != 0 {
+		t.Fatalf("load_threshold_gib = %v, want 0 when the catalog publishes no size", row.LoadThresholdGiB)
+	}
+}
+
+// --- Review follow-up: warm-pool-only models must survive the join -----------
+
+// ModelCapacitySnapshot admits only publicly-routable providers, so a model whose
+// every provider is private/untrusted/stale-challenged yields NO capacity row —
+// while the warm-pool snapshot still records it plus the disqualifiers explaining
+// exactly that. Iterating capacity rows alone dropped the model and its
+// cold_disqualifiers from /v1/admin/utilization at the moment the aggregate
+// diagnosis is most useful.
+func TestUtilizationPreservesWarmPoolOnlyModels(t *testing.T) {
+	caps := []ModelCapacity{{ModelID: "routable", ColdProviders: 2, WarmProviders: 1}}
+	snaps := []WarmPoolSnapshot{
+		{
+			Model: "routable", WarmProviders: 1, EligibleCold: 1,
+			ColdIneligible: 1, QualityConcurrency: 2,
+			ColdDisqualifiers: map[string]int{"not_idle": 1},
+		},
+		{
+			// No capacity row: every provider is filtered from the public feed.
+			Model: "warm-pool-only", WarmProviders: 0, EligibleCold: 0,
+			ColdIneligible: 4, QualityConcurrency: 1,
+			ColdDisqualifiers: map[string]int{"stale_challenge": 3, "offline_untrusted_private": 1},
+		},
+	}
+	out := computeNetworkUtilization(caps, snaps, FleetCapacity{}, time.Now(), time.Now())
+
+	byModel := make(map[string]ModelUtilization, len(out.Models))
+	for _, m := range out.Models {
+		byModel[m.Model] = m
+	}
+	row, ok := byModel["warm-pool-only"]
+	if !ok {
+		t.Fatalf("warm-pool-only model dropped from utilization; rows = %v", byModel)
+	}
+	if row.ColdIneligible != 4 {
+		t.Fatalf("cold_ineligible = %d, want 4", row.ColdIneligible)
+	}
+	if row.ColdDisqualifiers["stale_challenge"] != 3 {
+		t.Fatalf("cold_disqualifiers lost: %v", row.ColdDisqualifiers)
+	}
+	if !row.HasWarmData {
+		t.Fatalf("has_warm_data must be true for a snapshot-only row")
+	}
+	// The routable model must be entirely unaffected.
+	if r := byModel["routable"]; r.ColdIneligible != 1 || r.ColdProviders != 2 {
+		t.Fatalf("routable row disturbed: %+v", r)
+	}
+}
+
+// A snapshot-only row has no routable serving capacity, so it must not move the
+// network-wide aggregates or claim the bottleneck. Those are defined over
+// observable capacity; changing them is a separate decision from fixing a
+// reporting omission.
+func TestWarmPoolOnlyRowDoesNotDisturbAggregates(t *testing.T) {
+	caps := []ModelCapacity{{ModelID: "routable", ActiveRequests: 3, QueuedRequests: 1, WarmProviders: 2}}
+	base := []WarmPoolSnapshot{{
+		Model: "routable", WarmProviders: 2, QualityConcurrency: 2,
+		DemandConcurrency: 2, SpillArrivalRate: 0.5,
+	}}
+	withExtra := append(append([]WarmPoolSnapshot{}, base...), WarmPoolSnapshot{
+		Model: "warm-pool-only", ColdIneligible: 5, QualityConcurrency: 1,
+		// Deliberately carries demand and spill: it still must not be summed.
+		DemandConcurrency: 99, SpillArrivalRate: 42,
+	})
+
+	before := computeNetworkUtilization(caps, base, FleetCapacity{}, time.Now(), time.Now())
+	after := computeNetworkUtilization(caps, withExtra, FleetCapacity{}, time.Now(), time.Now())
+
+	if len(after.Models) != len(before.Models)+1 {
+		t.Fatalf("expected exactly one extra row, got %d vs %d", len(after.Models), len(before.Models))
+	}
+	if after.DemandConcurrency != before.DemandConcurrency {
+		t.Fatalf("demand_concurrency moved: %v -> %v", before.DemandConcurrency, after.DemandConcurrency)
+	}
+	if after.ServingCapacity != before.ServingCapacity {
+		t.Fatalf("serving_capacity moved: %v -> %v", before.ServingCapacity, after.ServingCapacity)
+	}
+	if after.SpillArrivalRate != before.SpillArrivalRate {
+		t.Fatalf("spill_arrival_rate moved: %v -> %v", before.SpillArrivalRate, after.SpillArrivalRate)
+	}
+	if after.Utilization != before.Utilization {
+		t.Fatalf("headline utilization moved: %v -> %v", before.Utilization, after.Utilization)
+	}
+	if after.BottleneckModel != before.BottleneckModel {
+		t.Fatalf("bottleneck model changed to %q (was %q)", after.BottleneckModel, before.BottleneckModel)
+	}
+	if after.ActiveRequests != before.ActiveRequests || after.QueuedRequests != before.QueuedRequests {
+		t.Fatalf("request counts moved")
+	}
+}
+
+// Snapshot-only rows must be deterministically ordered: a map walk would shuffle
+// them between polls and make the dashboard flicker.
+func TestWarmPoolOnlyRowsAreDeterministicallyOrdered(t *testing.T) {
+	snaps := []WarmPoolSnapshot{
+		{Model: "zeta", ColdIneligible: 1},
+		{Model: "alpha", ColdIneligible: 1},
+		{Model: "mu", ColdIneligible: 1},
+	}
+	var first []string
+	for i := 0; i < 20; i++ {
+		out := computeNetworkUtilization(nil, snaps, FleetCapacity{}, time.Now(), time.Now())
+		got := make([]string, 0, len(out.Models))
+		for _, m := range out.Models {
+			got = append(got, m.Model)
+		}
+		if i == 0 {
+			first = got
+			continue
+		}
+		if len(got) != len(first) {
+			t.Fatalf("row count varied: %v vs %v", got, first)
+		}
+		for j := range got {
+			if got[j] != first[j] {
+				t.Fatalf("row order varied between runs: %v vs %v", got, first)
+			}
+		}
+	}
+	if len(first) != 3 || first[0] != "alpha" || first[2] != "zeta" {
+		t.Fatalf("rows not sorted by model id: %v", first)
+	}
+}

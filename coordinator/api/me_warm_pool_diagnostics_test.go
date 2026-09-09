@@ -71,6 +71,7 @@ type wireWarmPool struct {
 		Permanent          bool    `json:"permanent"`
 		RequiredMemoryGB   float64 `json:"required_memory_gb"`
 		WeightsGB          float64 `json:"weights_gb"`
+		LoadThresholdGiB   float64 `json:"load_threshold_gib"`
 	} `json:"models"`
 	EligibleModels           int `json:"eligible_models"`
 	WarmModels               int `json:"warm_models"`
@@ -231,5 +232,102 @@ func TestMyProvidersWarmPoolIsAccountScoped(t *testing.T) {
 		if p.ID == "p-theirs" {
 			t.Fatalf("another account's machine leaked into /v1/me/providers")
 		}
+	}
+}
+
+// --- Review follow-ups -------------------------------------------------------
+
+// A CONNECTED but UNTRUSTED machine must still receive a verdict. buildMyProvider
+// clears Online for StatusUntrusted as well as StatusOffline, so gating the
+// attach on Online withheld the diagnostic from exactly the machine that most
+// needs it: the offline_untrusted_private blocker could never be explained
+// through /v1/me/providers, contradicting the field's connected-machine contract.
+func TestMyProvidersIncludesWarmPoolForConnectedUntrustedMachine(t *testing.T) {
+	srv, _ := newKeyTestServer(t)
+	model := "wire-untrusted"
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, MinRAMGB: 40, SizeGB: 30}})
+	registerWarmPoolTestProvider(t, srv, "p-untrusted", "acct-1", model, 64, 48)
+
+	// Downgrade to untrusted while remaining CONNECTED (still in the registry).
+	p := srv.registry.GetProvider("p-untrusted")
+	if p == nil {
+		t.Fatal("provider not in registry")
+	}
+	p.Mu().Lock()
+	p.Status = registry.StatusUntrusted
+	p.Mu().Unlock()
+
+	resp := fetchMyProviders(t, srv, "acct-1")
+	var card *struct {
+		ID       string        `json:"id"`
+		Online   bool          `json:"online"`
+		WarmPool *wireWarmPool `json:"warm_pool"`
+	}
+	for i := range resp.Providers {
+		if resp.Providers[i].ID == "p-untrusted" {
+			card = &resp.Providers[i]
+		}
+	}
+	if card == nil {
+		t.Fatalf("machine missing from /v1/me/providers")
+	}
+	// Precondition: this is the shape the review describes — NOT online, but live.
+	if card.Online {
+		t.Fatalf("test shape wrong: an untrusted machine must report online=false")
+	}
+	if card.WarmPool == nil {
+		t.Fatalf("warm_pool omitted for a CONNECTED untrusted machine: the untrusted case cannot be explained")
+	}
+	if len(card.WarmPool.Models) == 0 {
+		t.Fatalf("warm_pool present but carries no model rows")
+	}
+	// And the verdict must name the reason rather than reading as eligible.
+	row := card.WarmPool.Models[0]
+	if row.Eligible {
+		t.Fatalf("an untrusted machine must not be reported as an eligible warm target")
+	}
+	if row.Blocker != "offline_untrusted_private" {
+		t.Fatalf("blocker = %q, want offline_untrusted_private", row.Blocker)
+	}
+	if row.BlockerDescription == "" {
+		t.Fatalf("blocker_description must be populated so a client need not carry the mapping")
+	}
+}
+
+// The padded load threshold must reach the wire, since the raw weights figure
+// alone contradicts the verdict near the memory boundary.
+func TestMyProvidersSerializesPaddedLoadThreshold(t *testing.T) {
+	srv, _ := newKeyTestServer(t)
+	model := "wire-boundary"
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, MinRAMGB: 40, SizeGB: 30}})
+	// 30 GB weights, 32 GiB reported free: raw size LOOKS like it fits, padded does not.
+	registerWarmPoolTestProvider(t, srv, "p-boundary", "acct-1", model, 64, 32)
+
+	resp := fetchMyProviders(t, srv, "acct-1")
+	if len(resp.Providers) == 0 || resp.Providers[0].WarmPool == nil {
+		t.Fatalf("no warm_pool on the card")
+	}
+	wp := resp.Providers[0].WarmPool
+	if len(wp.Models) != 1 {
+		t.Fatalf("expected 1 model row, got %d", len(wp.Models))
+	}
+	row := wp.Models[0]
+	if row.Blocker != "no_free_for_load" {
+		t.Fatalf("blocker = %q, want no_free_for_load", row.Blocker)
+	}
+	if row.LoadThresholdGiB == 0 {
+		t.Fatalf("load_threshold_gib missing from the wire JSON")
+	}
+	if wp.FreeForLoadGB == nil {
+		t.Fatalf("free_for_load_gb missing")
+	}
+	// The whole point: the serialized numbers must now EXPLAIN the verdict.
+	if row.LoadThresholdGiB <= *wp.FreeForLoadGB {
+		t.Fatalf("load_threshold_gib %v must exceed free_for_load_gb %v to explain the refusal",
+			row.LoadThresholdGiB, *wp.FreeForLoadGB)
+	}
+	if !(row.WeightsGB < *wp.FreeForLoadGB) {
+		t.Fatalf("test shape wrong: raw weights %v should look like it fits %v",
+			row.WeightsGB, *wp.FreeForLoadGB)
 	}
 }

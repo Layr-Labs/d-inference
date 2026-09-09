@@ -179,10 +179,26 @@ type ModelWarmPoolEligibility struct {
 	// and fails open). Present regardless of verdict so an operator can see how
 	// much headroom they are short of, or how much margin they have.
 	RequiredMemoryGB float64 `json:"required_memory_gb,omitempty"`
-	// WeightsGB is the catalog's on-disk weight size for the model, the figure
-	// compared against the machine's reported free_for_load_gb. Zero when
-	// unpublished.
+	// WeightsGB is the catalog's on-disk weight size for the model, in DECIMAL
+	// GB exactly as the catalog publishes it (TotalSizeBytes/1e9, unpadded).
+	// Zero when unpublished.
+	//
+	// This is NOT the figure the no_free_for_load gate compares against — see
+	// LoadThresholdGiB. Reported because it is the number an operator sees in
+	// the model catalog and on disk, so omitting it would be its own confusion.
 	WeightsGB float64 `json:"weights_gb,omitempty"`
+	// LoadThresholdGiB is the actual threshold the no_free_for_load gate applies:
+	// WeightsGB converted into the provider's own load-gate basis (padded GiB),
+	// i.e. weights x 1.2 scanner overhead, then decimal GB -> GiB. Directly
+	// comparable to FreeForLoadGB, which the machine reports in that same basis.
+	//
+	// Reported because WeightsGB alone CONTRADICTS the verdict near the boundary:
+	// a 30 GB model on a machine reporting 32 GiB free reads as "30 needed, 32
+	// free" yet still gets no_free_for_load, because the gate compares
+	// 30 x 1.1176 = 33.5 GiB > 32. Publishing only the raw size made the
+	// diagnostic look wrong exactly where an operator would scrutinise it most.
+	// Zero when WeightsGB is unpublished (the gate is then skipped).
+	LoadThresholdGiB float64 `json:"load_threshold_gib,omitempty"`
 }
 
 // ProviderWarmPoolEligibility is the coordinator's answer to "would you
@@ -202,6 +218,12 @@ type ProviderWarmPoolEligibility struct {
 	// weight, the input to the no_free_for_load verdict. Nil when the machine's
 	// version does not report it, in which case that gate is skipped entirely
 	// and only the static fit gate applies.
+	//
+	// UNITS: padded GiB, the provider's own load-gate basis — NOT the decimal GB
+	// the catalog uses for weights. Compare it against a model row's
+	// LoadThresholdGiB, never its WeightsGB. The name keeps the `_gb` suffix
+	// because it mirrors the machine's own `free_for_load_gb` heartbeat field,
+	// which is already named that way on the wire.
 	FreeForLoadGB *float64 `json:"free_for_load_gb,omitempty"`
 	// Models carries one row per model the machine advertises, sorted by id.
 	Models []ModelWarmPoolEligibility `json:"models,omitempty"`
@@ -261,10 +283,14 @@ func (r *Registry) warmPoolEligibilityLocked(p *Provider, now time.Time) *Provid
 		}
 		seen[m.ID] = struct{}{}
 
+		weights := r.catalogSizeGBLocked(m.ID)
 		row := ModelWarmPoolEligibility{
 			ID:               m.ID,
 			RequiredMemoryGB: r.requiredMemoryGBLocked(m.ID),
-			WeightsGB:        r.catalogSizeGBLocked(m.ID),
+			WeightsGB:        weights,
+			// Derived from the SAME constant reportedFreeForLoadAdmits applies,
+			// so the published threshold cannot drift from the enforced one.
+			LoadThresholdGiB: loadThresholdGiB(weights),
 		}
 
 		// An already-warm machine is not a warming candidate, and
@@ -298,6 +324,19 @@ func (r *Registry) warmPoolEligibilityLocked(p *Provider, now time.Time) *Provid
 	}
 	sort.Slice(out.Models, func(i, j int) bool { return out.Models[i].ID < out.Models[j].ID })
 	return out
+}
+
+// loadThresholdGiB converts a catalog decimal-GB weight size into the padded-GiB
+// threshold reportedFreeForLoadAdmits actually compares against free_for_load_gb.
+// It applies coldLoadCatalogGBToMemGiB — the same constant the gate uses — rather
+// than restating the factor, so the number the diagnostic publishes cannot drift
+// from the number the gate enforces. 0 in, 0 out (the gate is skipped when the
+// catalog publishes no size).
+func loadThresholdGiB(catalogSizeGB float64) float64 {
+	if catalogSizeGB <= 0 {
+		return 0
+	}
+	return catalogSizeGB * coldLoadCatalogGBToMemGiB
 }
 
 // requiredMemoryGBLocked reports the total-memory threshold modelFitsHardware

@@ -103,6 +103,8 @@ extension ProviderLoop {
         /// Machine-memory override for the re-slice fleet budget (nil ⇒
         /// real physical memory).
         let physicalMemoryBytes: UInt64?
+        /// Deterministic load-admission sample for eviction integration tests.
+        let availableMemoryGb: Double?
         /// Backend kind the hook-built bridge reports per model (default
         /// `.contiguous`). A `.paged` entry makes the bridge apply the
         /// production paged semantics — resize clamps to the scripted
@@ -124,6 +126,7 @@ extension ProviderLoop {
             extraEOSTokens: [String] = [],
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
             physicalMemoryBytes: UInt64? = nil,
+            availableMemoryGb: Double? = nil,
             kvBackendKindByModel: [String: EngineV2KVBackendKind] = [:],
             assistantLoader: (any ProviderMTPAssistantLoading)? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
@@ -133,6 +136,7 @@ extension ProviderLoop {
             self.extraEOSTokens = extraEOSTokens
             self.emitTelemetry = emitTelemetry
             self.physicalMemoryBytes = physicalMemoryBytes
+            self.availableMemoryGb = availableMemoryGb
             self.kvBackendKindByModel = kvBackendKindByModel
             self.assistantLoader = assistantLoader
             self.makeEngine = makeEngine

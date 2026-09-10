@@ -299,7 +299,7 @@ extension ProviderLoop {
         if modelSlots.count >= maxModelSlots {
             let modelsWithInflight = Set(requestToModel.values)
             let evictable = modelSlots.filter {
-                !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key)
+                !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key)
             }
             if evictable.isEmpty || !allowEviction {
                 isLoadingAny = false
@@ -313,7 +313,12 @@ extension ProviderLoop {
                 )
             }
             if let lru = evictable.min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt }) {
-                await unloadModel(lru.key)
+                guard await unloadModel(lru.key, forEviction: true) else {
+                    isLoadingAny = false
+                    releaseLoadGateWaiters()
+                    throw InferenceError.invalidModelDirectory(
+                        "Selected model slot became unavailable for eviction; retry loading '\(modelId)'")
+                }
             }
         }
 
@@ -825,15 +830,23 @@ extension ProviderLoop {
         }
     }
 
-    internal func unloadModel(_ modelId: String) async {
+    @discardableResult
+    internal func unloadModel(_ modelId: String, forEviction: Bool = false) async -> Bool {
         await waitForMTPUpgrade(modelId)
+        // Recheck after the transition wait: staging or new work can begin
+        // after the LRU/idle snapshot. Explicit retirement still may unload;
+        // its retained target stays charged until preparation/discard ends.
+        if forEviction && (isMTPUpgradeTargetRetained(modelId)
+            || requestToModel.values.contains(modelId) || hasLocalReservation(modelId)) {
+            return false
+        }
         // Bind ONLY the bridge, never the whole slot: the slot value is the
         // last owner of the container AND the opaque MTP drafter handle, and
         // both must be released at `removeValue` below — BEFORE the cache
         // purge — not kept alive by a local until this function returns.
         guard let engineBundle = modelSlots[modelId]?.engineBundle,
             !modelsUnloading.contains(modelId)
-        else { return }
+        else { return false }
         let engineV2 = engineBundle.bridge
         modelsUnloading.insert(modelId)
         // Retire the slot's v2 bridge: unregister so heartbeats/cancellation
@@ -873,6 +886,7 @@ extension ProviderLoop {
         // Room appeared: re-offer desired builds deferred for capacity
         // (their bounded backoff may have expired long before this unload).
         await retryReserveDeferredPrefetches()
+        return true
     }
 
     /// Weight-hash observations for only the models currently loaded in memory.
@@ -926,7 +940,7 @@ extension ProviderLoop {
     /// preload (`ProviderLoop+StartupPreload`), which must skip — never evict
     /// for — a preload candidate that doesn't fit.
     internal func availableMemoryGb() async -> Double {
-        kvBudget.availableForLoadGb()
+        engineV2SlotHooks?.availableMemoryGb ?? kvBudget.availableForLoadGb()
     }
 
     /// The activation reserve resolved for the CURRENT serving set —
@@ -1010,7 +1024,7 @@ extension ProviderLoop {
     /// can RAISE the serving-set floor meanwhile — comparing against a
     /// requirement captured before the wait would admit a load the post-load
     /// guard then rejects (accepted-then-503). Resolve the headroom live.
-    private func evictUntilAvailable(weightsGb: Double, allowEviction: Bool = true) async throws {
+    internal func evictUntilAvailable(weightsGb: Double, allowEviction: Bool = true) async throws {
         while true {
             // Sample FIRST, resolve the requirement AFTER that suspension:
             // the exit decision must compare against the floor as it stands
@@ -1021,7 +1035,7 @@ extension ProviderLoop {
             if available >= requiredGb { return }
             let modelsWithInflight = Set(requestToModel.values)
             let evictable = modelSlots
-                .filter { !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) }
+                .filter { !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key) }
             // Feasibility BEFORE the first eviction: if even evicting every
             // idle model (plus the reclaimable buffer cache) cannot reach the
             // requirement, refuse now rather than unload a model the box can
@@ -1065,7 +1079,7 @@ extension ProviderLoop {
             }
 
             logger.info("Evicting idle model \(modelId) to free memory")
-            await unloadModel(modelId)
+            await unloadModel(modelId, forEviction: true)
         }
     }
 
@@ -1157,7 +1171,7 @@ extension ProviderLoop {
         // evicted to make room, so its presence means we must NOT pre-reject.
         let modelsWithInflight = Set(requestToModel.values)
         let evictable = modelSlots.filter {
-            !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key)
+            !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key)
         }
         let hasEvictable = !evictable.isEmpty
         // ...but only if evicting could actually reach the requirement: when

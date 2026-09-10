@@ -11,18 +11,23 @@ private final class UpgradeScriptedEngine: CBv2Engine, @unchecked Sendable {
     private var bytes: Int
     private var busy = false
     private var stops = 0
+    private var reads = 0
     private let shutdownBarrier: UpgradeBarrier?
     init(bytes: Int, shutdownBarrier: UpgradeBarrier? = nil) {
         self.bytes = bytes
         self.shutdownBarrier = shutdownBarrier
     }
     var shutdownCount: Int { lock.withLock { stops } }
+    var capacityReadCount: Int { lock.withLock { reads } }
     func setBusy(_ value: Bool) { lock.withLock { busy = value } }
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> { AsyncStream { $0.finish() } }
     func cancel(_ id: CBv2RequestID) {}
     func capacity() -> CBv2CapacitySnapshot {
-        lock.withLock { .init(activeRequests: busy ? 1 : 0, waitingRequests: 0,
-            kvBytesInUse: 0, kvBytesCapacity: bytes, activeTokens: 0, stepsExecuted: 0) }
+        lock.withLock {
+            reads += 1
+            return .init(activeRequests: busy ? 1 : 0, waitingRequests: 0,
+                kvBytesInUse: 0, kvBytesCapacity: bytes, activeTokens: 0, stepsExecuted: 0)
+        }
     }
     func updateKVBytesCapacity(_ bytes: Int) { lock.withLock { self.bytes = bytes } }
     func shutdown() async {
@@ -48,6 +53,27 @@ private final class UpgradeScriptedFactory: @unchecked Sendable {
     }
 }
 
+final class UpgradeWeakTarget: @unchecked Sendable {
+    weak var container: ModelContainer?
+    init(_ container: ModelContainer?) { self.container = container }
+}
+
+struct UpgradePausedAssistantLoader: ProviderMTPAssistantLoading {
+    let gate: UpgradeBarrier?
+    func loadAndBind(artifact: SpecDecArtifact,
+                     target: any LanguageModel) async throws -> ProviderMTPAssistantHandle {
+        await gate?.wait()
+        return try await MTPFloorAssistantLoader().loadAndBind(artifact: artifact, target: target)
+    }
+}
+
+actor UpgradeBlockedCachedCatalog: SpecDecCatalogLooking {
+    let gate: UpgradeBarrier
+    init(_ gate: UpgradeBarrier) { self.gate = gate }
+    func cachedModel(id: String) async -> CatalogModel? { await gate.wait(); return nil }
+    func model(id: String) async throws -> CatalogModel? { nil }
+}
+
 private struct ProviderUpgradeFixture {
     let loop: ProviderLoop
     let runtime: EngineV2Runtime
@@ -58,7 +84,9 @@ private struct ProviderUpgradeFixture {
     let artifact: SpecDecArtifact
     let targetDirectory: URL
 
-    static func make(shutdownBarrier: UpgradeBarrier? = nil) async throws -> Self {
+    static func make(shutdownBarrier: UpgradeBarrier? = nil,
+                     useLocalAssistant: Bool = true, assistantBarrier: UpgradeBarrier? = nil,
+                     availableMemoryGb: Double? = nil) async throws -> Self {
         let artifact = try mtpFloorArtifact()
         let targetDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("mtp-upgrade-target-\(UUID().uuidString)")
@@ -66,18 +94,19 @@ private struct ProviderUpgradeFixture {
         try Data("{}".utf8).write(to: targetDirectory.appendingPathComponent("config.json"))
         let loop = try mtpFloorLoop(models: [ModelInfo(id: upgradeModelID,
             modelType: "gemma4", sizeBytes: 1, estimatedMemoryGb: 1)],
-            mtpDrafterPath: artifact.directory.path)
+            mtpDrafterPath: useLocalAssistant ? artifact.directory.path : nil, mtpMode: .auto)
         let runtime = EngineV2Runtime()
         let telemetry = UpgradePostureSink()
         let factory = UpgradeScriptedFactory()
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(.init(
             emitTelemetry: { telemetry.record($0) }, physicalMemoryBytes: 64 << 30,
-            assistantLoader: MTPFloorAssistantLoader(),
+            availableMemoryGb: availableMemoryGb,
+            assistantLoader: UpgradePausedAssistantLoader(gate: assistantBarrier),
             makeEngine: { _, bytes in try factory.make(bytes) }))
         let engine = UpgradeScriptedEngine(bytes: 1 << 30, shutdownBarrier: shutdownBarrier)
         let bridge = EngineV2Bridge(engine: engine, modelId: upgradeModelID,
-            tokenizer: TokenizerHandle(MTPFloorTokenizer()), eosTokenIds: [])
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()), eosTokenIds: [], kvBytesPerToken: 20_480)
         await runtime.register(modelId: upgradeModelID, bridge: bridge)
         await loop.installModelSlotForTesting(modelId: upgradeModelID,
             container: mtpFloorContainer(), tokenizer: TokenizerHandle(MTPFloorTokenizer()),
@@ -110,6 +139,19 @@ private struct ProviderUpgradeFixture {
 private extension ProviderLoop {
     func setUpgradeCoordinatorPin(_ pinned: Bool) {
         requestToModel["upgrade-test-request"] = pinned ? upgradeModelID : nil
+    }
+    func weakUpgradeTarget() -> UpgradeWeakTarget { UpgradeWeakTarget(modelSlots[upgradeModelID]?.container) }
+    func configureUpgradeEvictionProbe() {
+        advertisedModels["upgrade-cold"] = ModelInfo(id: "upgrade-cold",
+            modelType: "gemma4", sizeBytes: 1, estimatedMemoryGb: 1)
+        if let slot = modelSlots[upgradeModelID] {
+            modelSlots[upgradeModelID] = ModelSlot(engineBundle: slot.engineBundle,
+                container: slot.container, tokenizer: slot.tokenizer,
+                sizing: mtpFloorSizing(weightsGiB: 50),
+                cacheEligibleWeightHash: slot.cacheEligibleWeightHash,
+                isVLM: slot.isVLM, modelType: slot.modelType,
+                lastInferenceAt: slot.lastInferenceAt)
+        }
     }
     func upgradeResliceWaiterCount() -> Int { resliceGateWaiters.count }
     func upgradeAdmissionWaiterCount() -> Int { mtpUpgradeWaiters[upgradeModelID]?.count ?? 0 }
@@ -153,6 +195,7 @@ struct ProviderLoopMTPUpgradeTests {
         let fixture = try await ProviderUpgradeFixture.make()
         defer { fixture.cleanFiles() }
         let staged = try #require(try await fixture.prepare())
+        let oldTarget = await fixture.loop.weakUpgradeTarget()
         await fixture.runtime.unregister(modelId: upgradeModelID)
         await fixture.loop.removeModelSlotForTesting(modelId: upgradeModelID)
         await fixture.original.shutdown()
@@ -166,7 +209,9 @@ struct ProviderLoopMTPUpgradeTests {
         await #expect(throws: CancellationError.self) {
             _ = try await fixture.loop.commitMTPUpgradeIfIdle(staged)
         }
+        #expect(oldTarget.container != nil, "stale candidate still retains the original target")
         await fixture.loop.discardMTPUpgrade(staged)
+        #expect(oldTarget.container == nil, "discard releases actual target ownership before removing its charge")
         #expect(await fixture.loop.slotBridgeForTesting(modelId: upgradeModelID) === reloaded)
         #expect(await fixture.runtime.bridge(forModel: upgradeModelID) === reloaded)
         #expect(reloadedEngine.shutdownCount == 0)
@@ -203,12 +248,21 @@ struct ProviderLoopMTPUpgradeTests {
 
     @Test("actual preparation build failure releases its lease and keeps the original registered")
     func failedBuildUnwindsActualPreparation() async throws {
-        let fixture = try await ProviderUpgradeFixture.make()
+        let gate = UpgradeBarrier()
+        let fixture = try await ProviderUpgradeFixture.make(assistantBarrier: gate)
         defer { fixture.cleanFiles() }
+        await fixture.loop.resliceGrowSurvivors()
+        let fullGrant = await fixture.original.engineKVBytesCapacity()
         fixture.factory.failBuild()
+        let preparation = Task { try await fixture.prepare() }
+        await gate.observeEntry()
+        await fixture.loop.resliceGrowSurvivors()
+        #expect(await fixture.original.engineKVBytesCapacity() < fullGrant)
+        await gate.release()
         await #expect(throws: UpgradeScriptedFactory.Failure.self) {
-            _ = try await fixture.prepare()
+            _ = try await preparation.value
         }
+        #expect(await fixture.original.engineKVBytesCapacity() == fullGrant)
         await fixture.checkOriginal()
         #expect(await fixture.loop.outstandingKVReservationBytesForTesting() == 0)
         await fixture.clean()
@@ -238,6 +292,90 @@ struct ProviderLoopMTPUpgradeTests {
         await fixture.checkOriginal()
         #expect(fixture.factory.latest?.shutdownCount == 1)
         #expect(await fixture.loop.outstandingKVReservationBytesForTesting() == 0)
+        await fixture.clean()
+    }
+
+    @Test("target is not eviction credit during the first preparation await, before any staging lease")
+    func preparingTargetExcludedFromAdmissionAndEviction() async throws {
+        let fixture = try await ProviderUpgradeFixture.make(useLocalAssistant: false, availableMemoryGb: 0)
+        defer { fixture.cleanFiles() }
+        let gate = UpgradeBarrier()
+        let funnel = SpecDecArtifactFunnel(resolver: SpecDecResolver(), catalog: UpgradeBlockedCachedCatalog(gate))
+        await fixture.loop.setSpecDecFunnelForTesting(funnel)
+        await fixture.loop.configureUpgradeEvictionProbe()
+        await fixture.loop.updateAggregateCapacity()
+        let priorReads = fixture.originalEngine.capacityReadCount
+        let preparation = Task { try await fixture.prepare() }
+        await gate.observeEntry()
+        #expect(fixture.originalEngine.capacityReadCount > priorReads,
+            "preparation must publish capacity before waiting for catalog lookup")
+        #expect(await fixture.loop.isMTPUpgradeTargetRetained(upgradeModelID))
+        #expect(await fixture.loop.outstandingKVReservationBytesForTesting() == 0)
+        // A snapshot was republished before entering the blocked catalog call.
+        let heldQuote = try #require(await fixture.loop.backendCapacityForTesting())
+        #expect(heldQuote.slots.count == 1)
+        #expect(await fixture.loop.fastAdmissionReject(modelId: "upgrade-cold"))
+        #expect(await !fixture.loop.unloadModel(upgradeModelID, forEviction: true),
+            "the unload mutation itself must recheck a newly retained target")
+        await #expect(throws: (any Error).self) {
+            try await fixture.loop.evictUntilAvailable(weightsGb: 1)
+        }
+        await fixture.checkOriginal()
+        await gate.release()
+        #expect(try await preparation.value == nil)
+        #expect(await !fixture.loop.isMTPUpgradeTargetRetained(upgradeModelID))
+        // The same idle target becomes legitimate eviction credit afterward.
+        #expect(await !fixture.loop.fastAdmissionReject(modelId: "upgrade-cold"))
+        await fixture.clean()
+    }
+
+    @Test("staging immediately clamps advertised capacity and discard regrows it without a heartbeat")
+    func stagingAndDiscardRefreshCapacity() async throws {
+        let fixture = try await ProviderUpgradeFixture.make()
+        defer { fixture.cleanFiles() }
+        await fixture.loop.resliceGrowSurvivors()
+        await fixture.loop.updateAggregateCapacity()
+        let fullGrant = await fixture.original.engineKVBytesCapacity()
+        let initial = try #require(await fixture.loop.backendCapacityForTesting()?.slots.first)
+        let staged = try #require(try await fixture.prepare())
+        let reserved = try #require(await fixture.loop.backendCapacityForTesting()?.slots.first)
+        #expect(reserved.activeTokenBudgetMax < initial.activeTokenBudgetMax)
+        #expect(await fixture.loop.isMTPUpgradeTargetRetained(upgradeModelID))
+        // A concurrent serving-set reslice shrinks survivors while staging.
+        await fixture.loop.resliceGrowSurvivors()
+        #expect(await fixture.original.engineKVBytesCapacity() < fullGrant)
+        await fixture.loop.discardMTPUpgrade(staged)
+        #expect(await fixture.original.engineKVBytesCapacity() == fullGrant)
+        let restored = try #require(await fixture.loop.backendCapacityForTesting()?.slots.first)
+        #expect(restored.activeTokenBudgetMax == initial.activeTokenBudgetMax)
+        #expect(await !fixture.loop.isMTPUpgradeTargetRetained(upgradeModelID))
+        #expect(await fixture.loop.mtpStagingBytes == 0)
+        #expect(staged.original == nil, "discard must drop its strong original reference before regrow")
+        await fixture.clean()
+    }
+
+    @Test("discard queues behind the real reslice gate and regrows only after the reservation is removed")
+    func discardWaitsForResliceGate() async throws {
+        let fixture = try await ProviderUpgradeFixture.make()
+        defer { fixture.cleanFiles() }
+        await fixture.loop.resliceGrowSurvivors()
+        let fullGrant = await fixture.original.engineKVBytesCapacity()
+        let staged = try #require(try await fixture.prepare())
+        await fixture.loop.resliceGrowSurvivors()
+        await fixture.loop.acquireResliceGateForTesting()
+        let discard = Task { await fixture.loop.discardMTPUpgrade(staged) }
+        for _ in 0..<2_000 {
+            if await fixture.loop.upgradeResliceWaiterCount() > 0 { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(await fixture.loop.upgradeResliceWaiterCount() > 0)
+        #expect(await fixture.loop.mtpStagingBytes > 0)
+        #expect(await fixture.original.engineKVBytesCapacity() < fullGrant)
+        discard.cancel() // Cleanup must finish even when its owner was cancelled.
+        await fixture.loop.releaseResliceGateForTesting()
+        await discard.value
+        #expect(await fixture.loop.mtpStagingBytes == 0)
+        #expect(await fixture.original.engineKVBytesCapacity() == fullGrant)
         await fixture.clean()
     }
 }

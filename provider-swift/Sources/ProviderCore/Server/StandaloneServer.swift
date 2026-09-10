@@ -235,7 +235,7 @@ public actor StandaloneServer {
     private var activationReserveEpoch: UInt64 = 0
     private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     var isLoadingAny: Bool = false
-    private var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
+    var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     var slotReservations: [String: Int] = [:]
     var evictingModels: Set<String> = []
     var models: [ModelInfo]
@@ -1135,11 +1135,13 @@ public actor StandaloneServer {
         for entry in snapshot {
             guard slots[entry.key] != nil,
                   !evictingModels.contains(entry.key),
+                  !isMTPUpgradeTargetRetained(entry.key),
                   (slotReservations[entry.key] ?? 0) == 0 else { continue }
 
             let active = await entry.cached.bridge.activeRequestCount()
             guard slots[entry.key] != nil,
                   !evictingModels.contains(entry.key),
+                  !isMTPUpgradeTargetRetained(entry.key),
                   (slotReservations[entry.key] ?? 0) == 0,
                   active == 0 else { continue }
 
@@ -1152,6 +1154,7 @@ public actor StandaloneServer {
         guard let evictKey = lruKey,
               let evicted = slots[evictKey],
               !evictingModels.contains(evictKey),
+              !isMTPUpgradeTargetRetained(evictKey),
               (slotReservations[evictKey] ?? 0) == 0 else {
             return false
         }
@@ -1159,6 +1162,7 @@ public actor StandaloneServer {
         let active = await evicted.bridge.activeRequestCount()
         guard slots[evictKey]?.bridge === evicted.bridge,
               !evictingModels.contains(evictKey),
+              !isMTPUpgradeTargetRetained(evictKey),
               (slotReservations[evictKey] ?? 0) == 0,
               active == 0 else {
             return false

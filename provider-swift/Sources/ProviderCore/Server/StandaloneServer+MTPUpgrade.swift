@@ -5,7 +5,8 @@ import MLX
 /// replacement owns only new assistant and KV resources.
 final class StagedStandaloneMTPUpgrade: @unchecked Sendable {
     let modelID: String
-    let original: StandaloneServer.CachedSlot
+    // Mutated only by the owning provider actor; cleared before crediting freed weights.
+    var original: StandaloneServer.CachedSlot?
     let replacement: ProviderEngineBundle
     let sizing: SlotSizingSnapshot
     let lease: PendingModelLoadLease
@@ -24,6 +25,11 @@ final class StagedStandaloneMTPUpgrade: @unchecked Sendable {
 extension StandaloneServer {
     var mtpStagingBytes: UInt64 {
         mtpStagingReservations.extraBytes(residentTargets: Set(slots.values.map { ObjectIdentifier($0.container) }))
+    }
+
+    func isMTPUpgradeTargetRetained(_ modelID: String) -> Bool {
+        guard let slot = slots[modelID] else { return false }
+        return mtpStagingReservations.retains(ObjectIdentifier(slot.container))
     }
 
     func startMTPUpgradeMonitor() {
@@ -79,7 +85,25 @@ extension StandaloneServer {
 
     func prepareMTPUpgrade(_ modelID: String, modelDirectory: URL? = nil) async throws -> StagedStandaloneMTPUpgrade? {
         guard pendingMTPUpgradeModels().contains(modelID), !isLoadingAny,
-            let original = slots[modelID],
+            let target = slots[modelID].map({
+                (ObjectIdentifier($0.container), UInt64(max(0, $0.sizing.weightsBytes)))
+            }) else { return nil }
+        let retention = mtpStagingReservations.retainPreparingTarget(target.0, bytes: target.1)
+        do {
+            let staged = try await prepareRetainedMTPUpgrade(modelID,
+                modelDirectory: modelDirectory, target: target.0)
+            await finishPreparingMTPUpgrade(retention)
+            return staged
+        } catch {
+            await finishPreparingMTPUpgrade(retention)
+            throw error
+        }
+    }
+
+    private func prepareRetainedMTPUpgrade(_ modelID: String, modelDirectory: URL?,
+                                          target: ObjectIdentifier) async throws -> StagedStandaloneMTPUpgrade? {
+        guard pendingMTPUpgradeModels().contains(modelID), !isLoadingAny,
+            let original = slots[modelID], ObjectIdentifier(original.container) == target,
             let info = models.first(where: { $0.id == modelID }),
             let directory = modelDirectory ?? ModelScanner.resolveLocalPath(modelID: modelID)
         else { return nil }
@@ -158,9 +182,12 @@ extension StandaloneServer {
         } catch {
             if let replacement { await replacement.bridge.shutdown(); replacement.releaseAssistant() }
             prepared?.assistant?.release()
+            prepared = nil
             MLX.Memory.clearCache()
             mtpStagingReservations.release(lease)
             await kvBudget.finishPendingLoad(lease)
+            // Preparation still owns the load gate, which serializes reslices.
+            await resliceGrowSurvivors()
             standaloneLogger.warning("mtp: model=\(modelID) optional preparation failed: \(String(describing: error)); retaining target engine")
             await finishMTPUpgradeLoad()
             throw error
@@ -169,16 +196,17 @@ extension StandaloneServer {
 
     func commitMTPUpgradeIfIdle(_ staged: StagedStandaloneMTPUpgrade) async throws -> Bool {
         let modelID = staged.modelID
+        guard let original = staged.original else { throw CancellationError() }
         try Task.checkCancellation()
-        guard slots[modelID]?.bridge === staged.original.bridge,
+        guard slots[modelID]?.bridge === original.bridge,
             pendingMTPUpgradeModels().contains(modelID)
         else { throw CancellationError() }
         guard slotReservations[modelID, default: 0] == 0, !isLoadingAny else { return false }
-        let capacity = await staged.original.bridge.capacitySnapshot()
+        let capacity = await original.bridge.capacitySnapshot()
         try Task.checkCancellation()
         guard capacity.activeRequests == 0, capacity.waitingRequests == 0,
             capacity.kvBytesReserved == 0 else { return false }
-        guard slots[modelID]?.bridge === staged.original.bridge,
+        guard slots[modelID]?.bridge === original.bridge,
             pendingMTPUpgradeModels().contains(modelID)
         else { throw CancellationError() }
         guard slotReservations[modelID, default: 0] == 0, !isLoadingAny else { return false }
@@ -187,17 +215,18 @@ extension StandaloneServer {
         // Work arriving during publication waits; existing work is never drained.
         mtpUpgradeTransitions.insert(modelID)
         slots[modelID] = CachedSlot(
-            bundle: staged.replacement, container: staged.original.container,
-            tokenizer: staged.original.tokenizer, modelType: staged.original.modelType,
-            isVLM: staged.original.isVLM, sizing: staged.sizing,
-            lastUsedAt: staged.original.lastUsedAt,
-            cacheEligibleWeightHash: staged.original.cacheEligibleWeightHash)
+            bundle: staged.replacement, container: original.container,
+            tokenizer: original.tokenizer, modelType: original.modelType,
+            isVLM: original.isVLM, sizing: staged.sizing,
+            lastUsedAt: original.lastUsedAt,
+            cacheEligibleWeightHash: original.cacheEligibleWeightHash)
         // Publication is committed. Shutdown of the old idle engine releases
         // its pool before the minimal replacement grant is grown.
-        await staged.original.bridge.shutdown()
-        staged.original.bundle.releaseAssistant()
+        await original.bridge.shutdown()
+        original.bundle.releaseAssistant()
         await staged.replacement.bridge.startSSDPrefixCacheStatsLogger()
         await staged.replacement.bridge.configureMTPStatus(staged.replacement.mtpStatus)
+        staged.original = nil
         MLX.Memory.clearCache()
         mtpStagingReservations.release(staged.lease)
         await kvBudget.finishPendingLoad(staged.lease)
@@ -213,15 +242,39 @@ extension StandaloneServer {
     func discardMTPUpgrade(_ staged: StagedStandaloneMTPUpgrade) async {
         await staged.replacement.bridge.shutdown()
         staged.replacement.releaseAssistant()
+        staged.original = nil
         MLX.Memory.clearCache()
+        // Unlike failed preparation, a staged discard owns no load gate.
+        // Wait even when cancelled: resource cleanup must complete, and its
+        // regrow must not interleave with a newcomer's shrink/build/install.
+        while isLoadingAny {
+            await withCheckedContinuation { loadGateWaiters.append($0) }
+        }
+        isLoadingAny = true
         mtpStagingReservations.release(staged.lease)
         await kvBudget.finishPendingLoad(staged.lease)
+        await resliceGrowSurvivors()
+        await finishMTPUpgradeLoad()
     }
 
     private func finishMTPUpgradeLoad() async {
         isLoadingAny = false
         releaseLoadGateWaiters()
         await applyDeferredModelsIfNeeded()
+    }
+
+    /// Runs after the preparation frame has released its original/prepared
+    /// target references, so a concurrent explicit retirement is accounted
+    /// until the last staging owner is actually gone.
+    private func finishPreparingMTPUpgrade(_ retention: UUID) async {
+        while isLoadingAny {
+            await withCheckedContinuation { loadGateWaiters.append($0) }
+        }
+        isLoadingAny = true
+        let previous = mtpStagingBytes
+        mtpStagingReservations.releasePreparingTarget(retention)
+        if mtpStagingBytes != previous { await resliceGrowSurvivors() }
+        await finishMTPUpgradeLoad()
     }
 
     func waitForMTPUpgrade(_ modelID: String) async {

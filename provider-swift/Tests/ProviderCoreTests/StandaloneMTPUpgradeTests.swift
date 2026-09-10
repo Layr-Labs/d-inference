@@ -65,7 +65,7 @@ private struct StandaloneUpgradeFixture: Sendable {
     let artifact: SpecDecArtifact
     let targetDirectory: URL
 
-    static func make(shutdownBarrier: UpgradeBarrier? = nil, useLocalAssistant: Bool = true) async throws -> Self {
+    static func make(shutdownBarrier: UpgradeBarrier? = nil, useLocalAssistant: Bool = true, assistantBarrier: UpgradeBarrier? = nil) async throws -> Self {
         let artifact = try mtpFloorArtifact()
         let targetDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("mtp-upgrade-target-\(UUID().uuidString)")
@@ -77,7 +77,7 @@ private struct StandaloneUpgradeFixture: Sendable {
         let factory = StandaloneUpgradeScriptedFactory()
         await server.setV2TestHooksForTesting(.init(physicalMemoryBytes: 64 << 30,
             emitTelemetry: { telemetry.record($0) },
-            assistantLoader: MTPFloorAssistantLoader(), makeEngine: { _, bytes in try factory.make(bytes) }))
+            assistantLoader: UpgradePausedAssistantLoader(gate: assistantBarrier), makeEngine: { _, bytes in try factory.make(bytes) }))
         let engine = StandaloneUpgradeScriptedEngine(bytes: 1 << 30, shutdownBarrier: shutdownBarrier)
         let bridge = EngineV2Bridge(engine: engine, modelId: standaloneUpgradeModelID,
             tokenizer: TokenizerHandle(MTPFloorTokenizer()), eosTokenIds: [])
@@ -125,7 +125,11 @@ private extension StandaloneServer {
         isLoadingAny = false
         releaseLoadGateWaiters()
     }
+    func weakUpgradeTarget() -> UpgradeWeakTarget { UpgradeWeakTarget(slots[standaloneUpgradeModelID]?.container) }
     func removeUpgradeTarget() { slots.removeValue(forKey: standaloneUpgradeModelID) }
+    func holdUpgradeLoadGate() { isLoadingAny = true }
+    func releaseUpgradeLoadGate() { isLoadingAny = false; releaseLoadGateWaiters() }
+    func upgradeLoadWaiterCount() -> Int { loadGateWaiters.count }
 }
 
 @Suite("Standalone assistant upgrade integration", .serialized)
@@ -189,11 +193,22 @@ struct StandaloneMTPUpgradeTests {
 
     @Test("failed real staging keeps target and releases both reservation ledgers")
     func buildFailure() async throws {
-        let fixture = try await StandaloneUpgradeFixture.make()
+        let gate = UpgradeBarrier()
+        let fixture = try await StandaloneUpgradeFixture.make(assistantBarrier: gate)
+        await fixture.server.resliceForUpgradeAccountingTest()
+        let fullGrant = try #require(await fixture.server.debugEngineKVGrant(modelId: standaloneUpgradeModelID))
         fixture.factory.failBuild()
+        let preparation = Task { try await fixture.prepare() }
+        await gate.observeEntry()
+        // The pending preparation owns the standalone load gate here.
+        #expect(await fixture.server.isLoadingAny)
+        await fixture.server.resliceGrowSurvivors()
+        #expect(try #require(await fixture.server.debugEngineKVGrant(modelId: standaloneUpgradeModelID)) < fullGrant)
+        await gate.release()
         await #expect(throws: StandaloneUpgradeScriptedFactory.Failure.self) {
-            _ = try await fixture.prepare()
+            _ = try await preparation.value
         }
+        #expect(await fixture.server.debugEngineKVGrant(modelId: standaloneUpgradeModelID) == fullGrant)
         await fixture.checkOriginal()
         #expect(await fixture.server.debugOutstandingKVReservationBytes() == 0)
         #expect(await fixture.server.mtpStagingBytes == 0)
@@ -263,12 +278,15 @@ struct StandaloneMTPUpgradeTests {
         let fixture = try await StandaloneUpgradeFixture.make()
         let staged = try #require(try await fixture.prepare())
         let before = await fixture.server.mtpStagingBytes
+        let oldTarget = await fixture.server.weakUpgradeTarget()
         await fixture.server.removeUpgradeTarget()
         #expect(await fixture.server.mtpStagingBytes == before + (1 << 30))
         await #expect(throws: CancellationError.self) {
             _ = try await fixture.server.commitMTPUpgradeIfIdle(staged)
         }
+        #expect(oldTarget.container != nil)
         await fixture.server.discardMTPUpgrade(staged)
+        #expect(oldTarget.container == nil, "stale candidate must release the target before its final charge")
         #expect(await fixture.server.upgradeBridge() == nil)
         #expect(await fixture.server.debugOutstandingKVReservationBytes() == 0)
         #expect(await fixture.server.mtpStagingBytes == 0)
@@ -356,5 +374,65 @@ struct StandaloneMTPUpgradeTests {
             #expect(await fixture.server.debugOutstandingKVReservationBytes() == 0)
         }
         for fixture in fixtures { await fixture.clean() }
+    }
+
+    @Test("first preparation await protects target from LRU before a staging lease exists")
+    func preparingTargetIsNotEvictable() async throws {
+        let fixture = try await StandaloneUpgradeFixture.make(useLocalAssistant: false)
+        let gate = UpgradeBarrier()
+        let funnel = SpecDecArtifactFunnel(resolver: SpecDecResolver(), catalog: UpgradeBlockedCachedCatalog(gate))
+        await fixture.server.setSpecDecFunnelForTesting(funnel)
+        let preparation = Task { try await fixture.prepare() }
+        await gate.observeEntry()
+        #expect(await fixture.server.isMTPUpgradeTargetRetained(standaloneUpgradeModelID))
+        #expect(await fixture.server.debugOutstandingKVReservationBytes() == 0)
+        #expect(await !fixture.server.evictLRUIdleSlotForTesting())
+        await fixture.checkOriginal()
+        await gate.release()
+        #expect(try await preparation.value == nil)
+        #expect(await !fixture.server.isMTPUpgradeTargetRetained(standaloneUpgradeModelID))
+        await fixture.clean()
+    }
+
+    @Test("staged target cannot be LRU evicted and discard immediately restores survivor grant")
+    func discardRestoresSurvivorGrant() async throws {
+        let fixture = try await StandaloneUpgradeFixture.make()
+        await fixture.server.resliceForUpgradeAccountingTest()
+        let fullGrant = try #require(await fixture.server.debugEngineKVGrant(modelId: standaloneUpgradeModelID))
+        let staged = try #require(try await fixture.prepare())
+        #expect(await !fixture.server.evictLRUIdleSlotForTesting())
+        await fixture.checkOriginal()
+        await fixture.server.resliceForUpgradeAccountingTest()
+        #expect(try #require(await fixture.server.debugEngineKVGrant(modelId: standaloneUpgradeModelID)) < fullGrant)
+        await fixture.server.discardMTPUpgrade(staged)
+        #expect(await fixture.server.debugEngineKVGrant(modelId: standaloneUpgradeModelID) == fullGrant)
+        #expect(await fixture.server.mtpStagingBytes == 0)
+        #expect(staged.original == nil, "release actual original ownership before crediting its bytes")
+        await fixture.clean()
+    }
+
+    @Test("cancelled discard waits for standalone load gate before releasing charge and regrowing")
+    func discardWaitsForLoadGate() async throws {
+        let fixture = try await StandaloneUpgradeFixture.make()
+        await fixture.server.resliceForUpgradeAccountingTest()
+        let fullGrant = try #require(await fixture.server.debugEngineKVGrant(modelId: standaloneUpgradeModelID))
+        let staged = try #require(try await fixture.prepare())
+        await fixture.server.resliceForUpgradeAccountingTest()
+        await fixture.server.holdUpgradeLoadGate()
+        let discard = Task { await fixture.server.discardMTPUpgrade(staged) }
+        for _ in 0..<2_000 {
+            if await fixture.server.upgradeLoadWaiterCount() > 0 { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(await fixture.server.upgradeLoadWaiterCount() > 0)
+        #expect(await fixture.server.mtpStagingBytes > 0)
+        #expect(try #require(await fixture.server.debugEngineKVGrant(modelId: standaloneUpgradeModelID)) < fullGrant)
+        discard.cancel()
+        await fixture.server.releaseUpgradeLoadGate()
+        await discard.value
+        #expect(await fixture.server.debugEngineKVGrant(modelId: standaloneUpgradeModelID) == fullGrant)
+        #expect(await fixture.server.mtpStagingBytes == 0)
+        #expect(await !fixture.server.isLoadingAny)
+        await fixture.clean()
     }
 }

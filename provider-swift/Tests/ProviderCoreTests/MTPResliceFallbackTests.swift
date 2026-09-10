@@ -254,7 +254,8 @@ private struct MTPFloorFailingAssistantLoader: ProviderMTPAssistantLoading {
 
 func mtpFloorLoop(
     models: [ModelInfo] = [],
-    mtpDrafterPath: String? = nil
+    mtpDrafterPath: String? = nil,
+    mtpMode: MTPMode? = nil
 ) throws -> ProviderLoop {
     try ProviderLoop(
         config: ProviderLoopConfig(
@@ -271,7 +272,8 @@ func mtpFloorLoop(
                 backend: .init(
                     idleTimeoutMins: 0,
                     maxModelSlots: 3,
-                    mtp: mtpDrafterPath != nil,
+                    mtp: mtpMode == nil ? mtpDrafterPath != nil : nil,
+                    mtpMode: mtpMode ?? .auto,
                     mtpDrafterPath: mtpDrafterPath),
                 coordinator: .init(heartbeatIntervalSecs: 60))),
         purgeLegacyFiles: false,

@@ -76,9 +76,12 @@ extension ProviderLoop {
         // relaxing it, a load's own marker transitions) would leave this
         // invocation publishing pre-push figures. Not every push site
         // publishes a replacement, so a tripped guard RECOMPUTES rather
-        // than returns (bounded: the third attempt publishes regardless —
-        // a snapshot one epoch behind beats none until the next tick).
+        // than returns. For activation-reserve epochs the third attempt
+        // may publish one epoch behind rather than wait until the next tick.
+        // Staging changes always invalidate the old snapshot; their mutation
+        // paths explicitly publish a replacement.
         let reserveEpochAtEntry = activationReserveEpoch
+        let stagingGenerationAtEntry = mtpStagingReservations.generation
         // ONE ENGINE (v0.7.5): `EngineV2Runtime.capacitySummary` is the ONLY
         // slot source — every loaded model serves through a v2 bridge; the
         // legacy scheduler fold is gone. Same `BackendSlotCapacity` wire
@@ -142,7 +145,7 @@ extension ProviderLoop {
         let mlxCacheBytes = processMemory.cacheBytes
         let (sumUsed, usedOverflow) = mlxActiveBytes.addingReportingOverflow(mlxCacheBytes)
         let mlxUsed = usedOverflow ? UInt64.max : sumUsed
-        let reclaimableMlx: UInt64 = hasInflightWork ? 0 : mlxUsed
+        let reclaimableMlx: UInt64 = hasInflightWork || mtpStagingReservations.hasRetainedTargets ? 0 : mlxUsed
         let loadReserve = kvBudget.loadReserveBytes
         // The same sample contains usage and only unmaterialized commitments;
         // loaded native backing is already included in active/cache above.
@@ -173,9 +176,13 @@ extension ProviderLoop {
         // free_for_load_gb here predate the floor the KV gate already
         // enforces. Recompute over the current state instead of publishing
         // them; bounded so a push storm cannot starve the publish.
-        guard activationReserveEpoch == reserveEpochAtEntry || attempt >= 2 else {
+        // A newer staging refresh owns the replacement snapshot. Never let
+        // the bounded reserve retry publish obsolete staging capacity.
+        if mtpStagingReservations.generation != stagingGenerationAtEntry && attempt >= 2 { return }
+        guard (activationReserveEpoch == reserveEpochAtEntry
+            && mtpStagingReservations.generation == stagingGenerationAtEntry) || attempt >= 2 else {
             logger.info(
-                "Capacity snapshot recomputed: activation reserve moved during refresh (attempt \(attempt + 1))")
+                "Capacity snapshot recomputed: activation reserve or MTP staging moved during refresh (attempt \(attempt + 1))")
             return await updateAggregateCapacity(attempt: attempt + 1)
         }
 

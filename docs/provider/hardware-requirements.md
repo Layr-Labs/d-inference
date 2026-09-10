@@ -1,6 +1,6 @@
 # Provider hardware requirements
 
-> Last updated: 2026-09-07 · commit `0b46b1618`
+> Last updated: 2026-09-10 · commit `dcc3d0809`
 
 Reference for what a Mac needs to run the `darkbloom` provider: the minimum
 requirements, the chip families the provider distinguishes, which catalog
@@ -83,6 +83,18 @@ with less than `minimumLoadKVBytes` of KV headroom is unloaded again
 (`provider-swift/Sources/ProviderCore/Inference/KVHeadroomProbe.swift`;
 [after the load](../architecture/hardware-support.md#after-the-load)).
 
+## Nemotron embedded assistant memory
+
+Nemotron 3.5 Lightning retains native convolution/KV dtypes and FP32 persistent
+Mamba SSM state. Embedded MTP adds request-local assistant KV/history plus
+speculative target-state reservations; file size alone is not an admission
+estimate. `NemotronH35MTPAssistant.requestStateBytesPerToken` conservatively
+charges assistant pages/history, and ordinary runtime memory gates remain in force
+(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP.swift`). Complete prefix
+checkpoints preserve immutable trusted history and restore independent assistant
+state. Captured verification and adaptive depth do not imply a qualified device tier.
+See [engine MTP constraints](../architecture/inference.md#multi-token-prediction).
+
 ## Disk for the SSD prefix cache
 
 | Rule | Where it is specified | Code |
@@ -90,7 +102,7 @@ with less than `minimumLoadKVBytes` of KV headroom is unloaded again
 | Location | [`../reference/ssd-kv-cache.md#paths`](../reference/ssd-kv-cache.md#paths) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` |
 | Box-wide budget (`ssdDiskBudgetBytes`, based on currently available space), the `DARKBLOOM_PREFIX_CACHE_DISK_GB` override, LRU eviction | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) |
 | Low-disk write stop (`lowDiskFloorBytes`; reads continue) and the daily write cap (`defaultMaxWriteBytesPerDay`) | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` |
-| When it is used at all | Eligible Qwen uses complete SSD on native contiguous or segmented paged storage; historical GPT-OSS/Gemma complete checkpoints require paged storage. Loaded capability, identity and key gates apply; resident RAM is opt-in | [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) |
+| When it is used at all | Eligible Qwen and selected Nemotron Lightning use complete SSD on native contiguous or segmented paged target storage; historical GPT-OSS/Gemma complete checkpoints require paged storage. Loaded capability, identity and key gates apply; resident RAM is opt-in | [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) |
 
 ## Thermal and power
 

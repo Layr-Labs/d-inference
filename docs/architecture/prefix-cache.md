@@ -1,6 +1,6 @@
 # KV cache layouts and prefix caching
 
-> Last updated: 2026-09-07 · commit `2827184f5`
+> Last updated: 2026-09-10 · commit `dcc3d0809`
 
 How the provider lays out a request's KV cache, how it decides whether a
 previously computed prefix can be reused, and where reusable state lives:
@@ -48,6 +48,9 @@ for these exact fleet model IDs, not family names, aliases or substrings:
 - `EigenLabs/Qwen3.8-27B-4bit-mtp`
 - `gpt-oss-20b`
 - `gemma-4-26b-qat-4bit`
+- `nvidia-nemotron-3.5-lightning`
+- `EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp`
+- `mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit` (target-only artifact)
 
 Every other ID, including unlisted Qwen artifacts, Gemma 8-bit and unknown
 models, resolves contiguous under `auto`. Per-model configuration still overrides
@@ -92,7 +95,7 @@ record completed validation. Final sustained, connected-serving, quality and
 production-key restart checks remain subject to the
 [acceptance criteria](../design/release-090-acceptance.md).
 This selection change is not a release or deployment claim. SSD prefix reuse
-defaults on only for the three exact Qwen IDs above. An explicit affirmative
+defaults on for the exact Qwen and Nemotron Lightning IDs above. An explicit affirmative
 `DARKBLOOM_PREFIX_CACHE` opts other models into their existing cache eligibility
 checks; a non-affirmative nonempty value disables all tiers. Both SSD codecs,
 local/connected load hashing and benchmark expectations use the model-scoped

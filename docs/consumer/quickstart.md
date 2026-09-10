@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-10 · commit `18c4d8d43`
+> Last updated: 2026-09-10 · commit `d93c2c335`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -47,7 +47,10 @@ Inputs need at least **32 estimated input tokens** by default. The examples belo
 meet that default. A model may have a different minimum; 400 `input_too_short`
 reports the estimate and required minimum. Add meaningful context instead of
 retrying the unchanged request. Model publishers can configure `0` for small-input
-testing; callers cannot override the policy in their request.
+testing; callers cannot override the policy in their request. Only the active
+endpoint's prompt counts; adding unused `input` or `prompt` fields to a Chat
+request does not meet the minimum. Structured Responses and Anthropic text is
+counted after the same text conversion used for serving.
 [Exact contract and model overrides](../reference/api-contracts.md#minimum-input-length).
 
 ```bash

@@ -205,6 +205,9 @@ func (s *Server) topUpReservationForInlinedMedia(w http.ResponseWriter, r *http.
 // preflight needs. model is the resolved build id; the preflight may swap it to
 // a Previous build via an alias fallback and returns the final value.
 type inferenceAdmissionParams struct {
+	// Post-inline revalidation of a deferred floor may only retain the build
+	// already admitted: the other build failed the request's floor snapshot.
+	disableAliasFallback      bool
 	model                     string
 	publicModel               string
 	stream                    bool
@@ -254,6 +257,10 @@ func preflightScanWait(deadline time.Duration) time.Duration {
 func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, parsed map[string]any, p inferenceAdmissionParams) (string, bool) {
 	model := p.model
 	publicModel := p.publicModel
+	fallbackAlias := publicModel
+	if p.disableAliasFallback {
+		fallbackAlias = model
+	}
 	refundReservation := p.refundReservation
 	requestTraits := func() registry.RequestTraits {
 		if p.traits != nil {
@@ -431,7 +438,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 	// owner's machine instead (handled below).
 	candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, p.estimatedPromptTokens, p.requestedMaxTokens, modelTraits(model), p.requiresVision, p.allowedProviderSerials...)
 	if candidateCount == 0 && capacityRejections > 0 {
-		if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, 0, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
+		if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, fallbackAlias, model, p.estimatedPromptTokens, p.requestedMaxTokens, 0, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
 			model = fallbackModel
 			candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
 			bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
@@ -507,7 +514,17 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		candidateCount == 0 &&
 		capacityRejections == 0 &&
 		modelTooLarge == 0 {
-		if rejectProviderBodyTooLarge(providerBodyErr) {
+		// A wire-size protocol floor is a property of the serving pool, not
+		// an intrinsically oversized request: Previous may serialize it without
+		// a legacy cache buster. Probe that pool using its own prepared body.
+		if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, fallbackAlias, model, p.estimatedPromptTokens, p.requestedMaxTokens, 0, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
+			model = fallbackModel
+			candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
+			bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
+			if p.onModelFallback != nil && !p.onModelFallback(model) {
+				return model, true
+			}
+		} else if rejectProviderBodyTooLarge(providerBodyErr) {
 			return model, true
 		}
 	}
@@ -685,7 +702,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 				s.triggerWarmPool()
 			}
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
-		} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackTTFT, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, ttftThreshold, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
+		} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackTTFT, fallbackAlias, model, p.estimatedPromptTokens, p.requestedMaxTokens, ttftThreshold, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
 			model = fallbackModel
 			if p.onModelFallback != nil && !p.onModelFallback(model) {
 				return model, true

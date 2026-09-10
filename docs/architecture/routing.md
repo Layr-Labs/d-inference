@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-10 · commit `42551bf49`
+> Last updated: 2026-09-10 · commit `d93c2c335`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -47,19 +47,26 @@ content beyond that. See [`data-flow.md`](data-flow.md) and
 Before token admission and balance reservation, the inference handlers compare
 the prompt-field-only media-aware estimate against the selected model's
 `runtime_parameters.min_input_tokens`, inheriting a deployment default of 32.
-Anthropic Messages also counts the top-level `system` text that provider lowering
-prepends, including string and text-block forms (`inputFloorPromptTokens` and
-`promptcontract.AnthropicSystemText`). Block metadata contributes no tokens.
-Empty inputs cannot acquire input tokens from model names or sampling options.
+The estimate uses only the active endpoint's prompt. Responses and Anthropic
+text blocks use canonical provider lowering joins and framing, including
+Anthropic top-level `system`; images/videos retain flat media costs
+(`inputFloorPromptTokens`, `promptcontract.PromptMessagesForEstimate`). Ignored
+fields from other endpoints and block metadata contribute no tokens.
 A terminal failure is 400 `input_too_short`; it never reaches provider dispatch.
 
-If an alias's Previous build allows an input that Desired rejects, the initial
+If exactly one of an alias's Desired/Previous builds allows the input, the initial
 floor decision is deferred until the normal capacity/TTFT preflight runs. The
 floor does not independently select an older build. If preflight keeps Desired,
 its floor still applies; if preflight switches builds, the fallback's floor
 applies. Alias token quota and balance admission wait for that final validation.
 Remote-media fetches still wait for quota admission and balance reservation,
-including on the deferred alias path. Failed registry reads produce
+including on the deferred alias path. When both floors permit the input, media
+inlining precedes ordinary admission, so fallback sees the expanded body. If
+Desired only has protocol-0 providers whose cache buster exceeds the wire limit,
+admission probes Previous with its own body/protocol traits before returning 413. A
+deferred request reruns admission after inlining changes body/protocol traits,
+keeping the floor-compatible build; it cannot switch to a build whose floor
+failed after quota/funding (`runInferenceAdmission`). Failed registry reads produce
 503; only a genuinely absent record or omitted/null parameter inherits the
 default (`checkInitialInputFloor`, `inputFloorRegistryReadFailed`, and
 `rejectShortInput` in `coordinator/api/input_token_floor.go`).

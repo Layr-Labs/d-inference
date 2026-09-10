@@ -119,7 +119,7 @@ class TestProbe:
     def run(self, client, model, timeout):
         started = time.monotonic()
         result = client.request("/v1/chat/completions", timeout, api_key=self.api_key, payload={
-            "model": model, "messages": [{"role": "user", "content": "Reply with exactly STARTUP_OK."}],
+            "model": model, "messages": [{"role": "user", "content": "This is an automated inference startup availability check. Do not explain your reasoning or add formatting. Follow the response instruction exactly: reply with exactly STARTUP_OK."}],
             "max_tokens": 32, "stream": False,
         })
         body = result.body if isinstance(result.body, dict) else {}

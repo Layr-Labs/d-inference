@@ -97,9 +97,9 @@ func (s *Server) rejectShortInput(w http.ResponseWriter, r *http.Request, parsed
 	return true
 }
 
-// checkInitialInputFloor defers aliases with a Previous build until ordinary
-// capacity and TTFT admission chooses the final build. Both quota and balance
-// admission wait for that validation. A lower floor alone never causes fallback.
+// checkInitialInputFloor defers aliases when only one build passes the floor,
+// until ordinary capacity and TTFT admission chooses the final build. Both quota
+// and balance admission wait for validation. A lower floor alone never causes fallback.
 func (s *Server) checkInitialInputFloor(w http.ResponseWriter, r *http.Request, parsed map[string]any, publicModel, model string, tokens int, parameters map[string]any) (deferred, handled bool) {
 	currentAllows := tokens >= minimumInputTokens(s.defaultMinInputTokens, parameters)
 	target, alias := s.registry.AliasTarget(publicModel)
@@ -112,8 +112,12 @@ func (s *Server) checkInitialInputFloor(w http.ResponseWriter, r *http.Request, 
 		if rec != nil {
 			previousParameters = rec.RuntimeParameters
 		}
-		if currentAllows || tokens >= minimumInputTokens(s.defaultMinInputTokens, previousParameters) {
-			return true, false // validate the selected build before any quota/balance debit
+		previousAllows := tokens >= minimumInputTokens(s.defaultMinInputTokens, previousParameters)
+		if currentAllows && previousAllows {
+			return false, false
+		}
+		if currentAllows || previousAllows {
+			return true, false // only one build can pass; validate selection before charging
 		}
 	}
 	if currentAllows {
@@ -133,31 +137,26 @@ func (s *Server) inputFloorRegistryReadFailed(w http.ResponseWriter, model strin
 	return true
 }
 
-// inputFloorPromptTokens includes endpoint-native prompt text without admitting
-// unrelated request options. Anthropic's system field becomes a provider-bound
-// system message; extraction and framing must agree with that lowering.
+// inputFloorPromptTokens counts only the active endpoint's normalized prompt.
+// Canonical lowering owns structured text joins and message framing; media keeps
+// its existing flat cost. Uninterpretable content cannot inflate the floor.
 func inputFloorPromptTokens(parsed map[string]any, endpoint promptcontract.Endpoint) int {
-	// Scalar forms lower into one user message, just like Chat Completions.
-	if endpoint == promptcontract.EndpointCompletions {
-		if text, ok := parsed["prompt"].(string); ok {
-			return 4 + textPromptTokens(text)
-		}
-		if prompts, ok := parsed["prompt"].([]any); ok && len(prompts) == 1 {
-			if text, ok := prompts[0].(string); ok {
-				return 4 + textPromptTokens(text)
+	messages, media, err := promptcontract.PromptMessagesForEstimate(endpoint, parsed)
+	if err != nil {
+		// Multi-prompt completions are forwarded natively, not lowered as one chat.
+		if endpoint == promptcontract.EndpointCompletions {
+			if prompts, ok := parsed["prompt"].([]any); ok {
+				tokens := 0
+				for _, prompt := range prompts {
+					if text, ok := prompt.(string); ok {
+						tokens += 4 + textPromptTokens(text)
+					}
+				}
+				return tokens
 			}
 		}
+		return 0
 	}
-	if endpoint == promptcontract.EndpointResponses {
-		if text, ok := parsed["input"].(string); ok {
-			return 4 + textPromptTokens(text)
-		}
-	}
-	tokens, _ := routingShape(parsed)
-	if endpoint == promptcontract.EndpointMessages {
-		if system := promptcontract.AnthropicSystemText(parsed["system"]); system != "" {
-			tokens += 4 + textPromptTokens(system)
-		}
-	}
-	return tokens
+	tokens, _ := messagesShape(messages)
+	return tokens + media.Images*imagePromptTokenCost + media.Videos*videoPromptTokenCost
 }

@@ -137,6 +137,11 @@ file created during a test must be removed after shutdown.
 go test ./e2e/testbed -run '^TestCleanup' -count=1
 ```
 
+The startup probe and mixed-version contract tests also check that their
+synthetic inputs clear the default minimum-input floor. The authenticated
+`scripts/smoke-dev.sh` request uses the same long-prompt convention while retaining
+its short response limit.
+
 #### Coordinator startup and reconnect recovery
 
 `TestSupervisorRestartsChildAndBecomesReady` allows a five-second helper startup

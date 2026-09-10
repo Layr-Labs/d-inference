@@ -70,7 +70,7 @@ if [ -n "$API_KEY" ]; then
   HTTP_CODE=$(curl -sS -o /tmp/smoke-chat.json -w '%{http_code}' \
     -H "Authorization: Bearer $API_KEY" \
     -H "Content-Type: application/json" \
-    -d '{"model":"auto","messages":[{"role":"user","content":"ping"}],"max_tokens":8,"stream":false}' \
+    -d '{"model":"auto","messages":[{"role":"user","content":"This is an automated inference availability check. Do not explain your reasoning or add formatting. Follow the response instruction exactly and reply with pong."}],"max_tokens":8,"stream":false}' \
     "$COORD/v1/chat/completions" || echo 000)
   if [ "$HTTP_CODE" = "200" ]; then
     green "chat OK"

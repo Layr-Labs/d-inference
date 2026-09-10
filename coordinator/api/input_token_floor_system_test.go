@@ -33,8 +33,12 @@ func TestInputTokenFloorAnthropicSystemMatchesLowering(t *testing.T) {
 		}
 		native, _ := routingShape(parsed)
 		for _, endpoint := range []promptcontract.Endpoint{promptcontract.EndpointChatCompletions, promptcontract.EndpointCompletions, promptcontract.EndpointResponses} {
-			if got := inputFloorPromptTokens(parsed, endpoint); got != native {
-				t.Fatalf("unexpected system contribution on %s", endpoint)
+			want := 0 // These bodies have no active prompt/input on the other endpoints.
+			if endpoint == promptcontract.EndpointChatCompletions {
+				want = native
+			}
+			if got := inputFloorPromptTokens(parsed, endpoint); got != want {
+				t.Fatalf("endpoint %s: floor=%d want=%d", endpoint, got, want)
 			}
 		}
 	}

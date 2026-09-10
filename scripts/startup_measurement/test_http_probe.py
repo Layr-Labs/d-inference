@@ -100,7 +100,10 @@ class HTTPProbeTests(unittest.TestCase):
             self.assertEqual(1, sum(method == "POST" for method, *_ in calls))
             post = next(call for call in calls if call[0] == "POST")
             self.assertEqual("Bearer key-secret", post[3])
-            self.assertEqual("m1", json.loads(post[2])["model"])
+            payload = json.loads(post[2])
+            self.assertEqual("m1", payload["model"])
+            # Leave enough text to clear the default 32-token input floor.
+            self.assertGreaterEqual(len(payload["messages"][0]["content"]), 128)
             for private in ("key-secret", "response-secret", "different-synthetic-answer", "prompt_tokens", "messages"):
                 self.assertNotIn(private, output.read_text())
 

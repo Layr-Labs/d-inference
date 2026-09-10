@@ -1,6 +1,6 @@
 # Measure coordinator startup after the old process stops
 
-> Last updated: 2026-09-08 · commit `501320342`
+> Last updated: 2026-09-10 · commit `d93c2c335`
 
 Use `scripts/measure-coordinator-startup.py` to observe the interval after the
 old coordinator stops. The preceding drain is outside this measurement. The
@@ -91,7 +91,8 @@ observer command with the matching test origin. Either flag alone is refused.
 Known production origins are refused for this mode; declaring a different host
 as disposable is the operator's responsibility, not automatic proof of safety.
 
-The probe sends one fixed synthetic prompt, with at most three attempts per
+The probe sends one fixed synthetic prompt long enough to clear the default
+input floor and asks for exactly `STARTUP_OK`, with at most three attempts per
 model and at most one request per second across all models. It only runs after
 candidate readiness and that model's capacity gate. It requires HTTP 200, a
 matching response model, non-empty content and a terminal `stop`/`length` reason.

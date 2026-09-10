@@ -775,7 +775,8 @@ const (
 // or too slow to hit the TTFT ceiling (aliasFallbackTTFT) and Previous can serve,
 // route this request to Previous instead of returning a fast 429 / slow stream.
 // Hard constraints and permanent model-too-large failures are handled by the
-// caller and do not use this fallback. The TTFT estimate for Previous is also
+// caller and do not use this fallback, except a cache-isolation protocol floor
+// may fall back when Previous can fit its provider-bound body. The TTFT estimate for Previous is also
 // returned so the caller does not need to recompute it. ttftThreshold is the
 // request-local deadline pinned before admission and is only consulted in
 // aliasFallbackTTFT mode.
@@ -2031,7 +2032,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
 	}
-	floorPromptTokens := shape.routingTokens
+	floorPromptTokens := inputFloorPromptTokens(parsed, promptcontract.EndpointChatCompletions)
 	if isResponsesAPI {
 		floorPromptTokens = inputFloorPromptTokens(parsed, promptcontract.EndpointResponses)
 	}
@@ -2295,6 +2296,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		var runtimeParameters map[string]any
 		if rec, err := s.store.GetModelRegistryRecord(newModel); err == nil {
 			runtimeParameters = rec.RuntimeParameters
+			modelMaxContext = rec.MaxContextLength
 			runtimeDefaults.apply(parsed, runtimeParameters)
 		} else {
 			if s.inputFloorRegistryReadFailed(w, newModel, err) {
@@ -2331,7 +2333,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	var preflightHandled bool
 	preflightStart := time.Now()
-	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
+	admissionParams := inferenceAdmissionParams{
 		model:                     model,
 		publicModel:               publicModel,
 		stream:                    stream,
@@ -2348,7 +2350,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		policy:                    policy,
 		refundReservation:         refundReservation,
 		onModelFallback:           onModelFallback,
-	})
+	}
+	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, admissionParams)
 	if rp != nil {
 		rp.PreflightUS = time.Since(preflightStart).Microseconds()
 		rp.Mark(registry.StampReqPreflightDone)
@@ -2368,6 +2371,19 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if floorDeferred {
 		if !admitAndReserve() || !resolveAdmittedMedia() {
 			return
+		}
+		if mediaInlined {
+			// Inlining can change protocol/body-size eligibility. There is only
+			// one floor-admissible build on this path; never switch to the build
+			// whose floor already failed after charging/fetching media.
+			admissionParams.model = model
+			admissionParams.modelMaxContext = modelMaxContext
+			admissionParams.disableAliasFallback = true
+			var handled bool
+			model, handled = s.runInferenceAdmission(w, r, parsed, admissionParams)
+			if handled {
+				return
+			}
 		}
 	}
 

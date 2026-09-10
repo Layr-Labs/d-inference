@@ -32,11 +32,12 @@ and out-of-range values with 400. The maximum is 2147483647. Invalid legacy stor
 values inherit the deployment default. A consumer's request body cannot change
 this catalog-owned policy.
 
-The count is the coordinator's existing **media-aware routing estimate** over the
-conversation/input, not an exact tokenizer count or just the last user message.
-For `/v1/messages`, top-level `system` text also contributes, using the same
-string/text-block extraction and message framing as provider lowering; block
-metadata such as `cache_control` does not contribute.
+The count is a **media-aware prompt estimate**, not an exact tokenizer count
+or just the last user message. Only the active endpoint's prompt contributes;
+ignored `input`/`prompt` fields cannot pad a Chat request. Structured Responses
+and Anthropic text follows provider lowering joins/framing, including Anthropic
+`system`; media retains flat costs. See the [counting contract](api-contracts.md#minimum-input-length)
+and `coordinator/promptcontract/endpoint_estimate.go` (`PromptMessagesForEstimate`).
 Scalar Completions and Responses inputs count the same user-message framing
 as their lowered Chat equivalents (112 ASCII characters estimate to 32 tokens
 on all three endpoints).

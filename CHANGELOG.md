@@ -2,7 +2,7 @@
 
 ## Unreleased — model input minimums
 
-- Require 32 estimated input tokens by default across all four inference endpoints; shorter inputs receive HTTP 400 `input_too_short`. Publishers can set `runtime_parameters.min_input_tokens` per model, including `0` for small-input testing and `null` to inherit the deployment default. Scalar Completions/Responses use the same message framing as Chat; alias floor validation completes before any token-quota or balance debit. The floor counts prompt fields, including Anthropic top-level system text, excludes unrelated metadata, honors normal alias fallback, records rejection traits and servability, and refuses transient model-policy lookup failures with 503.
+- Require 32 estimated input tokens by default across all four inference endpoints; shorter inputs receive HTTP 400 `input_too_short`. Publishers can set `runtime_parameters.min_input_tokens` per model, including `0` for small-input testing and `null` to inherit the deployment default. Scalar Completions/Responses use the same message framing as Chat; alias floor validation completes before any token-quota or balance debit. The floor counts only the active endpoint's prompt, normalizes structured Responses/Anthropic text with provider lowering, includes Anthropic top-level system text, excludes unrelated metadata, rechecks inlined-media eligibility while preserving normal alias fallback, records rejection traits and servability, and refuses transient model-policy lookup failures with 503. Dev smoke, startup, and mixed-version probes use inputs above the default floor.
 
 ## Unreleased — Gemma QAT SSD prefix caching and automatic MTP
 

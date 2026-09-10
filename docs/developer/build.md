@@ -414,7 +414,10 @@ the default MicroMDM entrypoint script; see the
 
 The [startup measurement tool](../operations/coordinator-startup-measurement.md)
 requires Python 3.10+ and no third-party packages or build step. Its tests use
-local stub servers; its default observation mode sends only public GETs.
+local stub servers; its default observation mode sends only public GETs. The
+optional startup inference probe, dev smoke script, and mixed-version E2E lane
+use synthetic inputs long enough to clear the default input floor; a build
+needs no minimum-input override to run these checks.
 
 ## `make` targets
 

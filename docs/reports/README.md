@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-08 · commit `fce72956c`
+> Last updated: 2026-09-10 · commit `b4b8797ae`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -218,3 +218,5 @@ Machine-generated; kept as evidence for the reports above.
 - [Gemma QAT default cache and MTP validation](2026-09-08-gemma-qat-defaults.md) — measured decode gains, live assistant download/swap, cache isolation, capability checks and limitations.
 
 - [Gemma MTP review fixes](2026-09-08-gemma-mtp-review-fixes.md) — reproduced request-ID reuse and verification-shape findings, generation isolation fixes and regression evidence.
+
+- [Gemma QAT September 10 merge and validation](2026-09-10-gemma-qat-review-sync.md) — review fixes, merged-source tests, new artifact identity and model/HTTP revalidation status.

@@ -1,0 +1,6 @@
+=== RUN   TestReview0910ProviderCreditFailureNotRecoveredByReplay
+time=2026-09-10T18:48:22.664-04:00 level=ERROR msg="failed to credit linked provider account" provider_id=review-earned-provider account_id=review-earned-account request_id=review-unpaid error="synthetic transient provider-credit failure"
+    review_0910_test.go:107: REPRODUCED: consumer charged 150 micro-USD, provider owed 150 received zero; completion replay did not retry transient credit failure
+--- PASS: TestReview0910ProviderCreditFailureNotRecoveredByReplay (0.00s)
+PASS
+ok  	github.com/eigeninference/d-inference/coordinator/api	0.996s

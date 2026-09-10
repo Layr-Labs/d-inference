@@ -1,0 +1,11 @@
+ok  	github.com/eigeninference/d-inference/coordinator/attestation	(cached)
+ok  	github.com/eigeninference/d-inference/coordinator/apns	0.224s
+ok  	github.com/eigeninference/d-inference/coordinator/mdm	0.456s
+ok  	github.com/eigeninference/d-inference/coordinator/auth	(cached)
+ok  	github.com/eigeninference/d-inference/coordinator/billing	0.528s
+ok  	github.com/eigeninference/d-inference/coordinator/payments	(cached)
+ok  	github.com/eigeninference/d-inference/coordinator/payments/baserewards	(cached)
+ok  	github.com/eigeninference/d-inference/coordinator/mediafetch	1.252s
+ok  	github.com/eigeninference/d-inference/coordinator/internal/e2e	5.006s
+ok  	github.com/eigeninference/d-inference/coordinator/registry	17.512s
+ok  	github.com/eigeninference/d-inference/coordinator/api	192.572s

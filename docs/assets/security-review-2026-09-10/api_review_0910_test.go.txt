@@ -1,0 +1,167 @@
+package api
+
+// Review probes assert the observed vulnerable behavior, not a desired contract.
+// They use synthetic identities/payments and never contact a live service.
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/billing"
+	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
+func TestReview0910SealedEnvelopeReplayReachesHandler(t *testing.T) {
+	srv, _, _ := billingTestServer(t)
+	key, err := e2e.DeriveCoordinatorKey(senderTestMnemonic)
+	if err != nil { t.Fatal(err) }
+	srv.SetCoordinatorKey(key)
+	envelope, _, _ := sealRequest(t, []byte(`{"model":"review-model","messages":[]}`), key.PublicKey, key.KID)
+	calls := 0
+	handler := srv.sealedTransport(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	for i := 0; i < 2; i++ {
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(envelope)))
+		r.Header.Set("Content-Type", SealedContentType)
+		w := httptest.NewRecorder()
+		handler(w, r)
+		if w.Code != http.StatusOK { t.Fatalf("status=%d", w.Code) }
+	}
+	if calls != 2 { t.Fatalf("handler calls=%d want 2", calls) }
+	t.Log("CONFIRMED: identical sealed envelope reaches downstream handler twice; encryption layer provides no replay deduplication. Authentication and billing are outside this probe.")
+}
+
+func TestReview0910ProviderClaimsSettleAboveServiceHold(t *testing.T) {
+	srv, st := newReservationTestServer(t, ServerConfig{ServiceReservations: true}, nil)
+	const account, model = "review-service", "review-model"
+	createServiceUser(t, st, account)
+	if err := st.Credit(account, 1_000_000, store.LedgerDeposit, "review-seed"); err != nil { t.Fatal(err) }
+	if err := st.SetModelPrice("platform", model, 1_000_000, 1_000_000); err != nil { t.Fatal(err) }
+	service, err := srv.reserveInitialBalance(account, model, 100)
+	if err != nil || !service { t.Fatalf("reserve service=%v err=%v", service, err) }
+	provider := srv.registry.Register("review-provider", nil, &protocol.RegisterMessage{Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}})
+	pr := &registry.PendingRequest{
+		RequestID: "review-claims", Model: model, ConsumerKey: account,
+		RequestedMaxTokens: 1, EstimatedPromptTokens: 1,
+		ReservedMicroUSD: 100, ServiceReservation: true,
+		ChunkCh: make(chan registry.ProviderChunk, 1), CompleteCh: make(chan protocol.UsageInfo, 1), ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID,
+		Usage: protocol.UsageInfo{PromptTokens: 0, CompletionTokens: 100_000},
+		SESignature: "not-a-signature", ResponseHash: "not-a-hash",
+	})
+	if got := st.GetBalance(account); got != 900_000 { t.Fatalf("balance=%d want 900000", got) }
+	if pr.SESignature != "not-a-signature" || pr.ResponseHash != "not-a-hash" { t.Fatal("signature fields were not retained as observed") }
+	select {
+	case usage := <-pr.CompleteCh:
+		if usage.CompletionTokens != 100_000 { t.Fatalf("usage=%+v", usage) }
+	default: t.Fatal("completion was not delivered")
+	}
+	t.Log("REPRODUCED at completion handler: requested max 1, reported 100000, billed 100000 micro-USD against 100 micro-USD hold; invalid signature/hash retained")
+}
+
+func TestReview0910DeviceCodeMintsMultipleTokens(t *testing.T) {
+	srv, st := deviceTestServer()
+	w := httptest.NewRecorder()
+	srv.handleDeviceCode(w, httptest.NewRequest(http.MethodPost, "/v1/device/code", nil))
+	var issued struct { DeviceCode string `json:"device_code"` }
+	if err := json.Unmarshal(w.Body.Bytes(), &issued); err != nil { t.Fatal(err) }
+	if err := st.ApproveDeviceCode(issued.DeviceCode, "review-account"); err != nil { t.Fatal(err) }
+	seen := map[string]bool{}
+	for i := 0; i < 3; i++ {
+		w = httptest.NewRecorder()
+		srv.handleDeviceToken(w, httptest.NewRequest(http.MethodPost, "/v1/device/token", strings.NewReader(fmt.Sprintf(`{"device_code":%q}`, issued.DeviceCode))))
+		var answer struct { Token string `json:"token"` }
+		if err := json.Unmarshal(w.Body.Bytes(), &answer); err != nil { t.Fatal(err) }
+		if w.Code != http.StatusOK || answer.Token == "" || seen[answer.Token] { t.Fatalf("unexpected response: %d %s", w.Code, w.Body.String()) }
+		seen[answer.Token] = true
+	}
+	t.Log("REPRODUCED: one approved device code issued three different provider tokens")
+}
+
+// Force both requests to finish their real store read before either can credit.
+type review0910FailProviderCreditStore struct {
+	store.Store
+	calls int
+}
+
+func (s *review0910FailProviderCreditStore) CreditProviderAccount(earning *store.ProviderEarning) error {
+	s.calls++
+	if s.calls == 1 { return fmt.Errorf("synthetic transient provider-credit failure") }
+	return s.Store.CreditProviderAccount(earning)
+}
+
+func TestReview0910ProviderCreditFailureNotRecoveredByReplay(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	fault := &review0910FailProviderCreditStore{Store: st}
+	srv.store = fault
+	const model, account = "review-paid-model", "review-earned-account"
+	provider := srv.registry.Register("review-earned-provider", nil, &protocol.RegisterMessage{Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}})
+	provider.Mu().Lock()
+	provider.AccountID = account
+	provider.Mu().Unlock()
+	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
+	cost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
+	initial := ledger.Balance(testConsumerID)
+	if err := ledger.Charge(testConsumerID, cost, "review-reserve"); err != nil { t.Fatal(err) }
+	pr := &registry.PendingRequest{RequestID: "review-unpaid", Model: model, ConsumerKey: testConsumerID, ReservedMicroUSD: cost,
+		ChunkCh: make(chan registry.ProviderChunk, 1), CompleteCh: make(chan protocol.UsageInfo, 1), ErrorCh: make(chan protocol.InferenceErrorMessage, 1)}
+	provider.AddPending(pr)
+	msg := &protocol.InferenceCompleteMessage{Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID, Usage: usage}
+	srv.handleComplete(provider.ID, provider, msg)
+	srv.handleComplete(provider.ID, provider, msg)
+	if got := ledger.Balance(testConsumerID); got != initial-cost { t.Fatalf("consumer balance=%d want %d", got, initial-cost) }
+	if got := st.GetWithdrawableBalance(account); got != 0 { t.Fatalf("provider balance=%d want 0", got) }
+	if fault.calls != 1 { t.Fatalf("provider credit attempts=%d want 1", fault.calls) }
+	select { case <-pr.CompleteCh: default: t.Fatal("completion was not delivered") }
+	t.Logf("REPRODUCED: consumer charged %d micro-USD, provider owed %d received zero; completion replay did not retry transient credit failure", cost, payments.ProviderPayout(cost))
+}
+
+type review0910ConcurrentStore struct {
+	store.Store
+	arrivals sync.WaitGroup
+}
+
+func (s *review0910ConcurrentStore) GetBillingSession(id string) (*store.BillingSession, error) {
+	session, err := s.Store.GetBillingSession(id)
+	s.arrivals.Done()
+	s.arrivals.Wait()
+	return session, err
+}
+
+func TestReview0910ConcurrentDepositDoubleCredit(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	if err := st.CreateBillingSession(&store.BillingSession{ID:"review-session", AccountID:"review-account", Status:"pending", CreatedAt:time.Now()}); err != nil { t.Fatal(err) }
+	barrier := &review0910ConcurrentStore{Store:st}
+	barrier.arrivals.Add(2)
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), barrier, ServerConfig{}, logger)
+	srv.SetBilling(billing.NewService(barrier, payments.NewLedger(barrier), logger, billing.Config{StripeSecretKey:"sk_test_review", StripeWebhookSecret:"whsec_review"}))
+	payload := []byte(`{"id":"evt_review","type":"checkout.session.completed","data":{"object":{"id":"cs_review","amount_total":100,"payment_status":"paid","metadata":{"billing_session_id":"review-session","consumer_key":"review-account"}}}}`)
+	var wg sync.WaitGroup
+	responses := make([]*httptest.ResponseRecorder, 2)
+	for i := range responses {
+		req := signedConnectRequest(t, payload, "whsec_review")
+		responses[i] = httptest.NewRecorder()
+		wg.Add(1)
+		go func(i int) { defer wg.Done(); srv.handleStripeWebhook(responses[i], req) }(i)
+	}
+	wg.Wait()
+	for _, response := range responses { if response.Code != http.StatusOK { t.Fatalf("callback: %d %s", response.Code, response.Body.String()) } }
+	if balance := st.GetBalance("review-account"); balance != 2_000_000 { t.Fatalf("observed balance %d, expected duplicate 2_000_000", balance) }
+	t.Log("REPRODUCED: two callbacks for one $1 payment credited $2")
+}

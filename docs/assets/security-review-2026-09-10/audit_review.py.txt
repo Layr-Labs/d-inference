@@ -1,0 +1,57 @@
+"""Offline audit of the pinned review implementation; makes no API calls."""
+import ast
+import collections
+import fnmatch
+import json
+import pathlib
+import subprocess
+import sys
+
+import yaml
+
+ROOT = pathlib.Path(sys.argv[1]).resolve()
+model = yaml.safe_load((ROOT / 'docs/threat-model.yaml').read_text())
+source = ROOT / '.github/scripts/threat-model-review.py'
+tree = ast.parse(source.read_text())
+names = {'parse_diff_by_file', 'threats_for_file', 'build_focused_diff', 'build_user_message'}
+nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+ns = {'fnmatch': fnmatch, 'MAX_FILE_DIFF_CHARS': 8000, 'MAX_TOTAL_DIFF_CHARS': 80000}
+exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), ns)
+
+def diff(path, content, deleted=False):
+    return f'diff --git a/{path} b/{path}\n--- a/{path}\n+++ ' + ('/dev/null' if deleted else f'b/{path}') + '\n@@ -1 +1 @@\n' + content + '\n'
+
+deleted = ns['parse_diff_by_file'](diff('coordinator/api/provider.go', '-security_gate()', True))
+renamed = ns['parse_diff_by_file']('diff --git a/coordinator/api/provider.go b/coordinator/api/new.go\nsimilarity index 100%\nrename from coordinator/api/provider.go\nrename to coordinator/api/new.go\n')
+new_path = 'coordinator/api/new_sensitive_handler.go'
+covered, uncovered = ns['build_focused_diff'](ns['parse_diff_by_file'](diff(new_path, '+NEW_SECURITY_SENTINEL')), model['threats'])
+message = ns['build_user_message'](covered, uncovered)
+actual_files = subprocess.check_output(['git', 'ls-files'], cwd=ROOT, text=True).splitlines()
+production = [p for p in actual_files if p.endswith(('.go', '.swift', '.ts', '.tsx', '.py', '.yml')) and not (p.endswith(('_test.go', '.test.ts', '.test.tsx')) or '/Tests/' in p or '/tests/' in p)]
+unmapped = [p for p in production if not ns['threats_for_file'](p, model['threats'])]
+unknown = []
+for ref_field, collection in [('adversaries', 'adversaries'), ('affected_assets', 'assets')]:
+    known = {x['id'] for x in model[collection]}
+    for threat in model['threats']:
+        unknown += [{'threat': threat['id'], 'field': ref_field, 'value': x} for x in threat.get(ref_field, []) if x not in known]
+duplicates = {key: count for key, count in collections.Counter(t['id'] for t in model['threats']).items() if count > 1}
+large = {f'coordinator/api/p{i}.go': 'x' * 9000 for i in range(12)}
+budgeted, _ = ns['build_focused_diff'](large, [{'id':'TEST', 'affected_files':['coordinator/api/*']}])
+result = {
+    'revision': subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
+    'threat_entries':len(model['threats']), 'duplicate_ids':duplicates, 'unknown_references':unknown,
+    'deleted_file_omitted':not deleted, 'pure_rename_omitted':not renamed,
+    'unmapped_new_code_hidden_from_model':'NEW_SECURITY_SENTINEL' not in message,
+    'total_diff_budget':ns['MAX_TOTAL_DIFF_CHARS'],
+    'actual_snippet_characters':sum(len(snippet) for _,snippet in budgeted.values()),
+    'production_like_files_count':len(production), 'unmapped_production_like_count':len(unmapped),
+    'unmapped_production_like_files':unmapped,
+    'important_mapping':{p:ns['threats_for_file'](p,model['threats']) for p in [
+        'coordinator/api/provider_codeattest.go','coordinator/api/trust_reuse.go',
+        'coordinator/registry/attestation_policy.go','coordinator/api/device_auth.go',
+        'coordinator/api/billing_handlers.go','console-ui/src/lib/server/coordinator.ts',
+        'admin-ui/src/proxy.ts','.github/workflows/threat-model-review.yml','docs/threat-model.yaml']},
+}
+assert result['deleted_file_omitted'] and result['pure_rename_omitted']
+assert result['unmapped_new_code_hidden_from_model']
+print(json.dumps(result, indent=2))

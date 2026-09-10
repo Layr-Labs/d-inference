@@ -66,6 +66,7 @@ public struct SelfUpdater: Sendable {
     /// `checkForUpdate` uses, from the same injected seam.
     internal let currentVersion: String
     private let urlSession: URLSession
+    private let bundleDownloader: ReleaseBundleDownloader
     private let now: @Sendable () -> Double
     /// Test seam threaded into every `UpdateRecoveryStore` this updater
     /// constructs; production always uses the no-op default.
@@ -127,7 +128,8 @@ public struct SelfUpdater: Sendable {
             Date().timeIntervalSince1970
         },
         recoveryFaultInjector:
-            @escaping @Sendable (UpdateRecoveryStore.FaultPoint) throws -> Void = { _ in }
+            @escaping @Sendable (UpdateRecoveryStore.FaultPoint) throws -> Void = { _ in },
+        bundleDownloader: ReleaseBundleDownloader? = nil
     ) {
         // Convert WebSocket URL to HTTP if needed
         var base = WebSocketURLScheme.toHTTP(coordinatorBaseURL)
@@ -141,6 +143,7 @@ public struct SelfUpdater: Sendable {
         self.verifyCodeSignatures = verifyCodeSignatures
         self.currentVersion = currentVersion
         self.urlSession = urlSession
+        self.bundleDownloader = bundleDownloader ?? ReleaseBundleDownloader(r2Session: urlSession)
         self.now = now
         self.recoveryFaultInjector = recoveryFaultInjector
     }
@@ -325,35 +328,13 @@ public struct SelfUpdater: Sendable {
 
     // MARK: - Download and Verify
 
-    /// Download the release bundle and verify its SHA-256 hash.
+    /// Download using the 10% GitHub transport trial, with R2 fallback. The
+    /// coordinator's bundle hash and all subsequent signature checks still apply.
     public func downloadAndVerify(release: ReleaseInfo) async -> Result<URL, UpdateError> {
-        guard let downloadURL = URL(string: release.url) else {
-            return .failure(.invalidURL(release.url))
-        }
-
-        do {
-            let (tempFileURL, response) = try await urlSession.download(from: downloadURL)
-
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200
-            else {
-                return .failure(.downloadFailed("HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)"))
-            }
-
-            // Verify SHA-256
-            let fileData = try Data(contentsOf: tempFileURL)
-            let digest = SHA256.hash(data: fileData)
-            let computedHash = digest.map { String(format: "%02x", $0) }.joined()
-
-            guard computedHash == release.bundleHash.lowercased() else {
-                try? FileManager.default.removeItem(at: tempFileURL)
-                return .failure(.hashMismatch(expected: release.bundleHash, got: computedHash))
-            }
-
-            return .success(tempFileURL)
-        } catch {
-            return .failure(.downloadFailed(error.localizedDescription))
-        }
+        await bundleDownloader.download(
+            release: release,
+            allowGitHub: coordinatorBaseURL == "https://api.darkbloom.dev"
+        )
     }
 
     // MARK: - Stage / Commit

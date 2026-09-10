@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — GitHub upgrade download trial
+
+- Try the matching GitHub release bundle for a random 10% of production stable-version upgrade downloads, falling back to R2 on network, HTTP, or checksum failure. Keep coordinator release discovery, R2 URLs and hashes, and signature verification authoritative. GitHub attempts have a 30-second idle timeout and a 120-second total transfer limit.
+
 ## Release candidate v0.9.1 — cache reliability and recovery (not shipped; 2026-09-09)
 
 Source changes since `v0.9.0`. Provider changes require a new signed bundle;

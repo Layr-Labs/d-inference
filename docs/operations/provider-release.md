@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-09 · commit `a82f89520`
+> Last updated: 2026-09-09 · commit `73093957b`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -14,6 +14,38 @@ collected in [`CHANGELOG.md`](../../CHANGELOG.md). The version bump prepares
 the source for the provider bundle. Publication and coordinator deployment remain
 separate operations; the bump alone does not change the registered release
 returned by `GET /v1/releases/latest`.
+
+## GitHub upgrade download trial
+
+For providers containing this change, `SelfUpdater.downloadAndVerify` chooses
+GitHub for a fresh random 10% of eligible upgrade downloads. This covers manual
+`darkbloom update`, in-process auto-update, and watchdog recovery updates. The
+trial applies to the production coordinator (`https://api.darkbloom.dev`) and
+stable `macos-arm64` releases with the versioned R2 bundle path; dev coordinators,
+prereleases, and custom bundle paths continue using the registered URL directly.
+This is a transport trial, not a separate beta release channel.
+
+[`ReleaseBundleDownloader.swift`](../../provider-swift/Sources/ProviderCore/Update/ReleaseBundleDownloader.swift)
+(`githubURL`, `download`) derives the GitHub asset from the coordinator-selected
+version: `Layr-Labs/d-inference`, tag `vX.Y.Z`, asset
+`darkbloom-bundle-macos-arm64.tar.gz`. It never uses GitHub release discovery.
+The coordinator's registered R2 URL and bundle hash remain authoritative; both
+transports must pass that hash before the existing binary, metallib, and pinned
+code-signature checks can run.
+
+A GitHub network, HTTP, checksum, or file-read failure removes the failed
+transfer and retries the exact registered R2 URL once. Cancellation stops the
+update without starting a fallback. GitHub has a 30-second handshake/idle timeout
+and a 120-second whole-transfer limit; the existing R2 session limits remain in
+place. Provider logs identify source selection and fallback.
+
+The release workflow already uploads the identical signed tarball to both
+locations. It registers R2 before publishing the GitHub asset, so upgrades during
+that interval may receive GitHub 404 and fall back normally. Verify publication
+using the existing release checks below. Existing installed provider versions
+keep their old download behavior until upgraded to a bundle containing this
+change; the trial takes effect on their subsequent upgrades. The installer
+continues using R2.
 
 ## Environment-free signing validation
 

@@ -97,13 +97,11 @@ func (s *Server) rejectShortInput(w http.ResponseWriter, r *http.Request, parsed
 	return true
 }
 
-// checkInitialInputFloor can defer an alias's rejection until ordinary capacity
-// and TTFT admission chooses its final build. A lower floor alone never causes
-// fallback. The caller rechecks the original build if admission keeps it.
+// checkInitialInputFloor defers aliases with a Previous build until ordinary
+// capacity and TTFT admission chooses the final build. Both quota and balance
+// admission wait for that validation. A lower floor alone never causes fallback.
 func (s *Server) checkInitialInputFloor(w http.ResponseWriter, r *http.Request, parsed map[string]any, publicModel, model string, tokens int, parameters map[string]any) (deferred, handled bool) {
-	if tokens >= minimumInputTokens(s.defaultMinInputTokens, parameters) {
-		return false, false
-	}
+	currentAllows := tokens >= minimumInputTokens(s.defaultMinInputTokens, parameters)
 	target, alias := s.registry.AliasTarget(publicModel)
 	if alias && target.Desired == model && target.Previous != "" {
 		rec, err := s.store.GetModelRegistryRecord(target.Previous)
@@ -114,9 +112,12 @@ func (s *Server) checkInitialInputFloor(w http.ResponseWriter, r *http.Request, 
 		if rec != nil {
 			previousParameters = rec.RuntimeParameters
 		}
-		if tokens >= minimumInputTokens(s.defaultMinInputTokens, previousParameters) {
-			return true, false
+		if currentAllows || tokens >= minimumInputTokens(s.defaultMinInputTokens, previousParameters) {
+			return true, false // validate the selected build before any quota/balance debit
 		}
+	}
+	if currentAllows {
+		return false, false
 	}
 	return false, s.rejectShortInput(w, r, parsed, publicModel, model, tokens, parameters)
 }
@@ -136,6 +137,22 @@ func (s *Server) inputFloorRegistryReadFailed(w http.ResponseWriter, model strin
 // unrelated request options. Anthropic's system field becomes a provider-bound
 // system message; extraction and framing must agree with that lowering.
 func inputFloorPromptTokens(parsed map[string]any, endpoint promptcontract.Endpoint) int {
+	// Scalar forms lower into one user message, just like Chat Completions.
+	if endpoint == promptcontract.EndpointCompletions {
+		if text, ok := parsed["prompt"].(string); ok {
+			return 4 + textPromptTokens(text)
+		}
+		if prompts, ok := parsed["prompt"].([]any); ok && len(prompts) == 1 {
+			if text, ok := prompts[0].(string); ok {
+				return 4 + textPromptTokens(text)
+			}
+		}
+	}
+	if endpoint == promptcontract.EndpointResponses {
+		if text, ok := parsed["input"].(string); ok {
+			return 4 + textPromptTokens(text)
+		}
+	}
 	tokens, _ := routingShape(parsed)
 	if endpoint == promptcontract.EndpointMessages {
 		if system := promptcontract.AnthropicSystemText(parsed["system"]); system != "" {

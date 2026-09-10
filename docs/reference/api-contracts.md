@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-10 · commit `18c4d8d43`
+> Last updated: 2026-09-10 · commit `42551bf49`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -387,6 +387,9 @@ tokens**, configurable per concrete model. `rejectShortInput` in
 {"error":{"message":"input is too short for model \"example\": estimated 19 input tokens; minimum is 32","type":"invalid_request_error","code":"input_too_short"}}
 ```
 
+Scalar Completions and Responses inputs include the same four user-message
+framing tokens as equivalent Chat messages.
+
 The floor counts prompt-bearing fields (`messages`, `input`, `prompt`) with the
 media-aware estimate, including top-level Anthropic `system` text on `/v1/messages`.
 String and text-block system prompts are extracted exactly as in provider lowering
@@ -394,8 +397,9 @@ String and text-block system prompts are extracted exactly as in provider loweri
 text-block metadata does not contribute. Model names, sampling options, and other request metadata
 do not contribute. It is not the provider's exact tokenizer count. Below-minimum
 requests do not start a response stream or reach a provider. An alias may defer
-its floor decision until ordinary capacity/TTFT admission selects a build; a
-subsequent rejection refunds any balance reservation. The lower floor alone does
+its floor decision until ordinary capacity/TTFT admission selects a build. Token
+quota and balance admission wait until that selected build passes the floor; a
+400 cannot consume token quota or be masked by an insufficient-funds 402. The lower floor alone does
 not trigger fallback. Transient registry read failures return retryable 503
 `service_unavailable`, rather than silently substituting the deployment default.
 

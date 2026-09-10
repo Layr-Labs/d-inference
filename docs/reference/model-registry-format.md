@@ -15,7 +15,7 @@ the operator procedure is [`../operations/model-migration.md`](../operations/mod
 (`coordinator/api/input_token_floor.go`, `minimumInputTokens`). It applies to
 chat completions, Responses, completions, and Anthropic messages, for all callers.
 Public aliases inherit the selected build's setting; a fallback to another build
-rechecks that build's minimum and refunds any prior balance reservation on rejection.
+rechecks that build's minimum before consuming token quota or reserving balance.
 If Previous allows a short input that Desired rejects, the initial floor decision
 is deferred until ordinary capacity/TTFT admission selects the final build. The
 floor alone never causes fallback. Transient registry lookup failures return 503;
@@ -37,6 +37,9 @@ conversation/input, not an exact tokenizer count or just the last user message.
 For `/v1/messages`, top-level `system` text also contributes, using the same
 string/text-block extraction and message framing as provider lowering; block
 metadata such as `cache_control` does not contribute.
+Scalar Completions and Responses inputs count the same user-message framing
+as their lowered Chat equivalents (112 ASCII characters estimate to 32 tokens
+on all three endpoints).
 It excludes the routing estimator's whole-body fallback: model names, sampling
 options, and unrelated metadata cannot make an empty prompt meet the floor.
 For example, a provider-reported 27-token prompt can estimate to 19 tokens.
@@ -45,7 +48,8 @@ returns HTTP **400**, `error.type = "invalid_request_error"`, and
 `error.code = "input_too_short"`. The initial check runs before token admission
 and billing reservation; eligible aliases can defer the decision until ordinary
 capacity/TTFT admission. Every floor rejection precedes provider dispatch and
-stream commitment; deferred rejections refund the reservation. The error message
+stream commitment. Alias quota and balance admission wait until the selected
+build passes the floor, so a 400 consumes neither. The error message
 reports both the estimate and effective minimum (`rejectShortInput`).
 
 To register a test model through the existing publishing workflow, include:

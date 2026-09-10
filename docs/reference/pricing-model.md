@@ -1,12 +1,17 @@
 # Pricing model reference
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-10 · commit `42551bf49`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
 pieces fit together, and what they guarantee, is explained in
 [`architecture/billing.md`](../architecture/billing.md); the consumer how-to is
 [`consumer/billing.md`](../consumer/billing.md).
+
+Input-floor validation finishes before token quota is consumed or balance is
+reserved, including aliases that require capacity/TTFT selection. A 400
+`input_too_short` therefore consumes neither. Remote media still cannot be fetched
+before quota admission and funding. See [the input-minimum contract](../reference/api-contracts.md#minimum-input-length).
 
 ## Units
 

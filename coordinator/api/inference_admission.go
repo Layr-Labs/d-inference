@@ -42,6 +42,17 @@ type balanceReservationParams struct {
 	policy                selfRoutePolicy
 }
 
+// admitTokensAndReserve runs the cost gates only after input-floor validation.
+// Keep the token-before-balance order, including for aliases validated by preflight.
+func (s *Server) admitTokensAndReserve(w http.ResponseWriter, r *http.Request, parsed map[string]any, p balanceReservationParams) (registry.TokenAdmission, int64, bool, bool) {
+	admission, ok := s.applyTokenRateLimitWithAdmission(w, r, p.estimatedPromptTokens, p.requestedMaxTokens)
+	if !ok {
+		return admission, 0, false, true
+	}
+	amount, service, handled := s.reserveInferenceBalance(w, r, parsed, p)
+	return admission, amount, service, handled
+}
+
 // reserveInferenceBalance performs the shared pre-flight balance reservation +
 // per-key spend cap for both inference handlers. Self-route (policy.enabled) and
 // a nil billing backend skip it (the request is free). On a spend-cap or

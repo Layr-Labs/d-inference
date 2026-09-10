@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-10 · commit `18c4d8d43`
+> Last updated: 2026-09-10 · commit `42551bf49`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -57,7 +57,9 @@ If an alias's Previous build allows an input that Desired rejects, the initial
 floor decision is deferred until the normal capacity/TTFT preflight runs. The
 floor does not independently select an older build. If preflight keeps Desired,
 its floor still applies; if preflight switches builds, the fallback's floor
-applies. Any reservation is refunded on rejection. Failed registry reads produce
+applies. Alias token quota and balance admission wait for that final validation.
+Remote-media fetches still wait for quota admission and balance reservation,
+including on the deferred alias path. Failed registry reads produce
 503; only a genuinely absent record or omitted/null parameter inherits the
 default (`checkInitialInputFloor`, `inputFloorRegistryReadFailed`, and
 `rejectShortInput` in `coordinator/api/input_token_floor.go`).

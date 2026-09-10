@@ -43,8 +43,8 @@ func TestInputTokenFloorEmptyInputIgnoresRequestOptions(t *testing.T) {
 				t.Fatalf("empty input accepted: %d %s", w.Code, w.Body.String())
 			}
 			// Empty chat arrays already fail required-message validation. Empty scalar
-			// inputs reach the floor and must report a zero estimate.
-			if ep.field != "messages" && (!strings.Contains(w.Body.String(), "input_too_short") || !strings.Contains(w.Body.String(), "estimated 0 input tokens")) {
+			// inputs reach the floor and must count only the empty user-message framing.
+			if ep.field != "messages" && (!strings.Contains(w.Body.String(), "input_too_short") || !strings.Contains(w.Body.String(), "estimated 4 input tokens")) {
 				t.Fatalf("wrong floor response: %s", w.Body.String())
 			}
 		})

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -67,7 +68,7 @@ func TestInputTokenFloorModelOverrideAndAliasFallback(t *testing.T) {
 				// after fallback; an initially admitted request must not bypass it.
 				harness := newRuntimeDefaultsAliasHarness(t, map[string]any{"min_input_tokens": 0}, map[string]any{"min_input_tokens": minimum})
 				content := tc.content
-				if len(content) == 128 && ep.field == "messages" {
+				if len(content) == 128 {
 					content = content[:112]
 				}
 				body := inputFloorBody(runtimeDefaultsAlias, ep.field, content)
@@ -76,7 +77,14 @@ func TestInputTokenFloorModelOverrideAndAliasFallback(t *testing.T) {
 					if err := json.Unmarshal([]byte(body), &parsed); err != nil {
 						t.Fatal(err)
 					}
-					if got := estimatePromptTokens(parsed); got != 32 {
+					endpoint := promptcontract.EndpointChatCompletions
+					if ep.field == "input" {
+						endpoint = promptcontract.EndpointResponses
+					}
+					if ep.field == "prompt" {
+						endpoint = promptcontract.EndpointCompletions
+					}
+					if got := inputFloorPromptTokens(parsed, endpoint); got != 32 {
 						t.Fatalf("boundary fixture estimated %d, want 32", got)
 					}
 				}

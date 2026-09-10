@@ -2,6 +2,8 @@
 
 ## Unreleased — Gemma QAT SSD prefix caching and automatic MTP
 
+- Keep MTP preparation targets out of eviction feasibility and idle eviction, restore surviving KV grants after discarded preparation, and refresh network capacity quotes immediately when staging memory changes.
+
 - Download optional QAT assistants asynchronously in network and standalone serving while the current engine keeps serving. Standalone inherits the configured coordinator catalog authority. Stage a verified replacement under a separate memory reservation, activate only at a natural idle boundary, and retain the old engine on failure or insufficient memory. Add fleet-jittered retry backoff for failed assistant fetches.
 - Allow catalog-declared assistants to download from an immutable Hugging Face revision first, with checksum-verified R2 fallback and unchanged support for existing R2-only metadata.
 - Reset adaptive MTP learning when participating requests finish, including reused request IDs and late chained steps. Track first-use verification warmup by exact row count and draft depth.

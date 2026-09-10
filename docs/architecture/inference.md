@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-08 · commit `fce72956c`
+> Last updated: 2026-09-10 · commit `213b8c2b6`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process in v0.8.16: one in-process engine (`mlx-swift-lm`
@@ -148,7 +148,12 @@ only the minimum serviceable KV grant. Static fleet grants and network capacity
 clamps reserve the candidate's assistant and KV bytes; if the original target
 is concurrently unloaded, its retained weight basis stays counted until discard. Identity follows the shared
 model container, so publishing a new bridge over that same target does not count
-the weights twice.
+the weights twice. Preparation pins the target before its first asynchronous lookup;
+model-load feasibility, LRU eviction and idle eviction exclude pinned targets.
+Explicit retirement may still unload a slot, while retained weights remain charged.
+Discard releases the actual target references before removing that charge and
+regrowing survivor KV grants under the reslice/load gate. Network capacity quotes
+refresh at staging changes and reject snapshots from older staging generations.
 Reservations follow the load generation, so delayed cleanup cannot release a
 new candidate's budget. Existing requests continue on the old
 engine. Publication waits for both network requests and local reservations to

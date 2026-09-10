@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-07 · commit `5ce1d0cd0`
+> Last updated: 2026-09-10 · commit `f76edbf2a`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -56,7 +56,7 @@
 - [`consumer/privacy-expectations.md`](consumer/privacy-expectations.md): what a consumer can and cannot assume, in plain terms.
 - [`consumer/verification.md`](consumer/verification.md): how to check a provider's attestation from the API.
 - [`provider/attestation.md`](provider/attestation.md): reach and keep `hardware` trust — enrol, approve the MDM profile, confirm posture; what `darkbloom status` shows.
-- [`threat-model.yaml`](threat-model.yaml): machine-readable threat model reviewed by CI on security-relevant PRs.
+- [`threat-model.yaml`](threat-model.yaml): machine-readable threat model.
 
 ## Reference (look up, do not read)
 

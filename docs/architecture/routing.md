@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-09-09 · commit `01d768198`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -41,6 +41,28 @@ content beyond that. See [`data-flow.md`](data-flow.md) and
 [`security/encryption.md`](security/encryption.md).
 
 ## Mechanism
+
+### Minimum-input admission
+
+Before token admission and balance reservation, the inference handlers compare
+the prompt-field-only media-aware estimate against the selected model's
+`runtime_parameters.min_input_tokens`, inheriting a deployment default of 32.
+Empty inputs cannot acquire input tokens from model names or sampling options.
+A terminal failure is 400 `input_too_short`; it never reaches provider dispatch.
+
+If an alias's Previous build allows an input that Desired rejects, the initial
+floor decision is deferred until the normal capacity/TTFT preflight runs. The
+floor does not independently select an older build. If preflight keeps Desired,
+its floor still applies; if preflight switches builds, the fallback's floor
+applies. Any reservation is refunded on rejection. Failed registry reads produce
+503; only a genuinely absent record or omitted/null parameter inherits the
+default (`checkInitialInputFloor`, `inputFloorRegistryReadFailed`, and
+`rejectShortInput` in `coordinator/api/input_token_floor.go`).
+
+Floor rejections record vision/tools traits and use the existing bounded
+asynchronous telemetry sink to calculate `CouldHaveServed`; they are not treated
+as routing-saturation rejections. See the [API contract](../reference/api-contracts.md#minimum-input-length)
+and [per-model settings](../reference/model-registry-format.md#minimum-input-tokens).
 
 ### Entry points
 

@@ -16,6 +16,10 @@ the operator procedure is [`../operations/model-migration.md`](../operations/mod
 chat completions, Responses, completions, and Anthropic messages, for all callers.
 Public aliases inherit the selected build's setting; a fallback to another build
 rechecks that build's minimum and refunds any prior balance reservation on rejection.
+If Previous allows a short input that Desired rejects, the initial floor decision
+is deferred until ordinary capacity/TTFT admission selects the final build. The
+floor alone never causes fallback. Transient registry lookup failures return 503;
+a genuinely absent record inherits the deployment default.
 
 | Value | Behavior |
 |---|---|
@@ -30,12 +34,16 @@ this catalog-owned policy.
 
 The count is the coordinator's existing **media-aware routing estimate** over the
 conversation/input, not an exact tokenizer count or just the last user message.
+It excludes the routing estimator's whole-body fallback: model names, sampling
+options, and unrelated metadata cannot make an empty prompt meet the floor.
 For example, a provider-reported 27-token prompt can estimate to 19 tokens.
-Tool definitions are not added to this routing estimate. At initial admission, a
-below-minimum request returns HTTP **400**, `error.type = "invalid_request_error"`, and
-`error.code = "input_too_short"`, before token admission, billing reservation,
-provider dispatch, or starting the response stream (`rejectShortInput`).
-The error message reports both the estimate and effective minimum.
+Tool definitions are not added to this routing estimate. A terminal floor rejection
+returns HTTP **400**, `error.type = "invalid_request_error"`, and
+`error.code = "input_too_short"`. The initial check runs before token admission
+and billing reservation; eligible aliases can defer the decision until ordinary
+capacity/TTFT admission. Every floor rejection precedes provider dispatch and
+stream commitment; deferred rejections refund the reservation. The error message
+reports both the estimate and effective minimum (`rejectShortInput`).
 
 To register a test model through the existing publishing workflow, include:
 

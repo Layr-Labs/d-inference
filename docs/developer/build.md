@@ -1,13 +1,14 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-10 · commit `c09499b5e`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the two Next.js UIs. `make build` does all
 of it; the per-component steps below explain what each target runs.
 
-Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
+Model publishing prompts for a per-model minimum estimated input length (32 by
+default; enter 0 for small-input testing) and can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the
 [model publishing procedure](../operations/model-migration.md).
 

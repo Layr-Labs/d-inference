@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-09 · commit `01d768198`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -376,6 +376,28 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 When every dispatched provider rejects a request with the same deterministic client error (for example a chat template that cannot render the messages, or a body the provider caps), the provider's own 4xx status is passed through once as `invalid_request_error` with `code: model_capability` (or `payload_too_large`) rather than being retried or reclassified (`terminalClientError` handling in the exhausted branch of `dispatchState.run`, `coordinator/api/dispatch.go`).
 
 A client that disconnects before commit receives nothing; the coordinator records status 499 internally and cancels the provider job (`sendProviderCancel`, `coordinator/api/consumer.go`).
+
+### Minimum input length
+
+All four inference endpoints enforce a default minimum of **32 estimated prompt
+tokens**, configurable per concrete model. `rejectShortInput` in
+`coordinator/api/input_token_floor.go` returns 400 with this error envelope:
+
+```json
+{"error":{"message":"input is too short for model \"example\": estimated 19 input tokens; minimum is 32","type":"invalid_request_error","code":"input_too_short"}}
+```
+
+The floor counts prompt-bearing fields (`messages`, `input`, `prompt`) with the
+media-aware estimate; model names, sampling options, and other request metadata
+do not contribute. It is not the provider's exact tokenizer count. Below-minimum
+requests do not start a response stream or reach a provider. An alias may defer
+its floor decision until ordinary capacity/TTFT admission selects a build; a
+subsequent rejection refunds any balance reservation. The lower floor alone does
+not trigger fallback. Transient registry read failures return retryable 503
+`service_unavailable`, rather than silently substituting the deployment default.
+
+See [per-model minimum settings](model-registry-format.md#minimum-input-tokens)
+for `min_input_tokens`, including `0` for testing and `null` for inheritance.
 
 ## Inference request and response shapes
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — model input minimums
+
+- Require 32 estimated input tokens by default across all four inference endpoints; shorter inputs receive HTTP 400 `input_too_short`. Publishers can set `runtime_parameters.min_input_tokens` per model, including `0` for small-input testing and `null` to inherit the deployment default. The floor counts prompt fields only, honors normal alias fallback, records rejection traits and servability, and refuses transient model-policy lookup failures with 503.
+
 ## Unreleased — Gemma QAT SSD prefix caching and automatic MTP
 
 - Keep MTP preparation targets out of eviction feasibility and idle eviction, restore surviving KV grants after discarded preparation, and refresh network capacity quotes immediately when staging memory changes.

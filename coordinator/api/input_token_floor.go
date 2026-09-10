@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -74,14 +75,58 @@ func (s *Server) rejectShortInput(w http.ResponseWriter, r *http.Request, parsed
 	}
 	stream, _ := parsed["stream"].(bool)
 	s.recordRejection(rejectionInfo{
-		r: r, stage: "validation", reasonCode: "input_too_short", httpStatus: http.StatusBadRequest,
-		keyID: keyIDFromContext(r.Context()), consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
-		requestedModel: publicModel, resolvedModel: model, stream: stream,
-		estimatedPromptTokens: estimatedTokens, requestedMaxTokens: estimateRequestedMaxTokens(parsed),
-		params: rejectionSamplingParams(parsed), skipServability: true,
+		r:                     r,
+		stage:                 "validation",
+		reasonCode:            "input_too_short",
+		httpStatus:            http.StatusBadRequest,
+		keyID:                 keyIDFromContext(r.Context()),
+		consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+		requestedModel:        publicModel,
+		resolvedModel:         model,
+		stream:                stream,
+		estimatedPromptTokens: estimatedTokens,
+		requestedMaxTokens:    estimateRequestedMaxTokens(parsed),
+		params:                rejectionSamplingParams(parsed),
+		requiresVision:        detectMediaRequirement(parsed),
+		hasTools:              requestHasTools(parsed),
 	})
 	writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
 		fmt.Sprintf("input is too short for model %q: estimated %d input tokens; minimum is %d", publicModel, estimatedTokens, minimum),
 		withCode("input_too_short")))
+	return true
+}
+
+// checkInitialInputFloor can defer an alias's rejection until ordinary capacity
+// and TTFT admission chooses its final build. A lower floor alone never causes
+// fallback. The caller rechecks the original build if admission keeps it.
+func (s *Server) checkInitialInputFloor(w http.ResponseWriter, r *http.Request, parsed map[string]any, publicModel, model string, tokens int, parameters map[string]any) (deferred, handled bool) {
+	if tokens >= minimumInputTokens(s.defaultMinInputTokens, parameters) {
+		return false, false
+	}
+	target, alias := s.registry.AliasTarget(publicModel)
+	if alias && target.Desired == model && target.Previous != "" {
+		rec, err := s.store.GetModelRegistryRecord(target.Previous)
+		if s.inputFloorRegistryReadFailed(w, target.Previous, err) {
+			return false, true
+		}
+		var previousParameters map[string]any
+		if rec != nil {
+			previousParameters = rec.RuntimeParameters
+		}
+		if tokens >= minimumInputTokens(s.defaultMinInputTokens, previousParameters) {
+			return true, false
+		}
+	}
+	return false, s.rejectShortInput(w, r, parsed, publicModel, model, tokens, parameters)
+}
+
+// A genuinely absent record (e.g. a local/self-route model) has no override.
+// A failed lookup is not evidence that the override is absent.
+func (s *Server) inputFloorRegistryReadFailed(w http.ResponseWriter, model string, err error) bool {
+	if err == nil || errors.Is(err, store.ErrNotFound) {
+		return false
+	}
+	s.logger.Error("cannot resolve model input token floor", "model", model, "error", err)
+	s.writeServiceUnavailable(w, model)
 	return true
 }

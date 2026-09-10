@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-10 · commit `5a3ffc27f`
+> Last updated: 2026-09-10 · commit `c09499b5e`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -36,6 +36,20 @@ preparation seam before tokenization. The shared public corpus covers JSON-objec
 and schema response formats plus multi-system and text/tool/endpoint forms; it compares
 actual Swift tokens and scope-bound hashes with Rust plans. No production
 prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
+
+Minimum-input admission regressions cover empty inputs with large request options,
+model-policy store failures, both directions of alias fallback, the exact 32-token
+boundary, billing order, and asynchronous rejection telemetry:
+
+```bash
+go test -race ./coordinator/api -run 'Test(DefaultMinInputTokensConfig|InputTokenFloor|RejectShortInput)' -count=1
+./scripts/test-publish-model.sh
+```
+
+The publisher test exercises its five interactive answers, preserves required
+provider capabilities, checks default/zero/custom minimums and workflow payloads,
+and rejects malformed minimums before model hashing. It uses stubbed tools and
+never publishes real model files. See the [model policy](../reference/model-registry-format.md#minimum-input-tokens).
 
 ## Prerequisites
 

@@ -1999,6 +1999,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			maxOutputBound = rec.MaxOutputLength
 		}
 		modelMaxContext = rec.MaxContextLength
+	} else if s.inputFloorRegistryReadFailed(w, model, err) {
+		return
 	}
 	if err := validateResolvedToolConstraintParser(
 		parsed, validatedMode, model, s.registry.ModelType(model),
@@ -2029,7 +2031,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
 	}
-	if s.rejectShortInput(w, r, parsed, publicModel, model, estimatedPromptTokens, resolvedRuntimeParameters) {
+	floorPromptTokens := shape.routingTokens
+	floorModel := model
+	floorDeferred, floorHandled := s.checkInitialInputFloor(w, r, parsed, publicModel, model, floorPromptTokens, resolvedRuntimeParameters)
+	if floorHandled {
 		return
 	}
 
@@ -2279,9 +2284,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			runtimeParameters = rec.RuntimeParameters
 			runtimeDefaults.apply(parsed, runtimeParameters)
 		} else {
+			if s.inputFloorRegistryReadFailed(w, newModel, err) {
+				refundReservation()
+				return false
+			}
 			runtimeDefaults.apply(parsed, nil)
 		}
-		if s.rejectShortInput(w, r, parsed, publicModel, newModel, estimatedPromptTokens, runtimeParameters) {
+		if (newModel != floorModel || !floorDeferred) && s.rejectShortInput(w, r, parsed, publicModel, newModel, floorPromptTokens, runtimeParameters) {
 			refundReservation()
 			return false
 		}
@@ -2337,6 +2346,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if preflightHandled {
+		return
+	}
+	if floorDeferred && model == floorModel && s.rejectShortInput(w, r, parsed, publicModel, model, floorPromptTokens, resolvedRuntimeParameters) {
+		refundReservation()
 		return
 	}
 
@@ -2789,6 +2802,8 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			genericMaxOutput = rec.MaxOutputLength
 		}
 		modelMaxContext = rec.MaxContextLength
+	} else if s.inputFloorRegistryReadFailed(w, model, err) {
+		return
 	}
 	ensureMaxTokensBound(parsed, false, genericMaxOutput)
 
@@ -2802,7 +2817,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
 	}
-	if s.rejectShortInput(w, r, parsed, publicModel, model, estimatedPromptTokens, resolvedRuntimeParameters) {
+	floorPromptTokens, _ := routingShape(parsed)
+	floorModel := model
+	floorDeferred, floorHandled := s.checkInitialInputFloor(w, r, parsed, publicModel, model, floorPromptTokens, resolvedRuntimeParameters)
+	if floorHandled {
 		return
 	}
 
@@ -2887,9 +2905,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			runtimeParameters = rec.RuntimeParameters
 			runtimeDefaults.apply(parsed, runtimeParameters)
 		} else {
+			if s.inputFloorRegistryReadFailed(w, newModel, err) {
+				refundReservation()
+				return false
+			}
 			runtimeDefaults.apply(parsed, nil)
 		}
-		if s.rejectShortInput(w, r, parsed, publicModel, newModel, estimatedPromptTokens, runtimeParameters) {
+		if (newModel != floorModel || !floorDeferred) && s.rejectShortInput(w, r, parsed, publicModel, newModel, floorPromptTokens, runtimeParameters) {
 			refundReservation()
 			return false
 		}
@@ -2947,6 +2969,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 	if preflightHandled {
+		return
+	}
+	if floorDeferred && model == floorModel && s.rejectShortInput(w, r, parsed, publicModel, model, floorPromptTokens, resolvedRuntimeParameters) {
+		refundReservation()
 		return
 	}
 	cachePlan := registry.CachePlan{}

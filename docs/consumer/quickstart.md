@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-09 · commit `01d768198`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -43,13 +43,20 @@ export MODEL="<an id from the list>"
 
 ### 4. Make a chat completion
 
+Inputs need at least **32 estimated input tokens** by default. The examples below
+meet that default. A model may have a different minimum; 400 `input_too_short`
+reports the estimate and required minimum. Add meaningful context instead of
+retrying the unchanged request. Model publishers can configure `0` for small-input
+testing; callers cannot override the policy in their request.
+[Exact contract and model overrides](../reference/api-contracts.md#minimum-input-length).
+
 ```bash
 curl -s https://api.darkbloom.dev/v1/chat/completions \
   -H "Authorization: Bearer $DARKBLOOM_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "'"$MODEL"'",
-    "messages": [{"role": "user", "content": "Say hello in one sentence."}],
+    "messages": [{"role": "user", "content": "Explain how a decentralized inference network routes a request from an application to an available provider, and summarize the benefits in one short paragraph."}],
     "max_tokens": 64
   }'
 ```
@@ -66,7 +73,7 @@ curl -N https://api.darkbloom.dev/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "'"$MODEL"'",
-    "messages": [{"role": "user", "content": "Count from 1 to 10."}],
+    "messages": [{"role": "user", "content": "Count from one to ten, then explain in a short sentence why streaming responses let applications display useful output before generation has finished."}],
     "stream": true
   }'
 ```
@@ -83,7 +90,7 @@ from openai import OpenAI
 client = OpenAI(base_url="https://api.darkbloom.dev/v1", api_key=DARKBLOOM_API_KEY)
 resp = client.chat.completions.create(
     model=MODEL,
-    messages=[{"role": "user", "content": "Say hello in one sentence."}],
+    messages=[{"role": "user", "content": "Explain how a decentralized inference network routes a request from an application to an available provider, and summarize the benefits in one short paragraph."}],
 )
 print(resp.choices[0].message.content)
 ```
@@ -101,7 +108,7 @@ client = anthropic.Anthropic(base_url="https://api.darkbloom.dev", auth_token=DA
 msg = client.messages.create(
     model=MODEL,
     max_tokens=64,
-    messages=[{"role": "user", "content": "Say hello in one sentence."}],
+    messages=[{"role": "user", "content": "Explain how a decentralized inference network routes a request from an application to an available provider, and summarize the benefits in one short paragraph."}],
 )
 print(msg.content[0].text)
 ```

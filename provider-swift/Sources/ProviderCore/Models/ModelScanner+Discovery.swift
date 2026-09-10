@@ -21,7 +21,7 @@ extension ModelScanner {
     /// Scan for locally cached MLX models, filtering to those that fit in available memory.
     public static func scanModels(hardwareInfo: HardwareInfo) -> [ModelInfo] {
         guard let cacheDir = defaultCacheDirectory(),
-              FileManager.default.fileExists(atPath: cacheDir.path) else {
+              ModelScanner.isUsableCacheDirectory(cacheDir) else {
             discoveryLogger.debug("HuggingFace cache directory not found")
             return []
         }
@@ -35,7 +35,7 @@ extension ModelScanner {
     /// the operator actually configured and that will never load.
     public static func scanAllModels(hardwareInfo: HardwareInfo) -> [ModelInfo] {
         guard let cacheDir = defaultCacheDirectory(),
-              FileManager.default.fileExists(atPath: cacheDir.path) else {
+              ModelScanner.isUsableCacheDirectory(cacheDir) else {
             discoveryLogger.debug("HuggingFace cache directory not found")
             return []
         }

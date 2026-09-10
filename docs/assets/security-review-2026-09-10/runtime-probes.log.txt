@@ -1,0 +1,13 @@
+=== RUN   TestReview0910DeviceCodeMintsMultipleTokens
+    review_0910_test.go:37: REPRODUCED: one approved device code issued three different provider tokens
+--- PASS: TestReview0910DeviceCodeMintsMultipleTokens (0.00s)
+=== RUN   TestReview0910ConcurrentDepositDoubleCredit
+    review_0910_test.go:73: REPRODUCED: two callbacks for one $1 payment credited $2
+--- PASS: TestReview0910ConcurrentDepositDoubleCredit (0.00s)
+PASS
+ok  	github.com/eigeninference/d-inference/coordinator/api	0.594s
+=== RUN   TestReview0910PinnedCatalogAcceptsMissingHash
+    review_0910_test.go:24: REPRODUCED: pinned model rejects a wrong hash but accepts an omitted hash
+--- PASS: TestReview0910PinnedCatalogAcceptsMissingHash (0.00s)
+PASS
+ok  	github.com/eigeninference/d-inference/coordinator/registry	0.528s

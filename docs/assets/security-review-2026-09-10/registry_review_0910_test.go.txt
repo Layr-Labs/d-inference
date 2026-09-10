@@ -1,0 +1,25 @@
+package registry
+
+import (
+	"io"
+	"log/slog"
+	"strings"
+	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+)
+
+// Review characterization, not the desired post-fix behavior.
+func TestReview0910PinnedCatalogAcceptsMissingHash(t *testing.T) {
+	r := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	r.SetModelCatalog([]CatalogEntry{{ID: "review-model", WeightHash: strings.Repeat("a", 64)}})
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if !r.modelAllowedByCatalogLocked(protocol.ModelInfo{ID: "review-model"}) {
+		t.Fatal("missing hash is no longer accepted; update the finding")
+	}
+	if r.modelAllowedByCatalogLocked(protocol.ModelInfo{ID: "review-model", WeightHash: strings.Repeat("b", 64)}) {
+		t.Fatal("mismatched hash unexpectedly accepted")
+	}
+	t.Log("REPRODUCED: pinned model rejects a wrong hash but accepts an omitted hash")
+}

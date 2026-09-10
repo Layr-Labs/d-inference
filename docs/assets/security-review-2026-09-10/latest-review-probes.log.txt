@@ -1,0 +1,25 @@
+# github.com/eigeninference/d-inference/coordinator/api.test
+ld: warning: '<temporary-linker-path>' has malformed LC_DYSYMTAB, expected 98 undefined symbols to start at index 1626, found 95 undefined symbols starting at index 1626
+=== RUN   TestReview0910SealedEnvelopeReplayReachesHandler
+    review_0910_test.go:43: CONFIRMED: identical sealed envelope reaches downstream handler twice; encryption layer provides no replay deduplication. Authentication and billing are outside this probe.
+--- PASS: TestReview0910SealedEnvelopeReplayReachesHandler (0.02s)
+=== RUN   TestReview0910ProviderClaimsSettleAboveServiceHold
+    review_0910_test.go:74: REPRODUCED at completion handler: requested max 1, reported 100000, billed 100000 micro-USD against 100 micro-USD hold; invalid signature/hash retained
+--- PASS: TestReview0910ProviderClaimsSettleAboveServiceHold (0.00s)
+=== RUN   TestReview0910DeviceCodeMintsMultipleTokens
+    review_0910_test.go:93: REPRODUCED: one approved device code issued three different provider tokens
+--- PASS: TestReview0910DeviceCodeMintsMultipleTokens (0.00s)
+=== RUN   TestReview0910ProviderCreditFailureNotRecoveredByReplay
+time=2026-09-10T18:53:50.120-04:00 level=ERROR msg="failed to credit linked provider account" provider_id=review-earned-provider account_id=review-earned-account request_id=review-unpaid error="synthetic transient provider-credit failure"
+    review_0910_test.go:131: REPRODUCED: consumer charged 150 micro-USD, provider owed 150 received zero; completion replay did not retry transient credit failure
+--- PASS: TestReview0910ProviderCreditFailureNotRecoveredByReplay (0.00s)
+=== RUN   TestReview0910ConcurrentDepositDoubleCredit
+    review_0910_test.go:166: REPRODUCED: two callbacks for one $1 payment credited $2
+--- PASS: TestReview0910ConcurrentDepositDoubleCredit (0.00s)
+PASS
+ok  	github.com/eigeninference/d-inference/coordinator/api	2.394s
+=== RUN   TestReview0910PinnedCatalogAcceptsMissingHash
+    review_0910_test.go:24: REPRODUCED: pinned model rejects a wrong hash but accepts an omitted hash
+--- PASS: TestReview0910PinnedCatalogAcceptsMissingHash (0.00s)
+PASS
+ok  	github.com/eigeninference/d-inference/coordinator/registry	1.416s

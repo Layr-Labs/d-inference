@@ -53,6 +53,10 @@ extension EngineV2Factory {
                 layerKinds = qwen.cbv2LayerKinds
                 modelCapabilities = qwen.cbv2Capabilities
                 newCaches = { make in qwen.newCacheV2(makeLayerCache: make) }
+            case let nemotron as NemotronH35Model:
+                layerKinds = nemotron.cbv2LayerKinds
+                modelCapabilities = nemotron.cbv2Capabilities
+                newCaches = { make in nemotron.newCacheV2(makeLayerCache: make) }
             default:
                 return nil
             }

@@ -378,6 +378,11 @@ private enum Qwen36ProductionCanary {
                     result.firstContentLatency = startedAt.duration(to: .now)
                 }
                 result.text += text
+            case .parsed(let parsed):
+                if result.firstContentLatency == nil, !parsed.content.isEmpty {
+                    result.firstContentLatency = startedAt.duration(to: .now)
+                }
+                result.text += parsed.content
             case .toolCall(let call):
                 result.toolCalls.append(call)
             case .info(let info):

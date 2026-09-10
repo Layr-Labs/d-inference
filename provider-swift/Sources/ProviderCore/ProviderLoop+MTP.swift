@@ -20,7 +20,7 @@ extension ProviderLoop {
             let modelId = advertisedModels.values
                 .filter({
                     SpecDecArtifactFunnel.isGemma4Target(modelType: $0.modelType)
-                        || SpecDecArtifactFunnel.isQwen35Target(modelType: $0.modelType)
+                        || SpecDecArtifactFunnel.isInlineTarget(modelType: $0.modelType)
                 })
                 .map(\.id)
                 .sorted()

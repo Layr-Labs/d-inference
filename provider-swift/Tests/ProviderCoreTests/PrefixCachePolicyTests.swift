@@ -32,8 +32,11 @@ struct PrefixCachePolicyTests {
     @Test(arguments: [
         "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
         "EigenLabs/Qwen3.8-27B-4bit-mtp",
+        "nvidia-nemotron-3.5-lightning",
+        "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+        "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit",
     ])
-    func qwenDefaultSSD(modelID: String) {
+    func qualifiedArtifactDefaultSSD(modelID: String) {
         for value in [nil, "", "   "] as [String?] {
             let environment = value.map { [PrefixCachePolicy.environmentFlag: $0] } ?? [:]
             #expect(PrefixCachePolicy.isEnabled(modelId: modelID, environment: environment))
@@ -49,6 +52,8 @@ struct PrefixCachePolicyTests {
         "gpt-oss-20b", "gemma-4-26b-qat-4bit", "gemma-4-26b", "gemma-4-26b-8bit", "unknown", "",
         "qwen3.5-35b-a3b-other", "QWEN3.5-35B-A3B", " qwen3.5-35b-a3b",
         "qwen3.6-35b-a3b", "EigenLabs/Qwen3.8-27B-4bit",
+        "nvidia-nemotron-3.5-lightning-other", "NVIDIA-NEMOTRON-3.5-LIGHTNING",
+        "nvidia-nemotron-3.5-lightning ", "arbitrary/Nemotron-MTP",
     ])
     func otherArtifactsRequireExplicitSSDOptIn(modelID: String) {
         for value in [nil, "", "   ", "0", "false", "junk"] as [String?] {

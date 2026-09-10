@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — Nemotron native paging and MTP prefix checkpoints
+
+- Select native paged KV and encrypted complete-prefix caching by default for the exact Nemotron Lightning registry/Hugging Face IDs, retaining explicit rollback controls. Keep native activation/KV precision and FP32 persistent Mamba state.
+- Give the embedded MTP assistant request-owned paged KV and an exact trusted-history checkpoint codec, so prompt prefixes restore with MTP enabled without sharing speculative state. Bind persisted state to the Nemotron numerical controls. MTP uses adaptive depth up to seven and captured target verification; test and benchmark results remain scoped to the measured artifact and machine, not fleet qualification.
+
+- Route native reasoning/content/tool channels through the existing coordinator-serving engine and validate forced tool calls before publication. No new localhost testing endpoints or personal artifact aliases are included.
+
 ## Release candidate v0.9.1 — cache reliability and recovery (not shipped; 2026-09-09)
 
 Source changes since `v0.9.0`. Provider changes require a new signed bundle;

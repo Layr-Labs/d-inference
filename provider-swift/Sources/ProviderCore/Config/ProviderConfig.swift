@@ -90,10 +90,12 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     case off
 
     /// `model_type` values whose embedded heads self-activate under `auto`.
-    /// Kept in sync with `SpecDecArtifactFunnel.isQwen35Target` — the funnel
-    /// stays the single authority on which models it will *resolve*; this set
-    /// only decides which ones `auto` is willing to *ask about*.
-    static let automaticQwen35ModelTypes: Set<String> = ["qwen3_5", "qwen3_5_moe"]
+    /// Kept in sync with `SpecDecArtifactFunnel.isInlineTarget` — the
+    /// funnel stays the single authority on which models it will *resolve*;
+    /// this set only decides which ones `auto` is willing to *ask about*.
+    static let automaticEmbeddedModelTypes: Set<String> = [
+        "qwen3_5", "qwen3_5_moe", "nemotron_h",
+    ]
 
     func enablesMTP(forModelType modelType: String?, embeddedArtifactDeclared: Bool) -> Bool {
         switch self {
@@ -107,7 +109,7 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .lowercased(), !raw.isEmpty
             else { return false }
-            return Self.automaticQwen35ModelTypes.contains(raw)
+            return Self.automaticEmbeddedModelTypes.contains(raw)
         }
     }
 }

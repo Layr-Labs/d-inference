@@ -124,6 +124,13 @@ func TestGateRejectionTallies(t *testing.T) {
 			lock(p, func() { p.Status = StatusUntrusted })
 			return nil
 		}},
+		{name: "state_restoring", want: GateStateRestoring, setup: func(_ *testing.T, _ *Registry, p *Provider, _ *PendingRequest) []string {
+			lock(p, func() {
+				p.stateRestorePending = true
+				p.AttestationResult = &attestation.VerificationResult{Valid: true}
+			})
+			return nil
+		}},
 		{name: "trust_floor", want: GateTrustFloor, setup: func(_ *testing.T, _ *Registry, p *Provider, _ *PendingRequest) []string {
 			lock(p, func() { p.TrustLevel = TrustNone })
 			return nil

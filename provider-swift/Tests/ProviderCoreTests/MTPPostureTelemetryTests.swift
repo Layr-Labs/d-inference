@@ -87,12 +87,40 @@ private func field(_ event: TelemetryEvent?, _ key: String) -> String? {
     event?.fields?[key]?.description
 }
 
+private extension EngineV2Bridge {
+    // Hold the actor until cancellation is set: the queued callback cannot
+    // enter first. This models cancellation after the sampler's loop check
+    // but before delivery through the actor hop, without timer races.
+    func cancelledPostureDelivery() -> Task<Void, Never> {
+        let bridge = self
+        let task = Task { await bridge.sampleSlotPostureFromSampler() }
+        task.cancel()
+        return task
+    }
+}
+
 // MARK: - Tests
 
 @Suite("MTP + paged-pool posture telemetry")
 struct MTPPostureTelemetryTests {
 
     // MARK: Enabled but inert
+
+    @Test("a sampler callback cancelled while queued on the actor emits nothing")
+    func cancelledQueuedSampleIsIgnored() async {
+        let telemetry = PostureTelemetrySink()
+        let bridge = makePostureBridge(
+            engine: PagedPoolStubEngine(kvBytesInUse: 0, poolBytes: 1 << 30),
+            kvBackendKind: .paged, telemetry: telemetry)
+        await bridge.configureMTPStatus(
+            .disabled(.configDisabled, configured: false), metricsInterval: .seconds(600))
+        let initial = telemetry.events.count
+        #expect(initial == 1)
+        let task = await bridge.cancelledPostureDelivery()
+        await task.value
+        #expect(telemetry.events.count == initial)
+        await bridge.shutdown()
+    }
 
     @Test("paged slot with zero MTP rounds reports inert_kv_unsupported")
     func inertPagedSlotIsNamed() async {

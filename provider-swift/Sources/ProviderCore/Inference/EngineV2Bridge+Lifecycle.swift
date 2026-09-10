@@ -142,8 +142,9 @@ extension EngineV2Bridge {
         prefixCacheTelemetry.close()
         statsTask?.cancel()
         slotPostureClosed = true
-        slotPostureTask?.cancel()
+        let postureTask = slotPostureTask
         slotPostureTask = nil
+        postureTask?.cancel()
         let live = pumpTasks
         pumpTasks.removeAll()
         for task in live.values { task.cancel() }
@@ -156,6 +157,7 @@ extension EngineV2Bridge {
             await task.value
         }
         _ = await statsTask?.value
+        _ = await postureTask?.value
         // The bridge may remain in a local teardown variable; explicitly drop
         // the concrete engine so target and assistant ownership does not.
         ownedEngine = nil

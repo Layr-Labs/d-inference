@@ -152,7 +152,7 @@ export default function EarningsContent() {
       <div>
         <h2 className="text-lg font-semibold text-text-primary">Provider Earnings</h2>
         <p className="text-sm text-text-tertiary mt-0.5">
-          Across all linked provider nodes
+          Earnings stay available after you remove your Macs.
         </p>
       </div>
 

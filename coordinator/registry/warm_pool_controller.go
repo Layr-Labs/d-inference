@@ -650,6 +650,7 @@ const (
 	warmColdDedicated      warmColdReason = "dedicated_excluded"
 	warmColdTooLarge       warmColdReason = "model_too_large"
 	warmColdNoFreeForLoad  warmColdReason = "no_free_for_load"
+	warmColdStateRestoring warmColdReason = "state_restoring"
 )
 
 // warmColdReasonStrings converts a reason tally to a string-keyed map for
@@ -687,6 +688,9 @@ func (r *Registry) warmPoolCandidateLocked(p *Provider, model string, now time.T
 func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now time.Time) (warmPoolCandidate, warmColdReason) {
 	if p.Status == StatusOffline || p.Status == StatusUntrusted || p.PrivateOnly {
 		return warmPoolCandidate{}, warmColdOfflineUntrust
+	}
+	if providerStateRestoreRequiredLocked(p) {
+		return warmPoolCandidate{}, warmColdStateRestoring
 	}
 	if r.providerHasPendingLoad(p.ID) || r.gateOf(p).dispatchLoadCooled(model, now) {
 		return warmPoolCandidate{}, warmColdPendingLoad

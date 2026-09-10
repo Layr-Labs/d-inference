@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-09-07 · commit `0b46b1618`
+> Last updated: 2026-09-09 · commit `56ceac15a`
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -258,11 +258,17 @@ the coordinator's consumption is in
 | Enum | Values |
 |---|---|
 | `PrefixCacheStatusReason` | `ready`, `config_disabled`, `weight_hash_unavailable`, `runtime_identity_unavailable`, `unsupported_layout`, `unsupported_backend`, `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`, `disk_unavailable`, `cache_init_failed` |
-| `PrefixCacheDonationOutcome` | `donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot`, `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed` |
+| `PrefixCacheDonationOutcome` | `donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot`, `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`, `host_memory_unavailable`, `cache_epoch_changed`, `cache_maintenance_busy`, `disk_space_insufficient`, `unsafe_cache_root`, `write_io_failed`, `existing_cache_unreadable`, `cache_entry_evicted` |
 
 Outcomes are cumulative process-local counters carrying no identifiers; each
 donation call settles exactly one outcome
 (`provider-swift/Sources/ProviderCore/KVCacheSSD/PrefixCacheDonationTelemetry.swift`).
+
+`disk_space_insufficient` includes both failed free-space preflight and typed
+`ENOSPC` errors during atomic file creation/rename. When maintenance removes
+the donated endpoint, `cache_entry_evicted` takes precedence over the epoch
+change that removal causes; no ready endpoint is published in either case
+(`SSDHybridCheckpointStore.performWrite`, `SSDNoFollowIO.posixError`).
 
 ## Verification
 

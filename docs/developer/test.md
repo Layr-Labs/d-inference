@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-08 · commit `970384ae7`
+> Last updated: 2026-09-10 · commit `4f29957d2`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -15,6 +15,12 @@ checksum rejection, fallback, and cancellation. `scripts/test-publish-model.sh`
 checks the artifact workflow payload. `TestHuggingFaceArtifactPostgresAndCache`
 in `coordinator/store/hugging_face_artifact_test.go` uses a disposable
 `DATABASE_URL` to check storage and cache invalidation.
+
+`ProductionPromptParityTests` drives the real model-free `MLXOpenAIService`
+preparation seam before tokenization. The shared public corpus covers JSON-object
+and schema response formats plus multi-system and text/tool/endpoint forms; it compares
+actual Swift tokens and scope-bound hashes with Rust plans. No production
+prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
 
 ## Prerequisites
 
@@ -102,6 +108,53 @@ file created during a test must be removed after shutdown.
 go test ./e2e/testbed -run '^TestCleanup' -count=1
 ```
 
+#### Coordinator startup and reconnect recovery
+
+`TestSupervisorRestartsChildAndBecomesReady` allows a five-second helper startup
+and a fifteen-second overall wait so concurrent cold builds do not exhaust its
+restart budget. It asserts restart plus readiness, not a production startup SLA;
+production supervisor deadlines are unchanged (`coordinator/promptcontract/supervisor_test.go`).
+
+The [startup observer](../operations/coordinator-startup-measurement.md) has
+standard-library tests using only local HTTP stubs and a deterministic clock.
+They run in Release Integrity CI and make no external inference calls:
+
+```bash
+python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
+```
+
+
+Use a disposable local PostgreSQL database for the startup regressions. Store
+tests truncate tables and create/drop isolated databases; never point
+`DATABASE_URL` at a shared or production database.
+
+```bash
+cd coordinator
+# DATABASE_URL must name a throwaway local database.
+go test -p 1 ./store ./cmd/coordinator -run 'Test(EarningsSummary|LegacyFloor|RecordProviderEarningMaintains|ProviderRestore|PostgresRestore|Maintenance)' -count=1
+go test -race ./api ./registry -run 'Test(ProviderRestore|ProviderPendingRestore|RestoreProviderState|AttachCachedMDAProof|StageDurableMDAChain)' -count=1
+```
+
+These check captured-history recovery across old-style live writes and canceled
+application, refusal to silently replan an aborted initial snapshot, resumable
+per-key updates without double-counting, original floor-writer/old-boot/new-migration
+upgrade replay, preservation of lifetime totals when retained detail differs, base-reward work
+exclusion, a repeated boot while earnings history is exclusively locked,
+concurrent reconnect exclusion, late initial/reputation-write ordering, atomic
+provider/reputation publication and rollback, and newest-prior
+identity lookup through CachedStore,
+index applicability, MDA trust caps, and a migration-only subprocess that exits
+without HTTP startup or admin-key seeding. They do not measure production startup
+latency or validate an overlapping coordinator handoff.
+
+Startup recovery regressions also cover old settlement commits around the pinned
+snapshot/attempt-marker boundary, catalog-verified index definitions and isolated
+planner applicability, transient provider/reputation retries, a shared deadline,
+1013 registration teardown before duplicate eviction, and routing/capacity/load
+exclusion while a verified identity is restoring. Tests use disposable stores and
+localhost WebSockets (`coordinator/api/provider_restore_retry_test.go`,
+`coordinator/registry/provider_restore_routing_test.go`); they do not reconnect production providers.
+
 ### 3. Prompt-contract sidecar (Rust)
 
 ```bash
@@ -115,6 +168,7 @@ CI additionally builds the static Linux binary through the Dockerfile stage
 checks `file` reports `statically linked|static-pie linked`, and replays the
 production prompt vectors against it with
 `scripts/verify-prompt-sidecar-linux.sh <binary>`.
+
 
 ### 4. Provider (Swift) — unit tests with a source-matched metallib
 
@@ -975,7 +1029,8 @@ binary that already has `mlx.metallib` beside it.
 prompt-contract tests: `contract_vectors.json` and `block_hash_vectors.json`
 (identity and chain vectors), `corpus.json` (complete requests for tools, null
 sanitization, Harmony and Gemma normalization, reasoning effort, Unicode, all
-four endpoints, exact block multiples and long prompts),
+four endpoints, exact block multiples, long prompts, response formats and
+multiple system turns),
 `production_vectors.json` (per-model normalized bodies, token IDs and
 boundaries) and `manifests/` (the catalog snapshot the vectors were generated
 from). Production tokenizer/template/config artifacts are **not** in the
@@ -984,9 +1039,9 @@ coordinator-provisioned artifacts. What the vectors protect is explained in
 [`../architecture/prompt-contract-sidecar.md`](../architecture/prompt-contract-sidecar.md#parity-fixtures-and-measured-latency).
 
 The pinned inventory contains seven artifacts: the five release models and two
-additional Gemma variants. All 14 shared cases run against every artifact,
-producing 98 token-array comparisons. The common corpus uses histories and
-reasoning settings accepted by each family; family-specific argument and
+additional Gemma variants. All 18 shared cases run against every artifact,
+producing 126 token-array and scoped-hash comparisons. The common corpus uses
+histories and reasoning settings accepted by each family; family-specific argument and
 Harmony regressions remain in the provider's focused test suites.
 
 **Run the gate** (what CI's Provider Tests job runs; needs Go, `cargo +1.88.0`,

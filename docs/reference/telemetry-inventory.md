@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-08 · commit `ada6fcea1`
+> Last updated: 2026-09-09 · commit `884d97862`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -148,7 +148,12 @@ and the public cache status retain their aggregate-only contract.
 | `usage` | `outcome`, `tier` | Completion terminals with retained pending/parked ownership, at the same seam as aggregate cache usage. Outcome is `hit`, `miss_absent`, `miss_corrupt`, `skipped_capacity`, `skipped_cost`, `skipped_policy`, `invalid` or `unreported`. `invalid`/`unreported` use tier `none`; they are coverage gaps, not misses. Duplicate and unknown terminals do not count. |
 | `cached_tokens`, `prefill_tokens_saved` | `tier` | Validated provider-reported token totals. Cached tokens may exceed saved prefill tokens when replay is required. Neither count requires an accepted routing proof. |
 | `provider_stage_us`, `provider_stage_samples` | `outcome`, `tier` | Sum of provider-reported staging microseconds (rounded per sample) and sample count for valid usage. Divide to obtain mean stage time. This is overhead, not time saved. |
-| `lookup` | `outcome`, `tier` | Only coordinator-accepted V2 lookup proofs; distinct from terminal provider usage. Rejected proofs remain in aggregate reason counters. |
+| `lookup` | `outcome`, `tier` | Only coordinator-accepted V2 lookup proofs; distinct from terminal provider usage. Rejected proofs remain separate in the `receipt` reason counters. |
+| `usage_prompt_tokens`, `usage_prefill_tokens_saved` | `outcome`, `tier` | Same valid completion population and same labels for numerator/denominator. Prompt counts must be 1–1,000,000; invalid/missing counts never enter these counters. Filter `outcome=hit` for hit-conditioned coverage. |
+| `lookup_prompt_tokens`, `lookup_prefill_tokens_saved` | `outcome`, `tier` | Accepted V2 proof population; exact coordinator-plan prompt denominator and validated expected saved-token numerator. |
+| `selection_prompt_tokens`, `selection_prefill_tokens_saved` | Same as `selection` | Valid provider usage in the exactly-once cache-selection terminal population; filter `selected=true,result=hit` for selected reported hits. |
+| `receipt` | `type`, `outcome`, `reason`, `tier` | Every V2 receipt decision, including rejection; reported model maps to the bounded active catalog or `unknown`. A model label on a rejected receipt does not imply its attempt binding was accepted. |
+| `prompt_mismatch` | `detail`, `tier` | Exact prompt-anchor rejection after attempt/connection/capability binding: `same_length_hash`, `provider_shorter`, `provider_longer`. No hashes, exact counts or prompt-derived identifiers are emitted. |
 | `donation` | `tier` | Accepted V2 ready receipts, not number of files, unique prefixes or requests. |
 | `selection` | `mode`, `tier`, `selected`, `result`, `lookup_outcome`, `cache_read` | Existing exactly-once cache terminal population. `selected=true` identifies cache-favored routing; combine with `result=hit` for reported reuse. `result` describes cache usage, not consumer request success. Here `tier` is the selected routing tier (`none` for an unselected provider); `usage.tier` instead describes actual reported reuse. Error terminals can be `unreported`. |
 | `ttft_us`, `ttft_samples` | Same as `selection` | Coordinator-measured first-content latency for valid reported usage in active cache routing. Compare hit/miss and selected/unselected populations; this is observed latency, not estimated savings. |
@@ -157,6 +162,9 @@ and the public cache status retain their aggregate-only contract.
 Timing sums/sample counters work with both HTTPS and DogStatsD. The admin
 registry additionally exposes `cache_model_provider_stage_ms` and
 `cache_model_ttft_ms` and `cache_model_estimated_ttft_saved_ms` histograms with the corresponding labels.
+Admin `cache_model_usage_prefill_saved_percent` and
+`cache_model_selection_prefill_saved_percent` histograms report per-request
+percentages; use same-label summed counters for token-weighted coverage.
 Admin counters reset on coordinator restart; all model breakdowns begin only
 when this instrumentation is deployed. Historical aggregate hits cannot be
 backfilled into models. Provider usage, receipt counts and selection counts

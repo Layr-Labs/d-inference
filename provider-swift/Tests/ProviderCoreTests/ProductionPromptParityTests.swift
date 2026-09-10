@@ -1,4 +1,6 @@
 import Foundation
+import MLXLMServer
+import MLXLMCommon
 import Testing
 
 @testable import ProviderCore
@@ -48,10 +50,21 @@ struct ProductionPromptParityTests {
             for fixture in model.cases {
                 let providerBody = try JSONSerialization.data(
                     withJSONObject: fixture.providerBody.foundationObject())
-                let actual = try ProviderPromptContractPipeline.tokenizeProviderBody(
-                    providerBody,
+                // Exercise the actual service entry point before tokenization: it can
+                // inject response-format instructions into the engine request.
+                let request = try ProviderLoop.decodeOpenAIRequest(providerBody)
+                let engine = PromptPreparationCaptureEngine()
+                let frames = try await MLXOpenAIService(engine: engine)
+                    .streamChatCompletionFrames(request: request)
+                for try await _ in frames {}
+                let generationRequest = try #require(await engine.request)
+                let actual = try ProviderPromptContractPipeline.tokenize(
+                    prepared: ToolChoicePromptPolicy.prepare(generationRequest),
+                    request: generationRequest,
                     tokenizer: tokenizer,
-                    modelType: modelType)
+                    modelType: modelType,
+                    templateControls: ProviderLoop.extractChatTemplateControls(from: providerBody)
+                        .resolvingPromptDate())
                 let difference = firstDifference(actual, fixture.tokenIDs).map { index in
                     let actualToken = actual.indices.contains(index)
                         ? "\(actual[index]) \(tokenizer.convertIdToToken(actual[index]) ?? "<unknown>")"
@@ -65,6 +78,13 @@ struct ProductionPromptParityTests {
                     actual == fixture.tokenIDs,
                     "serving tokenizer diverged for \(model.modelID)/\(fixture.id); \(difference)")
                 #expect(actual.count == fixture.plan.promptTokenCount)
+                let hasher = CBv2BlockHasher(promptContractID: model.promptContractID, scopeID: fixture.scopeID)
+                let chains = hasher.chainHashes(tokens: actual, maxBlocks: hasher.maxLookupBlocks(tokenCount: actual.count))
+                #expect(chains.map { $0.map { String(format: "%02x", $0) }.joined() } == fixture.plan.blockBoundaries.map(\.chainHash))
+                if let first = chains.first {
+                    let otherScope = CBv2BlockHasher(promptContractID: model.promptContractID, scopeID: fixture.scopeID + "-other")
+                    #expect(first != otherScope.chainHashes(tokens: actual, maxBlocks: 1).first)
+                }
             }
         }
     }
@@ -108,12 +128,14 @@ private struct Model: Decodable {
 
 private struct Fixture: Decodable {
     let id: String
+    let scopeID: String
     let providerBody: JSONValue
     let plan: Plan
     let tokenIDs: [Int]
 
     enum CodingKeys: String, CodingKey {
         case id
+        case scopeID = "scope_id"
         case providerBody = "provider_body"
         case plan
         case tokenIDs = "token_ids"
@@ -122,9 +144,16 @@ private struct Fixture: Decodable {
 
 private struct Plan: Decodable {
     let promptTokenCount: Int
+    let blockBoundaries: [Boundary]
+
+    struct Boundary: Decodable {
+        let chainHash: String
+        enum CodingKeys: String, CodingKey { case chainHash = "chain_hash" }
+    }
 
     enum CodingKeys: String, CodingKey {
         case promptTokenCount = "prompt_token_count"
+        case blockBoundaries = "block_boundaries"
     }
 }
 
@@ -176,5 +205,26 @@ private enum JSONValue: Decodable {
         case .null:
             return NSNull()
         }
+    }
+}
+
+// A model-free engine captures the exact post-service request. No generated
+// content, production request, prompt logging or weight loading is involved.
+private actor PromptPreparationCaptureEngine: MLXServerEngine {
+    var request: OpenAIChatCompletionRequest?
+    func availableModels() async throws -> [MLXServerModel] { [] }
+    func streamChatCompletion(request: OpenAIChatCompletionRequest) async throws
+        -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        self.request = request
+        return AsyncThrowingStream { $0.finish() }
+    }
+    func tokenize(_ request: TokenizeRequest) async throws -> TokenizeResponse {
+        TokenizeResponse(tokens: [])
+    }
+    func detokenize(_ request: DetokenizeRequest) async throws -> DetokenizeResponse {
+        DetokenizeResponse(text: "")
+    }
+    func applyTemplate(_ request: ApplyTemplateRequest) async throws -> TokenizeResponse {
+        TokenizeResponse(tokens: [])
     }
 }

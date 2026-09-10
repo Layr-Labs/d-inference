@@ -82,6 +82,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 
 	p := &Provider{
 		ID:                          id,
+		stateRestorePending:         r.store != nil,
 		Hardware:                    msg.Hardware,
 		Models:                      models,
 		Backend:                     msg.Backend,

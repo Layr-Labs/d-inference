@@ -86,7 +86,7 @@ struct SSDCompleteDonationTelemetryTests {
         try bytes.write(to: f.file(store))
         #expect(try await f.donate(store, receipt: 12).isEmpty)
         await store.closeAndWait()
-        #expect(recorder.snapshot == [.donated, .alreadyDurable, .writeFailed])
+        #expect(recorder.snapshot == [.donated, .alreadyDurable, .existingCacheUnreadable])
     }
 
     @Test("whole-root removals accumulate once, including an unloaded complete store")

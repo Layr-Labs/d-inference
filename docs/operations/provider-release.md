@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-09 · commit `a82f89520`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -8,6 +8,12 @@ environment, and let [`.github/workflows/release-swift.yml`](../../.github/workf
 build, sign, notarize, hash, upload, and register the bundle. The coordinator
 verifies every registered artifact by re-downloading it, so a release either
 lands fully or not at all.
+
+The prepared version is **0.9.1**; its source changes since `v0.9.0` are
+collected in [`CHANGELOG.md`](../../CHANGELOG.md). The version bump prepares
+the source for the provider bundle. Publication and coordinator deployment remain
+separate operations; the bump alone does not change the registered release
+returned by `GET /v1/releases/latest`.
 
 ## Environment-free signing validation
 
@@ -103,8 +109,8 @@ Coordinator deploys are a separate runbook:
 
 The provider and coordinator versions must be identical strings:
 
-- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.0"`
-- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.0"`
+- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.1"`
+- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.1"`
 
 ```bash
 ./scripts/check-release-version.sh          # provider == coordinator, semver
@@ -112,8 +118,8 @@ The provider and coordinator versions must be identical strings:
 ```
 
 `check-release-version.sh` accepts an optional expected version
-(`check-release-version.sh v0.9.0`) and an optional reported string from a
-built binary (`darkbloom 0.9.0` or `0.9.0`); the workflow calls it in all
+(`check-release-version.sh v0.9.1`) and an optional reported string from a
+built binary (`darkbloom 0.9.1` or `0.9.1`); the workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
 push. Do not touch `minProviderVersionForDesiredModels` (`"0.5.17"`, same file)
 for a routine release; it is the floor for desired-model fan-out, not the
@@ -142,10 +148,10 @@ change that is not fixture-synced will fail the release, not just CI.
 
 ```bash
 git checkout master && git pull --ff-only
-git tag -a v0.8.17 -m "v0.8.17 — <one-line theme>
+git tag -a v0.9.1 -m "v0.9.1 — <one-line theme>
 
 <body: the changelog bullets for this release>"
-git push origin v0.8.17
+git push origin v0.9.1
 ```
 
 Accepted tag patterns (`on.push.tags`): `v*.*.*`, `v*-swift`, `v*-swift.*`.
@@ -159,7 +165,7 @@ this before writing job outputs or requesting environment approval.
 
 ```bash
 gh workflow run release-swift.yml --ref <branch> -f environment=dev
-# optional: -f version_override=0.8.17
+# optional: -f version_override=0.9.1
 ```
 
 Without a tag the version is read from `ProviderCore.swift` (or
@@ -220,14 +226,14 @@ The registration payload (`coordinator/api/release_handlers.go`,
 
 ```json
 {
-  "version": "0.8.17",
+  "version": "0.9.1",
   "platform": "macos-arm64",
   "backend": "mlx-swift",
   "binary_hash": "<sha256 of bin/darkbloom>",
   "bundle_hash": "<sha256 of the tar.gz>",
   "metallib_hash": "<sha256 of mlx.metallib>",
-  "url": "<R2_PUBLIC_URL>/releases/v0.8.17/darkbloom-bundle-macos-arm64.tar.gz",
-  "changelog": "<tag subject + body, or 'Release v0.8.17'>"
+  "url": "<R2_PUBLIC_URL>/releases/v0.9.1/darkbloom-bundle-macos-arm64.tar.gz",
+  "changelog": "<tag subject + body, or 'Release v0.9.1'>"
 }
 ```
 
@@ -292,7 +298,7 @@ it** so the previous active version becomes "latest" again.
    ```bash
    curl -fsS -X DELETE "$COORD/v1/admin/releases" \
      -H "Authorization: Bearer $ADMIN_KEY" -H "Content-Type: application/json" \
-     -d '{"version":"0.8.17","platform":"macos-arm64"}'
+     -d '{"version":"0.9.1","platform":"macos-arm64"}'
    ```
 
    `handleAdminDeleteRelease` answers `409 release_in_use` while connected
@@ -315,7 +321,7 @@ it** so the previous active version becomes "latest" again.
    (`install.sh` uses the versioned URL from `/v1/releases/latest`; the
    `latest/` objects are for legacy clients.)
 4. Mark the GitHub Release as a pre-release or delete it
-   (`gh release delete v0.8.17`), and record the outcome in `CHANGELOG.md` as
+   (`gh release delete v0.9.1`), and record the outcome in `CHANGELOG.md` as
    `## Release candidate vX.Y.Z (not shipped; …)`.
 5. Do **not** re-register the same version with a different artifact. Fix
    forward with a new patch version.

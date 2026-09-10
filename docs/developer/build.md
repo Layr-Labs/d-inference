@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-08 · commit `d984a9fd9`
+> Last updated: 2026-09-10 · commit `4f29957d2`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -402,6 +402,18 @@ and `/usr/local/bin/promptsidecar`, OCI labels
 `start.sh` (`coordinator/deploy/start.sh`). Cloud Build wraps exactly this in
 `deploy/gcp/cloudbuild.yaml` (dev) and `deploy/gcp/cloudbuild-prod.yaml`
 (prod); see [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md).
+
+### 10. Use the database-only coordinator command
+
+The normal coordinator build also supports `coordinator --migrate-only`. It
+requires `EIGENINFERENCE_DATABASE_URL`, runs store migrations, and exits without
+starting the server or seeding an admin key. Container execution must override
+the default MicroMDM entrypoint script; see the
+[deployment procedure](../operations/coordinator-deploy.md#optional-prepare-compatible-migrations-before-draining).
+
+The [startup measurement tool](../operations/coordinator-startup-measurement.md)
+requires Python 3.10+ and no third-party packages or build step. Its tests use
+local stub servers; its default observation mode sends only public GETs.
 
 ## `make` targets
 

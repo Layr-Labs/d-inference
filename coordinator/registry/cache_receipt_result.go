@@ -27,10 +27,22 @@ const (
 	CacheReceiptRouteKey              CacheReceiptReason = "route_key_unavailable"
 )
 
+// Only equality/direction is exported; never expose token hashes, prompt
+// contents or request identity in mismatch diagnostics.
+type CachePromptMismatch string
+
+const (
+	CachePromptHashMismatch CachePromptMismatch = "same_length_hash"
+	CachePromptShorter      CachePromptMismatch = "provider_shorter"
+	CachePromptLonger       CachePromptMismatch = "provider_longer"
+)
+
 type CacheReceiptResult struct {
-	Accepted bool
-	Reason   CacheReceiptReason
-	mismatch bool
+	PromptTokens   int // exact plan denominator, set only on accepted lookup
+	PromptMismatch CachePromptMismatch
+	Accepted       bool
+	Reason         CacheReceiptReason
+	mismatch       bool
 }
 
 func rejectCacheReceipt(reason CacheReceiptReason) CacheReceiptResult {

@@ -1418,10 +1418,7 @@ func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestT
 		serves := r.providerServesOwnedRoutableModelLocked(p, model) &&
 			r.providerEligibleForTraitsLocked(p, model, traits) &&
 			(!requiresVision || r.providerServesVisionModelLocked(p, model, true)) &&
-			p.RuntimeVerified &&
-			r.providerSupportsPrivateTextAtLocked(p, now) &&
-			!p.LastChallengeVerified.IsZero() &&
-			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
+			r.providerLivenessGateLocked(p, TrustNone, true, now)
 		p.mu.Unlock()
 		if serves {
 			servesModel++

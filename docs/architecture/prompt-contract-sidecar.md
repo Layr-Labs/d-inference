@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-05 · commit `1114a8ba0`
+> Last updated: 2026-09-09 · commit `884d97862`
 
 How the coordinator's `promptsidecar` child process derives deterministic,
 provider-compatible token boundaries so exact-cache routing can predict which
@@ -139,6 +139,27 @@ boundaries (one per complete block — block size in
 lookup-eligible boundary (`PlanResponse`). The normalized body and token IDs
 remain transient and are not returned by the service. The offline fixture
 generator is the only interface that emits token IDs.
+
+### Provider service preparation
+
+Before tool-choice normalization and template rendering, the planner mirrors
+`MLXOpenAIService` response-format preparation: `json_object` and `json_schema`
+insert the same system instruction after initial system messages
+(`coordinator/promptsidecar/src/response_format.rs`, `prepare`). Schema JSON
+matches the typed Swift `JSONValue` and `JSONEncoder.openAIServer` encoding.
+The provider-bound body remains unchanged because the provider service inserts
+this instruction itself. Qwen and Harmony system-turn folding then mirrors
+`Qwen35TemplateFix` / `GPTOSSHarmonyTemplateFix` / `LeadingSystemMessageNormalizer` before rendering
+(`coordinator/promptsidecar/src/leading_system.rs`, `normalize_messages`). Invalid or
+unsupported shapes fail cold.
+
+The production parity gate captures the request entering the engine through
+`MLXOpenAIService.streamChatCompletionFrames`, then checks tokens and scoped
+block hashes. Calling the tokenizer directly on the inbound body would miss
+service-level prompt transformations
+(`provider-swift/Tests/ProviderCoreTests/ProductionPromptParityTests.swift`).
+This corrects planner parity with existing provider behavior; it does not change
+the provider contract, relax receipt checks or clear existing fences.
 
 ### Contract identity
 

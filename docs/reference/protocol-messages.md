@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-07 · commit `0b46b1618`
+> Last updated: 2026-09-09 · commit `af7a74126`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -97,6 +97,13 @@ connection, first.
 | `privacy_capabilities` | `*PrivacyCapabilities` | `PrivacyCapabilities?` | opt | [`privacy_capabilities`](#privacy_capabilities); providers `< v0.6.31` also send `hypervisor_active` inside it, which Go drops |
 | `wallet_address` | — | `String?` | Swift only | legacy key; Go has no field and drops it |
 
+A verified registration whose durable state cannot be recovered after bounded
+retries closes with WebSocket code **1013** (`StatusTryAgainLater`). It receives
+no inference work while recovery is pending. The provider's normal reconnect
+retries registration; this is a transient store failure, not failed attestation
+(`coordinator/api/provider.go`, `verifyProviderAttestation`;
+`coordinator/api/provider_restore.go`, `restorePersistedProviderState`).
+
 #### `hardware`
 
 Go `Hardware` · Swift `HardwareInfo`. All fields required.
@@ -142,7 +149,7 @@ booleans: `text_backend_inprocess`, `text_proxy_disabled`,
 |---|---|
 | `PrefixCacheV2Capability` | Required: `model_id`, `model_aggregate_hash`, `prompt_contract_id`, `block_hash_version` (`string`); `block_size` (`uint32`); `cache_epoch` (`string`); `enabled`, `ready` (`bool`). Optional `ready_boundary_mode` (`string`): absent/empty retains legacy SSD coverage; `checkpoint` permits only explicitly committed input endpoints. Unknown values are rejected; the field is invalid on resident capabilities. `coordinator/registry/cache_capabilities_v2.go`, `validatePrefixCacheCapability` / `validateMemoryPrefixCacheCapabilities` |
 | `PrefixCacheModelStatus` | `model_id`; `backend` ∈ {`contiguous`, `paged`, `unknown`}; `replay_strategy` ∈ {`direct`, `frozen_full`, `tail_replay`, `none`, `unknown`}; `state` ∈ {`ready`, `pending`, `disabled`, `error`}; `reason` ∈ {`ready`, `config_disabled`, `weight_hash_unavailable`, `runtime_identity_unavailable`, `unsupported_layout`, `unsupported_backend`, `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`, `disk_unavailable`, `cache_init_failed`}. Enums validated at the coordinator boundary; Swift `PrefixCacheStatusBackend` / `ReplayStrategy` / `State` / `Reason` (`Messages.swift`) |
-| `PrefixCacheDonationOutcomeCount` | `outcome` ∈ {`donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot` (pre-0.8.0 compat), `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`}; `count` (`uint64`, monotonic per process) |
+| `PrefixCacheDonationOutcomeCount` | `outcome` ∈ {`donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot` (pre-0.8.0 compat), `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`, `host_memory_unavailable`, `cache_epoch_changed`, `cache_maintenance_busy`, `disk_space_insufficient`, `unsafe_cache_root`, `write_io_failed`, `existing_cache_unreadable`, `cache_entry_evicted`}; `count` (`uint64`, monotonic per process). Unknown future outcomes are ignored individually by older coordinators. |
 | `PrefixCacheAnchor` | `chain_hash` (lowercase SHA-256 hex), `token_count` (block-aligned `int`) |
 
 ### `heartbeat`

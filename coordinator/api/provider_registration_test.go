@@ -128,7 +128,7 @@ func TestProviderRegistrationBindsProtectedRuntimeClaims(t *testing.T) {
 		TemplateHashes: map[string]string{"mlx_metallib": metallibHash},
 	}
 	provider := reg.Register("signed-runtime", nil, regMsg)
-	srv.verifyProviderAttestation(provider.ID, provider, regMsg)
+	srv.verifyProviderAttestation(context.Background(), provider.ID, provider, regMsg)
 	runtimeOK, mismatches := srv.verifyRuntimeHashesForBackend(
 		regMsg.Backend, "", "", regMsg.TemplateHashes)
 	if !runtimeOK {
@@ -259,7 +259,7 @@ func TestProviderRegistrationAttestationFreshnessVersionGate(t *testing.T) {
 						t, publicKey, "", "", timestamp, nil),
 				}
 				provider := reg.Register(fmt.Sprintf("reconnect-%d", index), nil, regMsg)
-				srv.verifyProviderAttestation(provider.ID, provider, regMsg)
+				srv.verifyProviderAttestation(context.Background(), provider.ID, provider, regMsg)
 
 				provider.Mu().Lock()
 				defer provider.Mu().Unlock()
@@ -335,7 +335,7 @@ func TestLegacyRegistrationReplayCannotPromoteProtectedRuntimeCapabilities(t *te
 		TemplateHashes: map[string]string{"mlx_metallib": metallibHash},
 	}
 	provider := reg.Register("legacy-reconnect", nil, regMsg)
-	srv.verifyProviderAttestation(provider.ID, provider, regMsg)
+	srv.verifyProviderAttestation(context.Background(), provider.ID, provider, regMsg)
 	provider.Mu().Lock()
 	provider.RuntimeVerified = true
 	provider.RuntimeManifestChecked = true
@@ -379,7 +379,7 @@ func TestProviderRegistrationRequiresBinaryHashWhenPolicyConfigured(t *testing.T
 	}
 	p := reg.Register("provider-1", nil, regMsg)
 
-	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 
 	if p.AttestationResult == nil {
 		t.Fatal("expected attestation result")
@@ -421,7 +421,7 @@ func TestProviderRegistrationAcceptsKnownBinaryHash(t *testing.T) {
 	}
 	p := reg.Register("provider-1", nil, regMsg)
 
-	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 
 	if p.AttestationResult == nil {
 		t.Fatal("expected attestation result")
@@ -460,7 +460,7 @@ func TestProviderRegistrationRejectsInvalidConfiguredBinaryHash(t *testing.T) {
 	}
 	p := reg.Register("provider-1", nil, regMsg)
 
-	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 
 	policyConfigured, knownHashes := srv.binaryHashPolicySnapshot()
 	if !policyConfigured {
@@ -776,7 +776,7 @@ func TestProviderRegistrationWithoutAttestationRejectedWhenBinaryHashPolicyConfi
 	}
 	p := reg.Register("provider-1", nil, regMsg)
 
-	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 
 	if p.AttestationResult == nil {
 		t.Fatal("expected attestation result")

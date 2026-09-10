@@ -72,6 +72,14 @@ func main() {
 	logger := slog.New(slogHandler)
 	slog.SetDefault(logger)
 
+	if len(os.Args) > 1 {
+		if err := runMaintenanceCommand(os.Args[1:]); err != nil {
+			logger.Error("coordinator maintenance command failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Read all configuration from environment variables.
 	cfg := config.ReadAppConfig()
 	if err := cfg.Check(); err != nil {

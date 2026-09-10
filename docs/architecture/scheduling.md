@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-08 · commit `0c162cdae`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -350,7 +350,7 @@ ranked by `warmPoolCandidateReasonLocked`; those disqualified are tallied by
 reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 `thermal_critical`, `trust_or_runtime`, `stale_challenge`,
 `not_serving_catalog`, `dedicated_excluded`, `model_too_large`,
-`no_free_for_load`).
+`no_free_for_load`, `state_restoring`).
 
 **`WarmPoolSnapshot`.** Every tick produces one per model, logged as
 `warm_pool_tick` and retained as the controller's latest state

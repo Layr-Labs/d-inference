@@ -645,11 +645,20 @@ type ProviderStore interface {
 	// UpsertProvider creates or updates a provider record.
 	UpsertProvider(ctx context.Context, p ProviderRecord) error
 
+	// UpsertProviderWithReputation atomically publishes a completed provider record
+	// with the reputation that the next reconnect will read.
+	UpsertProviderWithReputation(ctx context.Context, p ProviderRecord, rep ReputationRecord) error
+
 	// GetProviderRecord returns a provider record by ID.
 	GetProviderRecord(ctx context.Context, id string) (*ProviderRecord, error)
 
 	// GetProviderBySerial returns a provider record by serial number.
 	GetProviderBySerial(ctx context.Context, serial string) (*ProviderRecord, error)
+
+	// GetProviderForRestore returns the newest historical record for a verified
+	// serial, falling back to the verified SE key only when no serial record exists.
+	// excludeIDs removes all live/in-progress sessions from the candidate set. No match returns (nil, nil); failures return errors.
+	GetProviderForRestore(ctx context.Context, serial, seKey string, excludeIDs []string) (*ProviderRecord, error)
 
 	// GetMDAChainBySerial returns the newest NON-EMPTY Apple MDA cert chain stored
 	// for a serial, or (nil, nil) if none. A reconnecting provider gets a new row

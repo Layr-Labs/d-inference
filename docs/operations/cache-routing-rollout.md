@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-08 · commit `884d97862`
+> Last updated: 2026-09-10 · commit `4f29957d2`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -241,6 +241,21 @@ proof of a lookup miss. Compare accepted `lookup` and `selection` evidence
 alongside reported reuse; do not add those populations together. Request success
 and first-content latency still come from the existing request-outcome/profile
 metrics. `selection.result=hit` does not itself prove a successful response.
+
+Token-weighted prompt coverage is `100 * usage_prefill_tokens_saved /
+usage_prompt_tokens` with identical model, outcome and tier filters over the
+same window. Add `outcome:hit` for the percentage of hit prompts that avoided
+prefill; include miss/skipped outcomes for all valid reported cache attempts.
+`lookup_prefill_tokens_saved / lookup_prompt_tokens` instead describes accepted
+proofs, with the coordinator plan as denominator. `selection_prefill_tokens_saved / selection_prompt_tokens`, filtered by `selected:true,result:hit`, describes
+cache-selected reported-hit terminals. Never divide across these populations.
+Zero/missing denominators mean unavailable coverage, not zero benefit.
+
+Inspect `receipt` by model/type/reason to locate evidence rejection. For
+`prompt_anchor_mismatch`, `prompt_mismatch.detail` distinguishes
+`same_length_hash`, `provider_shorter` and `provider_longer`; these categorical
+diagnostics contain no hashes or token sequences. They narrow investigation,
+but do not identify a production request shape or explain every mismatch.
 
 Mean stage milliseconds is `provider_stage_us / provider_stage_samples / 1000`
 with identical model/outcome/tier filters. Mean observed first-content milliseconds

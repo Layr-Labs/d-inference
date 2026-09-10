@@ -404,7 +404,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 			provider = s.registry.Register(providerID, conn, regMsg)
 			s.attachProviderLocation(providerID, provider, r)
-			s.verifyProviderAttestation(providerID, provider, regMsg)
+			if err := s.verifyProviderAttestation(loopCtx, providerID, provider, regMsg); err != nil {
+				// No duplicate eviction or account/MDM continuation after failed
+				// recovery. Pending state remains unroutable through teardown.
+				s.logger.Warn("provider registration recovery failed", "provider_id", providerID, "error", err)
+				_ = conn.Close(websocket.StatusTryAgainLater, "provider state temporarily unavailable")
+				return
+			}
 
 			// Record registration outcome metrics + telemetry.
 			if s.metrics != nil {
@@ -705,6 +711,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			lookupMsg := msg.Payload.(*protocol.PrefixCacheLookupV2Message)
 			receipt := s.registry.ApplyPrefixCacheLookupV2Result(providerID, lookupMsg)
 			s.emitCacheReceiptResult("lookup_v2", receipt)
+			s.emitModelCacheReceipt(lookupMsg.ModelID, lookupMsg.Tier, "lookup_v2", receipt)
 			if receipt.Accepted {
 				s.emitModelCacheLookup(lookupMsg, receipt)
 				s.ddIncr("routing.cache_lookup_receipt", []string{
@@ -723,6 +730,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			readyMsg := msg.Payload.(*protocol.PrefixCacheReadyV2Message)
 			receipt := s.registry.ApplyPrefixCacheReadyV2Result(providerID, readyMsg)
 			s.emitCacheReceiptResult("ready_v2", receipt)
+			s.emitModelCacheReceipt(readyMsg.ModelID, readyMsg.Tier, "ready_v2", receipt)
 			if receipt.Accepted {
 				s.emitModelCacheDonation(readyMsg, receipt)
 				s.ddIncr("routing.cache_ready_receipt", []string{
@@ -899,7 +907,7 @@ func (s *Server) emitCacheSelectionTerminal(pr *registry.PendingRequest, usage p
 		return false
 	}
 	tags := cacheSelectionTerminalTags(pr, usage, usageValid, usagePresent)
-	s.emitModelCacheSelection(pr, tags)
+	s.emitModelCacheSelection(pr, tags, usage, usageValid)
 	s.ddIncr("routing.cache_selection_terminal", tags)
 	if pr.CacheSelectionDiscountMs > 0 {
 		s.ddHistogram("routing.cache_selection_discount_ms", pr.CacheSelectionDiscountMs, tags)
@@ -3043,7 +3051,7 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 // if one was included in the registration message. If the attestation is valid,
 // the provider is marked as attested. If missing or invalid, the provider is
 // accepted in Open Mode only when no binary hash policy is configured.
-func (s *Server) verifyProviderAttestation(providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage) {
+func (s *Server) verifyProviderAttestation(ctx context.Context, providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage) error {
 	policyConfigured, knownBinaryHashes := s.binaryHashPolicySnapshot()
 	if len(regMsg.Attestation) == 0 {
 		if policyConfigured {
@@ -3055,12 +3063,12 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 				Error: "attestation missing",
 			})
 			s.registry.MarkUntrusted(providerID)
-			return
+			return nil
 		}
 		s.logger.Info("provider registered without attestation (Open Mode)",
 			"provider_id", providerID,
 		)
-		return
+		return nil
 	}
 
 	result, err := attestation.VerifyJSON(regMsg.Attestation)
@@ -3076,7 +3084,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			})
 			s.registry.MarkUntrusted(providerID)
 		}
-		return
+		return nil
 	}
 
 	provider.SetAttestationResult(&result)
@@ -3089,7 +3097,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		if policyConfigured {
 			s.registry.MarkUntrusted(providerID)
 		}
-		return
+		return nil
 	}
 
 	enforceReconnectFreshness := regMsg.Version != "" &&
@@ -3102,7 +3110,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		s.registry.MarkUntrusted(providerID)
 		s.logger.Warn("provider registration attestation replay rejected",
 			"provider_id", providerID)
-		return
+		return nil
 	}
 
 	if !enforceReconnectFreshness {
@@ -3131,7 +3139,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			if policyConfigured {
 				s.registry.MarkUntrusted(providerID)
 			}
-			return
+			return nil
 		}
 		if result.EncryptionPublicKey != regMsg.PublicKey {
 			s.logger.Warn("attestation encryption key does not match register public key",
@@ -3145,7 +3153,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			if policyConfigured {
 				s.registry.MarkUntrusted(providerID)
 			}
-			return
+			return nil
 		}
 	}
 
@@ -3165,7 +3173,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			result.Error = "binary hash missing"
 			provider.SetAttestationResult(&result)
 			s.registry.MarkUntrusted(providerID)
-			return
+			return nil
 		}
 		binaryHash, err := normalizeSHA256Hex(result.BinaryHash, "binary_hash")
 		if err != nil || !knownBinaryHashes[binaryHash] {
@@ -3177,7 +3185,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			result.Error = "binary hash not recognized"
 			provider.SetAttestationResult(&result)
 			s.registry.MarkUntrusted(providerID)
-			return
+			return nil
 		}
 		s.logger.Info("provider binary hash verified",
 			"provider_id", providerID,
@@ -3210,35 +3218,16 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		"trust_level", registry.TrustSelfSigned,
 	)
 
-	// Restore persisted state: if this provider was previously known (by serial
-	// number or SE key), restore trust level, reputation, and account linkage.
-	// Fresh attestation verification still runs (above), but stored reputation
-	// is preserved so routing quality is maintained across coordinator restarts.
-	if s.storedProviders != nil {
-		var storedRec *store.ProviderRecord
-		if result.SerialNumber != "" {
-			storedRec = s.storedProviders[result.SerialNumber]
-		}
-		if storedRec == nil && result.PublicKey != "" {
-			storedRec = s.storedProviders["sekey:"+result.PublicKey]
-		}
-		if storedRec != nil {
-			s.registry.RestoreProviderState(provider, storedRec)
-			s.logger.Info("restored persisted provider state",
-				"provider_id", providerID,
-				"stored_serial", storedRec.SerialNumber,
-				"stored_trust", storedRec.TrustLevel,
-			)
-		}
+	// Resolve only this freshly verified identity, rather than loading all historical
+	// sessions before startup. Exclude every live session and keep incomplete
+	// registrations' identities unpublished across asynchronous persistence.
+	if err := s.restorePersistedProviderState(ctx, provider, result.SerialNumber, result.PublicKey); err != nil {
+		return err
 	}
 
-	// Stage the durable Apple MDA cert chain from a LIVE store read. storedProviders
-	// above is a one-time startup snapshot — empty for the coordinator's whole life
-	// under the in-memory store used in prod — so it cannot surface a chain earned
-	// during this coordinator's lifetime. The store record survives provider
-	// disconnect, so a serial lookup recovers a chain a previous connection earned,
-	// letting attachCachedMDAProof reuse it (re-verified + SE-key-bound) instead of
-	// forcing a fresh, Apple-rate-limited DevicePropertiesAttestation round-trip.
+	// Independently recover the newest non-empty durable MDA chain. A newer
+	// empty record must not shadow a chain earned by an earlier session. The
+	// hardware-grant path still re-verifies the certificate and SE-key binding.
 	s.stageDurableMDAChain(provider, result.SerialNumber)
 
 	// Deduplicate: if another provider connection exists from the same physical
@@ -3261,6 +3250,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			"provider_id", providerID,
 		)
 	}
+	return nil
 }
 
 // mdmVerifyOutcome classifies one scheduler-owned MDM verification attempt.
@@ -3481,10 +3471,8 @@ func (s *Server) ApplyLateSecurityInfo(
 
 // stageDurableMDAChain recovers a previously-earned Apple MDA cert chain from the
 // store (by serial) and stages it on the provider as a reuse candidate for this
-// reconnect. The store record survives provider disconnect, so this works under
-// the in-memory store used in prod — where the startup storedProviders snapshot is
-// empty — as well as a durable store. Best-effort: a missing record / chain or a
-// read error simply stages nothing, and a fresh attestation is requested.
+// reconnect. A missing record / chain or a read error stages nothing, and a
+// fresh attestation is requested. This read is independent of counter recovery.
 func (s *Server) stageDurableMDAChain(provider *registry.Provider, serial string) {
 	if s.store == nil || serial == "" {
 		return

@@ -66,3 +66,25 @@ func TestCacheReadyReportsMissingLookupWithoutPoisoningValidReceipt(t *testing.T
 		t.Fatal("diagnostic rejection poisoned valid later evidence")
 	}
 }
+
+func TestCachePromptMismatchDiagnosticsPreserveExactRejection(t *testing.T) {
+	for _, tc := range []struct {
+		blocks int
+		want   CachePromptMismatch
+	}{{1, CachePromptShorter}, {2, CachePromptHashMismatch}, {3, CachePromptLonger}} {
+		tracker := newCacheRoutingTracker(time.Minute, 2)
+		cap := testV2Capability("11111111-1111-1111-1111-111111111111")
+		prompt := protocol.PrefixCacheAnchor{ChainHash: strings.Repeat("c", 64), TokenCount: 2 * int(cap.BlockSize)}
+		testV2Attempt(tracker, "nonce", cap, prompt)
+		msg := testV2Lookup("nonce", cap, prompt, 1)
+		msg.PromptAnchor.TokenCount = tc.blocks * int(cap.BlockSize)
+		msg.PromptAnchor.ChainHash = strings.Repeat("f", 64)
+		got := tracker.applyLookupV2Decision("provider", nil, cap, msg, []byte("route"), time.Now())
+		if got.Accepted || !got.mismatch || got.Reason != CacheReceiptPromptMismatch || got.PromptMismatch != tc.want || got.PromptTokens != 0 {
+			t.Fatalf("diagnostic=%+v", got)
+		}
+		if tracker.holderCount != 0 {
+			t.Fatal("mismatch created a holder")
+		}
+	}
+}

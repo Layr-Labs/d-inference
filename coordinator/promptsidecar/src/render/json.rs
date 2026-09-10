@@ -30,6 +30,40 @@ pub(super) fn tojson(value: JinjaValue, args: Rest<JinjaValue>) -> Result<JinjaV
         .map_err(json_error)
 }
 
+// JSONEncoder.openAIServer uses the same Foundation scalar/number encoder,
+// with sorted keys, compact output, Unicode preserved and slashes unescaped.
+// The typed Swift JSONValue decoder tries Int before Double (unlike serde_json).
+pub(crate) fn openai_json(value: &serde_json::Value) -> Result<String, super::RenderError> {
+    fn typed(value: &serde_json::Value) -> serde_json::Value {
+        use serde_json::Value;
+        match value {
+            Value::Number(number) if number.is_f64() => {
+                let n = number.as_f64().unwrap();
+                if n.fract() == 0.0 && n >= i64::MIN as f64 && n < -(i64::MIN as f64) {
+                    Value::from(n as i64)
+                } else {
+                    value.clone()
+                }
+            }
+            Value::Array(values) => Value::Array(values.iter().map(typed).collect()),
+            Value::Object(values) => {
+                Value::Object(values.iter().map(|(k, v)| (k.clone(), typed(v))).collect())
+            }
+            _ => value.clone(),
+        }
+    }
+    let mut output = BoundedWriter::new(MAX_RENDERED_BYTES);
+    write_value(
+        &JinjaValue::from_serialize(typed(value)),
+        &mut output,
+        false,
+        false,
+        0,
+    )
+    .map_err(|_| super::RenderError::UnsupportedInput)?;
+    Ok(output.into_string()?.replace("\\/", "/"))
+}
+
 fn argument(
     positional: &[JinjaValue],
     kwargs: &Kwargs,

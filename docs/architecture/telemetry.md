@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-08 · commit `ada6fcea1`
+> Last updated: 2026-09-09 · commit `aa94fa5d6`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -86,6 +86,17 @@ are `other` (`coordinator/api/unknown_frame_metrics.go`). Arbitrary patch
 numbers and prerelease counters cannot create new series. Exact versions
 remain in provider metadata.
 
+### Slot posture sampler lifecycle
+
+`EngineV2Bridge.configureMTPStatus` in
+`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+MTP.swift` emits
+the opening slot-posture sample synchronously and starts a periodic task. Periodic delivery rechecks task
+cancellation inside the bridge actor, after the scheduling hop; cancellation
+while queued cannot emit a stale sample. `EngineV2Bridge.shutdown` cancels and
+joins the sampler before returning
+(`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift`). This preserves the opening observation while
+preventing the periodic producer from emitting after teardown.
+
 ### Durable prefix-cache observations
 
 `startSSDPrefixCacheStatsLogger`
@@ -116,6 +127,20 @@ Complete-checkpoint donations now settle the existing bounded
 `prefix_cache_donation_outcomes` counter once per exported endpoint, including
 synchronous refusal, queue overflow, shutdown, write failure and already-durable
 success (`SSDHybridCheckpointStore+Write.swift`, `PrefixCacheDonationTelemetry.swift`).
+Complete-checkpoint outcomes distinguish host-memory refusal, stale epoch,
+maintenance contention, low disk space, unsafe root, fresh-write I/O error,
+unreadable existing file and post-write eviction. Error descriptions and paths
+never become metric labels. The legacy `write_failed` still covers unclassified
+producer errors and older providers, so it must not be interpreted as a count
+of physical disk errors.
+
+A failed atomic creation that never entered the index does not revoke unrelated
+checkpoints: the next donation can retry after the failure clears. Failure to
+reauthenticate an indexed file still removes that file under an epoch change
+before any ready receipt can be published. Cancellation and stale-epoch work
+publish no receipt and do not revoke a newer epoch's evidence
+(`SSDHybridCheckpointStore.performWrite`). There is no unbounded retry loop or
+retained failed tensor job.
 The complete-store `donation_drops_total` counter covers queued-write
 `writesDropped` only; prequeue refusals are counted by the donation outcome
 snapshot. Maintenance publishes its cumulative result under a separate short

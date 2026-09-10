@@ -118,8 +118,9 @@ func (s *Server) refreshStats() ([]byte, bool) {
 	return s.refreshCachedEntry(&s.statsRefresh, statsCacheKey, s.computeStats)
 }
 
-// computeStats returns a complete stats response. An empty successful query
-// is valid data; any failed input prevents publication of a partial response.
+// computeStats returns core stats with the latest independently refreshed
+// geography. Core query failures prevent publication; geography failures are
+// represented explicitly and never block the core snapshot.
 func (s *Server) computeStats() ([]byte, error) {
 	// Preserve the start of the source observation through successful cache hits
 	// and bounded stale-on-error reads; downstream caches must not renew its age.
@@ -261,12 +262,10 @@ func (s *Server) computeStats() ([]byte, error) {
 	// --- Provider location aggregation ---
 	providerLocations, providerRegions, unknownLocationProviders, suppressedCityProviders := s.aggregateProviderLocations()
 
-	// --- Request location aggregation ---
-	requestLocations, requestRegions, unknownRequestLocReqs, suppressedReqCityReqs, locationErr := s.aggregateRequestLocations(analyticsCutoff)
-
-	// --- Request flow aggregation ---
-	requestFlows, flowErr := s.aggregateRequestFlows(analyticsCutoff)
-	if err := errors.Join(totalsErr, seriesErr, last24hErr, locationErr, flowErr); err != nil {
+	// Geography queries run independently of the core stats refresher. Never
+	// wait for them here, including on a cold cache or during a geo outage.
+	geography := s.cachedStatsGeography()
+	if err := errors.Join(totalsErr, seriesErr, last24hErr); err != nil {
 		return nil, err
 	}
 
@@ -321,15 +320,8 @@ func (s *Server) computeStats() ([]byte, error) {
 		"unknown_location_providers":         unknownLocationProviders,
 		"suppressed_city_location_providers": suppressedCityProviders,
 		"location_privacy_min_providers":     minProvidersPerCityBucket,
-
-		"request_locations":                     requestLocations,
-		"request_regions":                       requestRegions,
-		"unknown_request_location_requests":     unknownRequestLocReqs,
-		"suppressed_request_city_requests":      suppressedReqCityReqs,
-		"request_location_privacy_min_requests": minRequestsPerCityBucket,
-
-		"request_flows": requestFlows,
 	}
+	geography.addTo(resp)
 	return json.Marshal(resp)
 }
 
@@ -474,7 +466,7 @@ func (s *Server) aggregateProviderLocations() (
 
 // aggregateRequestLocations builds privacy-floored city and region
 // buckets from usage records with request-origin locations. A failed query
-// aborts aggregation so the refresher retains the last complete response.
+// makes request locations unavailable without affecting the core snapshot.
 func (s *Server) aggregateRequestLocations(since time.Time) (
 	cityBuckets []publicRequestLocationBucket,
 	regionBuckets []publicRequestLocationBucket,

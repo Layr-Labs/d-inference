@@ -447,6 +447,129 @@
         "minimum_tokens": 1025,
         "max_repetitions": 4096
       }
+    },
+    {
+      "id": "json_object",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Follow instructions."
+          },
+          {
+            "role": "user",
+            "content": "Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. "
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29",
+        "response_format": {
+          "type": "json_object"
+        }
+      }
+    },
+    {
+      "id": "json_schema",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Follow instructions."
+          },
+          {
+            "role": "user",
+            "content": "Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. "
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29",
+        "response_format": {
+          "type": "json_schema",
+          "json_schema": {
+            "name": "public_schema",
+            "description": "A café / Unicode schema",
+            "strict": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "description": "\\ / 🐈"
+                },
+                "value": {
+                  "type": "number",
+                  "minimum": 1e-05
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "response_text",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Follow instructions."
+          },
+          {
+            "role": "user",
+            "content": "Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. Public synthetic cache-parity input. "
+          }
+        ],
+        "_darkbloom_prompt_date": "2028-02-29",
+        "response_format": {
+          "type": "text"
+        }
+      }
+    },
+    {
+      "id": "multi_system",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "_darkbloom_prompt_date": "2028-02-29",
+        "messages": [
+          {
+            "role": "user",
+            "content": "A public initial question."
+          },
+          {
+            "role": "system",
+            "content": "First system instruction."
+          },
+          {
+            "role": "assistant",
+            "content": "Acknowledged."
+          },
+          {
+            "role": "system",
+            "content": ""
+          },
+          {
+            "role": "system",
+            "content": "Second system instruction."
+          },
+          {
+            "role": "user",
+            "content": "Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. Public followup. "
+          }
+        ]
+      }
     }
   ],
   "artifact_gate": "scripts/verify-prompt-parity.sh snapshots the public manifest-backed production catalog, provisions every declared prompt-role artifact by immutable hash, regenerates vectors, and fails on any catalog/vector mismatch.",

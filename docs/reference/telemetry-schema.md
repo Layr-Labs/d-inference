@@ -1,6 +1,6 @@
 # Telemetry event schema
 
-> Last updated: 2026-09-07 · commit `0b46b1618`
+> Last updated: 2026-09-09 · commit `884d97862`
 
 The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, the field allowlist, and the tests
@@ -22,6 +22,15 @@ Durable cache statistics use optional typed heartbeat objects, not event
 `backend_capacity.prefix_cache_maintenance`. The live producer/consumer and
 counter units are listed in the [telemetry inventory](telemetry-inventory.md).
 The client event facade remains disabled.
+
+Cache donation outcomes also use the separate typed heartbeat protocol:
+[`PrefixCacheDonationOutcomeCount`](protocol-messages.md) carries a bounded
+reason and a cumulative count. Complete-checkpoint providers distinguish host
+memory refusal, epoch invalidation, maintenance contention, insufficient disk
+space, unsafe roots, write I/O failure, unreadable existing files and eviction.
+The legacy `write_failed` remains the fallback for unclassified producer errors
+and older providers; it is not an I/O-error total. These are not event `fields`
+and do not add fields to the TypeScript event mirror.
 
 Paged allocator observations use the separate optional
 [`slots[].paged_storage`](protocol-messages.md#slotspaged_storage) heartbeat

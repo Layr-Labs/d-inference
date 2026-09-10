@@ -43,9 +43,16 @@ extension EngineV2Bridge {
                 try? await taskSleep(metricsInterval)
                 if Task.isCancelled { return }
                 guard let bridge else { return }
-                await bridge.sampleSlotPosture()
+                await bridge.sampleSlotPostureFromSampler()
             }
         }
+    }
+
+    func sampleSlotPostureFromSampler() {
+        // The loop's check precedes an actor hop. Shutdown or reconfiguration
+        // can cancel this task while its callback is queued on the actor.
+        guard !Task.isCancelled else { return }
+        sampleSlotPosture()
     }
 
     /// One posture tick: read the engine's MTP metrics ONCE, log it when a

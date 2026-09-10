@@ -88,9 +88,13 @@ func (s *Server) runCacheRefreshLoop(ctx context.Context, interval time.Duration
 }
 
 // StartCacheRefreshers starts the goroutines that own the refreshed read-cache
-// entries (stats:v1 and network_totals:*). Each loop is independent so a slow
-// statement in one never delays the other. Stops when ctx is cancelled.
+// entries (stats:v1, stats:geography:v1 and network_totals:*). Independent
+// loops keep slow geography queries off the core stats path. Stops when ctx
+// is cancelled.
 func (s *Server) StartCacheRefreshers(ctx context.Context) {
+	saferun.Go(s.logger, "api.statsGeographyRefresher", func() {
+		s.runCacheRefreshLoop(ctx, statsRefreshInterval, func() { s.refreshStatsGeography() })
+	})
 	saferun.Go(s.logger, "api.statsRefresher", func() {
 		s.runStatsRefresher(ctx, statsRefreshInterval)
 	})

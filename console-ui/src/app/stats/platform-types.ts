@@ -97,11 +97,14 @@ export interface PlatformStats {
   unknown_location_providers?: number;
   suppressed_city_location_providers?: number;
   location_privacy_min_providers?: number;
-  request_locations?: RequestLocationBucket[];
-  request_regions?: RequestLocationBucket[];
-  request_flows?: RequestFlowBucket[];
-  unknown_request_location_requests?: number;
-  suppressed_request_city_requests?: number;
+  geography_snapshot_at?: string;
+  request_locations_status?: "available" | "unavailable";
+  request_flows_status?: "available" | "unavailable";
+  request_locations?: RequestLocationBucket[] | null;
+  request_regions?: RequestLocationBucket[] | null;
+  request_flows?: RequestFlowBucket[] | null;
+  unknown_request_location_requests?: number | null;
+  suppressed_request_city_requests?: number | null;
   request_location_privacy_min_requests?: number;
   time_series: TimeSeriesBucket[];
 }

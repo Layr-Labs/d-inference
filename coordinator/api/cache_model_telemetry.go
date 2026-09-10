@@ -67,6 +67,7 @@ func (s *Server) emitModelCacheUsage(pr *registry.PendingRequest, usage protocol
 	s.cacheModelCount("cached_tokens", int64(usage.CachedTokens), model, MetricLabel{"tier", tier})
 	s.cacheModelCount("prefill_tokens_saved", int64(usage.PrefillTokensSaved), model, MetricLabel{"tier", tier})
 	s.cacheModelTiming("provider_stage", usage.CacheStageMs, labels...)
+	s.emitModelCacheCoverage("usage", usage, labels)
 }
 
 // Called only after V2 proof acceptance. ModelID has then been checked against
@@ -75,10 +76,13 @@ func (s *Server) emitModelCacheLookup(msg *protocol.PrefixCacheLookupV2Message, 
 	if msg == nil || !receipt.Accepted {
 		return
 	}
-	s.cacheModelCount("lookup", 1,
-		MetricLabel{"model", s.cacheModelLabel(msg.ModelID)},
-		MetricLabel{"outcome", msg.Outcome},
-		MetricLabel{"tier", lowCardinalityCacheTier(msg.Tier)})
+	labels := []MetricLabel{{"model", s.cacheModelLabel(msg.ModelID)}, {"outcome", msg.Outcome}, {"tier", lowCardinalityCacheTier(msg.Tier)}}
+	s.cacheModelCount("lookup", 1, labels...)
+	// The denominator is the coordinator's exact plan, never a provider value.
+	if receipt.PromptTokens > 0 {
+		s.cacheModelCount("lookup_prompt_tokens", int64(receipt.PromptTokens), labels...)
+		s.cacheModelCount("lookup_prefill_tokens_saved", int64(msg.ExpectedPrefillTokensSaved), labels...)
+	}
 }
 
 func (s *Server) emitModelCacheDonation(msg *protocol.PrefixCacheReadyV2Message, receipt registry.CacheReceiptResult) {
@@ -93,9 +97,12 @@ func (s *Server) emitModelCacheDonation(msg *protocol.PrefixCacheReadyV2Message,
 // Runs inside the existing exactly-once cache terminal claim. "result" is the
 // provider's cache outcome, not consumer request success; an unreported error
 // terminal remains distinguishable from a provider-reported hit or miss.
-func (s *Server) emitModelCacheSelection(pr *registry.PendingRequest, tags []string) {
+func (s *Server) emitModelCacheSelection(pr *registry.PendingRequest, tags []string, usage protocol.UsageInfo, valid bool) {
 	labels := s.cacheModelSelectionLabels(pr.Model, tags)
 	s.cacheModelCount("selection", 1, labels...)
+	if valid {
+		s.emitModelCacheCoverage("selection", usage, labels)
+	}
 	if ms := pr.CacheSelectionEstimatedTTFTSavedMs; ms > 0 {
 		s.cacheModelTiming("estimated_ttft_saved", ms, labels...)
 	}
@@ -108,4 +115,33 @@ func (s *Server) cacheModelSelectionLabels(model string, tags []string) []Metric
 		labels = append(labels, MetricLabel{name, value})
 	}
 	return labels
+}
+
+// Same-label numerator and denominator permit token-weighted coverage or
+// hit-conditioned coverage without joining different request populations.
+// Counts are only called from existing exactly-once terminal hooks. Invalid
+// prompt counts do not contaminate denominators or create a division by zero.
+func (s *Server) emitModelCacheCoverage(population string, usage protocol.UsageInfo, labels []MetricLabel) {
+	if usage.PromptTokens <= 0 || usage.PromptTokens > 1_000_000 {
+		return
+	}
+	s.cacheModelCount(population+"_prompt_tokens", int64(usage.PromptTokens), labels...)
+	s.cacheModelCount(population+"_prefill_tokens_saved", int64(usage.PrefillTokensSaved), labels...)
+	if s.metrics != nil {
+		s.metrics.ObserveHistogram("cache_model_"+population+"_prefill_saved_percent", 100*float64(usage.PrefillTokensSaved)/float64(usage.PromptTokens), labels...)
+	}
+}
+
+func (s *Server) emitModelCacheReceipt(model, tier, kind string, receipt registry.CacheReceiptResult) {
+	outcome := "rejected"
+	if receipt.Accepted {
+		outcome = "accepted"
+	}
+	s.cacheModelCount("receipt", 1,
+		MetricLabel{"model", s.cacheModelLabel(model)}, MetricLabel{"tier", lowCardinalityCacheTier(tier)},
+		MetricLabel{"type", kind}, MetricLabel{"outcome", outcome}, MetricLabel{"reason", string(receipt.Reason)})
+	if receipt.PromptMismatch != "" {
+		s.cacheModelCount("prompt_mismatch", 1, MetricLabel{"model", s.cacheModelLabel(model)},
+			MetricLabel{"tier", lowCardinalityCacheTier(tier)}, MetricLabel{"detail", string(receipt.PromptMismatch)})
+	}
 }

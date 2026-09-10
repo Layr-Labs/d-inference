@@ -5,6 +5,7 @@ use serde_json::json;
 fn raw_numeric_bridge_domain_is_exact_or_cold() {
     for encoded in [
         "9223372036854775808",
+        "9223372036854775809",
         "18446744073709551615",
         "-9223372036854775809",
         "-0",
@@ -17,6 +18,16 @@ fn raw_numeric_bridge_domain_is_exact_or_cold() {
         assert!(
             validate_request_input(&json!({"tools":[{"parameters":{"value":value}}]})).is_err(),
             "{encoded}"
+        );
+        // Structured-output instructions use the same pre-normalization
+        // eligibility guard; unsupported u64 values must never reach tojson.
+        let schema_body = json!({"response_format":{"type":"json_schema","json_schema":{
+        "name":"limit","schema":{"type":"object","properties":{"value":{
+            "type":"integer","maximum":value
+        }}}}}});
+        assert!(
+            validate_request_input(&schema_body).is_err(),
+            "schema {encoded}"
         );
         let body = json!({"messages":[{"tool_calls":[{"function":{"arguments":format!("{{\"value\":{encoded}}}")}}]}]});
         assert!(validate_request_input(&body).is_err(), "encoded {encoded}");
@@ -36,6 +47,13 @@ fn raw_numeric_bridge_domain_is_exact_or_cold() {
     ] {
         let value: Value = serde_json::from_str(encoded).unwrap();
         validate_request_input(&json!({"tools":[{"parameters":{"value":value}}]})).unwrap();
+        validate_request_input(
+            &json!({"response_format":{"type":"json_schema","json_schema":{
+            "name":"limit","schema":{"type":"object","properties":{"value":{
+                "type":"integer","maximum":value
+            }}}}}}),
+        )
+        .unwrap();
         let body = json!({"messages":[{"tool_calls":[{"function":{"arguments":format!("{{\"value\":{encoded}}}")}}]}]});
         validate_request_input(&body).unwrap();
     }

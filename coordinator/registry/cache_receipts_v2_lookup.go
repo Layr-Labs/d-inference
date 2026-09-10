@@ -78,7 +78,14 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 		return mismatchCacheReceipt(CacheReceiptIdentityMismatch)
 	}
 	if attempt.ExpectedPrompt != msg.PromptAnchor {
-		return mismatchCacheReceipt(CacheReceiptPromptMismatch)
+		result := mismatchCacheReceipt(CacheReceiptPromptMismatch)
+		result.PromptMismatch = CachePromptHashMismatch
+		if msg.PromptAnchor.TokenCount < attempt.ExpectedPrompt.TokenCount {
+			result.PromptMismatch = CachePromptShorter
+		} else if msg.PromptAnchor.TokenCount > attempt.ExpectedPrompt.TokenCount {
+			result.PromptMismatch = CachePromptLonger
+		}
+		return result
 	}
 	if msg.MatchedAnchor != nil &&
 		attempt.ExpectedBoundaries[msg.MatchedAnchor.TokenCount] != msg.MatchedAnchor.ChainHash {
@@ -137,5 +144,5 @@ func (t *cacheRoutingTracker) applyLookupV2Decision(
 			t.ssdMisses++
 		}
 	}
-	return CacheReceiptResult{Accepted: true, Reason: CacheReceiptAccepted}
+	return CacheReceiptResult{Accepted: true, Reason: CacheReceiptAccepted, PromptTokens: attempt.Plan.PromptTokenCount}
 }

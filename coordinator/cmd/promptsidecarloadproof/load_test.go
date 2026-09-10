@@ -23,15 +23,24 @@ func TestProductionInventoryCoversSevenModelsAndEverySupportedVector(t *testing.
 	if len(inventory.Contracts) != 6 {
 		t.Fatalf("deduplicated contracts = %d, want 6", len(inventory.Contracts))
 	}
-	if len(inventory.Vectors) != 98 {
-		t.Fatalf("supported vectors = %d, want 98", len(inventory.Vectors))
+	if len(inventory.Vectors) != 126 {
+		t.Fatalf("supported vectors = %d, want 126", len(inventory.Vectors))
 	}
 	coveredModels := make(map[string]bool)
+	coveredCases := make(map[string]bool)
 	for _, vector := range inventory.Vectors {
 		coveredModels[vector.ModelID] = true
+		coveredCases[vector.Name] = true
 	}
 	if len(coveredModels) != inventory.EligibleModels {
 		t.Fatalf("covered routable models = %d, want %d", len(coveredModels), inventory.EligibleModels)
+	}
+	for modelID := range coveredModels {
+		for _, caseID := range []string{"json_object", "json_schema", "response_text", "multi_system"} {
+			if !coveredCases[modelID+"/"+caseID] {
+				t.Fatalf("serving-preparation vector %s/%s missing from load inventory", modelID, caseID)
+			}
+		}
 	}
 }
 

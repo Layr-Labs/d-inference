@@ -39,10 +39,16 @@ pub fn normalize(
     normalize_tool_parameter_types(&mut body);
     normalize_legacy_function_calls(&mut body)?;
     let mut messages = template_messages(&body)?;
+    crate::response_format::prepare(&body, &mut messages)?;
     let mut tools = template_tools(&body)?;
     let requires_tool_call = apply_tool_choice_policy(&body, &mut messages, &mut tools)?;
     messages = sanitize_array(messages);
     tools = tools.map(sanitize_array);
+    if crate::leading_system::qwen_applies(&model_id, model_type)
+        || is_harmony(Some(&model_id), model_type)
+    {
+        messages = crate::leading_system::normalize_messages(messages);
+    }
     validate_tool_history(&messages)?;
 
     let harmony = is_harmony(Some(&model_id), model_type);

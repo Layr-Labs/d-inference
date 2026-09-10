@@ -2,6 +2,7 @@ mod input;
 mod json;
 
 pub(crate) use input::validate_request_input;
+pub(crate) use json::openai_json;
 
 use crate::artifacts::LoadedArtifacts;
 use crate::normalize::NormalizedRequest;

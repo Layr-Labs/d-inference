@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-08 · commit `ada6fcea1`
+> Last updated: 2026-09-09 · commit `884d97862`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -435,8 +435,8 @@ fixed cap (`maxPrefixCacheStatuses = 16` statuses or
 `maxPrefixCacheDonationOutcomeEntries = 32` raw outcome entries), duplicate
 model/outcome keys, or a blank/non-canonical status model ID drops that whole
 optional snapshot (`sanitizePrefixCacheStatuses`). Donation aggregation has
-exactly 13 known buckets (`PrefixCacheDonationOutcomes`); the raw cap reserves
-19 entries for future outcomes, which are filtered individually.
+exactly 21 known buckets (`PrefixCacheDonationOutcomes`); the raw cap reserves
+11 entries for future outcomes, which are filtered individually.
 A dropped/present status snapshot becomes authoritative empty and clears stale
 status; a dropped donation snapshot preserves the prior monotonic counter
 baseline. Field omission preserves the prior mixed-version behavior.

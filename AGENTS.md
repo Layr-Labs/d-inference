@@ -98,7 +98,7 @@ deploy/               infra config: gcp/ (Cloud Build + VM bootstrap), environme
 docs/                 how-tos, runbooks, reference, architecture, design records, dated reports
                       (map: docs/README.md · rules + freshness stamps: docs/AGENTS.md · lint: make docs-check)
 .github/workflows/    CI (ci.yml), integration tests (integration.yml), Swift release (release-swift.yml),
-                      model registration (register-model.yml), threat model review (threat-model-review.yml)
+                      model registration (register-model.yml)
 ```
 
 ## Current Surface Area

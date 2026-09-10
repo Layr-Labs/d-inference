@@ -59,19 +59,16 @@ type ModelUtilization struct {
 	ColdProviders    int     `json:"cold_providers"`
 	AggregateTPS     float64 `json:"aggregate_tps"`
 
-	// Cold-provider decomposition. ColdProviders above is a raw "slot not
-	// loaded" count that says nothing about whether those machines could be
-	// warmed: it lumps an idle, fitting box together with one the model can
-	// never fit. EligibleCold is the subset the warm-pool controller would
-	// actually send a load_model to, ColdIneligible the remainder, and
-	// ColdDisqualifiers the reason breakdown (warmColdReason wire strings ->
-	// count). Counts only, no provider identities.
+	// Cold-provider decomposition from the warm-pool controller's last tick.
+	// ColdProviders is a raw "slot not loaded" count; EligibleCold is the
+	// subset the controller would send a load_model to, ColdIneligible the
+	// rest, and ColdDisqualifiers the per-reason tally (warmColdReason wire
+	// string -> count; no provider identities).
 	//
-	// Note EligibleCold + ColdIneligible need not equal ColdProviders: the two
-	// come from different observations (the controller's last tick vs the live
-	// capacity snapshot) and the controller applies a per-model catalog filter
-	// the capacity feed does not. Treat the split as a breakdown of the
-	// controller's view, not an exact partition of ColdProviders.
+	// EligibleCold + ColdIneligible need not equal ColdProviders: they come
+	// from different observations (controller tick vs live capacity snapshot)
+	// and the controller applies a per-model catalog filter the capacity feed
+	// does not.
 	EligibleCold      int            `json:"eligible_cold"`
 	ColdIneligible    int            `json:"cold_ineligible"`
 	ColdDisqualifiers map[string]int `json:"cold_disqualifiers,omitempty"`
@@ -287,17 +284,7 @@ func computeNetworkUtilization(caps []ModelCapacity, snaps []WarmPoolSnapshot, f
 
 		// Warm serving-capacity axis (Little's Law), if the controller has data.
 		if s, ok := bySnap[c.ModelID]; ok {
-			mu.HasWarmData = true
-			mu.DemandConcurrency = nonNeg(s.DemandConcurrency)
-			mu.QualityConcurrency = s.QualityConcurrency
-			mu.TargetWarm = s.TargetWarm
-			mu.SpillArrivalRate = nonNeg(s.SpillArrivalRate)
-			// Cold-provider decomposition: why the eligible-cold set is
-			// smaller than the raw cold count. Already computed by the
-			// controller every tick and previously discarded.
-			mu.EligibleCold = s.EligibleCold
-			mu.ColdIneligible = s.ColdIneligible
-			mu.ColdDisqualifiers = s.ColdDisqualifiers
+			mu.applyWarmPoolSnapshot(s)
 			// Prefer the warm-pool snapshot's warm count so numerator and
 			// denominator come from the same observation; fall back to the
 			// capacity snapshot when the controller reports none.
@@ -337,62 +324,18 @@ func computeNetworkUtilization(caps []ModelCapacity, snaps []WarmPoolSnapshot, f
 		out.Models = append(out.Models, mu)
 	}
 
-	// Warm-pool-only models. The loop above walks CAPACITY rows, but
-	// ModelCapacitySnapshot admits only publicly-routable providers, so a model
-	// whose every provider is private, untrusted, or carrying a stale challenge
-	// produces no capacity row at all — while warmPoolFleetSnapshot still records
-	// it along with the disqualifiers explaining exactly that. Iterating capacity
-	// alone dropped the model and its cold_disqualifiers from
-	// /v1/admin/utilization precisely when the aggregate diagnosis is most
-	// useful: "why is this model serving nothing?" is unanswerable if the model
-	// is absent from the report.
-	//
-	// So emit a snapshot-only row for each warm-pool model with no capacity row,
-	// preserving the diagnostic fields. Deliberately NOT folded into the
-	// network-wide aggregates (sumDemand/sumServing/ActiveRequests/
-	// QueuedRequests/bottleneck): those are defined over observable serving
-	// capacity, and a model with no routable provider contributes none. Adding it
-	// would change existing headline numbers, which is a separate decision from
-	// fixing a reporting omission.
-	if len(snaps) > 0 {
-		haveCapacityRow := make(map[string]struct{}, len(caps))
-		for _, c := range caps {
-			haveCapacityRow[c.ModelID] = struct{}{}
-		}
-		missing := make([]string, 0, len(snaps))
-		for _, s := range snaps {
-			if s.Model == "" {
-				continue
-			}
-			if _, ok := haveCapacityRow[s.Model]; ok {
-				continue
-			}
-			missing = append(missing, s.Model)
-		}
-		// Deterministic order: caps arrive sorted, and a map walk would otherwise
-		// shuffle these rows between polls.
-		sort.Strings(missing)
-		for _, model := range missing {
-			s := bySnap[model]
-			mu := ModelUtilization{
-				Model:              model,
-				HasWarmData:        true,
-				DemandConcurrency:  nonNeg(s.DemandConcurrency),
-				QualityConcurrency: s.QualityConcurrency,
-				TargetWarm:         s.TargetWarm,
-				SpillArrivalRate:   nonNeg(s.SpillArrivalRate),
-				WarmProviders:      s.WarmProviders,
-				EligibleCold:       s.EligibleCold,
-				ColdIneligible:     s.ColdIneligible,
-				ColdDisqualifiers:  s.ColdDisqualifiers,
-			}
-			// ServingCapacity/WarmUtilization stay zero: with no capacity row
-			// there is no routable serving capacity to divide by. Leaving
-			// Utilization at 0 rather than the per-model "demand but no capacity
-			// = saturated" rule keeps this row out of the bottleneck comparison,
-			// which is scoped to models that can actually serve.
-			out.Models = append(out.Models, mu)
-		}
+	// Snapshot-only rows: models the controller tracks that have no capacity
+	// row. ModelCapacitySnapshot admits only publicly-routable providers, so a
+	// model whose every provider is private, untrusted or stale-challenged has
+	// no capacity row while its WarmPoolSnapshot carries the disqualifiers that
+	// say exactly that. These rows carry the snapshot fields only and do not
+	// enter sumDemand, sumServing, ActiveRequests, QueuedRequests or the
+	// bottleneck: those aggregates are defined over routable serving capacity,
+	// of which such a model has none.
+	for _, model := range warmPoolOnlyModels(caps, snaps) {
+		mu := ModelUtilization{Model: model, WarmProviders: bySnap[model].WarmProviders}
+		mu.applyWarmPoolSnapshot(bySnap[model])
+		out.Models = append(out.Models, mu)
 	}
 
 	// Network-wide throughput and token budget come from the provider-deduped
@@ -420,6 +363,42 @@ func computeNetworkUtilization(caps []ModelCapacity, snaps []WarmPoolSnapshot, f
 	// Headline: the binding axis network-wide (max of the two aggregates), clamped.
 	out.Utilization = clamp01(math.Max(out.WarmUtilization, out.TokenBudgetUtilization))
 	return out
+}
+
+// applyWarmPoolSnapshot copies the controller-owned fields of s onto mu. Used
+// for both capacity-backed and snapshot-only rows so the two cannot drift.
+func (mu *ModelUtilization) applyWarmPoolSnapshot(s WarmPoolSnapshot) {
+	mu.HasWarmData = true
+	mu.DemandConcurrency = nonNeg(s.DemandConcurrency)
+	mu.QualityConcurrency = s.QualityConcurrency
+	mu.TargetWarm = s.TargetWarm
+	mu.SpillArrivalRate = nonNeg(s.SpillArrivalRate)
+	mu.EligibleCold = s.EligibleCold
+	mu.ColdIneligible = s.ColdIneligible
+	mu.ColdDisqualifiers = s.ColdDisqualifiers
+}
+
+// warmPoolOnlyModels returns, sorted, the model ids present in snaps but absent
+// from caps. Sorted so a map walk cannot reorder rows between polls.
+func warmPoolOnlyModels(caps []ModelCapacity, snaps []WarmPoolSnapshot) []string {
+	if len(snaps) == 0 {
+		return nil
+	}
+	haveCapacityRow := make(map[string]struct{}, len(caps))
+	for _, c := range caps {
+		haveCapacityRow[c.ModelID] = struct{}{}
+	}
+	var missing []string
+	for _, s := range snaps {
+		if s.Model == "" {
+			continue
+		}
+		if _, ok := haveCapacityRow[s.Model]; !ok {
+			missing = append(missing, s.Model)
+		}
+	}
+	sort.Strings(missing)
+	return missing
 }
 
 func clamp01(v float64) float64 {

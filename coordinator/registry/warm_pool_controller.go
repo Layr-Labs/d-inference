@@ -713,6 +713,25 @@ const (
 	warmColdStateRestoring warmColdReason = "state_restoring"
 )
 
+// warmColdReasons lists every warmColdReason. Add a new reason here when adding
+// the constant; TestWarmPoolBlockerMappingIsClosedOverEveryReason checks each
+// entry has a WarmPoolBlocker, and TestWarmColdReasonsIsComplete checks the
+// list against the constants above.
+var warmColdReasons = []warmColdReason{
+	warmColdEligible,
+	warmColdOfflineUntrust,
+	warmColdPendingLoad,
+	warmColdNotIdle,
+	warmColdThermal,
+	warmColdTrust,
+	warmColdStaleChallenge,
+	warmColdNotServing,
+	warmColdDedicated,
+	warmColdTooLarge,
+	warmColdNoFreeForLoad,
+	warmColdStateRestoring,
+}
+
 // warmColdReasonStrings converts a reason tally to a string-keyed map for
 // logging / the snapshot. Returns nil for an empty tally.
 func warmColdReasonStrings(in map[warmColdReason]int) map[string]int {
@@ -777,12 +796,9 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	if r.providerExcludedByDedicatedRuleLocked(p, model) {
 		return warmPoolCandidate{}, warmColdDedicated
 	}
-	totalMemoryGB := float64(p.Hardware.MemoryGB)
+	totalMemoryGB := warmPoolTotalMemoryGBLocked(p)
 	gpuActiveGB := 0.0
 	if p.BackendCapacity != nil {
-		if p.BackendCapacity.TotalMemoryGB > 0 {
-			totalMemoryGB = p.BackendCapacity.TotalMemoryGB
-		}
 		gpuActiveGB = p.BackendCapacity.GPUMemoryActiveGB
 	}
 	if !modelFitsHardware(r.catalogMinRAMGbLocked(model), r.catalogSizeGBLocked(model), totalMemoryGB) {

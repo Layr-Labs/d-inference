@@ -420,29 +420,20 @@ func emittedIdentity(mp *myProvider) string {
 	return "id:" + mp.ID
 }
 
-// attachWarmPoolEligibility populates mp.WarmPool from the live registry. It is
-// a no-op for a machine that is not currently connected: every input (slot
-// state, thermal state, reported free-for-load memory, pending-load cooldowns)
-// is live state that does not survive disconnect, and a stale verdict on an
-// offline card would be worse than none.
+// attachWarmPoolEligibility populates mp.WarmPool from the live registry.
 //
-// PRESENCE IN THE REGISTRY is the connected test, NOT mp.Online. Online is
-// routability-oriented — buildMyProvider clears it for StatusUntrusted as well
-// as StatusOffline — so gating on it withheld the diagnostic from exactly the
-// machine that most needs it: a connected but untrusted box could never surface
-// its own offline_untrusted_private blocker, contradicting this field's
-// connected-machine contract. WarmPoolEligibility returns nil for an id that is
-// not in the registry, and disconnectProvider deletes the entry, so the nil
-// result is itself the authoritative liveness check.
+// Connected-ness is decided by registry membership, not mp.Online:
+// WarmPoolEligibility returns nil for an id the registry does not hold, and
+// disconnectProvider deletes the entry, so nil is the liveness check. Online
+// answers "would we route here" (buildMyProvider clears it for StatusUntrusted
+// too) and gating on it would withhold the diagnostic from a connected but
+// untrusted machine — the one that most needs to see its own
+// offline_untrusted_private blocker.
 //
-// Called AFTER buildMyProvider returns rather than inside it, because
-// WarmPoolEligibility acquires r.mu and p.mu itself and buildMyProvider holds
-// p.mu across its overlay block.
+// Runs after buildMyProvider has released p.mu, because WarmPoolEligibility
+// takes r.mu and p.mu itself.
 func (s *Server) attachWarmPoolEligibility(mp *myProvider, now time.Time) {
-	if mp == nil || mp.ID == "" {
-		return
-	}
-	if s.registry == nil {
+	if mp == nil || mp.ID == "" || s.registry == nil {
 		return
 	}
 	mp.WarmPool = s.registry.WarmPoolEligibility(mp.ID, now)

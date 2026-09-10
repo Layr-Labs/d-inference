@@ -5,51 +5,32 @@ import (
 	"time"
 )
 
-// warm_pool_diagnostics.go answers the operator question that sits one layer
-// BEYOND "is my machine routable": "my machine is routable, trusted and idle,
-// the model is in my catalog — so why does the coordinator never send me a
-// load_model for it?"
+// Warm-pool eligibility diagnostics: per model, would the coordinator send this
+// machine a load_model, and if not, why not.
 //
-// Whether a cold (on-disk, not-loaded) provider is a warm-pool target is
-// decided by warmPoolCandidateReasonLocked, which already classifies every
-// refusal into a warmColdReason — including the two memory verdicts an operator
-// most needs to see:
-//
-//	model_too_large    the model can never fit this box per the catalog's
-//	                   authoritative min_ram_gb (or the size_gb heuristic)
-//	no_free_for_load   the box's OWN reported free_for_load_gb says it cannot
-//	                   fit the weights right now
-//
-// Those reasons are computed every control tick and then discarded. They reach
-// a log line only when coldIneligible > 0 AND the model happens to be a
-// dedicated model, and they reach no API at all. So the aggregate
-// `cold_providers` count on /v1/models/capacity lumps "idle and warmable"
-// together with "will never fit", and an operator whose box is permanently
-// excluded by a catalog requirement sees a machine that reports itself online,
-// trusted, routable and cold — indistinguishable from one that is simply
-// waiting its turn.
-//
-// This file does NOT re-implement the gate. WarmPoolEligibility delegates to
-// warmPoolCandidateReasonLocked, the same function the planner calls to build
-// its action list, and maps the reason onto a stable wire string. A diagnostic
-// and a warming decision cannot disagree because they are the same code.
+// The verdict is not computed here. WarmPoolEligibility calls
+// warmPoolCandidateReasonLocked — the predicate plan() uses to pick load
+// targets — and translates its warmColdReason into a stable wire string. The
+// diagnostic and the warming decision cannot disagree because they run the same
+// code; the only thing this file owns is the mapping and the memory figures
+// published alongside it.
 
-// WarmPoolBlocker is a closed, operator-facing reason a provider is not a
-// warm-pool (load_model) target for one model. Values are stable wire strings
-// consumed by the console UI and `darkbloom status`, so renaming one is a
-// breaking change.
+// WarmPoolBlocker is the closed set of reasons a provider is not a warm-pool
+// target for one model. The values are wire strings; renaming one breaks
+// clients.
 type WarmPoolBlocker string
 
 const (
-	// WarmPoolBlockerNone means the provider IS an eligible warm target.
+	// WarmPoolBlockerNone: the provider is an eligible warm target.
 	WarmPoolBlockerNone WarmPoolBlocker = ""
 
-	// Already warm — not a blocker, reported so a client can tell "already
-	// loaded" apart from "eligible to load".
+	// WarmPoolBlockerAlreadyWarm is reported, not a refusal: the model is
+	// loaded here, so there is nothing to warm.
 	WarmPoolBlockerAlreadyWarm WarmPoolBlocker = "already_warm"
 
-	// Liveness / trust / privacy.
+	// Liveness, trust, privacy.
 	WarmPoolBlockerOfflineUntrustedPrivate WarmPoolBlocker = "offline_untrusted_private"
+	WarmPoolBlockerStateRestoring          WarmPoolBlocker = "state_restoring"
 	WarmPoolBlockerTrustOrRuntime          WarmPoolBlocker = "trust_or_runtime"
 	WarmPoolBlockerStaleChallenge          WarmPoolBlocker = "stale_challenge"
 
@@ -58,95 +39,76 @@ const (
 	WarmPoolBlockerNotIdle               WarmPoolBlocker = "not_idle"
 	WarmPoolBlockerThermalCritical       WarmPoolBlocker = "thermal_critical"
 
-	// Catalog / routing policy.
+	// Catalog and routing policy.
 	WarmPoolBlockerNotServingCatalog WarmPoolBlocker = "not_serving_catalog"
 	WarmPoolBlockerDedicatedExcluded WarmPoolBlocker = "dedicated_excluded"
 
-	// Memory. The two verdicts this whole file exists to surface.
-	WarmPoolBlockerModelTooLarge  WarmPoolBlocker = "model_too_large"
-	WarmPoolBlockerNoFreeForLoad  WarmPoolBlocker = "no_free_for_load"
-	WarmPoolBlockerModelNotOnDisk WarmPoolBlocker = "model_not_on_disk"
+	// Memory.
+	WarmPoolBlockerModelTooLarge WarmPoolBlocker = "model_too_large"
+	WarmPoolBlockerNoFreeForLoad WarmPoolBlocker = "no_free_for_load"
 )
 
-// warmPoolBlockerFor maps the internal reason label onto the exported wire
-// string. Kept as an explicit table rather than a cast so that renaming an
-// internal label cannot silently change the public contract.
+// warmPoolBlockers maps every warmColdReason onto its wire string. A table
+// rather than a cast so an internal rename cannot change the public contract;
+// TestWarmPoolBlockerMappingIsClosedOverEveryReason fails when a reason in
+// warmColdReasons has no entry.
+var warmPoolBlockers = map[warmColdReason]WarmPoolBlocker{
+	warmColdEligible:       WarmPoolBlockerNone,
+	warmColdOfflineUntrust: WarmPoolBlockerOfflineUntrustedPrivate,
+	warmColdStateRestoring: WarmPoolBlockerStateRestoring,
+	warmColdPendingLoad:    WarmPoolBlockerPendingLoadOrCooldown,
+	warmColdNotIdle:        WarmPoolBlockerNotIdle,
+	warmColdThermal:        WarmPoolBlockerThermalCritical,
+	warmColdTrust:          WarmPoolBlockerTrustOrRuntime,
+	warmColdStaleChallenge: WarmPoolBlockerStaleChallenge,
+	warmColdNotServing:     WarmPoolBlockerNotServingCatalog,
+	warmColdDedicated:      WarmPoolBlockerDedicatedExcluded,
+	warmColdTooLarge:       WarmPoolBlockerModelTooLarge,
+	warmColdNoFreeForLoad:  WarmPoolBlockerNoFreeForLoad,
+}
+
+// warmPoolBlockerFor translates an internal reason. An unmapped reason is
+// returned as its raw label so it never reads as eligible; the closed-set test
+// turns that into a CI failure.
 func warmPoolBlockerFor(reason warmColdReason) WarmPoolBlocker {
-	switch reason {
-	case warmColdEligible:
-		return WarmPoolBlockerNone
-	case warmColdOfflineUntrust:
-		return WarmPoolBlockerOfflineUntrustedPrivate
-	case warmColdPendingLoad:
-		return WarmPoolBlockerPendingLoadOrCooldown
-	case warmColdNotIdle:
-		return WarmPoolBlockerNotIdle
-	case warmColdThermal:
-		return WarmPoolBlockerThermalCritical
-	case warmColdTrust:
-		return WarmPoolBlockerTrustOrRuntime
-	case warmColdStaleChallenge:
-		return WarmPoolBlockerStaleChallenge
-	case warmColdNotServing:
-		return WarmPoolBlockerNotServingCatalog
-	case warmColdDedicated:
-		return WarmPoolBlockerDedicatedExcluded
-	case warmColdTooLarge:
-		return WarmPoolBlockerModelTooLarge
-	case warmColdNoFreeForLoad:
-		return WarmPoolBlockerNoFreeForLoad
-	default:
-		// A new internal reason with no mapping must not silently read as
-		// eligible. Surface the raw label; the closed-set test below fails so
-		// this is caught in CI rather than in production.
-		return WarmPoolBlocker(reason)
+	if b, ok := warmPoolBlockers[reason]; ok {
+		return b
 	}
+	return WarmPoolBlocker(reason)
 }
 
-// Description is a one-line, content-free explanation with the remediation an
-// operator can act on. Never embeds request data — only fixed text.
+// warmPoolBlockerDescriptions is the operator-facing text for each blocker.
+// Fixed strings only; never request or provider data.
+var warmPoolBlockerDescriptions = map[WarmPoolBlocker]string{
+	WarmPoolBlockerNone:                    "the machine is an eligible warm-pool target for this model",
+	WarmPoolBlockerAlreadyWarm:             "the model is already loaded on this machine",
+	WarmPoolBlockerOfflineUntrustedPrivate: "the machine is offline, untrusted, or in private-only mode",
+	WarmPoolBlockerStateRestoring:          "the coordinator is still restoring this machine's persisted state after a reconnect",
+	WarmPoolBlockerTrustOrRuntime:          "the machine's trust level or runtime verification is below what public routing requires",
+	WarmPoolBlockerStaleChallenge:          "the machine's last passing attestation challenge is older than the freshness window",
+	WarmPoolBlockerPendingLoadOrCooldown:   "a load is already in flight, or a recent load failure put this machine and model on a short cooldown",
+	WarmPoolBlockerNotIdle:                 "the machine is serving requests; the coordinator only pre-loads onto a fully idle machine",
+	WarmPoolBlockerThermalCritical:         "the machine reported a critical thermal state",
+	WarmPoolBlockerNotServingCatalog:       "the machine does not advertise this model, or the model is not in the coordinator's catalog",
+	WarmPoolBlockerDedicatedExcluded:       "this model only pre-loads onto machines dedicated to it; this machine also serves other model families",
+	WarmPoolBlockerModelTooLarge:           "this model's published memory requirement exceeds this machine's total memory, so it can never be pre-loaded here",
+	WarmPoolBlockerNoFreeForLoad:           "the machine's own last heartbeat reported less loadable memory than this model's weights need",
+}
+
+// Description returns the operator-facing text for b, or the raw wire string
+// for an unknown value.
 func (b WarmPoolBlocker) Description() string {
-	switch b {
-	case WarmPoolBlockerNone:
-		return "the machine is an eligible warm-pool target for this model"
-	case WarmPoolBlockerAlreadyWarm:
-		return "the model is already loaded on this machine"
-	case WarmPoolBlockerOfflineUntrustedPrivate:
-		return "the machine is offline, untrusted, or in private-only mode"
-	case WarmPoolBlockerTrustOrRuntime:
-		return "the machine's trust level or runtime verification is below what public routing requires"
-	case WarmPoolBlockerStaleChallenge:
-		return "the machine's last passing attestation challenge is older than the freshness window"
-	case WarmPoolBlockerPendingLoadOrCooldown:
-		return "a load is already in flight, or a recent load failure put this machine and model on a short cooldown"
-	case WarmPoolBlockerNotIdle:
-		return "the machine is serving requests; the coordinator only pre-loads onto a fully idle machine"
-	case WarmPoolBlockerThermalCritical:
-		return "the machine reported a critical thermal state"
-	case WarmPoolBlockerNotServingCatalog:
-		return "the machine does not advertise this model, or the model is not in the coordinator's catalog"
-	case WarmPoolBlockerDedicatedExcluded:
-		return "this model only pre-loads onto machines dedicated to it; this machine also serves other model families"
-	case WarmPoolBlockerModelTooLarge:
-		return "this model's published memory requirement exceeds this machine's total memory, so it can never be pre-loaded here"
-	case WarmPoolBlockerNoFreeForLoad:
-		return "the machine's own last heartbeat reported less loadable memory than this model's weights need"
-	case WarmPoolBlockerModelNotOnDisk:
-		return "the weights are not present on this machine; the coordinator only pre-loads a model the machine already advertises"
-	default:
-		return string(b)
+	if d, ok := warmPoolBlockerDescriptions[b]; ok {
+		return d
 	}
+	return string(b)
 }
 
-// Permanent reports whether the blocker is a standing property of this machine
-// and model rather than a transient one. Only the static hardware-fit verdict
-// qualifies: it is derived from the catalog's published requirement against
-// total installed memory, so it cannot clear without changing the hardware or
-// the catalog entry. Everything else — including no_free_for_load, which is a
-// live measurement — can clear on the next heartbeat.
-//
-// This distinction is the point of the whole surface: it separates "wait" from
-// "this will never happen on this box".
+// Permanent reports whether the blocker cannot clear without a hardware or
+// catalog change. Only model_too_large qualifies: it compares the catalog's
+// published requirement against installed memory. Every other blocker,
+// including no_free_for_load (a live heartbeat measurement), can clear on its
+// own.
 func (b WarmPoolBlocker) Permanent() bool {
 	return b == WarmPoolBlockerModelTooLarge
 }
@@ -155,92 +117,59 @@ func (b WarmPoolBlocker) Permanent() bool {
 // machine.
 type ModelWarmPoolEligibility struct {
 	ID string `json:"id"`
-	// Warm reports whether the model is currently loaded here (slot state
-	// "running" or "idle").
+	// Warm: the model is loaded here (slot state running or idle).
 	Warm bool `json:"warm"`
-	// Eligible reports whether the coordinator would consider this machine as
-	// a load_model target for this model right now. False when Warm is true —
-	// an already-loaded model is not a warming candidate.
+	// Eligible: the planner would pick this machine as a load_model target
+	// for this model now. Always false when Warm.
 	Eligible bool `json:"eligible"`
-	// Blocker is the reason Eligible is false, empty when eligible. Only the
-	// FIRST failing gate is reported, matching the order the planner evaluates
-	// them: clearing it may reveal another.
+	// Blocker is why Eligible is false; empty when eligible. Only the first
+	// failing gate is reported, in planner order, so clearing it may reveal
+	// another.
 	Blocker WarmPoolBlocker `json:"blocker,omitempty"`
-	// BlockerDescription is the operator-facing text for Blocker, so a client
-	// does not have to carry its own copy of the mapping.
+	// BlockerDescription is Blocker.Description().
 	BlockerDescription string `json:"blocker_description,omitempty"`
-	// Permanent is true when Blocker cannot clear without a hardware or catalog
-	// change. A permanent blocker means this machine will never be pre-loaded
-	// with this model, however long it waits.
+	// Permanent is Blocker.Permanent().
 	Permanent bool `json:"permanent,omitempty"`
-	// RequiredMemoryGB is the catalog's published requirement for this model:
-	// min_ram_gb when set, else the size_gb heuristic's effective threshold.
-	// Zero when the catalog publishes neither (the fit gate is then disabled
-	// and fails open). Present regardless of verdict so an operator can see how
-	// much headroom they are short of, or how much margin they have.
+	// RequiredMemoryGB is the total-memory threshold modelFitsHardware applies:
+	// the catalog's min_ram_gb, else size_gb x modelMemoryHeadroomFactor, else
+	// 0 (gate disabled).
 	RequiredMemoryGB float64 `json:"required_memory_gb,omitempty"`
-	// WeightsGB is the catalog's on-disk weight size for the model, in DECIMAL
-	// GB exactly as the catalog publishes it (TotalSizeBytes/1e9, unpadded).
-	// Zero when unpublished.
-	//
-	// This is NOT the figure the no_free_for_load gate compares against — see
-	// LoadThresholdGiB. Reported because it is the number an operator sees in
-	// the model catalog and on disk, so omitting it would be its own confusion.
+	// WeightsGB is the catalog's on-disk size in decimal GB, unpadded. This is
+	// the number shown in the catalog, not the number the load gate compares;
+	// see LoadThresholdGiB.
 	WeightsGB float64 `json:"weights_gb,omitempty"`
-	// LoadThresholdGiB is the actual threshold the no_free_for_load gate applies:
-	// WeightsGB converted into the provider's own load-gate basis (padded GiB),
-	// i.e. weights x 1.2 scanner overhead, then decimal GB -> GiB. Directly
-	// comparable to FreeForLoadGB, which the machine reports in that same basis.
-	//
-	// Reported because WeightsGB alone CONTRADICTS the verdict near the boundary:
-	// a 30 GB model on a machine reporting 32 GiB free reads as "30 needed, 32
-	// free" yet still gets no_free_for_load, because the gate compares
-	// 30 x 1.1176 = 33.5 GiB > 32. Publishing only the raw size made the
-	// diagnostic look wrong exactly where an operator would scrutinise it most.
-	// Zero when WeightsGB is unpublished (the gate is then skipped).
+	// LoadThresholdGiB is WeightsGB in the provider's load-gate basis (padded
+	// GiB, via coldLoadCatalogGBToMemGiB), i.e. what reportedFreeForLoadAdmits
+	// compares against FreeForLoadGB. Zero when WeightsGB is unpublished.
 	LoadThresholdGiB float64 `json:"load_threshold_gib,omitempty"`
 }
 
-// ProviderWarmPoolEligibility is the coordinator's answer to "would you
-// pre-load a model onto this machine, and if not, why not".
-//
-// Deliberately per-model: the same machine can be permanently too small for one
-// build, transiently busy for a second, and an eligible target for a third. A
-// single machine-level verdict would collapse exactly the distinction an
-// operator needs.
+// ProviderWarmPoolEligibility is the per-model warm-pool verdict for one
+// machine. Per model because one box can be permanently too small for one
+// build, busy for a second and eligible for a third.
 type ProviderWarmPoolEligibility struct {
-	// TotalMemoryGB is the memory basis the static fit gate used — the
-	// machine's reported backend total when available, else the registered
-	// hardware figure. Reported because the two can differ and the gate prefers
-	// the former.
+	// TotalMemoryGB is the figure the static fit gate used
+	// (warmPoolTotalMemoryGBLocked).
 	TotalMemoryGB float64 `json:"total_memory_gb,omitempty"`
-	// FreeForLoadGB is the machine's own last-reported maximum loadable model
-	// weight, the input to the no_free_for_load verdict. Nil when the machine's
-	// version does not report it, in which case that gate is skipped entirely
-	// and only the static fit gate applies.
-	//
-	// UNITS: padded GiB, the provider's own load-gate basis — NOT the decimal GB
-	// the catalog uses for weights. Compare it against a model row's
-	// LoadThresholdGiB, never its WeightsGB. The name keeps the `_gb` suffix
-	// because it mirrors the machine's own `free_for_load_gb` heartbeat field,
-	// which is already named that way on the wire.
+	// FreeForLoadGB is the machine's last-reported maximum loadable model
+	// weight, in padded GiB (the heartbeat field of the same name). Nil when
+	// the provider version does not report it, in which case the
+	// no_free_for_load gate is skipped. Compare against LoadThresholdGiB, not
+	// WeightsGB.
 	FreeForLoadGB *float64 `json:"free_for_load_gb,omitempty"`
-	// Models carries one row per model the machine advertises, sorted by id.
+	// Models has one row per advertised model, sorted by id.
 	Models []ModelWarmPoolEligibility `json:"models,omitempty"`
-	// EligibleModels / WarmModels / PermanentlyBlockedModels are counts over
-	// Models, so a client can render a summary without walking the rows.
+	// Counts over Models.
 	EligibleModels           int `json:"eligible_models"`
 	WarmModels               int `json:"warm_models"`
 	PermanentlyBlockedModels int `json:"permanently_blocked_models"`
-	// ChallengeMaxAgeSeconds is the freshness window behind
-	// stale_challenge, so a client can render "N of M minutes".
+	// ChallengeMaxAgeSeconds is the stale_challenge freshness window.
 	ChallengeMaxAgeSeconds int `json:"challenge_max_age_seconds"`
 }
 
-// WarmPoolEligibility returns the warm-pool verdict for one live provider, or
-// nil when the id is not connected. Safe to call from HTTP handlers; takes r.mu
-// and p.mu internally. Read-only: it runs no planning pass and issues no
-// load_model.
+// WarmPoolEligibility returns the verdict for a connected provider, or nil when
+// providerID is not in the registry. Read-only: no planning pass, no
+// load_model. Takes r.mu and p.mu.
 func (r *Registry) WarmPoolEligibility(providerID string, now time.Time) *ProviderWarmPoolEligibility {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -256,20 +185,12 @@ func (r *Registry) WarmPoolEligibility(providerID string, now time.Time) *Provid
 // warmPoolEligibilityLocked builds the verdict. Caller holds r.mu and p.mu.
 func (r *Registry) warmPoolEligibilityLocked(p *Provider, now time.Time) *ProviderWarmPoolEligibility {
 	out := &ProviderWarmPoolEligibility{
+		TotalMemoryGB:          warmPoolTotalMemoryGBLocked(p),
 		ChallengeMaxAgeSeconds: int(challengeFreshnessMaxAge.Seconds()),
 	}
-
-	// Same memory basis the candidate gate uses: prefer the machine's own
-	// reported backend total over the registered hardware figure.
-	out.TotalMemoryGB = float64(p.Hardware.MemoryGB)
-	if p.BackendCapacity != nil {
-		if p.BackendCapacity.TotalMemoryGB > 0 {
-			out.TotalMemoryGB = p.BackendCapacity.TotalMemoryGB
-		}
-		if free := p.BackendCapacity.FreeForLoadGB; free != nil {
-			v := *free
-			out.FreeForLoadGB = &v
-		}
+	if free := backendFreeForLoadGB(p.BackendCapacity); free != nil {
+		v := *free
+		out.FreeForLoadGB = &v
 	}
 
 	seen := make(map[string]struct{}, len(p.Models))
@@ -283,42 +204,14 @@ func (r *Registry) warmPoolEligibilityLocked(p *Provider, now time.Time) *Provid
 		}
 		seen[m.ID] = struct{}{}
 
-		weights := r.catalogSizeGBLocked(m.ID)
-		row := ModelWarmPoolEligibility{
-			ID:               m.ID,
-			RequiredMemoryGB: r.requiredMemoryGBLocked(m.ID),
-			WeightsGB:        weights,
-			// Derived from the SAME constant reportedFreeForLoadAdmits applies,
-			// so the published threshold cannot drift from the enforced one.
-			LoadThresholdGiB: loadThresholdGiB(weights),
-		}
-
-		// An already-warm machine is not a warming candidate, and
-		// warmPoolCandidateReasonLocked is only meaningful for cold ones — the
-		// controller checks warmth first and never calls it on a warm provider.
-		// Mirror that order here.
-		if r.providerHasWarmModelLocked(p, m.ID, now) {
-			row.Warm = true
-			row.Blocker = WarmPoolBlockerAlreadyWarm
-			row.BlockerDescription = WarmPoolBlockerAlreadyWarm.Description()
+		row := r.modelWarmPoolRowLocked(p, m.ID, now)
+		switch {
+		case row.Warm:
 			out.WarmModels++
-			out.Models = append(out.Models, row)
-			continue
-		}
-
-		// Delegate to the SAME predicate the planner uses. Not a second
-		// implementation.
-		_, reason := r.warmPoolCandidateReasonLocked(p, m.ID, now)
-		row.Blocker = warmPoolBlockerFor(reason)
-		row.Eligible = row.Blocker == WarmPoolBlockerNone
-		if !row.Eligible {
-			row.BlockerDescription = row.Blocker.Description()
-			row.Permanent = row.Blocker.Permanent()
-			if row.Permanent {
-				out.PermanentlyBlockedModels++
-			}
-		} else {
+		case row.Eligible:
 			out.EligibleModels++
+		case row.Permanent:
+			out.PermanentlyBlockedModels++
 		}
 		out.Models = append(out.Models, row)
 	}
@@ -326,12 +219,50 @@ func (r *Registry) warmPoolEligibilityLocked(p *Provider, now time.Time) *Provid
 	return out
 }
 
-// loadThresholdGiB converts a catalog decimal-GB weight size into the padded-GiB
-// threshold reportedFreeForLoadAdmits actually compares against free_for_load_gb.
-// It applies coldLoadCatalogGBToMemGiB — the same constant the gate uses — rather
-// than restating the factor, so the number the diagnostic publishes cannot drift
-// from the number the gate enforces. 0 in, 0 out (the gate is skipped when the
-// catalog publishes no size).
+// modelWarmPoolRowLocked builds one model's row. Warmth is checked first, as
+// the controller does — warmPoolCandidateReasonLocked is only defined for cold
+// providers. Caller holds r.mu and p.mu.
+func (r *Registry) modelWarmPoolRowLocked(p *Provider, model string, now time.Time) ModelWarmPoolEligibility {
+	weights := r.catalogSizeGBLocked(model)
+	row := ModelWarmPoolEligibility{
+		ID:               model,
+		RequiredMemoryGB: r.requiredMemoryGBLocked(model),
+		WeightsGB:        weights,
+		LoadThresholdGiB: loadThresholdGiB(weights),
+	}
+
+	if r.providerHasWarmModelLocked(p, model, now) {
+		row.Warm = true
+		row.Blocker = WarmPoolBlockerAlreadyWarm
+		row.BlockerDescription = row.Blocker.Description()
+		return row
+	}
+
+	_, reason := r.warmPoolCandidateReasonLocked(p, model, now)
+	row.Blocker = warmPoolBlockerFor(reason)
+	row.Eligible = row.Blocker == WarmPoolBlockerNone
+	if !row.Eligible {
+		row.BlockerDescription = row.Blocker.Description()
+		row.Permanent = row.Blocker.Permanent()
+	}
+	return row
+}
+
+// warmPoolTotalMemoryGBLocked is the total-memory basis for the static fit
+// gate: the machine's reported backend total when present, else the registered
+// hardware figure. Shared by warmPoolCandidateReasonLocked and the diagnostic
+// so the published figure is the one the gate used. Caller holds p.mu.
+func warmPoolTotalMemoryGBLocked(p *Provider) float64 {
+	if p.BackendCapacity != nil && p.BackendCapacity.TotalMemoryGB > 0 {
+		return p.BackendCapacity.TotalMemoryGB
+	}
+	return float64(p.Hardware.MemoryGB)
+}
+
+// loadThresholdGiB converts a catalog decimal-GB size into the padded-GiB figure
+// reportedFreeForLoadAdmits compares against free_for_load_gb, using the same
+// constant so the published threshold cannot drift from the enforced one.
+// Zero in, zero out (the gate is skipped when the size is unpublished).
 func loadThresholdGiB(catalogSizeGB float64) float64 {
 	if catalogSizeGB <= 0 {
 		return 0
@@ -339,12 +270,9 @@ func loadThresholdGiB(catalogSizeGB float64) float64 {
 	return catalogSizeGB * coldLoadCatalogGBToMemGiB
 }
 
-// requiredMemoryGBLocked reports the total-memory threshold modelFitsHardware
-// applies for this model, in GB: the catalog's authoritative min_ram_gb when
-// published, else the weight-size heuristic's effective threshold, else 0 when
-// the catalog publishes neither and the gate is disabled. Mirrors
-// modelFitsHardware's precedence exactly so the number an operator reads is the
-// number the gate compared against. Caller holds r.mu.
+// requiredMemoryGBLocked mirrors modelFitsHardware's precedence: min_ram_gb
+// when published, else size_gb x modelMemoryHeadroomFactor, else 0 when the
+// gate is disabled. Caller holds r.mu.
 func (r *Registry) requiredMemoryGBLocked(model string) float64 {
 	if minRAM := r.catalogMinRAMGbLocked(model); minRAM > 0 {
 		return float64(minRAM)

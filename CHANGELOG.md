@@ -63,6 +63,12 @@ coordinator and console changes require their own deployments.
 - **Incoming request accounting** — Add an unsampled request-outcome ledger and bounded admin inspection with explicit coverage and completion evidence. Record recovered HTTP errors and parsed streaming mode, and distinguish completed, incomplete and error response terminals after successful writes while preserving contradictory evidence and earlier content progress.
 - **Partial network geography** — Keep the stats overview available when request-location or route analytics time out. Refresh geography independently, expose unavailable sections, preserve valid empty maps and restore geography after recovery.
 
+## Unreleased — warm-pool eligibility diagnostics
+
+- `GET /v1/me/providers` adds `warm_pool` to each connected machine: per model, whether the coordinator would pre-load it there and, if not, which gate refuses (`blocker`), whether that is permanent (`model_too_large` only), and the memory figures the gate compared (`required_memory_gb`, `weights_gb`, `load_threshold_gib`). Omitted for disconnected machines; present for connected-but-untrusted ones.
+- `GET /v1/admin/utilization` per-model rows add `eligible_cold`, `cold_ineligible` and `cold_disqualifiers`; models with warm-pool data but no publicly-routable provider now appear as snapshot-only rows outside the network-wide aggregates. `warm_pool_tick` logs the same two fields.
+- Additive fields only; no protocol, config or provider change.
+
 ## Unreleased — stats request-flow refresh
 
 - Restore Stats refreshes on large usage windows by aggregating request origins before looking up provider locations. Preserve weighted coordinates, request/token counts, and the top-50 flow limit while avoiding large temporary sorts.

@@ -1,9 +1,16 @@
 package registry
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -198,6 +205,33 @@ func TestWarmPoolEligibilityReportsStaleChallenge(t *testing.T) {
 	}
 }
 
+// A machine whose persisted state is still being restored after reconnect
+// (providerStateRestoreRequiredLocked) reports state_restoring, transient.
+// This reason landed on master after the diagnostic was written; the test pins
+// the live path, not just the mapping table.
+func TestWarmPoolEligibilityReportsStateRestoring(t *testing.T) {
+	reg := New(testLogger())
+	model := "diag-restoring"
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, MinRAMGB: 40, SizeGB: 30}})
+	p := makeWarmPoolDiagProvider(t, reg, "restoring-box", model, 64)
+	setDiagFreeForLoad(p, 48)
+	p.mu.Lock()
+	p.stateRestorePending = true
+	p.AttestationResult = &attestation.VerificationResult{Valid: true, SerialNumber: "serial", PublicKey: "se"}
+	p.mu.Unlock()
+
+	row := modelRow(t, reg.WarmPoolEligibility(p.ID, time.Now()), model)
+	if row.Blocker != WarmPoolBlockerStateRestoring {
+		t.Fatalf("blocker = %q, want %q", row.Blocker, WarmPoolBlockerStateRestoring)
+	}
+	if row.Permanent {
+		t.Fatalf("state_restoring must not be permanent")
+	}
+	if row.BlockerDescription == string(row.Blocker) {
+		t.Fatalf("state_restoring has no description")
+	}
+}
+
 // An already-loaded model is not a warming candidate, and must be
 // distinguishable from an excluded one.
 func TestWarmPoolEligibilityWarmModelIsNotAnEligibilityFailure(t *testing.T) {
@@ -321,24 +355,14 @@ func TestWarmPoolEligibilityAgreesWithThePlannerPredicate(t *testing.T) {
 // sentinel may map to "no blocker". Without this a newly added warmColdReason
 // would fall through the mapping and read as ELIGIBLE on an operator's screen.
 func TestWarmPoolBlockerMappingIsClosedOverEveryReason(t *testing.T) {
-	all := []warmColdReason{
-		warmColdEligible,
-		warmColdOfflineUntrust,
-		warmColdPendingLoad,
-		warmColdNotIdle,
-		warmColdThermal,
-		warmColdTrust,
-		warmColdStaleChallenge,
-		warmColdNotServing,
-		warmColdDedicated,
-		warmColdTooLarge,
-		warmColdNoFreeForLoad,
-	}
-	seen := make(map[WarmPoolBlocker]warmColdReason, len(all))
-	for _, reason := range all {
+	seen := make(map[WarmPoolBlocker]warmColdReason, len(warmColdReasons))
+	for _, reason := range warmColdReasons {
 		b := warmPoolBlockerFor(reason)
 		if reason != warmColdEligible && b == WarmPoolBlockerNone {
 			t.Fatalf("reason %q maps to the empty blocker, which reads as ELIGIBLE", reason)
+		}
+		if _, mapped := warmPoolBlockers[reason]; !mapped {
+			t.Fatalf("reason %q has no entry in warmPoolBlockers (falls through to its raw label)", reason)
 		}
 		if prev, dup := seen[b]; dup {
 			t.Fatalf("blocker %q is produced by two reasons (%q and %q)", b, prev, reason)
@@ -358,6 +382,73 @@ func TestWarmPoolBlockerMappingIsClosedOverEveryReason(t *testing.T) {
 			t.Fatalf("blocker %q (reason %q) Permanent()=%v, want %v", b, reason, b.Permanent(), wantPermanent)
 		}
 	}
+}
+
+// warmColdReasons must list every warmColdReason constant declared in the
+// package, or the closed-set test above silently stops covering the new one.
+// Parses the source rather than trusting a second hand-maintained list: this
+// is exactly how `state_restoring` (added on master after this surface was
+// written) escaped the mapping.
+func TestWarmColdReasonsIsComplete(t *testing.T) {
+	declared := warmColdReasonConstantsFromSource(t)
+	listed := make(map[warmColdReason]struct{}, len(warmColdReasons))
+	for _, r := range warmColdReasons {
+		listed[r] = struct{}{}
+	}
+	for name, value := range declared {
+		if _, ok := listed[value]; !ok {
+			t.Errorf("constant %s (%q) is not in warmColdReasons", name, value)
+		}
+	}
+	if len(declared) != len(warmColdReasons) {
+		t.Errorf("warmColdReasons has %d entries, source declares %d warmColdReason constants", len(warmColdReasons), len(declared))
+	}
+}
+
+// warmColdReasonConstantsFromSource returns name -> value for every constant of
+// type warmColdReason declared in this package's non-test sources.
+func warmColdReasonConstantsFromSource(t *testing.T) map[string]warmColdReason {
+	t.Helper()
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("parse package: %v", err)
+	}
+	out := make(map[string]warmColdReason)
+	for _, pkg := range pkgs {
+		for _, f := range pkg.Files {
+			for _, decl := range f.Decls {
+				gd, ok := decl.(*ast.GenDecl)
+				if !ok || gd.Tok != token.CONST {
+					continue
+				}
+				for _, spec := range gd.Specs {
+					vs := spec.(*ast.ValueSpec)
+					id, ok := vs.Type.(*ast.Ident)
+					if !ok || id.Name != "warmColdReason" {
+						continue
+					}
+					for i, name := range vs.Names {
+						lit, ok := vs.Values[i].(*ast.BasicLit)
+						if !ok || lit.Kind != token.STRING {
+							t.Fatalf("%s: warmColdReason constant is not a string literal", name.Name)
+						}
+						v, err := strconv.Unquote(lit.Value)
+						if err != nil {
+							t.Fatalf("%s: %v", name.Name, err)
+						}
+						out[name.Name] = warmColdReason(v)
+					}
+				}
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("found no warmColdReason constants; parser filter is wrong")
+	}
+	return out
 }
 
 // An unmapped reason must NOT silently read as eligible.

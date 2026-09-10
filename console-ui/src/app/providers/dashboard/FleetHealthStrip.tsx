@@ -2,6 +2,7 @@
 // a segmented capacity bar and the money KPIs. Worst fleet state drives the
 // left rail color so the page's health is signaled at the very top.
 
+import Link from "next/link";
 import { AlertTriangle, CheckCircle2, CircleSlash, XCircle, type LucideIcon } from "lucide-react";
 import type { MySummaryResponse } from "../types";
 import type { FleetVerdict } from "./aggregate";
@@ -49,10 +50,11 @@ export function FleetHealthStrip({
 }) {
   const meta = routingMeta(verdict.state);
   const Icon = ICON[verdict.state];
+  const payoutStatus = summary?.payout_ready ? "payout ready" : "set up payouts";
 
   return (
     <div className={`rounded-xl bg-bg-secondary shadow-sm border border-border-dim border-l-[3px] ${meta.rail} p-5`}>
-      <div className="grid gap-5 lg:grid-cols-[36%_1fr] lg:items-center">
+      <div className="grid gap-5 lg:grid-cols-[1fr_1fr] lg:items-center">
         {/* Left: the plain-language fleet verdict (worst state wins) */}
         <div className="flex items-center gap-3">
           <div className={`w-14 h-14 rounded-full flex items-center justify-center shrink-0 ${meta.tint}`}>
@@ -64,38 +66,39 @@ export function FleetHealthStrip({
           </div>
         </div>
 
-        {/* Right: segmented capacity bar over the money + routable KPIs */}
-        <div className="space-y-4">
-          <CapacityBar counts={verdict.counts} />
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
-            <KPI
-              label="Total earned"
-              value={summary ? formatUSD(summary.lifetime_micro_usd) : "—"}
-              sub={summary ? `${summary.lifetime_jobs} jobs` : undefined}
-            />
-            <KPI
-              label="Last 24h"
-              value={summary ? formatUSD(summary.last_24h_micro_usd) : "—"}
-              sub={summary ? `${summary.last_24h_jobs} jobs` : undefined}
-            />
-            <KPI
-              label="Last 7d"
-              value={summary ? formatUSD(summary.last_7d_micro_usd) : "—"}
-              sub={summary ? `${summary.last_7d_jobs} jobs` : undefined}
-            />
-            <KPI
-              label="Withdrawable"
-              value={summary ? formatUSD(summary.withdrawable_balance_micro_usd ?? summary.available_balance_micro_usd) : "—"}
-              sub={summary?.payout_ready ? "payout ready" : "set up payouts"}
-              dot={summary?.payout_ready}
-            />
-            <KPI
-              label="Earning now"
-              value={`${verdict.counts.routable + verdict.counts.degraded}/${verdict.counts.total}`}
-              sub={verdict.counts.degraded > 0 ? `${verdict.counts.routable} full priority` : "machines routable"}
-            />
-          </div>
-        </div>
+        <CapacityBar counts={verdict.counts} />
+      </div>
+      <div className="mt-5 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+        <KPI
+          label="Total earned"
+          value={summary ? formatUSD(summary.lifetime_micro_usd) : "—"}
+          sub={summary ? `${summary.lifetime_jobs} jobs` : undefined}
+        />
+        <KPI
+          label="Last 24h"
+          value={summary ? formatUSD(summary.last_24h_micro_usd) : "—"}
+          sub={summary ? `${summary.last_24h_jobs} jobs` : undefined}
+        />
+        <KPI
+          label="Last 7d"
+          value={summary ? formatUSD(summary.last_7d_micro_usd) : "—"}
+          sub={summary ? `${summary.last_7d_jobs} jobs` : undefined}
+        />
+        <KPI
+          label="Withdrawable"
+          value={summary ? formatUSD(summary.withdrawable_balance_micro_usd ?? summary.available_balance_micro_usd) : "—"}
+          sub={summary ? payoutStatus : "temporarily unavailable"}
+          dot={summary?.payout_ready}
+        />
+        <KPI
+          label="Earning now"
+          value={`${verdict.counts.routable + verdict.counts.degraded}/${verdict.counts.total}`}
+          sub={verdict.counts.degraded > 0 ? `${verdict.counts.routable} full priority` : "machines routable"}
+        />
+      </div>
+      <div className="mt-4 border-t border-border-dim/60 pt-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <span className="text-text-tertiary">Earnings across your account</span>
+        <Link href="/providers/earnings" className="focus-ring rounded text-accent-brand hover:underline">View earnings & payouts →</Link>
       </div>
     </div>
   );

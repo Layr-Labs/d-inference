@@ -39,11 +39,10 @@ export function CardVitals({
   const sm = provider.system_metrics;
   const cap = provider.backend_capacity;
 
-  if (!sm && !cap) {
-    const msg =
-      provider.status === "never_seen"
-        ? "Live metrics resume when this machine first connects."
-        : "No live metrics — machine offline.";
+  if (!provider.online || (!sm && !cap)) {
+    let msg = "No live metrics — machine offline.";
+    if (provider.status === "never_seen") msg = "Live metrics resume when this machine first connects.";
+    else if (provider.online) msg = "Waiting for live metrics from this machine.";
     return <p className="px-4 py-3 text-xs text-text-tertiary">{msg}</p>;
   }
 

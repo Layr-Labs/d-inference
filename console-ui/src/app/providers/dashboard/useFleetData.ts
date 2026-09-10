@@ -131,7 +131,7 @@ export function useFleetData(): FleetData {
       }));
 
       const summary = await readSummary(sRes);
-      if (isCurrent() && summary !== undefined) setSnapshot((previous) => ({ ...previous, summary }));
+      if (isCurrent()) setSnapshot((previous) => ({ ...previous, summary: summary ?? null }));
     } catch (e) {
       if (!isCurrent()) return;
       const message = e instanceof Error ? e.message : String(e);

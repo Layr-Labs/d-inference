@@ -287,6 +287,7 @@ private func makeOpenAIRequest(model: String = "gemma-4-26b-qat-4bit") -> OpenAI
 /// Collect a server-engine event stream into a comparable shape.
 private enum RecordedServerEvent: Equatable {
     case content(String)
+    case parsed(ParsedReasoning)
     case info(prompt: Int, completion: Int)
 }
 
@@ -298,6 +299,8 @@ private func recordServerStream(
         switch event {
         case .content(let text):
             events.append(.content(text))
+        case .parsed(let parsed):
+            events.append(.parsed(parsed))
         case .info(let info):
             events.append(.info(prompt: info.promptTokens, completion: info.completionTokens))
         case .toolCall:

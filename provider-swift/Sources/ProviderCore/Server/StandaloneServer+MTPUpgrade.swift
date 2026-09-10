@@ -5,7 +5,7 @@ import MLX
 /// replacement owns only new assistant and KV resources.
 final class StagedStandaloneMTPUpgrade: @unchecked Sendable {
     let modelID: String
-    // Mutated only by the owning provider actor; cleared before crediting freed weights.
+    // Mutated only by the owning standalone actor; cleared before crediting freed weights.
     var original: StandaloneServer.CachedSlot?
     let replacement: ProviderEngineBundle
     let sizing: SlotSizingSnapshot

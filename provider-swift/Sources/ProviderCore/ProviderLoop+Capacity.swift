@@ -132,14 +132,14 @@ extension ProviderLoop {
         // the load gate uses, so it enforces the 90% cap.
         //
         // Eviction handling: current MLX usage may be reclaimed by evicting idle
-        // models on a cold load — BUT ONLY when nothing is being served. MLX
+        // models on a cold load, only without serving work or retained MTP targets. MLX
         // memory is global (it also covers the local inference endpoint, whose
         // streams are tracked by localReservations, not modelSlots), so a model
         // serving a local request is NOT evictable. `hasInflightWork` is the
         // comprehensive signal (coordinator inflight + local streams): when work
         // is in flight we treat NOTHING as reclaimable (conservative, never
-        // advertises an actively-served model's weights as free); only when fully
-        // idle do we assume idle models can be evicted.
+        // advertises an actively-served model's weights as free). Retained MTP
+        // targets also prevent reclaim credit, even when all slots are idle.
         let mlxActiveBytes = processMemory.activeBytes
         let mlxPeakBytes = UInt64(max(0, MLX.GPU.peakMemory))
         let mlxCacheBytes = processMemory.cacheBytes

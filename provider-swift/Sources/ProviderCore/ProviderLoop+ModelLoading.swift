@@ -840,10 +840,10 @@ extension ProviderLoop {
             || requestToModel.values.contains(modelId) || hasLocalReservation(modelId)) {
             return false
         }
-        // Bind ONLY the bridge, never the whole slot: the slot value is the
-        // last owner of the container AND the opaque MTP drafter handle, and
-        // both must be released at `removeValue` below — BEFORE the cache
-        // purge — not kept alive by a local until this function returns.
+        // Bind only the bridge, never the whole slot: remove the slot's
+        // container and opaque drafter ownership before the cache purge,
+        // without extending it through a local. Explicit retirement can leave
+        // a separately charged MTP preparation owner until its cleanup.
         guard let engineBundle = modelSlots[modelId]?.engineBundle,
             !modelsUnloading.contains(modelId)
         else { return false }
@@ -1167,8 +1167,8 @@ extension ProviderLoop {
             return false
         }
 
-        // An idle slot (loaded, no in-flight work, not already unloading) can be
-        // evicted to make room, so its presence means we must NOT pre-reject.
+        // An idle slot with no in-flight work, unload, or MTP target retention
+        // can be eviction credit; check the resulting headroom before rejecting.
         let modelsWithInflight = Set(requestToModel.values)
         let evictable = modelSlots.filter {
             !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key)

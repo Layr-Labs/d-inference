@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-09 · commit `01d768198`
+> Last updated: 2026-09-10 · commit `18c4d8d43`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -388,7 +388,10 @@ tokens**, configurable per concrete model. `rejectShortInput` in
 ```
 
 The floor counts prompt-bearing fields (`messages`, `input`, `prompt`) with the
-media-aware estimate; model names, sampling options, and other request metadata
+media-aware estimate, including top-level Anthropic `system` text on `/v1/messages`.
+String and text-block system prompts are extracted exactly as in provider lowering
+(`promptcontract.AnthropicSystemText`), with one system-message framing allowance;
+text-block metadata does not contribute. Model names, sampling options, and other request metadata
 do not contribute. It is not the provider's exact tokenizer count. Below-minimum
 requests do not start a response stream or reach a provider. An alias may defer
 its floor decision until ordinary capacity/TTFT admission selects a build; a

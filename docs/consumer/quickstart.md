@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-09 · commit `01d768198`
+> Last updated: 2026-09-10 · commit `18c4d8d43`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -112,6 +112,10 @@ msg = client.messages.create(
 )
 print(msg.content[0].text)
 ```
+
+A top-level Anthropic `system` prompt contributes to the input minimum, whether
+provided as a string or text blocks. The estimate includes the system-message
+framing but excludes block metadata such as `cache_control`.
 
 Requests land on `POST /v1/messages` (`handleAnthropicMessages`, `coordinator/api/consumer.go`) and are translated to the same pipeline as chat completions.
 

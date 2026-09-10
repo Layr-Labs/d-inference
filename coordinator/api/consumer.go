@@ -2817,7 +2817,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
 	}
-	floorPromptTokens, _ := routingShape(parsed)
+	floorPromptTokens := inputFloorPromptTokens(parsed, endpointKind)
 	floorModel := model
 	floorDeferred, floorHandled := s.checkInitialInputFloor(w, r, parsed, publicModel, model, floorPromptTokens, resolvedRuntimeParameters)
 	if floorHandled {

@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-09 · commit `01d768198`
+> Last updated: 2026-09-10 · commit `18c4d8d43`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -47,6 +47,9 @@ content beyond that. See [`data-flow.md`](data-flow.md) and
 Before token admission and balance reservation, the inference handlers compare
 the prompt-field-only media-aware estimate against the selected model's
 `runtime_parameters.min_input_tokens`, inheriting a deployment default of 32.
+Anthropic Messages also counts the top-level `system` text that provider lowering
+prepends, including string and text-block forms (`inputFloorPromptTokens` and
+`promptcontract.AnthropicSystemText`). Block metadata contributes no tokens.
 Empty inputs cannot acquire input tokens from model names or sampling options.
 A terminal failure is 400 `input_too_short`; it never reaches provider dispatch.
 

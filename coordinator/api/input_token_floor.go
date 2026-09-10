@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -129,4 +130,17 @@ func (s *Server) inputFloorRegistryReadFailed(w http.ResponseWriter, model strin
 	s.logger.Error("cannot resolve model input token floor", "model", model, "error", err)
 	s.writeServiceUnavailable(w, model)
 	return true
+}
+
+// inputFloorPromptTokens includes endpoint-native prompt text without admitting
+// unrelated request options. Anthropic's system field becomes a provider-bound
+// system message; extraction and framing must agree with that lowering.
+func inputFloorPromptTokens(parsed map[string]any, endpoint promptcontract.Endpoint) int {
+	tokens, _ := routingShape(parsed)
+	if endpoint == promptcontract.EndpointMessages {
+		if system := promptcontract.AnthropicSystemText(parsed["system"]); system != "" {
+			tokens += 4 + textPromptTokens(system)
+		}
+	}
+	return tokens
 }

@@ -34,6 +34,9 @@ this catalog-owned policy.
 
 The count is the coordinator's existing **media-aware routing estimate** over the
 conversation/input, not an exact tokenizer count or just the last user message.
+For `/v1/messages`, top-level `system` text also contributes, using the same
+string/text-block extraction and message framing as provider lowering; block
+metadata such as `cache_control` does not contribute.
 It excludes the routing estimator's whole-body fallback: model names, sampling
 options, and unrelated metadata cannot make an empty prompt meet the floor.
 For example, a provider-reported 27-token prompt can estimate to 19 tokens.

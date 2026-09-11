@@ -1,0 +1,643 @@
+{
+  "limitations": [
+    "Small synthetic workload; no broad model quality equivalence claim.",
+    "B2/B4 replicate one prompt per cohort; branches run in successive cohorts, not mixed suffixes in one cohort.",
+    "Exact output tokens are informational; semantic answer keys and structural gates are mandatory.",
+    "Per-row SSD counter deltas can overlap within a batch; terminal hit/staged receipts remain required.",
+    "TTFT includes SSD staging and native engine dispatch, not HTTP or coordinator latency.",
+    "Fresh-cache matrix only: first cohort must miss; separate-process persistent restart needs its own assertion.",
+    "Timing distributions contain few requests and no statistical significance claim."
+  ],
+  "off": {
+    "cache_on": false,
+    "concurrency": 1,
+    "errors": [],
+    "exact_generated_tokens_informational": true,
+    "metrics": {
+      "branch-first": {
+        "decode_tps": {
+          "max": 130.53042765945074,
+          "median": 130.53042765945074,
+          "min": 130.53042765945074,
+          "n": 1,
+          "p95_nearest_rank": 130.53042765945074
+        },
+        "hits": 0,
+        "ttft_s": {
+          "max": 1.105358458,
+          "median": 1.105358458,
+          "min": 1.105358458,
+          "n": 1,
+          "p95_nearest_rank": 1.105358458
+        }
+      },
+      "branch-repeat": {
+        "decode_tps": {
+          "max": 130.1706556249918,
+          "median": 130.1706556249918,
+          "min": 130.1706556249918,
+          "n": 1,
+          "p95_nearest_rank": 130.1706556249918
+        },
+        "hits": 0,
+        "ttft_s": {
+          "max": 1.106678458,
+          "median": 1.106678458,
+          "min": 1.106678458,
+          "n": 1,
+          "p95_nearest_rank": 1.106678458
+        }
+      },
+      "compute-first": {
+        "decode_tps": {
+          "max": 130.4621287342468,
+          "median": 130.4621287342468,
+          "min": 130.4621287342468,
+          "n": 1,
+          "p95_nearest_rank": 130.4621287342468
+        },
+        "hits": 0,
+        "ttft_s": {
+          "max": 1.106724667,
+          "median": 1.106724667,
+          "min": 1.106724667,
+          "n": 1,
+          "p95_nearest_rank": 1.106724667
+        }
+      },
+      "compute-repeat": {
+        "decode_tps": {
+          "max": 130.33415060646067,
+          "median": 130.33415060646067,
+          "min": 130.33415060646067,
+          "n": 1,
+          "p95_nearest_rank": 130.33415060646067
+        },
+        "hits": 0,
+        "ttft_s": {
+          "max": 1.107488125,
+          "median": 1.107488125,
+          "min": 1.107488125,
+          "n": 1,
+          "p95_nearest_rank": 1.107488125
+        }
+      },
+      "long-first": {
+        "decode_tps": {
+          "max": 130.59460141300747,
+          "median": 130.59460141300747,
+          "min": 130.59460141300747,
+          "n": 1,
+          "p95_nearest_rank": 130.59460141300747
+        },
+        "hits": 0,
+        "ttft_s": {
+          "max": 1.70853425,
+          "median": 1.70853425,
+          "min": 1.70853425,
+          "n": 1,
+          "p95_nearest_rank": 1.70853425
+        }
+      },
+      "long-repeat": {
+        "decode_tps": {
+          "max": 130.43066613330134,
+          "median": 130.43066613330134,
+          "min": 130.43066613330134,
+          "n": 1,
+          "p95_nearest_rank": 130.43066613330134
+        },
+        "hits": 0,
+        "ttft_s": {
+          "max": 1.106416583,
+          "median": 1.106416583,
+          "min": 1.106416583,
+          "n": 1,
+          "p95_nearest_rank": 1.106416583
+        }
+      }
+    },
+    "pass": true,
+    "prompt_tokens": {
+      "max": 4266,
+      "median": 4259.0,
+      "min": 4259,
+      "n": 6,
+      "p95_nearest_rank": 4266
+    },
+    "report": "/private/tmp/gptoss-prefix-20260911/results/b1-off-1.json",
+    "semantic": [
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-first",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-repeat",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-first",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-repeat",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-repeat",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-793B115B-74F9-4573-AA15-371AFAE92DE3-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-793B115B-74F9-4573-AA15-371AFAE92DE3-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-793B115B-74F9-4573-AA15-371AFAE92DE3-B"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-793B115B-74F9-4573-AA15-371AFAE92DE3-cancel"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-793B115B-74F9-4573-AA15-371AFAE92DE3-cancel"
+      }
+    ],
+    "sha256": "e53f2cb2bc4b897e6a9560f09e704ea778706680b94361bbf004bfd9a0de8bf9",
+    "shared_prefix_tokens": {
+      "branch-first": 4241,
+      "compute-first": 4239
+    }
+  },
+  "on": {
+    "cache_on": true,
+    "concurrency": 1,
+    "errors": [],
+    "exact_generated_tokens_informational": true,
+    "metrics": {
+      "branch-first": {
+        "decode_tps": {
+          "max": 130.55113085198937,
+          "median": 130.55113085198937,
+          "min": 130.55113085198937,
+          "n": 1,
+          "p95_nearest_rank": 130.55113085198937
+        },
+        "hits": 1,
+        "ttft_s": {
+          "max": 0.1519695,
+          "median": 0.1519695,
+          "min": 0.1519695,
+          "n": 1,
+          "p95_nearest_rank": 0.1519695
+        }
+      },
+      "branch-repeat": {
+        "decode_tps": {
+          "max": 130.5737351738048,
+          "median": 130.5737351738048,
+          "min": 130.5737351738048,
+          "n": 1,
+          "p95_nearest_rank": 130.5737351738048
+        },
+        "hits": 1,
+        "ttft_s": {
+          "max": 0.149447542,
+          "median": 0.149447542,
+          "min": 0.149447542,
+          "n": 1,
+          "p95_nearest_rank": 0.149447542
+        }
+      },
+      "compute-first": {
+        "decode_tps": {
+          "max": 130.6306318743498,
+          "median": 130.6306318743498,
+          "min": 130.6306318743498,
+          "n": 1,
+          "p95_nearest_rank": 130.6306318743498
+        },
+        "hits": 1,
+        "ttft_s": {
+          "max": 0.157179459,
+          "median": 0.157179459,
+          "min": 0.157179459,
+          "n": 1,
+          "p95_nearest_rank": 0.157179459
+        }
+      },
+      "compute-repeat": {
+        "decode_tps": {
+          "max": 130.58948637282236,
+          "median": 130.58948637282236,
+          "min": 130.58948637282236,
+          "n": 1,
+          "p95_nearest_rank": 130.58948637282236
+        },
+        "hits": 1,
+        "ttft_s": {
+          "max": 0.14802375,
+          "median": 0.14802375,
+          "min": 0.14802375,
+          "n": 1,
+          "p95_nearest_rank": 0.14802375
+        }
+      },
+      "long-first": {
+        "decode_tps": {
+          "max": 130.2405269255701,
+          "median": 130.2405269255701,
+          "min": 130.2405269255701,
+          "n": 1,
+          "p95_nearest_rank": 130.2405269255701
+        },
+        "hits": 0,
+        "ttft_s": {
+          "max": 1.112010542,
+          "median": 1.112010542,
+          "min": 1.112010542,
+          "n": 1,
+          "p95_nearest_rank": 1.112010542
+        }
+      },
+      "long-repeat": {
+        "decode_tps": {
+          "max": 130.57447040025656,
+          "median": 130.57447040025656,
+          "min": 130.57447040025656,
+          "n": 1,
+          "p95_nearest_rank": 130.57447040025656
+        },
+        "hits": 1,
+        "ttft_s": {
+          "max": 0.169856292,
+          "median": 0.169856292,
+          "min": 0.169856292,
+          "n": 1,
+          "p95_nearest_rank": 0.169856292
+        }
+      }
+    },
+    "pass": true,
+    "prompt_tokens": {
+      "max": 4266,
+      "median": 4259.0,
+      "min": 4259,
+      "n": 6,
+      "p95_nearest_rank": 4266
+    },
+    "report": "/private/tmp/gptoss-prefix-20260911/results/b1-on-1.json",
+    "semantic": [
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-first",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-repeat",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-first",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-repeat",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-repeat",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-0618E6CE-AC92-458E-A0AC-65D7D1209435-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-0618E6CE-AC92-458E-A0AC-65D7D1209435-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-0618E6CE-AC92-458E-A0AC-65D7D1209435-B"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-0618E6CE-AC92-458E-A0AC-65D7D1209435-cancel"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-0618E6CE-AC92-458E-A0AC-65D7D1209435-cancel"
+      }
+    ],
+    "sha256": "5406b046d743909395aee698930bd129b33dc17b08107f99243d7b27e13e717e",
+    "shared_prefix_tokens": {
+      "branch-first": 4241,
+      "compute-first": 4239
+    }
+  },
+  "pair_errors": [],
+  "pairs": [
+    {
+      "authenticated_hit": false,
+      "decode_speed_change_pct": -0.2711249037910868,
+      "exact_tokens_equal_informational": true,
+      "id": "long-first",
+      "off_decode_tps": 130.59460141300747,
+      "off_ttft_s": 1.70853425,
+      "on_decode_tps": 130.2405269255701,
+      "on_ttft_s": 1.112010542,
+      "ttft_reduction_pct": 34.91435468735848
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 0.11025341755768192,
+      "exact_tokens_equal_informational": true,
+      "id": "long-repeat",
+      "off_decode_tps": 130.43066613330134,
+      "off_ttft_s": 1.106416583,
+      "on_decode_tps": 130.57447040025656,
+      "on_ttft_s": 0.169856292,
+      "ttft_reduction_pct": 84.64807066254899
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 0.01586081721316468,
+      "exact_tokens_equal_informational": true,
+      "id": "branch-first",
+      "off_decode_tps": 130.53042765945074,
+      "off_ttft_s": 1.105358458,
+      "on_decode_tps": 130.55113085198937,
+      "on_ttft_s": 0.1519695,
+      "ttft_reduction_pct": 86.25156401526355
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 0.30965469665775736,
+      "exact_tokens_equal_informational": true,
+      "id": "branch-repeat",
+      "off_decode_tps": 130.1706556249918,
+      "off_ttft_s": 1.106678458,
+      "on_decode_tps": 130.5737351738048,
+      "on_ttft_s": 0.149447542,
+      "ttft_reduction_pct": 86.49584792044448
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 0.12915866216336447,
+      "exact_tokens_equal_informational": true,
+      "id": "compute-first",
+      "off_decode_tps": 130.4621287342468,
+      "off_ttft_s": 1.106724667,
+      "on_decode_tps": 130.6306318743498,
+      "on_ttft_s": 0.157179459,
+      "ttft_reduction_pct": 85.79778117478247
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 0.19590856669076118,
+      "exact_tokens_equal_informational": true,
+      "id": "compute-repeat",
+      "off_decode_tps": 130.33415060646067,
+      "off_ttft_s": 1.107488125,
+      "on_decode_tps": 130.58948637282236,
+      "on_ttft_s": 0.14802375,
+      "ttft_reduction_pct": 86.63428106734779
+    }
+  ],
+  "pass": true,
+  "schema": 1,
+  "ttft_reduction_pct_hit_rows": {
+    "max": 86.63428106734779,
+    "median": 86.25156401526355,
+    "min": 84.64807066254899,
+    "n": 5,
+    "p95_nearest_rank": 86.63428106734779
+  }
+}

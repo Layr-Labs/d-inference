@@ -44,7 +44,7 @@ The coordinator workstream is [PR #898](https://github.com/Layr-Labs/d-inference
 `handleEndpointStreamingResponse` replaces duplicated translated-endpoint
 orchestration; `streamCompletionPolicy` names the existing Responses versus
 Messages/Completions completion differences. Chat keeps its authoritative
-usage, held finish frames and metadata. Production code is 132 lines smaller.
+usage, held finish frames and metadata. Production code is 127 lines smaller.
 
 The web workstream is [PR #899](https://github.com/Layr-Labs/d-inference/pull/899).
 Fifteen operations in twelve route files become declarations over

@@ -92,6 +92,15 @@ file on critical-secret or metadata-download failure. The writer publishes a
 mode-0600 candidate by atomic rename after validation; temporary files are
 removed on exit. A failed boot refresh stops before service reconfiguration.
 
+On a new VM, bootstrap runs before these secrets are populated and therefore
+stops at that validation. After filling the required secrets, rerun startup to
+finish installing the service units before the first image deploy:
+
+```bash
+gcloud compute ssh d-inference-dev --zone=us-central1-a --project=sepolia-ai \
+  -- 'sudo google_metadata_script_runner startup'
+```
+
 ### 3. DNS
 
 ```

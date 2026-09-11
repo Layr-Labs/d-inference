@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, act, render, screen, fireEvent } from "@testing-library/react";
+import { renderHook, act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { useStripePayouts } from "@/components/payouts/useStripePayouts";
 import { StripePayoutsCard } from "@/components/payouts/StripePayoutsCard";
 import type { StripeStatus } from "@/lib/api";
@@ -36,6 +36,8 @@ const readyStatus: StripeStatus = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(fetchStripeStatus).mockResolvedValue(readyStatus);
+  vi.mocked(fetchStripeWithdrawals).mockResolvedValue([]);
 });
 
 describe("useStripePayouts", () => {
@@ -85,15 +87,16 @@ describe("useStripePayouts", () => {
     const onWithdrawStart = vi.fn();
     const onWithdrawSuccess = vi.fn();
     const { result } = renderHook(() =>
-      useStripePayouts({ addToast, enabled: false, onAfterWithdraw, onWithdrawStart, onWithdrawSuccess }),
+      useStripePayouts({ addToast, onAfterWithdraw, onWithdrawStart, onWithdrawSuccess }),
     );
+    await waitFor(() => expect(result.current.status).toEqual(readyStatus));
     act(() => result.current.setWithdrawAmount("10"));
 
     await act(async () => {
       await result.current.withdraw();
     });
 
-    expect(withdrawStripe).toHaveBeenCalledWith("10", "standard");
+    expect(withdrawStripe).toHaveBeenCalledWith("10", "standard", undefined);
     expect(onWithdrawStart).toHaveBeenCalledWith("standard");
     expect(onWithdrawSuccess).toHaveBeenCalledWith("standard");
     expect(onAfterWithdraw).toHaveBeenCalled();
@@ -106,8 +109,9 @@ describe("useStripePayouts", () => {
     const addToast = vi.fn();
     const onWithdrawError = vi.fn();
     const { result } = renderHook(() =>
-      useStripePayouts({ addToast, enabled: false, onWithdrawError }),
+      useStripePayouts({ addToast, onWithdrawError }),
     );
+    await waitFor(() => expect(result.current.status).toEqual(readyStatus));
 
     await act(async () => {
       await result.current.withdraw();
@@ -123,7 +127,7 @@ describe("useStripePayouts", () => {
     (withdrawStripe as ReturnType<typeof vi.fn>).mockRejectedValue(
       new ApiError("your Stripe payout account no longer exists", "stripe_account_gone", 409),
     );
-    (fetchStripeStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+    vi.mocked(fetchStripeStatus).mockResolvedValueOnce(readyStatus).mockResolvedValue({
       ...readyStatus,
       has_account: false,
       status: "",
@@ -131,7 +135,8 @@ describe("useStripePayouts", () => {
     (fetchStripeWithdrawals as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 
     const addToast = vi.fn();
-    const { result } = renderHook(() => useStripePayouts({ addToast, enabled: false }));
+    const { result } = renderHook(() => useStripePayouts({ addToast }));
+    await waitFor(() => expect(result.current.status).toEqual(readyStatus));
     act(() => result.current.setWithdrawOpen(true));
 
     await act(async () => {

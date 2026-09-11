@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-11 · commit `7c394fa2b`
 
 How the coordinator's `promptsidecar` child process derives deterministic,
 provider-compatible token boundaries so exact-cache routing can predict which
@@ -182,8 +182,8 @@ the provider contract, relax receipt checks or clear existing fences.
 
 The semantic versions (`CurrentVersions`) are:
 
-- normalization: `darkbloom-request-normalization-v3` (includes Gemma 4 compatibility, explicit empty content on detached Harmony reasoning turns, and the provider's existing GPT-OSS high-to-medium effort policy)
-- renderer: `swift-jinja-request-date-compatible-v3`
+- normalization: `darkbloom-request-normalization-v4` (retains v3 policies and preserves typed function-level `strict` only for Nemotron)
+- renderer: `swift-jinja-request-date-compatible-v4`
 - tokenizer: `huggingface-tokenizer-json-v1`
 - block hash: `PromptContractIdentity.blockHashVersion`, stated in
   [`prefix-cache.md#block-hashing`](prefix-cache.md#block-hashing)
@@ -307,6 +307,29 @@ values remain booleans through `ParserUtilities.asSendable` in
 `libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/ParserUtilities.swift`.
 
 ### Parity fixtures and measured latency
+
+For `model_type=nemotron_h`, the provider and sidecar instead use the pinned
+Nemotron template's Transformers-compatible default scalar and JSON filters.
+`provider-swift/Sources/ProviderCoreFoundation/NemotronTemplateFilters.swift`
+and `coordinator/promptsidecar/src/render/nemotron.rs` preserve Unicode and
+use comma-space/colon-space JSON separators. The Swift writer bounds nesting
+at 128 and output at 16 MiB; unsupported filter options fail closed.
+`NemotronTemplateFilterBinding` binds only the `string` filter to a private
+name because Swift Jinja shares filter and type-test names. It leaves
+`is string` tests intact. Model artifact templates are not modified.
+
+The SDK preserves optional boolean `strict` (including false); provider and
+sidecar normalization retain it only for Nemotron. Unknown function fields
+are still outside the typed SDK contract. This is not a general arbitrary-JSON
+or every-template parity guarantee. The fixture corpus verifies the pinned
+template's supported request shapes; it does not certify model tool-selection
+quality.
+
+The v4 identity change affects all model families, including those with
+unchanged prompt bytes. Existing checkpoints remain separated by prompt
+identity and start cold. Coordinator/sidecar contracts and artifact allowlists
+must be regenerated with the provider rollout; rollback restores the prior
+provider/coordinator versions together, never relabeling old cache entries.
 
 `fixtures/prompt-contract/v1` is shared by Rust, Go, and Swift tests:
 `contract_vectors.json` and `block_hash_vectors.json` hold the contract and

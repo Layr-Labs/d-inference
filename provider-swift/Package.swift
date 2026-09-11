@@ -237,7 +237,8 @@ let package = Package(
                 // ProviderCoreFoundationTests cannot link.
                 .product(name: "Jinja", package: "swift-jinja"),
             ],
-            path: "Tests/ProviderCoreTests"
+            path: "Tests/ProviderCoreTests",
+            resources: [.copy("Fixtures")]
         ),
 
         // ----------------------------------------------------------------

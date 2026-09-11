@@ -1,5 +1,6 @@
 mod input;
 mod json;
+mod nemotron;
 
 pub(crate) use input::validate_request_input;
 pub(crate) use json::openai_json;
@@ -75,6 +76,15 @@ pub fn render(
     environment.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
     minijinja_contrib::add_to_environment(&mut environment);
     environment.add_filter("tojson", json::tojson);
+    if artifacts
+        .model_config
+        .get("model_type")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("nemotron_h"))
+    {
+        environment.add_filter("string", nemotron::string);
+        environment.add_filter("tojson", nemotron::tojson);
+    }
     environment.add_function("raise_exception", raise_exception);
     let date = request.prompt_date.clone();
     environment.add_function(
@@ -335,5 +345,87 @@ mod tests {
             validate_template_source(r#"{{ strftime_now("%Y-%m-%d") }}"#, Some("2026-02-29"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn nemotron_uses_transformers_filter_bytes_and_other_families_do_not() {
+        use crate::contract::{ContractMetadata, ContractVersions};
+        let template = "{{ tools[0].function.strict|string }}|{{ tools[0].function.parameters.required|tojson }}";
+        let mut artifacts = date_artifacts();
+        artifacts.metadata = ContractMetadata {
+            schema_version: 1,
+            prompt_contract_id: String::new(),
+            model_id: "nvidia-nemotron-3.5-lightning".into(),
+            model_type: Some("nemotron_h".into()),
+            model_aggregate_sha256: String::new(),
+            artifacts: vec![],
+            versions: ContractVersions::default(),
+        };
+        artifacts.model_config = serde_json::json!({"model_type":"nemotron_h"})
+            .as_object()
+            .unwrap()
+            .clone();
+        artifacts.chat_template = Value::String(template.into());
+        let body = serde_json::json!({
+            "model":"nvidia-nemotron-3.5-lightning",
+            "messages":[{"role":"user","content":"weather"}],
+            "tools":[{"type":"function","function":{
+                "name":"get_weather", "strict":true,
+                "parameters":{"type":"object","required":["location", "unit"]}
+            }}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let request = crate::normalize::normalize(body.clone(), Some("nemotron_h")).unwrap();
+        assert_eq!(
+            render(&artifacts, &request).unwrap(),
+            "True|[\"location\", \"unit\"]"
+        );
+
+        artifacts.model_config = serde_json::json!({"model_type":"qwen3_5"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let request = crate::normalize::normalize(body, Some("qwen3_5")).unwrap();
+        assert_eq!(
+            render(&artifacts, &request).unwrap(),
+            "|[\"location\",\"unit\"]"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires NEMOTRON_TEMPLATE_MODEL_DIR pointing to the pinned local artifact"]
+    fn nemotron_reference_corpus_matches_prompt_bytes_and_tokens() {
+        let root = std::path::PathBuf::from(std::env::var("NEMOTRON_TEMPLATE_MODEL_DIR").unwrap());
+        let corpus: Value = serde_json::from_str(include_str!(
+            "../../../provider-swift/Tests/ProviderCoreTests/Fixtures/nemotron-reference-corpus.json"
+        )).unwrap();
+        let mut artifacts = date_artifacts();
+        artifacts.model_config =
+            serde_json::from_str(&std::fs::read_to_string(root.join("config.json")).unwrap())
+                .unwrap();
+        artifacts.tokenizer_config = serde_json::from_str(
+            &std::fs::read_to_string(root.join("tokenizer_config.json")).unwrap(),
+        )
+        .unwrap();
+        artifacts.chat_template =
+            Value::String(std::fs::read_to_string(root.join("chat_template.jinja")).unwrap());
+        let tokenizer = tokenizers::Tokenizer::from_file(root.join("tokenizer.json")).unwrap();
+        let cases = corpus["cases"].as_array().unwrap();
+        assert!(cases.len() >= 25);
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let request = crate::normalize::normalize(
+                case["body"].as_object().unwrap().clone(),
+                Some("nemotron_h"),
+            )
+            .unwrap();
+            let prompt = render(&artifacts, &request).unwrap();
+            assert_eq!(prompt, case["prompt"].as_str().unwrap(), "{name}");
+            let encoded = tokenizer.encode(prompt, false).unwrap();
+            let expected: Vec<u32> = serde_json::from_value(case["token_ids"].clone()).unwrap();
+            assert_eq!(encoded.get_ids(), expected, "{name}");
+        }
     }
 }

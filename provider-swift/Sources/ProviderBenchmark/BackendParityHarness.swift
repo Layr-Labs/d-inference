@@ -97,14 +97,8 @@ public enum BackendParityHarness {
         log("  path: \(modelDirectory.path)")
 
         let isVLM = ThroughputSweep.readHasVisionConfig(modelDirectory: modelDirectory)
-        let container: ModelContainer
-        if isVLM {
-            container = try await VLMModelFactory.shared.loadContainer(
-                from: modelDirectory, using: LocalTokenizerLoader())
-        } else {
-            container = try await LLMModelFactory.shared.loadContainer(
-                from: modelDirectory, using: LocalTokenizerLoader())
-        }
+        let container = try await BenchmarkModelLoader.load(
+            directory: modelDirectory, isVLM: isVLM)
 
         // The SERVING model is resolved EXACTLY ONCE and reused by every
         // engine build and by the drafter.

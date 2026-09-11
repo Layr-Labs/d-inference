@@ -80,18 +80,8 @@ public enum ThroughputSweep {
         // VLM checkpoints load through the VLM factory and serve through the
         // exact text tower owned by that wrapper, matching production.
         let isVLM = readHasVisionConfig(modelDirectory: modelDirectory)
-        let container: ModelContainer
-        if isVLM {
-            container = try await VLMModelFactory.shared.loadContainer(
-                from: modelDirectory,
-                using: LocalTokenizerLoader()
-            )
-        } else {
-            container = try await LLMModelFactory.shared.loadContainer(
-                from: modelDirectory,
-                using: LocalTokenizerLoader()
-            )
-        }
+        let container = try await BenchmarkModelLoader.load(
+            directory: modelDirectory, isVLM: isVLM)
 
         let facts = try await container.perform { ctx -> ModelFacts in
             eval(ctx.model.parameters().flattened().map { $0.1 })

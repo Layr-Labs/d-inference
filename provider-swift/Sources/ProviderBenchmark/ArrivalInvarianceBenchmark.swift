@@ -101,18 +101,8 @@ public enum ArrivalInvarianceBenchmark {
         log("  path: \(modelDirectory.path)")
 
         let isVLM = ThroughputSweep.readHasVisionConfig(modelDirectory: modelDirectory)
-        let container: ModelContainer
-        if isVLM {
-            container = try await VLMModelFactory.shared.loadContainer(
-                from: modelDirectory,
-                using: LocalTokenizerLoader()
-            )
-        } else {
-            container = try await LLMModelFactory.shared.loadContainer(
-                from: modelDirectory,
-                using: LocalTokenizerLoader()
-            )
-        }
+        let container = try await BenchmarkModelLoader.load(
+            directory: modelDirectory, isVLM: isVLM)
 
         let facts = await container.perform { context -> ModelFacts in
             let encoded = context.tokenizer.encode(

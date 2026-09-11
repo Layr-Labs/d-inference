@@ -63,7 +63,7 @@ extension ProviderLoop {
                     nextAttempt[modelID] = .now.advanced(by:
                         outcome == .notReady ? .seconds(15) : .seconds(300))
                 }
-                do { try await Task.sleep(for: .seconds(Int.random(in: 10...15))) }
+                do { try await taskSleep(.seconds(Int.random(in: 10...15))) }
                 catch { return }
             }
         }

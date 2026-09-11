@@ -16,7 +16,7 @@ enum MTPIdleUpgrade {
         commitIfIdle: @Sendable (Candidate) async throws -> Bool,
         discard: @Sendable (Candidate) async -> Void,
         finishDrain: @Sendable (Candidate) async -> Void,
-        pause: @Sendable () async throws -> Void = { try await Task.sleep(for: .milliseconds(500)) }
+        pause: @Sendable () async throws -> Void = { try await taskSleep(.milliseconds(500)) }
     ) async -> Outcome {
         let candidate: Candidate
         do {

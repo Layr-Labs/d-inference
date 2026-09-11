@@ -1,6 +1,6 @@
 # Identity binding
 
-> Last updated: 2026-09-07 · commit `efcde6334`
+> Last updated: 2026-09-11 · commit `ef7b5a9aa`
 
 A provider connection carries five identities — a Secure Enclave P-256 key, an
 X25519 process key `K`, an APNs device token, an Apple device identity
@@ -99,6 +99,7 @@ RFC 8628-style flow implemented in `coordinator/api/device_auth.go` and
 | Key | A single **static** PEM `SubjectPublicKeyInfo` parsed with `x509.ParsePKIXPublicKey`; must be ECDSA. There is no JWKS fetch and no key rotation without a restart | `coordinator/auth/privy.go` (`NewPrivyAuth`) |
 | Token checks | Algorithm exactly `ES256`; issuer `privy.io`; audience = app ID; standard `exp`/`nbf` via `jwt.RegisteredClaims`; non-empty `sub` | `coordinator/auth/privy.go` (`VerifyToken`) |
 | Result | `sub` is the Privy DID (`did:privy:…`); `GetOrCreateUser` looks it up or creates `User{AccountID: uuid, PrivyUserID, Email}` after fetching details from `https://auth.privy.io/api/v1/users/<did>` with Basic auth `app_id:app_secret` and `Privy-App-Id` | `coordinator/auth/privy.go` (`GetOrCreateUser`, `fetchUserDetails`) |
+| Admin email OTP | `InitEmailOTP` and `VerifyEmailOTP` encode email/code with typed JSON serialization before calling Privy; quotes, backslashes and control characters remain inside their string fields | `coordinator/auth/privy.go` |
 | Failure | Missing header → `401 authentication_error "missing credentials"`; bad token → `401 authentication_error "invalid Privy token"` | `coordinator/api/server.go` (`requirePrivyAuth`) |
 
 ## Invariants

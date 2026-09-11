@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-10 · commit `c09499b5e`
+> Last updated: 2026-09-10 · commit `0a724f3ad`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -142,7 +142,9 @@ synthetic inputs clear the default minimum-input floor. The authenticated
 `scripts/smoke-dev.sh` request uses the same long-prompt convention while retaining
 its short response limit. Input-floor regressions also exercise native-only
 prompt forwarding, tool-call history, and scaling-pressure suppression for
-unfunded, over-quota, and floor-rejected aliases, with admitted traffic as a control.
+unfunded, over-quota, and floor-rejected aliases, with admitted traffic as a control. Funded terminal capacity/TTFT 429 cases
+verify demand signals, reservation refunds, and one quota debit. Reasoning-history
+and native completion-batch tests pin their minimum-input boundaries.
 
 #### Coordinator startup and reconnect recovery
 

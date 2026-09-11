@@ -2331,7 +2331,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		return refreshForwardBody(forwardBytes, newModel)
 	}
-	pressure := &admissionPressureGate{s: s, admitted: !floorDeferred}
+	pressure := &admissionPressureGate{s: s, admitted: !floorDeferred, fixedBuildAfterAdmission: floorDeferred, admitRequest: func(selectedModel string) bool {
+		if selectedModel == floorModel && s.rejectShortInput(w, r, parsed, publicModel, selectedModel, floorPromptTokens, resolvedRuntimeParameters) {
+			return false
+		}
+		model = selectedModel
+		return admitAndReserve()
+	}}
 	var preflightHandled bool
 	preflightStart := time.Now()
 	admissionParams := inferenceAdmissionParams{
@@ -2366,15 +2372,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if preflightHandled {
 		return
 	}
-	if floorDeferred && model == floorModel && s.rejectShortInput(w, r, parsed, publicModel, model, floorPromptTokens, resolvedRuntimeParameters) {
-		refundReservation()
-		return
-	}
 	if floorDeferred {
-		if !admitAndReserve() {
+		if !pressure.admit(model) {
 			return
 		}
-		pressure.admit()
 		if !resolveAdmittedMedia() {
 			return
 		}
@@ -2384,7 +2385,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// whose floor already failed after charging/fetching media.
 			admissionParams.model = model
 			admissionParams.modelMaxContext = modelMaxContext
-			admissionParams.disableAliasFallback = true
 			var handled bool
 			model, handled = s.runInferenceAdmission(w, r, parsed, admissionParams)
 			if handled {
@@ -2983,7 +2983,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	// Shared routing/capacity admission preflight (self-route / prefer / public
 	// capacity+TTFT gate — see runInferenceAdmission).
-	pressure := &admissionPressureGate{s: s, admitted: !floorDeferred}
+	pressure := &admissionPressureGate{s: s, admitted: !floorDeferred, fixedBuildAfterAdmission: floorDeferred, admitRequest: func(selectedModel string) bool {
+		if selectedModel == floorModel && s.rejectShortInput(w, r, parsed, publicModel, selectedModel, floorPromptTokens, resolvedRuntimeParameters) {
+			return false
+		}
+		model = selectedModel
+		return admitAndReserve()
+	}}
 	var preflightHandled bool
 	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
@@ -3017,15 +3023,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if preflightHandled {
 		return
 	}
-	if floorDeferred && model == floorModel && s.rejectShortInput(w, r, parsed, publicModel, model, floorPromptTokens, resolvedRuntimeParameters) {
-		refundReservation()
-		return
-	}
 	if floorDeferred {
-		if !admitAndReserve() {
+		if !pressure.admit(model) {
 			return
 		}
-		pressure.admit()
 	}
 	cachePlan := registry.CachePlan{}
 	// Response framing is determined by the caller-facing endpoint, never by

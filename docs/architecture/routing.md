@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-10 · commit `35188e0ca`
+> Last updated: 2026-09-10 · commit `0a724f3ad`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -52,7 +52,9 @@ text blocks use canonical provider lowering joins and framing, including
 Anthropic top-level `system`; images/videos retain flat media costs
 (`inputFloorPromptTokens`, `promptcontract.PromptMessagesForEstimate`). Ignored
 fields from other endpoints and block metadata contribute no tokens.
-Tool-call history adds function names and arguments to the floor estimate.
+Tool-call history adds function names and arguments; assistant reasoning strings
+also contribute to the floor estimate. Native completion batches count their
+text/token IDs without synthetic chat framing.
 Native-only generic shapes retain their active prompt estimate when canonical
 lowering is unsupported (`coordinator/api/input_token_estimate.go`).
 A terminal failure is 400 `input_too_short`; it never reaches provider dispatch.
@@ -62,9 +64,11 @@ floor decision is deferred until the normal capacity/TTFT preflight runs. The
 floor does not independently select an older build. If preflight keeps Desired,
 its floor still applies; if preflight switches builds, the fallback's floor
 applies. Alias token quota and balance admission wait for that final validation.
-The request-owned `admissionPressureGate` buffers preflight capacity/TTFT scaling
-signals until both cost gates succeed; a terminal deferred rejection discards
-them. Admitted requests release their buffered signals once
+The request-owned `admissionPressureGate` validates the selected floor and
+admits quota/funding once, before recording capacity/TTFT demand. Eligible
+terminal 429s retain scaling pressure and refund their balance reservation;
+unfunded, over-quota, and floor-rejected callers emit no pressure. After admission,
+the gate fixes the permitted build across later preflight/media revalidation
 (`coordinator/api/inference_admission_pressure.go`).
 Remote-media fetches still wait for quota admission and balance reservation,
 including on the deferred alias path. When both floors permit the input, media

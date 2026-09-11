@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-10 · commit `c09499b5e`
+> Last updated: 2026-09-10 · commit `0a724f3ad`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -40,12 +40,14 @@ and Anthropic text follows provider lowering joins/framing, including Anthropic
 and `coordinator/promptcontract/endpoint_estimate.go` (`PromptMessagesForEstimate`).
 Scalar Completions and Responses inputs count the same user-message framing
 as their lowered Chat equivalents (112 ASCII characters estimate to 32 tokens
-on all three endpoints).
+on all three endpoints). Multi-prompt native completion batches get no chat
+framing: sum the text estimate/token IDs, with empty items contributing zero.
 It excludes the routing estimator's whole-body fallback: model names, sampling
 options, and unrelated metadata cannot make an empty prompt meet the floor.
 For example, a provider-reported 27-token prompt can estimate to 19 tokens.
 Tool definitions are not added to the floor estimate, but tool-call history
-contributes function names and arguments. Native-only generic shapes retain
+contributes function names and arguments. Assistant reasoning strings count
+as a single channel; see the [field precedence](api-contracts.md#minimum-input-length). Native-only generic shapes retain
 their endpoint prompt estimate when canonical lowering is unsupported. A terminal floor rejection
 returns HTTP **400**, `error.type = "invalid_request_error"`, and
 `error.code = "input_too_short"`. The initial check runs before token admission

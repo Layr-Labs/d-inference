@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/payments"
@@ -14,8 +15,9 @@ import (
 )
 
 func TestInputTokenFloorDefersScalingUntilCostAdmission(t *testing.T) {
+	t.Setenv(envQueueBeforeShed, "false")
 	for _, ep := range inputFloorEndpoints {
-		for _, mode := range []string{"unfunded", "over_quota", "short_input", "hard_ttft", "capacity", "admitted"} {
+		for _, mode := range []string{"unfunded", "over_quota", "short_input", "hard_ttft", "capacity", "admitted", "funded_capacity", "funded_hard_ttft"} {
 			t.Run(ep.path+"/"+mode, func(t *testing.T) {
 				desiredFloor, previousFloor := 0, 64
 				if mode == "short_input" {
@@ -34,15 +36,15 @@ func TestInputTokenFloorDefersScalingUntilCostAdmission(t *testing.T) {
 					p := srv.registry.GetProvider(id)
 					p.Mu().Lock()
 					p.PrefillTPS = 0.2
-					if p.BackendCapacity != nil && mode != "capacity" {
+					if p.BackendCapacity != nil && !strings.HasSuffix(mode, "capacity") {
 						p.BackendCapacity.Slots[0].ActiveTokenBudgetUsed = 0
 					}
 					p.Mu().Unlock()
 				}
-				if mode == "hard_ttft" {
+				if strings.HasSuffix(mode, "hard_ttft") {
 					srv.ttftHardReject = true
 				}
-				if mode == "capacity" || mode == "hard_ttft" {
+				if strings.HasSuffix(mode, "capacity") || strings.HasSuffix(mode, "hard_ttft") {
 					srv.registry.Disconnect(h.providers[0].registryID)
 				}
 				srv.SetBilling(billing.NewService(srv.store, payments.NewLedger(srv.store), quietLogger(), billing.Config{MockMode: true}))
@@ -52,7 +54,8 @@ func TestInputTokenFloorDefersScalingUntilCostAdmission(t *testing.T) {
 						t.Fatal("failed to exhaust test quota")
 					}
 				}
-				if mode == "admitted" {
+				if mode == "admitted" || strings.HasPrefix(mode, "funded_") {
+					srv.consumerTokenLimiter = ratelimit.NewTokenLimiter(0.001, 100, 0.001, 100)
 					if err := srv.store.Credit("pressure-account", 1000000, store.LedgerDeposit, "test"); err != nil {
 						t.Fatal(err)
 					}
@@ -71,13 +74,17 @@ func TestInputTokenFloorDefersScalingUntilCostAdmission(t *testing.T) {
 				default:
 					srv.handleChatCompletions(w, req)
 				}
-				expected := map[string]int{"unfunded": 402, "over_quota": 429, "short_input": 400, "hard_ttft": 429, "capacity": 400, "admitted": 502}[mode]
-				// Capacity can shed before final floor/cost validation, depending on queue configuration.
-				if mode == "capacity" && w.Code != 429 && w.Code != 402 {
-					t.Fatalf("capacity request status=%d body=%s", w.Code, w.Body.String())
-				}
-				if mode != "capacity" && w.Code != expected {
+				expected := map[string]int{"unfunded": 402, "over_quota": 429, "short_input": 400, "hard_ttft": 402, "capacity": 402, "admitted": 502, "funded_capacity": 429, "funded_hard_ttft": 429}[mode]
+				if w.Code != expected {
 					t.Fatalf("status=%d want=%d body=%s", w.Code, expected, w.Body.String())
+				}
+				if strings.HasPrefix(mode, "funded_") {
+					if balance := srv.store.GetBalance("pressure-account"); balance != 1000000 {
+						t.Fatalf("terminal 429 left balance reservation: %d", balance)
+					}
+					if stat, _ := srv.consumerTokenLimiter.OutputStat("pressure-account"); stat.Remaining != 68 {
+						t.Fatalf("quota charged more than once: %+v", stat)
+					}
 				}
 				found := false
 				for _, snapshot := range srv.registry.TriggerWarmPool() {
@@ -85,8 +92,12 @@ func TestInputTokenFloorDefersScalingUntilCostAdmission(t *testing.T) {
 						continue
 					}
 					found = true
-					if mode == "admitted" {
-						if snapshot.TTFTMisses == 0 {
+					if mode == "funded_capacity" {
+						if snapshot.CapacityRejects != 1 {
+							t.Fatalf("eligible capacity 429 lost pressure: %+v", snapshot)
+						}
+					} else if mode == "admitted" || mode == "funded_hard_ttft" {
+						if snapshot.TTFTMisses != 1 {
 							t.Fatal("admitted request lost its deferred TTFT pressure")
 						}
 					} else if snapshot.CapacityRejects != 0 || snapshot.TTFTMisses != 0 {
@@ -98,5 +109,52 @@ func TestInputTokenFloorDefersScalingUntilCostAdmission(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestInputTokenFloorKeepsAdmittedBuildIfFallbackCapacityChanges(t *testing.T) {
+	t.Setenv(envQueueBeforeShed, "true")
+	h := newRuntimeDefaultsAliasHarness(t, map[string]any{"min_input_tokens": 0}, map[string]any{"min_input_tokens": 64})
+	srv := h.coordinator
+	srv.registry.Disconnect(h.providers[0].registryID)
+	previous := registerBuildsProvider(srv, "late-previous", runtimeDefaultsPreviousModel)
+	previous.Mu().Lock()
+	previous.BackendCapacity.Slots[0].ActiveTokenBudgetUsed = 1000
+	previous.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 1000
+	previous.Mu().Unlock()
+	desired := srv.registry.GetProvider("runtime-defaults-desired-provider")
+	desired.Mu().Lock()
+	desired.PrefillTPS = 0.2
+	desired.Mu().Unlock()
+	srv.ttftHardReject = true
+	admissions := 0
+	gate := &admissionPressureGate{s: srv, fixedBuildAfterAdmission: true, admitRequest: func(model string) bool {
+		admissions++
+		// Simulate capacity appearing while a database-backed cost gate runs.
+		previous.Mu().Lock()
+		previous.BackendCapacity.Slots[0].ActiveTokenBudgetUsed = 0
+		previous.Mu().Unlock()
+		return true
+	}}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	params := inferenceAdmissionParams{
+		model: runtimeDefaultsDesiredModel, publicModel: runtimeDefaultsAlias, pressure: gate,
+		estimatedPromptTokens: 5, requestedMaxTokens: 32, deadline: 5 * time.Second,
+		refundReservation: func() {}, onModelFallback: func(string) bool { t.Error("changed to a floor-ineligible build after cost admission"); return false },
+	}
+	parsed := map[string]any{"model": runtimeDefaultsDesiredModel}
+	model, handled := srv.runInferenceAdmission(w, req, parsed, params)
+	if handled || model != runtimeDefaultsDesiredModel || admissions != 1 {
+		t.Fatalf("initial queue admission: handled=%v model=%s admissions=%d", handled, model, admissions)
+	}
+	// Revalidation sees newly available capacity, but the charged build is fixed.
+	desired.Mu().Lock()
+	desired.BackendCapacity.Slots[0].ActiveTokenBudgetUsed = 0
+	desired.Mu().Unlock()
+	w = httptest.NewRecorder()
+	model, handled = srv.runInferenceAdmission(w, req, parsed, params)
+	if !handled || w.Code != 429 || model != runtimeDefaultsDesiredModel || admissions != 1 {
+		t.Fatalf("handled=%v status=%d model=%s admissions=%d body=%s", handled, w.Code, model, admissions, w.Body.String())
 	}
 }

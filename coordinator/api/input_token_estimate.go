@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 )
 
@@ -22,23 +24,14 @@ func inputFloorPromptTokens(parsed map[string]any, endpoint promptcontract.Endpo
 	case promptcontract.EndpointResponses:
 		tokens, _ := inputShape(parsed["input"])
 		return tokens
+	// Only the scalar/single-string shape lowered above gets chat framing.
 	case promptcontract.EndpointCompletions:
-		if prompts, ok := parsed["prompt"].([]any); ok {
-			tokens := 0
-			for _, prompt := range prompts {
-				if text, ok := prompt.(string); ok {
-					tokens += 4 + textPromptTokens(text)
-				} else {
-					tokens += approximateTokenCount(prompt)
-				}
-			}
-			return tokens
-		}
+		return nativeCompletionPromptTokens(parsed["prompt"])
 	}
 	return 0
 }
 
-// Tool-call history is prompt content even when an assistant message has no
+// Reasoning and tool-call history are prompt content even without assistant
 // prose. Count names and argument text, excluding IDs and wrapper metadata.
 // Lowering normalizes Responses function_call and Anthropic tool_use into this
 // same tool_calls representation. Native-only blocks retain contentShape's
@@ -50,6 +43,16 @@ func inputFloorMessageTokens(messages any) int {
 		message, ok := item.(map[string]any)
 		if !ok {
 			continue
+		}
+		if message["role"] == "assistant" {
+			// These are alternative representations of one reasoning channel. Use
+			// the first nonempty value rather than charging duplicate history.
+			for _, key := range []string{"thinking", "reasoning", "reasoning_content"} {
+				if text, ok := message[key].(string); ok && text != "" {
+					tokens += textPromptTokens(text)
+					break
+				}
+			}
 		}
 		calls, _ := message["tool_calls"].([]any)
 		for _, raw := range calls {
@@ -72,4 +75,23 @@ func inputFloorFunctionTokens(value any) int {
 	name, _ := function["name"].(string)
 	arguments, _ := function["arguments"].(string)
 	return textPromptTokens(name) + textPromptTokens(arguments)
+}
+
+// Native completion batches contain raw text or token IDs, without chat roles.
+// Empty nested batches and JSON wrappers contribute no tokens.
+func nativeCompletionPromptTokens(prompt any) int {
+	switch value := prompt.(type) {
+	case string:
+		return textPromptTokens(value)
+	case []any:
+		tokens := 0
+		for _, part := range value {
+			tokens += nativeCompletionPromptTokens(part)
+		}
+		return tokens
+	case json.Number, int, float64:
+		return 1
+	default:
+		return 0
+	}
 }

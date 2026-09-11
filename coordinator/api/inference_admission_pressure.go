@@ -2,43 +2,48 @@ package api
 
 import "time"
 
-// admissionPressureGate buffers preflight scaling signals while an alias's
-// input floor is unresolved. The request may release them only after both quota
-// and balance admission succeed; terminal rejections discard the pending work.
+// admissionPressureGate validates a deferred alias's selected floor and cost
+// admission before recording demand. Admission runs once, including when the
+// preflight will return a terminal 429, so eligible demand still drives scaling.
 // This object belongs to one handler goroutine, not shared registry state.
 type admissionPressureGate struct {
-	s        *Server
-	admitted bool
-	pending  []func()
+	s                        *Server
+	admitted                 bool
+	fixedBuildAfterAdmission bool
+	admitRequest             func(model string) bool
 }
 
-func (g *admissionPressureGate) record(action func()) {
+func (g *admissionPressureGate) admit(model string) bool {
 	if g.admitted {
-		action()
-	} else {
-		g.pending = append(g.pending, action)
+		return true
 	}
-}
-
-func (g *admissionPressureGate) capacity(model string) {
-	g.record(func() {
-		g.s.registry.RecordWarmPoolCapacityReject(model)
-		g.s.triggerWarmPool()
-	})
-}
-
-func (g *admissionPressureGate) ttftMiss(model string, threshold time.Duration) {
-	g.record(func() {
-		g.s.registry.RecordWarmPoolTTFTMiss(model, threshold)
-		g.s.triggerWarmPool()
-	})
-}
-
-func (g *admissionPressureGate) admit() {
+	if g.admitRequest != nil && !g.admitRequest(model) {
+		return false
+	}
 	g.admitted = true
-	pending := g.pending
-	g.pending = nil
-	for _, action := range pending {
-		action()
+	return true
+}
+
+func (g *admissionPressureGate) capacity(model string) bool {
+	if !g.admit(model) {
+		return false
 	}
+	g.s.registry.RecordWarmPoolCapacityReject(model)
+	g.s.triggerWarmPool()
+	return true
+}
+
+func (g *admissionPressureGate) ttftMiss(model string, threshold time.Duration) bool {
+	if !g.admit(model) {
+		return false
+	}
+	g.s.registry.RecordWarmPoolTTFTMiss(model, threshold)
+	g.s.triggerWarmPool()
+	return true
+}
+
+// Only one build passes a deferred floor. Once cost admission selects it, a
+// later fleet change must not switch to the other build after quota is charged.
+func (g *admissionPressureGate) allowsAliasFallback() bool {
+	return !g.fixedBuildAfterAdmission || !g.admitted
 }

@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-10 · commit `35188e0ca`
+> Last updated: 2026-09-10 · commit `0a724f3ad`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -388,7 +388,9 @@ tokens**, configurable per concrete model. `rejectShortInput` in
 ```
 
 Scalar Completions and Responses inputs include the same four user-message
-framing tokens as equivalent Chat messages.
+framing tokens as equivalent Chat messages. Native multi-prompt completion
+batches receive no synthetic chat framing; empty strings or token arrays count
+as zero, and token IDs count individually.
 
 The floor counts only the active endpoint's prompt: Chat/Anthropic `messages`,
 Responses `input`, or Completions `prompt`. Ignored fields from other endpoints
@@ -398,7 +400,9 @@ text contributes too (`promptcontract.PromptMessagesForEstimate`). Media keeps
 the flat routing cost of 300 tokens per image and 1500 per video. Model names,
 sampling options, and supported text-block metadata do not contribute. Tool-call
 history contributes function names and argument text, excluding IDs and wrapper
-metadata. Generic endpoint shapes that cannot be lowered retain the native
+metadata. Assistant reasoning counts the first nonempty string among `thinking`,
+`reasoning`, and `reasoning_content`; Anthropic thinking blocks share the same
+canonical lowering. Generic endpoint shapes that cannot be lowered retain the native
 prompt estimate (`coordinator/api/input_token_estimate.go`, `inputFloorPromptTokens`);
 a document block cannot erase adjacent text. This is a heuristic,
 not the provider's exact tokenizer count. Below-minimum
@@ -406,8 +410,11 @@ requests do not start a response stream or reach a provider. An alias may defer
 its floor decision until ordinary capacity/TTFT admission selects a build. Token
 quota and balance admission wait until that selected build passes the floor; a
 400 cannot consume token quota or be masked by an insufficient-funds 402. The lower floor alone does
-not trigger fallback. Deferred preflight scaling signals remain buffered until
-quota and balance admission both succeed; rejected requests discard those signals.
+not trigger fallback. Before deferred preflight emits scaling pressure, it validates the selected
+floor and admits quota/funding once. Eligible terminal capacity/TTFT 429s still
+record demand and refund their balance reservation; ineligible callers emit no
+scaling pressure. Once admitted, a deferred request cannot switch to a build
+whose floor rejected it.
 Transient registry read failures return retryable 503
 `service_unavailable`, rather than silently substituting the deployment default.
 

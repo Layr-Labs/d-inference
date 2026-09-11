@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-10 · commit `5a3ffc27f`
+> Last updated: 2026-09-11 · commit `ef7b5a9aa`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1167,6 +1167,41 @@ token IDs are accepted.
 - [`../architecture/components/provider.md`](../architecture/components/provider.md) — what the provider does at runtime.
 - [`../architecture/prompt-contract-sidecar.md`](../architecture/prompt-contract-sidecar.md) — what prompt parity protects.
 
+## GPT-OSS complete-checkpoint reconstruction
+
+On an owned idle Apple Silicon host, build the optimized provider tests with the
+pinned dependencies and source-matched metallib described in [build.md](build.md).
+Point the fixture at the verified exact `gpt-oss-20b` catalog snapshot; the helper
+hashes it before and after loading and rejects any other aggregate. Run only this
+fixture, with MTP and resident caching left at their production defaults:
+
+```bash
+cd provider-swift
+DARKBLOOM_LIVE_MLX_TESTS=1 \
+DARKBLOOM_LIVE_MLX_GPTOSS_CHECKPOINT_RESTART=1 \
+DARKBLOOM_LIVE_MLX_GPTOSS_MODEL_DIRECTORY=/absolute/verified-gpt-oss-20b \
+  swift test -c release --force-resolved-versions -Xswiftc -enable-testing \
+    --no-parallel --filter GPTOSSCheckpointRestartLiveTests
+```
+
+`provider-swift/Tests/ProviderCoreTests/GPTOSSCheckpointRestartLiveTests.swift`
+(`sameKeyNewEngineRestoresBranchedPrompt`) donates a complete encrypted historical
+checkpoint, shuts down the engine/store, reconstructs both and requests a branched
+prompt first. It requires disk reads, exact checkpoint-boundary hit accounting,
+expected answer markers, tenant and changed-prefix misses, cache-off controls,
+and retired staging/write reservations. TTFT and exact-text equality are recorded;
+one run is not a general performance or answer-quality claim. The fixture uses
+an isolated temporary root, one ephemeral key retained across reconstruction,
+and test runtime identity. It does not prove provider-process restart, production
+keychain recovery or cross-binary reuse.
+
+The focused construction and load-policy suites are `GPTOSSDefaultPrefixCacheWiringTests`,
+`PrefixCachePolicyTests` and `PrefixCacheLoadHashTests` in
+`provider-swift/Tests/ProviderCoreTests/`. They cover exact-ID activation, disabled
+and unsupported backends, fresh load hashes and identity rejection. A passing
+construction suite does not replace the real-checkpoint fixture above. Live test
+skips must be reported as unrun qualification.
+
 ## Connected coordinator/provider HTTP cache gate
 
 For a focused release-default check, use
@@ -1183,8 +1218,10 @@ DARKBLOOM_RELEASE_DEFAULT_OUTPUT=/absolute/new-defaults-output \
 
 The two B1 requests check actual paged activation, automatic MTP selection,
 complete cold/repeat output and token accounting, and model-scoped cache
-capability. Qwen requires an exact ready SSD capability and an accepted repeat
-hit; GPT-OSS and Gemma QAT require cache inactivity. The report retains the actual
+capability. Qwen and exact `gpt-oss-20b` require a ready SSD capability and an
+accepted repeat hit; GPT-OSS still requires MTP inactivity under automatic
+selection. The older Gemma QAT helper retains its cache-inactive expectation and
+does not qualify the current Gemma default. The report retains the actual
 generated provider configuration. This smoke does not establish raw token-ID
 parity, concurrent widths, cancellation, restart, or selection between providers;
 run the corresponding native and connected gates separately. CPU helper checks:

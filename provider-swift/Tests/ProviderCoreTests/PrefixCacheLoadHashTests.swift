@@ -92,7 +92,8 @@ struct PrefixCacheLoadHashTests {
         #expect(calls.count == 4)
     }
 
-    @Test(arguments: ["gpt-oss-20b", "gemma-4-26b", "gemma-4-26b-8bit"])
+    @Test(arguments: ["gemma-4-26b", "gemma-4-26b-8bit", "gpt-oss-120b",
+                      "openai/gpt-oss-20b", "mlx-community/gpt-oss-20b-MXFP4-Q8"])
     func uncachedReleaseModelsSkipSSDHashing(modelID: String) throws {
         let directory = try snapshot(#"{"model_type":"future_model"}"#)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -112,6 +113,36 @@ struct PrefixCacheLoadHashTests {
         #expect(!PrefixCachePolicy.requiresLoadHashBracket(
             modelId: "gemma-4-26b-qat-4bit", modelDirectory: directory,
             environment: [PrefixCachePolicy.environmentFlag: "0"]))
+    }
+
+    @Test("GPT-OSS default brackets each standalone load and the cache disable skips hashing")
+    func gptOssDefaultHashBracket() async throws {
+        let directory = try snapshot(#"{"model_type":"gpt_oss"}"#)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let server = StandaloneServer(models: [])
+        let calls = HashCallRecorder()
+        await server.setV2TestHooksForTesting(.init(
+            computeWeightHash: { _, _ in calls.hash() },
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+        for config in [#"{"model_type":"gpt_oss"}"#, "invalid"] {
+            try Data(config.utf8).write(to: directory.appendingPathComponent("config.json"))
+            let required = PrefixCachePolicy.requiresLoadHashBracket(
+                modelId: "gpt-oss-20b", modelDirectory: directory, environment: [:])
+            #expect(required)
+            let pre = await server.computeStandaloneWeightHash(
+                modelPath: directory, modelId: "gpt-oss-20b", required: required)
+            let post = await server.computeStandaloneWeightHash(
+                modelPath: directory, modelId: "gpt-oss-20b", required: required)
+            #expect(pre != nil && pre == post)
+        }
+        #expect(calls.count == 4, "fresh hashes bracket every load, including an unreadable config")
+        let disabled = PrefixCachePolicy.requiresLoadHashBracket(
+            modelId: "gpt-oss-20b", modelDirectory: directory,
+            environment: [PrefixCachePolicy.environmentFlag: "0"])
+        #expect(!disabled)
+        #expect(await server.computeStandaloneWeightHash(
+            modelPath: directory, modelId: "gpt-oss-20b", required: disabled) == nil)
+        #expect(calls.count == 4)
     }
 
     @Test("a failed standalone hash is retried rather than cached")

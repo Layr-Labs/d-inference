@@ -848,6 +848,22 @@ type ProviderEarningsSummary struct {
 	CompletionTokens int64 `json:"completion_tokens"`
 }
 
+// ProviderMachineEarnings is one machine's lifetime earnings within an
+// account, aggregated by provider_key (the stable X25519 hardware identity —
+// provider_id rotates per connection and must not be used for grouping).
+// Rows recorded before provider_key existed aggregate under an empty key.
+type ProviderMachineEarnings struct {
+	ProviderKey string `json:"provider_key"`
+	// TotalMicroUSD includes base_reward rows; JobCount and token totals
+	// exclude them (base rewards add money but are not inference jobs),
+	// matching ProviderEarningsSummary semantics.
+	TotalMicroUSD    int64     `json:"total_micro_usd"`
+	JobCount         int64     `json:"job_count"`
+	PromptTokens     int64     `json:"prompt_tokens"`
+	CompletionTokens int64     `json:"completion_tokens"`
+	LastEarnedAt     time.Time `json:"last_earned_at"`
+}
+
 // AccountEarningsWindows holds an account's rolling-window earnings (row count
 // and micro-USD sum over the last 24 h and the last 7 d) as computed by the
 // store, so the dashboard header never sums a truncated row page.

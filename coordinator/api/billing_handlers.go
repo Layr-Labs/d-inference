@@ -14,6 +14,7 @@ package api
 // read-only endpoints and inference.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 )
@@ -835,9 +837,17 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 
 	availableBalance, withdrawableBalance := s.store.GetBalanceWithWithdrawable(accountID)
 
+	byProvider, err := s.accountEarningsByMachine(r.Context(), accountID)
+	if err != nil {
+		s.logger.Error("get account earnings by provider failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch earnings"))
+		return
+	}
+
 	body, err := json.Marshal(map[string]any{
 		"account_id":                     accountID,
 		"earnings":                       earnings,
+		"by_provider":                    byProvider,
 		"total_micro_usd":                summary.TotalMicroUSD,
 		"total_usd":                      fmt.Sprintf("%.6f", float64(summary.TotalMicroUSD)/1_000_000),
 		"count":                          summary.Count,
@@ -854,4 +864,68 @@ func (s *Server) handleAccountEarnings(w http.ResponseWriter, r *http.Request) {
 	}
 	s.readCache.Set(cacheKey, body, 20*time.Second)
 	writeCachedJSON(w, body)
+}
+
+// machineEarnings is one entry of the account-earnings "by_provider" array:
+// a machine's lifetime aggregates enriched with the hardware description from
+// its provider record (matched on the persisted X25519 public key), so the
+// dashboard can label machines even when they are offline.
+type machineEarnings struct {
+	ProviderKey      string    `json:"provider_key"`
+	ChipName         string    `json:"chip_name,omitempty"`
+	MemoryGB         int       `json:"memory_gb,omitempty"`
+	TotalMicroUSD    int64     `json:"total_micro_usd"`
+	TotalUSD         string    `json:"total_usd"`
+	JobCount         int64     `json:"job_count"`
+	PromptTokens     int64     `json:"prompt_tokens"`
+	CompletionTokens int64     `json:"completion_tokens"`
+	LastEarnedAt     time.Time `json:"last_earned_at"`
+}
+
+// accountEarningsByMachine returns lifetime earnings grouped by machine
+// (stable provider_key), enriched with hardware labels from the account's
+// provider records. Rows recorded before provider_key existed surface as one
+// entry with an empty key; the frontend labels it as earlier activity.
+func (s *Server) accountEarningsByMachine(ctx context.Context, accountID string) ([]machineEarnings, error) {
+	grouped, err := s.store.GetAccountEarningsByProvider(accountID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Hardware lookup keyed on the persisted X25519 public key.
+	type hwInfo struct {
+		chip     string
+		memoryGB int
+	}
+	hwByKey := map[string]hwInfo{}
+	if records, err := s.store.ListProvidersByAccount(ctx, accountID); err == nil {
+		for _, rec := range records {
+			if rec.PublicKey == "" || len(rec.Hardware) == 0 {
+				continue
+			}
+			var hw protocol.Hardware
+			if json.Unmarshal(rec.Hardware, &hw) == nil {
+				hwByKey[rec.PublicKey] = hwInfo{chip: hw.ChipName, memoryGB: hw.MemoryGB}
+			}
+		}
+	}
+
+	results := make([]machineEarnings, 0, len(grouped))
+	for _, m := range grouped {
+		entry := machineEarnings{
+			ProviderKey:      m.ProviderKey,
+			TotalMicroUSD:    m.TotalMicroUSD,
+			TotalUSD:         fmt.Sprintf("%.6f", float64(m.TotalMicroUSD)/1_000_000),
+			JobCount:         m.JobCount,
+			PromptTokens:     m.PromptTokens,
+			CompletionTokens: m.CompletionTokens,
+			LastEarnedAt:     m.LastEarnedAt,
+		}
+		if hw, ok := hwByKey[m.ProviderKey]; ok {
+			entry.ChipName = hw.chip
+			entry.MemoryGB = hw.memoryGB
+		}
+		results = append(results, entry)
+	}
+	return results, nil
 }

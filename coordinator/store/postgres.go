@@ -4084,6 +4084,44 @@ func (s *PostgresStore) GetAccountEarningsSummary(accountID string) (ProviderEar
 	return summary, nil
 }
 
+// GetAccountEarningsByProvider returns an account's lifetime earnings grouped
+// by provider_key (stable machine identity), highest total first. Totals
+// include base_reward rows; job/token counts exclude them, matching the
+// earnings_summary semantics.
+func (s *PostgresStore) GetAccountEarningsByProvider(accountID string) ([]ProviderMachineEarnings, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT provider_key,
+		        COALESCE(SUM(amount_micro_usd), 0),
+		        COUNT(*) FILTER (WHERE model <> 'base_reward'),
+		        COALESCE(SUM(prompt_tokens) FILTER (WHERE model <> 'base_reward'), 0),
+		        COALESCE(SUM(completion_tokens) FILTER (WHERE model <> 'base_reward'), 0),
+		        MAX(created_at)
+		 FROM provider_earnings
+		 WHERE account_id = $1
+		 GROUP BY provider_key
+		 ORDER BY 2 DESC, provider_key ASC`,
+		accountID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query account earnings by provider: %w", err)
+	}
+	defer rows.Close()
+
+	results := []ProviderMachineEarnings{}
+	for rows.Next() {
+		var m ProviderMachineEarnings
+		if err := rows.Scan(&m.ProviderKey, &m.TotalMicroUSD, &m.JobCount,
+			&m.PromptTokens, &m.CompletionTokens, &m.LastEarnedAt); err != nil {
+			continue
+		}
+		results = append(results, m)
+	}
+	return results, nil
+}
+
 // RecordProviderPayout stores a payout record for a provider wallet.
 func (s *PostgresStore) RecordProviderPayout(payout *ProviderPayout) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

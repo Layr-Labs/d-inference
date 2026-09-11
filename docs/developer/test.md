@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-11 · commit `cb8c6ebf9`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -922,6 +922,10 @@ node --test landing/earn-calculator-core.test.js
 ```
 
 ### 6. Scripts and release integrity
+
+`python3 scripts/test_operations_scripts.py` checks admin JSON fields, fleet
+partial-failure exit status and smoke-file ownership using stub transports. It
+makes no network request, writes no login token and updates no host.
 
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)

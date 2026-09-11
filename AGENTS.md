@@ -121,7 +121,7 @@ root [`Makefile`](Makefile) — run `make` with no args to list all targets.
 ### One-time setup
 ```bash
 mise install            # installs every tool pinned in mise.toml
-make ui-install         # console-ui npm deps
+make ui-install admin-install tooling-install  # UI deps + isolated pinned Python tooling
 ```
 
 ### Coordinator (Go)

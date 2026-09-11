@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-11 · commit `d7f1e80cb`
+> Last updated: 2026-09-11 · commit `38fbddbce`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -60,10 +60,14 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 mise install                          # installs every pin in mise.toml
 git submodule update --init --recursive
 git config core.hooksPath .githooks   # enables pre-commit + pre-push (see "Git hooks")
+make ui-install admin-install tooling-install  # dependencies for aggregate build/test
 ```
 
 `mise` activates the pinned versions per shell; on macOS the system Xcode
-`swift` is also acceptable for `provider-swift`.
+`swift` is also acceptable for `provider-swift`. `tooling-install` prepares
+`.venv/tooling` from the pinned attention-packet requirements. `tooling-test`
+prepares it automatically when missing and reinstalls dependencies only when
+the requirements file changes. See [the tooling checks](test.md#6-scripts-and-release-integrity).
 
 ### 2. Build everything
 
@@ -438,7 +442,7 @@ local stub servers; its default observation mode sends only public GETs.
 | `ui-install` / `ui-lint` / `ui-test` / `ui-build` / `ui` | `npm install` / `npx eslint src/` / `npm test` / `npm run build` in `console-ui/` |
 | `admin-install` / `admin-lint` / `admin-typecheck` / `admin-test` / `admin-build` | Locked install, lint, full TypeScript, Vitest and build in `admin-ui/` |
 | `landing-test` | `node --test landing/*.test.js` |
-| `tooling-test` | Python script packages, benchmark references, owned-host helpers and release validation fixtures |
+| `tooling-install` / `tooling-test` | Prepare isolated pinned NumPy environment / run Python script packages, benchmark references, owned-host helpers and release validation fixtures |
 | `e2e-integration` | `go test ./e2e/... -run TestIntegration -v` |
 | `e2e-benchmark` | `go test ./e2e/... -run TestBenchmark -v` |
 | `e2e` | `e2e-integration` |

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d7f1e80cb`
+> Last updated: 2026-09-11 · commit `38fbddbce`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -38,7 +38,8 @@ prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
 
 ## Prerequisites
 
-- Toolchain from [build.md](build.md) (`mise install`, submodules, `cmake`).
+- Complete the [build setup](build.md#1-install-the-toolchain-and-hooks): pinned
+  toolchain, submodules, `cmake`, and `make ui-install admin-install tooling-install`.
 - **Postgres 16** for the coordinator store tests and the e2e suite: either
   Docker (`postgres:16` image is pulled automatically by the testbed) or a
   native `postgres`/`initdb` on `PATH` (`brew install postgresql@16`, then
@@ -131,7 +132,7 @@ production supervisor deadlines are unchanged (`coordinator/promptcontract/super
 
 The [startup observer](../operations/coordinator-startup-measurement.md) has
 standard-library tests using only local HTTP stubs and a deterministic clock.
-They run in Release Integrity CI and make no external inference calls:
+They run in the `Tooling Tests` CI job and make no external inference calls:
 
 ```bash
 python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
@@ -922,13 +923,17 @@ make landing-test
 
 ### 6. Scripts and release integrity
 
-Create the CPU tooling environment once, using the existing pinned NumPy requirement:
+Prepare and run the CPU tooling checks from the repository root:
 
 ```bash
-python3 -m venv /tmp/darkbloom-tooling-venv
-/tmp/darkbloom-tooling-venv/bin/python -m pip install -r scripts/benchmarks/attention_packet/requirements.txt
-PATH="/tmp/darkbloom-tooling-venv/bin:$PATH" make tooling-test
+make tooling-install  # isolated .venv/tooling with pinned NumPy
+make tooling-test     # also bootstraps the environment if needed
 ```
+
+The environment is reused until `scripts/benchmarks/attention_packet/requirements.txt`
+changes; ordinary test invocations do not run pip or access the package index.
+Set `TOOLING_VENV` to choose another isolated directory. To rebuild a damaged
+environment, remove that directory and run `make tooling-install` again.
 
 This target runs Gemma/GPT-OSS report validators, startup observers, offline
 attention/reference tests, owned-host process fixtures, release-validation

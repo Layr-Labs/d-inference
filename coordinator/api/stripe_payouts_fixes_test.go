@@ -534,8 +534,9 @@ func TestConnectWebhookTransferReversedOnPaidRowNeedsHuman(t *testing.T) {
 // failures into specific operations.
 type flakyPayoutStore struct {
 	*store.MemoryStore
-	failLookups bool
-	failUpdates bool
+	failLookups   bool
+	failUpdates   bool
+	failReversals bool
 }
 
 func (f *flakyPayoutStore) GetStripeWithdrawalByPayoutID(payoutID string) (*store.StripeWithdrawal, error) {
@@ -550,6 +551,13 @@ func (f *flakyPayoutStore) UpdateStripeWithdrawal(wd *store.StripeWithdrawal) er
 		return errors.New("connection reset by peer")
 	}
 	return f.MemoryStore.UpdateStripeWithdrawal(wd)
+}
+
+func (f *flakyPayoutStore) RefundStripeWithdrawalAfterReversal(id, transferID string) (bool, error) {
+	if f.failReversals {
+		return false, errors.New("connection reset by peer")
+	}
+	return f.MemoryStore.RefundStripeWithdrawalAfterReversal(id, transferID)
 }
 
 // newFlakyPayoutServer wires a Server + billing around a flakyPayoutStore.
@@ -572,10 +580,8 @@ func newFlakyPayoutServer(t *testing.T, fakeStripe *httptest.Server) (*Server, *
 	return srv, flaky
 }
 
-// TestConnectWebhookTransferReversedConvergesAcrossPersistFailure: the credit
-// lands but the row persist fails → 500 → Stripe redelivers → the
-// reference-deduped credit no-ops and the persist completes. Exactly one
-// refund, terminal row.
+// A failed reversal transaction returns 500 without changing the balance;
+// webhook redelivery settles it once with both the refund and terminal state.
 func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.T) {
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer fakeStripe.Close()
@@ -589,15 +595,15 @@ func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.
 	})
 	balBefore := flaky.GetBalance(user.AccountID)
 
-	flaky.failUpdates = true
+	flaky.failReversals = true
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_conv")); w.Code != http.StatusInternalServerError {
 		t.Fatalf("got %d, want 500 (persist failed — Stripe must redeliver)", w.Code)
 	}
-	if bal := flaky.GetBalance(user.AccountID); bal != balBefore+5_000_000 {
-		t.Fatalf("credit should have landed once: balance = %d", bal)
+	if bal := flaky.GetBalance(user.AccountID); bal != balBefore {
+		t.Fatalf("failed reversal moved balance: %d, want %d", bal, balBefore)
 	}
 
-	flaky.failUpdates = false
+	flaky.failReversals = false
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_conv")); w.Code != http.StatusOK {
 		t.Fatalf("redelivery got %d", w.Code)
 	}

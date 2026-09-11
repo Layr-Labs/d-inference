@@ -293,14 +293,6 @@ func (lg *LoadGenerator) Run() *LoadResult {
 				}
 				timingsMu.Unlock()
 
-				if lg.Config.Streaming {
-					ttft := lg.extractTTFT(respBody)
-					if ttft > 0 {
-						timingsMu.Lock()
-						segmentTimings[SegmentTTFT] = append(segmentTimings[SegmentTTFT], ttft)
-						timingsMu.Unlock()
-					}
-				}
 			} else {
 				errorCount.Add(1)
 				rr.Error = fmt.Errorf("status %d: %s", resp.StatusCode, string(respBody[:min(len(respBody), 200)]))
@@ -319,18 +311,4 @@ func (lg *LoadGenerator) Run() *LoadResult {
 	result.ProfileRun = &ProfileRun{SegmentTimings: segmentTimings}
 
 	return result
-}
-
-func (lg *LoadGenerator) extractTTFT(body []byte) time.Duration {
-	var resp struct {
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-		} `json:"usage"`
-	}
-	json.Unmarshal(body, &resp)
-	if resp.Usage.CompletionTokens > 0 {
-		return 0
-	}
-	return 0
 }

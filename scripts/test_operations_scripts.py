@@ -70,6 +70,21 @@ sys.exit(1 if sys.argv[1] == "second" else 0)
         self.assertEqual(result.returncode, 2)
         self.assertEqual(self.calls(), ["first", "second", "third"])
 
+    def test_fleet_propagates_remote_download_and_installer_failures(self):
+        fleet = self.root / "update-fleet.sh"
+        shutil.copy2(ROOT / "deploy/provider-fleet/update-fleet.sh", fleet)
+        (self.root / "dev-inventory.txt").write_text("fixture-host\n")
+        self.stub("ssh", '''import subprocess,sys
+# Run only the supplied shell command locally against our curl stub.
+sys.exit(subprocess.run(["/bin/sh", "-c", sys.argv[2]]).returncode)
+''')
+        for curl_source in ("import sys; sys.exit(22)", "print('exit 7')", "print('exit 0')"):
+            with self.subTest(curl_source=curl_source):
+                self.stub("curl", curl_source)
+                result = subprocess.run(["bash", str(fleet), "dev"], env=self.env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0 if "exit 0" in curl_source else 1)
+
     def test_smoke_uses_a_fresh_owned_response_file_and_removes_it(self):
         self.stub("curl", '''import json,os,sys
 from pathlib import Path

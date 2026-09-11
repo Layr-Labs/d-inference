@@ -52,7 +52,7 @@ echo "==> Updating $ENV_NAME fleet against $COORD_URL"
 failed=0
 for HOST in $HOSTS; do
   echo "---- $HOST ----"
-  ssh "$HOST" "curl -fsSL $COORD_URL/install.sh | bash" || {
+  ssh "$HOST" "bash -o pipefail -c 'curl -fsSL $COORD_URL/install.sh | bash'" || {
     echo "!!! $HOST failed — continuing" >&2
     failed=$((failed + 1))
   }

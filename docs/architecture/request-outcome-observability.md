@@ -1,6 +1,6 @@
 # Request Outcome Observability
 
-> Last updated: 2026-09-07 · commit `5ce1d0cd0`
+> Last updated: 2026-09-11 · commit `275190bb0`
 
 Every provider dispatch attempt ends in one claimed terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the existing attempt taxonomy and protected counters. The unsampled incoming-request ledger, its coverage limits, and separate egress/completion evidence are defined in [incoming request accounting](request-accounting.md).
 
@@ -24,7 +24,7 @@ Every terminal goes through `coordinator/api/route_outcome.go`. The constructors
 ```mermaid
 flowchart LR
   A[dispatch loop<br/>dispatch.go] -->|pre-commit arms| F[route_outcome.go<br/>constructors]
-  B[consumer relay<br/>consumer.go / generic_endpoint_stream.go] -->|post-commit arms| F
+  B[consumer relay<br/>consumer.go / endpoint_stream.go] -->|post-commit arms| F
   C[provider terminal<br/>provider.go handleComplete / handleInferenceError] --> F
   D[settlement grace<br/>settlement.go] -->|no terminal| F
   F --> G[updateInferenceRouteOutcomeForPending]
@@ -69,7 +69,7 @@ The five persisted values are constants in `coordinator/api/route_outcome.go` (`
 | `timeout` | `accepted_timeout` | `dispatch.go` accepted-wait arm | provider sent `inference_accepted` (or a cold load) but no content in time |
 | `timeout` | `preamble_liveness_timeout` | `dispatch.go` preamble-liveness arm | provider emitted only role/lifecycle preamble, then stalled |
 | `timeout` | `usage_timeout_before_response`, `response_timeout_before_response` | `consumer.go` non-streaming relay (`preResponseTimeoutOutcome`) | non-streaming response or its usage frame did not arrive in time |
-| `partial_success` | `provider_error_after_commit` / `provider_disconnect_after_commit` | `postCommitProviderErrorOutcome` (streaming relays, `generic_endpoint_stream.go`) | provider error or disconnect after the client had content |
+| `partial_success` | `provider_error_after_commit` / `provider_disconnect_after_commit` | `postCommitProviderErrorOutcome` (streaming relays, `endpoint_stream.go`) | provider error or disconnect after the client had content |
 | `partial_success` | `provider_incomplete_after_commit` | `postCommitProviderIncompleteOutcome`, `502` | provider channel closed mid-stream with no terminal |
 | `partial_success` | `stream_timeout_after_commit` | `postCommitStreamTimeoutOutcome`, `504` | idle-stream timer expired mid-stream |
 | `partial_success` | `client_gone_after_commit_provider_completed` | `provider.go` `handleComplete` when `consumerGone` (`completeRouteOutcome`) | client left after commit; provider completed; consumer charged and provider paid |
@@ -226,7 +226,7 @@ All admin reads require the admin key (`requireAdminKey`).
 |---|---|
 | Outcome constructors, `final_status` constants, `error_reason` derivation | `coordinator/api/route_outcome.go` |
 | Pre-commit arms, dispatch error classes, exhausted-status reclassification, `request_outcome` emit | `coordinator/api/dispatch.go`, `coordinator/api/first_token_clock.go`, `coordinator/api/or_uptime.go` |
-| Post-commit and pre-response relay arms | `coordinator/api/consumer.go`, `coordinator/api/generic_endpoint_stream.go`, `coordinator/api/dispatch_terminal_write.go` |
+| Post-commit and pre-response relay arms | `coordinator/api/consumer.go`, `coordinator/api/endpoint_stream.go`, `coordinator/api/dispatch_terminal_write.go` |
 | Provider terminals, consumer-gone handling | `coordinator/api/provider.go`, `coordinator/api/inference_error_sanitize.go` |
 | Settlement grace and no-terminal refund | `coordinator/api/settlement.go` |
 | Client-gone and partial-success counters | `coordinator/api/prompt_buckets.go`, `coordinator/api/partial_success_metrics.go` |

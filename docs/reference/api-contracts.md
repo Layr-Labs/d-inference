@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-11 · commit `775c41e32`
+> Last updated: 2026-09-11 · commit `275190bb0`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -443,7 +443,7 @@ Bodies are lowered into the chat pipeline (`coordinator/promptcontract/endpoint_
 
 ### Completions and Messages
 
-`/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/api/generic_endpoint_response.go` and streams by `coordinator/api/generic_endpoint_stream.go`, which terminates with `data: [DONE]`.
+`/v1/completions` and `/v1/messages` are lowered to the chat contract (`coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_messages.go`); responses are re-shaped by `coordinator/api/generic_endpoint_response.go` and streams by the emitters in `coordinator/api/generic_endpoint_stream.go`, selected through `newEndpointStreamEmitter` (`coordinator/api/endpoint_stream.go`). Completions ends with `data: [DONE]`; Messages emits `message_delta` and `message_stop` without a `[DONE]` sentinel.
 
 ## SSE framing
 

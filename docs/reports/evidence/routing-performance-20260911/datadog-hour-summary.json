@@ -1,0 +1,160 @@
+{
+  "outcomes": {
+    "since": "2026-09-11T22:25:00+00:00",
+    "until": "2026-09-11T23:25:00+00:00",
+    "models": {
+      "gpt-oss-20b": {
+        "provider_5xx": 28.0,
+        "mid_stream": 54.0,
+        "rate_limited": 5362.0,
+        "client_gone": 890.0,
+        "success": 42511.0,
+        "client_error": 2.0
+      },
+      "qwen3.5-9b": {
+        "rate_limited": 487.0,
+        "success": 1922.0,
+        "client_gone": 88.0
+      },
+      "unknown": {
+        "provider_5xx": 1.0
+      },
+      "qwen3.6-35b-a3b-vl-mtp-mxfp8": {
+        "client_gone": 11.0,
+        "client_error": 2.0,
+        "rate_limited": 950.0,
+        "mid_stream": 1.0,
+        "provider_5xx": 1.0,
+        "success": 6799.0
+      },
+      "gemma-4-26b-qat-4bit": {
+        "rate_limited": 1931.0,
+        "provider_5xx": 19.0,
+        "success": 124495.0,
+        "mid_stream": 6.0,
+        "client_error": 75.0,
+        "client_gone": 261.0
+      },
+      "qwen3.5-35b-a3b": {
+        "rate_limited": 7.0,
+        "client_gone": 1.0,
+        "success": 1551.0
+      },
+      "nvidia-nemotron-3.5-lightning": {
+        "success": 540.0,
+        "client_gone": 35.0,
+        "rate_limited": 249.0
+      },
+      "eigenlabs/qwen3.8-27b-4bit-mtp": {
+        "success": 1203.0,
+        "client_gone": 70.0,
+        "mid_stream": 4.0,
+        "rate_limited": 155.0
+      },
+      "auto": {
+        "client_error": 3.0
+      }
+    }
+  },
+  "attempts": {
+    "since": "2026-09-11T22:25:00+00:00",
+    "until": "2026-09-11T23:25:00+00:00",
+    "models": {
+      "gpt-oss-20b": {
+        "disconnect": 38.0,
+        "speculative_loser": 262.0,
+        "deadline_unreachable": 124239.0,
+        "success": 43457.0,
+        "send_failed": 4.0,
+        "first_chunk_timeout": 5502.0,
+        "capacity": 413.0
+      },
+      "nvidia-nemotron-3.5-lightning": {
+        "deadline_unreachable": 779.0,
+        "success": 575.0,
+        "first_chunk_timeout": 253.0,
+        "speculative_loser": 19.0,
+        "disconnect": 1.0,
+        "capacity": 35.0
+      },
+      "qwen3.5-35b-a3b": {
+        "deadline_unreachable": 33.0,
+        "speculative_loser": 1.0,
+        "first_chunk_timeout": 7.0,
+        "success": 1552.0
+      },
+      "qwen3.6-35b-a3b-vl-mtp-mxfp8": {
+        "client_gone": 2.0,
+        "speculative_loser": 51.0,
+        "disconnect": 1.0,
+        "deadline_unreachable": 1066.0,
+        "success": 6811.0,
+        "first_chunk_timeout": 234.0,
+        "client_error": 2.0,
+        "capacity": 2342.0
+      },
+      "gemma-4-26b-qat-4bit": {
+        "send_failed": 28.0,
+        "client_error": 75.0,
+        "capacity": 35.0,
+        "disconnect": 36.0,
+        "speculative_loser": 1206.0,
+        "success": 124762.0,
+        "deadline_unreachable": 75427.0,
+        "first_chunk_timeout": 2033.0
+      },
+      "qwen3.5-9b": {
+        "disconnect": 1.0,
+        "speculative_loser": 2.0,
+        "capacity": 19.0,
+        "first_chunk_timeout": 99.0,
+        "success": 2010.0,
+        "deadline_unreachable": 8524.0
+      },
+      "eigenlabs/qwen3.8-27b-4bit-mtp": {
+        "send_failed": 1.0,
+        "deadline_unreachable": 1136.0,
+        "first_chunk_timeout": 158.0,
+        "success": 1277.0,
+        "speculative_loser": 11.0,
+        "capacity": 14.0
+      }
+    }
+  },
+  "cache_lookup": {
+    "since": "2026-09-11T22:25:00+00:00",
+    "until": "2026-09-11T23:25:00+00:00",
+    "models": {
+      "gemma-4-26b-qat-4bit": {
+        "miss_absent": 111729.0,
+        "skipped_capacity": 485.0,
+        "skipped_policy": 153.0,
+        "hit": 993.0
+      },
+      "eigenlabs/qwen3.8-27b-4bit-mtp": {
+        "skipped_capacity": 3.0,
+        "hit": 24.0,
+        "miss_absent": 846.0
+      },
+      "qwen3.6-35b-a3b-vl-mtp-mxfp8": {
+        "miss_absent": 3429.0,
+        "skipped_capacity": 24.0,
+        "hit": 28.0
+      },
+      "qwen3.5-35b-a3b": {
+        "miss_absent": 240.0,
+        "hit": 90.0
+      }
+    }
+  },
+  "shadow_spread": {
+    "since": "2026-09-11T22:25:00+00:00",
+    "until": "2026-09-11T23:25:00+00:00",
+    "models": {
+      "all": {
+        "false": 178130.0,
+        "true": 170546.0
+      }
+    }
+  }
+}

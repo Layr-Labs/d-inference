@@ -1,8 +1,9 @@
-import type { ReactNode } from "react";
+import type { ReactNode, HTMLAttributes } from "react";
 
 export interface Column<T> {
   key: string;
-  header: string;
+  header: ReactNode;
+  headerProps?: Pick<HTMLAttributes<HTMLTableCellElement>, "onClick" | "className">;
   render?: (row: T) => ReactNode;
   mono?: boolean;
   align?: "left" | "right";
@@ -29,9 +30,10 @@ export function DataTable<T>({
             {columns.map((c) => (
               <th
                 key={c.key}
+                onClick={c.headerProps?.onClick}
                 className={`px-3 py-2 text-xs font-medium uppercase tracking-wide text-[var(--text-dim)] ${
                   c.align === "right" ? "text-right" : ""
-                }`}
+                } ${c.headerProps?.className ?? ""}`}
               >
                 {c.header}
               </th>

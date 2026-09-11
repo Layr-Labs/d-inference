@@ -24,10 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install CPU reference dependency in an isolated environment
-        run: |
-          python3 -m venv "$RUNNER_TEMP/tooling-venv"
-          "$RUNNER_TEMP/tooling-venv/bin/python" -m pip install -r scripts/benchmarks/attention_packet/requirements.txt
-          echo "$RUNNER_TEMP/tooling-venv/bin" >> "$GITHUB_PATH"
+        run: make tooling-install
       - name: Test tooling against synthetic fixtures and owned process stubs
         run: make tooling-test
 

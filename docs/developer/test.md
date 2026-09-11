@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `8985b8934`
+> Last updated: 2026-09-11 · commit `d7f1e80cb`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs

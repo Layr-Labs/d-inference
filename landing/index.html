@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Darkbloom — Cost-Efficient Private AI Inference on Verified Macs</title>
-  <meta name="description" content="Darkbloom routes encrypted AI inference to hardware-verified Apple Silicon providers. Get comparable model performance at about 50% lower cost than typical API providers, with operator-blind privacy.">
+  <meta name="description" content="Darkbloom routes encrypted AI inference to hardware-verified Apple Silicon providers. Get comparable model performance at about 50% lower cost than typical API providers, with encrypted network connections.">
   <meta name="keywords" content="Darkbloom, Eigen Labs, decentralized AI, private inference, Apple Silicon, encrypted transport, OpenAI compatible, Mac GPU compute, AI inference, hardware verification">
   <meta name="author" content="Eigen Labs">
   <meta name="robots" content="index, follow">
@@ -14,14 +14,14 @@
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Darkbloom">
   <meta property="og:title" content="Darkbloom — Cost-Efficient Private AI Inference on Verified Macs">
-  <meta property="og:description" content="Route encrypted AI requests to hardware-verified Apple Silicon providers. Comparable model performance, operator-blind privacy, and about 50% lower cost than typical API providers.">
+  <meta property="og:description" content="Route encrypted AI requests to hardware-verified Apple Silicon providers. Comparable model performance, encrypted network connections, and about 50% lower cost than typical API providers.">
   <meta property="og:url" content="https://darkbloom.dev">
 
   <!-- Twitter / X -->
   <meta name="twitter:card" content="summary">
   <meta name="twitter:site" content="@eigen_labs">
   <meta name="twitter:title" content="Darkbloom — Cost-Efficient Private AI Inference on Verified Macs">
-  <meta name="twitter:description" content="Encrypted inference on hardware-verified Apple Silicon. Comparable model performance, operator-blind privacy, and about 50% lower cost.">
+  <meta name="twitter:description" content="Encrypted inference on hardware-verified Apple Silicon. Comparable model performance, encrypted network connections, and about 50% lower cost.">
 
   <!-- Favicon -->
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 221 253'><path d='M126.46 126.46H94.85V189.67H63.22V126.44V0H0V126.44V189.67V252.89V252.91H63.22V252.89H94.85V252.91H126.46V252.89H189.69V189.67H126.46V126.46Z' fill='%231A0C6D'/><path d='M221.31 0H189.7V63.22H221.31V0Z' fill='%231A0C6D'/><path d='M158.08 0H126.46V0.01H96.13V31.62H126.46V126.44H158.08V126.43H189.69V63.2H158.08V0Z' fill='%231A0C6D'/></svg>">
@@ -1115,7 +1115,7 @@
     <div class="container" style="display: grid; grid-template-columns: 1fr auto; gap: 48px; align-items: center;">
       <div>
         <h1 style="font-family: var(--font-logo); font-weight: 400;">Cost-efficient private AI inference</h1>
-        <p class="lead">Darkbloom routes encrypted requests to hardware-verified Apple Silicon providers, delivering comparable model performance at about <strong>50% lower cost</strong> than typical API providers. Prompts stay hidden from operators, and Mac owners earn from compute they already own.</p>
+        <p class="lead">Darkbloom routes encrypted requests to hardware-verified Apple Silicon providers, delivering comparable model performance at about <strong>50% lower cost</strong> than typical API providers. Requests use encrypted network connections, and Mac owners earn from compute they already own.</p>
         <div class="ctas">
           <a href="https://console.darkbloom.dev" class="btn btn-primary" target="_blank">Start building ↗</a>
           <a href="https://console.darkbloom.dev/earn" class="btn btn-outline" target="_blank">Estimate earnings ↗</a>
@@ -1244,7 +1244,7 @@
         <div class="card">
           <div class="card-label">For developers</div>
           <h3>Private inference without a new SDK</h3>
-          <p>Change the base URL and keep your existing OpenAI client. Requests are encrypted before they leave your app and routed to verified Apple Silicon providers.</p>
+          <p>Change the base URL and keep your existing OpenAI client. HTTPS protects requests in transit to the coordinator, which encrypts them for verified Apple Silicon providers.</p>
           <a href="https://console.darkbloom.dev" target="_blank" class="btn btn-primary" style="margin-top:20px;">Open Console ↗</a>
         </div>
         <div class="card">
@@ -1321,7 +1321,7 @@
       <div class="rv">
         <div class="sec-label">04 - Privacy Architecture</div>
         <h2>Verified software, encrypted connections</h2>
-        <p class="sec-desc">Encrypted network hops, hardware identity checks, and a hardened provider runtime work together. The coordinator verifies provider identity and processes request content in memory without logging or retaining it.</p>
+        <p class="sec-desc">Encrypted network hops, hardware identity checks, and a hardened provider runtime work together. The coordinator verifies provider identity and processes requests in memory without logging or retaining prompt or completion content.</p>
       </div>
       <div class="card-grid rv">
         <div class="card">

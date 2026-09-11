@@ -45,43 +45,45 @@ export function ModelSupportList({ calc }: { calc: EarningsCalculator }) {
             return (
               <li
                 key={model.id}
-                className={`flex items-center gap-3 px-4 py-3 ${
+                className={`flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:gap-3 ${
                   index > 0 ? "border-t border-border-dim" : ""
                 } ${fits ? "" : "opacity-60"}`}
               >
-                {fits ? (
-                  <Check size={16} className="text-accent-green shrink-0" aria-hidden />
-                ) : (
-                  <X size={16} className="text-text-secondary shrink-0" aria-hidden />
-                )}
-
-                <div className="flex-1 min-w-0">
-                  <p className={`text-sm font-medium truncate ${fits ? "text-text-primary" : "text-text-secondary"}`}>
-                    {model.displayName}
-                  </p>
-                  <p className="text-xs text-text-secondary">
-                    {fits
-                      ? `Fits in your ${effectiveRAM} GB (${formatSize(model.sizeGB)} GB of model weights)`
-                      : unfitDetail(fitReason, model, effectiveRAM)}
-                  </p>
+                <div className="flex min-w-0 flex-1 items-start gap-3">
+                  {fits ? (
+                    <Check size={16} className="mt-0.5 shrink-0 text-accent-green" aria-hidden />
+                  ) : (
+                    <X size={16} className="mt-0.5 shrink-0 text-text-secondary" aria-hidden />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className={`text-sm font-medium break-words ${fits ? "text-text-primary" : "text-text-secondary"}`}>
+                      {model.displayName}
+                    </p>
+                    <p className="text-xs break-words text-text-secondary">
+                      {fits
+                        ? `Fits in your ${effectiveRAM} GB (${formatSize(model.sizeGB)} GB of model weights)`
+                        : unfitDetail(fitReason, model, effectiveRAM)}
+                    </p>
+                  </div>
                 </div>
 
-                {fits && estimate && (
-                  <span className="text-sm font-mono tabular-nums whitespace-nowrap text-text-secondary">
-                    {fmtUSD(estimate.monthlyRevenueUSD)}/mo estimated earning
-                  </span>
-                )}
-                {fits && !estimate && (
-                  <span className="text-xs whitespace-nowrap text-text-secondary">
-                    Earning estimate unavailable
-                  </span>
-                )}
-
-                {isBest && (
-                  <span className="px-2 py-0.5 rounded text-xs font-medium bg-accent-green/10 text-accent-green border border-accent-green/20 whitespace-nowrap">
-                    Best current estimate
-                  </span>
-                )}
+                <div className="flex flex-wrap items-center gap-2 pl-7 sm:shrink-0 sm:pl-0">
+                  {fits && estimate && (
+                    <span className="text-sm font-mono tabular-nums text-text-secondary">
+                      {fmtUSD(estimate.monthlyRevenueUSD)}/mo
+                    </span>
+                  )}
+                  {fits && !estimate && (
+                    <span className="text-xs text-text-secondary">
+                      Earning estimate unavailable
+                    </span>
+                  )}
+                  {isBest && (
+                    <span className="rounded border border-accent-green/20 bg-accent-green/10 px-2 py-0.5 text-xs font-medium text-accent-green">
+                      Best current estimate
+                    </span>
+                  )}
+                </div>
               </li>
             );
           })}

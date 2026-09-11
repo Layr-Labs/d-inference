@@ -205,6 +205,18 @@ describe("EarnPage", () => {
     ).toEqual(["Select model", MACBOOK_PRO, "Mac Mini", MAC_STUDIO, "Mac Pro"]);
   });
 
+  it("keeps every catalog model name readable in the support list", async () => {
+    const EarnPage = (await import("@/app/earn/page")).default;
+    render(<EarnPage />);
+    selectMac();
+    expect(await screen.findByText(BEST_ESTIMATE)).toBeInTheDocument();
+    for (const model of CALCULATOR_MODELS) {
+      const name = screen.getAllByText(model.displayName)[0];
+      expect(name).toBeTruthy();
+      expect(name.className).not.toMatch(/\btruncate\b/);
+    }
+  });
+
   it("shows the capacity flow, prominent caveat, and setup CTA in order", async () => {
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);

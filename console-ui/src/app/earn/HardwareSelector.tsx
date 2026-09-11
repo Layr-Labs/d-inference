@@ -5,9 +5,10 @@ import { DEFAULT_DUTY_CYCLE_PERCENT } from "./calc";
 import type { EarningsCalculator } from "./useEarningsCalculator";
 
 const selectClasses =
-  "w-full bg-bg-tertiary rounded-lg px-3 py-2.5 text-sm text-text-primary " +
-  "border border-border-dim focus:outline-none focus:ring-2 focus:ring-accent-brand/50 " +
-  "cursor-pointer appearance-none";
+  "w-full rounded-lg border border-border-dim bg-bg-tertiary px-3 py-2.5 text-sm " +
+  "text-text-primary [color-scheme:light] [-webkit-text-fill-color:var(--text-primary)] " +
+  "dark:[color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-accent-brand/50 " +
+  "cursor-pointer [&>option]:bg-bg-white [&>option]:text-text-primary";
 
 /** The calculator remains hidden until all three hardware fields are chosen. */
 export function HardwareSelector({ calc }: { calc: EarningsCalculator }) {

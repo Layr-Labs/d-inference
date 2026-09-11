@@ -47,12 +47,10 @@ public actor EngineV2Bridge {
                 stepsExecuted: wedgeMonitor.lastStepsSample)
     }
     public let modelId: String
-    /// Which KV backend the engine was built with. Keys the bridge's
-    /// shared-gate accounting (paged pools are construction-committed —
-    /// no per-request `GlobalKVCacheBudget` reserve), the heartbeat
-    /// capacity clamp, and the provider's re-slice policy (paged slots
-    /// rebuild instead of resizing; `updateBytesCapacity` is a no-op on
-    /// a physically preallocated pool).
+    /// Actual serving backend. Contiguous requests reserve worst-case bytes
+    /// through the shared budget; paged engines own native process-ledger
+    /// charges. Segmented paged storage follows runtime grant changes; only
+    /// explicit fixed-reference pools clamp grants to physical capacity.
     public let kvBackendKind: EngineV2KVBackendKind
     /// Construction-time fallback reason, retained for heartbeat reporting.
     /// Admission and resizing depend on the actual kvBackendKind only.

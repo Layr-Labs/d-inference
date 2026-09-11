@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `ec3b0e65e`
+> Last updated: 2026-09-11 · commit `d22ad0cf3`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1239,10 +1239,17 @@ branches in B2/B4 cohorts, reverses the B2 request order, and submits a four-req
 mixture of matching prefixes, a changed early fact and another tenant.
 `provider-swift/Tests/ProviderCoreTests/GPTOSSMixedPrefixCohort.swift` (`run`)
 submits through the real bridge and requires completed native target-decode
-observations at widths two and four for the all-hit cohorts; the mixed four-request
-cohort requires at least width two. Submission count alone is not concurrency
-proof. Each request must return its own answer and hit/miss accounting, finish
-naturally and retire admission/KV reservations. The same ephemeral-key limits
+observations at widths two and four for the restored B2/B4 cohorts. The cold
+`off-four-submitted` control and mixed four-request cohorts require at least
+width two: full prefills can stagger short natural answers, so four admissions
+do not establish cold decode width four. All observed widths remain in the
+retained deltas. This semantic/isolation gate does not establish matched
+full-width-four cache-on/cache-off parity or performance; paired performance
+benchmarks retain their own actual-width requirements. Each warm cohort must
+restore both distinct suffixes; extra duplicate rows may safely miss. Store
+consumptions must reconcile with observed hits. Every request must return its
+own answer and hit/miss accounting, finish naturally and retire admission/KV
+reservations. The same ephemeral-key limits
 apply. First-observed chunk times can include buffered output and are not
 benchmark TTFT; exact-text comparisons are diagnostic. This invocation describes
 the gate and does not assert that it passed.

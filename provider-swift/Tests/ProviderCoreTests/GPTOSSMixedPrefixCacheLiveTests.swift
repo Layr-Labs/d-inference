@@ -47,8 +47,12 @@ struct GPTOSSMixedPrefixCacheLiveTests {
             let coldBridge = try fixture.makeBridge(store: nil, maxConcurrentRequests: 4)
             let coldPair = try await GPTOSSMixedPrefixCohort.run(bridge: coldBridge, requests: pair,
                 label: "off-b2", requiredDecodeWidth: 2, cacheOn: false)
+            // Full prefills stagger these short natural answers: four admitted
+            // cold requests need not overlap at decode width four. This is a
+            // concurrent semantic control, not cold full-width-four parity.
+            // The restored B4 arm below must still execute native width four.
             let coldAll = try await GPTOSSMixedPrefixCohort.run(bridge: coldBridge, requests: allHit,
-                label: "off-b4", requiredDecodeWidth: 4, cacheOn: false)
+                label: "off-four-submitted", requiredDecodeWidth: 2, cacheOn: false)
             let coldMixed = try await GPTOSSMixedPrefixCohort.run(bridge: coldBridge, requests: mixed,
                 label: "off-mixed4", requiredDecodeWidth: 2, cacheOn: false)
             await coldBridge.shutdown()

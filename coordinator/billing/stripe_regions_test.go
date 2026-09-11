@@ -40,6 +40,7 @@ func TestRequiredServiceAgreement(t *testing.T) {
 		{"US", "MX", ServiceAgreementRecipient},
 		{"US", "BR", ServiceAgreementRecipient},
 		{"US", "IN", ServiceAgreementRecipient},
+		{"US", "MK", ServiceAgreementRecipient}, // North Macedonia: EU candidate, not EEA (#695)
 		// Case-insensitive: the platform country comes from configuration
 		// (EIGENINFERENCE_STRIPE_CONNECT_COUNTRY) and may be lowercase; a
 		// missed match would create US/EEA accounts as recipient.
@@ -93,7 +94,7 @@ func TestCreateExpressAccountFullAgreementForm(t *testing.T) {
 }
 
 func TestCreateExpressAccountRecipientAgreementForm(t *testing.T) {
-	for _, country := range []string{"AU", "NZ", "JP"} {
+	for _, country := range []string{"AU", "NZ", "JP", "MK"} {
 		form := captureAccountCreate(t, country)
 		if got := form.Get("tos_acceptance[service_agreement]"); got != "recipient" {
 			t.Errorf("%s: service_agreement = %q, want recipient", country, got)

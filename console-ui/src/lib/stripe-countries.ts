@@ -4,6 +4,12 @@ export interface StripeCountry {
   flag: string;
 }
 
+// Countries Stripe lists as available for Express connected accounts, sorted by
+// ISO 3166-1 alpha-2 code. Check a code against Stripe's list before adding a
+// row here: https://docs.stripe.com/connect/accounts#availability-of-express-connected-accounts
+// Countries outside the US/CA/UK/EEA/CH transfer region are routed to the
+// `recipient` service agreement by the coordinator (see
+// coordinator/billing/stripe_regions.go), not by anything in this file.
 export const STRIPE_CONNECT_COUNTRIES: StripeCountry[] = [
   { code: "AE", name: "United Arab Emirates", flag: "\u{1F1E6}\u{1F1EA}" },
   { code: "AT", name: "Austria", flag: "\u{1F1E6}\u{1F1F9}" },
@@ -35,6 +41,7 @@ export const STRIPE_CONNECT_COUNTRIES: StripeCountry[] = [
   { code: "LT", name: "Lithuania", flag: "\u{1F1F1}\u{1F1F9}" },
   { code: "LU", name: "Luxembourg", flag: "\u{1F1F1}\u{1F1FA}" },
   { code: "LV", name: "Latvia", flag: "\u{1F1F1}\u{1F1FB}" },
+  { code: "MK", name: "North Macedonia", flag: "\u{1F1F2}\u{1F1F0}" },
   { code: "MT", name: "Malta", flag: "\u{1F1F2}\u{1F1F9}" },
   { code: "MX", name: "Mexico", flag: "\u{1F1F2}\u{1F1FD}" },
   { code: "MY", name: "Malaysia", flag: "\u{1F1F2}\u{1F1FE}" },

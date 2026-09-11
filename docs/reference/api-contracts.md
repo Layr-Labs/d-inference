@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-10 · commit `d93c2c335`
+> Last updated: 2026-09-10 · commit `35188e0ca`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -396,13 +396,19 @@ cannot pad the estimate. Responses and Anthropic structured text use the same
 joins and message framing as provider lowering; Anthropic top-level `system`
 text contributes too (`promptcontract.PromptMessagesForEstimate`). Media keeps
 the flat routing cost of 300 tokens per image and 1500 per video. Model names,
-sampling options, and block metadata do not contribute. This is a heuristic,
+sampling options, and supported text-block metadata do not contribute. Tool-call
+history contributes function names and argument text, excluding IDs and wrapper
+metadata. Generic endpoint shapes that cannot be lowered retain the native
+prompt estimate (`coordinator/api/input_token_estimate.go`, `inputFloorPromptTokens`);
+a document block cannot erase adjacent text. This is a heuristic,
 not the provider's exact tokenizer count. Below-minimum
 requests do not start a response stream or reach a provider. An alias may defer
 its floor decision until ordinary capacity/TTFT admission selects a build. Token
 quota and balance admission wait until that selected build passes the floor; a
 400 cannot consume token quota or be masked by an insufficient-funds 402. The lower floor alone does
-not trigger fallback. Transient registry read failures return retryable 503
+not trigger fallback. Deferred preflight scaling signals remain buffered until
+quota and balance admission both succeed; rejected requests discard those signals.
+Transient registry read failures return retryable 503
 `service_unavailable`, rather than silently substituting the deployment default.
 
 See [per-model minimum settings](model-registry-format.md#minimum-input-tokens)

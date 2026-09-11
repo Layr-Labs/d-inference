@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-10 · commit `d93c2c335`
+> Last updated: 2026-09-10 · commit `35188e0ca`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -50,7 +50,9 @@ retrying the unchanged request. Model publishers can configure `0` for small-inp
 testing; callers cannot override the policy in their request. Only the active
 endpoint's prompt counts; adding unused `input` or `prompt` fields to a Chat
 request does not meet the minimum. Structured Responses and Anthropic text is
-counted after the same text conversion used for serving.
+counted after the same text conversion used for serving. Tool-call names and
+arguments also count; native-only blocks do not erase the surrounding prompt.
+The README and API-console examples use prompts above the default floor.
 [Exact contract and model overrides](../reference/api-contracts.md#minimum-input-length).
 
 ```bash

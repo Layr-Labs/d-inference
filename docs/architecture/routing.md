@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-10 · commit `d93c2c335`
+> Last updated: 2026-09-10 · commit `35188e0ca`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -52,6 +52,9 @@ text blocks use canonical provider lowering joins and framing, including
 Anthropic top-level `system`; images/videos retain flat media costs
 (`inputFloorPromptTokens`, `promptcontract.PromptMessagesForEstimate`). Ignored
 fields from other endpoints and block metadata contribute no tokens.
+Tool-call history adds function names and arguments to the floor estimate.
+Native-only generic shapes retain their active prompt estimate when canonical
+lowering is unsupported (`coordinator/api/input_token_estimate.go`).
 A terminal failure is 400 `input_too_short`; it never reaches provider dispatch.
 
 If exactly one of an alias's Desired/Previous builds allows the input, the initial
@@ -59,6 +62,10 @@ floor decision is deferred until the normal capacity/TTFT preflight runs. The
 floor does not independently select an older build. If preflight keeps Desired,
 its floor still applies; if preflight switches builds, the fallback's floor
 applies. Alias token quota and balance admission wait for that final validation.
+The request-owned `admissionPressureGate` buffers preflight capacity/TTFT scaling
+signals until both cost gates succeed; a terminal deferred rejection discards
+them. Admitted requests release their buffered signals once
+(`coordinator/api/inference_admission_pressure.go`).
 Remote-media fetches still wait for quota admission and balance reservation,
 including on the deferred alias path. When both floors permit the input, media
 inlining precedes ordinary admission, so fallback sees the expanded body. If

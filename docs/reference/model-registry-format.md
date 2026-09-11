@@ -44,7 +44,9 @@ on all three endpoints).
 It excludes the routing estimator's whole-body fallback: model names, sampling
 options, and unrelated metadata cannot make an empty prompt meet the floor.
 For example, a provider-reported 27-token prompt can estimate to 19 tokens.
-Tool definitions are not added to this routing estimate. A terminal floor rejection
+Tool definitions are not added to the floor estimate, but tool-call history
+contributes function names and arguments. Native-only generic shapes retain
+their endpoint prompt estimate when canonical lowering is unsupported. A terminal floor rejection
 returns HTTP **400**, `error.type = "invalid_request_error"`, and
 `error.code = "input_too_short"`. The initial check runs before token admission
 and billing reservation; eligible aliases can defer the decision until ordinary

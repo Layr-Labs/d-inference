@@ -8,6 +8,8 @@ import {
 } from "lucide-react";
 
 export const EXAMPLE_MODEL = "<model-id-from-/v1/models>";
+const EXAMPLE_PROMPT =
+  "Explain how decentralized inference works for a new developer. Describe how a request moves from the client through the coordinator to a provider, and give one practical example.";
 
 export interface Endpoint {
   method: "GET" | "POST";
@@ -38,7 +40,7 @@ export const ENDPOINTS: Endpoint[] = [
   "model": "${EXAMPLE_MODEL}",
   "messages": [
     {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "Hello!"}
+    {"role": "user", "content": "${EXAMPLE_PROMPT}"}
   ],
   "stream": true,
   "max_tokens": 1024
@@ -63,7 +65,7 @@ export const ENDPOINTS: Endpoint[] = [
     auth: true,
     request: `{
   "model": "${EXAMPLE_MODEL}",
-  "input": "Explain how decentralized inference works.",
+  "input": "${EXAMPLE_PROMPT}",
   "stream": true,
   "max_output_tokens": 1024
 }`,
@@ -80,7 +82,7 @@ export const ENDPOINTS: Endpoint[] = [
     }]
   }],
   "usage": {
-    "input_tokens": 12,
+    "input_tokens": 42,
     "output_tokens": 256
   }
 }`,
@@ -235,7 +237,7 @@ export function chatExamples(apiKey: string, baseUrl: string): CodeSnippet[] {
   -H "Content-Type: application/json" \\
   -d '{
     "model": "${EXAMPLE_MODEL}",
-    "messages": [{"role": "user", "content": "Explain quantum computing"}],
+    "messages": [{"role": "user", "content": "${EXAMPLE_PROMPT}"}],
     "stream": true,
     "max_tokens": 1024
   }'`,
@@ -252,7 +254,7 @@ client = OpenAI(
 
 stream = client.chat.completions.create(
     model="${EXAMPLE_MODEL}",
-    messages=[{"role": "user", "content": "Explain quantum computing"}],
+    messages=[{"role": "user", "content": "${EXAMPLE_PROMPT}"}],
     stream=True,
     max_tokens=1024,
 )
@@ -274,7 +276,7 @@ const client = new OpenAI({
 
 const stream = await client.chat.completions.create({
   model: "${EXAMPLE_MODEL}",
-  messages: [{ role: "user", content: "Explain quantum computing" }],
+  messages: [{ role: "user", content: "${EXAMPLE_PROMPT}" }],
   stream: true,
   max_tokens: 1024,
 });
@@ -299,7 +301,7 @@ const darkbloom = createOpenAICompatible({
 // Streaming response
 const { textStream } = streamText({
   model: darkbloom.chatModel("${EXAMPLE_MODEL}"),
-  prompt: "Explain quantum computing",
+  prompt: "${EXAMPLE_PROMPT}",
 });
 
 for await (const text of textStream) {
@@ -309,7 +311,7 @@ for await (const text of textStream) {
 // Single response
 const { text } = await generateText({
   model: darkbloom.chatModel("${EXAMPLE_MODEL}"),
-  prompt: "Write a haiku about Apple Silicon",
+  prompt: "Write a three-line haiku about Apple Silicon running a language model locally. Use an image from nature, keep the tone calm, and return only the poem without a title or explanation.",
 });
 console.log(text);`,
     },

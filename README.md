@@ -134,7 +134,7 @@ client = OpenAI(
 
 stream = client.chat.completions.create(
     model="gemma-4-26b",                       # use an id from GET /v1/models
-    messages=[{"role": "user", "content": "Hello, Darkbloom!"}],
+    messages=[{"role": "user", "content": "Explain how decentralized inference works for a new developer. Describe how a request moves from the client through the coordinator to a provider, and give one practical example."}],
     stream=True,
 )
 for chunk in stream:
@@ -146,8 +146,11 @@ for chunk in stream:
 curl https://api.darkbloom.dev/v1/chat/completions \
   -H "Authorization: Bearer sk-db-..." \
   -H "Content-Type: application/json" \
-  -d '{"model":"gemma-4-26b","messages":[{"role":"user","content":"Hello!"}],"stream":true}'
+  -d '{"model":"gemma-4-26b","messages":[{"role":"user","content":"Explain how decentralized inference works for a new developer. Describe how a request moves from the client through the coordinator to a provider, and give one practical example."}],"stream":true}'
 ```
+
+These examples meet the default minimum of 32 estimated input tokens. Model publishers can
+override that minimum; see the [input-length contract](docs/reference/api-contracts.md#minimum-input-length).
 
 The **Anthropic Messages API** works too — point the Anthropic SDK at the same base URL and use `/v1/messages`.
 

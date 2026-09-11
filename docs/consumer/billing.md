@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-10 · commit `42551bf49`
+> Last updated: 2026-09-10 · commit `35188e0ca`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -11,7 +11,9 @@ route is tabulated in [`reference/pricing-model.md`](../reference/pricing-model.
 Input-floor validation finishes before token quota is consumed or balance is
 reserved, including aliases that require capacity/TTFT selection. A 400
 `input_too_short` therefore consumes neither. Remote media still cannot be fetched
-before quota admission and funding. See [the input-minimum contract](../reference/api-contracts.md#minimum-input-length).
+before quota admission and funding. Deferred alias preflight cannot emit
+warm-pool scaling pressure until both cost gates succeed; terminal rejections
+discard those pending signals. See [the input-minimum contract](../reference/api-contracts.md#minimum-input-length).
 
 ## Prerequisites
 

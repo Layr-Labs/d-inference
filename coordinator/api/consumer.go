@@ -2331,9 +2331,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		return refreshForwardBody(forwardBytes, newModel)
 	}
+	pressure := &admissionPressureGate{s: s, admitted: !floorDeferred}
 	var preflightHandled bool
 	preflightStart := time.Now()
 	admissionParams := inferenceAdmissionParams{
+		pressure:                  pressure,
 		model:                     model,
 		publicModel:               publicModel,
 		stream:                    stream,
@@ -2369,7 +2371,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if floorDeferred {
-		if !admitAndReserve() || !resolveAdmittedMedia() {
+		if !admitAndReserve() {
+			return
+		}
+		pressure.admit()
+		if !resolveAdmittedMedia() {
 			return
 		}
 		if mediaInlined {
@@ -2977,9 +2983,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	// Shared routing/capacity admission preflight (self-route / prefer / public
 	// capacity+TTFT gate — see runInferenceAdmission).
+	pressure := &admissionPressureGate{s: s, admitted: !floorDeferred}
 	var preflightHandled bool
 	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
+		pressure:                  pressure,
 		model:                     model,
 		publicModel:               publicModel,
 		stream:                    stream,
@@ -3013,8 +3021,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		refundReservation()
 		return
 	}
-	if floorDeferred && !admitAndReserve() {
-		return
+	if floorDeferred {
+		if !admitAndReserve() {
+			return
+		}
+		pressure.admit()
 	}
 	cachePlan := registry.CachePlan{}
 	// Response framing is determined by the caller-facing endpoint, never by

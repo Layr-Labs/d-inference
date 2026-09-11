@@ -205,6 +205,7 @@ func (s *Server) topUpReservationForInlinedMedia(w http.ResponseWriter, r *http.
 // preflight needs. model is the resolved build id; the preflight may swap it to
 // a Previous build via an alias fallback and returns the final value.
 type inferenceAdmissionParams struct {
+	pressure *admissionPressureGate
 	// Post-inline revalidation of a deferred floor may only retain the build
 	// already admitted: the other build failed the request's floor snapshot.
 	disableAliasFallback      bool
@@ -256,6 +257,10 @@ func preflightScanWait(deadline time.Duration) time.Duration {
 // prefer modes short-circuit the public capacity gate exactly as before.
 func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, parsed map[string]any, p inferenceAdmissionParams) (string, bool) {
 	model := p.model
+	pressure := p.pressure
+	if pressure == nil {
+		pressure = &admissionPressureGate{s: s, admitted: true}
+	}
 	publicModel := p.publicModel
 	fallbackAlias := publicModel
 	if p.disableAliasFallback {
@@ -530,8 +535,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 	}
 	if candidateCount == 0 && capacityRejections > 0 {
 		// Routing v2 W3: feed the autoscaler the demand the preflight sees.
-		s.registry.RecordWarmPoolCapacityReject(model)
-		s.triggerWarmPool()
+		pressure.capacity(model)
 		// Queue-before-shed (default on): providers exist for this model but
 		// all are at capacity right now. Rather than an immediate 429, let the
 		// request fall through to the normal dispatch+queue path so a slot
@@ -602,9 +606,8 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		// unservable demand; it is the safety valve for the narrow window
 		// where a loadable cold provider is not yet a candidate.
 		//
-		// Feed the autoscaler the demand regardless of outcome.
-		s.registry.RecordWarmPoolCapacityReject(model)
-		s.triggerWarmPool()
+		// Feed admitted demand to the autoscaler; deferred cost gates buffer it.
+		pressure.capacity(model)
 		if s.coldDispatchEnabled() && s.coldSpillAvailable(model, modelTraits(model), p.requiresVision, p.allowedProviderSerials) {
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
 			// Fall through to dispatch+queue; reservation kept.
@@ -698,8 +701,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			// Keep the text soft-gate pressure signal, but do not teach the warm
 			// pool from a media projection that omits decode and tower work.
 			if !p.requiresVision {
-				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
-				s.triggerWarmPool()
+				pressure.ttftMiss(model, ttftThreshold)
 			}
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
 		} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackTTFT, fallbackAlias, model, p.estimatedPromptTokens, p.requestedMaxTokens, ttftThreshold, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
@@ -710,8 +712,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		} else {
 			// Hard TTFT gate, no faster alias: shed with a 429 + Retry-After,
 			// and feed the autoscaler a TTFT-miss so warm capacity grows.
-			s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
-			s.triggerWarmPool()
+			pressure.ttftMiss(model, ttftThreshold)
 			retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 			refundReservation()
 			s.recordRejection(rejectionInfo{

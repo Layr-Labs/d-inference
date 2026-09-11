@@ -8,7 +8,6 @@ import (
 	"net/http"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
-	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -135,28 +134,4 @@ func (s *Server) inputFloorRegistryReadFailed(w http.ResponseWriter, model strin
 	s.logger.Error("cannot resolve model input token floor", "model", model, "error", err)
 	s.writeServiceUnavailable(w, model)
 	return true
-}
-
-// inputFloorPromptTokens counts only the active endpoint's normalized prompt.
-// Canonical lowering owns structured text joins and message framing; media keeps
-// its existing flat cost. Uninterpretable content cannot inflate the floor.
-func inputFloorPromptTokens(parsed map[string]any, endpoint promptcontract.Endpoint) int {
-	messages, media, err := promptcontract.PromptMessagesForEstimate(endpoint, parsed)
-	if err != nil {
-		// Multi-prompt completions are forwarded natively, not lowered as one chat.
-		if endpoint == promptcontract.EndpointCompletions {
-			if prompts, ok := parsed["prompt"].([]any); ok {
-				tokens := 0
-				for _, prompt := range prompts {
-					if text, ok := prompt.(string); ok {
-						tokens += 4 + textPromptTokens(text)
-					}
-				}
-				return tokens
-			}
-		}
-		return 0
-	}
-	tokens, _ := messagesShape(messages)
-	return tokens + media.Images*imagePromptTokenCost + media.Videos*videoPromptTokenCost
 }

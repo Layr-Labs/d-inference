@@ -55,7 +55,7 @@ export default function EarningsContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const getAuthHeaders = useCallback(async () => {
+  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
     const accessToken = await getAccessToken().catch(() => null);
     if (accessToken) {
       return { Authorization: `Bearer ${accessToken}` };

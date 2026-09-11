@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-11 · commit `bbb46b21f`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -432,7 +432,7 @@ local stub servers; its default observation mode sends only public GETs.
 | `provider-build` | `swift build` + `scripts/fetch-metallib.sh <bin-path>` |
 | `provider-test` | `swift build --build-tests`, stage `mlx.metallib` into the bin dir and every `*PackageTests.xctest/Contents/MacOS`, then `swift test --skip-build` |
 | `provider` | `provider-build` + `provider-test` |
-| `benchmark-wrapper-test` | `cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .` |
+| `benchmark-wrapper-test` | Python unittest discovery in `scripts/gemma_contbatch/tests` and `scripts/mtp_benchmark/tests` |
 | `benchmark-gemma-contbatch` | `python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)` (needs GPU + weights) |
 | `ui-install` / `ui-lint` / `ui-test` / `ui-build` / `ui` | `npm install` / `npx eslint src/` / `npm test` / `npm run build` in `console-ui/` |
 | `e2e-integration` | `go test ./e2e/... -run TestIntegration -v` |

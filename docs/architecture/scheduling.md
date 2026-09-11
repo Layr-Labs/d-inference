@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-10 · commit `213b8c2b6`
+> Last updated: 2026-09-11 · commit `7c394fa2b`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -359,6 +359,14 @@ reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 `thermal_critical`, `trust_or_runtime`, `stale_challenge`,
 `not_serving_catalog`, `dedicated_excluded`, `model_too_large`,
 `no_free_for_load`, `state_restoring`).
+
+Models share cold providers. `allocateWarmPoolLoads`
+(`coordinator/registry/warm_pool_allocation.go`) assigns a provider to at most
+one model per planning pass, including observe-only passes. If another model
+already claimed a preferred provider, or a pending-load reservation loses a
+race, the allocator tries the remaining ranked candidates within the original
+per-model and per-tick allowance. It visits each candidate at most once and
+leaves any unfillable deficit for a later tick.
 
 **`WarmPoolSnapshot`.** Every tick produces one per model, logged as
 `warm_pool_tick` and retained as the controller's latest state

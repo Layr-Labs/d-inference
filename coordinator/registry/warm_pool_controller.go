@@ -368,6 +368,7 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 
 	params := c.targetParams()
 	var out []WarmPoolSnapshot
+	assignedProviders := make(map[string]struct{})
 	for _, model := range ordered {
 		p := pressure[model]
 		q := queue[model]
@@ -401,13 +402,11 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 		if need < 0 {
 			need = 0
 		}
-		actions := make([]modelLoadAction, 0, need)
-		for i := 0; i < need; i++ {
-			actions = append(actions, modelLoadAction{providerID: f.eligibleCold[i].providerID, modelID: model})
+		reserveLoads := reserve
+		if c.config.ObserveOnly {
+			reserveLoads = nil
 		}
-		if reserve != nil && !c.config.ObserveOnly {
-			actions = reserve(actions, now)
-		}
+		actions := allocateWarmPoolLoads(model, f.eligibleCold, need, assignedProviders, reserveLoads, now)
 		loadsRemaining -= len(actions)
 		c.state.rememberTarget(model, target, now)
 		// Surface why cold boxes aren't warmable (counts only). For a dedicated pool

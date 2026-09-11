@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-11 · commit `6938e8547`
+> Last updated: 2026-09-11 · commit `7c394fa2b`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -222,3 +222,5 @@ Machine-generated; kept as evidence for the reports above.
 - [Gemma MTP review fixes](2026-09-08-gemma-mtp-review-fixes.md) — reproduced request-ID reuse and verification-shape findings, generation isolation fixes and regression evidence.
 
 - [Gemma QAT September 10 merge and validation](2026-09-10-gemma-qat-review-sync.md) — review fixes, merged-source tests, new artifact identity and model/HTTP revalidation status.
+
+- [Routing performance study](2026-09-11-routing-performance-study.md) — production outcomes, ranking and cache hypotheses, and a reproduced cross-model warm-pool allocation fix.

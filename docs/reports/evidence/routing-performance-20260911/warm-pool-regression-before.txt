@@ -1,0 +1,8 @@
+--- FAIL: TestWarmPoolSharedColdFleetFillsBothModels (0.00s)
+    --- FAIL: TestWarmPoolSharedColdFleetFillsBothModels/observe=false (0.00s)
+        warm_pool_allocation_test.go:75: model demand-b planned 0 loads, want 2: {Model:demand-b TargetWarm:3 WarmProviders:1 EligibleCold:4 QueueDepth:0 OldestQueueAge:0s CapacityRejects:1 TTFTMisses:0 SpeculativeStarted:0 SpeculativeWon:0 ColdDispatches:0 LoadDurationEWMA:0s ObserveOnly:false Actions:[] RunningRequests:3 WaitingRequests:0 WarmSaturated:1 WarmForeignBlocked:0 SpillArrivalRate:0 OccupancyRamp:0 HeadroomProviders:0 ServiceTime:500ms QualityConcurrency:1 DemandConcurrency:3 ColdIneligible:0 ColdDisqualifiers:map[]}
+    --- FAIL: TestWarmPoolSharedColdFleetFillsBothModels/observe=true (0.00s)
+        warm_pool_allocation_test.go:79: two models claimed provider cold-0
+FAIL
+FAIL	github.com/eigeninference/d-inference/coordinator/registry	0.938s
+FAIL

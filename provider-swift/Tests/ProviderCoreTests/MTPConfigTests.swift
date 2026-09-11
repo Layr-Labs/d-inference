@@ -119,13 +119,12 @@ struct MTPConfigKeyTests {
         #expect(modeWins.backend.mtpMode == .off)
     }
 
-    @Test("automatic embedded heads require a Qwen3.5-family model type")
+    @Test("automatic embedded heads require a supported embedded model type")
     func targetPolicy() {
-        // Embedded (mtplx_mtp-declaring) checkpoints of the Qwen 3.5 family —
-        // dense (9B, 27B) and MoE (3.5/3.6 35B) — self-activate under `auto`.
-        // The embedded-head family gate remains Qwen; exact Gemma QAT uses
+        // Declared embedded heads in Qwen 3.5-family and Nemotron Lightning
+        // checkpoints self-activate under `auto`. Exact Gemma QAT uses
         // its separately validated external assistant policy below.
-        let familyModelTypes = ["qwen3_5_moe", "qwen3_5"]
+        let familyModelTypes = ["qwen3_5_moe", "qwen3_5", "nemotron_h"]
         let nonFamilyModelTypes: [String?] = [
             "gemma4",
             "gemma4_text",

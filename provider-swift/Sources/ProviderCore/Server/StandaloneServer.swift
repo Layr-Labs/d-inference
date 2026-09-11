@@ -1423,7 +1423,7 @@ public actor StandaloneServer {
         // Loud insurance behind the init/setModels filter: a model without
         // a CBv2 adapter must never reach engine construction (v0.7.5
         // fail-loud — there is no legacy engine to degrade onto).
-        guard EngineV2SupportedModels.isSupported(modelType: modelInfo.modelType) else {
+        guard EngineV2SupportedModels.isSupported(model: modelInfo) else {
             standaloneLogger.error(
                 "Model '\(modelId)' (model_type \(modelInfo.modelType ?? "unknown")) has no CBv2 adapter — refusing to load")
             throw StandaloneServerError.modelNotFound(modelId)

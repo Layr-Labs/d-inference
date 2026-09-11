@@ -155,4 +155,4 @@ all: test build ## Test + build everything
 
 clean: ## Remove built artifacts
 	rm -f coordinator/coordinator coordinator/coordinator-linux
-	rm -rf coordinator/promptsidecar/target provider-swift/.build console-ui/.next console-ui/node_modules
+	rm -rf coordinator/promptsidecar/target provider-swift/.build console-ui/.next console-ui/node_modules admin-ui/.next admin-ui/node_modules

@@ -1,6 +1,6 @@
 # Models reference
 
-> Last updated: 2026-09-10 · commit `dcc3d0809`
+> Last updated: 2026-09-10 · commit `28332cb6a`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
@@ -103,6 +103,19 @@ loaded Qwen and selected Nemotron Lightning recurrent targets (including typed
 embedded MTP history), and paged GPT-OSS/Gemma historical attention;
 the [cache capability reference](../reference/ssd-kv-cache.md#per-family-reuse-capability)
 records backend and identity gates. This does not change API feature flags.
+
+## Gemma 4 26B QAT runtime defaults
+
+The v0.9.1 provider source enables these defaults only for exact build
+`gemma-4-26b-qat-4bit`. This does not publish a catalog entry or change the
+API feature flags above; other Gemma artifacts, including 8-bit, do not inherit
+these defaults.
+
+| Behavior | Default and limits | Source |
+|---|---|---|
+| Prefix caching | Encrypted complete paged SSD checkpoints enabled, subject to loaded capability, verified identity, cache key and tenant scope. A cache hit is not guaranteed; explicit cache disable wins | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Activation.swift` (`isEnabled`); [cache defaults](../architecture/prefix-cache.md#kv-layouts) |
+| Multi-token prediction (MTP) | `mtp_mode = "auto"` resolves the catalog-declared assistant; adaptive decoding chooses ordinary decode or one draft token. Missing, invalid or memory-ineligible assistants retain target-only serving; explicit `off` and the process kill switch win | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (`MTPMode.enablesMTP`); [MTP policy and controls](../architecture/inference.md#multi-token-prediction) |
+| Assistant activation | Requests continue during download and preparation. Network providers also serve during rollout jitter, then temporarily close admissions only for this model while accepted requests finish and the prepared engine swaps in. Racing/new acquisitions can receive transient 503; timeout or cancellation reopens the original engine without force-cancelling accepted work. Random jitter provides no fleet availability guarantee | `provider-swift/Sources/ProviderCore/Inference/MTPIdleUpgrade.swift` (`run`); [provider memory and availability](../provider/hardware-requirements.md#gemma-qat-assistant-footprint-and-availability) |
 
 ## Related
 

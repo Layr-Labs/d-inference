@@ -18,6 +18,6 @@ extension StandaloneServer {
 
     func throwIfMTPUpgradeDraining(_ modelID: String) throws {
         guard mtpAdmissionDrains.contains(modelID) else { return }
-        throw MultiModelBatchSchedulerEngineError.queueFull("model temporarily unavailable during assistant upgrade")
+        throw MultiModelBatchSchedulerEngineError.requestRejected("model temporarily unavailable during assistant upgrade")
     }
 }

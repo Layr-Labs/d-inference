@@ -208,7 +208,7 @@ struct StandaloneMTPUpgradeTests {
         await paused.observeEntry()
         await fixture.checkOriginal()
         #expect(await fixture.server.debugSlotReservationCount(modelId: standaloneUpgradeModelID) == 1)
-        await #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+        try await expectMTPDrainHTTP503 {
             let rejected = try await fixture.server.acquireModel(standaloneUpgradeModelID)
             await rejected.releaseToken.fire()
         }

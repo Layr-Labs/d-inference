@@ -446,8 +446,9 @@ struct ProviderLoopMTPUpgradeTests {
         try await fixture.loop.ensureModelLoaded(modelId: upgradeModelID)
         #expect(await fixture.loop.hasUpgradeCoordinatorPin())
         #expect(acceptedLocal.engineV2Bridge === fixture.original)
-        await #expect(throws: MultiModelBatchSchedulerEngineError.self) {
-            _ = try await fixture.loop.acquireModelForLocal(upgradeModelID)
+        try await expectMTPDrainHTTP503 {
+            let rejected = try await fixture.loop.acquireModelForLocal(upgradeModelID)
+            await rejected.releaseToken.fire()
         }
         let peerRequest = try await fixture.loop.acquireModelForLocal(peerID)
         #expect(peerRequest.engineV2Bridge === peer)

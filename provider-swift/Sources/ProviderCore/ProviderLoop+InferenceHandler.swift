@@ -133,7 +133,7 @@ extension ProviderLoop {
             throw MultiModelBatchSchedulerEngineError.queueFull(providerDrainingForUpdateReason)
         }
         if let modelId, mtpAdmissionDrains.contains(modelId) {
-            throw MultiModelBatchSchedulerEngineError.queueFull("model preparing assistant swap")
+            throw MultiModelBatchSchedulerEngineError.requestRejected("model preparing assistant swap")
         }
     }
 

@@ -43,9 +43,9 @@ export function NormalMode({
       color: "text-coral",
       title: "Data Protection",
       description:
-        "Your prompts are encrypted end-to-end. Not even Darkbloom servers can read them.",
-      info: "X25519 key exchange + XSalsa20-Poly1305 encryption (NaCl box). The coordinator only sees ciphertext.",
-      ok: true, // E2E is always active
+        "Requests use encrypted network hops. The coordinator processes plaintext in memory without logging or retaining prompt content.",
+      info: "HTTPS protects the browser connection. Optional sender sealing terminates at the coordinator, which re-seals to the provider using X25519/NaCl box.",
+      ok: true, // The coordinator/provider leg requires encrypted requests and responses.
     },
     {
       icon: Cpu,

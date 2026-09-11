@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Darkbloom — Cost-Efficient Private AI Inference on Verified Macs</title>
   <meta name="description" content="Darkbloom routes encrypted AI inference to hardware-verified Apple Silicon providers. Get comparable model performance at about 50% lower cost than typical API providers, with operator-blind privacy.">
-  <meta name="keywords" content="Darkbloom, Eigen Labs, decentralized AI, private inference, Apple Silicon, end-to-end encryption, OpenAI compatible, Mac GPU compute, AI inference, hardware verification">
+  <meta name="keywords" content="Darkbloom, Eigen Labs, decentralized AI, private inference, Apple Silicon, encrypted transport, OpenAI compatible, Mac GPU compute, AI inference, hardware verification">
   <meta name="author" content="Eigen Labs">
   <meta name="robots" content="index, follow">
   <link rel="canonical" href="https://darkbloom.dev">
@@ -32,7 +32,7 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "Darkbloom",
-    "description": "Cost-efficient private AI inference routed to hardware-verified Apple Silicon providers. Prompts are end-to-end encrypted and hidden from node operators.",
+    "description": "Cost-efficient private AI inference routed to hardware-verified Apple Silicon providers. Requests use encrypted network hops with plaintext processed in memory by the coordinator and attested provider.",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "macOS",
     "url": "https://darkbloom.dev",
@@ -1304,7 +1304,7 @@
       <div class="rv">
         <div class="sec-label">03 - The Privacy Problem</div>
         <div class="narrative">
-          <span class="dim">Routing to idle machines is only useful if the operator cannot read the request.</span><br><br>
+          <span class="dim">Routing to idle machines requires verified software and protected network connections.</span><br><br>
           Prompts can contain customer conversations, internal plans, source code, and other sensitive context. A marketplace promise is not enough when inference runs on hardware you do not own.<br><br>
           Darkbloom is designed around a stricter guarantee: the coordinator can route requests, the provider can serve them, but neither should get a usable view of the prompt.<br><br>
           <strong>Private inference requires privacy that can be verified, not just promised.</strong>
@@ -1326,8 +1326,8 @@
       <div class="card-grid rv">
         <div class="card">
           <div class="card-label">Encryption</div>
-          <h3>Encrypted end-to-end</h3>
-          <p>Requests are encrypted before transmission. The coordinator routes ciphertext, and only the matched provider's hardware-bound key can decrypt the request.</p>
+          <h3>Encrypted network hops</h3>
+          <p>HTTPS protects requests in transit to the coordinator. It processes plaintext in confidential-VM memory, then encrypts the request for the verified provider. Prompt content is not logged or retained by the coordinator.</p>
         </div>
         <div class="card">
           <div class="card-label">Hardware</div>
@@ -1382,7 +1382,7 @@
       <!-- Eigen Blue showcase block — brand element -->
       <div class="eigen-block rv">
         <h3>The operator contributes compute, not visibility.</h3>
-        <p>Your prompt is encrypted before it leaves your app. The coordinator routes traffic it cannot read. The provider serves the request inside a hardened process the operator cannot inspect.</p>
+        <p>Your app connects over HTTPS, with optional sender encryption that terminates at the coordinator. The coordinator processes plaintext in memory for routing and billing, then re-encrypts it to the attested provider. The provider runs inference inside a hardened process.</p>
         <a href="#paper" class="btn-white">Read the paper ↗</a>
       </div>
     </div>

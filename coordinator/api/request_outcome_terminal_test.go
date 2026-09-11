@@ -71,7 +71,8 @@ func emitOutcomeTerminalError(endpoint string, w http.ResponseWriter, pr *regist
 	case "/v1/responses":
 		newResponsesStreamEmitter(w, flusher, pr, "response-id", 1).emitError("provider_error", "failed")
 	default:
-		newGenericEndpointStreamEmitter(w, flusher, pr).emitError("provider_error", "failed")
+		emitter, _ := newEndpointStreamEmitter(w, flusher, pr)
+		emitter.emitError("provider_error", "failed")
 	}
 }
 

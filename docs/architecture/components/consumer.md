@@ -1,6 +1,6 @@
 # Consumer surface
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-11 · commit `275190bb0`
 
 The consumer surface is the coordinator's OpenAI- and Anthropic-compatible request pipeline: it speaks OpenAI Chat Completions, OpenAI Responses, Anthropic Messages and legacy Completions to clients and turns each request into one provider job through a single pipeline in `handleChatCompletions` (`coordinator/api/consumer.go`), with an endpoint-specific lowering step before it and a re-shaping step after it. This page is for engineers changing or debugging that pipeline: it explains what "compatible" means concretely, walks the stages, and lists the invariants and failure modes that follow. The exact routes, headers, and JSON shapes are in [`../../reference/api-contracts.md`](../../reference/api-contracts.md).
 
@@ -13,7 +13,7 @@ Compatibility is a contract about *shapes*, not a promise to forward arbitrary f
 | `POST /v1/chat/completions` | `handleChatCompletions` | Native | `ChatCompletionResponse` (`buildNonStreamingResponse`) or SSE chunks |
 | `POST /v1/responses` | `handleChatCompletions` (same registration; it detects `input` instead of `messages`) | `promptcontract.LowerProviderBody` (`coordinator/promptcontract/endpoint_lower_responses.go`) rewrites the Responses body into chat messages and tool definitions | `ResponsesResponse`; streams are re-emitted as typed `response.*` events by `newResponsesStreamEmitter` (`coordinator/api/responses_stream.go`) |
 | `POST /v1/messages` | `handleAnthropicMessages` | `coordinator/promptcontract/endpoint_lower_messages.go` maps `system`, content blocks and `tool_use`/`tool_result` onto chat messages | `coordinator/api/generic_endpoint_response.go` builds the Messages object; `newMessagesStreamEmitter` (`coordinator/api/generic_endpoint_stream.go`) emits Anthropic-style events. A matched `stop_sequence` is reported only when the caller supplied it (`coordinator/api/generic_endpoint_stop.go`) |
-| `POST /v1/completions` | `handleCompletions` | `coordinator/promptcontract/endpoint_lower.go` wraps `prompt` as a single user message | Generic response builder and `newGenericEndpointStreamEmitter` |
+| `POST /v1/completions` | `handleCompletions` | `coordinator/promptcontract/endpoint_lower.go` wraps `prompt` as a single user message | Generic response builder and `newEndpointStreamEmitter` (`coordinator/api/endpoint_stream.go`) |
 
 **Translated on the way in.** The alias in `model` is replaced by the concrete build id in the forwarded body (`resolveRequestedModel`); a string `stop` becomes a one-element array; tool schemas are normalised to strict JSON Schema (`NormalizeToolSchemas`, `coordinator/api/toolschema.go`); `provider` and other routing hints are removed (`stripProviderRoutingFields`, `coordinator/api/request_introspection.go`); remote `image_url` parts are fetched and inlined (`resolveRemoteMedia`, `coordinator/api/media_resolve.go`); `max_tokens` is clamped to the model's ceiling (`ensureMaxTokensBound`); reasoning fields follow per-model policy (`applyResolvedModelReasoningPolicy`, `coordinator/api/reasoning_request_policy.go`).
 
@@ -40,10 +40,30 @@ Stages in the order `handleChatCompletions` runs them. Each stage either advance
 | 11 | Capacity admission: can any eligible provider take this prompt now? | `runInferenceAdmission` | 429, 503, 413 `payload_too_large` |
 | 12 | Plan: cache-aware route plan for the prompt | `planCacheRoute` (`coordinator/api/prompt_artifacts.go`); see [`../cache-aware-routing.md`](../cache-aware-routing.md) | — |
 | 13 | Dispatch: select a provider from the scheduler plan, encrypt, send, wait for first content, race a speculative backup, fail over, commit | `dispatchState.run` → `dispatchPrimary`, `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover`, `commitFirstContent`, `writeCommittedResponse` (`coordinator/api/dispatch.go`); selection through `registry.Queue`, scoring in [`../routing.md`](../routing.md); payload encryption with `e2e.GenerateSessionKeys` / `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`), model in [`../security/encryption.md`](../security/encryption.md) | 429 on capacity or first-content deadline, 502/503/504 `provider_error`, 503 `model_unavailable` (`preContentTerminal`, `coordinator/api/dispatch_terminal_write.go`; exhausted branch of `dispatchState.run`) |
-| 14 | Relay: stream or assemble the provider's chunks | `handleStreamingResponseWithFirstChunkAndError`, `handleResponsesStreamingResponseWithFirstChunk` (`coordinator/api/consumer_stream.go`); `handleNonStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_response.go`) | Terminal SSE `error` event (status already 200) |
+| 14 | Relay: stream or assemble the provider's chunks | `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_stream.go`), `handleEndpointStreamingResponse` (`coordinator/api/endpoint_stream.go`); `handleNonStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_response.go`) | Terminal SSE `error` event (status already 200) |
 | 15 | Settle: charge the account from provider-reported usage, record usage, credit the provider | `handleCompleteAt` (`coordinator/api/provider.go`): `claimSettlement`, `ledger.Charge`, `store.RecordUsageFullWithPublicModel`, `store.CreditProviderAccount`; rules in [`../billing.md`](../billing.md) | — |
 
 Provider-side execution between stages 13 and 14 — the WebSocket `inference_request` → `inference_response_chunk` → `inference_complete` exchange (`coordinator/protocol/messages.go`) and the engine behind it — is described in [`../inference.md`](../inference.md) and [`provider.md`](provider.md). The whole journey as a sequence diagram is in [`../data-flow.md`](../data-flow.md).
+
+### Streaming ownership
+
+`relayProviderStream` (`coordinator/api/provider_stream.go`) arbitrates provider
+chunks, errors, the idle timer and client cancellation for every SSE endpoint.
+It drains only already-queued chunks, flushes them before returning a close or
+error, and leaves settlement and terminal encoding to the endpoint orchestrator.
+The chat relay keeps its held usage/finish frames and metadata;
+`handleEndpointStreamingResponse` (`coordinator/api/endpoint_stream.go`) owns the
+shared lifecycle for Responses, Messages and legacy Completions. Their emitters
+own only wire formatting.
+
+Completion policies remain endpoint-specific. Messages and Completions require
+an explicit `CompleteCh` message and allow client cancellation to interrupt that
+wait. Responses retains its existing fallback: absent completion usage becomes
+an incomplete-stream error only when an outstanding reservation is refunded;
+its completion grace period does not observe client cancellation. The policies
+are named by `streamCompletionPolicy` and applied by `finishEndpointStream` in
+`coordinator/api/endpoint_stream.go`. A trailing provider error takes precedence
+over either policy.
 
 ## Invariants
 
@@ -77,7 +97,8 @@ Provider-side execution between stages 13 and 14 — the WebSocket `inference_re
 | Concern | Files |
 |---|---|
 | Pipeline entry, health/version/balance handlers | `coordinator/api/consumer.go` |
-| Streaming and buffered response orchestration | `coordinator/api/consumer_stream.go`, `coordinator/api/consumer_response.go` |
+| Streaming and buffered response orchestration | `coordinator/api/consumer_stream.go`, `coordinator/api/endpoint_stream.go`, `coordinator/api/consumer_response.go` |
+| Provider stream arbitration and bounded coalescing | `coordinator/api/provider_stream.go`, `coordinator/api/stream_coalesce.go` |
 | Chat/Responses shaping and SSE event handling | `coordinator/api/chat_response.go`, `coordinator/api/responses_response.go`, `coordinator/api/chat_stream_terminal.go`, `coordinator/api/stream_message.go`, `coordinator/api/sse_events.go`, `coordinator/api/sse_normalize.go` |
 | Prelude parsing, body cap, vision fail-fast | `coordinator/api/inference_preprocess.go` |
 | Request traits and routing-field stripping | `coordinator/api/request_introspection.go` |

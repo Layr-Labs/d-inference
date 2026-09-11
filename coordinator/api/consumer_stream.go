@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -17,14 +16,8 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 	firstChunks []string,
 	initialError *protocol.InferenceErrorMessage,
 ) {
-	if pr.ConsumerEndpoint == completionsEndpoint || pr.ConsumerEndpoint == messagesEndpoint {
-		s.handleGenericEndpointStreamingResponseWithError(
-			w, r, pr, firstChunks, initialError)
-		return
-	}
-	if pr.IsResponsesAPI {
-		s.handleResponsesStreamingResponseWithFirstChunk(
-			w, r, pr, firstChunks, initialError)
+	if pr.ConsumerEndpoint == completionsEndpoint || pr.ConsumerEndpoint == messagesEndpoint || pr.IsResponsesAPI {
+		s.handleEndpointStreamingResponse(w, r, pr, firstChunks, initialError)
 		return
 	}
 
@@ -160,49 +153,19 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 		relay.handleChunk(chunk.Data)
 	}
 
-	for {
-		select {
-		case providerChunk, ok := <-pr.ChunkCh:
-			if !ok {
-				finishStream()
-				return
-			}
-			relayChunk(providerChunk)
-			// Fold in whatever the provider already queued behind this chunk
-			// (never waiting for more), then flush the batch once. A close
-			// observed mid-drain is handled exactly like the blocking-receive
-			// close — after the drained chunks are on the wire.
-			closed := drainQueuedChunks(pr.ChunkCh, maxCoalescedChunks-1, relayChunk)
-			relay.flush()
-			if closed {
-				finishStream()
-				return
-			}
-
-		case errMsg, ok := <-pr.ErrorCh:
-			if !ok {
-				continue
-			}
-			// The provider error is delivered before ChunkCh is closed, so
-			// chunks that arrived ahead of it may still be queued: forward them
-			// (never waiting) before the terminal error so a late failure never
-			// truncates content the provider already produced.
-			drainQueuedChunks(pr.ChunkCh, cap(pr.ChunkCh), relayChunk)
-			relay.flush()
-			s.writeChatStreamProviderError(w, flusher, pr, errMsg)
-			return
-
-		case <-timer.C:
-			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
-			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
-			s.updateInferenceRouteOutcomeForPending(pr, postCommitStreamTimeoutOutcome(pr))
-			s.writeChatStreamTerminalError(w, flusher, pr, "timeout", "request timed out")
-			return
-
-		case <-r.Context().Done():
-			profileClientGone(pr, phaseAfterCommit)
-			return
-		}
+	end, providerError := relayProviderStream(r.Context(), pr, timer, relayChunk, relay.flush)
+	switch end {
+	case providerStreamClosed:
+		finishStream()
+	case providerStreamFailed:
+		s.writeChatStreamProviderError(w, flusher, pr, providerError)
+	case providerStreamTimedOut:
+		s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
+		s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
+		s.updateInferenceRouteOutcomeForPending(pr, postCommitStreamTimeoutOutcome(pr))
+		s.writeChatStreamTerminalError(w, flusher, pr, "timeout", "request timed out")
+	case providerStreamClientGone:
+		profileClientGone(pr, phaseAfterCommit)
 	}
 }
 
@@ -218,142 +181,4 @@ func (s *Server) writeChatStreamProviderError(
 	s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 	s.writeChatStreamTerminalError(
 		w, flusher, pr, "provider_error", clientSafeInferenceErrorMessage(errMsg))
-}
-
-func (s *Server) handleResponsesStreamingResponseWithFirstChunk(
-	w http.ResponseWriter,
-	r *http.Request,
-	pr *registry.PendingRequest,
-	firstChunks []string,
-	initialError *protocol.InferenceErrorMessage,
-) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "streaming not supported"))
-		return
-	}
-
-	writeSSEResponseHeader(w, pr.RequestID)
-
-	// The emitter flushes after every event; defer those flushes so a burst of
-	// already-queued provider chunks reaches the wire in one Flush. Every
-	// return path performs the owed flush.
-	deferred := newDeferredFlusher(flusher)
-	defer deferred.flushNow()
-
-	responseID := "resp_" + strings.ReplaceAll(pr.RequestID, "-", "")
-	createdAt := time.Now().Unix()
-	emitter := newResponsesStreamEmitter(w, deferred, pr, responseID, createdAt)
-	emitter.start()
-
-	for _, firstChunk := range firstChunks {
-		if firstChunk != "" {
-			emitter.handleChunk(sanitizeStreamCacheDetails(firstChunk))
-		}
-	}
-	if initialError != nil {
-		s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-		s.noteInferenceError(pr.ProviderID, pr, initialError.StatusCode, initialError.Error, initialError.ErrorReason, initialError.TerminalCause, initialError.CoordinatorCause)
-		s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
-		s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, *initialError))
-		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(*initialError))
-		return
-	}
-	// The preamble (lifecycle events + dispatch-time chunks) goes on the wire
-	// before blocking on the provider.
-	deferred.flushNow()
-
-	timer := time.NewTimer(inferenceTimeout)
-	defer timer.Stop()
-
-	// emitProviderError settles and reports an in-band provider error.
-	emitProviderError := func(errMsg protocol.InferenceErrorMessage) {
-		s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-		s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, errMsg.CoordinatorCause)
-		s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
-		s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
-		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(errMsg))
-	}
-
-	// finishStream runs once ChunkCh is observed closed — on the blocking
-	// receive or while draining already-queued chunks (after those were
-	// flushed). A provider error is delivered on ErrorCh just before the
-	// channels close, so it is checked first: a close must never turn a real
-	// provider error into "incomplete" (or, with nothing reserved, success).
-	finishStream := func() {
-		select {
-		case errMsg, ok := <-pr.ErrorCh:
-			if ok && errMsg.Error != "" {
-				emitProviderError(errMsg)
-				return
-			}
-		default:
-		}
-		var usage protocol.UsageInfo
-		completed := false
-		select {
-		case u, ok := <-pr.CompleteCh:
-			if ok {
-				usage = u
-				completed = true
-			}
-		case <-time.After(2 * time.Second):
-		}
-		if !completed && s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
-			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
-			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
-			emitter.emitError("provider_error", "provider ended without completion")
-			return
-		}
-		s.noteInferenceSuccess(pr)
-		emitter.finish(usage)
-	}
-
-	relayChunk := func(chunk registry.ProviderChunk) {
-		emitter.handleChunk(sanitizeStreamCacheDetails(chunk.Data))
-		resetIdleTimer(timer, inferenceTimeout)
-	}
-
-	for {
-		select {
-		case providerChunk, ok := <-pr.ChunkCh:
-			if !ok {
-				finishStream()
-				return
-			}
-			relayChunk(providerChunk)
-			// Fold in whatever the provider already queued behind this chunk
-			// (never waiting for more), then flush the batch once. A close
-			// observed mid-drain is handled exactly like the blocking-receive
-			// close — after the drained chunks are on the wire.
-			closed := drainQueuedChunks(pr.ChunkCh, maxCoalescedChunks-1, relayChunk)
-			deferred.flushNow()
-			if closed {
-				finishStream()
-				return
-			}
-
-		case errMsg, ok := <-pr.ErrorCh:
-			if !ok {
-				continue
-			}
-			// Forward chunks queued ahead of the error before the terminal
-			// event (see the chat relay for the rationale).
-			drainQueuedChunks(pr.ChunkCh, cap(pr.ChunkCh), relayChunk)
-			deferred.flushNow()
-			emitProviderError(errMsg)
-			return
-
-		case <-timer.C:
-			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
-			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
-			s.updateInferenceRouteOutcomeForPending(pr, postCommitStreamTimeoutOutcome(pr))
-			emitter.emitError("timeout", "request timed out")
-			return
-
-		case <-r.Context().Done():
-			profileClientGone(pr, phaseAfterCommit)
-			return
-		}
-	}
 }

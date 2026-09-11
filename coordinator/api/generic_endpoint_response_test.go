@@ -117,7 +117,7 @@ func TestMessagesResponsesPreserveExactMatchedStopSequence(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	emitter := newGenericEndpointStreamEmitter(recorder, recorder, pr)
+	emitter, _ := newEndpointStreamEmitter(recorder, recorder, pr)
 	emitter.start()
 	emitter.handleChunk(`data: {"choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":"length"}]}`)
 	emitter.finish(protocol.UsageInfo{CompletionTokens: 1})
@@ -147,7 +147,7 @@ func TestGenericEndpointStreamEmittersUseNativeSchemas(t *testing.T) {
 			ConsumerEndpoint:   completionsEndpoint,
 			RequestedMaxTokens: 2,
 		}
-		emitter := newGenericEndpointStreamEmitter(recorder, recorder, pr)
+		emitter, _ := newEndpointStreamEmitter(recorder, recorder, pr)
 		emitter.start()
 		emitter.handleChunk(`data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}`)
 		emitter.handleChunk(`data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
@@ -176,7 +176,7 @@ func TestGenericEndpointStreamEmittersUseNativeSchemas(t *testing.T) {
 			PublicModel:      "public-model",
 			ConsumerEndpoint: messagesEndpoint,
 		}
-		emitter := newGenericEndpointStreamEmitter(recorder, recorder, pr)
+		emitter, _ := newEndpointStreamEmitter(recorder, recorder, pr)
 		emitter.start()
 		emitter.handleChunk(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"weather","arguments":"{\"city\":\"SF\"}"}}]},"finish_reason":"tool_calls"}]}`)
 		emitter.finish(protocol.UsageInfo{CompletionTokens: 4})
@@ -203,7 +203,7 @@ func TestGenericEndpointStreamEmittersUseNativeSchemas(t *testing.T) {
 			PublicModel:      "gemma-4-26b",
 			ConsumerEndpoint: messagesEndpoint,
 		}
-		emitter := newGenericEndpointStreamEmitter(recorder, recorder, pr)
+		emitter, _ := newEndpointStreamEmitter(recorder, recorder, pr)
 		emitter.start()
 		emitter.handleChunk(`data: {"choices":[{"index":0,"delta":{"tool_calls":[` +
 			`{"index":0,"id":"call-weather","function":{"name":"weather","arguments":"{\"city\":\"SF\"}"}},` +
@@ -232,7 +232,7 @@ func TestGenericEndpointStreamEmittersUseNativeSchemas(t *testing.T) {
 			PublicModel:      "public-model",
 			ConsumerEndpoint: messagesEndpoint,
 		}
-		emitter := newGenericEndpointStreamEmitter(recorder, recorder, pr)
+		emitter, _ := newEndpointStreamEmitter(recorder, recorder, pr)
 		emitter.start()
 		emitter.handleChunk(
 			`data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`)
@@ -250,7 +250,7 @@ func TestGenericEndpointStreamEmittersUseNativeSchemas(t *testing.T) {
 		}
 
 		timeoutRecorder := httptest.NewRecorder()
-		timeoutEmitter := newGenericEndpointStreamEmitter(timeoutRecorder, timeoutRecorder, pr)
+		timeoutEmitter, _ := newEndpointStreamEmitter(timeoutRecorder, timeoutRecorder, pr)
 		timeoutEmitter.emitError("timeout", "request timed out")
 		if body := timeoutRecorder.Body.String(); !strings.Contains(
 			body, `"error":{"message":"request timed out","type":"overloaded_error"}`) {

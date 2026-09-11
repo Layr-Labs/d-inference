@@ -20,9 +20,9 @@ CHANGED_FILES=$(
         fi
         if [[ "$remote_sha" =~ ^0+$ ]]; then
             git rev-list "$local_sha" --not "--remotes=$REMOTE" |
-                git diff-tree --stdin --no-commit-id --name-only --root -r -m
+                git diff-tree --stdin --no-commit-id --name-only --root -r -m || exit 1
         else
-            git diff --name-only "$remote_sha" "$local_sha"
+            git diff --name-only "$remote_sha" "$local_sha" || exit 1
         fi
     done
 )

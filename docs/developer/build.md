@@ -449,7 +449,7 @@ local stub servers; its default observation mode sends only public GETs.
 | `test` | `coordinator-test prompt-sidecar-test provider-test ui-test admin-test landing-test tooling-test docs-check` |
 | `build` | `coordinator-build prompt-sidecar-build provider-build ui-build admin-build` |
 | `all` | `test build` |
-| `clean` | remove `./coordinator/coordinator{,-linux}`, `./coordinator/promptsidecar/target`, `./provider-swift/.build`, `./console-ui/.next`, `./console-ui/node_modules` |
+| `clean` | remove `./coordinator/coordinator{,-linux}`, `./coordinator/promptsidecar/target`, `./provider-swift/.build`, `./console-ui/.next`, `./console-ui/node_modules`, `./admin-ui/.next`, `./admin-ui/node_modules` |
 
 ## Git hooks
 

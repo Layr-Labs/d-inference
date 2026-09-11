@@ -9,7 +9,7 @@ type Unwrapper interface {
 }
 
 // As reports whether s -- or any Store it wraps -- implements T, returning the
-// innermost value that does. Use it instead of a direct type assertion when
+// first value that does, checking each wrapper before its underlying store. Use it instead of a direct type assertion when
 // probing for an optional capability (e.g. paged verification-job listing or
 // durable push budgets) so the probe keeps working once main.go wraps the
 // backend in CachedStore. s may be any Store slice (a narrow sub-interface

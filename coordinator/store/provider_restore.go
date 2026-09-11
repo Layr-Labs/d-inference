@@ -24,34 +24,17 @@ func (s *PostgresStore) GetProviderForRestore(ctx context.Context, serial, seKey
 		if identity.value == "" {
 			continue
 		}
-		var p ProviderRecord
-		var locationRaw []byte
 		// column comes exclusively from the fixed literals above, never a caller.
-		err := s.pool.QueryRow(ctx, `SELECT id, hardware, models, backend, location,
-			trust_level, attested, attestation_result, se_public_key, serial_number,
-			mda_verified, mda_cert_chain, version, runtime_verified, python_hash, runtime_hash,
-			last_challenge_verified, failed_challenges, account_id,
-			lifetime_requests_served, lifetime_tokens_generated,
-			last_session_requests_served, last_session_tokens_generated,
-			lifetime_stats, last_session_stats, registered_at, last_seen, public_key
+		p, err := scanProviderRecord(s.pool.QueryRow(ctx, `SELECT `+providerRecordColumns+`
 			FROM providers WHERE `+identity.column+` = $1 AND `+identity.column+` <> '' AND id <> ALL($2::text[])
-			ORDER BY last_seen DESC, id DESC LIMIT 1`, identity.value, excludeIDs).Scan(
-			&p.ID, &p.Hardware, &p.Models, &p.Backend, &locationRaw,
-			&p.TrustLevel, &p.Attested, &p.AttestationResult, &p.SEPublicKey, &p.SerialNumber,
-			&p.MDAVerified, &p.MDACertChain, &p.Version, &p.RuntimeVerified, &p.PythonHash, &p.RuntimeHash,
-			&p.LastChallengeVerified, &p.FailedChallenges, &p.AccountID,
-			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
-			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
-			&p.LifetimeStats, &p.LastSessionStats, &p.RegisteredAt, &p.LastSeen, &p.PublicKey,
-		)
+			ORDER BY last_seen DESC, id DESC LIMIT 1`, identity.value, excludeIDs))
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
 		}
 		if err != nil {
 			return nil, fmt.Errorf("store: lookup provider for restore: %w", err)
 		}
-		p.Location = unmarshalProviderLocation(locationRaw)
-		return &p, nil
+		return p, nil
 	}
 	return nil, nil
 }

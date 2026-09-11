@@ -1053,23 +1053,11 @@ struct EngineV2KVBackendGateTests {
         #expect(outcome.status.reason == .unsupportedLayout)
     }
 
-    @Test(arguments: ["gpt-oss-20b"])
-    func releasePagedModelsDefaultToNoSSD(modelID: String) async throws {
+    @Test("Historical paged targets construct complete SSD checkpoints by default",
+          arguments: ["gpt-oss-20b", "gemma-4-26b-qat-4bit"])
+    func historicalTargetDefaultCompleteSSD(modelID: String) async throws {
         let outcome = try await slotCacheOutcome(
             kvBackendConfig: "auto", modelID: modelID, environment: [:])
-        #expect(outcome.kind == .paged)
-        #expect(!outcome.legacyConstructionAttempted)
-        #expect(!outcome.cache)
-        #expect(outcome.completeLayout == nil)
-        #expect(outcome.status.backend == .paged)
-        #expect(outcome.status.state == .disabled)
-        #expect(outcome.status.reason == .configDisabled)
-    }
-
-    @Test("Gemma QAT auto constructs complete SSD checkpoints by default")
-    func gemmaQatDefaultCompleteSSD() async throws {
-        let outcome = try await slotCacheOutcome(
-            kvBackendConfig: "auto", modelID: "gemma-4-26b-qat-4bit", environment: [:])
         #expect(outcome.kind == .paged)
         #expect(!outcome.legacyConstructionAttempted)
         #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout)

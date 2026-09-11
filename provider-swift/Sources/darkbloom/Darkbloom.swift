@@ -460,8 +460,3 @@ func printJSON<T: Encodable>(_ value: T) throws {
 func printError(_ message: String) {
     FileHandle.standardError.write(Data((message + "\n").utf8))
 }
-
-private func failNotImplemented(_ message: String) throws {
-    printError(message)
-    throw ExitCode.failure
-}

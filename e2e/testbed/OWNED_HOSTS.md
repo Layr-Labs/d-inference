@@ -78,7 +78,9 @@ and writes `terminal.json` with the group identity, signals, exit code, cleanup
 status, and failure. A cleanup error retains an incomplete receipt. The Go
 adapter requires terminal and host-cleanup evidence; it reports an unconfirmed
 shutdown as an error. Failed startup and fixture assertions still run cleanup and
-retain cleanup errors. Runtime, state, logs, cache, and terminal evidence remain
+retain cleanup errors. A malformed helper event closes both control pipes before
+waiting for the helper, so a rejected output stream cannot block teardown on a
+full pipe. Runtime, state, logs, cache, and terminal evidence remain
 under the owned root; the private fixture token is removed after confirmed
 shutdown.
 

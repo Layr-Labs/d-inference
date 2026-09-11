@@ -62,6 +62,14 @@ function generateId(): string {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
 
+/** Update one message without replacing other chats or their message objects. */
+function mapMessage(chats: Chat[], chatId: string, msgId: string, update: (message: Message) => Message): Chat[] {
+  return chats.map((chat) => chat.id === chatId ? {
+    ...chat,
+    messages: chat.messages.map((message) => message.id === msgId ? update(message) : message),
+  } : chat);
+}
+
 export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
@@ -113,48 +121,13 @@ export const useStore = create<AppState>()(
         })),
 
       updateMessage: (chatId, msgId, update) =>
-        set((s) => ({
-          chats: s.chats.map((c) =>
-            c.id === chatId
-              ? {
-                  ...c,
-                  messages: c.messages.map((m) =>
-                    m.id === msgId ? { ...m, ...update } : m
-                  ),
-                }
-              : c
-          ),
-        })),
+        set((s) => ({ chats: mapMessage(s.chats, chatId, msgId, (message) => ({ ...message, ...update })) })),
 
       appendToMessage: (chatId, msgId, token) =>
-        set((s) => ({
-          chats: s.chats.map((c) =>
-            c.id === chatId
-              ? {
-                  ...c,
-                  messages: c.messages.map((m) =>
-                    m.id === msgId ? { ...m, content: m.content + token } : m
-                  ),
-                }
-              : c
-          ),
-        })),
+        set((s) => ({ chats: mapMessage(s.chats, chatId, msgId, (message) => ({ ...message, content: message.content + token })) })),
 
       appendToThinking: (chatId, msgId, token) =>
-        set((s) => ({
-          chats: s.chats.map((c) =>
-            c.id === chatId
-              ? {
-                  ...c,
-                  messages: c.messages.map((m) =>
-                    m.id === msgId
-                      ? { ...m, thinking: (m.thinking || "") + token }
-                      : m
-                  ),
-                }
-              : c
-          ),
-        })),
+        set((s) => ({ chats: mapMessage(s.chats, chatId, msgId, (message) => ({ ...message, thinking: (message.thinking || "") + token })) })),
 
       setSelectedModel: (model) => set({ selectedModel: model }),
       setModels: (models) => {

@@ -76,7 +76,7 @@ test("a model that does not fit returns null", () => {
   assert.equal(Core.calculateCapacityRevenue(nemotron, hardware, 36, 25), null);
 });
 
-test("Qwen 3.8 requires an M5 or newer chip", () => {
+test("Qwen 3.8 requires an exact M5 family chip", () => {
   const qwen38 = Core.CALCULATOR_MODELS.find((entry) => entry.id === "EigenLabs/Qwen3.8-27B-4bit-mtp");
   const m4 = Core.HARDWARE_OPTIONS.find(
     (option) => option.macType === "MacBook Pro" && option.chip === "M4 Max (16-core CPU)",
@@ -84,10 +84,17 @@ test("Qwen 3.8 requires an M5 or newer chip", () => {
   const m5 = Core.HARDWARE_OPTIONS.find(
     (option) => option.macType === "MacBook Pro" && option.chip === "M5 Max (40-core GPU)",
   );
+  const m6 = Core.HARDWARE_OPTIONS.find(
+    (option) => option.macType === "Mac Mini" && option.chip === "M6",
+  );
+  assert.equal(qwen38.requiredChipFamily, "M5");
+  assert.equal(Core.chipFitDetail(qwen38), "Requires an Apple M5 chip");
   assert.equal(Core.modelFit(qwen38, m4, 48).reason, "chip");
   assert.equal(Core.calculateCapacityRevenue(qwen38, m4, 48, 25), null);
   assert.equal(Core.modelFit(qwen38, m5, 48).fits, true);
   assert.ok(Core.calculateCapacityRevenue(qwen38, m5, 48, 25));
+  assert.deepEqual(Core.modelFit(qwen38, m6, 48), { fits: false, reason: "chip" });
+  assert.equal(Core.calculateCapacityRevenue(qwen38, m6, 48, 25), null);
 });
 
 test("zero KV budget does not produce an earning estimate", () => {

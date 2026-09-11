@@ -136,7 +136,7 @@ export interface CalculatorModel {
   id: string;
   displayName: string;
   minRAMGB: number;
-  minChipGeneration: number;
+  requiredChipFamily: string | null;
   sizeGB: number;
   totalParameterCount: number;
   activeParameterCount: number;
@@ -164,7 +164,7 @@ export const CALCULATOR_MODELS: CalculatorModel[] = [
     id: "Qwen3.5-9B",
     displayName: "Qwen 3.5 9B",
     minRAMGB: 24,
-    minChipGeneration: 1,
+    requiredChipFamily: null,
     sizeGB: 6.114,
     totalParameterCount: 9_000_000_000,
     activeParameterCount: 9_000_000_000,
@@ -177,7 +177,7 @@ export const CALCULATOR_MODELS: CalculatorModel[] = [
     id: "gpt-oss-20b",
     displayName: "GPT-OSS 20B",
     minRAMGB: 24,
-    minChipGeneration: 1,
+    requiredChipFamily: null,
     sizeGB: 12.104,
     totalParameterCount: 20_000_000_000,
     activeParameterCount: 3_600_000_000,
@@ -190,7 +190,7 @@ export const CALCULATOR_MODELS: CalculatorModel[] = [
     id: "gemma-4-26b-qat-4bit",
     displayName: "Gemma 4 26B",
     minRAMGB: 36,
-    minChipGeneration: 1,
+    requiredChipFamily: null,
     sizeGB: 15.641,
     totalParameterCount: 26_000_000_000,
     activeParameterCount: 4_000_000_000,
@@ -203,7 +203,7 @@ export const CALCULATOR_MODELS: CalculatorModel[] = [
     id: "EigenLabs/Qwen3.8-27B-4bit-mtp",
     displayName: "Qwen 3.8 27B",
     minRAMGB: 36,
-    minChipGeneration: 5,
+    requiredChipFamily: "M5",
     sizeGB: 16.32,
     totalParameterCount: 27_000_000_000,
     activeParameterCount: 27_000_000_000,
@@ -216,7 +216,7 @@ export const CALCULATOR_MODELS: CalculatorModel[] = [
     id: "qwen3-vl-30b-a3b-instruct",
     displayName: "Qwen3-VL 30B A3B Instruct",
     minRAMGB: 32,
-    minChipGeneration: 1,
+    requiredChipFamily: null,
     sizeGB: 18.268,
     totalParameterCount: 30_000_000_000,
     activeParameterCount: 3_000_000_000,
@@ -229,7 +229,7 @@ export const CALCULATOR_MODELS: CalculatorModel[] = [
     id: "nvidia-nemotron-3.5-lightning",
     displayName: "Nemotron 3.5 Lightning",
     minRAMGB: 48,
-    minChipGeneration: 1,
+    requiredChipFamily: null,
     sizeGB: 18.544,
     totalParameterCount: 30_000_000_000,
     activeParameterCount: 3_000_000_000,
@@ -242,7 +242,7 @@ export const CALCULATOR_MODELS: CalculatorModel[] = [
     id: "qwen3.5-35b-a3b",
     displayName: "Qwen3.5 35B A3B",
     minRAMGB: 36,
-    minChipGeneration: 1,
+    requiredChipFamily: null,
     sizeGB: 20.894,
     totalParameterCount: 35_000_000_000,
     activeParameterCount: 3_000_000_000,
@@ -255,7 +255,7 @@ export const CALCULATOR_MODELS: CalculatorModel[] = [
     id: "qwen3.6-35b-a3b-vl-mtp-mxfp8",
     displayName: "Qwen 3.6 35B A3B",
     minRAMGB: 32,
-    minChipGeneration: 1,
+    requiredChipFamily: null,
     sizeGB: 21.309,
     totalParameterCount: 35_000_000_000,
     activeParameterCount: 3_000_000_000,
@@ -319,9 +319,16 @@ export function tokenBudgetTokens(memoryGB: number, sizeGB: number): number {
   return Math.floor(tokens);
 }
 
-export function chipGeneration(chip: string | undefined): number {
-  const match = /^M(\d+)/.exec(chip ?? "");
-  return match ? Number(match[1]) : 0;
+export function chipFamily(chip: string | undefined): string {
+  const match = /^(M\d+)/.exec(chip ?? "");
+  return match ? match[1] : "";
+}
+
+export function chipFitDetail(model: CalculatorModel): string {
+  if (model.requiredChipFamily) {
+    return `Requires an Apple ${model.requiredChipFamily} chip`;
+  }
+  return "This chip cannot run this model";
 }
 
 export function modelFit(
@@ -330,7 +337,10 @@ export function modelFit(
   memoryGB: number,
 ): { fits: boolean; reason: ModelFitReason | null } {
   if (memoryGB < model.minRAMGB) return { fits: false, reason: "ram" };
-  if (chipGeneration(hardware.chip) < model.minChipGeneration) {
+  if (
+    model.requiredChipFamily &&
+    chipFamily(hardware.chip) !== model.requiredChipFamily
+  ) {
     return { fits: false, reason: "chip" };
   }
   if (tokenBudgetTokens(memoryGB, model.sizeGB) < typicalRequestTokens()) {

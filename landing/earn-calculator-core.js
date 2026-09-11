@@ -90,7 +90,7 @@
       id: "Qwen3.5-9B",
       displayName: "Qwen 3.5 9B",
       minRAMGB: 24,
-      minChipGeneration: 1,
+      requiredChipFamily: null,
       sizeGB: 6.114,
       totalParameterCount: 9000000000,
       activeParameterCount: 9000000000,
@@ -103,7 +103,7 @@
       id: "gpt-oss-20b",
       displayName: "GPT-OSS 20B",
       minRAMGB: 24,
-      minChipGeneration: 1,
+      requiredChipFamily: null,
       sizeGB: 12.104,
       totalParameterCount: 20000000000,
       activeParameterCount: 3600000000,
@@ -116,7 +116,7 @@
       id: "gemma-4-26b-qat-4bit",
       displayName: "Gemma 4 26B",
       minRAMGB: 36,
-      minChipGeneration: 1,
+      requiredChipFamily: null,
       sizeGB: 15.641,
       totalParameterCount: 26000000000,
       activeParameterCount: 4000000000,
@@ -129,7 +129,7 @@
       id: "EigenLabs/Qwen3.8-27B-4bit-mtp",
       displayName: "Qwen 3.8 27B",
       minRAMGB: 36,
-      minChipGeneration: 5,
+      requiredChipFamily: "M5",
       sizeGB: 16.32,
       totalParameterCount: 27000000000,
       activeParameterCount: 27000000000,
@@ -142,7 +142,7 @@
       id: "qwen3-vl-30b-a3b-instruct",
       displayName: "Qwen3-VL 30B A3B Instruct",
       minRAMGB: 32,
-      minChipGeneration: 1,
+      requiredChipFamily: null,
       sizeGB: 18.268,
       totalParameterCount: 30000000000,
       activeParameterCount: 3000000000,
@@ -155,7 +155,7 @@
       id: "nvidia-nemotron-3.5-lightning",
       displayName: "Nemotron 3.5 Lightning",
       minRAMGB: 48,
-      minChipGeneration: 1,
+      requiredChipFamily: null,
       sizeGB: 18.544,
       totalParameterCount: 30000000000,
       activeParameterCount: 3000000000,
@@ -168,7 +168,7 @@
       id: "qwen3.5-35b-a3b",
       displayName: "Qwen3.5 35B A3B",
       minRAMGB: 36,
-      minChipGeneration: 1,
+      requiredChipFamily: null,
       sizeGB: 20.894,
       totalParameterCount: 35000000000,
       activeParameterCount: 3000000000,
@@ -181,7 +181,7 @@
       id: "qwen3.6-35b-a3b-vl-mtp-mxfp8",
       displayName: "Qwen 3.6 35B A3B",
       minRAMGB: 32,
-      minChipGeneration: 1,
+      requiredChipFamily: null,
       sizeGB: 21.309,
       totalParameterCount: 35000000000,
       activeParameterCount: 3000000000,
@@ -214,14 +214,21 @@
     return Math.floor(tokens);
   }
 
-  function chipGeneration(chip) {
-    const match = /^M(\d+)/.exec(chip || "");
-    return match ? Number(match[1]) : 0;
+  function chipFamily(chip) {
+    const match = /^(M\d+)/.exec(chip || "");
+    return match ? match[1] : "";
+  }
+
+  function chipFitDetail(model) {
+    if (model.requiredChipFamily) {
+      return "Requires an Apple " + model.requiredChipFamily + " chip";
+    }
+    return "This chip cannot run this model";
   }
 
   function modelFit(model, hardware, memoryGB) {
     if (memoryGB < model.minRAMGB) return { fits: false, reason: "ram" };
-    if (chipGeneration(hardware.chip) < model.minChipGeneration) {
+    if (model.requiredChipFamily && chipFamily(hardware.chip) !== model.requiredChipFamily) {
       return { fits: false, reason: "chip" };
     }
     if (tokenBudgetTokens(memoryGB, model.sizeGB) < typicalRequestTokens()) {
@@ -331,5 +338,7 @@
     tokenBudgetTokens: tokenBudgetTokens,
     maxConcurrencyFor: maxConcurrencyFor,
     modelFit: modelFit,
+    chipFamily: chipFamily,
+    chipFitDetail: chipFitDetail,
   };
 });

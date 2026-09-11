@@ -150,7 +150,7 @@
           (model.sizeGB < 10 ? model.sizeGB.toFixed(1) : model.sizeGB.toFixed(0)) +
           " GB of model weights)";
       } else if (entry.fitReason === "chip") {
-        sub.textContent = "Requires an M" + model.minChipGeneration + " or newer chip";
+        sub.textContent = Core.chipFitDetail(model);
       } else if (entry.fitReason === "kv") {
         sub.textContent = "Not enough KV headroom for a typical request on " + ramGB + " GB";
       } else {

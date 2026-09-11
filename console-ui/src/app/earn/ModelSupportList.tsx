@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Layers, X } from "lucide-react";
-import { fmtUSD } from "./calc";
+import { chipFitDetail, fmtUSD } from "./calc";
 import type { EarningsCalculator, ModelRow } from "./useEarningsCalculator";
 
 function formatSize(sizeGB: number): string {
@@ -13,7 +13,7 @@ function unfitDetail(
   model: ModelRow["model"],
   ramGB: number,
 ): string {
-  if (reason === "chip") return `Requires an M${model.minChipGeneration} or newer chip`;
+  if (reason === "chip") return chipFitDetail(model);
   if (reason === "kv") {
     return `Not enough KV headroom for a typical request on ${ramGB} GB`;
   }

@@ -89,15 +89,28 @@ public struct KeychainWrappedKEKStorage: WrappedKEKStorage {
         self.identifier = "keychain(\(service)/\(account))"
     }
 
-    public func load() throws -> Data? {
-        let query: [String: Any] = [
+    /// Every operation must address the same non-synchronizing Keychain slot.
+    private var identityQuery: [String: Any] {
+        [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecUseDataProtectionKeychain as String: true,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
         ]
+    }
+
+    private func insertionQuery(_ wrapped: Data) -> [String: Any] {
+        var query = identityQuery
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        query[kSecAttrSynchronizable as String] = false
+        query[kSecValueData as String] = wrapped
+        return query
+    }
+
+    public func load() throws -> Data? {
+        var query = identityQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         switch status {
@@ -116,24 +129,9 @@ public struct KeychainWrappedKEKStorage: WrappedKEKStorage {
         // Delete first to avoid duplicate-item error. Swallow the
         // delete's own failure — the subsequent add surfaces real
         // errors (-34018 etc.) more clearly.
-        let preDelete: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecUseDataProtectionKeychain as String: true,
-        ]
-        _ = SecItemDelete(preDelete as CFDictionary)
+        _ = SecItemDelete(identityQuery as CFDictionary)
 
-        let addQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecAttrSynchronizable as String: false,
-            kSecUseDataProtectionKeychain as String: true,
-            kSecValueData as String: wrapped,
-        ]
-        let status = SecItemAdd(addQuery as CFDictionary, nil)
+        let status = SecItemAdd(insertionQuery(wrapped) as CFDictionary, nil)
         switch status {
         case errSecSuccess:
             return
@@ -148,16 +146,7 @@ public struct KeychainWrappedKEKStorage: WrappedKEKStorage {
         // Atomic create: SecItemAdd fails with errSecDuplicateItem if an entry
         // already exists. No pre-delete (which would make this a clobbering
         // upsert and reopen the race). On duplicate, adopt the existing entry.
-        let addQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecAttrSynchronizable as String: false,
-            kSecUseDataProtectionKeychain as String: true,
-            kSecValueData as String: wrapped,
-        ]
-        let status = SecItemAdd(addQuery as CFDictionary, nil)
+        let status = SecItemAdd(insertionQuery(wrapped) as CFDictionary, nil)
         switch status {
         case errSecSuccess:
             return wrapped
@@ -175,13 +164,7 @@ public struct KeychainWrappedKEKStorage: WrappedKEKStorage {
     }
 
     public func delete() throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecUseDataProtectionKeychain as String: true,
-        ]
-        let status = SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(identityQuery as CFDictionary)
         switch status {
         case errSecSuccess, errSecItemNotFound:
             return

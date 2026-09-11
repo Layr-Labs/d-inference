@@ -52,6 +52,42 @@ struct FanDaemonTests {
         #expect(harness.backend.byte("F0Md") == 1)
     }
 
+    @Test("stale sessions cannot release a replacement lease", arguments: [false, true])
+    func replacementLeaseIgnoresStaleSession(explicitRelease: Bool) async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        let oldSession = UUID()
+        let currentSession = UUID()
+        _ = await harness.daemon.renewLease(
+            sessionID: oldSession,
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.9"
+        )
+        await harness.daemon.tick()
+        harness.clock.advance(by: 10)
+        _ = await harness.daemon.renewLease(
+            sessionID: currentSession,
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.9"
+        )
+        if explicitRelease {
+            #expect((await harness.daemon.releaseLease(sessionID: oldSession)).ok)
+        } else {
+            await harness.daemon.sessionInvalidated(oldSession)
+        }
+        harness.clock.advance(by: FanIPC.leaseDurationSeconds - 1)
+        await harness.daemon.tick()
+        #expect((await harness.daemon.status()).providerActive)
+        #expect(harness.backend.byte("F0Md") == 1)
+
+        // Expiry belongs to the replacement session, including its exact boundary.
+        harness.clock.advance(by: 1)
+        await harness.daemon.tick()
+        #expect(!(await harness.daemon.status()).providerActive)
+        #expect(harness.backend.byte("F0Md") == 0)
+        #expect(!FileManager.default.fileExists(atPath: harness.paths.sessionJournal.path))
+    }
+
     @Test("expired lease restores Auto without a disconnect callback")
     func leaseExpiry() async throws {
         let harness = try makeHarness()

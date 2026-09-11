@@ -96,37 +96,24 @@ private func sysctlUInt32(_ key: String) throws -> UInt32 {
 }
 
 private func sysctlUInt32Optional(_ key: String) -> UInt32? {
-    var value: UInt32 = 0
-    var size = MemoryLayout<UInt32>.size
-    guard sysctlbyname(key, &value, &size, nil, 0) == 0 else { return nil }
-    return value
+    try? sysctlUInt32(key)
 }
 
 // MARK: - GPU Detection
 
-private func detectGPUInfo() throws -> (chipName: String, gpuCores: UInt32) {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-    process.arguments = ["SPDisplaysDataType", "-json"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    try process.run()
-    process.waitUntilExit()
-
-    guard process.terminationStatus == 0 else {
-        return (fallbackChipName(), 0)
-    }
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+func detectGPUInfo(
+    runner: SecurityCommandRunner = .live,
+    fallback: () -> String = fallbackChipName
+) throws -> (chipName: String, gpuCores: UInt32) {
+    let result = try runner.run("/usr/sbin/system_profiler", ["SPDisplaysDataType", "-json"])
+    guard result.terminationStatus == 0 else { return (fallback(), 0) }
+    let data = Data(result.stdout.utf8)
 
     guard
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
         let displays = json["SPDisplaysDataType"] as? [[String: Any]]
     else {
-        return (fallbackChipName(), 0)
+        return (fallback(), 0)
     }
 
     for display in displays {
@@ -142,7 +129,7 @@ private func detectGPUInfo() throws -> (chipName: String, gpuCores: UInt32) {
         return (chipName, gpuCores)
     }
 
-    return (fallbackChipName(), 0)
+    return (fallback(), 0)
 }
 
 private func fallbackChipName() -> String {

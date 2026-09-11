@@ -55,6 +55,33 @@ struct SecurityCommandRunnerTests {
         #expect(checkMDMEnrollment(runner: unavailable) == .checkFailed)
     }
 
+    @Test("GPU discovery keeps exit-status, fallback and first-named-display policies")
+    func gpuDiscoveryPolicies() throws {
+        let output = #"{"SPDisplaysDataType":[{"sppci_model":""},{"sppci_model":"Apple M5 Max","sppci_cores":"40","sppci_gpu_core_count":"32"},{"sppci_model":"External GPU","sppci_cores":"99"}]}"#
+        let runner = SecurityCommandRunner { path, arguments in
+            #expect(path == "/usr/sbin/system_profiler")
+            #expect(arguments == ["SPDisplaysDataType", "-json"])
+            return SecurityCommandResult(terminationStatus: 0, stdout: output)
+        }
+        let gpu = try detectGPUInfo(runner: runner, fallback: { "fallback" })
+        #expect(gpu.chipName == "Apple M5 Max")
+        #expect(gpu.gpuCores == 40)
+        for runner in [result(status: 1, stdout: output), result(status: 0, stdout: "invalid"),
+                       result(status: 0, stdout: #"{"SPDisplaysDataType":[]}"#)] {
+            let gpu = try detectGPUInfo(runner: runner, fallback: { "fallback" })
+            #expect(gpu.chipName == "fallback")
+            #expect(gpu.gpuCores == 0)
+        }
+        let legacy = try detectGPUInfo(runner: result(status: 0,
+            stdout: #"{"SPDisplaysDataType":[{"sppci_model":"Apple M1","sppci_cores":"invalid","sppci_gpu_core_count":"8"}]}"#),
+            fallback: { "fallback" })
+        #expect(legacy.gpuCores == 8)
+        let unavailable = SecurityCommandRunner { _, _ in throw CocoaError(.fileNoSuchFile) }
+        #expect(throws: (any Error).self) {
+            try detectGPUInfo(runner: unavailable, fallback: { "fallback" })
+        }
+    }
+
     private func result(status: Int32, stdout: String = "", stderr: String = "") -> SecurityCommandRunner {
         SecurityCommandRunner { _, _ in
             SecurityCommandResult(terminationStatus: status, stdout: stdout, stderr: stderr)

@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-10 · commit `213b8c2b6`
+> Last updated: 2026-09-11 · commit `d38be3120`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -372,6 +372,55 @@ reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 `load_model` is sent; `MaxLoadsPerTick = 0` or `MaxGlobalPendingLoads = 0`
 has the same effect (`plan`).
 
+**Eligibility diagnostics** (`coordinator/registry/warm_pool_diagnostics.go`).
+`WarmPoolEligibility` reports, per model a connected provider advertises,
+whether the controller would pick it as a `load_model` target and, if not,
+the first failing gate. It calls `warmPoolCandidateReasonLocked` — the same
+predicate `plan` uses — and maps the `warmColdReason` onto a `WarmPoolBlocker`
+wire string through `warmPoolBlockers`; the two cannot disagree because they
+are one code path. Warmth is checked first (`providerHasWarmModelLocked`) and
+reported as `already_warm`. The blocker set is closed: every reason listed in
+`warmColdReasons` must have an entry, and `TestWarmColdReasonsIsComplete`
+parses the package source so a new `warmColdReason` constant that is not added
+to that list fails CI rather than falling through the mapping as its raw
+label.
+
+| `WarmPoolBlocker` | Gate (`warmPoolCandidateReasonLocked` order) | Permanent |
+|---|---|---|
+| `already_warm` | `providerHasWarmModelLocked` — reported, not a refusal | — |
+| `offline_untrusted_private` | `StatusOffline`, `StatusUntrusted`, or `PrivateOnly` | no |
+| `state_restoring` | `providerStateRestoreRequiredLocked` | no |
+| `pending_load_or_cooldown` | `providerHasPendingLoad` or `dispatchLoadCooled` | no |
+| `not_idle` | `pendingCount() != 0` or `warmPoolBackendSlotBusyLocked` | no |
+| `thermal_critical` | `SystemMetrics.ThermalState == "critical"` | no |
+| `trust_or_runtime` | trust rank below `MinTrustLevel`, `!RuntimeVerified`, or no private-text support | no |
+| `stale_challenge` | `LastChallengeVerified` older than `challengeFreshnessMaxAge` | no |
+| `not_serving_catalog` | `providerServesCatalogModelLocked` false | no |
+| `dedicated_excluded` | `providerExcludedByDedicatedRuleLocked` | no |
+| `model_too_large` | `modelFitsHardware` against `warmPoolTotalMemoryGBLocked` | **yes** |
+| `no_free_for_load` | `reportedFreeForLoadAdmits` against the heartbeat's `free_for_load_gb` | no |
+
+`Permanent` is true only for `model_too_large`: it compares the catalog's
+published `min_ram_gb` (else `size_gb × modelMemoryHeadroomFactor`) with
+installed memory, so it cannot clear without a hardware or catalog change.
+`no_free_for_load` is a live heartbeat measurement and clears on its own. Each
+model row publishes the figures the gates used: `required_memory_gb`
+(`requiredMemoryGBLocked`, mirrors `modelFitsHardware` precedence),
+`weights_gb` (catalog decimal GB, unpadded) and `load_threshold_gib`
+(`loadThresholdGiB` = `weights_gb × coldLoadCatalogGBToMemGiB`, the padded-GiB
+figure actually compared with `free_for_load_gb`). The wire shape is in
+[`api-contracts.md`](../reference/api-contracts.md#warm-pool-eligibility).
+
+The aggregate side: `computeNetworkUtilization` copies `EligibleCold`,
+`ColdIneligible` and `ColdDisqualifiers` from each `WarmPoolSnapshot` onto its
+`ModelUtilization` row (`applyWarmPoolSnapshot`), and emits a snapshot-only row
+(`warmPoolOnlyModels`) for a model the controller tracks that has no capacity
+row — `ModelCapacitySnapshot` admits only publicly-routable providers, so a
+model whose every provider is private, untrusted or stale-challenged would
+otherwise vanish from `/v1/admin/utilization` together with the disqualifiers
+explaining it. Snapshot-only rows do not enter the network-wide demand,
+serving, request or bottleneck aggregates.
+
 ### Heartbeat cadence and eviction
 
 Each heartbeat (`Registry.Heartbeat`) refreshes `LastHeartbeat`,
@@ -513,6 +562,7 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | `429` after `maxWait` | No eligible provider appeared within the queue's wait bound. | `ErrQueueTimeout`; `Retry-After` per [`routing.md`](routing.md#retry-after-derivation). |
 | Requests queue although a provider looks idle | Provider's slot is `idle_shutdown`, `reloading` or `crashed`, or its token budget is exhausted. | Routing gates it (`slot_*`, `free_memory`); `TriggerModelSwaps` or the warm pool loads elsewhere. |
 | Model never loads despite demand | Every cold candidate is disqualified (`ColdDisqualifiers`) or `MaxGlobalPendingLoads` is saturated. | `warm_pool_tick` logs the reason tally; pending entries expire after `pendingModelLoadTTL`. |
+| A provider is online, trusted and idle but never receives `load_model` | One of the gates in `warmPoolCandidateReasonLocked` refuses it for that model; most often `model_too_large` (catalog `min_ram_gb` above installed memory) or `no_free_for_load`. | `warm_pool` on `GET /v1/me/providers` names the blocker per model and whether it is permanent; `cold_disqualifiers` on `GET /v1/admin/utilization` tallies it fleet-wide ([above](#warm-pool-controller)). |
 | Warm count oscillates | `MinDwell` too short for the load duration. | Anti-flap holds a lowered target for `MinDwell`; raise it or set `MinWarmByModel`. |
 | Provider evicted while alive | Heartbeats older than the eviction timeout at `evictStrikeThreshold` consecutive sweeps ([above](#heartbeat-cadence-and-eviction)); network stall, sleeping Mac. | `Disconnect`; the provider re-registers, fault state persists by stable identity. |
 | Cancel arrives late at provider | A multi-MiB data frame was mid-write. | Control priority is non-preemptive; worst case one `providerWriteMaxTimeout`. |
@@ -529,7 +579,8 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | Token-budget and memory admission | `coordinator/registry/scheduler.go` — `freeMemoryAdmits`, `pooledBudgetAdmits`, `knownZeroTokenBudget`, `committedTokenBudget` |
 | Concurrency caps | `coordinator/registry/provider.go` — `maxConcurrency`, `maxConcurrencyForModelLocked`; `coordinator/registry/config.go` — `DefaultMaxConcurrent`; `coordinator/registry/concurrency_cap.go` — `SetQualityConcurrencyCap`, `effectiveMaxConcurrencyForModelRateLocked`, `hasConcurrencyHeadroomForModelCapResolvedLocked` |
 | Pending loads and swaps | `coordinator/registry/model_loading.go` — `pendingModelLoadTTL`, `TriggerModelSwaps`, `bestModelLoadProviderLocked`; `coordinator/registry/model_commands.go` — `SendLoadModel`; `coordinator/registry/model_swap_coalesce.go` — `modelSwapPlanInterval`, `modelSwapPlanGate`, `triggerModelSwapsFromHeartbeat` |
-| Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`, `WarmPoolSnapshot`; `coordinator/registry/warm_pool_target.go` — `warmTarget`, `qualityConcurrency`, `estimateServiceTime`, `rampLoadsThisTick`; `coordinator/registry/warm_pool_state.go` — `warmPoolArrivalEWMAAlpha` |
+| Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`, `WarmPoolSnapshot`, `warmPoolCandidateReasonLocked`, `warmColdReasons`; `coordinator/registry/warm_pool_target.go` — `warmTarget`, `qualityConcurrency`, `estimateServiceTime`, `rampLoadsThisTick`; `coordinator/registry/warm_pool_state.go` — `warmPoolArrivalEWMAAlpha` |
+| Warm-pool eligibility diagnostics | `coordinator/registry/warm_pool_diagnostics.go` — `WarmPoolEligibility`, `WarmPoolBlocker`, `warmPoolBlockers`, `loadThresholdGiB`, `requiredMemoryGBLocked`, `warmPoolTotalMemoryGBLocked`; `coordinator/registry/utilization.go` — `applyWarmPoolSnapshot`, `warmPoolOnlyModels`; `coordinator/api/me_handlers.go` — `attachWarmPoolEligibility` |
 | Warm-pool and quality-cap configuration | `coordinator/registry/config.go` — `WarmPoolConfig`, `QualityCapConfig`, `ReadConfig` |
 | Eviction | `coordinator/registry/provider_lifecycle.go` — `StartEvictionLoop`, `evictStale`, `disconnectProvider`, `evictStrikeThreshold`; wired in `coordinator/cmd/coordinator/main.go` |
 | Provider writer | `coordinator/registry/provider_writer.go` — `providerWriter`, `providerWriteTimeout`, `watchWrites` |

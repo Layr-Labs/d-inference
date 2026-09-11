@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-11 · commit `d38be3120`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -106,7 +106,7 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/provider/earnings` | `handleProviderEarnings` (`coordinator/api/consumer.go`) | `—` | — | Legacy lookup by `?wallet=` query or `X-Provider-Wallet` header; `ProviderEarningsResponse` |
 | GET | `/v1/provider/account-earnings` | `handleAccountEarnings` (`coordinator/api/billing_handlers.go`) | `key` | — | Earnings across the account's providers |
 | GET | `/v1/me/summary` | `handleMySummary` (`coordinator/api/me_handlers.go`) | `user` | — | Console account summary; includes `latest_provider_version` |
-| GET | `/v1/me/providers` | `handleMyProviders` (`coordinator/api/me_handlers.go`) | `user` | — | Machines linked to the account |
+| GET | `/v1/me/providers` | `handleMyProviders` (`coordinator/api/me_handlers.go`) | `user` | — | Machines linked to the account; connected machines carry [`warm_pool`](#warm-pool-eligibility) |
 | GET | `/v1/me/self-route-models` | `handleMySelfRouteModels` (`coordinator/api/me_handlers.go`) | `user` | — | Models the account's own machines can serve |
 | DELETE | `/v1/me/providers/{id}` | `handleDeleteMyProvider` (`coordinator/api/me_handlers.go`) | `user` | `fin` | Unlink a machine |
 | GET | `/v1/pricing` | `handleGetPricing` (`coordinator/api/billing_handlers.go`) | `—` | — | Public price table; see [`pricing-model.md`](pricing-model.md) |
@@ -227,7 +227,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | GET | `/v1/admin/log-reports/{id}` | `handleGetLogReport` (`coordinator/api/log_report_handlers.go`) | `admin` | Fetch an uploaded provider log bundle |
 | GET | `/v1/admin/metrics` | `handleAdminMetrics` | `admin-key` | Telemetry counters |
 | GET | `/v1/admin/base-rewards` | `handleAdminBaseRewards` (`coordinator/api/base_rewards_handlers.go`) | `admin-key` | |
-| GET | `/v1/admin/utilization` | `handleAdminUtilization` (`coordinator/api/admin_utilization.go`) | `admin-key` | |
+| GET | `/v1/admin/utilization` | `handleAdminUtilization` (`coordinator/api/admin_utilization.go`) | `admin-key` | Per-model rows carry `eligible_cold`, `cold_ineligible`, `cold_disqualifiers` ([warm-pool eligibility](#warm-pool-eligibility)) |
 | POST | `/v1/admin/drain` | `handleAdminDrain` (`coordinator/api/drain.go`) | `admin` | Start a drain; default grace [`DefaultDrainGrace`](#timeouts-and-constants) |
 | GET | `/v1/admin/routes`, `/v1/admin/routes/export` | `handleAdminRoutes`, `handleAdminRoutesExport` (`coordinator/api/admin_telemetry.go`) | `admin-key` | Route records |
 | GET | `/v1/admin/rejections`, `/v1/admin/rejections/export` | `handleAdminRejections`, `handleAdminRejectionsExport` (`coordinator/api/admin_telemetry.go`) | `admin-key` | Admission rejections; `could_have_served` is nullable: `null` means not evaluated. CSV uses an empty cell; `could_have_served=true|false` filters exclude unknowns. |
@@ -290,6 +290,58 @@ fields mean uninstrumented. Its exact fields and sample-age rules live in the
 [wire reference](protocol-messages.md#slotspaged_storage). The coordinator
 consumer is implemented; provider emission is pending. These observations do
 not grant admission or assert cache readiness.
+
+## Warm-pool eligibility
+
+`GET /v1/me/providers` attaches an optional `warm_pool` object to each machine
+(`attachWarmPoolEligibility`, `coordinator/api/me_handlers.go`;
+`ProviderWarmPoolEligibility`, `coordinator/registry/warm_pool_diagnostics.go`).
+It answers, per model the machine advertises, whether the warm-pool controller
+would send it a `load_model` now and, if not, the first gate that refuses. The
+object is omitted when the machine is not in the live registry (disconnected);
+it is present for a connected machine even when `online` is false. Same owner
+scoping as the rest of the response. Read-only: no planning pass runs and no
+`load_model` is sent. Mechanism and the gate order are in
+[`scheduling.md`](../architecture/scheduling.md#warm-pool-controller).
+
+| Field | Type | Meaning |
+|---|---|---|
+| `total_memory_gb` | number | Memory basis of the static fit gate: reported backend total, else registered hardware (`warmPoolTotalMemoryGBLocked`) |
+| `free_for_load_gb` | number, optional | The heartbeat's `free_for_load_gb` — max loadable model weight in **padded GiB**. Absent when the provider version does not report it; the `no_free_for_load` gate is then skipped. Compare with a row's `load_threshold_gib`, not `weights_gb` |
+| `models[]` | array | One row per advertised model, sorted by `id` |
+| `eligible_models`, `warm_models`, `permanently_blocked_models` | integer | Counts over `models[]` |
+| `challenge_max_age_seconds` | integer | `challengeFreshnessMaxAge` in seconds; the `stale_challenge` window |
+
+Each `models[]` row (`ModelWarmPoolEligibility`):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | Model id |
+| `warm` | boolean | Loaded here now (slot `running` or `idle`) |
+| `eligible` | boolean | Would be picked as a `load_model` target now; always false when `warm` |
+| `blocker` | string, omitted when eligible | One of the closed `WarmPoolBlocker` set below. Only the **first** failing gate, in planner order |
+| `blocker_description` | string, omitted when eligible | Fixed operator-facing text for `blocker` (`WarmPoolBlocker.Description`) |
+| `permanent` | boolean, omitted when false | `blocker` cannot clear without a hardware or catalog change; true only for `model_too_large` (`WarmPoolBlocker.Permanent`) |
+| `required_memory_gb` | number, omitted when 0 | Threshold the fit gate applied: catalog `min_ram_gb`, else `size_gb × modelMemoryHeadroomFactor`; 0 means the gate is disabled (`requiredMemoryGBLocked`) |
+| `weights_gb` | number, omitted when 0 | Catalog on-disk size in **decimal GB**, unpadded — the catalog's number, not the gate's |
+| `load_threshold_gib` | number, omitted when 0 | `weights_gb × coldLoadCatalogGBToMemGiB`, the padded-GiB figure `reportedFreeForLoadAdmits` compares with `free_for_load_gb` (`loadThresholdGiB`) |
+
+`blocker` values (`WarmPoolBlocker`, closed set; renaming one is a breaking
+change): `already_warm`, `offline_untrusted_private`, `state_restoring`,
+`trust_or_runtime`, `stale_challenge`, `pending_load_or_cooldown`, `not_idle`,
+`thermal_critical`, `not_serving_catalog`, `dedicated_excluded`,
+`model_too_large`, `no_free_for_load`.
+
+`GET /v1/admin/utilization` per-model rows (`ModelUtilization`,
+`coordinator/registry/utilization.go`) carry the controller's aggregate view:
+`eligible_cold` (cold providers the controller would load onto),
+`cold_ineligible`, and `cold_disqualifiers` (blocker string → count, no
+provider identities). `eligible_cold + cold_ineligible` need not equal
+`cold_providers`; they come from different observations. A model the controller
+tracks that has no publicly-routable provider gets a snapshot-only row carrying
+these fields with zero serving capacity and `utilization: 0`; such rows are
+excluded from the network-wide aggregates (`warmPoolOnlyModels`). The
+`warm_pool_tick` log line carries `cold_ineligible` and `cold_disqualifiers`.
 
 ## Provider-bound request normalization
 

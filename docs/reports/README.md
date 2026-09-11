@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-10 · commit `b4b8797ae`
+> Last updated: 2026-09-10 · commit `5f021ba4d`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,7 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [0.9.2 provider-only rollout review](2026-09-10-provider-092-rollout-review.md) — verified 0.9.1 coordinator compatibility, shared inference interactions and remaining fleet-release gates.
 - [Final cache routing checks](2026-09-07-final-cache-routing.md) — twenty cache-off/SSD cases pass with two isolated providers, including holder selection, tenant isolation, cancellation and cold fallback.
 - [0.9.0 implementation and validation readiness](2026-09-07-release090-readiness.md) — consolidated model, cache and routing evidence; code review readiness with signed production-key restart remaining.
 - [QAT sustained generation and matched prompt control](2026-09-07-qat-sustained-followup.md) — combined long-generation evidence satisfies sustained exposure, while original refusals, exact-cap failures and literary limits remain preserved.

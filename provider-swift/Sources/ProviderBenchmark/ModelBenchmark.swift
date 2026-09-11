@@ -23,18 +23,15 @@ public struct BenchmarkReport: Sendable {
     public let hardwareDescription: String
 
     public var avgPrefillLatencyMs: Double {
-        guard !iterations.isEmpty else { return 0 }
-        return iterations.map(\.prefillLatencyMs).reduce(0, +) / Double(iterations.count)
+        BenchmarkMeasurements.mean(iterations.map(\.prefillLatencyMs))
     }
 
     public var avgDecodeTokensPerSecond: Double {
-        guard !iterations.isEmpty else { return 0 }
-        return iterations.map(\.decodeTokensPerSecond).reduce(0, +) / Double(iterations.count)
+        BenchmarkMeasurements.mean(iterations.map(\.decodeTokensPerSecond))
     }
 
     public var avgTotalTimeMs: Double {
-        guard !iterations.isEmpty else { return 0 }
-        return iterations.map(\.totalTimeMs).reduce(0, +) / Double(iterations.count)
+        BenchmarkMeasurements.mean(iterations.map(\.totalTimeMs))
     }
 
     public var avgPromptTokens: Int {
@@ -145,7 +142,6 @@ public struct ModelBenchmark: Sendable {
 
             let result = try await runIteration(
                 container: container,
-                modelID: modelID,
                 prompt: prompt,
                 maxTokens: maxTokens,
                 iteration: i
@@ -164,26 +160,11 @@ public struct ModelBenchmark: Sendable {
 
     private static func runIteration(
         container: ModelContainer,
-        modelID: String,
         prompt: String,
         maxTokens: Int,
         iteration: Int
     ) async throws -> BenchmarkIterationResult {
-        let messages: [ChatMessage] = [
-            ChatMessage(role: "user", content: prompt)
-        ]
-
-        let request = ChatCompletionRequest(
-            model: modelID,
-            messages: messages,
-            temperature: 0.6,
-            max_tokens: maxTokens,
-            stream: false
-        )
-
-        let rawMessages = try messages.map { msg -> MLXLMCommon.Message in
-            ["role": msg.role, "content": msg.content] as MLXLMCommon.Message
-        }
+        let rawMessages: [MLXLMCommon.Message] = [["role": "user", "content": prompt]]
 
         let iterationStart = ContinuousClock.now
 
@@ -192,10 +173,10 @@ public struct ModelBenchmark: Sendable {
             let input = try await context.processor.prepare(
                 input: UserInput(messages: rawMessages))
             let params = GenerateParameters(
-                maxTokens: request.max_tokens,
-                temperature: request.temperature ?? 0.6,
-                topP: request.top_p ?? 1.0,
-                topK: request.top_k ?? 0
+                maxTokens: maxTokens,
+                temperature: 0.6,
+                topP: 1.0,
+                topK: 0
             )
             return try MLXLMCommon.generate(
                 input: input, parameters: params, context: context)
@@ -212,7 +193,7 @@ public struct ModelBenchmark: Sendable {
                 if firstTokenTime == nil {
                     firstTokenTime = .now
                     let elapsed = firstTokenTime! - iterationStart
-                    prefillLatencyMs = Double(elapsed.components.attoseconds) / 1e15
+                    prefillLatencyMs = BenchmarkMeasurements.milliseconds(elapsed)
                 }
 
             case .info(let info):
@@ -229,7 +210,7 @@ public struct ModelBenchmark: Sendable {
         }
 
         let totalElapsed = ContinuousClock.now - iterationStart
-        let totalTimeMs = Double(totalElapsed.components.attoseconds) / 1e15
+        let totalTimeMs = BenchmarkMeasurements.milliseconds(totalElapsed)
 
         // Calculate decode TPS from the generation info's timing when available,
         // otherwise approximate from wall-clock

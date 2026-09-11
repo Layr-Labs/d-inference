@@ -62,12 +62,12 @@ enum SchedulerPrefillDecisionEvaluator {
 
             let cap0Rows = medianTTFTByRow(cap0, rowCount: workload.rows.count)
             let cap1Rows = medianTTFTByRow(cap1, rowCount: workload.rows.count)
-            let cap0Throughput = median(
+            let cap0Throughput = BenchmarkMeasurements.median(
                 cap0.map(\.aggregatePromptTokensPerSecond))
-            let cap1Throughput = median(
+            let cap1Throughput = BenchmarkMeasurements.median(
                 cap1.map(\.aggregatePromptTokensPerSecond))
-            let cap0Mean = mean(cap0Rows)
-            let cap1Mean = mean(cap1Rows)
+            let cap0Mean = BenchmarkMeasurements.mean(cap0Rows)
+            let cap1Mean = BenchmarkMeasurements.mean(cap1Rows)
 
             comparisons.append(.init(
                 workload: workload.name,
@@ -281,7 +281,7 @@ enum SchedulerPrefillDecisionEvaluator {
         rowCount: Int
     ) -> [Double] {
         (0 ..< rowCount).map { row in
-            median(results.compactMap {
+            BenchmarkMeasurements.median(results.compactMap {
                 $0.rows.first { $0.row == row }?.ttftMs
             })
         }
@@ -296,21 +296,6 @@ enum SchedulerPrefillDecisionEvaluator {
                 + Double(row.promptTokens)
                     * thresholds.firstContentPerPromptTokenMs
         }
-    }
-
-    private static func mean(_ values: [Double]) -> Double {
-        guard !values.isEmpty else { return 0 }
-        return values.reduce(0, +) / Double(values.count)
-    }
-
-    private static func median(_ values: [Double]) -> Double {
-        guard !values.isEmpty else { return 0 }
-        let sorted = values.sorted()
-        let middle = sorted.count / 2
-        if sorted.count.isMultiple(of: 2) {
-            return (sorted[middle - 1] + sorted[middle]) / 2
-        }
-        return sorted[middle]
     }
 
     private static func validModelIdentity(

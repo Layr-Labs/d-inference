@@ -612,11 +612,7 @@ public enum ThroughputSweep {
     /// Low median for even counts is avoided: use the two-sided average so the
     /// result matches Python's `statistics.median` (the runner recomputes it).
     static func median(_ values: [Double]) -> Double {
-        guard !values.isEmpty else { return 0 }
-        let sorted = values.sorted()
-        let middle = sorted.count / 2
-        if sorted.count % 2 == 1 { return sorted[middle] }
-        return (sorted[middle - 1] + sorted[middle]) / 2
+        BenchmarkMeasurements.median(values)
     }
 
     /// Whether config.json declares `vision_config` (load through VLMModelFactory

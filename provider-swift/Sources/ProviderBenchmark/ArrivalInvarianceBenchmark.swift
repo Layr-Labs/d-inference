@@ -217,7 +217,7 @@ public enum ArrivalInvarianceBenchmark {
             let firstOutputs = allOutputs.first ?? []
             let stable = allOutputs.allSatisfy { $0 == firstOutputs }
             let measuredOffsets = definition.delaysMs.indices.map { index in
-                median(reports.compactMap { sample in
+                BenchmarkMeasurements.median(reports.compactMap { sample in
                     sample.rows.first { $0.row == index }?.submittedAtMs
                 })
             }
@@ -226,14 +226,14 @@ public enum ArrivalInvarianceBenchmark {
                 name: definition.name,
                 arrivalDelaysMs: definition.delaysMs,
                 samples: reports,
-                medianTTFTMs: median(reports.flatMap { $0.rows.map(\.ttftMs) }),
-                medianPerRequestDecodeTokensPerSecond: median(
+                medianTTFTMs: BenchmarkMeasurements.median(reports.flatMap { $0.rows.map(\.ttftMs) }),
+                medianPerRequestDecodeTokensPerSecond: BenchmarkMeasurements.median(
                     reports.flatMap { $0.rows.map(\.decodeTokensPerSecond) }
                 ),
-                medianAggregateDecodeTokensPerSecond: median(
+                medianAggregateDecodeTokensPerSecond: BenchmarkMeasurements.median(
                     reports.map(\.aggregateDecodeTokensPerSecond)
                 ),
-                medianMakespanMs: median(reports.map(\.makespanMs)),
+                medianMakespanMs: BenchmarkMeasurements.median(reports.map(\.makespanMs)),
                 outputsStableAcrossIterations: stable,
                 outputsMatchBurst: allOutputs.allSatisfy { $0 == burstOutputs },
                 measuredArrivalOffsetsMs: measuredOffsets,
@@ -563,16 +563,6 @@ public enum ArrivalInvarianceBenchmark {
 
     private static func milliseconds(from start: UInt64, to end: UInt64) -> Double {
         Double(end - start) / 1_000_000
-    }
-
-    private static func median(_ values: [Double]) -> Double {
-        guard !values.isEmpty else { return 0 }
-        let sorted = values.sorted()
-        let middle = sorted.count / 2
-        if sorted.count.isMultiple(of: 2) {
-            return (sorted[middle - 1] + sorted[middle]) / 2
-        }
-        return sorted[middle]
     }
 
     private static func checksum(_ tokens: [Int]) -> String {

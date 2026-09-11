@@ -322,6 +322,37 @@ struct ProviderMTPFactoryTests {
         #expect(recovered.mtpStatus.active)
     }
 
+    @Test("recovery fallback preserves the new target and the precise inactive reason")
+    func recoveryFallbackReasons() async throws {
+        let artifact = try mtpFactoryArtifact()
+        defer { try? FileManager.default.removeItem(at: artifact.directory) }
+        let prepared = try await EngineV2SlotFactory.prepareProductionModel(
+            modelId: "gemma-4-test", isVLM: false,
+            container: mtpFactoryContainer(),
+            specDecPreparation: .init(artifact: artifact, status: .candidate(artifact)),
+            assistantLoader: MTPFactoryRecordingLoader(
+                recorder: MTPFactoryIdentityRecorder(), failure: nil))
+        defer { prepared.assistant?.release() }
+        let replacement = MTPFactoryTarget()
+        let container = mtpFactoryContainer(replacement)
+        let disabled = MTPActivationStatus.disabled(.configDisabled, configured: false)
+        for (status, assistant, expected) in [
+            (disabled, nil, MTPFallbackReason.configDisabled),
+            (prepared.mtpStatus, nil, .engineInactive),
+            (prepared.mtpStatus, prepared.assistant, .assistantTargetIncompatible),
+        ] {
+            let recovered = try await EngineV2SlotFactory.prepareRecoveryModel(
+                modelId: "gemma-4-test", isVLM: false, container: container,
+                previousArtifact: artifact, previousStatus: status, assistant: assistant)
+            #expect(ObjectIdentifier(recovered.servingModel) == ObjectIdentifier(replacement))
+            #expect(recovered.assistant == nil)
+            #expect(recovered.mtpArtifact == nil)
+            #expect(recovered.assistantBytes == 0)
+            #expect(recovered.mtpStatus.reason == expected)
+            #expect(recovered.mtpStatus.configured == status.configured)
+        }
+    }
+
     @Test("VLM resolution fails loud for an unsupported wrapper")
     func unsupportedVLMWrapperRefuses() {
         #expect(throws: EngineV2ProductionError.self) {

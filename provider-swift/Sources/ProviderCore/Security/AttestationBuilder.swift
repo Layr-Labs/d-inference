@@ -359,19 +359,9 @@ private func detectHardwareModel() -> String {
 /// Parses the "Chip:" line from SPHardwareDataType output. Returns "Unknown"
 /// if the chip name cannot be determined.
 private func detectChipName() -> String {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-    process.arguments = ["SPHardwareDataType"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    guard let _ = try? process.run() else { return "Unknown" }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
+    guard let output = try? SecurityCommandRunner.live.run(
+        "/usr/sbin/system_profiler", ["SPHardwareDataType"]).stdout
+    else { return "Unknown" }
 
     for line in output.components(separatedBy: "\n") {
         if line.contains("Chip:") {
@@ -400,36 +390,16 @@ private func detectSerialNumber() -> String? {
 }
 
 private func detectSerialNumberFromIOReg() -> String? {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/ioreg")
-    process.arguments = ["-c", "IOPlatformExpertDevice", "-d", "2"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    guard let _ = try? process.run() else { return nil }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
+    guard let output = try? SecurityCommandRunner.live.run(
+        "/usr/sbin/ioreg", ["-c", "IOPlatformExpertDevice", "-d", "2"]).stdout
+    else { return nil }
     return parseSerialNumberFromIOReg(output)
 }
 
 private func detectSerialNumberFromSystemProfiler() -> String? {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-    process.arguments = ["SPHardwareDataType"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    guard let _ = try? process.run() else { return nil }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
+    guard let output = try? SecurityCommandRunner.live.run(
+        "/usr/sbin/system_profiler", ["SPHardwareDataType"]).stdout
+    else { return nil }
 
     return parseSerialNumberFromSystemProfiler(output)
 }

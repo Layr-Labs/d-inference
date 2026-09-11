@@ -25,13 +25,27 @@ if [ -n "$MICROMDM_API_KEY" ]; then
         echo "Key format: $(head -1 /data/micromdm/push.key)"
     fi
 
-    # Generate self-signed TLS cert for MicroMDM on first boot (internal only)
+    # Generate self-signed TLS cert for MicroMDM on first boot (internal only).
+    # Caddy pins this cert as its trust root for the /scep and /mdm/* upstreams
+    # (tls_trusted_ca_certs in coordinator/Caddyfile), so it MUST carry SANs
+    # covering the dial address: Go ignores the legacy CN and would reject a
+    # CN-only cert with "x509: certificate relies on legacy Common Name field".
+    # Certs generated before #715 have no SAN, so regenerate them on upgrade —
+    # safe because nothing outside the container ever sees this cert (enrolling
+    # devices terminate against Caddy's public EigenCloud cert), and this runs
+    # before MicroMDM starts.
+    if [ -f /data/micromdm/server.crt ] && ! openssl x509 -in /data/micromdm/server.crt \
+        -noout -text 2>/dev/null | grep -q "IP Address:127.0.0.1"; then
+        echo "MicroMDM TLS cert has no 127.0.0.1 SAN (pre-#715); regenerating..."
+        rm -f /data/micromdm/server.crt /data/micromdm/server.key
+    fi
     if [ ! -f /data/micromdm/server.crt ]; then
         echo "Generating MicroMDM self-signed TLS cert..."
         openssl req -x509 -newkey rsa:2048 -nodes \
             -keyout /data/micromdm/server.key \
             -out /data/micromdm/server.crt \
-            -days 3650 -subj "/CN=localhost" 2>/dev/null
+            -days 3650 -subj "/CN=localhost" \
+            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2>/dev/null
     fi
 
     # If the coordinator is configured with EIGENINFERENCE_MDM_WEBHOOK_SECRET it

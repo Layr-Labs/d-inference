@@ -705,8 +705,8 @@ func TestHandleUsageUsesRecordedPublicModelOnly(t *testing.T) {
 	reg.SetModelAliases(map[string]registry.AliasTarget{
 		"gemma-4-26b": {Desired: aliasQAT},
 	})
-	st.RecordUsageFullWithPublicModel("p1", "acct-1", "", aliasFP8, "gemma-4-26b", "req-alias", 10, 5, 100, nil)
-	st.RecordUsageFull("p2", "acct-1", "", aliasQAT, "req-raw", 3, 2, 50, nil)
+	st.RecordUsage(store.UsageRecord{ProviderID: "p1", ConsumerKey: "acct-1", Model: aliasFP8, PublicModel: "gemma-4-26b", RequestID: "req-alias", PromptTokens: 10, CompletionTokens: 5, CostMicroUSD: 100})
+	st.RecordUsage(store.UsageRecord{ProviderID: "p2", ConsumerKey: "acct-1", Model: aliasQAT, RequestID: "req-raw", PromptTokens: 3, CompletionTokens: 2, CostMicroUSD: 50})
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/payments/usage", nil)
 	req = req.WithContext(context.WithValue(req.Context(), ctxKeyConsumer, "acct-1"))
@@ -1254,7 +1254,7 @@ func TestOpenRouterAliasClonesConcreteModel(t *testing.T) {
 		hfID     = "openai/gpt-oss-20b"
 	)
 	seedActiveModel(t, st, sourceID, "GPT-OSS 20B")
-	if err := st.SetModelPrice("platform", sourceID, 20_000, 100_000); err != nil {
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: sourceID, InputPrice: 20_000, OutputPrice: 100_000}); err != nil {
 		t.Fatal(err)
 	}
 	srv.SyncModelCatalog()
@@ -1363,7 +1363,7 @@ func TestOpenRouterAliasConcreteRetrievalWithoutProviders(t *testing.T) {
 		hfID     = "openai/gpt-oss-20b"
 	)
 	seedActiveModel(t, st, sourceID, "GPT-OSS 20B")
-	if err := st.SetModelPrice("platform", sourceID, 20_000, 100_000); err != nil {
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: sourceID, InputPrice: 20_000, OutputPrice: 100_000}); err != nil {
 		t.Fatal(err)
 	}
 	srv.SyncModelCatalog()

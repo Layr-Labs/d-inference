@@ -64,6 +64,13 @@ coordinator and console changes require their own deployments.
 - **Incoming request accounting** — Add an unsampled request-outcome ledger and bounded admin inspection with explicit coverage and completion evidence. Record recovered HTTP errors and parsed streaming mode, and distinguish completed, incomplete and error response terminals after successful writes while preserving contradictory evidence and earlier content progress.
 - **Partial network geography** — Keep the stats overview available when request-location or route analytics time out. Refresh geography independently, expose unavailable sections, preserve valid empty maps and restore geography after recovery.
 
+## Unreleased — cached prompt pricing
+
+- Bill prompt tokens a provider serves from its prefix cache at a per-model `cache_read_price` instead of the input price, on the same `cached_tokens` count the consumer receives in `usage.prompt_tokens_details`; a malformed cache report bills at the full input price. Rows without an explicit rate derive half the input price; `cache_read_price` is accepted by `PUT /v1/admin/pricing`, `PUT /v1/pricing` and model registration (`0 ≤ cache_read_price ≤ input_price`).
+- Advertise the same rate to OpenRouter as `pricing.input_cache_read` in the provider feed, so a service-account debit equals the feed's per-token math (previously the feed declared `"0"` while cached tokens were billed at the full input price). No cache-write SKU: caching is provider-initiated.
+- Publish `cache_read_price` on `GET /v1/pricing`, persist `cached_tokens` on usage rows and `GET /v1/payments/usage`, and surface the rate in the console model catalog and the admin models table. Reservations are unchanged (worst case assumes no cache hit); settlement refunds the discount and emits `billing.cache_read_discount_micro_usd`. The `*_usd` strings returned by `PUT /v1/admin/pricing` and `PUT /v1/pricing` drop the trailing " per 1M tokens" to match `GET /v1/pricing`. Cost arithmetic saturates instead of wrapping on absurd provider-reported counts.
+- On deploy every existing price row — platform and provider custom — starts billing cache hits at half its own input price until an explicit `cache_read_price` is set; the feed's `input_cache_read` moves from `"0"` to that rate.
+
 ## Unreleased — stats request-flow refresh
 
 - Restore Stats refreshes on large usage windows by aggregating request origins before looking up provider locations. Preserve weighted coordinates, request/token counts, and the top-50 flow limit while avoiding large temporary sorts.

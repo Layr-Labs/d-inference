@@ -8,7 +8,7 @@ import { formatContext, formatPrice, modelContext, modelFeatures, modelName, typ
 
 const FEATURE_LABELS = new Map([["images", "Image input"], ["tools", "Tool calling"], ["reasoning", "Reasoning"]]);
 
-function ModelDetails({ model }: { model: Model }) {
+function ModelDetails({ model, price }: { model: Model; price?: CatalogPrice }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const requirement = providerRequirementBadge(model.required_provider_capabilities);
   const sizeGB = model.size_gb ?? (model.size_bytes ? model.size_bytes / 1e9 : undefined);
@@ -20,6 +20,9 @@ function ModelDetails({ model }: { model: Model }) {
     { label: "Attestation", value: model.attested ? "Attested" : undefined },
     { label: "Model size", value: sizeGB ? `${sizeGB.toLocaleString("en-US", { maximumFractionDigits: 1 })} GB` : undefined },
     { label: "Max output", value: model.max_output_length ? `${model.max_output_length.toLocaleString("en-US")} tokens` : undefined },
+    // Prompt tokens a provider serves from its prefix cache bill at this rate
+    // instead of the input rate; the API reports them as cached_tokens.
+    { label: "Cached input / 1M", value: price?.cacheRead !== undefined ? formatPrice(price.cacheRead) : undefined },
   ].filter((entry) => entry.value);
 
   async function copyID() {
@@ -106,7 +109,7 @@ export function ModelRow({ model, price, onChat }: { model: Model; price?: Catal
           Chat
         </button>
       </div>
-      <div id={detailsID} hidden={!expanded} className="pb-5">{expanded && <ModelDetails model={model} />}</div>
+      <div id={detailsID} hidden={!expanded} className="pb-5">{expanded && <ModelDetails model={model} price={price} />}</div>
     </li>
   );
 }

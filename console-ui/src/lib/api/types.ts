@@ -61,6 +61,9 @@ export interface UsageEntry {
   request_id: string;
   model: string;
   prompt_tokens: number;
+  // Subset of prompt_tokens served from the provider's prefix cache and billed
+  // at the cache-read rate. Omitted by the coordinator when zero.
+  cached_tokens?: number;
   completion_tokens: number;
   cost_micro_usd: number;
   timestamp: string;
@@ -114,10 +117,15 @@ export interface StreamCallbacks {
 
 export interface PriceEntry {
   model: string;
+  // Micro-USD per 1M tokens. cache_read_price is the effective rate for prompt
+  // tokens served from a provider's prefix cache (OpenRouter input_cache_read);
+  // optional so older coordinators without it still parse.
   input_price: number;
   output_price: number;
+  cache_read_price?: number;
   input_usd: string;
   output_usd: string;
+  cache_read_usd?: string;
 }
 
 export interface PricingResponse {

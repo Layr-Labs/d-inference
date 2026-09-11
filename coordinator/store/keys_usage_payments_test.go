@@ -96,8 +96,8 @@ func TestRevokeKeyNonexistent(t *testing.T) {
 func TestRecordUsage(t *testing.T) {
 	for name, s := range storeBackends(t) {
 		t.Run(name, func(t *testing.T) {
-			s.RecordUsage("provider-1", "consumer-key", "qwen3.5-9b", 50, 100)
-			s.RecordUsage("provider-2", "consumer-key", "llama-3", 30, 200)
+			s.RecordUsage(UsageRecord{ProviderID: "provider-1", ConsumerKey: "consumer-key", Model: "qwen3.5-9b", PromptTokens: 50, CompletionTokens: 100})
+			s.RecordUsage(UsageRecord{ProviderID: "provider-2", ConsumerKey: "consumer-key", Model: "llama-3", PromptTokens: 30, CompletionTokens: 200})
 
 			records := s.UsageRecords()
 			if len(records) != 2 {

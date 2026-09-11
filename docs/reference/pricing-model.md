@@ -13,11 +13,11 @@ pieces fit together, and what they guarantee, is explained in
 | Quantity | Unit | Citation |
 |---|---|---|
 | Balances, reservations, ledger amounts, earnings | `int64` micro-USD; 1 USD = 1,000,000 µUSD | `coordinator/payments/payments.go` (package comment) |
-| Prices (`input_price`, `output_price`) | µUSD per 1,000,000 tokens | `coordinator/payments/pricing.go` (`DefaultInputPricePerMillion`) |
+| Prices (`input_price`, `output_price`, `cache_read_price`) | µUSD per 1,000,000 tokens | `coordinator/payments/pricing.go` (`DefaultInputPricePerMillion`, `Rates`) |
 | Stripe Checkout amount in | `AmountTotal` cents × `10_000` = µUSD | `coordinator/api/billing_handlers.go` (`handleStripeWebhook`) |
 | Stripe Connect amount out | `microUSDToCents(µUSD)` integer cents; sub-cent remainder stays with the platform | `coordinator/api/stripe_payouts.go` (`microUSDToCents`); `coordinator/api/stripe_withdraw.go` (`handleStripeWithdraw`) |
-| OpenRouter model feed | USD per single token = µUSD/1M ÷ 1e12, rendered as a trimmed decimal string (`50000` → `"0.00000005"`) | `coordinator/payments/pricing.go` (`FormatPerTokenUSD`) |
-| `GET /v1/pricing` `*_usd` fields | `"$%.4f"` of µUSD/1M ÷ 1e6 (USD per 1M tokens) | `coordinator/api/billing_handlers.go` (`handleGetPricing`) |
+| OpenRouter model feed (`prompt`, `completion`, `input_cache_read`) | USD per single token = µUSD/1M ÷ 1e12, rendered as a trimmed decimal string (`50000` → `"0.00000005"`) | `coordinator/payments/pricing.go` (`FormatPerTokenUSD`); `coordinator/api/openrouter_models.go` (`buildModelPricing`) |
+| `GET /v1/pricing` `*_usd` fields | `"$%.4f"` of µUSD/1M ÷ 1e6 (USD per 1M tokens) | `coordinator/payments/pricing.go` (`FormatPerMillionUSD`); `coordinator/api/model_pricing.go` (`modelPriceQuote`, `ratesQuote`) |
 
 ## Constants
 
@@ -26,7 +26,8 @@ pieces fit together, and what they guarantee, is explained in
 | `usageHistoryLimit` | `100` | Newest in-process usage entries per consumer, oldest first; capacity grows lazily to the limit. Does not prune durable usage or change balances. | `coordinator/payments/payments.go` (`Ledger.RecordUsage`) |
 | `DefaultInputPricePerMillion` | `50_000` | fallback input price ($0.05 / 1M tokens) | `coordinator/payments/pricing.go` |
 | `DefaultOutputPricePerMillion` | `200_000` | fallback output price ($0.20 / 1M tokens) | `coordinator/payments/pricing.go` |
-| `minimumChargeMicroUSD` | `100` | per-request floor ($0.0001) applied by `CalculateCostWithOverrides`; not applied to service accounts | `coordinator/payments/pricing.go` |
+| `DefaultCacheReadDiscountPercent` | `50` | discount off the input price for prompt tokens served from a provider's prefix cache when the price row sets no `cache_read_price`; `DefaultCacheReadPrice(in) = in × 50 / 100` (fallback rate $0.025 / 1M) | `coordinator/payments/pricing.go` (`DefaultCacheReadPrice`, `RatesFor`) |
+| `minimumChargeMicroUSD` | `100` | per-request floor ($0.0001) applied by `Rates.CostWithMinimum`; not applied to service accounts | `coordinator/payments/pricing.go` |
 | `platformFeePercent` | see [billing.md, invariant 4](../architecture/billing.md#invariants) | global platform fee when no per-user override is set | `coordinator/payments/pricing.go` |
 | `defaultMaxOutputTokens` | `8192` | output bound when the request sets no max-tokens field and the registry has no `max_output_length` | `coordinator/api/consumer.go` |
 | `defaultTerminalSettleGrace` | `30 * time.Second` | how long a consumer-disconnected request waits for the provider terminal before refund | `coordinator/api/settlement.go` |
@@ -52,30 +53,35 @@ pieces fit together, and what they guarantee, is explained in
 | 2 | platform price | `GetModelPrice("platform", model)` | everyone |
 | 3 | hardcoded defaults | `DefaultInputPricePerMillion`, `DefaultOutputPricePerMillion` | everyone |
 
-Settlement: `coordinator/api/provider.go` (`handleCompleteAt`). Reservation:
+The resolved row becomes `payments.Rates{Input, Output, CacheRead}` through
+`RatesFor` (`coordinator/payments/pricing.go`): a row whose `cache_read_price`
+is `NULL` bills cached tokens at `DefaultCacheReadPrice(input_price)`; an
+explicit value (including `0`) is used verbatim. Settlement:
+`coordinator/api/provider.go` (`handleCompleteAt`). Reservation:
 `coordinator/api/consumer.go` (`reservationCost` uses steps 2–3;
 `providerReservationCost` uses 1–3 for the dispatched provider).
 
 | Price writer | Route | Validation | Citation |
 |---|---|---|---|
-| platform | `PUT /v1/admin/pricing` | `input_price > 0`, `output_price > 0` | `coordinator/api/billing_handlers.go` (`handleAdminPricing`) |
-| platform | `POST /v1/admin/models/register` | `input_price`, `output_price` required and positive | `coordinator/api/model_registry_handlers.go` (`handleRegisterModel`) |
-| provider custom | `PUT /v1/pricing`, `DELETE /v1/pricing` | positive; no floor or ceiling relative to the platform price | `coordinator/api/billing_handlers.go` (`handleSetPricing`, `handleDeletePricing`) |
+| platform | `PUT /v1/admin/pricing` | `input_price > 0`, `output_price > 0`; optional `cache_read_price` in `[0, input_price]` (omitted = unset) | `coordinator/api/billing_handlers.go` (`handleAdminPricing`); `coordinator/api/model_pricing.go` (`modelPriceInput.validate`) |
+| platform | `POST /v1/admin/models/register` | `input_price`, `output_price` required and positive; optional `cache_read_price` as above | `coordinator/api/model_registry_handlers.go` (`handleRegisterModel`) |
+| provider custom | `PUT /v1/pricing`, `DELETE /v1/pricing` | positive; optional `cache_read_price` in `[0, input_price]`; no floor or ceiling relative to the platform price | `coordinator/api/billing_handlers.go` (`handleSetPricing`, `handleDeletePricing`) |
 
 Storage: `model_prices(account_id, model, input_price, output_price,
-updated_at)`, primary key `(account_id, model)`
-(`coordinator/store/postgres.go`).
+cache_read_price NULL, updated_at)`, primary key `(account_id, model)`
+(`coordinator/store/postgres.go`; `store.ModelPrice.CacheReadPrice *int64`).
 
 ## Formulas
 
 | Quantity | Formula | Citation |
 |---|---|---|
-| Raw cost | `promptTokens × inPrice / 1_000_000 + completionTokens × outPrice / 1_000_000`, integer arithmetic | `coordinator/payments/pricing.go` (`calculateCost`) |
-| Cost, direct consumers | `max(rawCost, minimumChargeMicroUSD)` | `CalculateCostWithOverrides` |
-| Cost, service accounts | `rawCost`; `1` when the tokens are non-zero but the product rounds to `0` (no per-request minimum) | `CalculateCostWithOverridesNoMinimum` |
-| Cached tokens | see [billing.md, invariant 5](../architecture/billing.md#invariants) | `calculateCost` |
+| Raw cost | `(promptTokens − cachedTokens) × inPrice / 1_000_000 + cachedTokens × cacheReadPrice / 1_000_000 + completionTokens × outPrice / 1_000_000`, each term floored to whole µUSD; `cachedTokens` clamped to `[0, promptTokens]`, negative counts and rates bill as `0`, and each product saturates at `math.MaxInt64` instead of wrapping (an absurd provider-reported count then meets the ≤ 2× reservation overage clamp) | `coordinator/payments/pricing.go` (`Rates.Cost`, `termCost`) |
+| Cache-read discount | `cachedTokens × inPrice / 1_000_000 − cachedTokens × cacheReadPrice / 1_000_000`, emitted as `billing.cache_read_discount_micro_usd` | `Rates.CacheReadDiscount` |
+| Cost, direct consumers | `max(rawCost, minimumChargeMicroUSD)` | `Rates.CostWithMinimum` |
+| Cost, service accounts | `rawCost`; `1` when the tokens are non-zero but the products round to `0` (no per-request minimum) | `Rates.Cost` |
+| Cached tokens | `cachedTokens` is the provider's terminal `usage.cached_tokens` after `validCacheUsage` (`0` for a malformed report), the same count the consumer receives as `prompt_tokens_details.cached_tokens`; see [billing.md, invariant 5](../architecture/billing.md#invariants) | `coordinator/api/cache_usage.go` (`billableUsage`, `validCacheUsage`) |
 | Output bound | explicit `max_tokens` \| `max_completion_tokens` \| `max_output_tokens`, else registry `max_output_length`, else `defaultMaxOutputTokens` | `coordinator/api/consumer.go` (`explicitMaxTokens`, `ensureMaxTokensBound`) |
-| Reservation | `CalculateCostWithOverrides(model, max(billingPromptTokens, estimatedPromptTokens), outputBound, platform price)` | `coordinator/api/inference_admission.go` (`reserveInferenceBalance`); `coordinator/api/consumer.go` (`reservationCost`) |
+| Reservation | `RatesFor(platform price).CostWithMinimum(Usage{PromptTokens: max(billingPromptTokens, estimatedPromptTokens), CompletionTokens: outputBound})` — no cache hit assumed, so the reservation prices every prompt token at the input rate and settlement refunds the cache-read discount | `coordinator/api/inference_admission.go` (`reserveInferenceBalance`); `coordinator/api/consumer.go` (`reservationCost`, `reservationUsage`) |
 | Provider top-up | `providerReservationCost − reserved` when the dispatched provider's custom price makes it positive; skipped for service consumers | `coordinator/api/consumer.go` (`reserveAdditionalForProvider`) |
 | Media top-up | `reservationCost(inlined body) − reserved` when positive | `coordinator/api/inference_admission.go` (`topUpReservationForInlinedMedia`) |
 | Overage | `min(totalCost − reserved, reserved)`; debited as `charge` with reference `overage:<request_id>`; on failure `totalCost = reserved` | `coordinator/api/provider.go` (`handleCompleteAt`) |
@@ -140,7 +146,7 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 | Property | Value | Citation |
 |---|---|---|
 | Role value | `users.role = "service"` (`RoleService`); `PUT /v1/admin/users/role` accepts `"service"` or `""` | `coordinator/store/interface.go`; `coordinator/api/billing_handlers.go` (`handleAdminSetUserRole`) |
-| Cost function | `CalculateCostWithOverridesNoMinimum` | `coordinator/api/provider.go` (`handleCompleteAt`) |
+| Cost function | `Rates.Cost` (no per-request minimum) | `coordinator/api/provider.go` (`handleCompleteAt`) |
 | Price | platform price; provider custom prices and the provider top-up are skipped | `handleCompleteAt`; `coordinator/api/consumer.go` (`isServiceConsumer`, `reserveAdditionalForProvider`) |
 | Reservation mode | ledger debit, or in-memory hold when `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED=true` | `coordinator/api/reservations.go` (`useServiceReservation`) |
 | Rate limiter | `Service` ([Constants](#constants)) | `coordinator/ratelimit/config.go` |
@@ -247,25 +253,35 @@ the financial rate limiter ([Constants](#constants)).
 ```json
 {
   "prices": [
-    {"model": "<model id>", "input_price": 30000, "output_price": 165000, "input_usd": "$0.0300", "output_usd": "$0.1650"}
+    {"model": "<model id>", "input_price": 30000, "output_price": 165000, "cache_read_price": 15000,
+     "input_usd": "$0.0300", "output_usd": "$0.1650", "cache_read_usd": "$0.0150"}
   ],
   "fallback_input_price": 50000,
   "fallback_output_price": 200000,
+  "fallback_cache_read_price": 25000,
   "fallback_input_usd": "$0.0500",
-  "fallback_output_usd": "$0.2000"
+  "fallback_output_usd": "$0.2000",
+  "fallback_cache_read_usd": "$0.0250"
 }
 ```
 
 `prices` lists every `model_prices` row with `account_id = 'platform'`
-(`handleGetPricing`).
+(`handleGetPricing`). `cache_read_price` is the effective rate cached prompt
+tokens settle at — the stored value, or `DefaultCacheReadPrice(input_price)`
+when the row sets none (`modelPriceQuote`, `coordinator/api/model_pricing.go`;
+response shape `types.PricingResponse`).
+The OpenRouter feed advertises the same figure as `pricing.input_cache_read`.
 
 ### `GET /v1/payments/balance` and `GET /v1/payments/usage` responses
 
 `BalanceResponse{balance_micro_usd, balance_usd, withdrawable_micro_usd,
 withdrawable_usd}` and `UsageResponse{usage: [UsageEntry{job_id, model,
-prompt_tokens, completion_tokens, cost_micro_usd, timestamp}]}`
+prompt_tokens, cached_tokens, completion_tokens, cost_micro_usd, timestamp}]}`
 (`coordinator/api/types/types.go`; `coordinator/payments/payments.go`
-`UsageEntry`). `*_usd` strings are `"%.6f"`.
+`UsageEntry`). `cached_tokens` (omitted when `0`) is the subset of
+`prompt_tokens` billed at the cache-read rate; it is persisted as
+`usage.cached_tokens` (`coordinator/store/postgres.go` `RecordUsage`). `*_usd`
+strings are `"%.6f"`.
 
 ## Environment variables
 

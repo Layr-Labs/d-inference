@@ -26,11 +26,11 @@ func TestServiceAccountBilledAtPlatformPriceNoMinimum(t *testing.T) {
 	// Advertised platform price + a much higher provider custom price.
 	const platformIn, platformOut int64 = 50_000, 200_000
 	const provIn, provOut int64 = 50_000, 10_000_000
-	if err := st.SetModelPrice("platform", model, platformIn, platformOut); err != nil {
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: model, InputPrice: platformIn, OutputPrice: platformOut}); err != nil {
 		t.Fatal(err)
 	}
 	const provAcct = "svc-prov-acct"
-	if err := st.SetModelPrice(provAcct, model, provIn, provOut); err != nil {
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: provAcct, Model: model, InputPrice: provIn, OutputPrice: provOut}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -45,7 +45,7 @@ func TestServiceAccountBilledAtPlatformPriceNoMinimum(t *testing.T) {
 	// and far below the provider-priced cost — so the assertion distinguishes
 	// platform-no-min from both provider pricing and the minimum floor.
 	usage := protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 10}
-	expected := payments.CalculateCostWithOverridesNoMinimum(model, usage.PromptTokens, usage.CompletionTokens, platformIn, platformOut, true)
+	expected := payments.Rates{Input: platformIn, Output: platformOut}.Cost(billableUsage(usage))
 	if expected >= payments.MinimumCharge() {
 		t.Fatalf("test setup: platform cost %d should be below the minimum %d", expected, payments.MinimumCharge())
 	}
@@ -93,7 +93,7 @@ func TestServiceReservationNotToppedUpToProviderPrice(t *testing.T) {
 	}
 
 	const provAcct = "svc-reserve-prov"
-	if err := st.SetModelPrice(provAcct, model, 1_000_000, 50_000_000); err != nil { // very high
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: provAcct, Model: model, InputPrice: 1_000_000, OutputPrice: 50_000_000}); err != nil { // very high
 		t.Fatal(err)
 	}
 	provider := srv.registry.Register("svc-reserve-prov-id", nil, &protocol.RegisterMessage{

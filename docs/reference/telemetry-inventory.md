@@ -226,7 +226,7 @@ Datadog's; nothing is stored locally.
 |---|---|---|---|
 | `inference_routes` | one row per `(request_id, attempt)` | `recordRoutingDecisionFor` (`coordinator/api/dispatch.go`) → `RecordInferenceRoute` (upsert), outcome patched by `UpdateInferenceRouteOutcome` with `COALESCE` | none |
 | `request_rejections` | one row per pre-dispatch or exhausted rejection | `recordRejection` (`coordinator/api/rejection_telemetry.go`); insert errors swallowed | none |
-| `usage` (+ `usage_totals`) | one row per billed completion | `RecordUsageFullWithPublicModel` | none |
+| `usage` (+ `usage_totals`) | one row per billed completion | `store.RecordUsage` | none |
 | `providers`, `provider_reputation` | one row per provider | `UpsertProvider`, `UpsertReputation`, throttled to 30 s | none |
 | `provider_sessions` | one row per WebSocket session | `OpenProviderSession`, `TouchProviderSession`, `CloseProviderSession` | none |
 | `provider_log_reports` | one row per uploaded bundle | `StoreLogReport` | none |

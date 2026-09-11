@@ -163,7 +163,7 @@ func TestServiceReservationCompletionDebitsActualAndReleasesHold(t *testing.T) {
 	if err := st.Credit("svc-complete", 1_000_000, store.LedgerDeposit, "seed"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetModelPrice("platform", "svc-model", 1_000_000, 2_000_000); err != nil {
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: "svc-model", InputPrice: 1_000_000, OutputPrice: 2_000_000}); err != nil {
 		t.Fatal(err)
 	}
 	serviceMode, err := srv.reserveInitialBalance("svc-complete", "svc-model", 500_000)
@@ -185,7 +185,7 @@ func TestServiceReservationCompletionDebitsActualAndReleasesHold(t *testing.T) {
 	provider.AddPending(pr)
 
 	usage := protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 20}
-	expected := payments.CalculateCostWithOverridesNoMinimum("svc-model", usage.PromptTokens, usage.CompletionTokens, 1_000_000, 2_000_000, true)
+	expected := payments.Rates{Input: 1_000_000, Output: 2_000_000}.Cost(billableUsage(usage))
 	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID, Usage: usage})
 
 	if got := st.DebitCount(); got != 1 {

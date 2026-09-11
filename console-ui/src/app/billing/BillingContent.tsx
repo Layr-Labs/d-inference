@@ -353,7 +353,8 @@ export default function BillingContent() {
                         <td className="px-3 sm:px-5 py-3 font-mono text-xs text-text-secondary">
                           {entry.prompt_tokens + entry.completion_tokens}
                           <span className="text-text-tertiary ml-1">
-                            ({entry.prompt_tokens}p / {entry.completion_tokens}c)
+                            ({entry.prompt_tokens}p / {entry.completion_tokens}c
+                            {entry.cached_tokens ? ` · ${entry.cached_tokens} cached` : ""})
                           </span>
                         </td>
                         <td className="px-3 sm:px-5 py-3 font-mono text-xs text-teal">

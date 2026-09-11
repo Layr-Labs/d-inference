@@ -86,9 +86,10 @@ curl https://api.darkbloom.dev/v1/payments/usage   -H "Authorization: Bearer sk-
 `withdrawable_micro_usd` is the part you earned (serving inference, referral
 rewards) and can pay out through Stripe Connect; deposits and invite credits
 never count toward it, so a pure consumer sees `0`. `GET /v1/payments/usage` lists settled
-requests with `job_id`, `model`, `prompt_tokens`, `completion_tokens`,
-`cost_micro_usd`, `timestamp` (`coordinator/api/consumer.go` `handleBalance`,
-`handleUsage`). Console users get the same figures from `GET /v1/me/summary`
+requests with `job_id`, `model`, `prompt_tokens`, `cached_tokens` (the part of
+the prompt a provider served from its prefix cache; omitted when zero),
+`completion_tokens`, `cost_micro_usd`, `timestamp`
+(`coordinator/api/consumer.go` `handleBalance`, `handleUsage`). Console users get the same figures from `GET /v1/me/summary`
 (**Privy**). Usage is a recent-history view, not a complete billing export;
 the process retains the newest entries up to the [usage history limit](../reference/pricing-model.md#constants).
 Dashboard earnings windows include every row in each window, without the old
@@ -99,9 +100,15 @@ lag by the per-account cache interval
 ### 4. Understand what a request costs you
 
 Each request is charged
-`prompt_tokens × input_price + completion_tokens × output_price` at the
-platform price, floored at the per-request minimum, on the token counts the
-provider reports. Before dispatch the coordinator reserves the worst case —
+`(prompt_tokens − cached_tokens) × input_price + cached_tokens × cache_read_price + completion_tokens × output_price`
+at the platform price, floored at the per-request minimum, on the token counts
+the provider reports. `cached_tokens` is what the response reports as
+`usage.prompt_tokens_details.cached_tokens`: prompt tokens the provider
+served from its prefix cache instead of recomputing them. They bill at the
+model's `cache_read_price` (`GET /v1/pricing`; half the input price unless a
+model sets its own), so repeating a long prefix — a system prompt, a document,
+an agent's history — costs less on a hit. Caching is automatic and never
+charged for writing. Before dispatch the coordinator reserves the worst case —
 your estimated prompt plus the full output bound (your `max_tokens`, or a
 model default when you set none; the exact rule and default are in
 [pricing-model.md → Formulas](../reference/pricing-model.md#formulas)) — and

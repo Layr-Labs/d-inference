@@ -96,6 +96,7 @@ Example: `mlx-community/gemma-4-26B-A4B-it-qat-4bit` at version `2026-05-23-r1`
 | `promote` | boolean | no | activate this version immediately |
 | `input_price` | integer | yes | > 0, micro-USD per 1M tokens |
 | `output_price` | integer | yes | > 0, micro-USD per 1M tokens |
+| `cache_read_price` | integer | no | `0 ≤ v ≤ input_price`, micro-USD per 1M tokens, for prompt tokens served from a provider's prefix cache (OpenRouter `input_cache_read`). Omitted = unset: billing derives half the input price (`payments.DefaultCacheReadPrice`). Registration always rewrites the platform price row, so omitting it also clears a rate set earlier for this model |
 
 Server-side sequence, in order; any failure before step 5 persists nothing:
 
@@ -108,7 +109,7 @@ Server-side sequence, in order; any failure before step 5 persists nothing:
 5. `SetModelVersion` writes the entry (`status = "beta"`), version
    (`status = "ready"`, `uploaded_by` = key name), and file rows in one
    transaction.
-6. `SetModelPrice("platform", model_id, input_price, output_price)`.
+6. `SetModelPrice(store.ModelPrice{AccountID: "platform", Model: model_id, InputPrice, OutputPrice, CacheReadPrice})` (`coordinator/api/model_pricing.go` `modelPriceInput`).
 7. If `promote`: `PromoteModelVersion` upserts `model_active_versions`.
 8. `SyncModelCatalog()`.
 
@@ -121,9 +122,17 @@ Response `200`:
   "version": { "...ModelVersion..." },
   "files": 12,
   "input_price": 15000,
-  "output_price": 70000
+  "output_price": 70000,
+  "cache_read_price": 7500,
+  "input_usd": "$0.0150",
+  "output_usd": "$0.0700",
+  "cache_read_usd": "$0.0075"
 }
 ```
+
+`cache_read_price` is the effective rate (the stored value, or the derived
+default when the request set none); the `*_usd` strings are USD per 1M tokens
+(`registerModelResponse`, `types.ModelPriceQuote`).
 
 ## Stored rows
 

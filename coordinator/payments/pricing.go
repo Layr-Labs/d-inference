@@ -1,24 +1,34 @@
 package payments
 
 import (
+	"math"
+	"math/bits"
 	"strconv"
 	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // Pricing model for Darkbloom.
 //
 // All model-specific prices are managed via the admin API:
 //
-//   PUT /v1/admin/pricing  {"model":"...", "input_price":..., "output_price":...}
+//	PUT /v1/admin/pricing  {"model":"...", "input_price":..., "output_price":..., "cache_read_price":...}
 //
 // Prices are stored in the database (model_prices table, account_id="platform").
 // The billing path resolves prices in order:
-//   1. Provider custom price  (store.GetModelPrice(providerAccountID, model))
-//   2. Platform admin price   (store.GetModelPrice("platform", model))
-//   3. Fallback defaults      (constants below)
+//  1. Provider custom price  (store.GetModelPrice(providerAccountID, model))
+//  2. Platform admin price   (store.GetModelPrice("platform", model))
+//  3. Fallback defaults      (constants below)
 //
 // The fallback defaults apply only to models that have not been priced via API.
 // All prices are in micro-USD per 1M tokens.
+//
+// A request's prompt tokens split into two SKUs. Tokens the provider prefilled
+// bill at the input price; tokens it served from its prefix cache (the
+// consumer-visible usage.prompt_tokens_details.cached_tokens) bill at the
+// cache-read price — OpenRouter's pricing.input_cache_read. Caching is
+// provider-initiated and never requested, so there is no cache-write SKU.
 
 // DefaultInputPricePerMillion is the fallback input price for models without
 // DB-configured pricing (micro-USD per 1M tokens). $0.05 per 1M tokens.
@@ -27,6 +37,14 @@ const DefaultInputPricePerMillion int64 = 50_000
 // DefaultOutputPricePerMillion is the fallback output price for models without
 // DB-configured pricing (micro-USD per 1M tokens). $0.20 per 1M tokens.
 const DefaultOutputPricePerMillion int64 = 200_000
+
+// DefaultCacheReadDiscountPercent is the discount off the input price that
+// cached prompt tokens receive when a price row sets no explicit
+// cache_read_price. A cache hit skips the prefill compute for the matched
+// prefix, so cached tokens cost the provider a fraction of an uncached token;
+// 50% is the conservative industry baseline (OpenAI's standard prompt-caching
+// discount). Operators set a per-model cache_read_price to move off it.
+const DefaultCacheReadDiscountPercent int64 = 50
 
 // Minimum charge per inference request in micro-USD ($0.0001).
 const minimumChargeMicroUSD int64 = 100
@@ -47,76 +65,121 @@ func MinimumCharge() int64 {
 	return minimumChargeMicroUSD
 }
 
-// InputPricePerMillion returns the fallback price in micro-USD for 1M input tokens.
-// Callers should check the store for model-specific prices first.
-func InputPricePerMillion(_ string) int64 {
-	return DefaultInputPricePerMillion
+// Rates are the settlement prices of one model for one payer, in micro-USD per
+// 1,000,000 tokens. Every reader of a price row goes through RatesFor so the
+// derived cache-read default is applied in exactly one place.
+type Rates struct {
+	Input     int64 // prompt tokens the provider prefilled
+	Output    int64 // completion tokens
+	CacheRead int64 // prompt tokens the provider served from its prefix cache
 }
 
-// OutputPricePerMillion returns the fallback price in micro-USD for 1M output tokens.
-// Callers should check the store for model-specific prices first.
-func OutputPricePerMillion(_ string) int64 {
-	return DefaultOutputPricePerMillion
+// Usage is the billable token breakdown of a completed request. CachedTokens
+// is a subset of PromptTokens, never additional to it, matching the OpenAI
+// usage shape the consumer sees (prompt_tokens includes cached_tokens).
+type Usage struct {
+	PromptTokens     int
+	CachedTokens     int
+	CompletionTokens int
 }
 
-// CalculateCost returns the total cost in micro-USD for a completed inference
-// job. Both input (prompt) and output (completion) tokens are billed.
-// A minimum charge of $0.0001 (100 micro-USD) applies to every request.
-func CalculateCost(model string, promptTokens, completionTokens int) int64 {
-	inputRate := InputPricePerMillion(model)
-	outputRate := OutputPricePerMillion(model)
+// DefaultCacheReadPrice derives the cache-read rate of a price row that sets
+// none: the input price less DefaultCacheReadDiscountPercent.
+func DefaultCacheReadPrice(inputPerMillion int64) int64 {
+	return inputPerMillion * (100 - DefaultCacheReadDiscountPercent) / 100
+}
 
-	inputCost := int64(promptTokens) * inputRate / 1_000_000
-	outputCost := int64(completionTokens) * outputRate / 1_000_000
-	cost := inputCost + outputCost
+// DefaultRates are the rates of a model with no configured price row.
+func DefaultRates() Rates {
+	return RatesFor(store.ModelPrice{
+		InputPrice:  DefaultInputPricePerMillion,
+		OutputPrice: DefaultOutputPricePerMillion,
+	}, true)
+}
 
-	if cost < minimumChargeMicroUSD {
-		cost = minimumChargeMicroUSD
+// RatesFor resolves a price row into settlement rates. configured is the ok
+// value of the store lookup; false yields DefaultRates. A row without an
+// explicit CacheReadPrice bills cached tokens at DefaultCacheReadPrice of its
+// own input price, so the discount tracks the input price wherever it is set.
+func RatesFor(price store.ModelPrice, configured bool) Rates {
+	if !configured {
+		return DefaultRates()
 	}
-	return cost
-}
-
-// CalculateCostWithOverrides is like CalculateCost but uses custom per-account
-// prices if set, falling back to platform defaults. The per-request minimum
-// charge is applied.
-func CalculateCostWithOverrides(model string, promptTokens, completionTokens int, customInput, customOutput int64, hasCustom bool) int64 {
-	return calculateCost(model, promptTokens, completionTokens, customInput, customOutput, hasCustom, true)
-}
-
-// CalculateCostWithOverridesNoMinimum is like CalculateCostWithOverrides but
-// does NOT apply the per-request minimum charge. Used for service/wholesale
-// channels (e.g. OpenRouter) whose advertised pricing is purely per-token
-// (request price = 0), so the actual debit must match prompt*in + completion*out
-// exactly rather than being floored.
-func CalculateCostWithOverridesNoMinimum(model string, promptTokens, completionTokens int, customInput, customOutput int64, hasCustom bool) int64 {
-	return calculateCost(model, promptTokens, completionTokens, customInput, customOutput, hasCustom, false)
-}
-
-func calculateCost(model string, promptTokens, completionTokens int, customInput, customOutput int64, hasCustom, applyMinimum bool) int64 {
-	var inputRate, outputRate int64
-	if hasCustom {
-		inputRate = customInput
-		outputRate = customOutput
+	r := Rates{Input: price.InputPrice, Output: price.OutputPrice}
+	if price.CacheReadPrice != nil {
+		r.CacheRead = *price.CacheReadPrice
 	} else {
-		inputRate = InputPricePerMillion(model)
-		outputRate = OutputPricePerMillion(model)
+		r.CacheRead = DefaultCacheReadPrice(price.InputPrice)
 	}
+	return r
+}
 
-	inputCost := int64(promptTokens) * inputRate / 1_000_000
-	outputCost := int64(completionTokens) * outputRate / 1_000_000
-	cost := inputCost + outputCost
+// Cost is the exact per-token cost in micro-USD with no per-request floor:
+// uncached prompt tokens at Input, cached prompt tokens at CacheRead, and
+// completion tokens at Output, each term floored to whole micro-USD. Used for
+// service/wholesale channels (e.g. OpenRouter) whose advertised pricing is
+// purely per-token (request price = 0), so the debit must equal the published
+// per-token math exactly rather than being floored. Nonzero usage is never
+// free: a request whose exact cost rounds to 0 is charged 1 micro-USD.
+//
+// Token counts are provider-reported and untrusted. Malformed usage cannot
+// produce a negative or wrapped charge: negative counts and rates bill as 0,
+// CachedTokens is clamped to PromptTokens, and every product saturates at
+// math.MaxInt64 instead of overflowing — an absurd count then meets the
+// settlement overage clamp (≤ 2× the reservation) rather than turning a
+// wrapped negative cost into a refund.
+func (r Rates) Cost(u Usage) int64 {
+	prompt := max(u.PromptTokens, 0)
+	cached := min(max(u.CachedTokens, 0), prompt)
+	completion := max(u.CompletionTokens, 0)
 
-	if applyMinimum {
-		if cost < minimumChargeMicroUSD {
-			cost = minimumChargeMicroUSD
-		}
-	} else if cost == 0 && (promptTokens > 0 || completionTokens > 0) {
-		// No per-request minimum (service/wholesale channel), but never give
-		// nonzero usage away for free: integer micro-USD rounding can floor a
-		// tiny request to 0, so charge at least 1 micro-USD.
+	cost := saturatingAdd(
+		saturatingAdd(termCost(prompt-cached, r.Input), termCost(cached, r.CacheRead)),
+		termCost(completion, r.Output))
+	if cost == 0 && (prompt > 0 || completion > 0) {
 		cost = 1
 	}
 	return cost
+}
+
+// CostWithMinimum is Cost floored at MinimumCharge, the per-request minimum
+// applied to direct consumers.
+func (r Rates) CostWithMinimum(u Usage) int64 {
+	return max(r.Cost(u), minimumChargeMicroUSD)
+}
+
+// CacheReadDiscount is how much less Cost charges than it would with every
+// prompt token at Input — the revenue effect of the cache hit, in micro-USD.
+func (r Rates) CacheReadDiscount(u Usage) int64 {
+	cached := min(max(u.CachedTokens, 0), max(u.PromptTokens, 0))
+	return max(termCost(cached, r.Input)-termCost(cached, r.CacheRead), 0)
+}
+
+// termCost is tokens × ratePerMillion / 1_000_000 floored to whole micro-USD,
+// 0 for a non-positive count or rate, saturating at math.MaxInt64 when the
+// product does not fit in 64 bits.
+func termCost(tokens int, ratePerMillion int64) int64 {
+	if tokens <= 0 || ratePerMillion <= 0 {
+		return 0
+	}
+	hi, lo := bits.Mul64(uint64(tokens), uint64(ratePerMillion))
+	if hi >= 1_000_000 {
+		// The quotient itself would not fit in 64 bits.
+		return math.MaxInt64
+	}
+	q, _ := bits.Div64(hi, lo, 1_000_000)
+	if q > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(q)
+}
+
+// saturatingAdd adds two non-negative micro-USD amounts without wrapping.
+func saturatingAdd(a, b int64) int64 {
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
 }
 
 // DefaultPlatformFeePercent is the global platform routing fee applied when an
@@ -186,4 +249,11 @@ func FormatPerTokenUSD(microUSDPerMillion int64) string {
 		return "0"
 	}
 	return s
+}
+
+// FormatPerMillionUSD renders a micro-USD-per-1M-token price as the
+// "$0.0500" style USD-per-1M string used by GET /v1/pricing and the pricing
+// admin responses.
+func FormatPerMillionUSD(microUSDPerMillion int64) string {
+	return "$" + strconv.FormatFloat(float64(microUSDPerMillion)/1_000_000, 'f', 4, 64)
 }

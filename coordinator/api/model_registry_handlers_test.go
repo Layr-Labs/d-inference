@@ -101,13 +101,18 @@ func TestRegisterValidationAndR2Prefix(t *testing.T) {
 		}
 	}
 	// Verify missing pricing is rejected.
-	if err := validateRegisterModelRequest(registerModelRequest{ModelID: "ok/model", Version: "v1", Quantization: "8bit", MaxContextLength: 1, MaxOutputLength: 1, MinRAMGB: 1, InputPrice: 0, OutputPrice: 100}); err == nil {
+	if err := validateRegisterModelRequest(registerModelRequest{ModelID: "ok/model", Version: "v1", Quantization: "8bit", MaxContextLength: 1, MaxOutputLength: 1, MinRAMGB: 1, modelPriceInput: modelPriceInput{InputPrice: 0, OutputPrice: 100}}); err == nil {
 		t.Fatal("expected missing input_price to fail")
 	}
-	if err := validateRegisterModelRequest(registerModelRequest{ModelID: "ok/model", Version: "v1", Quantization: "8bit", MaxContextLength: 1, MaxOutputLength: 1, MinRAMGB: 1, InputPrice: 100, OutputPrice: 0}); err == nil {
+	if err := validateRegisterModelRequest(registerModelRequest{ModelID: "ok/model", Version: "v1", Quantization: "8bit", MaxContextLength: 1, MaxOutputLength: 1, MinRAMGB: 1, modelPriceInput: modelPriceInput{InputPrice: 100, OutputPrice: 0}}); err == nil {
 		t.Fatal("expected missing output_price to fail")
 	}
-	if err := validateRegisterModelRequest(registerModelRequest{ModelID: "mlx-community/gemma-4-26b-a4b-it-8bit", Version: "2026-05-23-r1", Quantization: "8bit", MaxContextLength: 32768, MaxOutputLength: 8192, MinRAMGB: 36, InputPrice: 30000, OutputPrice: 165000}); err != nil {
+	// A cache-read rate above the input rate is a misconfiguration, not a price.
+	overInput := int64(101)
+	if err := validateRegisterModelRequest(registerModelRequest{ModelID: "ok/model", Version: "v1", Quantization: "8bit", MaxContextLength: 1, MaxOutputLength: 1, MinRAMGB: 1, modelPriceInput: modelPriceInput{InputPrice: 100, OutputPrice: 100, CacheReadPrice: &overInput}}); err == nil {
+		t.Fatal("expected cache_read_price above input_price to fail")
+	}
+	if err := validateRegisterModelRequest(registerModelRequest{ModelID: "mlx-community/gemma-4-26b-a4b-it-8bit", Version: "2026-05-23-r1", Quantization: "8bit", MaxContextLength: 32768, MaxOutputLength: 8192, MinRAMGB: 36, modelPriceInput: modelPriceInput{InputPrice: 30000, OutputPrice: 165000}}); err != nil {
 		t.Fatalf("expected valid request: %v", err)
 	}
 	if modelR2Prefix("foo/bar", "v1") == modelR2Prefix("foo__bar", "v1") {

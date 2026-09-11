@@ -202,10 +202,52 @@ type ModelMetadata struct {
 	CanAccept         bool              `json:"can_accept"`
 }
 
+// ModelPriceQuote is the effective settlement price of one model in micro-USD
+// per 1M tokens, plus the same three rates as "$0.0500"-style USD-per-1M
+// strings. cache_read_price is the rate billing uses for prompt tokens served
+// from a provider's prefix cache — derived from input_price when the stored
+// row sets none — so it is never absent.
+type ModelPriceQuote struct {
+	InputPrice     int64  `json:"input_price"`
+	OutputPrice    int64  `json:"output_price"`
+	CacheReadPrice int64  `json:"cache_read_price"`
+	InputUSD       string `json:"input_usd"`
+	OutputUSD      string `json:"output_usd"`
+	CacheReadUSD   string `json:"cache_read_usd"`
+}
+
+// PriceEntry is one platform price row in GET /v1/pricing.
+type PriceEntry struct {
+	Model string `json:"model"`
+	ModelPriceQuote
+}
+
+// PricingResponse is the GET /v1/pricing response: every platform price row
+// and the fallback rates for models without one.
+type PricingResponse struct {
+	Prices                 []PriceEntry `json:"prices"`
+	FallbackInputPrice     int64        `json:"fallback_input_price"`
+	FallbackOutputPrice    int64        `json:"fallback_output_price"`
+	FallbackCacheReadPrice int64        `json:"fallback_cache_read_price"`
+	FallbackInputUSD       string       `json:"fallback_input_usd"`
+	FallbackOutputUSD      string       `json:"fallback_output_usd"`
+	FallbackCacheReadUSD   string       `json:"fallback_cache_read_usd"`
+}
+
+// PriceUpdateResponse is the PUT /v1/admin/pricing and PUT /v1/pricing
+// response: the row as stored, quoted at its effective rates.
+type PriceUpdateResponse struct {
+	Status string `json:"status"`
+	Model  string `json:"model"`
+	ModelPriceQuote
+}
+
 // ModelPricing is the per-token pricing block in the /v1/models response.
 // All values are USD strings (per the OpenRouter provider schema) to avoid
 // floating-point precision issues. prompt/completion are per-token;
-// image/request are per-image / per-request; input_cache_read is per-token.
+// image/request are per-image / per-request; input_cache_read is the per-token
+// rate for prompt tokens served from a provider's prefix cache (reported to
+// the consumer as prompt_tokens_details.cached_tokens).
 type ModelPricing struct {
 	Prompt         string `json:"prompt"`
 	Completion     string `json:"completion"`

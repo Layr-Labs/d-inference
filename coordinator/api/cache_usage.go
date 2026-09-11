@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -36,6 +37,18 @@ func validCacheUsage(usage protocol.UsageInfo) bool {
 		return usage.CacheTier != "" && usage.CachedTokens > 0 && usage.PrefillTokensSaved > 0
 	}
 	return usage.CachedTokens == 0 && usage.PrefillTokensSaved == 0
+}
+
+// billableUsage maps a provider's terminal usage onto the billing breakdown.
+// The usage must already have passed validCacheUsage (clearCacheUsage zeroes a
+// malformed report), so what is billed at the cache-read rate is exactly the
+// prompt_tokens_details.cached_tokens the consumer sees.
+func billableUsage(usage protocol.UsageInfo) payments.Usage {
+	return payments.Usage{
+		PromptTokens:     usage.PromptTokens,
+		CachedTokens:     usage.CachedTokens,
+		CompletionTokens: usage.CompletionTokens,
+	}
 }
 
 func clearCacheUsage(usage *protocol.UsageInfo) {

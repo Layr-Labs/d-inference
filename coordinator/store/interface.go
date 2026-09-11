@@ -74,14 +74,20 @@ type TelemetryEventRecord struct {
 	ReceivedAt time.Time       `json:"received_at"`
 }
 
-// UsageRecord captures a single inference usage event.
+// UsageRecord captures a single inference usage event. On write (RecordUsage)
+// ConsumerKey is the raw consumer key; the Postgres store persists only its
+// hash and returns that hash as ConsumerKey on read. Timestamp and CreatedAt
+// are assigned by the store.
 type UsageRecord struct {
-	ProviderID       string            `json:"provider_id"`
-	ConsumerKey      string            `json:"consumer_key"`
-	KeyID            string            `json:"key_id,omitempty"`
-	Model            string            `json:"model"`
-	PublicModel      string            `json:"public_model,omitempty"`
+	ProviderID  string `json:"provider_id"`
+	ConsumerKey string `json:"consumer_key"`
+	KeyID       string `json:"key_id,omitempty"`
+	Model       string `json:"model"`
+	PublicModel string `json:"public_model,omitempty"`
+	// PromptTokens counts every prompt token; CachedTokens is the subset the
+	// provider served from its prefix cache and billed at the cache-read rate.
 	PromptTokens     int               `json:"prompt_tokens"`
+	CachedTokens     int               `json:"cached_tokens,omitempty"`
 	CompletionTokens int               `json:"completion_tokens"`
 	RequestLocation  *ProviderLocation `json:"request_location,omitempty"`
 	Timestamp        time.Time         `json:"timestamp"`
@@ -467,11 +473,25 @@ type ReferralStats struct {
 }
 
 // ModelPrice represents a custom per-model price override for an account.
+// All prices are micro-USD per 1M tokens. CacheReadPrice is the rate for
+// prompt tokens served from a provider's prefix cache; nil means the row sets
+// none and billing derives it from InputPrice (payments.RatesFor).
 type ModelPrice struct {
-	AccountID   string `json:"account_id"`
-	Model       string `json:"model"`
-	InputPrice  int64  `json:"input_price"`  // micro-USD per 1M tokens
-	OutputPrice int64  `json:"output_price"` // micro-USD per 1M tokens
+	AccountID      string `json:"account_id"`
+	Model          string `json:"model"`
+	InputPrice     int64  `json:"input_price"`
+	OutputPrice    int64  `json:"output_price"`
+	CacheReadPrice *int64 `json:"cache_read_price,omitempty"`
+}
+
+// clone returns a copy sharing no memory with p, so a stored or cached row and
+// its callers never alias CacheReadPrice.
+func (p ModelPrice) clone() ModelPrice {
+	if p.CacheReadPrice != nil {
+		v := *p.CacheReadPrice
+		p.CacheReadPrice = &v
+	}
+	return p
 }
 
 // Per-key spend-cap reset windows. A cap with KeyResetNone is a lifetime cap;

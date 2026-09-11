@@ -573,20 +573,6 @@ func (s *MemoryStore) KeySpendSince(keyID string, since time.Time) int64 {
 	return total
 }
 
-// RecordUsage appends a usage record to the in-memory log.
-func (s *MemoryStore) RecordUsage(providerID, consumerKey, model string, promptTokens, completionTokens int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.usage = append(s.usage, UsageRecord{
-		ProviderID:       providerID,
-		ConsumerKey:      consumerKey,
-		Model:            model,
-		PromptTokens:     promptTokens,
-		CompletionTokens: completionTokens,
-		Timestamp:        time.Now(),
-	})
-}
-
 // RecordPayment appends a payment record to the in-memory log.
 func (s *MemoryStore) RecordPayment(txHash, consumerAddr, providerAddr, amountUSD, model string, promptTokens, completionTokens int, memo string) error {
 	s.mu.Lock()
@@ -883,48 +869,22 @@ func (s *MemoryStore) UsageByConsumer(consumerKey string) []UsageRecord {
 	return out
 }
 
-// RecordUsageWithCost logs a usage event with request ID and cost (in-memory).
-func (s *MemoryStore) RecordUsageWithCost(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64) {
-	s.RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID, promptTokens, completionTokens, costMicroUSD, nil)
-}
-
-// RecordUsageWithCostAndLocation logs a usage event with request location (in-memory).
-func (s *MemoryStore) RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
-	s.RecordUsageFull(providerID, consumerKey, "", model, requestID, promptTokens, completionTokens, costMicroUSD, requestLocation)
-}
-
-// RecordUsageFull logs a usage event with full attribution (incl. API key ID)
-// and updates the per-key spend accumulator used for cap enforcement.
-func (s *MemoryStore) RecordUsageFull(providerID, consumerKey, keyID, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
-	s.RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, "", requestID, promptTokens, completionTokens, costMicroUSD, requestLocation)
-}
-
-// RecordUsageFullWithPublicModel logs usage with concrete billing model and an
-// optional consumer-facing model name for usage history.
-func (s *MemoryStore) RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, publicModel, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation) {
+// RecordUsage logs a usage event (in-memory) and updates the per-key spend
+// accumulator used for cap enforcement. The record's location is copied so the
+// caller cannot mutate stored state; the store assigns the timestamp.
+func (s *MemoryStore) RecordUsage(rec UsageRecord) {
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var locCopy *ProviderLocation
-	if requestLocation != nil {
-		cp := *requestLocation
-		locCopy = &cp
+	if rec.RequestLocation != nil {
+		cp := *rec.RequestLocation
+		rec.RequestLocation = &cp
 	}
-	s.usage = append(s.usage, UsageRecord{
-		ProviderID:       providerID,
-		ConsumerKey:      consumerKey,
-		KeyID:            keyID,
-		Model:            model,
-		PublicModel:      publicModel,
-		PromptTokens:     promptTokens,
-		CompletionTokens: completionTokens,
-		RequestLocation:  locCopy,
-		Timestamp:        now,
-		RequestID:        requestID,
-		CostMicroUSD:     costMicroUSD,
-	})
-	if keyID != "" && costMicroUSD > 0 {
-		s.addKeySpendLocked(keyID, costMicroUSD, now)
+	rec.Timestamp = now
+	rec.CreatedAt = now
+	s.usage = append(s.usage, rec)
+	if rec.KeyID != "" && rec.CostMicroUSD > 0 {
+		s.addKeySpendLocked(rec.KeyID, rec.CostMicroUSD, now)
 	}
 }
 
@@ -1700,29 +1660,23 @@ func (s *MemoryStore) IsExternalIDProcessed(externalID string) bool {
 
 // --- Custom Pricing ---
 
-func (s *MemoryStore) SetModelPrice(accountID, model string, inputPrice, outputPrice int64) error {
+func (s *MemoryStore) SetModelPrice(price ModelPrice) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	key := accountID + ":" + model
-	s.modelPrices[key] = ModelPrice{
-		AccountID:   accountID,
-		Model:       model,
-		InputPrice:  inputPrice,
-		OutputPrice: outputPrice,
-	}
+	s.modelPrices[price.AccountID+":"+price.Model] = price.clone()
 	return nil
 }
 
-func (s *MemoryStore) GetModelPrice(accountID, model string) (int64, int64, bool) {
+func (s *MemoryStore) GetModelPrice(accountID, model string) (ModelPrice, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	mp, ok := s.modelPrices[accountID+":"+model]
 	if !ok {
-		return 0, 0, false
+		return ModelPrice{}, false
 	}
-	return mp.InputPrice, mp.OutputPrice, true
+	return mp.clone(), true
 }
 
 func (s *MemoryStore) ListModelPrices(accountID string) []ModelPrice {
@@ -1732,7 +1686,7 @@ func (s *MemoryStore) ListModelPrices(accountID string) []ModelPrice {
 	var prices []ModelPrice
 	for _, mp := range s.modelPrices {
 		if mp.AccountID == accountID {
-			prices = append(prices, mp)
+			prices = append(prices, mp.clone())
 		}
 	}
 	return prices

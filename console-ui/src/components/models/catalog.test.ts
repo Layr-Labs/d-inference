@@ -49,4 +49,17 @@ describe("model catalog controls", () => {
     const invalid = buildCatalogPrices({ prices: [{ model: "broken", input_price: -1, output_price: Number.NaN, input_usd: "", output_usd: "" }] });
     expect(invalid.has("broken")).toBe(false);
   });
+
+  it("carries the cache-read rate only when it is a valid discount off the input rate", () => {
+    const withCache = buildCatalogPrices({ prices: [
+      { model: ALPHA, input_price: 50_000, output_price: 200_000, cache_read_price: 25_000, input_usd: "0.05", output_usd: "0.20", cache_read_usd: "0.025" },
+      { model: BETA, input_price: 50_000, output_price: 200_000, cache_read_price: 0, input_usd: "0.05", output_usd: "0.20" },
+      { model: GAMMA, input_price: 50_000, output_price: 200_000, cache_read_price: 60_000, input_usd: "0.05", output_usd: "0.20" },
+      { model: "legacy", input_price: 50_000, output_price: 200_000, input_usd: "0.05", output_usd: "0.20" },
+    ] });
+    expect(withCache.get(ALPHA)).toEqual({ input: 50_000, output: 200_000, cacheRead: 25_000 });
+    expect(withCache.get(BETA)?.cacheRead).toBe(0);
+    expect(withCache.get(GAMMA)).toEqual({ input: 50_000, output: 200_000 });
+    expect(withCache.get("legacy")).toEqual({ input: 50_000, output: 200_000 });
+  });
 });

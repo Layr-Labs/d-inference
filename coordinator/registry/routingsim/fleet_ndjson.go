@@ -36,7 +36,7 @@ type ProviderSpec struct {
 	System protocol.SystemMetrics
 	// GPUMemoryActiveGB / GPUMemoryPeakGB / FreeForLoadGB are the
 	// BackendCapacity-level fields; FreeForLoadGB is nil when the snapshot
-	// carried 0 (legacy provider or unreported), mirroring the wire pointer.
+	// omitted the value (legacy provider or unreported), mirroring the wire pointer.
 	GPUMemoryActiveGB float64
 	GPUMemoryPeakGB   float64
 	FreeForLoadGB     *float64
@@ -101,6 +101,7 @@ func LoadFleetNDJSON(r io.Reader, at time.Time, hardware map[string]HardwareSpec
 		return FleetSpec{}, errors.New("routingsim: nil snapshots reader")
 	}
 	var rows []store.FleetSnapshotRow
+	var tick time.Time
 	err := forEachNDJSONLine(r, func(lineNo int, line []byte) error {
 		var row store.FleetSnapshotRow
 		if err := json.Unmarshal(line, &row); err != nil {
@@ -109,7 +110,14 @@ func LoadFleetNDJSON(r io.Reader, at time.Time, hardware map[string]HardwareSpec
 		if row.SampledAt.IsZero() {
 			return fmt.Errorf("routingsim: snapshots ndjson line %d: missing sampled_at", lineNo)
 		}
-		rows = append(rows, row)
+		// Retain one tick while still validating every exported row. Input
+		// order within the selected tick determines duplicate-slot precedence.
+		if tick.IsZero() || nearerTick(row.SampledAt, tick, at) {
+			tick, rows = row.SampledAt, nil
+		}
+		if row.SampledAt.Equal(tick) {
+			rows = append(rows, row)
+		}
 		return nil
 	})
 	if err != nil {
@@ -118,33 +126,17 @@ func LoadFleetNDJSON(r io.Reader, at time.Time, hardware map[string]HardwareSpec
 	if len(rows) == 0 {
 		return FleetSpec{}, errors.New("routingsim: snapshots ndjson has no rows")
 	}
-	tick := nearestTick(rows, at)
 	return fleetSpecFromRows(rows, tick, hardware), nil
 }
 
-// nearestTick returns the sampled_at nearest to at among rows (earlier wins a
-// tie); the latest tick when at is zero.
-func nearestTick(rows []store.FleetSnapshotRow, at time.Time) time.Time {
-	var best time.Time
-	var bestDist time.Duration
-	for _, row := range rows {
-		t := row.SampledAt
-		if best.IsZero() {
-			best, bestDist = t, absDuration(t.Sub(at))
-			continue
-		}
-		if at.IsZero() {
-			if t.After(best) {
-				best = t
-			}
-			continue
-		}
-		d := absDuration(t.Sub(at))
-		if d < bestDist || (d == bestDist && t.Before(best)) {
-			best, bestDist = t, d
-		}
+// nearerTick prefers the latest tick when at is zero, otherwise the nearest
+// tick with earlier timestamps winning ties.
+func nearerTick(candidate, current, at time.Time) bool {
+	if at.IsZero() {
+		return candidate.After(current)
 	}
-	return best
+	distance, bestDistance := absDuration(candidate.Sub(at)), absDuration(current.Sub(at))
+	return distance < bestDistance || (distance == bestDistance && candidate.Before(current))
 }
 
 func absDuration(d time.Duration) time.Duration {

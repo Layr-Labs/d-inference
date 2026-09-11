@@ -385,6 +385,12 @@ type BillingStore interface {
 	// was applied.
 	MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayoutID string) (bool, error)
 
+	// RefundStripeWithdrawalAfterReversal atomically checks the current row,
+	// credits principal/fee once by their existing ledger references, and marks
+	// it failed/refunded. Paid or refunded rows and a changed transfer ID are
+	// no-ops. Refund credits and terminal state commit together or not at all.
+	RefundStripeWithdrawalAfterReversal(id, expectedTransferID string) (bool, error)
+
 	// ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a
 	// withdrawal whose own payout failed: status back to "transferred",
 	// payout ID detached, failure reason recorded, FeeRefunded OR-ed in —

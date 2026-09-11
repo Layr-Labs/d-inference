@@ -524,34 +524,17 @@ func (s *Server) handleTransferFailed(event *billing.WebhookEvent) error {
 			"stripe_account_id", wd.StripeAccountID)
 		return nil
 	}
-	netMicroUSD := wd.AmountMicroUSD - wd.FeeMicroUSD
-	if netMicroUSD > 0 {
-		if _, err := s.billing.Store().CreditWithdrawableOnce(wd.AccountID, netMicroUSD,
-			store.LedgerRefund, "stripe_withdraw:"+wd.ID); err != nil {
-			s.logger.Error("stripe connect webhook: principal refund failed", "error", err, "withdrawal_id", wd.ID)
-			return err // Refunded stays false — redelivery retries idempotently
-		}
-	}
-	if wd.FeeMicroUSD > 0 {
-		// No-ops if the instant-fee path already credited this reference.
-		applied, err := s.billing.Store().CreditWithdrawableOnce(wd.AccountID, wd.FeeMicroUSD,
-			store.LedgerRefund, "stripe_withdraw_fee:"+wd.ID)
-		if err != nil {
-			s.logger.Error("stripe connect webhook: fee refund failed", "error", err, "withdrawal_id", wd.ID)
-			return err
-		}
-		if applied {
-			wd.FeeRefunded = true
-		}
-	}
-	wd.Refunded = true
-	wd.Status = "failed"
-	wd.FailureReason = "transfer_reversed"
-	if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
-		// Credits are reference-idempotent — redelivery skips them and
-		// retries this persist.
-		s.logger.Error("stripe connect webhook: mark failed failed", "error", err)
+	// Recheck the current row while locking it for the whole refund. A
+	// payout.paid that won after the lookup must not receive an automatic
+	// refund, and a credit cannot become visible before the terminal state.
+	applied, err := s.billing.Store().RefundStripeWithdrawalAfterReversal(wd.ID, te.ID)
+	if err != nil {
+		s.logger.Error("stripe connect webhook: reversal settlement failed", "error", err, "withdrawal_id", wd.ID)
 		return err
+	}
+	if !applied {
+		s.logger.Warn("stripe connect webhook: reversal not applied — withdrawal changed concurrently, review current state",
+			"withdrawal_id", wd.ID, "transfer_id", te.ID)
 	}
 	return nil
 }

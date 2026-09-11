@@ -1392,16 +1392,20 @@ func (s *MemoryStore) CreditWithdrawable(accountID string, amountMicroUSD int64,
 func (s *MemoryStore) CreditWithdrawableOnce(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.creditWithdrawableOnceLocked(accountID, amountMicroUSD, entryType, reference), nil
+}
+
+func (s *MemoryStore) creditWithdrawableOnceLocked(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) bool {
 	for i := range s.ledgerEntries {
 		if s.ledgerEntries[i].AccountID == accountID &&
 			s.ledgerEntries[i].Type == entryType &&
 			s.ledgerEntries[i].Reference == reference {
-			return false, nil
+			return false
 		}
 	}
 	s.creditLocked(accountID, amountMicroUSD, entryType, reference, time.Now())
 	s.withdrawable[accountID] += amountMicroUSD
-	return true, nil
+	return true
 }
 
 // DebitWithdrawable subtracts micro-USD from both the total balance and

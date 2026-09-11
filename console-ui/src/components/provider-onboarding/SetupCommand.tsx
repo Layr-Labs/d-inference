@@ -1,40 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useClipboard, type CopyStatus } from "@/hooks/useClipboard";
 import { Check, Copy, Loader2 } from "lucide-react";
 
-type CopyState = "idle" | "copying" | "copied" | "failed";
-
-function copyFeedback(state: CopyState) {
+function copyFeedback(state: CopyStatus) {
   if (state === "copying") return { label: "Copying…", icon: Loader2 };
   if (state === "copied") return { label: "Copied", icon: Check };
   return { label: "Copy command", icon: Copy };
 }
 
 export function SetupCommand({ command, label }: { command: string; label: string }) {
-  const [state, setState] = useState<CopyState>("idle");
-  const mounted = useRef(false);
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; };
-  }, []);
-
-  useEffect(() => {
-    if (state !== "copied") return;
-    const timer = setTimeout(() => setState("idle"), 2000);
-    return () => clearTimeout(timer);
-  }, [state]);
-
-  const copy = async () => {
-    setState("copying");
-    try {
-      await navigator.clipboard.writeText(command);
-      if (mounted.current) setState("copied");
-    } catch {
-      if (mounted.current) setState("failed");
-    }
-  };
+  const { status: state, copy } = useClipboard();
 
   const { label: feedback, icon: Icon } = copyFeedback(state);
 
@@ -44,7 +20,7 @@ export function SetupCommand({ command, label }: { command: string; label: strin
         <span className="text-xs text-text-secondary">Terminal</span>
         <button
           type="button"
-          onClick={copy}
+          onClick={() => copy(command)}
           disabled={state === "copying"}
           aria-label={`${feedback}: ${label}`}
           className="-mr-2 inline-flex min-h-11 items-center gap-2 rounded-md px-2 text-xs font-medium text-accent-brand hover:bg-accent-brand-dim disabled:cursor-wait"
@@ -54,7 +30,7 @@ export function SetupCommand({ command, label }: { command: string; label: strin
         </button>
       </div>
       <pre tabIndex={0} aria-label={`${label} command`} className="max-w-full overflow-x-auto p-4 font-mono text-[13px] leading-relaxed text-text-primary"><code>{command}</code></pre>
-      {state === "failed" && (
+      {state === "error" && (
         <p role="status" className="border-t border-border-dim px-4 py-3 text-xs leading-relaxed text-accent-red">
           Couldn’t copy. Select the command and copy it manually, or try again.
         </p>

@@ -45,7 +45,8 @@ struct AutoUpdateControllerTests {
     private func makeController(
         _ fakes: Fakes,
         recorder: Recorder,
-        drainTimeout: Duration = .milliseconds(10)
+        drainTimeout: Duration = .milliseconds(10),
+        recordRestartFailure: Bool = false
     ) -> AutoUpdateController {
         let deps = AutoUpdateController.Dependencies(
             claimStart: { recorder.record("claim"); return fakes.claimReturns },
@@ -63,6 +64,9 @@ struct AutoUpdateControllerTests {
             restart: {
                 recorder.record("restart")
                 if fakes.restartThrows { throw FakeError.restart }
+            },
+            restartDidFail: {
+                if recordRestartFailure { recorder.record("retireAttempt") }
             },
             log: { _ in }
         )
@@ -225,4 +229,28 @@ struct AutoUpdateControllerTests {
         }
         #expect(recorder.events == ["claim", "check", "stage", "beginDraining", "waitForDrain", "commit", "prepareRestart", "restart", "resume"])
     }
+    @Test("both installed paths retire a failed launch before resuming",
+          arguments: [true, false], [true, false])
+    func installedRestartFailureOrdering(alreadyInstalled: Bool, prepareFails: Bool) async {
+        let recorder = Recorder()
+        var fakes = Fakes(checkResult: alreadyInstalled
+            ? .restartRequired(current: "1.0.0", installed: "2.0.0")
+            : .updateAvailable(current: "1.0.0", latest: Self.release))
+        fakes.prepareRestartResult = prepareFails ? .failed("cannot arm candidate") : .completed
+        fakes.restartThrows = true
+        let outcome = await makeController(
+            fakes, recorder: recorder, recordRestartFailure: true).run()
+        guard case .restartFailed = outcome else {
+            Issue.record("expected restart failure, got \(outcome)")
+            return
+        }
+        let expected = prepareFails
+            ? ["prepareRestart", "resume"]
+            : ["prepareRestart", "restart", "retireAttempt", "resume"]
+        #expect(Array(recorder.events.suffix(expected.count)) == expected)
+        #expect(recorder.events.filter { $0 == "resume" }.count == 1)
+        #expect(recorder.events.contains("stage") == !alreadyInstalled)
+        #expect(recorder.events.contains("commit") == !alreadyInstalled)
+    }
+
 }

@@ -180,20 +180,7 @@ public struct AutoUpdateController: Sendable {
             if !drained {
                 await deps.forceCancelInflight()
             }
-            switch await deps.prepareInstalledRestart() {
-            case .failed(let reason):
-                await deps.resumeServing()
-                return .restartFailed(reason)
-            case .completed:
-                do {
-                    try deps.restart()
-                    return .restarted(from: current, to: installed, drained: drained)
-                } catch {
-                    await deps.restartDidFail()
-                    await deps.resumeServing()
-                    return .restartFailed("\(error)")
-                }
-            }
+            return await restartInstalled(from: current, to: installed, drained: drained)
 
         case .checkFailed(let reason):
             deps.log("auto-update: check failed: \(reason)")
@@ -201,71 +188,60 @@ public struct AutoUpdateController: Sendable {
             return .checkFailed(reason)
 
         case .updateAvailable(let current, let release):
-            deps.log("auto-update: v\(current) -> v\(release.version) available; staging download while serving")
+            return await installUpdate(from: current, release: release)
+        }
+    }
 
-            switch await deps.downloadVerifyStage(release) {
-            case .failed(let reason):
-                // A failed update must never cost us serving capacity: stay on
-                // the current version and let the next tick retry.
-                deps.log("auto-update: download/stage failed, staying on v\(current): \(reason)")
-                await deps.resumeServing()
-                return .stageFailed(reason)
+    /// The staged update owns jitter, drain and commit. A failed pre-install
+    /// phase returns before admission closes; restart handling is shared with
+    /// candidates that a previous cycle already installed.
+    private func installUpdate(from current: String, release: ReleaseInfo) async -> Outcome {
+        deps.log("auto-update: v\(current) -> v\(release.version) available; staging download while serving")
+        if case .failed(let reason) = await deps.downloadVerifyStage(release) {
+            deps.log("auto-update: download/stage failed, staying on v\(current): \(reason)")
+            await deps.resumeServing()
+            return .stageFailed(reason)
+        }
+        await deps.waitBeforeInstall()
+        // An interrupted jitter wait is not permission to drain or install.
+        if Task.isCancelled {
+            deps.log("auto-update: cycle cancelled during the pre-install wait; aborting before drain")
+            await deps.resumeServing()
+            return .cancelled
+        }
+        deps.log("auto-update: v\(release.version) staged; draining in-flight requests before install + restart")
+        await deps.beginDraining()
+        let drained = await deps.waitForDrain(drainTimeout)
+        if !drained {
+            deps.log("auto-update: drain timed out after \(drainTimeout.components.seconds)s; cancelling remaining requests")
+            await deps.forceCancelInflight()
+        }
+        if case .failed(let reason) = await deps.commitInstall() {
+            deps.log("auto-update: installing staged v\(release.version) failed, staying on v\(current): \(reason)")
+            await deps.resumeServing()
+            return .commitFailed(reason)
+        }
+        deps.log("auto-update: restarting into v\(release.version)")
+        return await restartInstalled(from: current, to: release.version, drained: drained, logFailure: true)
+    }
 
-            case .completed:
-                // Rollover jitter (see Dependencies.waitBeforeInstall): the
-                // bundle is verified + staged and we are STILL serving; this
-                // staggers the drain+restart across the fleet.
-                await deps.waitBeforeInstall()
-                // A cancelled cycle (provider shutdown / monitor teardown
-                // landing in the jitter window) must NOT proceed: the sleep
-                // returning early on cancellation is not permission to
-                // install. Abort before any drain/commit/restart side effect;
-                // resumeServing discards the staged bundle and a later tick
-                // retries.
-                if Task.isCancelled {
-                    deps.log("auto-update: cycle cancelled during the pre-install wait; aborting before drain")
-                    await deps.resumeServing()
-                    return .cancelled
-                }
-                deps.log("auto-update: v\(release.version) staged; draining in-flight requests before install + restart")
-                await deps.beginDraining()
-
-                let drained = await deps.waitForDrain(drainTimeout)
-                if !drained {
-                    deps.log("auto-update: drain timed out after \(drainTimeout.components.seconds)s; cancelling remaining requests")
-                    await deps.forceCancelInflight()
-                }
-
-                switch await deps.commitInstall() {
-                case .failed(let reason):
-                    // The live layout was restored (or never touched); resume
-                    // serving on the current version and retry next tick.
-                    deps.log("auto-update: installing staged v\(release.version) failed, staying on v\(current): \(reason)")
-                    await deps.resumeServing()
-                    return .commitFailed(reason)
-
-                case .completed:
-                    deps.log("auto-update: restarting into v\(release.version)")
-                    switch await deps.prepareInstalledRestart() {
-                    case .failed(let reason):
-                        await deps.resumeServing()
-                        return .restartFailed(reason)
-                    case .completed:
-                        break
-                    }
-                    do {
-                        try deps.restart()
-                    } catch {
-                        // Restart failed but the binary is already installed; resume
-                        // serving (on the old in-memory binary) so we aren't wedged.
-                        deps.log("auto-update: restart failed: \(error.localizedDescription)")
-                        await deps.restartDidFail()
-                        await deps.resumeServing()
-                        return .restartFailed("\(error)")
-                    }
-                    return .restarted(from: current, to: release.version, drained: drained)
-                }
-            }
+    /// Preparing or launching an installed candidate can fail on either path.
+    /// Retire the attempt before resuming only when launch itself throws.
+    private func restartInstalled(
+        from current: String, to installed: String, drained: Bool, logFailure: Bool = false
+    ) async -> Outcome {
+        if case .failed(let reason) = await deps.prepareInstalledRestart() {
+            await deps.resumeServing()
+            return .restartFailed(reason)
+        }
+        do {
+            try deps.restart()
+            return .restarted(from: current, to: installed, drained: drained)
+        } catch {
+            if logFailure { deps.log("auto-update: restart failed: \(error.localizedDescription)") }
+            await deps.restartDidFail()
+            await deps.resumeServing()
+            return .restartFailed("\(error)")
         }
     }
 }

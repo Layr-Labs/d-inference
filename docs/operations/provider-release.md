@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-10 · commit `5f021ba4d`
+> Last updated: 2026-09-11 · commit `4e4cabb59`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -47,6 +47,12 @@ coordinator `build_commit`; its build `version` can remain 0.9.1 while
 provider auto-update; it is not a limited canary rollout by itself.
 
 ## Environment-free signing validation
+
+Both signing workflows use `scripts/provider-signing-validation.py` for decoded
+profile and signed CLI entitlement checks. Profiles must authorize the provider
+team/app, keychain group and production APNs, with at least 30 days until expiry.
+The signed CLI must have the provider keychain group, production APNs and no
+enabled or malformed debug-task entitlement (`profile`, `cli_entitlements`).
 
 [`provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml)
 is a separate manual workflow for a reviewed full `source_sha` and its existing
@@ -243,8 +249,8 @@ shown in the run):
 | 5 | Verify production prompt parity | `scripts/verify-prompt-parity.sh` |
 | 6 | Build source-matched mlx.metallib through root helper | `scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"` with `MLX_METALLIB_DEPLOYMENT_TARGET=26.2`; cached by MLX source SHA + helper SHA |
 | 7 | Build provider-swift (release) | `swift build -c release --product darkbloom`, `darkbloom-enclave`, `darkbloom-fan-helper`; the built binary's `--version` is checked with `check-release-version.sh "$VERSION" "$REPORTED"` |
-| 8 | Embed provisioning profile | decodes `PROVISIONING_PROFILE_BASE64`; fails unless the profile grants `aps-environment=production` and has no `get-task-allow` |
-| 9 | Stage and sign bundle | stages `Darkbloom.app` (CLI, enclave, fan helper, `mlx.metallib`, every SwiftPM resource bundle via `scripts/stage-swiftpm-resource-bundles.sh`) plus a flat `bin/` layout; `codesign --options runtime --timestamp` on the metallib first, then each binary, then the bundle; `codesign --verify --deep --strict`; tars to `darkbloom-bundle-macos-arm64.tar.gz` |
+| 8 | Embed provisioning profile | decodes `PROVISIONING_PROFILE_BASE64`; runs the shared `profile` validator for team/app authorization, keychain group, production APNs and expiry |
+| 9 | Stage and sign bundle | stages `Darkbloom.app` (CLI, enclave, fan helper, `mlx.metallib`, every SwiftPM resource bundle via `scripts/stage-swiftpm-resource-bundles.sh`) plus a flat `bin/` layout; signs and verifies the components and bundle; runs the shared `cli-entitlements` validator before creating `darkbloom-bundle-macos-arm64.tar.gz` |
 | 10 | Notarize bundle | `xcrun notarytool submit --wait --timeout 15m`; on failure prints `notarytool log`; then `xcrun stapler staple` + `stapler validate`, re-verifies codesign, **rebuilds the tar**, and asserts the file list contains `./bin/darkbloom`, `./bin/darkbloom-enclave`, `./bin/mlx.metallib`, every resource bundle and `pagedattention.metal`. A smoke extract runs the CLI and re-checks the version |
 | 11 | Hashes | computed **after** signing, notarizing, stapling and the tar rebuild: `BINARY_HASH = sha256(bin/darkbloom)` from the extracted tar, `BUNDLE_HASH = sha256(tar.gz)`, `METALLIB_HASH = sha256(flat mlx.metallib)` |
 | 12 | Upload bundle to R2 | `s3://$R2_BUCKET/releases/v$VERSION/darkbloom-bundle-macos-arm64.tar.gz`, plus `releases/latest/darkbloom-bundle-macos-arm64.tar.gz` and the legacy `releases/latest/eigeninference-bundle-macos-arm64.tar.gz` |

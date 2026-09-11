@@ -345,69 +345,7 @@ jobs:
           # passes codesign but fails at runtime → silent attestation break.
           security cms -D -i /tmp/embedded.provisionprofile > /tmp/profile.plist
 
-          python3 - <<'PY'
-          import plistlib, sys
-          from datetime import datetime, timezone
-
-          with open('/tmp/profile.plist', 'rb') as f:
-              p = plistlib.load(f)
-
-          errors = []
-          team = p.get('TeamIdentifier', [])
-          if 'SLDQ2GJ6TL' not in team:
-              errors.append(f"TeamIdentifier missing SLDQ2GJ6TL: {team}")
-
-          ents = p.get('Entitlements', {})
-          groups = ents.get('keychain-access-groups', [])
-          # Accept exact match or wildcard (SLDQ2GJ6TL.*) which covers
-          # SLDQ2GJ6TL.io.darkbloom.provider at runtime.
-          has_group = any(
-              g == 'SLDQ2GJ6TL.io.darkbloom.provider' or g == 'SLDQ2GJ6TL.*'
-              for g in groups
-          )
-          if not has_group:
-              errors.append(f"keychain-access-groups missing SLDQ2GJ6TL.io.darkbloom.provider or wildcard: {groups}")
-
-          app_id = ents.get('application-identifier', '')
-          # Developer ID profiles may omit application-identifier entirely;
-          # accept empty or wildcard alongside exact match.
-          if app_id and not (app_id.endswith('io.darkbloom.provider') or app_id.endswith('*')):
-              errors.append(f"application-identifier mismatch: {app_id}")
-
-          # v0.6.0 APNs code-identity: the embedded profile MUST grant
-          # aps-environment=production, or the signed binary AMFI-kills at launch
-          # (restricted entitlement without an authorizing profile). This is the
-          # only build-time guard against shipping the entitlement with a stale,
-          # non-push profile. Profiles key it short ('aps-environment') or long.
-          aps = ents.get('aps-environment') or ents.get('com.apple.developer.aps-environment')
-          if aps != 'production':
-              errors.append(
-                  f"profile does not grant aps-environment=production (got {aps!r}); "
-                  "regenerate the push-enabled provisioning profile and update PROVISIONING_PROFILE_BASE64"
-              )
-
-          expiry = p.get('ExpirationDate')
-          if expiry is not None:
-              # ExpirationDate is a naive UTC datetime from plistlib.
-              now = datetime.utcnow()
-              days_left = (expiry - now).days
-              if days_left < 30:
-                  errors.append(f"Profile expires in {days_left} days (renew before cutover): {expiry}")
-              else:
-                  print(f"Profile valid for {days_left} more days")
-          else:
-              print("::warning::Provisioning profile has no ExpirationDate field")
-
-          name = p.get('Name', '<unknown>')
-          uuid = p.get('UUID', '<unknown>')
-          print(f"Profile: name={name!r} uuid={uuid} team={team} app_id={app_id}")
-
-          if errors:
-              for e in errors:
-                  print(f"::error::{e}", file=sys.stderr)
-              sys.exit(1)
-          print("Provisioning profile verification passed")
-          PY
+          python3 scripts/provider-signing-validation.py profile --profile /tmp/profile.plist
 
           echo "profile_available=true" >> "$GITHUB_OUTPUT"
         id: profile
@@ -534,48 +472,10 @@ jobs:
           printf '%s\n' "$SIGNED_BENCHMARK_HELP" \
             | grep -F -- '--scheduler-prefill-decision'
 
-          # Persistent Secure Enclave key requires keychain-access-groups
-          # bound to the team-scoped access group. If the entitlement is
-          # missing, providers fall back to ephemeral SE keys and PR #146
-          # silently no-ops. Fail the build instead of shipping a broken
-          # attestation.
-          EXPECTED_ACCESS_GROUP="SLDQ2GJ6TL.io.darkbloom.provider"
-          ENTITLEMENTS=$(codesign -d --entitlements - --xml "$APP/Contents/MacOS/$CLI_NAME" 2>&1 || true)
-          if ! echo "$ENTITLEMENTS" | grep -q "keychain-access-groups"; then
-            echo "::error::Signed CLI is missing keychain-access-groups entitlement"
-            echo "$ENTITLEMENTS"
-            exit 1
-          fi
-          if ! echo "$ENTITLEMENTS" | grep -q "$EXPECTED_ACCESS_GROUP"; then
-            echo "::error::Signed CLI is missing access group $EXPECTED_ACCESS_GROUP"
-            echo "$ENTITLEMENTS"
-            exit 1
-          fi
-          # v0.6.0 APNs code-identity assertions on the signed CLI:
-          #   (a) aps-environment present AND == production (parse the value, not a
-          #       bare grep — a dev profile would set 'development' and silently
-          #       register against the wrong APNs host).
-          #   (b) get-task-allow ABSENT — its absence (not "hardened runtime" per
-          #       se) is what blocks even-root debugger attach / dylib injection;
-          #       Developer ID + notarization strips it.
-          rm -f /tmp/cli-ents.plist
-          codesign -d --entitlements /tmp/cli-ents.plist --xml "$APP/Contents/MacOS/$CLI_NAME" 2>/dev/null || true
-          # Fail loudly if extraction produced nothing — otherwise the
-          # get-task-allow check below would pass vacuously on an empty file.
-          if [ ! -s /tmp/cli-ents.plist ]; then
-            echo "::error::Failed to extract entitlements from signed CLI for APNs/get-task-allow verification"
-            exit 1
-          fi
-          APS_ENV=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.aps-environment' /tmp/cli-ents.plist 2>/dev/null || echo "")
-          if [ "$APS_ENV" != "production" ]; then
-            echo "::error::Signed CLI aps-environment must be 'production' (got '${APS_ENV:-<absent>}'). Regenerate the push provisioning profile + entitlements (v0.6.0 APNs code-identity)."
-            exit 1
-          fi
-          if /usr/libexec/PlistBuddy -c 'Print :com.apple.security.get-task-allow' /tmp/cli-ents.plist 2>/dev/null | grep -qi true; then
-            echo "::error::Signed CLI has get-task-allow=true — defeats even-root injection resistance. It must be absent (Developer ID + notarized strips it)."
-            exit 1
-          fi
-          echo "APNs code-identity entitlements verified: aps-environment=production, get-task-allow absent"
+          # Apply the same parsed entitlement contract as signing validation:
+          # provider keychain group, production APNs and no enabled debug task.
+          codesign -d --entitlements - --xml "$APP/Contents/MacOS/$CLI_NAME" > /tmp/cli-ents.plist
+          python3 scripts/provider-signing-validation.py cli-entitlements --plist /tmp/cli-ents.plist
           if [ "${{ steps.profile.outputs.profile_available }}" = "true" ]; then
             if [ ! -f "$APP/Contents/embedded.provisionprofile" ]; then
               echo "::error::Provisioning profile secret set but not embedded in app bundle"
@@ -585,7 +485,7 @@ jobs:
             echo "::error::PROVISIONING_PROFILE_BASE64 secret is required to authorize the keychain-access-groups entitlement on provider machines"
             exit 1
           fi
-          echo "Entitlement verification passed: $EXPECTED_ACCESS_GROUP authorized via embedded provisioning profile"
+          echo "Provider entitlements authorized via embedded provisioning profile"
 
           # Flat layout alongside the .app bundle. Coordinator's release
           # artifact verifier (release_handlers.go:413) requires bin/darkbloom
@@ -858,7 +758,8 @@ jobs:
           # provider could ever echo — registering them armed a coordinator
           # gate that zeroed fleet routing (2026-08-31 incident). Register
           # only facts the provider actually reports.
-          python3 - <<PY > /tmp/release-payload.json
+          export BUNDLE_URL TAG_MSG
+          python3 - <<'PY' > /tmp/release-payload.json
           import json, os
           payload = {
               "version":         os.environ["VERSION"],
@@ -867,8 +768,8 @@ jobs:
               "binary_hash":     os.environ["BINARY_HASH"],
               "bundle_hash":     os.environ["BUNDLE_HASH"],
               "metallib_hash":   os.environ["METALLIB_HASH"],
-              "url":             "${BUNDLE_URL}",
-              "changelog":       """${TAG_MSG}""".strip(),
+              "url":             os.environ["BUNDLE_URL"],
+              "changelog":       os.environ["TAG_MSG"].strip(),
           }
           print(json.dumps(payload))
           PY

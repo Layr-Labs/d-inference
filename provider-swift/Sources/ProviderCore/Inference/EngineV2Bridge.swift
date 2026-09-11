@@ -144,6 +144,7 @@ public actor EngineV2Bridge {
     /// v0.8.0 MTP and paged-pool fields. Runs for every slot, MTP or not —
     /// see `configureMTPStatus`. Cancelled by `shutdown()`.
     var slotPostureTask: Task<Void, Never>?
+    var slotPostureClosed = false
     var mtpActivationStatus = MTPActivationStatus.disabled(
         .configDisabled, configured: false)
     /// Injectable telemetry sink (tests); nil ⇒ `TelemetryClient.shared`.

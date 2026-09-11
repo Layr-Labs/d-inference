@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-10 · commit `4f29957d2`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -28,7 +28,9 @@ for `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8` and
 remain outside the initial SSD/cache-routing cohort. A successful paged-attention
 test alone does not qualify a tuple for cache routing. See the
 [five-model release decision](../design/release-090-paged-qwen-cache.md).
-Leave the provider's `DARKBLOOM_PREFIX_CACHE` unset to use its Qwen-only default.
+Leave the provider's `DARKBLOOM_PREFIX_CACHE` unset to use its Qwen and Gemma QAT defaults.
+Gemma QAT default SSD eligibility does not change the deployed routing allowlist.
+Adding its exact model/weight/template tuple is a separate activation after validation.
 An explicit affirmative value opts other supported models into SSD caching;
 the coordinator allowlist restricts network participation but does not override
 that local provider setting.

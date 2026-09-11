@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — Gemma QAT SSD prefix caching and automatic MTP
+
+- Keep MTP preparation targets out of eviction feasibility and idle eviction, restore surviving KV grants after discarded preparation, and refresh network capacity quotes immediately when staging memory changes.
+
+- Download optional QAT assistants asynchronously in network and standalone serving while the current engine keeps serving. Standalone inherits the configured coordinator catalog authority. Stage a verified replacement under a separate memory reservation, then pause new admissions for that model while accepted requests finish. Network providers keep serving during the configured rollout jitter before this drain; other models remain available. A bounded drain timeout or cancellation discards the candidate and reopens the original engine without force-cancelling accepted work. Insufficient memory preserves target-only serving. Add jittered retry backoff for failed assistant fetches.
+- Allow catalog-declared assistants to download from an immutable Hugging Face revision first, with checksum-verified R2 fallback and unchanged support for existing R2-only metadata.
+- Reset adaptive MTP learning when participating requests finish, including reused request IDs and late chained steps. Track first-use verification warmup by exact row count and draft depth.
+- Learn adaptive Gemma MTP speed from actual committed tokens and elapsed time, including both seed cost and seed output across bounded eight-round learning windows that stream each round. Refresh the ordinary-decode baseline across request cohorts and keep first-use compilation out of steady estimates without hiding its measured cost.
+
+- Restore bounded rectangular Gemma target verification with adaptive ordinary-decode fallback. Retain serial verification as an explicit diagnostic and preserve speculative KV rollback.
+
+- Allow Gemma MTP to use target-prefix sampling for temperature/top-p/top-k/min-p requests; preserve ordinary decoding for unsupported transforms. Add real QAT encrypted-checkpoint restoration coverage across engine reconstruction.
+
+- Bound automatic Gemma QAT speculation to an adaptive depth of zero or one, allowing ordinary decode when measured draft cost outweighs accepted-token benefit. Preserve fixed-depth offline verification controls and other assistants’ depth policies.
+
+- Enable encrypted SSD prefix caching by default for `gemma-4-26b-qat-4bit` using complete paged historical-attention checkpoints. Preserve the global cache disable, identity and tenant checks, contiguous cold fallback, and target-only fallback when the assistant cannot be validated or loaded. Automatic MTP also resolves the existing catalog assistant for this exact QAT target; explicit off and the process kill switch remain authoritative. Other Gemma artifacts and GPT-OSS remain opt-in; production cache-routing activation remains separate.
+
 ## Unreleased — Nemotron native paging and MTP prefix checkpoints
 
 - Select native paged KV and encrypted complete-prefix caching by default for the exact Nemotron Lightning registry/Hugging Face IDs, retaining explicit rollback controls. Keep native activation/KV precision and FP32 persistent Mamba state.

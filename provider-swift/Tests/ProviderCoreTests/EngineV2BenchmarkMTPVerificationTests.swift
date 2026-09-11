@@ -138,15 +138,14 @@ struct EngineV2BenchmarkMTPVerificationTests {
         }
     }
 
-    @Test func qatProductionDefaultDoesNotHideExplicitRectangularDiagnostics() throws {
+    @Test func qatAutomaticDefaultPreservesExplicitVerificationControls() throws {
         let model = try target()
         let drafter = Drafter(target: model)
         let production = providerMTPVerificationPolicy(for: drafter,
-            modelID: "gemma-4-26b-qat-4bit", automaticRectangularTokens: 8)
-        #expect(production.mode == .serialTarget)
+            automaticRectangularTokens: 8)
+        #expect(production.mode == .automatic)
         for mode in [EngineV2BenchmarkMTPVerification.automatic, .serialTarget] {
             let baseline = providerMTPVerificationPolicy(for: drafter,
-                modelID: "gemma-4-26b-qat-4bit", benchmarkVerification: mode,
                 automaticRectangularTokens: 8)
             let config = CBv2MTPConfig(enabled: true, fixedDraftTokens: 1,
                 verificationMode: baseline.mode,
@@ -157,7 +156,6 @@ struct EngineV2BenchmarkMTPVerificationTests {
             #expect(selected.maxAutomaticRectangularTokens == 8)
             let required = Drafter(target: model, required: .serialTarget)
             let protected = providerMTPVerificationPolicy(for: required,
-                modelID: "gemma-4-26b-qat-4bit", benchmarkVerification: mode,
                 automaticRectangularTokens: 8)
             #expect(protected.mode == .serialTarget && protected.automaticRectangularTokens == 0)
             #expect(throws: EngineV2BenchmarkMTPVerification.Failure.unsupportedTargetOrAssistant) {

@@ -1,0 +1,312 @@
+{
+  "structural_checks": "pass",
+  "semantic_review": "All summaries include pumping-station upgrades, canal maintenance and acoustic leak detection. All changed-question responses correctly list costs, schedules and downstream construction risks. Wording varies across one restored summary; no answer contamination observed. Native text retains its terminal marker; HTTP filtering is checked separately.",
+  "rows": [
+    {
+      "id": "long-first-b0",
+      "saved_tokens": 0,
+      "cache_outcome": "miss",
+      "finish": "stop",
+      "completion_tokens": 60
+    },
+    {
+      "id": "long-first-b1",
+      "saved_tokens": 0,
+      "cache_outcome": "miss",
+      "finish": "stop",
+      "completion_tokens": 60
+    },
+    {
+      "id": "long-repeat-b0",
+      "saved_tokens": 3072,
+      "cache_outcome": "hit",
+      "finish": "stop",
+      "completion_tokens": 52
+    },
+    {
+      "id": "long-repeat-b1",
+      "saved_tokens": 3072,
+      "cache_outcome": "hit",
+      "finish": "stop",
+      "completion_tokens": 60
+    },
+    {
+      "id": "branch-b0",
+      "saved_tokens": 3072,
+      "cache_outcome": "hit",
+      "finish": "stop",
+      "completion_tokens": 25
+    },
+    {
+      "id": "branch-b1",
+      "saved_tokens": 3072,
+      "cache_outcome": "hit",
+      "finish": "stop",
+      "completion_tokens": 25
+    },
+    {
+      "id": "branch-repeat-b0",
+      "saved_tokens": 3072,
+      "cache_outcome": "hit",
+      "finish": "stop",
+      "completion_tokens": 25
+    },
+    {
+      "id": "branch-repeat-b1",
+      "saved_tokens": 3072,
+      "cache_outcome": "hit",
+      "finish": "stop",
+      "completion_tokens": 25
+    }
+  ],
+  "batches": [
+    {
+      "id": "long-first",
+      "concurrency_requested": 2,
+      "peak_active_requests": 2,
+      "target_forward_shapes": [
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "decode",
+            "physical_batch_rows": 1,
+            "sequence_width": 1
+          },
+          "completed_calls": 12,
+          "submitted_calls": 12
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 2,
+            "phase": "decode",
+            "physical_batch_rows": 2,
+            "sequence_width": 1
+          },
+          "completed_calls": 33,
+          "submitted_calls": 33
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 2,
+            "phase": "mtp_verification",
+            "physical_batch_rows": 2,
+            "sequence_width": 2
+          },
+          "completed_calls": 17,
+          "submitted_calls": 17
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "prefill",
+            "physical_batch_rows": 1,
+            "sequence_width": 1201
+          },
+          "completed_calls": 1,
+          "submitted_calls": 1
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "prefill",
+            "physical_batch_rows": 1,
+            "sequence_width": 177
+          },
+          "completed_calls": 1,
+          "submitted_calls": 1
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "prefill",
+            "physical_batch_rows": 1,
+            "sequence_width": 2048
+          },
+          "completed_calls": 1,
+          "submitted_calls": 1
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "prefill",
+            "physical_batch_rows": 1,
+            "sequence_width": 512
+          },
+          "completed_calls": 6,
+          "submitted_calls": 6
+        }
+      ]
+    },
+    {
+      "id": "long-repeat",
+      "concurrency_requested": 2,
+      "peak_active_requests": 2,
+      "target_forward_shapes": [
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "decode",
+            "physical_batch_rows": 1,
+            "sequence_width": 1
+          },
+          "completed_calls": 7,
+          "submitted_calls": 7
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 2,
+            "phase": "decode",
+            "physical_batch_rows": 2,
+            "sequence_width": 1
+          },
+          "completed_calls": 30,
+          "submitted_calls": 30
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "mtp_verification",
+            "physical_batch_rows": 1,
+            "sequence_width": 2
+          },
+          "completed_calls": 1,
+          "submitted_calls": 1
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 2,
+            "phase": "mtp_verification",
+            "physical_batch_rows": 2,
+            "sequence_width": 2
+          },
+          "completed_calls": 16,
+          "submitted_calls": 16
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "prefill",
+            "physical_batch_rows": 1,
+            "sequence_width": 177
+          },
+          "completed_calls": 2,
+          "submitted_calls": 2
+        }
+      ]
+    },
+    {
+      "id": "branch",
+      "concurrency_requested": 2,
+      "peak_active_requests": 2,
+      "target_forward_shapes": [
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "decode",
+            "physical_batch_rows": 1,
+            "sequence_width": 1
+          },
+          "completed_calls": 1,
+          "submitted_calls": 1
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 2,
+            "phase": "decode",
+            "physical_batch_rows": 2,
+            "sequence_width": 1
+          },
+          "completed_calls": 10,
+          "submitted_calls": 10
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 2,
+            "phase": "mtp_verification",
+            "physical_batch_rows": 2,
+            "sequence_width": 2
+          },
+          "completed_calls": 8,
+          "submitted_calls": 8
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "prefill",
+            "physical_batch_rows": 1,
+            "sequence_width": 189
+          },
+          "completed_calls": 2,
+          "submitted_calls": 2
+        }
+      ]
+    },
+    {
+      "id": "branch-repeat",
+      "concurrency_requested": 2,
+      "peak_active_requests": 2,
+      "target_forward_shapes": [
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "decode",
+            "physical_batch_rows": 1,
+            "sequence_width": 1
+          },
+          "completed_calls": 1,
+          "submitted_calls": 1
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 2,
+            "phase": "decode",
+            "physical_batch_rows": 2,
+            "sequence_width": 1
+          },
+          "completed_calls": 10,
+          "submitted_calls": 10
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 2,
+            "phase": "mtp_verification",
+            "physical_batch_rows": 2,
+            "sequence_width": 2
+          },
+          "completed_calls": 8,
+          "submitted_calls": 8
+        },
+        {
+          "axes": {
+            "kind": "target",
+            "live_batch_rows": 1,
+            "phase": "prefill",
+            "physical_batch_rows": 1,
+            "sequence_width": 189
+          },
+          "completed_calls": 2,
+          "submitted_calls": 2
+        }
+      ]
+    }
+  ]
+}

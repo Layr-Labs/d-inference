@@ -383,6 +383,7 @@ private enum Qwen36ProductionCanary {
                     result.firstContentLatency = startedAt.duration(to: .now)
                 }
                 result.text += parsed.content
+                result.reasoningContent += parsed.reasoningContent ?? ""
             case .toolCall(let call):
                 result.toolCalls.append(call)
             case .info(let info):
@@ -763,6 +764,7 @@ private struct Qwen36ProductionCanaryFixture: @unchecked Sendable {
 
 private struct Qwen36ProductionCanaryServerResult {
     var text = ""
+    var reasoningContent = ""
     var toolCalls: [ToolCall] = []
     var info: ServerGenerationInfo?
     var firstContentLatency: Duration?

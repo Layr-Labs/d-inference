@@ -1,0 +1,11 @@
+{
+  "runtime_parent": "22a9ad7acf03d25bb95f402066d76502ff56605d",
+  "runtime_lm": "3e2e137ea2be8a0be36935ff2cfd91e53ba39705",
+  "test_parent": "4ae34f033472f2b2b3d69cce0f9f0b0c85f31f39",
+  "test_lm": "b87e2ee1b2a4624aadc73210e066f2a6a8854736",
+  "changed_files": [
+    "libs/mlx-swift-lm/Tests/MLXLMTests/CBv2MTPDepthControllerTests.swift"
+  ],
+  "runtime_sources_unchanged": true,
+  "original_failure": "Tail-clamp fixture defaulted maxAutomaticRectangularTokens to0; raw controller depth1 synthetic costs did not match disabled actual plan. Set cap2 and assert actual planDepth1 before clamping."
+}

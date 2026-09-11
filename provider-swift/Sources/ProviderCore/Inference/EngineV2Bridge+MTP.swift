@@ -35,7 +35,7 @@ extension EngineV2Bridge {
         mtpActivationStatus = status
         slotPostureTask?.cancel()
         slotPostureTask = nil
-        guard metricsInterval > .zero else { return }
+        guard !slotPostureClosed, metricsInterval > .zero else { return }
         sampleSlotPosture()
         let bridge = self
         slotPostureTask = Task { [weak bridge] in
@@ -57,7 +57,9 @@ extension EngineV2Bridge {
 
     /// One posture tick: read the engine's MTP metrics ONCE, log it when a
     /// drafter is loaded, and emit the telemetry sample unconditionally.
-    private func sampleSlotPosture() {
+    func sampleSlotPosture() {
+        // A timer hop queued before cancellation may run after shutdown.
+        guard !slotPostureClosed, !Task.isCancelled else { return }
         let snapshot = mtpStatusSnapshot()
         if mtpActivationStatus.active { logMTPSnapshot(snapshot) }
         emitSlotPostureTelemetry(snapshot)

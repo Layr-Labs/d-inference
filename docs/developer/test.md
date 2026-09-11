@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-10 · commit `dcc3d0809`
+> Last updated: 2026-09-10 · commit `5a3ffc27f`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -219,6 +219,11 @@ set than production. To run a subset: `cd provider-swift && swift test
 --skip-build --filter <Suite>` after `make provider-test` has staged the
 metallib once.
 
+For a custom SwiftPM `--scratch-path`, stage the authoritative `mlx.metallib`
+in the active `debug` or `release` directory containing the `.xctest` bundle.
+`LiveInferenceFixtures.findSourceMetallib` uses that same-configuration source
+before replacing the runner copy; a runner-local file alone is insufficient.
+
 Tests that change process-wide MLX settings must use Swift Testing's
 `#expect(processExitsWith: .success)` child-process boundary. Restoring an
 environment variable does not reset MLX's cached value, and `.serialized`
@@ -329,7 +334,28 @@ batching or performance validation.
 #### Explicit Gemma verifier and projection controls
 
 Use the candidate `radix-engine` built from the same provider, native source and
-metallib tuple as the test runners. Run the CPU wrapper tests first:
+metallib tuple as the test runners.
+Candidate inputs use `EngineV2Factory.benchmarkPrompt` and the serving sampling
+translator, including the raw-body seed, logit-bias and logprobs overlays.
+Every completed or cancelled row reports its effective `sampling`; batched copies
+preserve those knobs. Omitted sampling stays greedy. The production API currently
+sets `min_p` to zero, including when an unrecognized `min_p` request key is present.
+Native direct `Input` fixtures can still exercise engine `minP` independently.
+
+Use `--generation-comparison-policy record` for sampled throughput probes: a seed also
+depends on request ID and step index, so separate donor/recovery requests are not
+an exact-token oracle. Do not change the strict default for greedy controls.
+Nonempty stop strings and `response_format` require HTTP testing and are rejected.
+Forced tool choices are rejected for sampled inputs; retained greedy tool-template
+probes measure rendering and raw engine events, without HTTP constraint enforcement.
+Explicit Gemma verification, projection, logits and attention diagnostics require
+untransformed greedy input. Historical baseline binaries retain their greedy
+sampling path; they are not sampled-throughput controls.
+Sampling wiring lives in
+`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkPrompt.swift`
+and `scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkSampling.swift`.
+
+Run the CPU wrapper tests first:
 
 ```bash
 python3 -m unittest discover -s scripts/benchmarks -p test_run_radix_engine.py
@@ -340,9 +366,9 @@ run these filters through `scripts/run-nested-suite.sh` from the listed package:
 
 | Package | Filters |
 |---|---|
-| `provider-swift` | `EngineV2BenchmarkMTPVerificationTests` |
+| `provider-swift` | `EngineV2BenchmarkMTPVerificationTests`, `BenchmarkProductionInputTests` |
 | `libs/mlx-swift-lm` | `Gemma4Layer0ProjectionDiagnosticTests` |
-| `scripts/benchmarks/radix-engine` | `BenchmarkGemmaVerifierOptionsTests`, `BenchmarkGemmaProjectionTests` |
+| `scripts/benchmarks/radix-engine` | `BenchmarkGemmaVerifierOptionsTests`, `BenchmarkGemmaProjectionTests`, `BenchmarkSamplingTests` |
 
 For the radix package, set `RADIX_SOURCE_ROOT` to the absolute combined checkout
 and `RADIX_CANDIDATE_BUILD=1` for both build and test commands. The tests cover

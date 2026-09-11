@@ -97,6 +97,16 @@ actor SpecDecArtifactFunnel {
     }
     private var prefetches: [String: Prefetch] = [:]
     private var prefetchFailures: [String: MTPFallbackReason] = [:]
+    private var prefetchFailureCounts: [String: Int] = [:]
+    private var prefetchRetryAfter: [String: ContinuousClock.Instant] = [:]
+    /// Injectable only for deterministic retry tests; production uses bounded
+    /// jitter to avoid synchronized retries across independently upgrading Macs.
+    var retryClock: @Sendable () -> ContinuousClock.Instant = { .now }
+    var retryDelay: @Sendable (Int) -> Duration = { failureCount in
+        let ceiling = min(300, 15 * (1 << min(max(0, failureCount - 1), 5)))
+        return .seconds(Int.random(in: max(1, ceiling * 3 / 4)...ceiling))
+    }
+
     private let maximumPrefetches = 2
     private var isShutdown = false
     private var shutdownTasks: [Task<Void, Never>] = []
@@ -259,6 +269,7 @@ actor SpecDecArtifactFunnel {
     ) {
         guard !isShutdown,
             prefetches[modelId] == nil,
+            prefetchRetryAfter[modelId].map({ retryClock() >= $0 }) ?? true,
             prefetches.count < maximumPrefetches
         else {
             return
@@ -295,6 +306,7 @@ actor SpecDecArtifactFunnel {
     ) {
         guard !isShutdown,
             prefetches[modelId] == nil,
+            prefetchRetryAfter[modelId].map({ retryClock() >= $0 }) ?? true,
             prefetches.count < maximumPrefetches
         else {
             return
@@ -330,6 +342,7 @@ actor SpecDecArtifactFunnel {
     private func scheduleArtifactPrefetch(modelId: String, model: CatalogModel) {
         guard !isShutdown,
             prefetches[modelId] == nil,
+            prefetchRetryAfter[modelId].map({ retryClock() >= $0 }) ?? true,
             prefetches.count < maximumPrefetches
         else {
             return
@@ -359,8 +372,13 @@ actor SpecDecArtifactFunnel {
         prefetches.removeValue(forKey: modelId)
         if let reason {
             prefetchFailures[modelId] = reason
+            let count = min(6, (prefetchFailureCounts[modelId] ?? 0) + 1)
+            prefetchFailureCounts[modelId] = count
+            prefetchRetryAfter[modelId] = retryClock().advanced(by: retryDelay(count))
         } else {
             prefetchFailures.removeValue(forKey: modelId)
+            prefetchFailureCounts.removeValue(forKey: modelId)
+            prefetchRetryAfter.removeValue(forKey: modelId)
         }
     }
 

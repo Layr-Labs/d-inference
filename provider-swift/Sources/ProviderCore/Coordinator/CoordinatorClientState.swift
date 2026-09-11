@@ -192,6 +192,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _publishedCapacity: BackendCapacity? = nil
     private var _capacitySeq: UInt64 = 0
     private var _refusingNewWork = false
+    private var _modelAdmissionDrains: Set<String> = []
 
     /// Bounded per-(model, warm/cold, prompt-bucket, batch-bucket) end-to-end
     /// TTFT statistics from completed real requests, fed by the ProviderLoop's
@@ -237,6 +238,32 @@ public final class ProviderState: @unchecked Sendable {
         set { lock.withLock { _refusingNewWork = newValue } }
     }
 
+    /// Model admission mirrors are separate from whole-provider draining:
+    /// probes refuse immediately without changing the heartbeat status.
+    func setModelAdmissionDraining(_ modelID: String, _ draining: Bool) {
+        lock.withLock {
+            if draining {
+                _modelAdmissionDrains.insert(modelID)
+                // Also close periodic heartbeat routing before the actor's
+                // full capacity rebuild can suspend on an engine snapshot.
+                if var capacity = _backendCapacity {
+                    for index in capacity.slots.indices where capacity.slots[index].model == modelID {
+                        capacity.slots[index].state = "reloading"
+                    }
+                    _backendCapacity = capacity
+                }
+            } else {
+                _modelAdmissionDrains.remove(modelID)
+                // Keep a stale reloading snapshot conservative until the
+                // actor rebuilds the actual live replacement/retained slot.
+            }
+        }
+    }
+
+    func refusingNewWork(forModel modelID: String) -> Bool {
+        lock.withLock { _refusingNewWork || _modelAdmissionDrains.contains(modelID) }
+    }
+
     /// The capacity payload of the LAST heartbeat actually sent on the
     /// current connection, seq-stamped (routing v2). This is the lock-free
     /// published snapshot the capacity-quote path reads: quotes must be
@@ -260,6 +287,14 @@ public final class ProviderState: @unchecked Sendable {
     ) -> BackendCapacity? {
         guard var capacity else { return nil }
         return lock.withLock {
+            // The caller may have read this payload before a model drain
+            // began. Project the live fence under the publication lock so
+            // that old snapshot cannot advertise the target as routable.
+            for index in capacity.slots.indices
+                where _modelAdmissionDrains.contains(capacity.slots[index].model)
+            {
+                capacity.slots[index].state = "reloading"
+            }
             _capacitySeq &+= 1
             capacity.capacitySeq = _capacitySeq
             let agedProcessMemory = capacity.telemetry?.processMemory?

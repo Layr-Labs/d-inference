@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-08 · commit `501320342`
+> Last updated: 2026-09-10 · commit `4f29957d2`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -488,3 +488,9 @@ ls console-ui/.next
 - [../operations/provider-release.md](../operations/provider-release.md) — provider release runbook.
 - [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md) — container build and deploy on GCP.
 - [`../architecture/components/mlx-swift.md`](../architecture/components/mlx-swift.md) — why the metallib must match the MLX source.
+
+Candidate native prefix-cache benchmarks must build ProviderCore and
+`scripts/benchmarks/radix-engine` from the same source revision: the benchmark
+prompt SPI carries production sampling parameters into each engine request.
+See [native benchmark validation](test.md#resident-prefix-benchmark-validation)
+for sampling scope, regression filters and diagnostic restrictions.

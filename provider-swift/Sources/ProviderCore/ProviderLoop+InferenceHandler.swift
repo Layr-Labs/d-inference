@@ -125,12 +125,15 @@ extension ProviderLoop {
     /// `localReservations`; without the shutdown gate a steady local client
     /// could keep reservations non-empty and hold `run()` open for the full
     /// shutdown drain timeout, then have its models unloaded mid-stream.
-    internal func throwIfRefusingNewLocalWork() throws {
+    internal func throwIfRefusingNewLocalWork(modelId: String? = nil) throws {
         if isShuttingDown {
             throw MultiModelBatchSchedulerEngineError.queueFull("provider shutting down")
         }
         if isDrainingForUpdate {
             throw MultiModelBatchSchedulerEngineError.queueFull(providerDrainingForUpdateReason)
+        }
+        if let modelId, mtpAdmissionDrains.contains(modelId) {
+            throw MultiModelBatchSchedulerEngineError.requestRejected("model preparing assistant swap")
         }
     }
 
@@ -395,6 +398,8 @@ extension ProviderLoop {
         // deliberately conservative: when in doubt it admits and lets the
         // post-accept load path below make the final call.
         let modelId = chatRequest.model
+        if rejectIfDrainingForMTP(modelId: modelId, requestId: requestId, send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer) { return }
         // Warm/cold classification for the TTFT tracker, captured BEFORE the
         // load step: a cold sample includes model-load latency and must never
         // calibrate warm quotes.
@@ -450,6 +455,11 @@ extension ProviderLoop {
         {
             return
         }
+
+        // Authoritative model drain re-check: no suspension before acceptance
+        // and requestToModel registration, so the drain sees every old owner.
+        if rejectIfDrainingForMTP(modelId: modelId, requestId: requestId, send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer) { return }
 
         // 5. Send inference_accepted
         send.send(.inferenceAccepted(requestId: requestId))

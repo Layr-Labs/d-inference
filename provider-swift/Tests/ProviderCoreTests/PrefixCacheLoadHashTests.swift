@@ -92,7 +92,7 @@ struct PrefixCacheLoadHashTests {
         #expect(calls.count == 4)
     }
 
-    @Test(arguments: ["gpt-oss-20b", "gemma-4-26b-qat-4bit", "gemma-4-26b", "gemma-4-26b-8bit"])
+    @Test(arguments: ["gpt-oss-20b", "gemma-4-26b", "gemma-4-26b-8bit"])
     func uncachedReleaseModelsSkipSSDHashing(modelID: String) throws {
         let directory = try snapshot(#"{"model_type":"future_model"}"#)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -101,6 +101,17 @@ struct PrefixCacheLoadHashTests {
         #expect(PrefixCachePolicy.requiresLoadHashBracket(
             modelId: modelID, modelDirectory: directory,
             environment: [PrefixCachePolicy.environmentFlag: "1"]))
+    }
+
+    @Test("Gemma QAT default requires fresh load hashing and honors the cache kill switch")
+    func gemmaQatDefaultHashBracket() throws {
+        let directory = try snapshot(#"{"model_type":"gemma4"}"#)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(PrefixCachePolicy.requiresLoadHashBracket(
+            modelId: "gemma-4-26b-qat-4bit", modelDirectory: directory, environment: [:]))
+        #expect(!PrefixCachePolicy.requiresLoadHashBracket(
+            modelId: "gemma-4-26b-qat-4bit", modelDirectory: directory,
+            environment: [PrefixCachePolicy.environmentFlag: "0"]))
     }
 
     @Test("a failed standalone hash is retried rather than cached")

@@ -32,7 +32,7 @@ struct NemotronMTPDeclarationTests {
         #expect(!SpecDecArtifactFunnel.isInlineQwenTarget(modelType: "nemotron_h"))
     }
     @Test func requestStatefulAssistantRetainsAdaptiveDepth() {
-        #expect(MTPAutomaticVerificationPolicy.fixedDraftTokens(usesRequestStatefulDrafter: true) == nil)
-        #expect(MTPAutomaticVerificationPolicy.fixedDraftTokens(usesRequestStatefulDrafter: false) == 1)
+        #expect(MTPAutomaticVerificationPolicy.draftDepthPolicy(usesRequestStatefulDrafter: true).fixed == nil)
+        #expect(MTPAutomaticVerificationPolicy.draftDepthPolicy(usesRequestStatefulDrafter: false).fixed == 1)
     }
 }

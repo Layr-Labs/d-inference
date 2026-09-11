@@ -363,7 +363,7 @@ struct EngineV2KVBackendGateTests {
         await contiguous.engine.shutdown()
     }
 
-    @Test(arguments: ["gpt-oss-20b", "gemma-4-26b-qat-4bit"])
+    @Test(arguments: ["gpt-oss-20b"])
     func releaseAttentionModelsDefaultToPaged(modelID: String) async throws {
         let model: any LanguageModel = try modelID == "gpt-oss-20b"
             ? tinyGPTOSS() : tinyGemma4Text()
@@ -1053,7 +1053,7 @@ struct EngineV2KVBackendGateTests {
         #expect(outcome.status.reason == .unsupportedLayout)
     }
 
-    @Test(arguments: ["gpt-oss-20b", "gemma-4-26b-qat-4bit"])
+    @Test(arguments: ["gpt-oss-20b"])
     func releasePagedModelsDefaultToNoSSD(modelID: String) async throws {
         let outcome = try await slotCacheOutcome(
             kvBackendConfig: "auto", modelID: modelID, environment: [:])
@@ -1064,6 +1064,38 @@ struct EngineV2KVBackendGateTests {
         #expect(outcome.status.backend == .paged)
         #expect(outcome.status.state == .disabled)
         #expect(outcome.status.reason == .configDisabled)
+    }
+
+    @Test("Gemma QAT auto constructs complete SSD checkpoints by default")
+    func gemmaQatDefaultCompleteSSD() async throws {
+        let outcome = try await slotCacheOutcome(
+            kvBackendConfig: "auto", modelID: "gemma-4-26b-qat-4bit", environment: [:])
+        #expect(outcome.kind == .paged)
+        #expect(!outcome.legacyConstructionAttempted)
+        #expect(outcome.completeLayout == CBv2CompleteCheckpointManifest.historicalAttentionLayout)
+        #expect(outcome.cache)
+        #expect(outcome.status.backend == .paged)
+        #expect(outcome.status.state == .ready)
+        #expect(outcome.status.reason == .ready)
+        #expect(outcome.status.replayStrategy == .direct)
+    }
+
+    @Test("Gemma QAT default respects cache and paged kill switches",
+          arguments: [PrefixCachePolicy.environmentFlag, EngineV2KVBackendPolicy.killSwitchEnvKey])
+    func gemmaQatDefaultCacheKillSwitch(key: String) async throws {
+        let outcome = try await slotCacheOutcome(
+            kvBackendConfig: "auto", modelID: "gemma-4-26b-qat-4bit", environment: [key: "0"])
+        #expect(!outcome.cache)
+        #expect(!outcome.legacyConstructionAttempted)
+        #expect(outcome.completeLayout == nil)
+        #expect(outcome.status.state == .disabled)
+        if key == PrefixCachePolicy.environmentFlag {
+            #expect(outcome.kind == .paged)
+            #expect(outcome.status.reason == .configDisabled)
+        } else {
+            #expect(outcome.kind == .contiguous)
+            #expect(outcome.status.reason == .unsupportedLayout)
+        }
     }
 
     // MARK: VLM slot routing (WS-2.2)

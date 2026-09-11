@@ -2,7 +2,7 @@ import Foundation
 
 /// Exact artifact bytes; separate from the upstream repository used for metadata.
 /// Only public, ungated repositories are needed: no publisher credentials are sent.
-public struct HuggingFaceArtifact: Codable, Sendable, Equatable {
+public struct HuggingFaceArtifact: Codable, Sendable, Equatable, Hashable {
     public let repoID: String
     public let revision: String
     public let pathPrefix: String?

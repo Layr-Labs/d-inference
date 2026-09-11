@@ -154,12 +154,23 @@ enum LiveInferenceFixtures {
     /// the test bundle (`.build/<arch>/<configuration>/...`) and accept only
     /// the configuration which contains the running test bundle.
     private static func findSourceMetallib() -> URL? {
-        let fm = FileManager.default
+        findSourceMetallib(testBundleURL: Bundle(for: BundleSentinel.self).bundleURL)
+    }
 
-        // Anchor at the test bundle path -- much more reliable than
-        // _NSGetExecutablePath under `swift test`.
-        let bundle = Bundle(for: BundleSentinel.self)
-        let components = bundle.bundleURL.pathComponents
+    /// SwiftPM's scratch directory need not be named `.build`. The immediate
+    /// configuration directory is authoritative; never accept the runner's
+    /// existing Contents/MacOS copy as a source or cross debug/release.
+    static func findSourceMetallib(testBundleURL: URL) -> URL? {
+        let fm = FileManager.default
+        let configurationDirectory = testBundleURL.deletingLastPathComponent()
+        if ["debug", "release"].contains(configurationDirectory.lastPathComponent) {
+            let staged = configurationDirectory.appendingPathComponent("mlx.metallib")
+            if fm.fileExists(atPath: staged.path) { return staged }
+        }
+
+        // Preserve the canonical `.build` helper drop sites for standard
+        // SwiftPM layouts, using only the running bundle's configuration.
+        let components = testBundleURL.pathComponents
         let configuration: String
         if let buildIndex = components.lastIndex(of: ".build"),
            let activeConfiguration = components[components.index(after: buildIndex)...]
@@ -169,7 +180,7 @@ enum LiveInferenceFixtures {
             configuration = "debug"
         }
 
-        var cursor = bundle.bundleURL
+        var cursor = testBundleURL
         for _ in 0..<12 {
             if cursor.lastPathComponent == ".build" {
                 let candidates: [URL] = [

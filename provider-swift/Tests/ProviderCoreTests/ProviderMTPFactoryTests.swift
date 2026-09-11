@@ -145,7 +145,8 @@ private func mtpCatalogArtifact() throws -> SpecDecArtifact {
         maximumFileCount: 8,
         allowedFileRoles: ["config", "weight"],
         configSHA256: mtpSHA256(config),
-        revision: manifest.version)
+        revision: manifest.version,
+        huggingFaceArtifact: nil)
     let verification = try SpecDecStore.verifyPublishedArtifact(
         at: directory, reference: reference).get()
     return SpecDecArtifact(
@@ -376,20 +377,14 @@ struct ProviderMTPFactoryTests {
         #expect(automatic.automaticRectangularTokens == 8)
     }
 
-    @Test("Gemma QAT production verification preserves drafting with serial target scoring")
-    func gemmaQATProductionVerification() {
-        let drafter = MTPFactoryDrafter()
-        let qat = providerMTPVerificationPolicy(for: drafter,
-            modelID: "gemma-4-26b-qat-4bit", automaticRectangularTokens: 8)
-        #expect(qat.mode == .serialTarget && qat.automaticRectangularTokens == 0)
-        for modelID in ["gemma-4-26b-8bit", "gemma-4-26b-qat-4bit-other", "gpt-oss-20b",
-            "EigenLabs/Qwen3.8-27B-4bit-mtp"] {
-            let other = providerMTPVerificationPolicy(for: drafter,
-                modelID: modelID, automaticRectangularTokens: 8)
-            #expect(other.mode == .automatic && other.automaticRectangularTokens == 8)
+    @Test("ordinary assistant verification retains the configured rectangular bound")
+    func automaticProductionVerification() {
+        for bound in [0, 4, 8] {
+            let policy = providerMTPVerificationPolicy(
+                for: MTPFactoryDrafter(), automaticRectangularTokens: bound)
+            #expect(policy.mode == .automatic && policy.automaticRectangularTokens == bound)
         }
-        let absent = providerMTPVerificationPolicy(for: nil,
-            modelID: "gemma-4-26b-qat-4bit", automaticRectangularTokens: 8)
+        let absent = providerMTPVerificationPolicy(for: nil, automaticRectangularTokens: 8)
         #expect(absent.mode == .automatic)
     }
 

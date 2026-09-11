@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-06 · commit `32b28b0a7`
+> Last updated: 2026-09-08 · commit `efb5517fc`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -221,6 +221,62 @@ Omitting the field or sending `null` on re-registration clears the source for
 that version. Existing entries and older providers continue using R2. Adding or
 clearing it on an existing version uses the normal registration endpoint;
 production registration still requires approval.
+
+### Pinned assistant download artifact
+
+`metadata.spec_dec.hugging_face_artifact` accepts the same optional
+`repo_id`, immutable `revision`, and `path_prefix` fields for a separately
+published MTP assistant. It is independent of the target's top-level artifact.
+`SpecDecMetadata.pinnedHuggingFaceArtifact` validates it before network work;
+missing or `null` preserves the existing R2-only assistant path. Malformed
+locators, branches and tags make the assistant unavailable, preserving target
+serving (`provider-swift/Sources/ProviderCore/SpecDec/SpecDecMetadata+HuggingFace.swift`).
+
+An assistant prefetch has a 15-minute total deadline, with the existing
+per-source idle timeout and cancellation checks. Downloads run while the
+target continues serving; an expired attempt removes its private staging
+files and retries later with backoff
+(`provider-swift/Sources/ProviderCore/SpecDec/SpecDecResolver.swift`).
+
+`SpecDecResolver.downloadArtifact` fetches and validates the registry manifest
+against `spec_dec.manifest_sha256`, then uses the same per-file HF-first/R2
+fallback helper as ordinary weights. Both sources must match that manifest's
+size and SHA-256 for every file. The existing complete-artifact validation and
+immutable staging publication remain required. Cancellation does not initiate
+R2 fallback; existing verified local artifacts need no download
+(`provider-swift/Sources/ProviderCore/SpecDec/SpecDecResolver.swift`).
+
+The [Gemma QAT assistant catalog patch](../operations/artifacts/gemma-qat-assistant-hugging-face.patch.json)
+adds only the pinned assistant locator to a current public catalog-model JSON
+object, with JSON Patch `test` operations guarding the exact target and existing
+assistant identity. It is a review artifact, not an HTTP request body: the
+coordinator has no generic JSON Patch endpoint. Apply it locally to the current
+catalog object, then use the existing registration workflow with the resulting
+metadata and all current registration fields/prices preserved. Re-registration
+sets model status to `beta`; preserve or restore the intended status through
+the existing status action. Validate on dev before an approved production
+metadata update. This source change requires no assistant republish, target
+version change, or weight replacement. Remove the optional locator to return
+future downloads to R2; already verified assistant bytes remain usable.
+
+The pinned HF files were fully streamed and hashed on 2026-09-08, and the R2
+manifest was independently fetched with provider request headers. All bytes
+match the existing catalog declaration:
+
+| Artifact | Immutable identity |
+|---|---|
+| HF repository | `mlx-community/gemma-4-26B-A4B-it-qat-assistant-4bit` |
+| HF revision | `bb94eae1b70a80dac16cbf959bb4b7d56bd1fb8c` |
+| Registry manifest SHA-256 | `8b7c00b7f131345156f5f20fa9c94a895c5340f16d9331bafb9e59628bf45bf2` |
+| `config.json` | 2,961 bytes; SHA-256 `0cd54ff36e53a258532c5c1433bc44b88ba758cfe9b59bb4e6eecfd5453fabcf` |
+| `model.safetensors` | 236,124,704 bytes; SHA-256 `3c4d43863abbbf455ec537c726eff7abeb88bb361e3ab23ff0d2d6006f620f74` |
+
+After rollout, a cold assistant download should fetch its pinned manifest from
+R2 and both files from the exact HF revision. A failed HF file should fall back
+to its declared R2 object and still verify; a failed checksum on both sources
+must leave no published assistant. Inspect the provider's assistant revision
+and active MTP metrics after loading; downloading alone does not prove the
+assistant has been installed in a serving engine.
 
 ## Admin actions
 

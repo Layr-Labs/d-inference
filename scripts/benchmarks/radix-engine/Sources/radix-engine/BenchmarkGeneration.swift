@@ -31,7 +31,7 @@ extension RadixBenchmark {
         let requestID = CBv2RequestID(id)
         let request = CBv2Request(
             id: requestID, promptTokens: input.tokens,
-            sampling: CBv2SamplingParams(temperature: 0), maxTokens: input.maxTokens,
+            sampling: input.sampling, maxTokens: input.maxTokens,
             stopTokens: loaded.eos, cacheSalt: scope, prefixCacheEnabled: enabled)
         let stream: AsyncStream<CBv2Event>
         var stageMilliseconds = 0.0
@@ -91,6 +91,7 @@ extension RadixBenchmark {
             : await BenchmarkMetrics.snapshot(loaded)
         var row: [String: Any] = ["id": input.name, "kind": input.kind, "scope": scope, "outcome": outcome,
                 "prompt_render_date": input.promptRenderDate as Any? ?? NSNull(),
+                "sampling": BenchmarkSampling.record(input.sampling),
                 "prompt_token_ids": input.tokens, "token_ids": tokens,
                 "text": loaded.tokenizer.decode(tokenIds: tokens), "finish": finish,
                 "cancel_requested": cancelled, "chunks": chunks,

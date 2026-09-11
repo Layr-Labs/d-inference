@@ -386,6 +386,20 @@ struct MTPPostureTelemetryTests {
         await bridge.shutdown()
     }
 
+    @Test("closed bridge suppresses queued posture ticks and cannot restart its sampler")
+    func closedPostureCannotReappear() async {
+        let telemetry = PostureTelemetrySink()
+        let bridge = makePostureBridge(
+            engine: PagedPoolStubEngine(kvBytesInUse: 0, poolBytes: 8 << 30),
+            kvBackendKind: .paged, telemetry: telemetry)
+        await bridge.configureMTPStatus(activatedStatus(), metricsInterval: .zero)
+        #expect(telemetry.posture == nil)
+        await bridge.shutdown()
+        await bridge.configureMTPStatus(activatedStatus())
+        await bridge.sampleSlotPosture()
+        #expect(telemetry.posture == nil)
+    }
+
     @Test("a slot torn down inside its first interval still reports exactly once")
     func slotShorterThanOneIntervalEmitsOnce() async throws {
         // The rollout-visibility case: a slot that fails post-build, crashes,

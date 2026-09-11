@@ -100,7 +100,8 @@ extension Start {
                 engineV2KVBackendByModel: config.backend.engineV2KVBackendByModel,
                 prefillDeadlineMode: config.backend.prefillDeadlineMode,
                 mtpMode: config.backend.mtpMode,
-                mtpDrafterPath: config.backend.mtpDrafterPath
+                mtpDrafterPath: config.backend.mtpDrafterPath,
+                coordinatorURL: config.coordinator.url
             ),
             models: advertised
         )

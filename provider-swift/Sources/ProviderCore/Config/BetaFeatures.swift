@@ -165,16 +165,15 @@ public enum BetaFeatures {
         BetaFeature(
             id: "mtp",
             title: "Multi-token prediction (speculative decoding)",
-            summary: "Force MTP on for supported CBv2 targets; Qwen checkpoints with an embedded head default on automatically.",
+            summary: "Force MTP on for supported CBv2 targets; embedded Qwen heads and Gemma 4 26B QAT default on automatically.",
             details: """
             Automatic mode enables MTP for Qwen 3.5-family checkpoints \
             (qwen3_5, qwen3_5_moe) whose config.json declares an embedded \
-            head (mtplx_mtp), after full artifact validation; checkpoints \
-            without an embedded head remain target-only when config is \
-            absent. Enabling this beta writes an explicit on override for \
-            supported targets — required for separately published catalog \
-            assistants and mtp_drafter_path overrides; disabling it writes \
-            the explicit off rollback. DARKBLOOM_CBV2_MTP=0 remains the \
+            head (mtplx_mtp), and the catalog assistant for the exact \
+            gemma-4-26b-qat-4bit target, after artifact validation. Other \
+            supported targets require explicit on. mtp_drafter_path remains \
+            authoritative for external assistants. Enabling this beta writes \
+            on; disabling it writes the explicit off rollback. DARKBLOOM_CBV2_MTP=0 remains the \
             final process-wide kill switch. Resolution and load are \
             fail-open to target-only decode.
             """,

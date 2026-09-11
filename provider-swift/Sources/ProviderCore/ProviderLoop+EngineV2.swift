@@ -103,6 +103,8 @@ extension ProviderLoop {
         /// Machine-memory override for the re-slice fleet budget (nil ⇒
         /// real physical memory).
         let physicalMemoryBytes: UInt64?
+        /// Deterministic load-admission sample for eviction integration tests.
+        let availableMemoryGb: Double?
         /// Backend kind the hook-built bridge reports per model (default
         /// `.contiguous`). A `.paged` entry makes the bridge apply the
         /// production paged semantics — resize clamps to the scripted
@@ -124,6 +126,7 @@ extension ProviderLoop {
             extraEOSTokens: [String] = [],
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
             physicalMemoryBytes: UInt64? = nil,
+            availableMemoryGb: Double? = nil,
             kvBackendKindByModel: [String: EngineV2KVBackendKind] = [:],
             assistantLoader: (any ProviderMTPAssistantLoading)? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
@@ -133,6 +136,7 @@ extension ProviderLoop {
             self.extraEOSTokens = extraEOSTokens
             self.emitTelemetry = emitTelemetry
             self.physicalMemoryBytes = physicalMemoryBytes
+            self.availableMemoryGb = availableMemoryGb
             self.kvBackendKindByModel = kvBackendKindByModel
             self.assistantLoader = assistantLoader
             self.makeEngine = makeEngine
@@ -160,7 +164,7 @@ extension ProviderLoop {
         extraWeightBytes: Int,
         activationReserveBytes: UInt64? = nil
     ) -> UInt64 {
-        var totalWeights = UInt64(max(0, extraWeightBytes))
+        var totalWeights = MTPStagingReservations.adding(UInt64(max(0, extraWeightBytes)), mtpStagingBytes)
         for (_, slot) in modelSlots {
             let (sum, overflow) = totalWeights
                 .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
@@ -564,7 +568,8 @@ extension ProviderLoop {
         kvBytesCapacity: Int,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2PreparedModel?,
-        cacheEligibleWeightHash: String? = nil
+        cacheEligibleWeightHash: String? = nil,
+        registerInRuntime: Bool = true
     ) async throws -> ProviderEngineBundle {
         let maxConcurrent = engineV2MaxConcurrent(forModel: modelId)
 
@@ -604,7 +609,7 @@ extension ProviderLoop {
                         kvBackendFallbackReason: nil)
                 })
             let status = preparedModel?.mtpStatus ?? specDecPreparation.status
-            await bridge.configureMTPStatus(status)
+            await bridge.configureMTPStatus(status, metricsInterval: registerInRuntime ? .seconds(60) : .zero)
             bundle = ProviderEngineBundle(
                 bridge: bridge,
                 assistant: preparedModel?.assistant,
@@ -637,6 +642,7 @@ extension ProviderLoop {
                 weightHash: cacheEligibleWeightHash,
                 specDecPreparation: specDecPreparation,
                 preparedModel: preparedModel,
+                startServingTelemetry: registerInRuntime,
                 logInfo: { slotLogger.info($0) },
                 logWarning: { slotLogger.warning($0) })
         }
@@ -647,7 +653,9 @@ extension ProviderLoop {
         // (Prefix-cache construction — RAM carve AND the SSD offload tier —
         // budget bookkeeping, stats loggers, and the cache-state log line
         // all live inside the shared slot factory.)
-        await engineV2Runtime.register(modelId: modelId, bridge: bridge)
+        if registerInRuntime {
+            await engineV2Runtime.register(modelId: modelId, bridge: bridge)
+        }
         if isVLM {
             logger.info(
                 "engine_v2: serving \(modelId) via ContinuousBatchingV2 "

@@ -142,6 +142,19 @@ enum BenchmarkMetrics {
                 "max_rectangular_tokens": mtp.maxAutomaticRectangularTokens,
                 "skipped_rows": mtp.skippedRows, "depth_selections": mtp.depthSelections.mapKeysToStrings(),
                 "controller_fallbacks": mtp.controllerFallbacks,
+                "conditional_acceptance": mtp.conditionalAcceptance,
+                "total_round_wall_time_nanos": mtp.totalRoundWallTimeNanos,
+                "cost_inputs": mtp.costInputs.map { cost -> [String: Any] in
+                    var input: [String: Any] = [
+                        "decode_row_bucket": cost.decodeRowBucket, "depth": cost.depth,
+                        "samples": cost.samples, "ewma_wall_time_nanos": cost.ewmaWallTimeNanos,
+                        "total_wall_time_nanos": cost.totalWallTimeNanos,
+                    ]
+                    if let cadence = cost.ewmaNanosPerCommittedToken {
+                        input["ewma_nanos_per_committed_token"] = cadence
+                    }
+                    return input
+                },
             ] as [String: Any]
         }
         #if RADIX_CANDIDATE

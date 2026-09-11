@@ -1,0 +1,311 @@
+{
+  "image_sha256": "f9f9fbf8c0a05fbac1081db94dff3688cdcb3ee3425e2c18e51cbe90f3c5cb33",
+  "helper_sha256": "95e078fb2a1a58bcefdff17751968b3e86a044ae757e76ee19e6fed92a0d077d",
+  "scope": "Same default-auto rollout provider after successful text activation; local diagnostic catalog with verified assistant bytes.",
+  "semantic_review_required": true,
+  "records": [
+    {
+      "name": "vision-first",
+      "request": {
+        "model": "gemma-4-26b-qat-4bit",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "image_url",
+                "image_url": {
+                  "fixture_sha256": "f9f9fbf8c0a05fbac1081db94dff3688cdcb3ee3425e2c18e51cbe90f3c5cb33",
+                  "inline_bytes_omitted": true
+                }
+              },
+              {
+                "type": "text",
+                "text": "Describe the central three-dimensional object and surrounding application interface in four concise sentences. Mention shapes, colors, background, and visible controls. Report only visible details."
+              }
+            ]
+          }
+        ],
+        "max_tokens": 192,
+        "temperature": 0,
+        "top_p": 1,
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "started_unix": 1788924610.706367,
+      "mtp_before": {
+        "mtp_enabled": 1.0,
+        "mtp_active": 1.0,
+        "mtp_rounds_total": 744.0,
+        "mtp_tokens_proposed_total": 744.0,
+        "mtp_tokens_accepted_total": 510.0
+      },
+      "status": 200,
+      "headers": {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+        "Access-Control-Allow-Origin": "*",
+        "Date": "Wed, 09 Sep 2026 03:30:11 GMT",
+        "Server": "darkbloom-provider",
+        "transfer-encoding": "chunked"
+      },
+      "response": {
+        "text": "A central three-dimensional object composed of various white and gray cubes is displayed against a solid black background. The application interface features a dark gray theme with multiple sidebars containing various text-based controls and sliders. The left sidebar includes sections for \"Story Steps,\" \"Camera Settings,\" and \"Behavior,\" while the right sidebar contains \"Story Builder\" settings and \"Visibility\" options. Various buttons, input fields, and checkboxes are visible throughout the interface, including options like \"Capture Camera,\" \"Load Matrix,\" and \"Export Story.\"",
+        "reasoning": "",
+        "usage": {
+          "completion_tokens": 107,
+          "prompt_tokens": 327,
+          "total_tokens": 434
+        },
+        "finish_reasons": [
+          "stop"
+        ],
+        "done": true,
+        "cancelled": false,
+        "ttft_s": 1.5337435,
+        "last_content_s": 2.413389459000001,
+        "elapsed_s": 2.4266294590000115,
+        "content_chunks": 92,
+        "client_decode_tps_estimate": 120.50302614986475
+      },
+      "mtp_after": {
+        "mtp_enabled": 1.0,
+        "mtp_active": 1.0,
+        "mtp_rounds_total": 771.0,
+        "mtp_tokens_proposed_total": 771.0,
+        "mtp_tokens_accepted_total": 525.0
+      },
+      "mtp_round_delta": 27.0,
+      "cache_inventory_unchanged": true,
+      "cached_tokens": null,
+      "cold_cache_explicitly_observed": null,
+      "checks": {
+        "http_ok": true,
+        "active_slot": true,
+        "usage_consistent": true,
+        "visible_answer": true,
+        "natural_stop": true,
+        "actual_mtp_rounds": true,
+        "no_reported_cache_hit": true
+      },
+      "passed": true
+    },
+    {
+      "name": "vision-repeat",
+      "request": {
+        "model": "gemma-4-26b-qat-4bit",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "image_url",
+                "image_url": {
+                  "fixture_sha256": "f9f9fbf8c0a05fbac1081db94dff3688cdcb3ee3425e2c18e51cbe90f3c5cb33",
+                  "inline_bytes_omitted": true
+                }
+              },
+              {
+                "type": "text",
+                "text": "Describe the central three-dimensional object and surrounding application interface in four concise sentences. Mention shapes, colors, background, and visible controls. Report only visible details."
+              }
+            ]
+          }
+        ],
+        "max_tokens": 192,
+        "temperature": 0,
+        "top_p": 1,
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        },
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "started_unix": 1788924613.137089,
+      "mtp_before": {
+        "mtp_enabled": 1.0,
+        "mtp_active": 1.0,
+        "mtp_rounds_total": 771.0,
+        "mtp_tokens_proposed_total": 771.0,
+        "mtp_tokens_accepted_total": 525.0
+      },
+      "status": 200,
+      "headers": {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+        "Access-Control-Allow-Origin": "*",
+        "Date": "Wed, 09 Sep 2026 03:30:13 GMT",
+        "Server": "darkbloom-provider",
+        "transfer-encoding": "chunked"
+      },
+      "response": {
+        "text": "A central three-dimensional object composed of various white and gray cubes is displayed against a solid black background. The application interface features a dark gray theme with multiple sidebars containing various text-based controls and sliders. The left sidebar includes sections for \"Story Steps,\" \"Camera Settings,\" and \"Behavior,\" while the right sidebar contains \"Story Builder\" settings and \"Visibility\" options. Various buttons, input fields, and checkboxes are visible throughout the interface, including options like \"Capture Camera,\" \"Load Matrix,\" and \"Export Story.\"",
+        "reasoning": "",
+        "usage": {
+          "completion_tokens": 107,
+          "prompt_tokens": 327,
+          "total_tokens": 434
+        },
+        "finish_reasons": [
+          "stop"
+        ],
+        "done": true,
+        "cancelled": false,
+        "ttft_s": 0.4584737500000102,
+        "last_content_s": 1.34607908400001,
+        "elapsed_s": 1.359239209000009,
+        "content_chunks": 92,
+        "client_decode_tps_estimate": 119.42244592234505
+      },
+      "mtp_after": {
+        "mtp_enabled": 1.0,
+        "mtp_active": 1.0,
+        "mtp_rounds_total": 798.0,
+        "mtp_tokens_proposed_total": 798.0,
+        "mtp_tokens_accepted_total": 540.0
+      },
+      "mtp_round_delta": 27.0,
+      "cache_inventory_unchanged": true,
+      "cached_tokens": null,
+      "cold_cache_explicitly_observed": null,
+      "checks": {
+        "http_ok": true,
+        "active_slot": true,
+        "usage_consistent": true,
+        "visible_answer": true,
+        "natural_stop": true,
+        "actual_mtp_rounds": true,
+        "no_reported_cache_hit": true
+      },
+      "passed": true
+    },
+    {
+      "name": "tools",
+      "request": {
+        "max_tokens": 512,
+        "messages": [
+          {
+            "content": "Call record_color with color blue and count 2.",
+            "role": "user"
+          }
+        ],
+        "seed": 0,
+        "stream": true,
+        "temperature": 0,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "function": {
+              "description": "Record a color and count.",
+              "name": "record_color",
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "enum": [
+                      "blue"
+                    ],
+                    "type": "string"
+                  },
+                  "count": {
+                    "enum": [
+                      2
+                    ],
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "color",
+                  "count"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ],
+        "model": "gemma-4-26b-qat-4bit",
+        "stream_options": {
+          "include_usage": true
+        },
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "started_unix": 1788924614.500749,
+      "mtp_before": {
+        "mtp_enabled": 1.0,
+        "mtp_active": 1.0,
+        "mtp_rounds_total": 798.0,
+        "mtp_tokens_proposed_total": 798.0,
+        "mtp_tokens_accepted_total": 540.0
+      },
+      "status": 200,
+      "headers": {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+        "Access-Control-Allow-Origin": "*",
+        "Date": "Wed, 09 Sep 2026 03:30:14 GMT",
+        "Server": "darkbloom-provider",
+        "transfer-encoding": "chunked"
+      },
+      "response": {
+        "text": "",
+        "reasoning": "",
+        "usage": {
+          "completion_tokens": 19,
+          "prompt_tokens": 91,
+          "total_tokens": 110
+        },
+        "finish_reasons": [
+          "tool_calls"
+        ],
+        "done": true,
+        "cancelled": false,
+        "ttft_s": 0.2031725840000007,
+        "last_content_s": 0.2031725840000007,
+        "elapsed_s": 0.20321220900000014,
+        "content_chunks": 1,
+        "client_decode_tps_estimate": null
+      },
+      "mtp_after": {
+        "mtp_enabled": 1.0,
+        "mtp_active": 1.0,
+        "mtp_rounds_total": 804.0,
+        "mtp_tokens_proposed_total": 804.0,
+        "mtp_tokens_accepted_total": 546.0
+      },
+      "mtp_round_delta": 6.0,
+      "cache_inventory_unchanged": true,
+      "cached_tokens": null,
+      "cold_cache_explicitly_observed": null,
+      "tool_calls": {
+        "0": {
+          "name": "record_color",
+          "arguments": "{\"color\":\"blue\",\"count\":2}"
+        }
+      },
+      "checks": {
+        "http_ok": true,
+        "active_slot": true,
+        "usage_consistent": true,
+        "tool_finish": true,
+        "exact_tool_call": true
+      },
+      "passed": true
+    }
+  ],
+  "cache_inventory_scope": "Descriptive only: prior text checkpoint writes may still be draining; unchanged files do not prove absence of reads.",
+  "cold_cache_scope": "Multimodal lookup/staging is source-gated off. Explicit cached_tokens is retained when exposed; absent detail is not treated as zero. Directory snapshots cannot prove absence of reads.",
+  "passed": true,
+  "cold_cache_http_evidence_complete": false,
+  "transformation": "Inline image bytes and raw SSE omitted; original report SHA256 retained.",
+  "source_report_sha256": "7f9f6ab875e237e4ee86649de25a6e578d0c92c5b735d25ecc718bdf0d4aa49e"
+}

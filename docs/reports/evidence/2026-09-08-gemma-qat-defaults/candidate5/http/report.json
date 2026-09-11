@@ -1,0 +1,90 @@
+{
+  "valid_requests_while_metadata_blocked": 2,
+  "valid_requests_while_weights_blocked": 2,
+  "requests": 47,
+  "valid_requests": 47,
+  "interrupted_or_invalid_streams": 0,
+  "serving_5xx": 0,
+  "serving_non_2xx": 0,
+  "observed_target_only": true,
+  "observed_activation_transition": true,
+  "first_active_monotonic": 89.094246416,
+  "mtp_rounds_max": 802.0,
+  "mtp_rounds_after_activation_max": 802.0,
+  "fixture_failure_served": false,
+  "latency": {
+    "all": {
+      "ttft": {
+        "n": 47,
+        "p50_s": 0.18148745799999944,
+        "p95_s": 0.18386512500000407,
+        "max_s": 22.234073917
+      },
+      "total": {
+        "n": 47,
+        "p50_s": 1.757315333000001,
+        "p95_s": 1.974114292000003,
+        "max_s": 23.644824707999998
+      }
+    },
+    "waiting_metadata": {
+      "ttft": {
+        "n": 2,
+        "p50_s": 0.18124229199999675,
+        "p95_s": 22.234073917,
+        "max_s": 22.234073917
+      },
+      "total": {
+        "n": 2,
+        "p50_s": 1.5766998329999993,
+        "p95_s": 23.644824707999998,
+        "max_s": 23.644824707999998
+      }
+    },
+    "waiting_weights": {
+      "ttft": {
+        "n": 33,
+        "p50_s": 0.18183366600000284,
+        "p95_s": 0.18386512500000407,
+        "max_s": 0.18421429199999295
+      },
+      "total": {
+        "n": 33,
+        "p50_s": 1.7862815000000012,
+        "p95_s": 1.974114292000003,
+        "max_s": 2.0076362499999902
+      }
+    },
+    "active": {
+      "ttft": {
+        "n": 12,
+        "p50_s": 0.17562608400000101,
+        "p95_s": 0.18319004200000677,
+        "max_s": 0.18319004200000677
+      },
+      "total": {
+        "n": 12,
+        "p50_s": 1.712209209000008,
+        "p95_s": 1.9632153329999937,
+        "max_s": 1.9632153329999937
+      }
+    }
+  },
+  "limitations": [
+    "Descriptive latency only; phases include startup/cache/compile differences and are not a decode speed A/B.",
+    "SSE structural validity is checked and full answers retained; human semantic review is still required.",
+    "Counter can reset at engine replacement; maximum is reported, not sum across engine lifetimes."
+  ],
+  "checks": {
+    "all_serving_requests_valid": true,
+    "no_runner_error_or_abort": true,
+    "provider_alive_until_cleanup": true,
+    "requests_served_during_metadata_delay": true,
+    "initial_target_only_metrics": true,
+    "requests_served_during_weight_delay": true,
+    "activation_after_weight_release": true,
+    "real_mtp_rounds_after_activation": true,
+    "enough_active_requests": true
+  },
+  "passed": true
+}

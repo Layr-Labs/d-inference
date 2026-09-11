@@ -202,7 +202,7 @@ func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
 		if id == keepID {
 			continue
 		}
-		if p.AttestationResult != nil && p.AttestationResult.SerialNumber == serial {
+		if result := p.GetAttestationResult(); result != nil && result.SerialNumber == serial {
 			toEvict = append(toEvict, id)
 		}
 	}

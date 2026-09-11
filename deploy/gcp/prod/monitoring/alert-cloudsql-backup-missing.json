@@ -1,0 +1,41 @@
+{
+  "displayName": "Darkbloom Cloud SQL backup missing",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "No Cloud SQL automated backup window in 25h, sustained 8h",
+      "conditionThreshold": {
+        "filter": "resource.type=\"cloudsql_database\" AND metric.type=\"logging.googleapis.com/user/darkbloom_cloudsql_automated_backup\"",
+        "aggregations": [
+          {
+            "alignmentPeriod": "90000s",
+            "perSeriesAligner": "ALIGN_DELTA",
+            "crossSeriesReducer": "REDUCE_SUM"
+          }
+        ],
+        "comparison": "COMPARISON_LT",
+        "thresholdValue": 1.0,
+        "duration": "28800s",
+        "trigger": {
+          "count": 1
+        },
+        "evaluationMissingData": "EVALUATION_MISSING_DATA_ACTIVE"
+      }
+    }
+  ],
+  "alertStrategy": {
+    "autoClose": "604800s"
+  },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "content": "No automated backup window has been recorded for production Cloud SQL instance `d-inference-prod-pg17` in roughly 33 hours.\n\n**Why this exists separately from 'backup failed'.** A failure alert only fires when a backup window runs and reports a bad status. It is silent in exactly the cases that matter most for the backup control: backups administratively disabled, the instance replaced or renamed, or audit logging broken. This condition fires on the *absence* of the signal (`evaluationMissingData: EVALUATION_MISSING_DATA_ACTIVE`), so silence pages instead of reading as health.\n\n**Impact.** Potentially unbounded. If backups are disabled, both the daily full backups and the premise behind point-in-time recovery are void, and the SOC 2 backup control is not operating.\n\n**Triage.**\n1. `gcloud sql instances describe d-inference-prod-pg17 --project=darkbloom-mainnet --format='yaml(settings.backupConfiguration,state)'` — is `enabled: true` and `pointInTimeRecoveryEnabled: true` still set?\n2. If backups were disabled, find who and when: `gcloud logging read 'protoPayload.methodName=\"cloudsql.instances.update\" AND resource.labels.database_id=\"darkbloom-mainnet:d-inference-prod-pg17\"' --project=darkbloom-mainnet --freshness=7d --limit=10 --format='value(timestamp,protoPayload.authenticationInfo.principalEmail)'`\n3. Confirm the instance name still matches this policy's filter. If production moved to a different instance, this policy and `Darkbloom Cloud SQL backup failed` must be repointed — a rename silences both.\n4. Verify the log-based metric still exists: `gcloud logging metrics describe darkbloom_cloudsql_automated_backup --project=darkbloom-mainnet`.\n\n**Escalate to the Security Officer immediately.** An unexplained gap in backup coverage is a control failure, not merely an availability issue."
+  },
+  "enabled": true,
+  "notificationChannels": [
+    "projects/darkbloom-mainnet/notificationChannels/9823153599696034473"
+  ],
+  "userLabels": {
+    "project": "darkbloom",
+    "purpose": "backup_integrity"
+  }
+}

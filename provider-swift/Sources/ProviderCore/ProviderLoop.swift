@@ -627,7 +627,7 @@ public actor ProviderLoop {
                 ineligibleModelIds.append(model.id)
                 continue
             }
-            if EngineV2SupportedModels.isSupported(modelType: model.modelType) {
+            if EngineV2SupportedModels.isSupported(model: model) {
                 advertised[model.id] = model
             } else {
                 unsupportedModelIds.append(model.id)

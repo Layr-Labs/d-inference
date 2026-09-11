@@ -42,6 +42,7 @@ extension PrefixCachePolicy {
             for (key, value) in values where
                 key.hasPrefix("MLX_") || key.hasPrefix("DARKBLOOM_CBV2_")
                     || key.hasPrefix("DARKBLOOM_QWEN_") || key.hasPrefix("DARKBLOOM_MTP_")
+                    || key.hasPrefix("DARKBLOOM_NEMOTRON35_")
                     || key.hasPrefix("DARKBLOOM_GPTOSS_") || key.hasPrefix("DARKBLOOM_GEMMA4_") {
                 numerics[scope + "." + key] = value
             }

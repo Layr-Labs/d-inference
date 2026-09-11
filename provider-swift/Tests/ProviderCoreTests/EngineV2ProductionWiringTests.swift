@@ -1368,7 +1368,7 @@ struct EngineV2RequestRoutingTests {
         } catch let error as MultiModelBatchSchedulerEngineError {
             #expect(
                 error == .toolChoiceViolation(
-                    "required tool_choice produced visible text before a tool call"))
+                    "forced tool_choice produced visible text before a validated call"))
         }
         #expect(emitted.isEmpty)
         #expect(engine.submitted.count == 1)
@@ -1445,7 +1445,7 @@ struct EngineV2RequestRoutingTests {
         #expect(engine.submitted[0].tokenConstraint == nil)
     }
 
-    @Test("required Qwen tool choice rejects a non-XML parser before submit")
+    @Test("required Qwen tool choice rejects an unframed JSON parser before submit")
     func requiredQwenToolChoiceRejectsParserOverride() async throws {
         let engine = WiringScriptedEngine(script: .stream([]))
         let bridge = makeBridge(engine: engine)
@@ -1470,7 +1470,7 @@ struct EngineV2RequestRoutingTests {
             Issue.record("expected Qwen parser mismatch rejection")
         } catch let error as MultiModelBatchSchedulerEngineError {
             #expect(error == .invalidToolPayload(
-                "inference-enforced Qwen tool_choice requires the qwen3_coder tool parser"))
+                "inference-enforced structured tool_choice requires an XML or Nemotron tool parser"))
         }
         #expect(engine.submitted.isEmpty)
     }
@@ -1545,7 +1545,7 @@ struct EngineV2RequestRoutingTests {
         } catch let error as MultiModelBatchSchedulerEngineError {
             #expect(
                 error == .toolChoiceViolation(
-                    "named tool_choice produced visible text before a tool call"))
+                    "forced tool_choice produced visible text before a validated call"))
         }
         #expect(emitted.isEmpty)
     }

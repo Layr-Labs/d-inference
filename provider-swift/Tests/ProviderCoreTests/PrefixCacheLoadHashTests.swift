@@ -6,6 +6,20 @@ import Testing
 
 @Suite("SSD load hashing follows model capability")
 struct PrefixCacheLoadHashTests {
+    @Test("Lightning default SSD activation always brackets model loading with fresh hashes", arguments: [
+        "nvidia-nemotron-3.5-lightning",
+        "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+    ])
+    func lightningLoadHashBracket(modelID: String) throws {
+        let directory = try snapshot(#"{"model_type":"nemotron_h"}"#)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(PrefixCachePolicy.requiresLoadHashBracket(
+            modelId: modelID, modelDirectory: directory, environment: [:]))
+        #expect(!PrefixCachePolicy.requiresLoadHashBracket(
+            modelId: modelID, modelDirectory: directory,
+            environment: [PrefixCachePolicy.environmentFlag: "0"]))
+    }
+
     private func snapshot(_ config: String) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ssd-load-hash-\(UUID().uuidString)")

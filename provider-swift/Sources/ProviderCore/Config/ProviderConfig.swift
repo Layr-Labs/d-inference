@@ -69,7 +69,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 }
 /// Operator policy for multi-token prediction.
 ///
-/// `auto` enables embedded Qwen 3.5-family heads and the separately published
+/// `auto` enables embedded Qwen 3.5-family and Nemotron Lightning heads, plus the separately published
 /// assistant for the exact `gemma-4-26b-qat-4bit` target. Other Gemma artifacts
 /// and Qwen checkpoints without an embedded declaration require explicit `on`.
 /// Model IDs are exact catalog identities; model types retain the funnel's
@@ -85,10 +85,12 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     case off
 
     /// `model_type` values whose embedded heads self-activate under `auto`.
-    /// Kept in sync with `SpecDecArtifactFunnel.isQwen35Target` — the funnel
-    /// stays the single authority on which models it will *resolve*; this set
-    /// only decides which ones `auto` is willing to *ask about*.
-    static let automaticQwen35ModelTypes: Set<String> = ["qwen3_5", "qwen3_5_moe"]
+    /// Kept in sync with `SpecDecArtifactFunnel.isInlineTarget` — the
+    /// funnel stays the single authority on which models it will *resolve*;
+    /// this set only decides which ones `auto` is willing to *ask about*.
+    static let automaticEmbeddedModelTypes: Set<String> = [
+        "qwen3_5", "qwen3_5_moe", "nemotron_h",
+    ]
 
     private static func isAutomaticGemmaTarget(modelType: String?, modelID: String?) -> Bool {
         modelID == "gemma-4-26b-qat-4bit"
@@ -114,12 +116,12 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .lowercased(), !raw.isEmpty
             else { return false }
-            return Self.automaticQwen35ModelTypes.contains(raw)
+            return Self.automaticEmbeddedModelTypes.contains(raw)
         }
     }
 
     /// Startup warms metadata only for eligible external assistants. Embedded
-    /// Qwen heads resolve from their checkpoint and need no catalog request.
+    /// Qwen and Nemotron heads resolve from their checkpoint and need no catalog request.
     func requiresCatalogPrewarm(forModelType modelType: String?, modelID: String) -> Bool {
         switch self {
         case .off:
@@ -128,7 +130,7 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
             return Self.isAutomaticGemmaTarget(modelType: modelType, modelID: modelID)
         case .on:
             return SpecDecArtifactFunnel.isGemma4Target(modelType: modelType)
-                || SpecDecArtifactFunnel.isQwen35Target(modelType: modelType)
+                || SpecDecArtifactFunnel.isInlineTarget(modelType: modelType)
         }
     }
 }

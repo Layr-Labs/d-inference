@@ -146,6 +146,8 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
                     bytes: bytes,
                     moduleKVRate: nil,
                     isQwenVLMWrapper: true)
+            case let nemotron as NemotronH35Model:
+                rate = fp16KVBytesPerToken(layerKinds: nemotron.cbv2LayerKinds)
             case is MLXVLM.Qwen35:
                 return ModuleFacts(
                     bytes: bytes,

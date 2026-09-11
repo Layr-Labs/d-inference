@@ -29,6 +29,30 @@
 import Foundation
 
 public enum EngineV2SupportedModels {
+    public static let nemotron35LightningModelID =
+        "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit"
+    public static let nemotron35LightningMTPModelID =
+        "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp"
+    public static let nemotron35LightningRegistryModelID = "nvidia-nemotron-3.5-lightning"
+
+    public static func isNemotron35ListingModelID(_ modelID: String?) -> Bool {
+        switch modelID {
+        case nemotron35LightningModelID, nemotron35LightningMTPModelID,
+            nemotron35LightningRegistryModelID:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Nano and Lightning share a model_type but have different checkpoint
+    /// contracts. Only the selected Lightning artifact is onboarded here.
+    public static func isSupported(model: ModelInfo) -> Bool {
+        if normalized(model.modelType) == "nemotron_h" {
+            return isNemotron35ListingModelID(model.id)
+        }
+        return isSupported(modelType: model.modelType)
+    }
     /// Exact config namespaces registered by the official Gemma 4 target
     /// factories. Keep this closed: assistant checkpoints intentionally share
     /// the `gemma4` prefix and must never become advertised chat targets.
@@ -57,7 +81,7 @@ public enum EngineV2SupportedModels {
         var supported: [ModelInfo] = []
         var unsupported: [ModelInfo] = []
         for model in models {
-            if isSupported(modelType: model.modelType) {
+            if isSupported(model: model) {
                 supported.append(model)
             } else {
                 unsupported.append(model)

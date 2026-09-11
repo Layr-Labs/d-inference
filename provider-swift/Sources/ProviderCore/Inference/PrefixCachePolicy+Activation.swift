@@ -20,7 +20,7 @@ extension PrefixCachePolicy {
     }
 
     /// Default SSD activation is separate from backend selection. Only these
-    /// exact Qwen and Gemma QAT artifacts default on; an explicit affirmative global flag
+    /// exact Qwen, Gemma QAT, and Nemotron Lightning artifacts default on; an affirmative global flag
     /// opts other models into their existing capability/identity gates. This
     /// keeps offline cache comparisons available without enabling other artifacts
     /// merely because their attention backend defaults to paged.
@@ -28,13 +28,13 @@ extension PrefixCachePolicy {
         modelId: String,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        let defaultEnabled: Bool
+        var defaultEnabled = EngineV2SupportedModels.isNemotron35ListingModelID(modelId)
         switch modelId {
         case "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
             "EigenLabs/Qwen3.8-27B-4bit-mtp", "gemma-4-26b-qat-4bit":
             defaultEnabled = true
         default:
-            defaultEnabled = false
+            break
         }
         return environmentEnabled(environment[environmentFlag], defaultValue: defaultEnabled)
     }

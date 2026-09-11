@@ -195,13 +195,14 @@ struct MTPConfigKeyTests {
         }
     }
 
-    @Test("catalog prewarm follows external assistant eligibility without warming embedded Qwen")
+    @Test("catalog prewarm follows external assistant eligibility without warming embedded heads")
     func catalogPrewarmPolicy() {
         #expect(MTPMode.auto.requiresCatalogPrewarm(
             forModelType: "gemma4", modelID: "gemma-4-26b-qat-4bit"))
         for (modelType, modelID) in [
             ("gemma4", "gemma-4-26b-8bit"),
             ("qwen3_5_moe", "qwen3.6-35b-a3b-vl-mtp-mxfp8"),
+            ("nemotron_h", "nvidia-nemotron-3.5-lightning"),
         ] {
             #expect(!MTPMode.auto.requiresCatalogPrewarm(forModelType: modelType, modelID: modelID))
             #expect(MTPMode.on.requiresCatalogPrewarm(forModelType: modelType, modelID: modelID))

@@ -53,6 +53,15 @@ struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
             }
         }
 
+        if let nemotron = target as? NemotronH35Model {
+            do {
+                let assistant = try NemotronH35MTPAssistant.load(from: artifact.directory, target: nemotron)
+                return ProviderMTPAssistantHandle(owner: assistant, drafter: assistant)
+            } catch {
+                throw ProviderMTPAssistantLoadError.loadFailed(String(describing: error))
+            }
+        }
+
         guard let gemmaTarget = target as? Gemma4TextModel else {
             throw ProviderMTPAssistantLoadError.targetIncompatible(
                 String(describing: type(of: target)))

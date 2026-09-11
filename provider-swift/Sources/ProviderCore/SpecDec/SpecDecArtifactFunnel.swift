@@ -172,7 +172,7 @@ actor SpecDecArtifactFunnel {
         guard request.enabled else {
             return .init(artifact: nil, status: .disabled(.configDisabled, configured: false))
         }
-        if Self.isQwen35Target(modelType: request.modelType),
+        if Self.isInlineTarget(modelType: request.modelType),
             let directory = request.modelDirectory,
             request.inlineDeclaration.mayDeclareEmbeddedArtifact
         {
@@ -187,7 +187,7 @@ actor SpecDecArtifactFunnel {
             }
         }
         guard Self.isGemma4Target(modelType: request.modelType)
-            || Self.isQwen35Target(modelType: request.modelType)
+            || Self.isInlineTarget(modelType: request.modelType)
         else {
             return .init(artifact: nil, status: .disabled(.targetUnsupported, configured: true))
         }
@@ -393,6 +393,14 @@ actor SpecDecArtifactFunnel {
         return modelType == "qwen3_5" || modelType == "qwen3_5_moe"
     }
 
+    static func isInlineQwenTarget(modelType: String?) -> Bool {
+        isQwen35Target(modelType: modelType)
+    }
+
+    static func isInlineTarget(modelType: String?) -> Bool {
+        isInlineQwenTarget(modelType: modelType)
+            || modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
+    }
     static func killSwitchEnabled(environment: [String: String]) -> Bool {
         guard let raw = environment["DARKBLOOM_CBV2_MTP"]?
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !raw.isEmpty

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-11 · commit `7c394fa2b`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -910,6 +910,12 @@ procedure, its inputs and the regeneration flow are in
 **Installer** — `./scripts/test-install-atomic.sh` exercises the atomic
 install/replace path of `scripts/install.sh` in a temp dir (and runs
 `scripts/sync-install-embed.sh check` first).
+
+`python3 -m unittest discover -s scripts -p test_installer_rollback.py` injects
+rename failures into app and legacy-flat commit functions. It checks successful
+restoration and retention of the previous payload if restoration also fails.
+These fixtures use temporary directories without downloads, signing, enrollment,
+or running the provider; Release Integrity CI runs them on Linux.
 
 ### 5. Console UI and Admin UI
 

@@ -185,12 +185,21 @@ verify_staged_app_payload() {
         && verify_file_hash "$app_bin/mlx.metallib" "$metallib_hash" "App metallib"
 }
 
+restore_install_path() {
+    local previous=$1
+    local destination=$2
+    [ -d "$previous" ] || return 0
+    mv "$previous" "$destination" || {
+        fail_install "Could not restore $destination; previous installation retained at $previous."
+        return 1
+    }
+}
+
 commit_staged_app() {
     local staged_app=$1
     local install_dir=$2
     local backup="$install_dir/.install-backup-$$-$RANDOM"
     local destination="$install_dir/Darkbloom.app"
-    local had_previous=0
     mkdir -p "$backup" "$install_dir/bin"
 
     if [ -d "$destination" ]; then
@@ -198,11 +207,9 @@ commit_staged_app() {
             rm -rf "$backup"
             return 1
         }
-        had_previous=1
     fi
     if ! mv "$staged_app" "$destination"; then
-        [ "$had_previous" -eq 1 ] \
-            && mv "$backup/Darkbloom.app" "$destination" 2>/dev/null || true
+        restore_install_path "$backup/Darkbloom.app" "$destination" || return 1
         rm -rf "$backup"
         return 1
     fi
@@ -214,8 +221,7 @@ commit_staged_app() {
         || ! ln -sfn "darkbloom-enclave" "$install_dir/bin/eigeninference-enclave"
     then
         rm -rf "$destination"
-        [ "$had_previous" -eq 1 ] \
-            && mv "$backup/Darkbloom.app" "$destination" 2>/dev/null || true
+        restore_install_path "$backup/Darkbloom.app" "$destination" || return 1
         rm -rf "$backup"
         return 1
     fi
@@ -236,7 +242,7 @@ commit_staged_flat_bundle() {
         }
     fi
     if ! mv "$staged_bin" "$destination"; then
-        [ -d "$backup/bin" ] && mv "$backup/bin" "$destination" 2>/dev/null || true
+        restore_install_path "$backup/bin" "$destination" || return 1
         rm -rf "$backup"
         return 1
     fi
@@ -288,7 +294,7 @@ install_bundle_atomically() {
         }
         commit_staged_app "$stage/Darkbloom.app" "$install_dir" || {
             rm -rf "$stage"
-            fail_install "Atomic app swap failed; previous install was restored."
+            fail_install "App swap failed."
             return 1
         }
     else
@@ -308,7 +314,7 @@ install_bundle_atomically() {
         fi
         commit_staged_flat_bundle "$flat_bin" "$install_dir" || {
             rm -rf "$stage"
-            fail_install "Atomic flat-bundle swap failed; previous install was restored."
+            fail_install "Flat-bundle swap failed."
             return 1
         }
     fi
@@ -397,7 +403,8 @@ echo ""
 echo "→ [2/5] Downloading Darkbloom v${VERSION}..."
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
-TARBALL="/tmp/darkbloom-bundle.tar.gz"
+TARBALL=$(mktemp "${TMPDIR:-/tmp}/darkbloom-bundle.XXXXXX")
+trap 'rm -f "$TARBALL"' EXIT
 curl -f#L "$BUNDLE_URL" -o "$TARBALL"
 
 ACTUAL_HASH=$(shasum -a 256 "$TARBALL" | cut -d' ' -f1)
@@ -406,18 +413,17 @@ if [ "$ACTUAL_HASH" != "$BUNDLE_HASH" ]; then
     echo "  ✗ Bundle hash mismatch — refusing to install possibly-tampered binary."
     echo "    Expected: $BUNDLE_HASH"
     echo "    Got:      $ACTUAL_HASH"
-    rm -f "$TARBALL"
     exit 1
 fi
 echo "  Bundle hash verified ✓"
 
 echo "  Staging and verifying the complete app before touching the live install ..."
 if ! install_bundle_atomically "$TARBALL" "$INSTALL_DIR" "$BINARY_HASH" "$METALLIB_HASH"; then
-    rm -f "$TARBALL"
-    echo "  Existing installation was left unchanged."
+    echo "  Installation failed; check the messages above for any retained recovery backup."
     exit 1
 fi
 rm -f "$TARBALL"
+trap - EXIT
 echo "  Strict signature, runtime resources, and atomic swap verified ✓"
 
 # Make available in PATH. Try /usr/local/bin symlink, fall back to shell rc.

@@ -205,8 +205,9 @@ func (lg *LoadGenerator) Run() *LoadResult {
 				return
 			}
 
-			respBody, _ := io.ReadAll(resp.Body)
+			respBody, readErr := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			e2eDuration = time.Since(reqStart)
 
 			rr := RequestResult{
 				Index:      idx,
@@ -252,7 +253,10 @@ func (lg *LoadGenerator) Run() *LoadResult {
 				}
 			}
 
-			if resp.StatusCode == http.StatusOK {
+			if readErr != nil {
+				errorCount.Add(1)
+				rr.Error = fmt.Errorf("read response body: %w", readErr)
+			} else if resp.StatusCode == http.StatusOK {
 				successCount.Add(1)
 
 				timingsMu.Lock()

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `7c394fa2b`
+> Last updated: 2026-09-11 · commit `965589a91`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -119,6 +119,13 @@ integer index; the event profiler keeps its separate nearest-rank convention.
 `e2e/testbed/profile/profile.go` indexes one event snapshot while preserving
 request-start order, repeated starts and individual error counts. Reports should
 be built after event producers have finished.
+
+`LoadGenerator.Run` measures each request through completion of the response body.
+An incomplete body counts as a failed request even when its HTTP status is 200;
+failed reads do not enter successful latency percentiles. The local HTTP fixtures
+in `e2e/testbed/load_response_test.go` cover delayed and truncated bodies without
+a provider or model. Earlier load reports measured response headers only; their
+latencies are not comparable to this corrected end-to-end measurement.
 
 ```bash
 go test -race -short ./e2e/testbed/...

@@ -1284,7 +1284,7 @@
         <div class="narrative">
           Apple has shipped over 100 million machines with serious ML hardware: unified memory, high bandwidth, Neural Engines, and enough RAM in high-end systems to serve large MoE models. Most of that capacity sits idle for long stretches every day.<br><br>
           <strong>Darkbloom turns that idle capacity into a private inference market.</strong><br><br>
-          Developers get lower prices without changing SDKs. Mac owners earn from machines they already own. The coordinator matches demand to providers, but prompts stay encrypted and hidden from the operator.
+          Developers get lower prices without changing SDKs. Mac owners earn from machines they already own. The coordinator matches demand to verified providers. Network connections are encrypted; the coordinator and provider process prompts in memory.
         </div>
       </div>
       <div class="stat-grid rv">
@@ -1306,7 +1306,7 @@
         <div class="narrative">
           <span class="dim">Routing to idle machines requires verified software and protected network connections.</span><br><br>
           Prompts can contain customer conversations, internal plans, source code, and other sensitive context. A marketplace promise is not enough when inference runs on hardware you do not own.<br><br>
-          Darkbloom is designed around a stricter guarantee: the coordinator can route requests, the provider can serve them, but neither should get a usable view of the prompt.<br><br>
+          Darkbloom protects requests in transit and verifies the provider software. The coordinator processes plaintext in memory for routing and billing; the attested provider decrypts it to run inference.<br><br>
           <strong>Private inference requires privacy that can be verified, not just promised.</strong>
         </div>
       </div>
@@ -1320,8 +1320,8 @@
     <div class="container">
       <div class="rv">
         <div class="sec-label">04 - Privacy Architecture</div>
-        <h2>Operator-blind by design</h2>
-        <p class="sec-desc">Darkbloom removes the practical software paths an operator could use to observe inference data. Four layers work together, with hardware identity verified privately by the coordinator.</p>
+        <h2>Verified software, encrypted connections</h2>
+        <p class="sec-desc">Encrypted network hops, hardware identity checks, and a hardened provider runtime work together. The coordinator verifies provider identity and processes request content in memory without logging or retaining it.</p>
       </div>
       <div class="card-grid rv">
         <div class="card">
@@ -1332,12 +1332,12 @@
         <div class="card">
           <div class="card-label">Hardware</div>
           <h3>Hardware-verified</h3>
-          <p>Each provider uses a key generated inside Apple's tamper-resistant secure hardware. The attestation chain traces back to Apple's root certificate authority.</p>
+          <p>Each provider's encryption key is bound to a Secure Enclave identity. The coordinator verifies the attestation chain against Apple's root certificate authority.</p>
         </div>
         <div class="card">
           <div class="card-label">Runtime</div>
           <h3>Hardened runtime</h3>
-          <p>The inference process is locked down at the OS level. Debugger attachment and memory inspection are blocked so the operator cannot inspect a running request.</p>
+          <p>The signed inference process uses macOS hardened runtime protections and debugger restrictions. The provider process still handles plaintext to run the model.</p>
         </div>
         <div class="card">
           <div class="card-label">Output</div>
@@ -1346,42 +1346,42 @@
         </div>
       </div>
 
-      <!-- Access path elimination diagram -->
+      <!-- Request protection layers -->
       <div class="rv" style="margin-top:48px;">
         <svg width="100%" viewBox="0 0 600 310" fill="none" xmlns="http://www.w3.org/2000/svg" style="max-width:600px;margin:0 auto;display:block;">
-          <!-- Layer 5 (outermost): E2E Encryption -->
+          <!-- Layer 5 (outermost): Encrypted network hops -->
           <rect x="0" y="0" width="600" height="310" rx="16" fill="#1A0C6D" opacity="0.04" stroke="#1A0C6D" stroke-width="1" stroke-opacity="0.12"/>
-          <text x="20" y="26" style="font-family:'ABC Repro Mono',monospace;font-size:11px;fill:#1A0C6D;opacity:0.6">E2E Encryption</text>
-          <text x="580" y="26" text-anchor="end" style="font-family:'ABC Repro Mono',monospace;font-size:9px;fill:#ACB1BC">encrypted before it leaves your device</text>
+          <text x="20" y="26" style="font-family:'ABC Repro Mono',monospace;font-size:11px;fill:#1A0C6D;opacity:0.6">Network Encryption</text>
+          <text x="580" y="26" text-anchor="end" style="font-family:'ABC Repro Mono',monospace;font-size:9px;fill:#ACB1BC">HTTPS to coordinator · encrypted provider hop</text>
 
           <!-- Layer 4: OS Integrity -->
           <rect x="20" y="40" width="560" height="250" rx="14" fill="#1A0C6D" opacity="0.04" stroke="#1A0C6D" stroke-width="1" stroke-opacity="0.12"/>
           <text x="40" y="64" style="font-family:'ABC Repro Mono',monospace;font-size:11px;fill:#1A0C6D;opacity:0.6">OS Integrity</text>
           <text x="560" y="64" text-anchor="end" style="font-family:'ABC Repro Mono',monospace;font-size:9px;fill:#ACB1BC">SIP enforced · signed system volume · binary self-hash</text>
 
-          <!-- Layer 3: Memory Isolation -->
+          <!-- Layer 3: Attested key binding -->
           <rect x="44" y="78" width="512" height="192" rx="12" fill="#1A0C6D" opacity="0.04" stroke="#1A0C6D" stroke-width="1" stroke-opacity="0.12"/>
-          <text x="64" y="102" style="font-family:'ABC Repro Mono',monospace;font-size:11px;fill:#1A0C6D;opacity:0.6">Memory Isolation</text>
-          <text x="536" y="102" text-anchor="end" style="font-family:'ABC Repro Mono',monospace;font-size:9px;fill:#ACB1BC">Hypervisor.framework · Stage 2 page tables</text>
+          <text x="64" y="102" style="font-family:'ABC Repro Mono',monospace;font-size:11px;fill:#1A0C6D;opacity:0.6">Key Binding</text>
+          <text x="536" y="102" text-anchor="end" style="font-family:'ABC Repro Mono',monospace;font-size:9px;fill:#ACB1BC">attested identity · bound encryption key</text>
 
           <!-- Layer 2: Hardened Process -->
           <rect x="68" y="116" width="464" height="134" rx="10" fill="#1A0C6D" opacity="0.04" stroke="#1A0C6D" stroke-width="1" stroke-opacity="0.12"/>
           <text x="88" y="140" style="font-family:'ABC Repro Mono',monospace;font-size:11px;fill:#1A0C6D;opacity:0.6">Hardened Process</text>
-          <text x="512" y="140" text-anchor="end" style="font-family:'ABC Repro Mono',monospace;font-size:9px;fill:#ACB1BC">debugger blocked · no shell access</text>
+          <text x="512" y="140" text-anchor="end" style="font-family:'ABC Repro Mono',monospace;font-size:9px;fill:#ACB1BC">signed runtime · debugger restrictions</text>
 
           <!-- Layer 1 (innermost): Your inference data -->
           <rect x="96" y="156" width="408" height="74" rx="8" fill="white" stroke="#1A0C6D" stroke-width="1.5"/>
           <text x="300" y="188" text-anchor="middle" style="font-family:'ABC Repro',sans-serif;font-size:15px;font-weight:600;fill:#1A0C6D">Your inference data</text>
           <text x="300" y="210" text-anchor="middle" style="font-family:'ABC Repro Mono',monospace;font-size:10px;fill:#ACB1BC">prompts · responses · model state</text>
 
-          <!-- Operator label (outside) -->
-          <text x="300" y="302" text-anchor="middle" style="font-family:'ABC Repro Mono',monospace;font-size:10px;fill:#ACB1BC">↑ operator is here — every path inward is eliminated</text>
+          <!-- Plaintext processing boundary -->
+          <text x="300" y="302" text-anchor="middle" style="font-family:'ABC Repro Mono',monospace;font-size:10px;fill:#ACB1BC">coordinator and provider process plaintext in memory</text>
         </svg>
       </div>
 
       <!-- Eigen Blue showcase block — brand element -->
       <div class="eigen-block rv">
-        <h3>The operator contributes compute, not visibility.</h3>
+        <h3>Verified endpoints for private inference.</h3>
         <p>Your app connects over HTTPS, with optional sender encryption that terminates at the coordinator. The coordinator processes plaintext in memory for routing and billing, then re-encrypts it to the attested provider. The provider runs inference inside a hardened process.</p>
         <a href="#paper" class="btn-white">Read the paper ↗</a>
       </div>

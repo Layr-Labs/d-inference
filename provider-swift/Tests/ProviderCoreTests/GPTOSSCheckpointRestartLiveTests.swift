@@ -123,7 +123,9 @@ struct GPTOSSCheckpointRestartLiveTests {
         let answer = stripHarmonyChannelFraming(fromAssistantContent: text)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         try #require(!answer.isEmpty, "request \(id) produced no final answer")
-        #expect(answer.uppercased().contains(expectedMarker),
+        let normalized = answer.uppercased().trimmingCharacters(in:
+            CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "`\"'.*")))
+        #expect(normalized == expectedMarker,
                 "request \(id) final answer must preserve the requested fact: \(answer)")
         for other in ["ALDER-427", "BRONZE-913", "CEDAR-682"] where other != expectedMarker {
             #expect(!answer.uppercased().contains(other),

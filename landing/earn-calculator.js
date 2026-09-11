@@ -119,7 +119,7 @@
     if (!list) return;
     list.innerHTML = "";
     const status = document.createElement("li");
-    status.className = "calc-model-row";
+    status.className = "calc-model-row calc-model-empty";
     status.textContent = message;
     list.appendChild(status);
   }

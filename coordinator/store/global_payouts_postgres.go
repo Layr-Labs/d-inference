@@ -125,9 +125,11 @@ func (s *PostgresStore) BeginGlobalPayout(accountID, id string, now time.Time) (
 	}
 	return &p, tx.Commit(ctx)
 }
-func (s *PostgresStore) ClaimGlobalPayout(id string, now time.Time) (bool, error) {
-	ctx, cancel := payoutContext()
-	defer cancel()
+
+// mutateGlobalPayout owns the row lock and atomic persistence of a payout change.
+// A false callback result leaves the row untouched and rolls back; a true result
+// commits both the row and any ledger writes made through the same transaction.
+func (s *PostgresStore) mutateGlobalPayout(ctx context.Context, id string, mutate func(pgx.Tx, *GlobalPayout) (bool, error)) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -137,43 +139,47 @@ func (s *PostgresStore) ClaimGlobalPayout(id string, now time.Time) (bool, error
 	if err = readPayoutJSON(tx.QueryRow(ctx, `SELECT data FROM global_payout_withdrawals WHERE id=$1 FOR UPDATE`, id), &p); err != nil {
 		return false, err
 	}
-	if p.Status == "quoted" || p.Refunded || p.RequiresManualReconciliation() || p.LeaseUntil.After(now) {
-		return false, nil
+	changed, err := mutate(tx, &p)
+	if err != nil || !changed {
+		return false, err
 	}
-	if p.ExternalID == "" && p.Rejection == nil {
-		p.DispatchAttempts++
-	}
-	p.LeaseUntil = now.Add(time.Minute)
 	if err = persistGlobalPayout(ctx, tx, p); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
 }
+
+func (s *PostgresStore) ClaimGlobalPayout(id string, now time.Time) (bool, error) {
+	ctx, cancel := payoutContext()
+	defer cancel()
+	return s.mutateGlobalPayout(ctx, id, func(_ pgx.Tx, p *GlobalPayout) (bool, error) {
+		if p.Status == "quoted" || p.Refunded || p.RequiresManualReconciliation() || p.LeaseUntil.After(now) {
+			return false, nil
+		}
+		if p.ExternalID == "" && p.Rejection == nil {
+			p.DispatchAttempts++
+		}
+		p.LeaseUntil = now.Add(time.Minute)
+		return true, nil
+	})
+}
+
 func (s *PostgresStore) ApplyGlobalPayout(id string, r GlobalPayoutResult, now time.Time) error {
 	ctx, cancel := payoutContext()
 	defer cancel()
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	var p GlobalPayout
-	if err = readPayoutJSON(tx.QueryRow(ctx, `SELECT data FROM global_payout_withdrawals WHERE id=$1 FOR UPDATE`, id), &p); err != nil {
-		return err
-	}
-	refund, err := applyGlobalResult(&p, r, now)
-	if err != nil {
-		return err
-	}
-	if refund {
-		if err = globalPayoutLedger(ctx, tx, p, p.AmountMicroUSD, LedgerRefund, "global_payout_refund:"+id); err != nil {
-			return err
+	_, err := s.mutateGlobalPayout(ctx, id, func(tx pgx.Tx, p *GlobalPayout) (bool, error) {
+		refund, err := applyGlobalResult(p, r, now)
+		if err != nil {
+			return false, err
 		}
-	}
-	if err = persistGlobalPayout(ctx, tx, p); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+		if refund {
+			if err := globalPayoutLedger(ctx, tx, *p, p.AmountMicroUSD, LedgerRefund, "global_payout_refund:"+id); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	})
+	return err
 }
 func (s *PostgresStore) listGlobalPayouts(query string, args ...any) ([]GlobalPayout, error) {
 	ctx, cancel := payoutContext()

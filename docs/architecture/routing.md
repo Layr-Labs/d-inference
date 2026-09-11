@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-11 · commit `e3993c611`
+> Last updated: 2026-09-11 · commit `cea57e9ea`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -646,6 +646,10 @@ traffic before deploy. It has no binary; it is driven from tests.
   (`FleetConfig`, `DefaultHardwareSpec`) into a fresh `Registry`.
 - `fleet_ndjson.go` — `LoadFleetNDJSON` reconstructs a fleet from exported
   fleet snapshots (`store.FleetSnapshotRow`) at the tick nearest a given time.
+  The loader validates every line while retaining only rows for the current
+  best tick; it accepts interleaved timestamps, chooses the earlier tick on a
+  distance tie and keeps duplicate-slot precedence in file order. A zero
+  requested time selects the latest tick.
 - `trace.go` / `trace_ndjson.go` — `GenerateTrace` and
   `CalibrationPromptMix` build synthetic prompt mixes;
   `LoadProfilesNDJSON` turns exported request profiles into arrivals.

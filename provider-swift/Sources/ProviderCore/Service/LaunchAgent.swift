@@ -54,20 +54,7 @@ public enum LaunchAgent: Sendable {
     }
 
     private static func isLoaded(label: String) -> Bool {
-        let target = "gui/\(getuid())/\(label)"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = ["print", target]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
-        } catch {
-            return false
-        }
+        LaunchctlControl.printSucceeds(label: label)
     }
 
     // MARK: - Install & Start
@@ -220,23 +207,10 @@ public enum LaunchAgent: Sendable {
     /// `reloadIfMissing`: `restart()` wants it (bring up an unloaded-but-installed
     /// job); the watchdog passes false so it never loads a job the user stopped.
     private static func kickstartInPlace(label serviceLabel: String, reloadIfMissing: Bool = true) throws {
-        let target = "gui/\(getuid())/\(serviceLabel)"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = ["kickstart", "-k", target]
-
-        let errPipe = Pipe()
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = errPipe
-
-        try process.run()
-        process.waitUntilExit()
-
-        if process.terminationStatus != 0 {
-            let stderr = String(
-                data: errPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
+        let result = try LaunchctlControl.runThrowing(
+            ["kickstart", "-k", LaunchctlControl.target(label: serviceLabel)], captureStderr: true)
+        if !result.succeeded {
+            let stderr = result.stderr
             // Error 3 = "could not find service": the service vanished between
             // the isLoaded() check and here.
             if stderr.contains("3:") || stderr.contains("could not find service") {
@@ -448,9 +422,6 @@ public enum LaunchAgent: Sendable {
     }
 
     private static func loadService() throws {
-        let path = plistPath()
-        let domain = "gui/\(getuid())"
-
         // Clear any persistent disable left by `stop()` (launchctl disable
         // survives reboots). Without this, bootstrap fails and RunAtLoad stays
         // suppressed. Best-effort: if it fails while the service is actually
@@ -458,22 +429,10 @@ public enum LaunchAgent: Sendable {
         LaunchctlControl.setEnabled(true, label: label)
 
         // Bootstrap registers the service with launchd.
-        let bootstrap = Process()
-        bootstrap.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        bootstrap.arguments = ["bootstrap", domain, path.path]
-
-        let errPipe = Pipe()
-        bootstrap.standardOutput = FileHandle.nullDevice
-        bootstrap.standardError = errPipe
-
-        try bootstrap.run()
-        bootstrap.waitUntilExit()
-
-        if bootstrap.terminationStatus != 0 {
-            let stderr = String(
-                data: errPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
+        let bootstrap = try LaunchctlControl.runThrowing(
+            ["bootstrap", LaunchctlControl.guiDomain(), plistPath().path], captureStderr: true)
+        if !bootstrap.succeeded {
+            let stderr = bootstrap.stderr
             // Error 37 = "already loaded" -- not a real failure.
             if !stderr.contains("37:") && !stderr.contains("already loaded") {
                 throw LaunchAgentError.bootstrapFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -485,48 +444,23 @@ public enum LaunchAgent: Sendable {
         // successful bootstrap the service exists, so kickstart should return 0 —
         // surface a non-zero exit (or a spawn failure) rather than silently
         // reporting success when launchd never launched the process.
-        let target = "gui/\(getuid())/\(label)"
-        let kickstart = Process()
-        kickstart.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        kickstart.arguments = ["kickstart", target]
-        let kickstartErr = Pipe()
-        kickstart.standardOutput = FileHandle.nullDevice
-        kickstart.standardError = kickstartErr
-
+        let kickstart: LaunchctlControl.Output
         do {
-            try kickstart.run()
+            kickstart = try LaunchctlControl.runThrowing(
+                ["kickstart", LaunchctlControl.target(label: label)], captureStderr: true)
         } catch {
             throw LaunchAgentError.kickstartFailed("could not run launchctl kickstart: \(error.localizedDescription)")
         }
-        kickstart.waitUntilExit()
-
-        if kickstart.terminationStatus != 0 {
-            let stderr = String(
-                data: kickstartErr.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
-            throw LaunchAgentError.kickstartFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        if !kickstart.succeeded {
+            throw LaunchAgentError.kickstartFailed(kickstart.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 
     private static func unloadService(label serviceLabel: String = LaunchAgent.label) throws {
-        let target = "gui/\(getuid())/\(serviceLabel)"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = ["bootout", target]
-
-        let errPipe = Pipe()
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = errPipe
-
-        try process.run()
-        process.waitUntilExit()
-
-        if process.terminationStatus != 0 {
-            let stderr = String(
-                data: errPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
+        let result = try LaunchctlControl.runThrowing(
+            ["bootout", LaunchctlControl.target(label: serviceLabel)], captureStderr: true)
+        if !result.succeeded {
+            let stderr = result.stderr
             // Error 3 = "could not find service" -- already unloaded, not an error.
             if !stderr.contains("3:") && !stderr.contains("could not find service") {
                 throw LaunchAgentError.bootoutFailed(stderr.trimmingCharacters(in: .whitespacesAndNewlines))

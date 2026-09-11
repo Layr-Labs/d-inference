@@ -396,7 +396,7 @@ public struct WatchdogRecoveryService: Sendable {
         // path, so the backend guard is the one automated mitigation left
         // and may trip.
         // The write is BOUND to the kickstart: any exit below that does not
-        // issue the restart rolls it back (`rollBackTripUnlessKickstarted`)
+        // issue the restart rolls it back (the deferred undo below)
         // — the chain counter is only persisted for issued restarts, so a
         // no-restart exit means the counted third restart never happened and
         // a stranded guard would force contiguous on the next manual start
@@ -438,14 +438,13 @@ public struct WatchdogRecoveryService: Sendable {
         // site), because launchd has already counted the restart — a
         // bookkeeping failure after that point must not strip the guard from
         // the daemon that is about to boot.
-        func rollBackTripUnlessKickstarted(_ outcome: DownOutcome) -> DownOutcome {
+        defer {
             if let undoTrip {
                 undoTrip()
                 deps.log(
                     "crash-loop backend guard rolled back — recovery ended without an "
                         + "issued restart, so the counted restart never happened")
             }
-            return outcome
         }
 
         var updatedTo: String?
@@ -478,7 +477,7 @@ public struct WatchdogRecoveryService: Sendable {
                 deps.log("update skipped because lock became busy: \(reason)")
             case .cancelled(let reason):
                 deps.log("watchdog update cancelled: \(reason)")
-                return rollBackTripUnlessKickstarted(.noLongerLoaded)
+                return .noLongerLoaded
             case .downloadFailed(let reason):
                 deps.log("update check/download failed; restarting current install: \(reason)")
             case .hashMismatch(let expected, let got):
@@ -498,7 +497,7 @@ public struct WatchdogRecoveryService: Sendable {
                     let recoveryReason =
                         "post-refusal update recovery failed: \(error)"
                     deps.log(recoveryReason)
-                    return rollBackTripUnlessKickstarted(.failed(recoveryReason))
+                    return .failed(recoveryReason)
                 }
             }
         }
@@ -539,7 +538,7 @@ public struct WatchdogRecoveryService: Sendable {
                     let before = state
                     state.cancelPendingAttempt()
                     try writeIfChanged(state, before: before)
-                    return rollBackTripUnlessKickstarted(.noLongerLoaded)
+                    return .noLongerLoaded
                 }
                 // The counted restart is now REAL: launchd has been told to
                 // relaunch. Disarm the trip undo — if the launch bookkeeping
@@ -573,7 +572,7 @@ public struct WatchdogRecoveryService: Sendable {
             // consistent in between. Post-kickstart bookkeeping throws reach
             // here too, but the undo was disarmed at the kickstart, so the
             // guard survives them.
-            return rollBackTripUnlessKickstarted(.failed(reason))
+            return .failed(reason)
         }
     }
 

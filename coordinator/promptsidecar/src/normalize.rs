@@ -1,3 +1,4 @@
+use crate::render_values::{sanitize_array, scalar_string};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use thiserror::Error;
@@ -956,24 +957,6 @@ fn tool_name(tool: &Value) -> Option<&str> {
         .as_str()
 }
 
-fn sanitize_array(values: Vec<Value>) -> Vec<Value> {
-    values.into_iter().filter_map(sanitize).collect()
-}
-
-fn sanitize(value: Value) -> Option<Value> {
-    match value {
-        Value::Null => None,
-        Value::Array(values) => Some(Value::Array(sanitize_array(values))),
-        Value::Object(values) => Some(Value::Object(
-            values
-                .into_iter()
-                .filter_map(|(key, value)| sanitize(value).map(|value| (key, value)))
-                .collect(),
-        )),
-        value => Some(value),
-    }
-}
-
 fn validate_tool_history(messages: &[Value]) -> Result<(), NormalizeError> {
     let mut allowed = false;
     for message in messages {
@@ -1212,15 +1195,6 @@ fn normalize_harmony_schema(value: &mut Value) {
     {
         let rendered = scalar_string(object.get("default").unwrap());
         object.insert("default".into(), Value::String(rendered));
-    }
-}
-
-fn scalar_string(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        Value::Bool(value) => value.to_string(),
-        Value::Number(value) => value.to_string(),
-        _ => String::new(),
     }
 }
 

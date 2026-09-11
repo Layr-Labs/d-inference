@@ -83,11 +83,62 @@ normpath() {
     printf '%s\n' "${out[*]}"
 }
 
-# One link parser feeds both existence checks and the navigation graph.
-# Reference definitions and percent-encoded spaces must count as inbound links.
+# One parser feeds existence checks and the navigation graph. Definitions are
+# checked even when unused, but only rendered link uses create navigation edges.
 link_targets() {
-    { grep -oE '\]\([^)[:space:]]+' "$1" | sed 's/^](//' ;
-      grep -oE '^\[[^]]+\]:[[:space:]]+[^[:space:]]+' "$1" | sed -E 's/^\[[^]]+\]:[[:space:]]+//' ; } 2>/dev/null
+    python3 - "$1" "${2:-all}" <<'PY_LINKS'
+from pathlib import Path
+import re
+import sys
+
+source, mode = sys.argv[1:]
+lines = []
+fence = None
+for line in Path(source).read_text().splitlines():
+    marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+    if fence is not None:
+        if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
+            fence = None
+        continue
+    if marker:
+        fence = marker[1]
+        continue
+    lines.append(line)
+
+
+def label(value):
+    return " ".join(value.split()).casefold()
+
+
+definitions = {}
+body = []
+for line in lines:
+    definition = re.match(r"^ {0,3}\[([^]\n]+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))", line)
+    if definition:
+        target = definition[2] or definition[3]
+        definitions.setdefault(label(definition[1]), target)
+        if mode == "all":
+            print(target)
+    else:
+        body.append(line)
+
+text = "\n".join(body)
+# Backtick spans contain literal examples, not rendered links.
+text = re.sub(r"(?<!`)(`+)(?!`).*?\1(?!`)", "", text, flags=re.DOTALL)
+links = re.compile(
+    r"(?<!\\)\[([^]\n]*)\]"
+    r"(?:\(\s*(?:<([^>\n]+)>|([^\s)]+))[^)]*\)|\[([^]\n]*)\])?"
+)
+for match in links.finditer(text):
+    if match[2] is not None or match[3] is not None:
+        print(match[2] or match[3])
+    else:
+        # Full [text][id], collapsed [id][], and shortcut [id] references.
+        reference = match[4] or match[1]
+        target = definitions.get(label(reference))
+        if target is not None:
+            print(target)
+PY_LINKS
 }
 
 relative_targets() {
@@ -97,7 +148,7 @@ relative_targets() {
         target=${target%%#*}
         target=${target%%\?*}
         [ -n "$target" ] && printf '%s\n' "${target//%20/ }"
-    done < <(link_targets "$1")
+    done < <(link_targets "$1" "${2:-all}")
 }
 
 # ---------------------------------------------------------------------------
@@ -182,7 +233,7 @@ if [ "$ORPHAN_CHECK" -eq 1 ]; then
     for f in "${FILES[@]}" "${EXTRA_LINK_FILES[@]}"; do
         [ -f "$f" ] || continue
         dir=$(dirname "$f")
-        relative_targets "$f" |
+        relative_targets "$f" navigation |
         while IFS= read -r target; do
             case "$target" in
                 /*) path=".${target}" ;;

@@ -424,8 +424,6 @@ jobs:
       - name: Lint, typecheck and test
         run: make admin-lint admin-typecheck admin-test
       - name: Build without a database connection
-        env:
-          ADMIN_DB_URL: postgresql://unused:unused@127.0.0.1:1/unused
         run: make admin-build
 
   test-landing:

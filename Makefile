@@ -110,7 +110,7 @@ admin-install: ## Install locked dependencies for admin-ui
 	cd admin-ui && npm ci
 
 admin-build: ## Build the admin dashboard
-	cd admin-ui && npm run build
+	cd admin-ui && ADMIN_DB_URL="$${ADMIN_DB_URL:-postgresql://unused:unused@127.0.0.1:1/unused}" npm run build
 
 admin-lint: ## Lint admin dashboard sources
 	cd admin-ui && npm run lint

@@ -59,8 +59,8 @@ struct MTPIdleUpgradeTests {
     @Test func slowPreparationKeepsTwoIndependentProvidersServing() async {
         let providers = [UpgradeServingFixture(), UpgradeServingFixture()]
         let fetch = UpgradeBarrier()
-        let busy = UpgradeBarrier()
-        let tasks = providers.map { provider in
+        let busy = providers.map { _ in UpgradeBarrier() }
+        let tasks = providers.enumerated().map { index, provider in
             Task {
                 await MTPIdleUpgrade.run(
                     prepare: { await fetch.wait(); return try await provider.prepare() },
@@ -68,19 +68,19 @@ struct MTPIdleUpgradeTests {
                     commitIfIdle: { try await provider.commit($0) },
                     discard: { await provider.discard($0) },
                     finishDrain: { await provider.finishDrain($0) },
-                    pause: { await busy.wait() })
+                    pause: { await busy[index].wait() })
             }
         }
         await fetch.observeEntry()
         for provider in providers { #expect(await provider.serve() == 0) }
         await fetch.release()
-        await busy.observeEntry()
+        for barrier in busy { await barrier.observeEntry() }
         for provider in providers {
             #expect(await provider.serve() == 0)
             #expect(await provider.admit() == nil)
             await provider.setBusy(false)
         }
-        await busy.release()
+        for barrier in busy { await barrier.release() }
         for task in tasks { #expect(await task.value == .installed) }
         for provider in providers {
             #expect(await provider.serve() == 1)

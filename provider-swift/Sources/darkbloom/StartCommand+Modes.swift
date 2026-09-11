@@ -156,24 +156,12 @@ extension Start {
     ) async throws {
         warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: true)
 
-        let selectedModels: [ModelInfo]
-        if !model.isEmpty {
-            selectedModels = advertisedModels(
-                from: snapshot.models,
-                config: config,
-                modelOverrides: model,
-                runtimeCapabilities: runtimeCapabilities)
-        } else if all {
-            selectedModels = snapshot.models.filter {
-                ModelRuntimeRequirements.isEligible(
-                    modelID: $0.id, available: runtimeCapabilities)
-            }
-        } else {
-            selectedModels = advertisedModels(
-                from: snapshot.models,
-                config: config,
-                runtimeCapabilities: runtimeCapabilities)
-        }
+        let selectedModels = advertisedModels(
+            from: snapshot.models,
+            config: config,
+            modelOverrides: model,
+            includeDisabled: all,
+            runtimeCapabilities: runtimeCapabilities)
 
         guard !selectedModels.isEmpty else {
             printError("No models selected.")

@@ -101,12 +101,9 @@ struct Doctor: AsyncParsableCommand {
             print("  pid file: \(ProcessLifecycle.defaultPIDFile().path)")
         }
 
-        let hasFailure = checks.contains { $0.status == .fail }
-            || diagnosis.contains { $0.level == .fail }
-        let hasWarning = checks.contains { $0.status == .warn }
-            || diagnosis.contains { $0.level == .warn }
-
-        if hasFailure || (strict && hasWarning) {
+        if checks.contains(where: { $0.status.isFailure(strict: strict) })
+            || DiagnosticReportRenderer.hasFailure(diagnosis, strict: strict)
+        {
             throw ExitCode.failure
         }
     }
@@ -182,17 +179,11 @@ struct Doctor: AsyncParsableCommand {
 
 // MARK: - Doctor
 
-enum CheckStatus: Equatable {
-    case pass
-    case warn
-    case fail
+typealias CheckStatus = DiagnosticLevel
 
-    var marker: String {
-        switch self {
-        case .pass: return "[PASS]"
-        case .warn: return "[WARN]"
-        case .fail: return "[FAIL]"
-        }
+extension DiagnosticLevel {
+    func isFailure(strict: Bool) -> Bool {
+        self == .fail || (strict && self == .warn)
     }
 
     init(_ verdict: BootSecurityVerdict) {
@@ -346,10 +337,11 @@ func buildCoordinatorDoctorChecks(
     let base = coordinatorHTTPBase(coordinatorOverride ?? snapshot.config.coordinator.url)
     var checks: [DoctorCheck] = []
 
+    let linked = AuthTokenStore.load() != nil
     checks.append(.init(
         name: "account link",
-        status: AuthTokenStore.load() == nil ? .warn : .pass,
-        detail: AuthTokenStore.load() == nil ? "not logged in; run darkbloom login" : "auth token present"
+        status: linked ? .pass : .warn,
+        detail: !linked ? "not logged in; run darkbloom login" : "auth token present"
     ))
 
     switch checkMDMEnrollment(coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url) {

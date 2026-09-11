@@ -20,25 +20,9 @@ struct Login: AsyncParsableCommand {
         let coordinatorURL = snapshot.config.coordinator.url
 
         do {
-            try await performDeviceCodeLogin(
+            try await performTerminalDeviceLogin(
                 coordinatorURL: coordinatorURL,
-                onDisplayCode: { userCode, verificationURI, expiresIn in
-                    print()
-                    print("  To link this machine, open this URL in your browser:")
-                    print()
-                    print("    \(verificationURI)")
-                    print()
-                    print("  Then enter this code:")
-                    print()
-                    print("    \(userCode)")
-                    print()
-                    print("  Waiting for approval (expires in \(expiresIn / 60) minutes)...")
-                },
-                onPollTick: {
-                    print(".", terminator: "")
-                    fflush(stdout)
-                }
-            )
+                introduction: "  To link this machine, open this URL in your browser:")
 
             print()
             print()
@@ -52,4 +36,29 @@ struct Login: AsyncParsableCommand {
             throw ExitCode.failure
         }
     }
+}
+
+/// Both entry points share the device-code display and polling feedback; each
+/// caller keeps its own introduction, completion message and failure policy.
+@discardableResult
+func performTerminalDeviceLogin(coordinatorURL: String, introduction: String) async throws -> String {
+    try await performDeviceCodeLogin(
+        coordinatorURL: coordinatorURL,
+        onDisplayCode: { userCode, verificationURI, expiresIn in
+            print()
+            print(introduction)
+            print()
+            print("    \(verificationURI)")
+            print()
+            print("  Then enter this code:")
+            print()
+            print("    \(userCode)")
+            print()
+            print("  Waiting for approval (expires in \(expiresIn / 60) minutes)...")
+        },
+        onPollTick: {
+            print(".", terminator: "")
+            fflush(stdout)
+        }
+    )
 }

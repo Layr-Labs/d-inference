@@ -50,32 +50,15 @@ enum Qwen35TemplateFix {
     static func normalizeMessages(
         _ messages: [OpenAIChatMessage]
     ) -> [OpenAIChatMessage] {
-        let systemIndices = messages.indices.filter {
-            messages[$0].role == .system
-        }
-        guard let firstSystemIndex = systemIndices.first else { return messages }
-        guard systemIndices.count > 1 || firstSystemIndex != messages.startIndex else {
-            return messages
-        }
-
-        let nonSystemMessages = messages.filter { $0.role != .system }
-        if systemIndices.count == 1 {
-            return [messages[firstSystemIndex]] + nonSystemMessages
-        }
-
-        let systemMessages = systemIndices.map { messages[$0] }
-        var systemTexts: [String] = []
-        systemTexts.reserveCapacity(systemMessages.count)
-        for message in systemMessages {
-            guard let text = systemTextContent(message.content) else {
-                return messages
-            }
-            if !text.isEmpty { systemTexts.append(text) }
-        }
-
-        var mergedSystem = systemMessages[0]
-        mergedSystem.content = .text(systemTexts.joined(separator: "\n\n"))
-        return [mergedSystem] + nonSystemMessages
+        LeadingSystemMessageNormalizer.normalize(
+            messages,
+            isSystem: { $0.role == .system },
+            textContent: { systemTextContent($0.content) },
+            replacingContent: { message, text in
+                var message = message
+                message.content = .text(text)
+                return message
+            })
     }
 
     private static func systemTextContent(_ content: OpenAIMessageContent) -> String? {

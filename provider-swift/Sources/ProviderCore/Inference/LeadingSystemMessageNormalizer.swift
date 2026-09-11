@@ -11,39 +11,45 @@ enum LeadingSystemMessageNormalizer {
     static func normalize(
         _ messages: [[String: any Sendable]]
     ) -> [[String: any Sendable]] {
-        let systemIndices = messages.indices.filter {
-            (messages[$0]["role"] as? String) == "system"
-        }
+        normalize(
+            messages,
+            isSystem: { ($0["role"] as? String) == "system" },
+            textContent: { textContent($0["content"]) },
+            replacingContent: { message, text in
+                var message = message
+                message["content"] = text
+                return message
+            })
+    }
+
+    /// Fold either typed or dictionary messages without converting the other
+    /// turns. Keep the first system message's metadata and abandon a multi-turn
+    /// fold if any system content cannot be represented as text.
+    static func normalize<Message>(
+        _ messages: [Message],
+        isSystem: (Message) -> Bool,
+        textContent: (Message) -> String?,
+        replacingContent: (Message, String) -> Message
+    ) -> [Message] {
+        let systemIndices = messages.indices.filter { isSystem(messages[$0]) }
         guard let firstSystemIndex = systemIndices.first else { return messages }
         guard systemIndices.count > 1 || firstSystemIndex != messages.startIndex else {
             return messages
         }
 
-        let nonSystemMessages = messages.filter {
-            ($0["role"] as? String) != "system"
-        }
+        let nonSystemMessages = messages.filter { !isSystem($0) }
         if systemIndices.count == 1 {
             return [messages[firstSystemIndex]] + nonSystemMessages
         }
 
-        let systemMessages = systemIndices.map { messages[$0] }
         var systemTexts: [String] = []
-        systemTexts.reserveCapacity(systemMessages.count)
-        for message in systemMessages {
-            guard let text = textContent(message["content"]) else {
-                // Moving structured media into a text-only template slot would
-                // change request semantics. Leave it untouched so the model's
-                // existing validation remains authoritative.
-                return messages
-            }
-            if !text.isEmpty {
-                systemTexts.append(text)
-            }
+        systemTexts.reserveCapacity(systemIndices.count)
+        for index in systemIndices {
+            guard let text = textContent(messages[index]) else { return messages }
+            if !text.isEmpty { systemTexts.append(text) }
         }
-
-        var mergedSystem = systemMessages[0]
-        mergedSystem["content"] = systemTexts.joined(separator: "\n\n")
-        return [mergedSystem] + nonSystemMessages
+        let merged = replacingContent(messages[firstSystemIndex], systemTexts.joined(separator: "\n\n"))
+        return [merged] + nonSystemMessages
     }
 
     private static func textContent(_ content: (any Sendable)?) -> String? {

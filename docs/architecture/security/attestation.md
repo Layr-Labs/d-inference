@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-08 · commit `eba352122`
+> Last updated: 2026-09-11 · commit `7c394fa2b`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -296,6 +296,13 @@ failure reason with status `untrusted`. The provider CLI renders the last one
 received (`darkbloom status`, `Trust: <level> / <status>`).
 
 ## Invariants
+
+Attestation results are immutable snapshots published by `SetAttestationResult`.
+`DisconnectDuplicatesBySerial` reads each snapshot through `GetAttestationResult`
+under the provider mutex before comparing serials; the registry read lock alone
+does not protect attestation renewal. Matching sessions are disconnected after
+the scan releases the registry lock (`coordinator/registry/provider_evidence.go`,
+`coordinator/registry/provider_lifecycle.go`).
 
 1. `hardware` is granted only by a received MDM `SecurityInfo` whose SIP and `SecureBootLevel == "full"` agree with the SE blob, or by trust reuse of such evidence after a fresh signed challenge; MDA and code identity never change the level — `coordinator/api/provider.go` (`verifyProviderViaMDM`), `coordinator/api/trust_reuse.go` (`tryTrustReuseFastSkip`), `coordinator/registry/provider_evidence.go` (`SetMDAProofIfHardwareBound`, `GrantProcessCodeAttested`).
 2. A stored `hardware` level and a stored `MDAVerified` flag are never restored on reconnect; the connection re-earns them — `coordinator/registry/persistence.go` (`RestoreProviderState`).

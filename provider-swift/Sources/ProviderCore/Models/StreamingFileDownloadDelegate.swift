@@ -20,8 +20,8 @@ import Foundation
 /// The resume contract matches the previous `streamDownload` implementation:
 /// - If `existingBytes > 0` the caller sent `Range: bytes=N-`.
 /// - 206 whose `Content-Range` start == N → append to the existing prefix.
-/// - 200 (range ignored) or a mismatched/unverifiable 206 → truncate and rewrite
-///   THIS file from byte 0.
+/// - 200 (range ignored) → truncate and rewrite THIS file from byte 0.
+/// - Mismatched/unverifiable 206 → discard the prefix and retry a full GET.
 /// - 404/403 → `.notFound` (caller removes the `.part`; throws iff required).
 /// - 416 with a prefix → size-verify against the 416's `Content-Range: bytes
 ///   */<total>`. If the `.part` size equals `<total>` it is the whole object →

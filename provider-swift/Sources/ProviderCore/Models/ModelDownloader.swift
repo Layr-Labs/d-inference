@@ -73,12 +73,7 @@ public struct ModelDownloader: Sendable {
                 ModelRuntimeIneligibleError(eligibility: eligibility).localizedDescription)
         }
         if model.r2Prefix != nil, model.aggregateSHA256 != nil {
-            let manifest: ModelManifest
-            if let catalogClient {
-                manifest = try await catalogClient.fetchManifest(modelID: model.id)
-            } else {
-                manifest = try await fetchManifestFromCDN(model: model)
-            }
+            let manifest = try await resolveManifest(model: model)
             try await downloadManifestModel(model: model, manifest: manifest, onProgress: onProgress)
             return
         }

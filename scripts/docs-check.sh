@@ -83,6 +83,23 @@ normpath() {
     printf '%s\n' "${out[*]}"
 }
 
+# One link parser feeds both existence checks and the navigation graph.
+# Reference definitions and percent-encoded spaces must count as inbound links.
+link_targets() {
+    { grep -oE '\]\([^)[:space:]]+' "$1" | sed 's/^](//' ;
+      grep -oE '^\[[^]]+\]:[[:space:]]+[^[:space:]]+' "$1" | sed -E 's/^\[[^]]+\]:[[:space:]]+//' ; } 2>/dev/null
+}
+
+relative_targets() {
+    local target
+    while IFS= read -r target; do
+        case "$target" in http://*|https://*|mailto:*|\#*|tel:*) continue ;; esac
+        target=${target%%#*}
+        target=${target%%\?*}
+        [ -n "$target" ] && printf '%s\n' "${target//%20/ }"
+    done < <(link_targets "$1")
+}
+
 # ---------------------------------------------------------------------------
 # 2. Relative links
 # ---------------------------------------------------------------------------
@@ -94,24 +111,13 @@ check_links() {
     # increments ERRORS in this shell rather than in a throwaway subshell.
     while IFS= read -r target; do
         case "$target" in
-            http://*|https://*|mailto:*|\#*|tel:*) continue ;;
-        esac
-        target=${target%%#*}
-        target=${target%%\?*}
-        [ -z "$target" ] && continue
-        # Percent-decode spaces only (the common case).
-        target=${target//%20/ }
-        case "$target" in
             /*) path=".${target}" ;;   # repo-absolute
             *)  path="$dir/$target" ;;
         esac
         if [ ! -e "$path" ]; then
             fail "$f: broken link -> $target"
         fi
-    done < <(
-        { grep -oE '\]\([^)[:space:]]+' "$f" | sed 's/^](//' ;
-          grep -oE '^\[[^]]+\]:[[:space:]]+[^[:space:]]+' "$f" | sed -E 's/^\[[^]]+\]:[[:space:]]+//' ; } 2>/dev/null
-    )
+    done < <(relative_targets "$f")
 }
 
 for f in "${FILES[@]}" "${EXTRA_LINK_FILES[@]}"; do
@@ -172,14 +178,12 @@ done
 if [ "$ORPHAN_CHECK" -eq 1 ]; then
     # Build the set of link targets, normalised to repo-relative paths.
     LINKED=$(mktemp)
+    trap 'rm -f "$LINKED"' EXIT
     for f in "${FILES[@]}" "${EXTRA_LINK_FILES[@]}"; do
         [ -f "$f" ] || continue
         dir=$(dirname "$f")
-        grep -oE '\]\([^)[:space:]]+' "$f" 2>/dev/null | sed 's/^](//' |
+        relative_targets "$f" |
         while IFS= read -r target; do
-            case "$target" in http://*|https://*|mailto:*|\#*) continue ;; esac
-            target=${target%%#*}; target=${target%%\?*}
-            [ -z "$target" ] && continue
             case "$target" in
                 /*) path=".${target}" ;;
                 *)  path="$dir/$target" ;;

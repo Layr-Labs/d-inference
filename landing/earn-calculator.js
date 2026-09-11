@@ -56,11 +56,11 @@
     if (element) element.style.display = show ? "" : "none";
   }
 
-  function appendPlaceholder(select, label) {
+  function appendOption(select, value, label, disabled) {
     const item = document.createElement("option");
-    item.value = "";
+    item.value = value;
     item.textContent = label;
-    item.disabled = true;
+    item.disabled = Boolean(disabled);
     select.appendChild(item);
   }
 
@@ -68,12 +68,9 @@
     const macTypeSelect = document.getElementById("mac-type-select");
     if (macTypeSelect && macTypeSelect.options.length !== MAC_TYPES.length + 1) {
       macTypeSelect.innerHTML = "";
-      appendPlaceholder(macTypeSelect, "Select model");
+      appendOption(macTypeSelect, "", "Select model", true);
       MAC_TYPES.forEach(function (macType) {
-        const item = document.createElement("option");
-        item.value = macType;
-        item.textContent = macType;
-        macTypeSelect.appendChild(item);
+        appendOption(macTypeSelect, macType, macType);
       });
     }
     if (macTypeSelect) macTypeSelect.value = state.macType;
@@ -81,14 +78,11 @@
     const chipSelect = document.getElementById("chip-select");
     if (chipSelect) {
       chipSelect.innerHTML = "";
-      appendPlaceholder(chipSelect, "Select chip");
+      appendOption(chipSelect, "", "Select chip", true);
       PROVIDER_HARDWARE_OPTIONS.filter(function (option) {
         return option.macType === state.macType;
       }).forEach(function (option) {
-        const item = document.createElement("option");
-        item.value = option.chip;
-        item.textContent = option.chip;
-        chipSelect.appendChild(item);
+        appendOption(chipSelect, option.chip, option.chip);
       });
       chipSelect.disabled = !state.macType;
       chipSelect.value = state.chip;
@@ -97,12 +91,9 @@
     const ramSelect = document.getElementById("ram-select");
     if (ramSelect) {
       ramSelect.innerHTML = "";
-      appendPlaceholder(ramSelect, "Select memory");
+      appendOption(ramSelect, "", "Select memory", true);
       (config ? config.ramOptions : []).forEach(function (ram) {
-        const item = document.createElement("option");
-        item.value = String(ram);
-        item.textContent = ram + " GB";
-        ramSelect.appendChild(item);
+        appendOption(ramSelect, String(ram), ram + " GB");
       });
       ramSelect.disabled = !config;
       ramSelect.value = state.ram === null ? "" : String(state.ram);
@@ -326,80 +317,49 @@
     renderFlow(result, config);
   }
 
-  document.addEventListener("DOMContentLoaded", function () {
-    const macTypeSelect = document.getElementById("mac-type-select");
-    if (macTypeSelect) {
-      macTypeSelect.addEventListener("change", function () {
-        state.macType = macTypeSelect.value;
-        state.chip = "";
-        state.ram = null;
-        render();
-      });
-    }
-    const chipSelect = document.getElementById("chip-select");
-    if (chipSelect) {
-      chipSelect.addEventListener("change", function () {
-        state.chip = chipSelect.value;
-        state.ram = null;
-        render();
-      });
-    }
-    const ramSelect = document.getElementById("ram-select");
-    if (ramSelect) {
-      ramSelect.addEventListener("change", function () {
-        state.ram = Number(ramSelect.value);
-        render();
-      });
-    }
-    const dutyInput = document.getElementById("calc-duty-input");
-    if (dutyInput) {
-      dutyInput.addEventListener("input", function () {
-        state.dutyCyclePercent = Number(dutyInput.value);
-        render();
-      });
-    }
-
-    const notifyButton = document.getElementById("calc-nofit-btn");
-    if (notifyButton) {
-      notifyButton.addEventListener("click", function () {
-        if (window.va) {
-          const selectedHardware = hardwareOption(state.macType, state.chip);
-          if (!selectedHardware) return;
-          window.va("event", {
-            name: "small_models_interest_click",
-            data: {
-              source: "landing_earn_calc",
-              mac_type: selectedHardware.macType,
-              chip: selectedHardware.chip,
-              ram_gb: state.ram,
-            },
-          });
-        }
-      });
-    }
-    const readinessButton = document.getElementById("calc-readiness-btn");
-    if (readinessButton) {
-      readinessButton.addEventListener("click", function () {
-        if (window.va) {
-          const selectedHardware = hardwareOption(state.macType, state.chip);
-          if (!selectedHardware) return;
-          window.va("event", {
-            name: "production_readiness_interest_click",
-            data: {
-              source: "landing_earn_calc",
-              mac_type: selectedHardware.macType,
-              chip: selectedHardware.chip,
-              ram_gb: state.ram,
-            },
-          });
-        }
-      });
-    }
-
-    if (!Core || PROVIDER_HARDWARE_OPTIONS.length === 0) {
+  function bindInput(id, event, update) {
+    const input = document.getElementById(id);
+    if (!input) return;
+    input.addEventListener(event, function () {
+      update(input.value);
       render();
-      return;
-    }
+    });
+  }
+
+  function bindInterestButton(id, eventName) {
+    const button = document.getElementById(id);
+    if (!button) return;
+    button.addEventListener("click", function () {
+      if (!window.va) return;
+      const selectedHardware = hardwareOption(state.macType, state.chip);
+      if (!selectedHardware) return;
+      window.va("event", {
+        name: eventName,
+        data: {
+          source: "landing_earn_calc",
+          mac_type: selectedHardware.macType,
+          chip: selectedHardware.chip,
+          ram_gb: state.ram,
+        },
+      });
+    });
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    bindInput("mac-type-select", "change", function (value) {
+      state.macType = value;
+      state.chip = "";
+      state.ram = null;
+    });
+    bindInput("chip-select", "change", function (value) {
+      state.chip = value;
+      state.ram = null;
+    });
+    bindInput("ram-select", "change", function (value) { state.ram = Number(value); });
+    bindInput("calc-duty-input", "input", function (value) { state.dutyCyclePercent = Number(value); });
+
+    bindInterestButton("calc-nofit-btn", "small_models_interest_click");
+    bindInterestButton("calc-readiness-btn", "production_readiness_interest_click");
     render();
   });
 })();

@@ -26,7 +26,7 @@ function LoginContent() {
         <p className="text-base text-text-secondary mb-8 leading-relaxed">
           Private inference on verified hardware.
           <br />
-          <span className="text-text-tertiary">Your prompts stay encrypted, your data stays yours.</span>
+          <span className="text-text-tertiary">Encrypted connections. Verified providers.</span>
         </p>
 
         <button

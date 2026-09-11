@@ -72,12 +72,14 @@ const STEPS: StepData[] = [
     iconBg: "bg-coral-light",
     title: "Encryption in Transit",
     description:
-      "Requests travel over encrypted connections. The coordinator processes plaintext in memory, then encrypts it for the verified provider.",
+      "Requests travel over encrypted connections. The coordinator and provider process plaintext; so does the console proxy when sender sealing is off.",
     technical:
-      "HTTPS protects the browser connection; optional X25519/NaCl box sealing terminates at the coordinator. " +
+      "HTTPS terminates at the console service. By default its /api/chat proxy parses plaintext requests " +
+      "before forwarding them over HTTPS. Turning on Encrypt to coordinator adds X25519/NaCl box sealing " +
+      "in the browser, so that proxy forwards ciphertext and the coordinator opens it. " +
       "The coordinator processes plaintext in confidential-VM memory for routing and billing, " +
       "without logging or retaining prompt content, then re-seals to the provider's registered key. " +
-      "The attested provider is the plaintext endpoint. This is hop-by-hop encryption.",
+      "The attested provider decrypts the request for inference. This is hop-by-hop encryption.",
   },
   {
     icon: RefreshCw,

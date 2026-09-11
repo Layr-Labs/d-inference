@@ -38,12 +38,5 @@ export function toApiMessages(
 function findNewestImageMessageIndex(
   messages: Pick<Message, "images">[]
 ): number {
-  let index = messages.length;
-  for (const message of [...messages].reverse()) {
-    index -= 1;
-    if (message.images && message.images.length > 0) {
-      return index;
-    }
-  }
-  return -1;
+  return messages.findLastIndex((message) => Boolean(message.images?.length));
 }

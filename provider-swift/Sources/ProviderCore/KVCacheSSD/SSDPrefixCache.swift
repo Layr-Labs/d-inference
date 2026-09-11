@@ -522,7 +522,7 @@ public final class SSDPrefixCache:
             guard config.epochStore == nil || epoch != nil else { return 0 }
             return stagedEntries.values.lazy
                 .filter { $0.cacheEpoch == epoch }
-                .map { $0.matched / config.blockSize }
+                .map { $0.matched / self.config.blockSize }
                 .max() ?? 0
         }
         guard maxStagedBlocks > 0 else {

@@ -17,8 +17,19 @@ jobs:
           python3 scripts/test-provider-release-resolution.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
-      - name: Test startup observer against local stubs
-        run: python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
+
+  test-tooling:
+    name: Tooling Tests
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install CPU reference dependency in an isolated environment
+        run: |
+          python3 -m venv "$RUNNER_TEMP/tooling-venv"
+          "$RUNNER_TEMP/tooling-venv/bin/python" -m pip install -r scripts/benchmarks/attention_packet/requirements.txt
+          echo "$RUNNER_TEMP/tooling-venv/bin" >> "$GITHUB_PATH"
+      - name: Test tooling against synthetic fixtures and owned process stubs
+        run: make tooling-test
 
   docs:
     name: Docs Lint
@@ -393,5 +404,36 @@ jobs:
         run: cd console-ui && npm ci
       - name: Lint
         run: cd console-ui && npx eslint src/
+      - name: Test
+        run: make ui-test
       - name: Build
         run: cd console-ui && npm run build
+
+  test-admin:
+    name: Admin UI Checks
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: admin-ui/package-lock.json
+      - name: Install dependencies
+        run: make admin-install
+      - name: Lint, typecheck and test
+        run: make admin-lint admin-typecheck admin-test
+      - name: Build without a database connection
+        env:
+          ADMIN_DB_URL: postgresql://unused:unused@127.0.0.1:1/unused
+        run: make admin-build
+
+  test-landing:
+    name: Landing Tests
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - run: make landing-test

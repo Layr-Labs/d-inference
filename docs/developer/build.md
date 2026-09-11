@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-11 · commit `ef7b5a9aa`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -68,7 +68,7 @@ git config core.hooksPath .githooks   # enables pre-commit + pre-push (see "Git 
 ### 2. Build everything
 
 ```bash
-make build      # coordinator-build prompt-sidecar-build provider-build ui-build
+make build      # coordinator-build prompt-sidecar-build provider-build ui-build admin-build
 make all        # test + build (see test.md)
 ```
 
@@ -435,13 +435,19 @@ local stub servers; its default observation mode sends only public GETs.
 | `benchmark-wrapper-test` | `cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .` |
 | `benchmark-gemma-contbatch` | `python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)` (needs GPU + weights) |
 | `ui-install` / `ui-lint` / `ui-test` / `ui-build` / `ui` | `npm install` / `npx eslint src/` / `npm test` / `npm run build` in `console-ui/` |
+| `admin-install` / `admin-lint` / `admin-typecheck` / `admin-test` / `admin-build` | Locked install, lint, full TypeScript, Vitest and build in `admin-ui/` |
+| `landing-test` | `node --test landing/*.test.js` |
+| `tooling-test` | Python script packages, benchmark references, owned-host helpers and release validation fixtures |
 | `e2e-integration` | `go test ./e2e/... -run TestIntegration -v` |
 | `e2e-benchmark` | `go test ./e2e/... -run TestBenchmark -v` |
-| `e2e` | `e2e-integration` |
+| `e2e` | `admin-install` / `admin-lint` / `admin-typecheck` / `admin-test` / `admin-build` | Locked install, lint, full TypeScript, Vitest and build in `admin-ui/` |
+| `landing-test` | `node --test landing/*.test.js` |
+| `tooling-test` | Python script packages, benchmark references, owned-host helpers and release validation fixtures |
+| `e2e-integration` |
 | `docs-check` | `scripts/docs-check.sh` (stamps, links, cited paths, orphans) |
 | `docs-stamp` | `scripts/docs-stamp.sh $(FILES)` — refresh freshness stamps |
-| `test` | `coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test docs-check` |
-| `build` | `coordinator-build prompt-sidecar-build provider-build ui-build` |
+| `test` | `coordinator-test prompt-sidecar-test provider-test ui-test admin-test landing-test tooling-test docs-check` |
+| `build` | `coordinator-build prompt-sidecar-build provider-build ui-build admin-build` |
 | `all` | `test build` |
 | `clean` | remove `./coordinator/coordinator{,-linux}`, `./coordinator/promptsidecar/target`, `./provider-swift/.build`, `./console-ui/.next`, `./console-ui/node_modules` |
 
@@ -452,10 +458,10 @@ components that changed.
 
 | Hook | Trigger | Checks |
 |---|---|---|
-| [`.githooks/pre-commit`](../../.githooks/pre-commit) | staged `coordinator/**.go` | `gofmt -l` on the staged files (fix: `gofmt -w <file>`) |
+| [`.githooks/pre-commit`](../../.githooks/pre-commit) | staged `coordinator/**.go` or `e2e/**.go` | `git show :<path>` into `gofmt -d`, checking index bytes even for partially staged files; format and restage failures |
 | | staged `console-ui/**.ts{,x}` | `cd console-ui && npx eslint src/` (fix: `npx eslint --fix src/`) |
 | | Swift | skipped — no enforced formatter |
-| [`.githooks/pre-push`](../../.githooks/pre-push) | any `coordinator/` change in the pushed range | `gofmt -l .` over `coordinator/`, then `go test $(go list ./... \| grep -v /internal/api)` from `coordinator/` (the slow WebSocket integration tests run in CI only) |
+| [`.githooks/pre-push`](../../.githooks/pre-push) | any `coordinator/` change in the pushed range | `gofmt -l .` and `go test ./...` from `coordinator/`; inspect every pushed ref, including new branches |
 | | any `console-ui/` change | `npx eslint --quiet src/` and `npm run build` |
 
 CI runs the fuller set (`gofmt`, `golangci-lint`, `-race` tests, Swift, Rust,

@@ -61,7 +61,9 @@ struct ScheduleTests {
                       ScheduleWindow(days: [day], start: "10:00", end: "13:00")]
         )))
         #expect(schedule.isActive(at: now))
-        #expect(schedule.durationUntilInactive(from: now) == 5 * 3600 - 30)
+        let remaining = try #require(schedule.durationUntilInactive(from: now))
+        let firstWindowRemaining: TimeInterval = 5 * 3600 - 30
+        #expect(remaining == firstWindowRemaining)
     }
 
     @Test("outside window reports time until next active")

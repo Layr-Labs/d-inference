@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -214,13 +214,16 @@ describe("EarnPage", () => {
   it("keeps every catalog model name readable in the support list", async () => {
     const EarnPage = (await import("@/app/earn/page")).default;
     render(<EarnPage />);
-    selectMac();
+    selectMac(MAC_STUDIO, "M3 Ultra", 512);
     expect(await screen.findByText(BEST_ESTIMATE)).toBeInTheDocument();
+    const supportList = screen.getByRole("list", { name: "Supported models" });
     for (const model of CALCULATOR_MODELS) {
-      const name = screen.getAllByText(model.displayName)[0];
-      expect(name).toBeTruthy();
+      const name = within(supportList).getByText(model.displayName);
       expect(name.className).not.toMatch(/\btruncate\b/);
+      expect(name.closest("li")?.className).toMatch(/\bgrid\b/);
     }
+    expect(screen.getAllByText(/Fits in your 512 GB/).length).toBeGreaterThan(0);
+    expect(screen.getByText("Requires an Apple M5 chip")).toBeInTheDocument();
   });
 
   it("shows the capacity flow, prominent caveat, and setup CTA in order", async () => {

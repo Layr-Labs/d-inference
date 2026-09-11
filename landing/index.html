@@ -900,24 +900,18 @@
     /* Read-only model support list */
     .calc-model-list { border: 1px solid var(--grey-01); border-radius: var(--radius-sm); overflow: hidden; list-style: none; margin: 0; padding: 0; }
     .calc-model-row {
-      display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%;
-      padding: 12px 16px; background: var(--white); text-align: left;
+      display: grid; grid-template-columns: 1rem minmax(0, 1fr); column-gap: 12px; row-gap: 2px;
+      width: 100%; padding: 12px 14px; background: var(--white); text-align: left;
     }
     .calc-model-row + .calc-model-row { border-top: 1px solid var(--grey-01); }
     .calc-model-row.nofit { opacity: 0.55; }
-    .calc-model-head { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
-    @media (min-width: 640px) {
-      .calc-model-row { flex-direction: row; align-items: center; }
-      .calc-model-head { flex: 1; }
-      .calc-model-meta { padding-left: 0; flex-shrink: 0; }
-    }
-    .calc-model-mark { font-size: 13px; flex-shrink: 0; width: 16px; text-align: center; }
+    .calc-model-mark { font-size: 13px; width: 16px; text-align: center; padding-top: 2px; }
     .calc-model-mark.ok { color: #166534; }
     .calc-model-mark.no { color: var(--grey-02); }
-    .calc-model-info { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 1px; }
-    .calc-model-name { font-size: 14px; font-weight: 500; overflow-wrap: anywhere; color: var(--black); }
-    .calc-model-sub { font-size: 12px; color: var(--grey-03); overflow-wrap: anywhere; }
-    .calc-model-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-left: 28px; }
+    .calc-model-info { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .calc-model-name { font-size: 14px; font-weight: 500; color: var(--black); }
+    .calc-model-sub { font-size: 12px; color: var(--grey-03); }
+    .calc-model-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
     .calc-model-net { font-family: var(--font-mono); font-size: 13px; color: var(--grey-03); }
     .calc-model-badge {
       font-family: var(--font-mono); font-size: 10px; padding: 2px 8px;
@@ -1567,7 +1561,7 @@ response = client.chat.completions.create(
         <div class="csec">
           <h4 class="clabel">Models your Mac can run</h4>
           <p class="calc-hint">Models are ranked by estimated monthly earning at the selected duty cycle.</p>
-          <ul class="calc-model-list" id="model-list" aria-live="polite"></ul>
+          <ul class="calc-model-list" id="model-list" aria-label="Supported models" aria-live="polite"></ul>
         </div>
         </div>
       </div>

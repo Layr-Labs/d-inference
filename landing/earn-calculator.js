@@ -158,29 +158,27 @@
       }
       info.appendChild(name);
       info.appendChild(sub);
-      const head = document.createElement("span");
-      head.className = "calc-model-head";
-      head.appendChild(mark);
-      head.appendChild(info);
-      row.appendChild(head);
-
-      const meta = document.createElement("span");
-      meta.className = "calc-model-meta";
-      if (entry.fits) {
-        const amount = document.createElement("span");
-        amount.className = "calc-model-net";
-        amount.textContent = entry.estimate
-          ? fmtUSD(entry.estimate.monthlyRevenueUSD) + "/mo"
-          : "Earning estimate unavailable";
-        meta.appendChild(amount);
+      if (entry.fits || (entry.estimate && model.id === bestID)) {
+        const meta = document.createElement("span");
+        meta.className = "calc-model-meta";
+        if (entry.fits) {
+          const amount = document.createElement("span");
+          amount.className = "calc-model-net";
+          amount.textContent = entry.estimate
+            ? fmtUSD(entry.estimate.monthlyRevenueUSD) + "/mo"
+            : "Earning estimate unavailable";
+          meta.appendChild(amount);
+        }
+        if (entry.estimate && model.id === bestID) {
+          const badge = document.createElement("span");
+          badge.className = "calc-model-badge";
+          badge.textContent = "Best current estimate";
+          meta.appendChild(badge);
+        }
+        info.appendChild(meta);
       }
-      if (entry.estimate && model.id === bestID) {
-        const badge = document.createElement("span");
-        badge.className = "calc-model-badge";
-        badge.textContent = "Best current estimate";
-        meta.appendChild(badge);
-      }
-      if (meta.childNodes.length) row.appendChild(meta);
+      row.appendChild(mark);
+      row.appendChild(info);
       list.appendChild(row);
     });
   }

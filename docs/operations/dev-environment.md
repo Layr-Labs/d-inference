@@ -97,7 +97,7 @@ stops at that validation. After filling the required secrets, rerun startup to
 finish installing the service units before the first image deploy:
 
 ```bash
-gcloud compute ssh d-inference-dev --zone=us-central1-a --project=sepolia-ai \
+gcloud compute ssh d-inference-dev --zone=us-central1-a --project=sepolia-ai --tunnel-through-iap \
   -- 'sudo google_metadata_script_runner startup'
 ```
 

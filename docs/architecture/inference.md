@@ -169,7 +169,7 @@ this fleet delay.
 the original engine. The admission fence is separate from the final publication
 gate: accepted requests can still pass `ensureModelLoaded` and reach completion.
 Network capacity advertises the existing `reloading` slot state and rejects
-racing admissions with transient 503 `slotState` refusals. Other models remain
+racing admissions with transient 503 `rejection_reason: slot_state` refusals. Other models remain
 eligible; this does not put the whole provider into its update-draining state.
 Standalone new acquisitions also receive 503 during the model drain.
 

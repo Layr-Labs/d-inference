@@ -287,6 +287,14 @@ public final class ProviderState: @unchecked Sendable {
     ) -> BackendCapacity? {
         guard var capacity else { return nil }
         return lock.withLock {
+            // The caller may have read this payload before a model drain
+            // began. Project the live fence under the publication lock so
+            // that old snapshot cannot advertise the target as routable.
+            for index in capacity.slots.indices
+                where _modelAdmissionDrains.contains(capacity.slots[index].model)
+            {
+                capacity.slots[index].state = "reloading"
+            }
             _capacitySeq &+= 1
             capacity.capacitySeq = _capacitySeq
             let agedProcessMemory = capacity.telemetry?.processMemory?

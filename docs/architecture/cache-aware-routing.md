@@ -276,7 +276,7 @@ evidence (`coordinator/registry/cache_receipts.go`).
 A prepared Gemma QAT assistant upgrade temporarily advertises only that model's
 slot as `reloading`. Normal eligibility gates exclude the slot even when it has
 valid cache-holder evidence; racing provider admissions receive a transient 503
-`slotState` refusal. Other model slots continue serving. Accepted work finishes
+`rejection_reason: slot_state` refusal. Other model slots continue serving. Accepted work finishes
 on the original engine before publication. The network provider's configured
 rollout jitter occurs before admission closes and only spreads independent
 upgrades; it provides no fleet-wide availability guarantee

@@ -209,16 +209,22 @@ struct MTPIdleUpgradeTests {
     @Test func staleOwnerCannotReopenSuccessorDrain() {
         var drains = MTPAdmissionDrains()
         let old = UUID(), next = UUID()
-        #expect(drains.begin("gemma", owner: old))
+        let oldBegan = drains.begin("gemma", owner: old)
+        #expect(oldBegan)
         #expect(!drains.contains("qwen"))
-        #expect(!drains.begin("gemma", owner: next))
-        #expect(drains.end("gemma", owner: old))
-        #expect(drains.begin("gemma", owner: next))
+        let conflictBegan = drains.begin("gemma", owner: next)
+        #expect(!conflictBegan)
+        let oldEnded = drains.end("gemma", owner: old)
+        #expect(oldEnded)
+        let successorBegan = drains.begin("gemma", owner: next)
+        #expect(successorBegan)
         let generation = drains.generation
-        #expect(!drains.end("gemma", owner: old))
+        let staleEnded = drains.end("gemma", owner: old)
+        #expect(!staleEnded)
         #expect(drains.contains("gemma"))
         #expect(drains.generation == generation)
-        #expect(drains.end("gemma", owner: next))
+        let successorEnded = drains.end("gemma", owner: next)
+        #expect(successorEnded)
     }
 
 }

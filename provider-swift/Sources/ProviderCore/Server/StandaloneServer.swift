@@ -1129,7 +1129,12 @@ public actor StandaloneServer {
     }
 
     private func evictLRUIdleSlot() async -> Bool {
-        let snapshot = slots.map { (key: $0.key, cached: $0.value) }
+        // Retain only the bridge and recency for suspended liveness checks.
+        // A CachedSlot snapshot would retain its container past eviction,
+        // clearCache and survivor regrowth, hiding the memory we just freed.
+        let snapshot = slots.map {
+            (key: $0.key, bridge: $0.value.bridge, lastUsedAt: $0.value.lastUsedAt)
+        }
         var lruKey: String?
         var lruTime: ContinuousClock.Instant?
 
@@ -1139,21 +1144,21 @@ public actor StandaloneServer {
                   !isMTPUpgradeTargetRetained(entry.key),
                   (slotReservations[entry.key] ?? 0) == 0 else { continue }
 
-            let active = await entry.cached.bridge.activeRequestCount()
+            let active = await entry.bridge.activeRequestCount()
             guard slots[entry.key] != nil,
                   !evictingModels.contains(entry.key),
                   !isMTPUpgradeTargetRetained(entry.key),
                   (slotReservations[entry.key] ?? 0) == 0,
                   active == 0 else { continue }
 
-            if lruTime == nil || entry.cached.lastUsedAt < lruTime! {
+            if lruTime == nil || entry.lastUsedAt < lruTime! {
                 lruKey = entry.key
-                lruTime = entry.cached.lastUsedAt
+                lruTime = entry.lastUsedAt
             }
         }
 
         guard let evictKey = lruKey,
-              let evicted = slots[evictKey],
+              let evicted = slots[evictKey]?.bundle,
               !evictingModels.contains(evictKey),
               !isMTPUpgradeTargetRetained(evictKey),
               (slotReservations[evictKey] ?? 0) == 0 else {
@@ -1174,7 +1179,7 @@ public actor StandaloneServer {
         // Drain the v2 bridge (running requests finish, new submissions are
         // rejected by the engine), then release the container reference.
         await evicted.bridge.shutdown()
-        evicted.bundle.releaseAssistant()
+        evicted.releaseAssistant()
         if slots[evictKey]?.bridge === evicted.bridge {
             slots.removeValue(forKey: evictKey)
         }
@@ -1651,9 +1656,10 @@ public actor StandaloneServer {
             // + existing grants restored inside the catch (unwind ordering)
             // — the catch below just surfaces it as a 503-shaped capacity
             // error.
-            var slotBuild: SlotBuild
-            do {
-                slotBuild = try await resliceAndBuildBundle(
+            // Both attempts use the same target and verified cache identity.
+            // Only the optional assistant preparation changes on fallback.
+            func buildSlot(preparation: SpecDecPreparation) async throws -> SlotBuild {
+                try await resliceAndBuildBundle(
                     modelId: modelId,
                     modelType: modelInfo.modelType,
                     isVLM: slotIsVLM,
@@ -1661,8 +1667,12 @@ public actor StandaloneServer {
                     newcomer: newcomer,
                     tokenizer: tokenizer,
                     targetSizing: targetSizing,
-                    specDecPreparation: mtpPreparation,
+                    specDecPreparation: preparation,
                     cacheEligibleWeightHash: cacheEligibleWeightHash)
+            }
+            var slotBuild: SlotBuild
+            do {
+                slotBuild = try await buildSlot(preparation: mtpPreparation)
             } catch let error as StandaloneServerError {
                 MLX.Memory.clearCache()
                 throw error
@@ -1702,15 +1712,7 @@ public actor StandaloneServer {
                 bundle.releaseAssistant()
                 MLX.Memory.clearCache()
                 do {
-                    slotBuild = try await resliceAndBuildBundle(
-                        modelId: modelId,
-                        modelType: modelInfo.modelType,
-                        isVLM: slotIsVLM,
-                        modelDirectory: modelPath,
-                        newcomer: newcomer,
-                        tokenizer: tokenizer,
-                        targetSizing: targetSizing,
-                        specDecPreparation: mtpPreparation.fallingBack(reason))
+                    slotBuild = try await buildSlot(preparation: mtpPreparation.fallingBack(reason))
                 } catch {
                     await resliceGrowSurvivors()
                     MLX.Memory.clearCache()

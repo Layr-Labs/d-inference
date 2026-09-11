@@ -1,125 +1,53 @@
-# `provider-swift` — Swift CLI provider
+# Swift provider package
 
-CLI provider for Apple Silicon Macs. Builds two executables:
+> Last updated: 2026-09-11 · commit `645d22c6d`
 
-| Binary | Purpose |
+The Apple Silicon provider runs inference through MLX-Swift and exposes the
+`darkbloom` CLI. Release packaging places the provider and its runtime resources
+in a signed `Darkbloom.app`; CLI entry points in the installation's `bin`
+directory point into that app.
+
+## Products and responsibilities
+
+[Package.swift](Package.swift) declares the products, targets, dependencies and
+test suites. The executable products are:
+
+| Product | Responsibility |
 |---|---|
-| `darkbloom` | Provider CLI: `serve`, `start`, `stop`, `status`, `doctor`, `models`, `login`, `logout`, `benchmark`, `update`, `verify` |
-| `darkbloom-enclave` | Stateless Secure Enclave helper: `attest`, `sign`, `info`, `wallet-address`. Installed as both `darkbloom-enclave` (canonical) and `eigeninference-enclave` (legacy symlink). |
+| `darkbloom` | Provider lifecycle, local serving, account setup, diagnostics, model management and benchmarks |
+| `darkbloom-enclave` | Secure Enclave attestation and signing helper; also exposed by the legacy `eigeninference-enclave` installation link |
+| `darkbloom-fan-helper` | Fan-control helper packaged for opt-in activation |
+| `darkbloom-publish` | Build and hash model manifests for publishing |
 
-This package is **CLI-only**: no SwiftUI app, no `.app` bundle, no DMG.
+`ProviderCoreFoundation` contains manifest, hashing and template helpers.
+`ProviderCore` owns coordinator connectivity, request lifecycle, model loading,
+inference, cache persistence, telemetry, platform checks and updates.
+`DarkbloomFanCore`, `DarkbloomFanProtocol` and `DarkbloomFanService` separate fan
+policy, messages and service operations. Benchmark support lives in the
+`ProviderBenchmark` target. Tests are grouped by their package targets under
+[Tests](Tests).
 
-## Build & test
+## Build and test
+
+Use the repository's [build guide](../docs/developer/build.md) for toolchain and
+submodule setup. From the repository root:
 
 ```bash
-# From the repository root. These targets build first, stage the matching
-# source-built metallib at every runtime path, and then run tests skip-build.
-make provider-test
 make provider-build
-
-# Optimized local binary:
-cd provider-swift && swift build -c release && cd ..
-./scripts/fetch-metallib.sh release
-# Outputs include provider-swift/.build/release/{darkbloom,mlx.metallib}.
+make provider-test
 ```
 
-The package depends on local submodules at `../libs/mlx-swift` and `../libs/mlx-swift-lm`. Make sure they are checked out:
+These targets build the provider and stage its source-matched `mlx.metallib`.
+The metallib must match the nested MLX source used by `Cmlx`; use the canonical
+[scripts/fetch-metallib.sh](../scripts/fetch-metallib.sh) helper after a manual
+build. See the [test guide](../docs/developer/test.md) for focused suites and
+hardware-dependent checks.
 
-```bash
-cd ..
-git submodule update --init --recursive
-```
+## Runtime and operations
 
-## Running locally — metallib setup
-
-`mlx-swift`'s `Cmlx` target does **not** auto-compile its Metal kernels through SwiftPM. The runtime needs an `mlx.metallib` file colocated with the binary (or inside the binary's resource bundle), or it crashes on the first MLX call with `Failed to load the default metallib`.
-
-The canonical helper builds the metallib from the exact nested MLX source used
-by `Cmlx` (`libs/mlx-swift/Source/Cmlx/mlx`), with Metal JIT disabled and the
-required deployment target and kernel completeness checks. It never extracts a
-Python wheel:
-
-```bash
-# From the repository root, after the corresponding Swift build:
-./scripts/fetch-metallib.sh debug
-./scripts/fetch-metallib.sh release
-
-provider-swift/.build/release/darkbloom serve --foreground
-```
-
-The helper also accepts an absolute destination directory and
-`METALLIB_CACHE_DIR`; local, integration, CI, and release paths use this same
-source-matched builder. Release packaging colocates the resulting metallib with
-`darkbloom`.
-
-## Layout
-
-```text
-Sources/
-├── ProviderCore/              shared library
-│   ├── Protocol/              wire types, Codable, raw-JSON attestation preservation
-│   ├── Hardware/              sysctl, system_profiler, system metrics
-│   ├── Crypto/                NodeKeyPair (libsodium NaCl box) + X25519 helpers
-│   ├── Coordinator/           URLSessionWebSocketTask client, reconnect, dispatch
-│   ├── Inference/             ChatCompletionRequest → mlx-swift-lm → SSE chunks
-│   ├── InferenceFoundation/   local model directory readiness checks
-│   ├── Models/                HF cache scan, weight hashing
-│   ├── Security/              SIP, anti-debug, binary hash, env scrub, attestation
-│   ├── Server/                standalone Hummingbird HTTP server
-│   ├── Scheduling/            availability windows
-│   ├── Service/               launchd integration
-│   ├── Config/                TOML config + hardware-based defaults
-│   ├── Auth/                  RFC 8628 device-code login flow
-│   ├── Update/                self-update via signed bundle
-│   ├── Benchmark/             tok/s benchmark used by `darkbloom benchmark`
-│   ├── Batching/              (Phase 4) batch queue planner — kept disabled until cutover
-│   └── ProviderLoop.swift     top-level event loop
-├── darkbloom/                  ArgumentParser CLI subcommands
-└── darkbloom-enclave-cli/      ArgumentParser SE helper
-Tests/
-└── ProviderCoreTests/         54 tests, including NaCl-box golden vectors generated by Go
-```
-
-## CLI surface
-
-```
-darkbloom serve / start / stop      lifecycle
-darkbloom status / doctor           read-only diagnostics (with update banner)
-darkbloom models list / catalog / download <id> / remove <id>
-darkbloom enroll / unenroll         MDM device-attestation profile
-darkbloom login / logout            RFC 8628 device-code account linking
-darkbloom logs [-n N] [-w]          tail provider.log
-darkbloom autoupdate enable|disable|status
-darkbloom benchmark                 tok/s vs golden numbers
-darkbloom update [--check-only]     pull a new signed release
-darkbloom start --foreground        invoked by launchd; not user-facing
-darkbloom start --local --port N    standalone OpenAI-compatible HTTP server
-                                    (no coordinator connection)
-```
-
-## Cutover checklist (post-0.5.0)
-
-Done in v0.5.0:
-
-- [x] Coordinator accepts `backend == "mlx-swift"` releases (already wired via `registry.BackendUsesSwiftRuntime`; v0.5.0 also bumps the fallback `LatestProviderVersion` and adds `MetallibHash` to `store.Release`).
-- [x] `scripts/install.sh` rewritten as a pure Swift bundle installer (no Python,
-  no vllm-mlx, no site-packages tarball). The coordinator-served
-  `coordinator/api/install.sh` is generated byte-for-byte from that canonical source.
-- [x] `darkbloom enroll` / `unenroll` / `logs` / `report` / `autoupdate` / `models download` / `models catalog` / `models remove` / `start --local` / `--check-only` for `update`.
-- [x] Client telemetry transport is privacy-disabled: the source-compatible
-  facade drops events, purges its legacy queue, and never posts free-form logs,
-  stacks, URLs, or request identifiers to the coordinator.
-- [x] PID-file single-instance lock + `caffeinate -s -i -w <pid>` in `start --foreground` and `start --local`.
-- [x] Crypto cleanup: `CoordinatorClient` now base64-decodes the ciphertext + sender pubkey itself and yields `Data` to `ProviderLoop`, removing the previous round-trip-through-base64 dance.
-- [x] `mlx.metallib` self-hashed at startup, surfaced under `template_hashes["mlx_metallib"]` in registration + attestation responses; the release pipeline still bakes the metallib next to the binary.
-- [x] `ChatCompletionRequest` accepts `stop` (string or array) / `seed` / `tools` / `tool_choice` / `response_format` / `user`; the values round-trip through Codable (the inference engine is a no-op pass-through for tools and response_format today).
-- [x] `darkbloom doctor` and `darkbloom status` show a one-line update banner before printing state (skip with `DARKBLOOM_NO_UPDATE_CHECK=1`).
-- [x] Privacy capabilities cleaned up: `python_runtime_locked` and `dangerous_modules_blocked` now report `false` instead of lying.
-- [x] Dead code dropped: `Inference/InferenceEngine.swift` removed; `BatchScheduler` is the single inference path.
-
-Still pending:
-
-- [ ] Phase 4b: true continuous batching (deferrable past cutover; today's `BatchScheduler` does prefill-serial + decode-concurrent on a single ModelContainer).
-- [ ] Phase 0: SwiftPM build-tool plugin to produce `mlx.metallib` directly from `libs/mlx-swift/Source/Cmlx/mlx`. Until then, local development and CI use the canonical source builder at `scripts/fetch-metallib.sh`.
-- [ ] First-class `metallib_hash` field on `protocol.RegisterMessage` and `protocol.AttestationResponseMessage` (today it rides as a key inside `template_hashes`, which the coordinator stores but does not enforce).
-- [ ] Build-time injection of `ProviderCore.version` from a git tag (today it is a hand-bumped constant; CI consumes it as-is).
+The [CLI reference](../docs/provider/cli-reference.md) describes supported
+commands and flags. The [provider architecture](../docs/architecture/components/provider.md)
+and [inference architecture](../docs/architecture/inference.md) explain the
+request lifecycle, continuous batching, model admission and cache behavior.
+Release packaging and rollback are covered by the
+[provider release runbook](../docs/operations/provider-release.md).

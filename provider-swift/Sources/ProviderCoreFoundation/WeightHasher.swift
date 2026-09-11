@@ -8,7 +8,7 @@ import Logging
 ///
 /// Computes a deterministic hash over all integrity-relevant files in a model
 /// snapshot directory. Files are sorted by filename, each hashed independently
-/// (in parallel), then the per-file digests are combined into a final hash.
+/// in sorted order, then the per-file digests are combined into a final hash.
 ///
 /// This is intentionally separated from `ModelScanner` because hashing is
 /// expensive (reads every byte of every weight file) and should only be

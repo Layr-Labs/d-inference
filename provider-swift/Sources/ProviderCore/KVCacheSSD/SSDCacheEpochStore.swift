@@ -250,7 +250,17 @@ final class SSDCacheEpochStore: @unchecked Sendable {
         case .regular:
             let handle = try SSDNoFollowIO.openRegularFileForReading(at: url)
             defer { try? handle.close() }
-            guard let data = try handle.readToEnd(), data.count <= maxRecordBytes else {
+            // Read at most the limit plus one sentinel byte. Checking after
+            // readToEnd() allowed corrupt metadata to allocate without a bound.
+            guard var data = try handle.read(upToCount: maxRecordBytes + 1) else {
+                throw SSDBlockStoreError.ioFailure("cache epoch record is oversized")
+            }
+            while data.count <= maxRecordBytes {
+                guard let chunk = try handle.read(upToCount: maxRecordBytes + 1 - data.count),
+                    !chunk.isEmpty else { break }
+                data.append(chunk)
+            }
+            guard data.count <= maxRecordBytes else {
                 throw SSDBlockStoreError.ioFailure("cache epoch record is oversized")
             }
             return ReadResult(

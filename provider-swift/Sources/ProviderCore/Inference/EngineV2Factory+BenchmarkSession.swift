@@ -297,71 +297,61 @@ extension EngineV2Factory {
             prepared.assistant?.release()
             throw error
         }
-        guard let engine = await bundle.bridge.ownedEngine as? EngineV2 else {
-            await bundle.bridge.shutdown()
-            bundle.releaseAssistant()
-            throw EngineV2BenchmarkSession.Failure.unexpectedEngine
-        }
-        guard !mtpEnabled || (bundle.mtpStatus.active && engine.mtpMetricsSnapshot() != nil) else {
-            await bundle.bridge.shutdown()
-            bundle.releaseAssistant()
-            throw EngineV2BenchmarkSession.Failure.mtpUnavailable
-        }
+        // Bundle ownership transfers only after every benchmark gate passes.
+        // All post-build refusals drain the engine before releasing the assistant.
         do {
+            guard let engine = await bundle.bridge.ownedEngine as? EngineV2 else {
+                throw EngineV2BenchmarkSession.Failure.unexpectedEngine
+            }
+            guard !mtpEnabled || (bundle.mtpStatus.active && engine.mtpMetricsSnapshot() != nil) else {
+                throw EngineV2BenchmarkSession.Failure.mtpUnavailable
+            }
             try gemmaMTPVerification?.validateObservedMetrics(engine.mtpMetricsSnapshot())
+            guard !PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment),
+                engine.hybridPrefixCache == nil else {
+                throw EngineV2BenchmarkSession.Failure.unexpectedResidentCache
+            }
+            if PrefixCachePolicy.isEnabled(modelId: modelId, environment: effectiveEnvironment) {
+                let cacheStatus = bundle.bridge.prefixCacheModelStatus()
+                let hasEvidenceSource = bundle.bridge.durablePrefixCacheEvidenceSource != nil
+                guard hasEvidenceSource, cacheStatus.state == .ready else {
+                    throw EngineV2BenchmarkSession.Failure.ssdUnavailable(
+                        status: cacheStatus, hasEvidenceSource: hasEvidenceSource)
+                }
+            }
+            if requirePersistentKey, bundle.bridge.ssdHybridCheckpointStore?.usesEphemeralKey == true {
+                throw EngineV2BenchmarkSession.Failure.persistentKeyUnavailable
+            }
+            var postBuildHeadroom: UInt64?
+            if useProductionKVGrant {
+                // The ordinary post-load guard clears reclaimable load buffers and
+                // requires minimum live OS/activation headroom. It is a refusal gate,
+                // not a second, smaller logical grant derived from Memory.active.
+                Memory.clearCache()
+                let sample = budget.memoryHeadroomSnapshot()
+                postBuildHeadroom = sample.runtimeRemainingBytes
+                let kind = await bundle.bridge.kvBackendKind
+                let ceiling = await bundle.bridge.kvBackendPoolBytes()
+                guard KVHeadroomProbe.postBuildServeable(kvBackendKind: kind, pagedPoolBytes: ceiling,
+                    activationReserveBytes: reserve, measuredHeadroomBytes: sample.runtimeRemainingBytes) else {
+                    throw EngineV2BenchmarkSession.Failure.unservablePostLoad(
+                        headroomBytes: sample.runtimeRemainingBytes,
+                        requiredBytes: UnifiedMemoryCap.minimumLoadKVBytes)
+                }
+            }
+            let backend = await bundle.bridge.kvBackendKind.rawValue
+            let fallback = await bundle.bridge.kvBackendFallbackReason
+            return EngineV2BenchmarkSession(
+                bundle: bundle, engine: engine,
+                backend: backend, fallback: fallback,
+                memoryEnabled: PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment),
+                activationReserveBytes: reserve, postLoadMaximumKVBytes: maximumKVBytes,
+                budget: budget, assistantIdentity: benchmarkAssistantIdentity(preparation.artifact),
+                productionGrant: productionGrant, postBuildHeadroomBytes: postBuildHeadroom)
         } catch {
             await bundle.bridge.shutdown()
             bundle.releaseAssistant()
             throw error
         }
-        guard !PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment),
-            engine.hybridPrefixCache == nil else {
-            await bundle.bridge.shutdown()
-            bundle.releaseAssistant()
-            throw EngineV2BenchmarkSession.Failure.unexpectedResidentCache
-        }
-        if PrefixCachePolicy.isEnabled(modelId: modelId, environment: effectiveEnvironment) {
-            let cacheStatus = bundle.bridge.prefixCacheModelStatus()
-            let hasEvidenceSource = bundle.bridge.durablePrefixCacheEvidenceSource != nil
-            guard hasEvidenceSource, cacheStatus.state == .ready else {
-                await bundle.bridge.shutdown()
-                bundle.releaseAssistant()
-                throw EngineV2BenchmarkSession.Failure.ssdUnavailable(
-                    status: cacheStatus, hasEvidenceSource: hasEvidenceSource)
-            }
-        }
-        if requirePersistentKey, bundle.bridge.ssdHybridCheckpointStore?.usesEphemeralKey == true {
-            await bundle.bridge.shutdown()
-            bundle.releaseAssistant()
-            throw EngineV2BenchmarkSession.Failure.persistentKeyUnavailable
-        }
-        var postBuildHeadroom: UInt64?
-        if useProductionKVGrant {
-            // The ordinary post-load guard clears reclaimable load buffers and
-            // requires minimum live OS/activation headroom. It is a refusal gate,
-            // not a second, smaller logical grant derived from Memory.active.
-            Memory.clearCache()
-            let sample = budget.memoryHeadroomSnapshot()
-            postBuildHeadroom = sample.runtimeRemainingBytes
-            let kind = await bundle.bridge.kvBackendKind
-            let ceiling = await bundle.bridge.kvBackendPoolBytes()
-            guard KVHeadroomProbe.postBuildServeable(kvBackendKind: kind, pagedPoolBytes: ceiling,
-                activationReserveBytes: reserve, measuredHeadroomBytes: sample.runtimeRemainingBytes) else {
-                await bundle.bridge.shutdown()
-                bundle.releaseAssistant()
-                throw EngineV2BenchmarkSession.Failure.unservablePostLoad(
-                    headroomBytes: sample.runtimeRemainingBytes,
-                    requiredBytes: UnifiedMemoryCap.minimumLoadKVBytes)
-            }
-        }
-        let backend = await bundle.bridge.kvBackendKind.rawValue
-        let fallback = await bundle.bridge.kvBackendFallbackReason
-        return EngineV2BenchmarkSession(
-            bundle: bundle, engine: engine,
-            backend: backend, fallback: fallback,
-            memoryEnabled: PrefixCachePolicy.isMemoryEnabled(environment: effectiveEnvironment),
-            activationReserveBytes: reserve, postLoadMaximumKVBytes: maximumKVBytes,
-            budget: budget, assistantIdentity: benchmarkAssistantIdentity(preparation.artifact),
-            productionGrant: productionGrant, postBuildHeadroomBytes: postBuildHeadroom)
     }
 }

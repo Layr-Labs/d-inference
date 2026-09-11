@@ -218,7 +218,7 @@ extension ProviderLoop {
             // The replacement bundle now owns the moved handle.
             recoveryAssistant = nil
             var newBridge = newBundle.bridge
-            // makeEngineV2BridgeForSlot re-registered `newBridge` in
+            // makeEngineV2BundleForSlot re-registered `newBridge` in
             // engineV2Runtime (replacing the old bridge's entry).
 
             MLX.Memory.clearCache()

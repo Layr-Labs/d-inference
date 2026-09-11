@@ -204,7 +204,7 @@ public actor ProviderLoop {
 
     /// Test seam (`ProviderLoop+Testing`): overrides the environment, the
     /// container EOS snapshot, and the production CBv2 engine builder used
-    /// by `makeEngineV2BridgeForSlot`. nil in production.
+    /// by `makeEngineV2BundleForSlot`. nil in production.
     internal var engineV2SlotHooks: EngineV2SlotHooks?
 
     /// Operator-configured hard cap on concurrent model slots

@@ -137,22 +137,7 @@ func setIdleUnloadMinutes(
         throw ValidationError(problem)
     }
 
-    let snapshot = try loadRuntimeSnapshot(configPath: configPath)
-    let savePath: URL
-    if configPath != nil {
-        savePath = snapshot.configPath
-    } else {
-        savePath = try ConfigManager.defaultConfigPath()
-    }
-
-    return try withExclusiveConfigLock(at: savePath) {
-        var config: ProviderConfig
-        if FileManager.default.fileExists(atPath: savePath.path) {
-            config = try ConfigManager.load(from: savePath)
-        } else {
-            config = snapshot.config
-        }
-
+    return try withMutableConfig(configPath: configPath) { savePath, config in
         if config.backend.idleTimeoutMins == minutes,
            let content = try? String(contentsOf: savePath, encoding: .utf8),
            tomlKeyPresent(content, section: "backend", key: "idle_timeout_mins") {

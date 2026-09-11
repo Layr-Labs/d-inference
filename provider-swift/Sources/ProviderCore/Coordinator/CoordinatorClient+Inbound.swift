@@ -15,6 +15,14 @@ extension CoordinatorClient {
         sendTextFrame(json, on: connection, identifier: identifier)
     }
 
+    private func rejectInvalidInferenceRequest(requestId: String, profile: RequestProfileBuilder) {
+        let response = encodeInferenceError(
+            requestId: requestId,
+            failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+            profile: profile.wireObject())
+        sendOnCurrentConnection(response, identifier: "inference_error")
+    }
+
     internal func handleIncomingFrame(
         _ data: Data,
         receivedAt: ContinuousClock.Instant,
@@ -49,12 +57,7 @@ extension CoordinatorClient {
 
             guard let encrypted = request.encryptedBody else {
                 logger.error("Rejecting plaintext inference request: \(requestId)")
-                let errorResponse = encodeInferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile.wireObject()
-                )
-                sendOnCurrentConnection(errorResponse, identifier: "inference_error")
+                rejectInvalidInferenceRequest(requestId: requestId, profile: profile)
                 return
             }
 
@@ -64,23 +67,13 @@ extension CoordinatorClient {
             // ephemeral pubkey (32 bytes).
             guard let cipherBytes = Data(base64Encoded: encrypted.ciphertext) else {
                 logger.error("Rejecting inference request \(requestId): ciphertext is not valid base64")
-                let errorResponse = encodeInferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile.wireObject()
-                )
-                sendOnCurrentConnection(errorResponse, identifier: "inference_error")
+                rejectInvalidInferenceRequest(requestId: requestId, profile: profile)
                 return
             }
             let senderKeyBytes = Data(base64Encoded: encrypted.ephemeralPublicKey)
             if senderKeyBytes == nil || senderKeyBytes?.count != 32 {
                 logger.error("Rejecting inference request \(requestId): invalid ephemeral public key")
-                let errorResponse = encodeInferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile.wireObject()
-                )
-                sendOnCurrentConnection(errorResponse, identifier: "inference_error")
+                rejectInvalidInferenceRequest(requestId: requestId, profile: profile)
                 return
             }
 

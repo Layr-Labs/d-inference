@@ -97,8 +97,7 @@ extension SSDPrefixCache {
             // A restored window does NOT shorten the replay: no row can
             // install one, so every boundary is judged against the same
             // conservative bound whether or not its tiling is complete.
-            if matched - min(config.adoptionBoundTokens, matched) >= config.minEffectiveTokens,
-                runBytes <= config.maxStageBytes,
+            if runBytes <= config.maxStageBytes,
                 SSDPrefixCachePolicy.estimatedStageMillis(bytes: runBytes) <= config.maxStageMillis
             {
                 break

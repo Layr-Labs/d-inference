@@ -94,30 +94,24 @@ public func parseMDMEnrollmentStatus(
 /// proceeds to a download (idempotent, can't brick), unenroll/doctor say the
 /// state is unknown instead of asserting non-enrollment.
 public func checkMDMEnrollment(coordinatorURL: String? = nil) -> MDMEnrollmentState {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/profiles")
-    process.arguments = ["status", "-type", "enrollment"]
+    checkMDMEnrollment(coordinatorURL: coordinatorURL, runner: .live)
+}
 
-    let outPipe = Pipe()
-    process.standardOutput = outPipe
-    process.standardError = Pipe()
-
+func checkMDMEnrollment(
+    coordinatorURL: String? = nil,
+    runner: SecurityCommandRunner
+) -> MDMEnrollmentState {
+    let result: SecurityCommandResult
     do {
-        try process.run()
+        result = try runner.run("/usr/bin/profiles", ["status", "-type", "enrollment"])
     } catch {
         logger.debug("profiles status failed to launch: \(error)")
         return .checkFailed
     }
-    process.waitUntilExit()
-
-    let output = String(
-        data: outPipe.fileHandleForReading.readDataToEndOfFile(),
-        encoding: .utf8
-    ) ?? ""
-
-    if process.terminationStatus != 0
+    let output = result.stdout
+    if result.terminationStatus != 0
         && output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        logger.debug("profiles status exited \(process.terminationStatus) with no output")
+        logger.debug("profiles status exited \(result.terminationStatus) with no output")
         return .checkFailed
     }
 

@@ -312,7 +312,7 @@ func runBenchmark(t *testing.T, name string, suiteCfg testbed.SuiteConfig, reqCf
 			modelStats[rr.ModelID] = st
 		}
 		st.count++
-		if rr.StatusCode == 200 {
+		if rr.StatusCode == http.StatusOK && rr.Error == nil {
 			st.success++
 			st.totalDuration += rr.Duration
 			if st.minDuration == 0 || rr.Duration < st.minDuration {
@@ -346,7 +346,7 @@ func runBenchmark(t *testing.T, name string, suiteCfg testbed.SuiteConfig, reqCf
 			userStats[rr.UserIndex] = st
 		}
 		st.count++
-		if rr.StatusCode == 200 {
+		if rr.StatusCode == http.StatusOK && rr.Error == nil {
 			st.success++
 		} else {
 			st.errors++

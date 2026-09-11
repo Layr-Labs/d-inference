@@ -1,0 +1,143 @@
+name: CodeQL
+
+# CodeQL ran on this repo via GitHub "default setup" from 2026-04-14 to
+# 2026-06-16, then was switched off in the repo UI — silently, because default
+# setup keeps no config in git. Two months of PRs merged unscanned while the
+# Security tab still showed the June alert snapshot, which reads as "we scan"
+# to anyone auditing it.
+#
+# This is the advanced setup: the config lives in git, so disabling it takes a
+# reviewed PR on master. The jobs in `analyze` are registered as required
+# status checks on master (ruleset "Branch Rules"), which makes removal
+# fail-closed — delete this file and the required contexts never report, so
+# nothing merges.
+#
+# DO NOT add `paths` / `paths-ignore` filters to these triggers. A job that is
+# skipped by a path filter never reports its check context, and a required
+# context that never reports blocks the merge forever. Scope exclusions belong
+# in .github/codeql/codeql-config.yml instead.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    # Mondays 09:17 UTC. Catches drift on master (and runs the Swift job) even
+    # in a week where no PR happens to touch the affected language.
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: CodeQL Analyze (${{ matrix.language }})
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      # One language failing must not cancel the others — a Rust extractor
+      # hiccup should not silently drop Go and TypeScript coverage.
+      fail-fast: false
+      matrix:
+        include:
+          # Workflow supply chain: pinned-action drift, untrusted checkout of
+          # PR head in the agent workflows, missing `permissions:` blocks.
+          - language: actions
+            build-mode: none
+          # coordinator/ + e2e/ live in the single root Go module.
+          - language: go
+            build-mode: autobuild
+          # console-ui/, admin-ui/, landing/.
+          - language: javascript-typescript
+            build-mode: none
+          # scripts/ benchmark + soak harnesses.
+          - language: python
+            build-mode: none
+          # coordinator/promptsidecar — parses untrusted prompt text.
+          - language: rust
+            build-mode: none
+    steps:
+      - name: Checkout
+        # Deliberately no `submodules: recursive`. libs/mlx, libs/mlx-swift and
+        # libs/mlx-swift-lm are vendored upstream trees; extracting them would
+        # bury first-party findings under third-party noise.
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Go
+        if: matrix.language == 'go'
+        # Go is the one language here using autobuild, so it needs the toolchain
+        # the module declares rather than whatever the runner image ships.
+        uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@faaa5d804fc648d0fdb28822a8e36cf7d0a6132c # v4.37.7
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@faaa5d804fc648d0fdb28822a8e36cf7d0a6132c # v4.37.7
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  analyze-swift:
+    name: CodeQL Analyze (swift)
+    # Weekly and on demand only — never on pull_request, so this job is not a
+    # required check and cannot block a merge.
+    #
+    # provider-swift is the highest-value target in the repo (it decrypts
+    # prompts and holds the Secure Enclave key), but a cold build compiles the
+    # full Cmlx C++/Metal tree at ~20 min on a paid macOS runner, and CodeQL's
+    # autobuild is what failed here in June 2026 ("unsuccessful execution",
+    # 0 rules). Per-PR Swift analysis would make every PR slow and occasionally
+    # red, which is the fastest route back to someone disabling code scanning.
+    # Weekly + non-blocking keeps the coverage and drops that pressure.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: blacksmith-12vcpu-macos-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@faaa5d804fc648d0fdb28822a8e36cf7d0a6132c # v4.37.7
+        with:
+          languages: swift
+          build-mode: manual
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Build provider-swift
+        working-directory: provider-swift
+        # Intentionally NOT restoring the SwiftPM cache that ci.yml uses. Swift
+        # is extracted by tracing real compiler invocations, so a warm .build
+        # would make this a no-op and yield an empty database ("no source code
+        # was seen"). The cold build is the point.
+        #
+        # No mlx.metallib staging either: the metallib is a runtime Metal
+        # artifact, needed to *run* the provider, not to compile it.
+        run: swift build
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@faaa5d804fc648d0fdb28822a8e36cf7d0a6132c # v4.37.7
+        with:
+          category: "/language:swift"

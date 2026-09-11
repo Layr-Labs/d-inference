@@ -20,7 +20,7 @@ export function ChatWelcome({ authenticated }: { authenticated: boolean }) {
         {authenticated ? "What are you working on?" : "Darkbloom"}
       </h1>
       <p className="mx-auto mt-4 max-w-md text-sm leading-relaxed text-text-secondary sm:text-[15px]">
-        {authenticated ? "Choose a model and start a private conversation." : "Your workspace for private AI. Write, code, and explore with end-to-end encrypted conversations."}
+        {authenticated ? "Choose a model and start a private conversation." : "Your workspace for private AI. Write, code, and explore with conversations encrypted in transit."}
       </p>
       {!authenticated && (
         <div className="mt-5 flex justify-center gap-6 text-xs text-text-secondary">

@@ -51,7 +51,7 @@ function LoginContent() {
         </p>
 
         <p className="mt-12 text-xs font-mono text-text-tertiary tracking-wide">
-          End-to-end encrypted · Apple Silicon · Decentralized
+          Encrypted in transit · Apple Silicon · Decentralized
         </p>
 
         <p className="mt-4 text-[10px] text-text-tertiary leading-relaxed max-w-xs mx-auto">

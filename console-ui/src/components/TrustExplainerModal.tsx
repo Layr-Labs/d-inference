@@ -70,15 +70,14 @@ const STEPS: StepData[] = [
     icon: Lock,
     iconColor: "text-coral",
     iconBg: "bg-coral-light",
-    title: "End-to-End Encryption",
+    title: "Encryption in Transit",
     description:
-      "Your prompts are encrypted before leaving your browser. Only the verified hardware can decrypt them.",
+      "Requests travel over encrypted connections. The coordinator processes plaintext in memory, then encrypts it for the verified provider.",
     technical:
-      "E2E encryption uses X25519/NaCl box (Curve25519 + XSalsa20-Poly1305). " +
-      "The coordinator generates ephemeral X25519 session keys for each request, encrypts " +
-      "the request body with the provider's public key, and forwards the ciphertext. " +
-      "Decryption happens only inside the hardened provider process with PT_DENY_ATTACH, " +
-      "Hardened Runtime, and SIP protections.",
+      "HTTPS protects the browser connection; optional X25519/NaCl box sealing terminates at the coordinator. " +
+      "The coordinator processes plaintext in confidential-VM memory for routing and billing, " +
+      "without logging or retaining prompt content, then re-seals to the provider's registered key. " +
+      "The attested provider is the plaintext endpoint. This is hop-by-hop encryption.",
   },
   {
     icon: RefreshCw,

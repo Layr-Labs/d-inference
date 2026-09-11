@@ -50,7 +50,7 @@ export function PreSendTrustBanner({ visible }: { visible: boolean }) {
         <div className="flex items-start justify-center gap-2 text-text-tertiary">
           <ShieldCheck size={14} className="mt-0.5 shrink-0" />
           <p className="text-xs leading-relaxed">
-            End-to-end encrypted on verified hardware
+            Encrypted in transit to verified hardware
             {summary && <span className="mt-1 block text-[11px]">{summary.count} provider{summary.count !== 1 ? "s" : ""} online.{summary.lastVerified ? ` Last verified ${summary.lastVerified}.` : ""}</span>}
           </p>
           <button

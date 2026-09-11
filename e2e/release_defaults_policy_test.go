@@ -19,7 +19,9 @@ func releaseDefaultSelection(in connectedCacheInput) (releaseDefaultExpectation,
 	switch in.Artifact.ModelID {
 	case "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "EigenLabs/Qwen3.8-27B-4bit-mtp":
 		expected = releaseDefaultExpectation{cache: "ssd", mtp: "on"}
-	case "gpt-oss-20b", "gemma-4-26b-qat-4bit":
+	case "gpt-oss-20b":
+		expected = releaseDefaultExpectation{cache: "ssd", mtp: "off"}
+	case "gemma-4-26b-qat-4bit":
 	default:
 		return expected, fmt.Errorf("exact release target required")
 	}
@@ -72,7 +74,7 @@ func validateReleaseDefaultSlots(slots []connectedSlot, in connectedCacheInput, 
 	}
 	if expected.cache == "ssd" {
 		if s.Capability == nil || !s.Capability.Enabled || !s.Capability.Ready || s.Capability.ModelID != in.Artifact.ModelID || s.Capability.ModelAggregateHash != in.Artifact.ModelAggregateSHA256 || s.Capability.PromptContractID != in.Artifact.PromptContractID || s.CacheStatus.State != "ready" || s.CacheStatus.Reason != "ready" {
-			return fmt.Errorf("default Qwen SSD not ready")
+			return fmt.Errorf("default model SSD not ready")
 		}
 	} else if s.Capability != nil || s.CacheStatus.State != "disabled" || s.CacheStatus.Reason != "config_disabled" {
 		return fmt.Errorf("default target unexpectedly enabled SSD")
@@ -83,7 +85,7 @@ func validateReleaseDefaultSlots(slots []connectedSlot, in connectedCacheInput, 
 func TestReleaseDefaultSelectionSeparatesRequestedAndObservedPolicy(t *testing.T) {
 	for _, model := range []string{"qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8", "EigenLabs/Qwen3.8-27B-4bit-mtp", "gpt-oss-20b", "gemma-4-26b-qat-4bit"} {
 		cache := "ssd"
-		if model == "gpt-oss-20b" || model == "gemma-4-26b-qat-4bit" {
+		if model == "gemma-4-26b-qat-4bit" {
 			cache = "off"
 		}
 		in := connectedCacheInput{Backend: "auto", MTPMode: "auto", CacheMode: cache, MaxConcurrent: 1}
@@ -107,23 +109,46 @@ func TestReleaseDefaultSelectionSeparatesRequestedAndObservedPolicy(t *testing.T
 		}
 	}
 }
+func TestReleaseDefaultGPTOSSRequiresSSDWithoutEnablingMTP(t *testing.T) {
+	in := connectedCacheInput{Backend: "auto", MTPMode: "auto", CacheMode: "ssd", MaxConcurrent: 1}
+	in.Artifact.ModelID = "gpt-oss-20b"
+	expected, err := releaseDefaultSelection(in)
+	require.NoError(t, err)
+	require.Equal(t, releaseDefaultExpectation{cache: "ssd", mtp: "off"}, expected)
+	cfg := releaseDefaultSuite(in, nil)
+	require.Empty(t, cfg.PrefixCacheMode, "the smoke must observe the production model default")
+	require.Equal(t, "auto", cfg.MTPMode, "MTP inactivity must be observed, not forced")
+	for _, cache := range []string{"off", "memory", ""} {
+		changed := in
+		changed.CacheMode = cache
+		_, err := releaseDefaultSelection(changed)
+		require.Error(t, err)
+	}
+	for _, model := range []string{"openai/gpt-oss-20b", "gpt-oss-20b-other", "gpt-oss-120b"} {
+		changed := in
+		changed.Artifact.ModelID = model
+		_, err := releaseDefaultSelection(changed)
+		require.Error(t, err)
+	}
+}
+
 func TestReleaseDefaultEnvironmentRefusesPolicyOverrides(t *testing.T) {
 	require.NoError(t, releaseDefaultEnvironment([]string{"PATH=/bin", "MLX_COMPILED_DECODE=1"}))
-	for _, key := range []string{"DARKBLOOM_PREFIX_CACHE=0", "DARKBLOOM_PREFIX_CACHE_MODEL_IDS=gemma-4-26b-qat-4bit", "DARKBLOOM_PREFIX_CACHE_MEMORY=1", "DARKBLOOM_CBV2_PAGED_KV=0", "DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=contiguous", "DARKBLOOM_MTP_MAX_TOKENS=0"} {
+	for _, key := range []string{"DARKBLOOM_PREFIX_CACHE=0", "DARKBLOOM_PREFIX_CACHE=1", "DARKBLOOM_PREFIX_CACHE=", "DARKBLOOM_PREFIX_CACHE_MODEL_IDS=gemma-4-26b-qat-4bit", "DARKBLOOM_PREFIX_CACHE_MEMORY=1", "DARKBLOOM_CBV2_PAGED_KV=0", "DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=contiguous", "DARKBLOOM_MTP_MAX_TOKENS=0"} {
 		require.Error(t, releaseDefaultEnvironment([]string{key}))
 	}
 }
 
 func TestReleaseDefaultSlotsRejectFallbackAndWrongCacheState(t *testing.T) {
 	paged := "paged"
-	for _, model := range []string{"gpt-oss-20b", "EigenLabs/Qwen3.8-27B-4bit-mtp"} {
+	for _, model := range []string{"gpt-oss-20b", "EigenLabs/Qwen3.8-27B-4bit-mtp", "gemma-4-26b-qat-4bit"} {
 		in := connectedCacheInput{}
 		in.Artifact.ModelID = model
 		in.Artifact.ModelAggregateSHA256 = "hash"
 		in.Artifact.PromptContractID = "contract"
 		want := releaseDefaultExpectation{cache: "off"}
 		state := "disabled"
-		if model != "gpt-oss-20b" {
+		if model != "gemma-4-26b-qat-4bit" {
 			want.cache = "ssd"
 			state = "ready"
 		}
@@ -139,6 +164,14 @@ func TestReleaseDefaultSlotsRejectFallbackAndWrongCacheState(t *testing.T) {
 			bad := makeSlot()
 			mutate(&bad)
 			require.Error(t, validateReleaseDefaultSlots([]connectedSlot{bad}, in, want))
+		}
+		if want.cache == "ssd" {
+			for _, state := range []string{"pending", "disabled"} {
+				bad := makeSlot()
+				bad.CacheStatus.State = state
+				bad.CacheStatus.Reason = map[string]string{"pending": "scan_pending", "disabled": "config_disabled"}[state]
+				require.Error(t, validateReleaseDefaultSlots([]connectedSlot{bad}, in, want), "default SSD must be ready")
+			}
 		}
 		if want.cache == "ssd" {
 			for _, mutate := range []func(*protocol.PrefixCacheV2Capability){func(c *protocol.PrefixCacheV2Capability) { c.Enabled = false }, func(c *protocol.PrefixCacheV2Capability) { c.Ready = false }, func(c *protocol.PrefixCacheV2Capability) { c.ModelID = "other" }, func(c *protocol.PrefixCacheV2Capability) { c.ModelAggregateHash = "other" }, func(c *protocol.PrefixCacheV2Capability) { c.PromptContractID = "other" }} {

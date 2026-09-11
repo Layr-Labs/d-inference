@@ -245,17 +245,18 @@ enum DoctorRunner {
     /// via `pmset -g assertions`. Informational only (the provider
     /// self-caffeinates while serving), so nil/UNKNOWN on any failure is fine.
     private static func systemSleepPrevented() -> Bool? {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
-        p.arguments = ["-g", "assertions"]
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = Pipe()
-        guard (try? p.run()) != nil else { return nil }
-        p.waitUntilExit()
-        guard p.terminationStatus == 0 else { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        // Same pipe-buffer deadlock as #811's contention probe: this waited on
+        // the child before draining stdout, and its stderr `Pipe()` was never
+        // read at all. Route it through the bounded runner so a chatty or wedged
+        // `pmset` degrades to UNKNOWN instead of hanging `doctor`.
+        let result = FanProcessRunner.run(
+            "/usr/bin/pmset",
+            arguments: ["-g", "assertions"],
+            timeout: 5,
+            discardStandardError: true
+        )
+        guard result.status == 0 else { return nil }
+        let text = result.output
         // `PreventUserIdleSystemSleep` / `PreventSystemSleep` report 1 when an
         // assertion (e.g. caffeinate, an active inference) is holding the system
         // awake. Any "1" on those lines ⇒ sleep currently prevented.

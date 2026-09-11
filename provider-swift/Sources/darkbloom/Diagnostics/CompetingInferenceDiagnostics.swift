@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCore
 
 /// Snapshot of non-Darkbloom inference that can steal unified memory / ports.
 /// Injectable for pure unit tests (see `DoctorChecksTests`).
@@ -11,12 +12,12 @@ struct LocalContentionSnapshot: Equatable, Sendable {
     static let empty = LocalContentionSnapshot(ollamaPortListening: false, competingProcessHints: [])
 
     /// Best-effort live probe. Failures degrade to empty (no false WARNs).
-    static func live() -> LocalContentionSnapshot {
+    static func live(runner: SecurityCommandRunner = .live) -> LocalContentionSnapshot {
         var ollama = false
         var hints: [String] = []
 
         // Port 11434 — Ollama default
-        if let out = runCapture("/usr/sbin/lsof", args: ["-nP", "-iTCP:11434", "-sTCP:LISTEN"]) {
+        if let out = try? runner.run("/usr/sbin/lsof", ["-nP", "-iTCP:11434", "-sTCP:LISTEN"]).stdout {
             if out.contains("LISTEN") {
                 ollama = true
                 if out.lowercased().contains("ollama") {
@@ -26,7 +27,7 @@ struct LocalContentionSnapshot: Equatable, Sendable {
         }
 
         // Process table hints (names only — no args, avoid leaking paths/keys)
-        if let ps = runCapture("/bin/ps", args: ["-axo", "comm="]) {
+        if let ps = try? runner.run("/bin/ps", ["-axo", "comm="]).stdout {
             let lower = ps.lowercased()
             let watch = ["ollama", "llama-server", "mlx_lm.server", "vllm", "text-generation-launcher"]
             for name in watch where lower.contains(name) {
@@ -40,22 +41,6 @@ struct LocalContentionSnapshot: Equatable, Sendable {
         )
     }
 
-    private static func runCapture(_ path: String, args: [String]) -> String? {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: path)
-        p.arguments = args
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = FileHandle.nullDevice
-        do {
-            try p.run()
-            p.waitUntilExit()
-        } catch {
-            return nil
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)
-    }
 }
 
 func competingInferenceCheck(_ snap: LocalContentionSnapshot) -> DoctorCheck {

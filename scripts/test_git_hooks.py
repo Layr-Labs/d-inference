@@ -78,10 +78,14 @@ class PrePushTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls, "")
 
-    def test_unknown_remote_commit_fails_instead_of_guessing_a_range(self):
-        result, calls = self.run_hook((self.base, "1" * 40))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(calls, "")
+    def test_unresolvable_ref_fails_even_before_valid_or_deleted_refs(self):
+        for invalid in ((self.base, "1" * 40), ("1" * 40, ZERO)):
+            for following in ((), ((self.base, self.base),), ((ZERO, self.base),)):
+                with self.subTest(invalid=invalid, following=following):
+                    result, calls = self.run_hook(invalid, *following)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(calls, "")
+                    self.assertNotIn("All checks passed", result.stdout)
 
     def test_check_failure_blocks_push(self):
         head = self.commit("coordinator/main.go", "package main\n")

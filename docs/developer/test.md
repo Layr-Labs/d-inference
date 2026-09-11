@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-11 · commit `4e4cabb59`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -922,6 +922,12 @@ node --test landing/earn-calculator-core.test.js
 ```
 
 ### 6. Scripts and release integrity
+
+`python3 scripts/test-provider-signing-validation.py` checks signing-input
+contracts. `python3 scripts/test_release_workflow.py` runs the release workflow's
+profile and JSON-payload steps against local fixtures, including invalid app
+identities, missing expiry, and quoted multiline tag text. Both run in Release
+Integrity CI without signing, notarizing, publishing or executing a provider.
 
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)

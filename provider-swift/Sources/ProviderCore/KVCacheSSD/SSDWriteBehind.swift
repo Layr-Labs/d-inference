@@ -212,12 +212,9 @@ final class SSDWriteBehind: @unchecked Sendable {
     /// byte cap) — the caller settles the in-flight tags and counts the
     /// drop. Safe to call from the engine's donation queue.
     ///
-    /// Admission is bounded on OUR job/byte counters (< maxJobs and
-    /// ≤ maxQueuedBytes) so the pipeline's `.bufferingNewest` buffer can
-    /// never overflow: an overflow would silently EVICT the OLDEST job,
-    /// stranding its in-flight dedupe tags until restart (those blocks
-    /// could never be rewritten). With the pre-count, a full queue drops
-    /// THIS donation instead — whose tags the caller settles immediately.
+    /// Job/byte counters enforce both caps before enqueue. The underlying
+    /// pipeline also uses bufferingOldest: overflow drops this donation,
+    /// whose tags the caller settles, and preserves accepted FIFO work.
     func submit(_ job: SSDDonationJob) -> Bool {
         submitWithResult(job) == .accepted
     }
@@ -338,16 +335,11 @@ final class SSDWriteBehind: @unchecked Sendable {
             do {
                 if let writeBlock = config.writeBlock {
                     fileBytes = try writeBlock(block, url)
-                    index.insert(tag16: block.tag16, fileBytes: fileBytes, lastAccess: now)
-                    stats.add(
-                        blocksWritten: 1, bytesWritten: fileBytes,
-                        windowSidecarsWritten: sidecar)
-                    durableWriteSucceeded = true
-                    continue
+                } else {
+                    fileBytes = try SSDBlockStore.write(
+                        to: url, metadata: block.metadata, chunks: block.chunks,
+                        kekKey: config.kekKey, strictFsync: config.strictFsync)
                 }
-                fileBytes = try SSDBlockStore.write(
-                    to: url, metadata: block.metadata, chunks: block.chunks,
-                    kekKey: config.kekKey, strictFsync: config.strictFsync)
             } catch {
                 stats.add(donationsDropped: 1)
                 if isENOSPC(error) {

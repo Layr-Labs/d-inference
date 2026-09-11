@@ -7,6 +7,8 @@ import {
   HARDWARE_OPTIONS,
   PREFILL_TO_DECODE_RATIO,
   calculateCapacityRevenue,
+  modelFit,
+  tokenBudgetTokens,
 } from "@/app/earn/calc";
 import {
   MIN_PROVIDER_MEMORY_GB,
@@ -156,6 +158,26 @@ describe("earnings projection", () => {
       ),
     ).toMatchObject({ bandwidthGBs: 1200, ramOptions: [96, 256, 512] });
   });
+
+  it("refuses Qwen 3.8 on pre-M5 chips and zero-KV boxes", () => {
+    const qwen38 = CALCULATOR_MODELS.find(
+      (model) => model.id === "EigenLabs/Qwen3.8-27B-4bit-mtp",
+    )!;
+    const qwen36 = qwenModel();
+    const m4 = HARDWARE_OPTIONS.find(
+      (option) => option.macType === MACBOOK_PRO && option.chip === M4_MAX,
+    )!;
+    const m5 = HARDWARE_OPTIONS.find(
+      (option) => option.macType === MACBOOK_PRO && option.chip === "M5 Max (40-core GPU)",
+    )!;
+    expect(modelFit(qwen38, m4, 48)).toEqual({ fits: false, reason: "chip" });
+    expect(calculateCapacityRevenue(qwen38, m4, 48, 25)).toBeNull();
+    expect(calculateCapacityRevenue(qwen38, m5, 48, 25)).not.toBeNull();
+    expect(tokenBudgetTokens(32, qwen36.sizeGB)).toBe(0);
+    expect(modelFit(qwen36, m4, 32)).toEqual({ fits: false, reason: "kv" });
+    expect(calculateCapacityRevenue(qwen36, m4, 32, 25)).toBeNull();
+    expect(tokenBudgetTokens(64, 12)).toBe(103854);
+  });
 });
 
 describe("EarnPage", () => {
@@ -192,6 +214,7 @@ describe("EarnPage", () => {
     expect(screen.getByText("3. Prefill and decode speed")).toBeInTheDocument();
     expect(screen.getByText("4. Concurrency this Mac can hold")).toBeInTheDocument();
     expect(screen.getByText("7. Input and output pricing")).toBeInTheDocument();
+    expect(screen.getByText("Requires an M5 or newer chip")).toBeInTheDocument();
     expect(screen.getByRole("note")).toHaveTextContent("Estimated earning, not guaranteed.");
     const setup = screen.getByText("Turn your Mac into a provider");
     const flow = screen.getByText("How this estimate is calculated");

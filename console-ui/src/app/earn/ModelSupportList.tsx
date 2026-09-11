@@ -2,10 +2,22 @@
 
 import { Check, Layers, X } from "lucide-react";
 import { fmtUSD } from "./calc";
-import type { EarningsCalculator } from "./useEarningsCalculator";
+import type { EarningsCalculator, ModelRow } from "./useEarningsCalculator";
 
 function formatSize(sizeGB: number): string {
   return sizeGB < 10 ? sizeGB.toFixed(1) : sizeGB.toFixed(0);
+}
+
+function unfitDetail(
+  reason: ModelRow["fitReason"],
+  model: ModelRow["model"],
+  ramGB: number,
+): string {
+  if (reason === "chip") return `Requires an M${model.minChipGeneration} or newer chip`;
+  if (reason === "kv") {
+    return `Not enough KV headroom for a typical request on ${ramGB} GB`;
+  }
+  return `Requires at least ${model.minRAMGB} GB of unified memory`;
 }
 
 export function ModelSupportList({ calc }: { calc: EarningsCalculator }) {
@@ -28,7 +40,7 @@ export function ModelSupportList({ calc }: { calc: EarningsCalculator }) {
       )}
       {modelRows.length > 0 && (
         <ul className="rounded-lg border border-border-dim overflow-hidden">
-          {modelRows.map(({ model, fits, estimate }, index) => {
+          {modelRows.map(({ model, fits, fitReason, estimate }, index) => {
             const isBest = Boolean(estimate && model.id === bestModel?.id);
             return (
               <li
@@ -50,7 +62,7 @@ export function ModelSupportList({ calc }: { calc: EarningsCalculator }) {
                   <p className="text-xs text-text-secondary">
                     {fits
                       ? `Fits in your ${effectiveRAM} GB (${formatSize(model.sizeGB)} GB of model weights)`
-                      : `Requires at least ${model.minRAMGB} GB of unified memory`}
+                      : unfitDetail(fitReason, model, effectiveRAM)}
                   </p>
                 </div>
 

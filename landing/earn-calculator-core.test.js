@@ -76,6 +76,34 @@ test("a model that does not fit returns null", () => {
   assert.equal(Core.calculateCapacityRevenue(nemotron, hardware, 36, 25), null);
 });
 
+test("Qwen 3.8 requires an M5 or newer chip", () => {
+  const qwen38 = Core.CALCULATOR_MODELS.find((entry) => entry.id === "EigenLabs/Qwen3.8-27B-4bit-mtp");
+  const m4 = Core.HARDWARE_OPTIONS.find(
+    (option) => option.macType === "MacBook Pro" && option.chip === "M4 Max (16-core CPU)",
+  );
+  const m5 = Core.HARDWARE_OPTIONS.find(
+    (option) => option.macType === "MacBook Pro" && option.chip === "M5 Max (40-core GPU)",
+  );
+  assert.equal(Core.modelFit(qwen38, m4, 48).reason, "chip");
+  assert.equal(Core.calculateCapacityRevenue(qwen38, m4, 48, 25), null);
+  assert.equal(Core.modelFit(qwen38, m5, 48).fits, true);
+  assert.ok(Core.calculateCapacityRevenue(qwen38, m5, 48, 25));
+});
+
+test("zero KV budget does not produce an earning estimate", () => {
+  const qwen36 = Core.CALCULATOR_MODELS.find((entry) => entry.id === "qwen3.6-35b-a3b-vl-mtp-mxfp8");
+  const hardware = Core.HARDWARE_OPTIONS.find(
+    (option) => option.macType === "MacBook Pro" && option.chip === "M4 Max (16-core CPU)",
+  );
+  assert.equal(Core.tokenBudgetTokens(32, qwen36.sizeGB), 0);
+  assert.equal(Core.modelFit(qwen36, hardware, 32).reason, "kv");
+  assert.equal(Core.calculateCapacityRevenue(qwen36, hardware, 32, 25), null);
+});
+
+test("token budget matches the coordinator cold estimate for a 64 GB / 12 GB box", () => {
+  assert.equal(Core.tokenBudgetTokens(64, 12), 103854);
+});
+
 test("provider options exclude unsupported Mac families and require 48 GB", () => {
   assert.equal(Core.MIN_PROVIDER_MEMORY_GB, 48);
   assert.deepEqual(

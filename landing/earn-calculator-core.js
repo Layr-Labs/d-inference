@@ -90,6 +90,7 @@
       id: "Qwen3.5-9B",
       displayName: "Qwen 3.5 9B",
       minRAMGB: 24,
+      minChipGeneration: 1,
       sizeGB: 6.114,
       totalParameterCount: 9000000000,
       activeParameterCount: 9000000000,
@@ -102,6 +103,7 @@
       id: "gpt-oss-20b",
       displayName: "GPT-OSS 20B",
       minRAMGB: 24,
+      minChipGeneration: 1,
       sizeGB: 12.104,
       totalParameterCount: 20000000000,
       activeParameterCount: 3600000000,
@@ -114,6 +116,7 @@
       id: "gemma-4-26b-qat-4bit",
       displayName: "Gemma 4 26B",
       minRAMGB: 36,
+      minChipGeneration: 1,
       sizeGB: 15.641,
       totalParameterCount: 26000000000,
       activeParameterCount: 4000000000,
@@ -126,6 +129,7 @@
       id: "EigenLabs/Qwen3.8-27B-4bit-mtp",
       displayName: "Qwen 3.8 27B",
       minRAMGB: 36,
+      minChipGeneration: 5,
       sizeGB: 16.32,
       totalParameterCount: 27000000000,
       activeParameterCount: 27000000000,
@@ -138,6 +142,7 @@
       id: "qwen3-vl-30b-a3b-instruct",
       displayName: "Qwen3-VL 30B A3B Instruct",
       minRAMGB: 32,
+      minChipGeneration: 1,
       sizeGB: 18.268,
       totalParameterCount: 30000000000,
       activeParameterCount: 3000000000,
@@ -150,6 +155,7 @@
       id: "nvidia-nemotron-3.5-lightning",
       displayName: "Nemotron 3.5 Lightning",
       minRAMGB: 48,
+      minChipGeneration: 1,
       sizeGB: 18.544,
       totalParameterCount: 30000000000,
       activeParameterCount: 3000000000,
@@ -162,6 +168,7 @@
       id: "qwen3.5-35b-a3b",
       displayName: "Qwen3.5 35B A3B",
       minRAMGB: 36,
+      minChipGeneration: 1,
       sizeGB: 20.894,
       totalParameterCount: 35000000000,
       activeParameterCount: 3000000000,
@@ -174,6 +181,7 @@
       id: "qwen3.6-35b-a3b-vl-mtp-mxfp8",
       displayName: "Qwen 3.6 35B A3B",
       minRAMGB: 32,
+      minChipGeneration: 1,
       sizeGB: 21.309,
       totalParameterCount: 35000000000,
       activeParameterCount: 3000000000,
@@ -192,6 +200,10 @@
     return hardware.bandwidthGBs * model.decodeBandwidthEfficiency / activeWeightGBPerToken(model);
   }
 
+  function typicalRequestTokens() {
+    return TYPICAL_PROMPT_TOKENS + TYPICAL_COMPLETION_TOKENS;
+  }
+
   function tokenBudgetTokens(memoryGB, sizeGB) {
     const weightsGB = sizeGB * COLD_WEIGHT_PAD;
     const postLoadGB = SERVABILITY_CAP_FRACTION * memoryGB - weightsGB;
@@ -202,11 +214,27 @@
     return Math.floor(tokens);
   }
 
+  function chipGeneration(chip) {
+    const match = /^M(\d+)/.exec(chip || "");
+    return match ? Number(match[1]) : 0;
+  }
+
+  function modelFit(model, hardware, memoryGB) {
+    if (memoryGB < model.minRAMGB) return { fits: false, reason: "ram" };
+    if (chipGeneration(hardware.chip) < model.minChipGeneration) {
+      return { fits: false, reason: "chip" };
+    }
+    if (tokenBudgetTokens(memoryGB, model.sizeGB) < typicalRequestTokens()) {
+      return { fits: false, reason: "kv" };
+    }
+    return { fits: true, reason: null };
+  }
+
   function maxConcurrencyFor(model, memoryGB) {
     const budget = tokenBudgetTokens(memoryGB, model.sizeGB);
-    const requestTokens = TYPICAL_PROMPT_TOKENS + TYPICAL_COMPLETION_TOKENS;
-    if (budget <= 0) return 1;
-    return Math.max(1, Math.min(ENGINE_MAX_CONCURRENT, Math.floor(budget / requestTokens)));
+    const requestTokens = typicalRequestTokens();
+    if (budget < requestTokens) return 0;
+    return Math.min(ENGINE_MAX_CONCURRENT, Math.floor(budget / requestTokens));
   }
 
   function effectiveConcurrencyFor(maxConcurrency, dutyCyclePercent) {
@@ -227,7 +255,7 @@
   function calculateCapacityRevenue(model, hardware, memoryGB, dutyCyclePercent) {
     const duty = dutyCyclePercent === undefined ? DEFAULT_DUTY_CYCLE_PERCENT : dutyCyclePercent;
     if (
-      memoryGB < model.minRAMGB ||
+      !modelFit(model, hardware, memoryGB).fits ||
       model.activeParameterCount <= 0 ||
       model.bytesPerParameter <= 0 ||
       model.inputPriceMicroUSDPerMillion <= 0 ||
@@ -302,5 +330,6 @@
     calculateCapacityRevenue: calculateCapacityRevenue,
     tokenBudgetTokens: tokenBudgetTokens,
     maxConcurrencyFor: maxConcurrencyFor,
+    modelFit: modelFit,
   };
 });

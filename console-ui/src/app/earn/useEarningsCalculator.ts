@@ -5,14 +5,17 @@ import {
   CALCULATOR_MODELS,
   DEFAULT_DUTY_CYCLE_PERCENT,
   calculateCapacityRevenue,
+  modelFit,
   type CalculatorModel,
   type CapacityRevenueEstimate,
+  type ModelFitReason,
 } from "./calc";
 import { PROVIDER_HARDWARE_OPTIONS, isProviderReadyMemory } from "./providerReadiness";
 
 export interface ModelRow {
   model: CalculatorModel;
   fits: boolean;
+  fitReason: ModelFitReason | null;
   estimate: CapacityRevenueEstimate | null;
 }
 
@@ -48,11 +51,12 @@ export function useEarningsCalculator() {
   const modelRows = useMemo<ModelRow[]>(() => {
     if (!isProductionReady) return [];
     const rows = CALCULATOR_MODELS.map((model) => {
-      const fits = model.minRAMGB <= effectiveRAM;
+      const fit = modelFit(model, hardware, effectiveRAM);
       return {
         model,
-        fits,
-        estimate: fits
+        fits: fit.fits,
+        fitReason: fit.reason,
+        estimate: fit.fits
           ? calculateCapacityRevenue(model, hardware, effectiveRAM, dutyCyclePercent)
           : null,
       };

@@ -34,7 +34,7 @@ export function CalculationFlow({ calc }: { calc: EarningsCalculator }) {
       icon: Gauge,
       label: "3. Prefill and decode speed",
       value: `${result.prefillTokensPerSecond.toFixed(0)} / ${result.decodeTokensPerSecond.toFixed(1)} tok/s`,
-      detail: `Single-stream prefill and decode. Decode is bandwidth-limited at ${(bestModel.decodeBandwidthEfficiency * 100).toFixed(0)}% of pin rate over ${result.activeWeightGBPerToken.toFixed(2)} GB active weights. Prefill is modeled at 12× decode, matching measured Gemma M4 Max rooflines.`,
+      detail: `Single-stream text prefill and decode. Decode is bandwidth-limited at ${(bestModel.decodeBandwidthEfficiency * 100).toFixed(0)}% of pin rate over ${result.activeWeightGBPerToken.toFixed(2)} GB active weights. Prefill is modeled at 12× decode from the Gemma M4 Max text roofline; image prefill is slower.`,
     },
     {
       icon: Users,

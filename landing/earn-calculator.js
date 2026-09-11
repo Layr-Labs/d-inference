@@ -145,11 +145,17 @@
       name.textContent = model.displayName;
       const sub = document.createElement("span");
       sub.className = "calc-model-sub";
-      sub.textContent = entry.fits
-        ? "Fits in your " + ramGB + " GB (" +
+      if (entry.fits) {
+        sub.textContent = "Fits in your " + ramGB + " GB (" +
           (model.sizeGB < 10 ? model.sizeGB.toFixed(1) : model.sizeGB.toFixed(0)) +
-          " GB of model weights)"
-        : "Requires at least " + model.minRAMGB + " GB of unified memory";
+          " GB of model weights)";
+      } else if (entry.fitReason === "chip") {
+        sub.textContent = "Requires an M" + model.minChipGeneration + " or newer chip";
+      } else if (entry.fitReason === "kv") {
+        sub.textContent = "Not enough KV headroom for a typical request on " + ramGB + " GB";
+      } else {
+        sub.textContent = "Requires at least " + model.minRAMGB + " GB of unified memory";
+      }
       info.appendChild(name);
       info.appendChild(sub);
       row.appendChild(mark);
@@ -218,9 +224,9 @@
     appendStep(
       flow,
       "3. Prefill and decode speed",
-      "Single-stream prefill and decode. Decode is bandwidth-limited at " +
+        "Single-stream text prefill and decode. Decode is bandwidth-limited at " +
         (model.decodeBandwidthEfficiency * 100).toFixed(0) + "% of pin rate over " +
-        result.activeWeightGBPerToken.toFixed(2) + " GB active weights. Prefill is modeled at 12× decode, matching measured Gemma M4 Max rooflines.",
+        result.activeWeightGBPerToken.toFixed(2) + " GB active weights. Prefill is modeled at 12× decode from the Gemma M4 Max text roofline; image prefill is slower.",
       result.prefillTokensPerSecond.toFixed(0) + " / " +
         result.decodeTokensPerSecond.toFixed(1) + " tok/s",
     );
@@ -297,11 +303,12 @@
     }
 
     const rows = state.catalogModels.map(function (model) {
-      const fits = model.minRAMGB <= effectiveRAM;
+      const fit = Core.modelFit(model, config, effectiveRAM);
       return {
         model: model,
-        fits: fits,
-        estimate: fits
+        fits: fit.fits,
+        fitReason: fit.reason,
+        estimate: fit.fits
           ? Core.calculateCapacityRevenue(model, config, effectiveRAM, state.dutyCyclePercent)
           : null,
       };

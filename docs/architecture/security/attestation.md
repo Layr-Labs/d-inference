@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-11 · commit `7c394fa2b`
+> Last updated: 2026-09-11 · commit `41609402e`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -297,25 +297,19 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 
 ## Invariants
 
-Attestation results are immutable snapshots published by `SetAttestationResult`.
-`DisconnectDuplicatesBySerial` reads each snapshot through `GetAttestationResult`
-under the provider mutex before comparing serials; the registry read lock alone
-does not protect attestation renewal. Matching sessions are disconnected after
-the scan releases the registry lock (`coordinator/registry/provider_evidence.go`,
-`coordinator/registry/provider_lifecycle.go`).
-
-1. `hardware` is granted only by a received MDM `SecurityInfo` whose SIP and `SecureBootLevel == "full"` agree with the SE blob, or by trust reuse of such evidence after a fresh signed challenge; MDA and code identity never change the level — `coordinator/api/provider.go` (`verifyProviderViaMDM`), `coordinator/api/trust_reuse.go` (`tryTrustReuseFastSkip`), `coordinator/registry/provider_evidence.go` (`SetMDAProofIfHardwareBound`, `GrantProcessCodeAttested`).
-2. A stored `hardware` level and a stored `MDAVerified` flag are never restored on reconnect; the connection re-earns them — `coordinator/registry/persistence.go` (`RestoreProviderState`).
-3. Only a posture mismatch proven by a received SecurityInfo demotes; lookup failures, timeouts, and not-enrolled outcomes leave trust unchanged and retry — `coordinator/api/provider.go` (`verifyProviderViaMDM`).
-4. The coordinator sends only `SecurityInfo` and `DeviceInformation` MDM commands and honours only webhook responses for an outstanding `CommandUUID` — `coordinator/mdm/mdm.go` (`assertReadOnlyCommand`, `HandleWebhook`).
-5. Every challenge and code-identity signature is verified against the SE key from the registration blob, never a key carried in the reply — `coordinator/api/provider.go` (`verifyChallengeResponse`), `coordinator/api/provider_codeattest.go` (`handleCodeAttestationResponse`).
-6. `sip_enabled == false` or `secure_boot_enabled == false` in any challenge reply, a binary/model-hash drift, or an encrypted-chunk violation untrusts the provider immediately, without the three-strike count — `coordinator/api/provider.go` (`verifyChallengeResponse`, `decryptTextResponseChunk`).
-7. A code-identity proof is accepted only for the exact (SE key, APNs token, `K`) it was issued to and only within `challengeValidity`; cached proofs authorise a resume challenge, never a grant — `coordinator/api/provider_codeattest.go` (`codeAttestLoopForGeneration`, `handleCodeAttestationResponse`), `coordinator/api/code_attest_throttle.go`.
-8. Code identity becomes mandatory only when an attestor is configured and `APNS_ENFORCE_AFTER` has passed — `coordinator/registry/attestation_policy.go` (`codeAttestationEnforcedLocked`).
-9. Routing evaluates `providerLivenessGateReasonLocked` in a fixed order and skips any provider whose last verified challenge is older than [`challengeFreshnessMaxAge`](../routing.md#challenge-freshness) — `coordinator/registry/routing_eligibility.go`, `coordinator/registry/scheduler.go`.
-10. Hard untrust writes a durable tombstone that wins any race with a pending hardware grant — `coordinator/api/trust_reuse.go` (`invalidateTrustReuse`), `coordinator/registry/provider_evidence.go` (`GrantHardwareEvidenceAtEpochIfNotUntrusted`).
-11. Effective `RuntimeCapabilities` require hardware trust and code proof; `SetAttested` below hardware and `SetCodeAttested(false)` clear them — `coordinator/registry/provider_evidence.go`.
-12. The [runtime manifest](#runtime-manifest) accepts every active release's values (one set per template name, `mlx_metallib` included); registering a release can only widen it and deactivating one narrows it, so a registration never deroutes providers on the previous release — `coordinator/api/server.go` (`SyncRuntimeManifest`, `RuntimeManifest`).
+1. Attestation results are immutable snapshots published by `SetAttestationResult`. `DisconnectDuplicatesBySerial` reads each snapshot through `GetAttestationResult` under the provider mutex before comparing serials; the registry read lock alone does not protect attestation renewal. Matching sessions are disconnected after the scan releases the registry lock (`coordinator/registry/provider_evidence.go`, `coordinator/registry/provider_lifecycle.go`).
+2. `hardware` is granted only by a received MDM `SecurityInfo` whose SIP and `SecureBootLevel == "full"` agree with the SE blob, or by trust reuse of such evidence after a fresh signed challenge; MDA and code identity never change the level — `coordinator/api/provider.go` (`verifyProviderViaMDM`), `coordinator/api/trust_reuse.go` (`tryTrustReuseFastSkip`), `coordinator/registry/provider_evidence.go` (`SetMDAProofIfHardwareBound`, `GrantProcessCodeAttested`).
+3. A stored `hardware` level and a stored `MDAVerified` flag are never restored on reconnect; the connection re-earns them — `coordinator/registry/persistence.go` (`RestoreProviderState`).
+4. Only a posture mismatch proven by a received SecurityInfo demotes; lookup failures, timeouts, and not-enrolled outcomes leave trust unchanged and retry — `coordinator/api/provider.go` (`verifyProviderViaMDM`).
+5. The coordinator sends only `SecurityInfo` and `DeviceInformation` MDM commands and honours only webhook responses for an outstanding `CommandUUID` — `coordinator/mdm/mdm.go` (`assertReadOnlyCommand`, `HandleWebhook`).
+6. Every challenge and code-identity signature is verified against the SE key from the registration blob, never a key carried in the reply — `coordinator/api/provider.go` (`verifyChallengeResponse`), `coordinator/api/provider_codeattest.go` (`handleCodeAttestationResponse`).
+7. `sip_enabled == false` or `secure_boot_enabled == false` in any challenge reply, a binary/model-hash drift, or an encrypted-chunk violation untrusts the provider immediately, without the three-strike count — `coordinator/api/provider.go` (`verifyChallengeResponse`, `decryptTextResponseChunk`).
+8. A code-identity proof is accepted only for the exact (SE key, APNs token, `K`) it was issued to and only within `challengeValidity`; cached proofs authorise a resume challenge, never a grant — `coordinator/api/provider_codeattest.go` (`codeAttestLoopForGeneration`, `handleCodeAttestationResponse`), `coordinator/api/code_attest_throttle.go`.
+9. Code identity becomes mandatory only when an attestor is configured and `APNS_ENFORCE_AFTER` has passed — `coordinator/registry/attestation_policy.go` (`codeAttestationEnforcedLocked`).
+10. Routing evaluates `providerLivenessGateReasonLocked` in a fixed order and skips any provider whose last verified challenge is older than [`challengeFreshnessMaxAge`](../routing.md#challenge-freshness) — `coordinator/registry/routing_eligibility.go`, `coordinator/registry/scheduler.go`.
+11. Hard untrust writes a durable tombstone that wins any race with a pending hardware grant — `coordinator/api/trust_reuse.go` (`invalidateTrustReuse`), `coordinator/registry/provider_evidence.go` (`GrantHardwareEvidenceAtEpochIfNotUntrusted`).
+12. Effective `RuntimeCapabilities` require hardware trust and code proof; `SetAttested` below hardware and `SetCodeAttested(false)` clear them — `coordinator/registry/provider_evidence.go`.
+13. The [runtime manifest](#runtime-manifest) accepts every active release's values (one set per template name, `mlx_metallib` included); registering a release can only widen it and deactivating one narrows it, so a registration never deroutes providers on the previous release — `coordinator/api/server.go` (`SyncRuntimeManifest`, `RuntimeManifest`).
 
 ## Failure modes
 

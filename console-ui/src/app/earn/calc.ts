@@ -87,10 +87,29 @@ export function buildHardwareOptions(configs: MacConfig[] = MAC_CONFIGS): Hardwa
 
 export const HARDWARE_OPTIONS = buildHardwareOptions();
 export const DEFAULT_HARDWARE_ID = `${MACBOOK_PRO}:${M4_MAX_16_CORE}`;
-export const DEFAULT_DUTY_CYCLE_PERCENT = 5;
+export const DEFAULT_DUTY_CYCLE_PERCENT = 25;
 export const DECODE_BANDWIDTH_EFFICIENCY = 0.65;
+export const GEMMA_DECODE_BANDWIDTH_EFFICIENCY = 0.47;
+export const PREFILL_TO_DECODE_RATIO = 12;
+export const ENGINE_MAX_CONCURRENT = 4;
+export const TYPICAL_PROMPT_TOKENS = 3200;
+export const TYPICAL_COMPLETION_TOKENS = 400;
 export const MONTH_SECONDS = 30 * 24 * 60 * 60;
 export const QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION = 700_000;
+export const SERVABILITY_CAP_FRACTION = 0.9;
+export const ACTIVATION_RESERVE_GB = 5.5;
+export const KV_BYTES_PER_TOKEN = 400_000;
+export const BYTES_PER_GIB = 1 << 30;
+export const COLD_WEIGHT_PAD = 1.2 * (1e9 / BYTES_PER_GIB);
+export const PREFILL_BATCH_UNIT_GAIN = 0.25;
+
+export const BATCH_SCALE_AT_4 = {
+  gemma_moe: 1.92,
+  moe: 3.8,
+  dense: 3.2,
+} as const;
+
+export type ModelFamily = keyof typeof BATCH_SCALE_AT_4;
 
 export interface FloorTier {
   minGB: number;
@@ -98,7 +117,7 @@ export interface FloorTier {
   floorUSD: number;
 }
 
-// Kept for the existing reference panel; the new calculator does not include
+// Kept for the existing reference panel; the calculator does not include
 // base rewards in its earning estimate.
 export const FLOOR_TIERS: FloorTier[] = [
   { minGB: 512, label: "512GB", floorUSD: 40 },
@@ -117,52 +136,196 @@ export interface CalculatorModel {
   displayName: string;
   minRAMGB: number;
   sizeGB: number;
+  totalParameterCount: number;
   activeParameterCount: number;
   bytesPerParameter: number;
+  inputPriceMicroUSDPerMillion: number;
   outputPriceMicroUSDPerMillion: number;
+  family: ModelFamily;
+  decodeBandwidthEfficiency: number;
 }
 
-/** The three models Darkbloom supports today, pinned for a stable estimate. */
+function catalogModel(
+  spec: Omit<CalculatorModel, "bytesPerParameter">,
+): CalculatorModel {
+  return {
+    ...spec,
+    bytesPerParameter: spec.sizeGB / (spec.totalParameterCount / 1_000_000_000),
+  };
+}
+
+/** Pinned catalog + platform prices. Not fetched live, so the estimate stays stable. */
 export const CALCULATOR_MODELS: CalculatorModel[] = [
-  {
-    id: "qwen3.6-35b-a3b-mxfp8",
-    displayName: "Qwen3.6 35B A3B",
-    minRAMGB: 48,
-    sizeGB: 22,
-    activeParameterCount: 3_000_000_000,
-    bytesPerParameter: 22 / 35,
-    outputPriceMicroUSDPerMillion: QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION,
-  },
-  {
-    id: "gemma-4-26b-a4b-mxfp8",
-    displayName: "Gemma 4 26B A4B",
-    minRAMGB: 32,
-    sizeGB: 17,
-    activeParameterCount: 4_000_000_000,
-    bytesPerParameter: 17 / 26,
-    outputPriceMicroUSDPerMillion: 220_000,
-  },
-  {
-    id: "gpt-oss-20b-mxfp4",
+  catalogModel({
+    id: "Qwen3.5-9B",
+    displayName: "Qwen 3.5 9B",
+    minRAMGB: 24,
+    sizeGB: 6.114,
+    totalParameterCount: 9_000_000_000,
+    activeParameterCount: 9_000_000_000,
+    inputPriceMicroUSDPerMillion: 80_000,
+    outputPriceMicroUSDPerMillion: 130_000,
+    family: "dense",
+    decodeBandwidthEfficiency: DECODE_BANDWIDTH_EFFICIENCY,
+  }),
+  catalogModel({
+    id: "gpt-oss-20b",
     displayName: "GPT-OSS 20B",
     minRAMGB: 24,
-    sizeGB: 12,
+    sizeGB: 12.104,
+    totalParameterCount: 20_000_000_000,
     activeParameterCount: 3_600_000_000,
-    bytesPerParameter: 12 / 20,
-    outputPriceMicroUSDPerMillion: 69_000,
-  },
+    inputPriceMicroUSDPerMillion: 20_000,
+    outputPriceMicroUSDPerMillion: 100_000,
+    family: "moe",
+    decodeBandwidthEfficiency: DECODE_BANDWIDTH_EFFICIENCY,
+  }),
+  catalogModel({
+    id: "gemma-4-26b-qat-4bit",
+    displayName: "Gemma 4 26B",
+    minRAMGB: 36,
+    sizeGB: 15.641,
+    totalParameterCount: 26_000_000_000,
+    activeParameterCount: 4_000_000_000,
+    inputPriceMicroUSDPerMillion: 42_000,
+    outputPriceMicroUSDPerMillion: 220_000,
+    family: "gemma_moe",
+    decodeBandwidthEfficiency: GEMMA_DECODE_BANDWIDTH_EFFICIENCY,
+  }),
+  catalogModel({
+    id: "EigenLabs/Qwen3.8-27B-4bit-mtp",
+    displayName: "Qwen 3.8 27B",
+    minRAMGB: 36,
+    sizeGB: 16.32,
+    totalParameterCount: 27_000_000_000,
+    activeParameterCount: 27_000_000_000,
+    inputPriceMicroUSDPerMillion: 150_000,
+    outputPriceMicroUSDPerMillion: 2_000_000,
+    family: "dense",
+    decodeBandwidthEfficiency: DECODE_BANDWIDTH_EFFICIENCY,
+  }),
+  catalogModel({
+    id: "qwen3-vl-30b-a3b-instruct",
+    displayName: "Qwen3-VL 30B A3B Instruct",
+    minRAMGB: 32,
+    sizeGB: 18.268,
+    totalParameterCount: 30_000_000_000,
+    activeParameterCount: 3_000_000_000,
+    inputPriceMicroUSDPerMillion: 90_000,
+    outputPriceMicroUSDPerMillion: 400_000,
+    family: "moe",
+    decodeBandwidthEfficiency: DECODE_BANDWIDTH_EFFICIENCY,
+  }),
+  catalogModel({
+    id: "nvidia-nemotron-3.5-lightning",
+    displayName: "Nemotron 3.5 Lightning",
+    minRAMGB: 48,
+    sizeGB: 18.544,
+    totalParameterCount: 30_000_000_000,
+    activeParameterCount: 3_000_000_000,
+    inputPriceMicroUSDPerMillion: 65_000,
+    outputPriceMicroUSDPerMillion: 180_000,
+    family: "moe",
+    decodeBandwidthEfficiency: DECODE_BANDWIDTH_EFFICIENCY,
+  }),
+  catalogModel({
+    id: "qwen3.5-35b-a3b",
+    displayName: "Qwen3.5 35B A3B",
+    minRAMGB: 36,
+    sizeGB: 20.894,
+    totalParameterCount: 35_000_000_000,
+    activeParameterCount: 3_000_000_000,
+    inputPriceMicroUSDPerMillion: 80_000,
+    outputPriceMicroUSDPerMillion: 750_000,
+    family: "moe",
+    decodeBandwidthEfficiency: DECODE_BANDWIDTH_EFFICIENCY,
+  }),
+  catalogModel({
+    id: "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+    displayName: "Qwen 3.6 35B A3B",
+    minRAMGB: 32,
+    sizeGB: 21.309,
+    totalParameterCount: 35_000_000_000,
+    activeParameterCount: 3_000_000_000,
+    inputPriceMicroUSDPerMillion: 50_000,
+    outputPriceMicroUSDPerMillion: QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION,
+    family: "moe",
+    decodeBandwidthEfficiency: DECODE_BANDWIDTH_EFFICIENCY,
+  }),
 ];
 
 export interface CapacityRevenueEstimate {
   model: CalculatorModel;
   activeWeightGBPerToken: number;
   decodeTokensPerSecond: number;
+  prefillTokensPerSecond: number;
+  maxConcurrency: number;
+  effectiveConcurrency: number;
+  tokenBudget: number;
+  batchedDecodeTokensPerSecond: number;
+  batchedPrefillTokensPerSecond: number;
   dutyCyclePercent: number;
   activeSecondsPerMonth: number;
+  typicalPromptTokens: number;
+  typicalCompletionTokens: number;
+  promptTokensPerMonth: number;
   outputTokensPerMonth: number;
+  inputPriceUSDPerMillion: number;
   outputPriceUSDPerMillion: number;
+  inputRevenueUSD: number;
+  outputRevenueUSD: number;
   monthlyRevenueUSD: number;
   annualRevenueUSD: number;
+}
+
+export function activeWeightGBPerToken(model: CalculatorModel): number {
+  return (model.activeParameterCount * model.bytesPerParameter) / 1_000_000_000;
+}
+
+export function singleStreamDecodeTps(
+  model: CalculatorModel,
+  hardware: HardwareProfile,
+): number {
+  return (
+    (hardware.bandwidthGBs * model.decodeBandwidthEfficiency) /
+    activeWeightGBPerToken(model)
+  );
+}
+
+export function tokenBudgetTokens(memoryGB: number, sizeGB: number): number {
+  const weightsGB = sizeGB * COLD_WEIGHT_PAD;
+  const postLoadGB = SERVABILITY_CAP_FRACTION * memoryGB - weightsGB;
+  if (postLoadGB <= 0) return 0;
+  const tokens =
+    (postLoadGB * BYTES_PER_GIB - ACTIVATION_RESERVE_GB * BYTES_PER_GIB) /
+    KV_BYTES_PER_TOKEN;
+  if (tokens <= 0) return 0;
+  return Math.floor(tokens);
+}
+
+export function maxConcurrencyFor(model: CalculatorModel, memoryGB: number): number {
+  const budget = tokenBudgetTokens(memoryGB, model.sizeGB);
+  const requestTokens = TYPICAL_PROMPT_TOKENS + TYPICAL_COMPLETION_TOKENS;
+  if (budget <= 0) return 1;
+  return Math.max(1, Math.min(ENGINE_MAX_CONCURRENT, Math.floor(budget / requestTokens)));
+}
+
+export function effectiveConcurrencyFor(
+  maxConcurrency: number,
+  dutyCyclePercent: number,
+): number {
+  return 1 + (maxConcurrency - 1) * (dutyCyclePercent / 100);
+}
+
+export function decodeBatchScale(family: ModelFamily, concurrency: number): number {
+  if (concurrency <= 1) return 1;
+  const unitGain = (BATCH_SCALE_AT_4[family] - 1) / 3;
+  return 1 + (concurrency - 1) * unitGain;
+}
+
+export function prefillBatchScale(concurrency: number): number {
+  if (concurrency <= 1) return 1;
+  return 1 + (concurrency - 1) * PREFILL_BATCH_UNIT_GAIN;
 }
 
 export function calculateCapacityRevenue(
@@ -175,6 +338,7 @@ export function calculateCapacityRevenue(
     memoryGB < model.minRAMGB ||
     model.activeParameterCount <= 0 ||
     model.bytesPerParameter <= 0 ||
+    model.inputPriceMicroUSDPerMillion <= 0 ||
     model.outputPriceMicroUSDPerMillion <= 0 ||
     hardware.bandwidthGBs <= 0 ||
     dutyCyclePercent < 0 ||
@@ -183,25 +347,57 @@ export function calculateCapacityRevenue(
     return null;
   }
 
-  const activeWeightGBPerToken =
-    (model.activeParameterCount * model.bytesPerParameter) / 1_000_000_000;
-  const decodeTokensPerSecond =
-    (hardware.bandwidthGBs * DECODE_BANDWIDTH_EFFICIENCY) / activeWeightGBPerToken;
-  const activeSecondsPerMonth = MONTH_SECONDS * (dutyCyclePercent / 100);
-  const outputTokensPerMonth = decodeTokensPerSecond * activeSecondsPerMonth;
-  const outputPriceUSDPerMillion = model.outputPriceMicroUSDPerMillion / 1_000_000;
-  const monthlyRevenueUSD =
-    (outputTokensPerMonth / 1_000_000) * outputPriceUSDPerMillion;
+  const weightGB = activeWeightGBPerToken(model);
+  const decodeTokensPerSecond = singleStreamDecodeTps(model, hardware);
+  const prefillTokensPerSecond = decodeTokensPerSecond * PREFILL_TO_DECODE_RATIO;
+  const tokenBudget = tokenBudgetTokens(memoryGB, model.sizeGB);
+  const maxConcurrency = maxConcurrencyFor(model, memoryGB);
+  const effectiveConcurrency = effectiveConcurrencyFor(maxConcurrency, dutyCyclePercent);
+  const batchedDecodeTokensPerSecond =
+    decodeTokensPerSecond * decodeBatchScale(model.family, effectiveConcurrency);
+  const batchedPrefillTokensPerSecond =
+    prefillTokensPerSecond * prefillBatchScale(effectiveConcurrency);
+  if (
+    batchedDecodeTokensPerSecond <= 0 ||
+    batchedPrefillTokensPerSecond <= 0
+  ) {
+    return null;
+  }
 
-  if (!Number.isFinite(monthlyRevenueUSD)) return null;
+  const requestSeconds =
+    TYPICAL_PROMPT_TOKENS / batchedPrefillTokensPerSecond +
+    TYPICAL_COMPLETION_TOKENS / batchedDecodeTokensPerSecond;
+  const activeSecondsPerMonth = MONTH_SECONDS * (dutyCyclePercent / 100);
+  const monthlyRequests = (1 / requestSeconds) * activeSecondsPerMonth;
+  const promptTokensPerMonth = monthlyRequests * TYPICAL_PROMPT_TOKENS;
+  const outputTokensPerMonth = monthlyRequests * TYPICAL_COMPLETION_TOKENS;
+  const inputPriceUSDPerMillion = model.inputPriceMicroUSDPerMillion / 1_000_000;
+  const outputPriceUSDPerMillion = model.outputPriceMicroUSDPerMillion / 1_000_000;
+  const inputRevenueUSD = (promptTokensPerMonth / 1_000_000) * inputPriceUSDPerMillion;
+  const outputRevenueUSD = (outputTokensPerMonth / 1_000_000) * outputPriceUSDPerMillion;
+  const monthlyRevenueUSD = inputRevenueUSD + outputRevenueUSD;
+
+  if (!Number.isFinite(monthlyRevenueUSD) || monthlyRevenueUSD < 0) return null;
   return {
     model,
-    activeWeightGBPerToken,
+    activeWeightGBPerToken: weightGB,
     decodeTokensPerSecond,
+    prefillTokensPerSecond,
+    maxConcurrency,
+    effectiveConcurrency,
+    tokenBudget,
+    batchedDecodeTokensPerSecond,
+    batchedPrefillTokensPerSecond,
     dutyCyclePercent,
     activeSecondsPerMonth,
+    typicalPromptTokens: TYPICAL_PROMPT_TOKENS,
+    typicalCompletionTokens: TYPICAL_COMPLETION_TOKENS,
+    promptTokensPerMonth,
     outputTokensPerMonth,
+    inputPriceUSDPerMillion,
     outputPriceUSDPerMillion,
+    inputRevenueUSD,
+    outputRevenueUSD,
     monthlyRevenueUSD,
     annualRevenueUSD: monthlyRevenueUSD * 12,
   };

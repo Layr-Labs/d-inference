@@ -285,18 +285,23 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 
 The marketing site is static HTML plus vanilla JavaScript with no build step and no `package.json`: `landing/index.html`, `landing/terms.html`, `landing/privacy.html`, `landing/earn-calculator-core.js`, `landing/earn-calculator.js`, `landing/network-stats.js`, `landing/earn-calculator-core.test.js`, plus `landing/fonts/` and `landing/assets/`.
 
-**Earn calculator.** `landing/earn-calculator-core.js` is a hand-maintained mirror of `console-ui/src/app/earn/calc.ts` (with `MIN_PROVIDER_MEMORY_GB` from `console-ui/src/app/earn/providerReadiness.ts`); the two must change together, and `landing/earn-calculator-core.test.js` (`node --test landing/earn-calculator-core.test.js`) pins the shared values. Both files hard-code: `DEFAULT_DUTY_CYCLE_PERCENT = 5`, `DECODE_BANDWIDTH_EFFICIENCY = 0.65`, `MONTH_SECONDS = 30 * 24 * 60 * 60`, `MIN_PROVIDER_MEMORY_GB = 48`, the `MAC_CONFIGS` table (Mac type, chip, `ramOptions`, `bandwidthGBs`), and `CALCULATOR_MODELS` — `qwen3.6-35b-a3b-mxfp8`, `gemma-4-26b-a4b-mxfp8`, `gpt-oss-20b-mxfp4`, each with `minRAMGB`, `sizeGB`, `activeParameterCount`, `bytesPerParameter`, and a pinned `outputPriceMicroUSDPerMillion` that is **not fetched from the coordinator** (live prices: [`../../reference/pricing-model.md`](../../reference/pricing-model.md)). `calculateCapacityRevenue(model, hardware, memoryGB, dutyCyclePercent)` returns `null` when `memoryGB < model.minRAMGB` (the model does not fit) and otherwise computes:
+**Earn calculator.** `landing/earn-calculator-core.js` is a hand-maintained mirror of `console-ui/src/app/earn/calc.ts` (with `MIN_PROVIDER_MEMORY_GB` from `console-ui/src/app/earn/providerReadiness.ts`); the two must change together, and `landing/earn-calculator-core.test.js` (`node --test landing/earn-calculator-core.test.js`) pins the shared values. Both files hard-code: `DEFAULT_DUTY_CYCLE_PERCENT = 25`, `DECODE_BANDWIDTH_EFFICIENCY = 0.65` (Gemma `0.47` from the M4 Max roofline), `PREFILL_TO_DECODE_RATIO = 12`, `ENGINE_MAX_CONCURRENT = 4`, `TYPICAL_PROMPT_TOKENS = 3200`, `TYPICAL_COMPLETION_TOKENS = 400` (rounded from the public 24h mix), `MONTH_SECONDS = 30 * 24 * 60 * 60`, `MIN_PROVIDER_MEMORY_GB = 48`, the `MAC_CONFIGS` table, and `CALCULATOR_MODELS` — the current serving set (`Qwen3.5-9B`, `gpt-oss-20b`, `gemma-4-26b-qat-4bit`, `EigenLabs/Qwen3.8-27B-4bit-mtp`, `qwen3-vl-30b-a3b-instruct`, `nvidia-nemotron-3.5-lightning`, `qwen3.5-35b-a3b`, `qwen3.6-35b-a3b-vl-mtp-mxfp8`), each with size, active/total params, family (`moe` / `dense` / `gemma_moe`), and pinned input+output µUSD/1M that is **not fetched from the coordinator** (live prices: [`../../reference/pricing-model.md`](../../reference/pricing-model.md)). Rollback and duplicate Gemma 8-bit builds are omitted. `calculateCapacityRevenue(model, hardware, memoryGB, dutyCyclePercent)` returns `null` when `memoryGB < model.minRAMGB` and otherwise computes:
 
 ```text
-activeWeightGBPerToken = activeParameterCount × bytesPerParameter / 1e9
-decodeTokensPerSecond  = bandwidthGBs × DECODE_BANDWIDTH_EFFICIENCY / activeWeightGBPerToken
-activeSecondsPerMonth  = MONTH_SECONDS × dutyCyclePercent / 100
-outputTokensPerMonth   = decodeTokensPerSecond × activeSecondsPerMonth
-monthlyRevenueUSD      = outputTokensPerMonth / 1e6 × (outputPriceMicroUSDPerMillion / 1e6)
-annualRevenueUSD       = monthlyRevenueUSD × 12
+activeWeightGBPerToken     = sizeGB × (activeParameterCount / totalParameterCount)
+decodeTokensPerSecond      = bandwidthGBs × decodeBandwidthEfficiency / activeWeightGBPerToken
+prefillTokensPerSecond     = decodeTokensPerSecond × 12
+tokenBudget                = floor((0.90×RAM − sizeGB×1.12 − 5.5 GiB) / 400kB)
+maxConcurrency             = clamp(1, 4, floor(tokenBudget / 3600))
+effectiveConcurrency       = 1 + (maxConcurrency − 1) × dutyCyclePercent / 100
+batchedDecodeTPS           = decodeTokensPerSecond × scale(family, effectiveConcurrency)
+batchedPrefillTPS          = prefillTokensPerSecond × (1 + (effectiveConcurrency − 1) × 0.25)
+requestSeconds             = 3200 / batchedPrefillTPS + 400 / batchedDecodeTPS
+monthlyRequests            = (1 / requestSeconds) × MONTH_SECONDS × dutyCyclePercent / 100
+monthlyRevenueUSD          = promptTokens/1e6 × inputUSD/1M + outputTokens/1e6 × outputUSD/1M
 ```
 
-It is a decode-bandwidth capacity estimate at the chosen duty cycle, not a forecast, and it excludes base rewards (`calc.ts` keeps `FLOOR_TIERS` only for the unmounted `BaseRewardsPanel`). `landing/earn-calculator.js` binds the `<select>` elements in `landing/index.html` to the core.
+Decode batch scale at B=4 is 3.8× (MoE), 3.2× (dense), 1.92× (Gemma, measured). It is a capacity estimate at the chosen duty cycle, not a forecast, and it excludes base rewards and electricity. `landing/earn-calculator.js` binds the `<select>` elements in `landing/index.html` to the core.
 
 **Network stats.** `landing/network-stats.js` reads `GET <coordinator>/v1/stats` (default `https://api.darkbloom.dev`, overridable with `?coord=<origin>`) and estimates fleet power from `POWER_TABLE` (`machineWatts`, `formatPower`). The `<script src="network-stats.js">` tag in `landing/index.html` is commented out — the HTML comment records that the `/v1/stats` CORS allowance is not yet deployed — so the live-network strip is not rendered; the console's `/stats` page, which goes through `/api/stats`, is the working equivalent.
 

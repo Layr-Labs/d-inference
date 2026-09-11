@@ -1,7 +1,7 @@
 "use client";
 
-import { ChevronDown, Cpu, Gauge, Layers, Percent, Tag, Timer } from "lucide-react";
-import { DECODE_BANDWIDTH_EFFICIENCY, fmtUSD } from "./calc";
+import { ChevronDown, Cpu, Gauge, Layers, Percent, Tag, Timer, Users } from "lucide-react";
+import { ENGINE_MAX_CONCURRENT, fmtUSD } from "./calc";
 import type { EarningsCalculator } from "./useEarningsCalculator";
 
 function formatTokens(tokens: number): string {
@@ -16,12 +16,13 @@ export function CalculationFlow({ calc }: { calc: EarningsCalculator }) {
   if (!result || !bestModel) return null;
 
   const activeBillions = bestModel.activeParameterCount / 1_000_000_000;
+  const totalBillions = bestModel.totalParameterCount / 1_000_000_000;
   const steps = [
     {
       icon: Layers,
       label: "1. Model that fits",
       value: bestModel.displayName,
-      detail: `${bestModel.minRAMGB} GB minimum memory · ${bestModel.sizeGB.toFixed(1)} GB model weights`,
+      detail: `${bestModel.minRAMGB} GB minimum memory · ${bestModel.sizeGB.toFixed(1)} GB weights · ${activeBillions.toFixed(1)}B of ${totalBillions.toFixed(0)}B params active`,
     },
     {
       icon: Cpu,
@@ -31,27 +32,33 @@ export function CalculationFlow({ calc }: { calc: EarningsCalculator }) {
     },
     {
       icon: Gauge,
-      label: "3. Single-stream decode speed",
-      value: `${result.decodeTokensPerSecond.toFixed(1)} tok/s`,
-      detail: `${calc.hardware.bandwidthGBs} GB/s × ${(DECODE_BANDWIDTH_EFFICIENCY * 100).toFixed(0)}% ÷ ${result.activeWeightGBPerToken.toFixed(2)} GB/token (${activeBillions.toFixed(1)}B active params)`,
+      label: "3. Prefill and decode speed",
+      value: `${result.prefillTokensPerSecond.toFixed(0)} / ${result.decodeTokensPerSecond.toFixed(1)} tok/s`,
+      detail: `Single-stream prefill and decode. Decode is bandwidth-limited at ${(bestModel.decodeBandwidthEfficiency * 100).toFixed(0)}% of pin rate over ${result.activeWeightGBPerToken.toFixed(2)} GB active weights. Prefill is modeled at 12× decode, matching measured Gemma M4 Max rooflines.`,
+    },
+    {
+      icon: Users,
+      label: "4. Concurrency this Mac can hold",
+      value: `${result.maxConcurrency} sequences`,
+      detail: `Engine cap ${ENGINE_MAX_CONCURRENT}. KV budget ${formatTokens(result.tokenBudget)} tokens after weights and the 5.5 GiB activation reserve. A typical request is ${result.typicalPromptTokens.toLocaleString()} prompt + ${result.typicalCompletionTokens.toLocaleString()} completion tokens. At ${calc.dutyCyclePercent}% duty, estimated overlap is ${result.effectiveConcurrency.toFixed(2)} wide (${result.batchedPrefillTokensPerSecond.toFixed(0)} / ${result.batchedDecodeTokensPerSecond.toFixed(1)} tok/s batched).`,
     },
     {
       icon: Percent,
-      label: "4. Duty cycle",
+      label: "5. Duty cycle",
       value: `${calc.dutyCyclePercent}%`,
-      detail: `${(result.activeSecondsPerMonth / 3600).toFixed(0)} active hours per 30-day month`,
+      detail: `${(result.activeSecondsPerMonth / 3600).toFixed(0)} serving hours per 30-day month. Higher duty also assumes more overlapping requests.`,
     },
     {
       icon: Timer,
-      label: "5. Output capacity",
-      value: `${formatTokens(result.outputTokensPerMonth)} tokens/mo`,
-      detail: "One sequence at a time, with no batching",
+      label: "6. Monthly token volume",
+      value: `${formatTokens(result.promptTokensPerMonth)} in · ${formatTokens(result.outputTokensPerMonth)} out`,
+      detail: "From the live network mix of about 3,200 prompt tokens and 400 completion tokens per request.",
     },
     {
       icon: Tag,
-      label: "6. OpenRouter output pricing",
-      value: `${fmtUSD(result.outputPriceUSDPerMillion, 3)} / 1M tokens`,
-      detail: `Applied to ${formatTokens(result.outputTokensPerMonth)} output tokens per month`,
+      label: "7. Input and output pricing",
+      value: `${fmtUSD(result.inputPriceUSDPerMillion, 3)} / ${fmtUSD(result.outputPriceUSDPerMillion, 3)} per 1M`,
+      detail: `${fmtUSD(result.inputRevenueUSD)} from prefill + ${fmtUSD(result.outputRevenueUSD)} from decode. Platform fee is 0% during public alpha.`,
     },
   ];
 
@@ -63,8 +70,8 @@ export function CalculationFlow({ calc }: { calc: EarningsCalculator }) {
             How this estimate is calculated
           </span>
           <span className="mt-1 block text-xs text-text-secondary">
-            The estimate assumes bandwidth-limited, single-stream decoding, with duty cycle as the
-            only adjustable input.
+            Prefill, decode, and KV-limited concurrency. Duty cycle is the only
+            adjustable input.
           </span>
         </span>
         <ChevronDown

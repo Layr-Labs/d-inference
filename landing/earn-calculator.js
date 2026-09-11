@@ -20,7 +20,7 @@
     macType: "",
     chip: "",
     ram: null,
-    dutyCyclePercent: Core ? Core.DEFAULT_DUTY_CYCLE_PERCENT : 5,
+    dutyCyclePercent: Core ? Core.DEFAULT_DUTY_CYCLE_PERCENT : 25,
     catalogModels: Core ? Core.CALCULATOR_MODELS : [],
   };
 
@@ -199,12 +199,14 @@
     if (!flow) return;
     const model = result.model;
     const activeBillions = model.activeParameterCount / 1e9;
+    const totalBillions = model.totalParameterCount / 1e9;
     flow.innerHTML = "";
     appendStep(
       flow,
       "1. Model that fits",
       model.minRAMGB + " GB minimum memory · " +
-        model.sizeGB.toFixed(1) + " GB model weights",
+        model.sizeGB.toFixed(1) + " GB weights · " +
+        activeBillions.toFixed(1) + "B of " + totalBillions.toFixed(0) + "B params active",
       model.displayName,
     );
     appendStep(
@@ -215,31 +217,49 @@
     );
     appendStep(
       flow,
-      "3. Single-stream decode speed",
-      config.bandwidthGBs + " GB/s × " +
-        (Core.DECODE_BANDWIDTH_EFFICIENCY * 100).toFixed(0) + "% ÷ " +
-        result.activeWeightGBPerToken.toFixed(2) + " GB/token (" +
-        activeBillions.toFixed(1) + "B active params)",
-      result.decodeTokensPerSecond.toFixed(1) + " tok/s",
+      "3. Prefill and decode speed",
+      "Single-stream prefill and decode. Decode is bandwidth-limited at " +
+        (model.decodeBandwidthEfficiency * 100).toFixed(0) + "% of pin rate over " +
+        result.activeWeightGBPerToken.toFixed(2) + " GB active weights. Prefill is modeled at 12× decode, matching measured Gemma M4 Max rooflines.",
+      result.prefillTokensPerSecond.toFixed(0) + " / " +
+        result.decodeTokensPerSecond.toFixed(1) + " tok/s",
     );
     appendStep(
       flow,
-      "4. Duty cycle",
-      (result.activeSecondsPerMonth / 3600).toFixed(0) + " active hours per 30-day month",
+      "4. Concurrency this Mac can hold",
+      "Engine cap " + Core.ENGINE_MAX_CONCURRENT +
+        ". KV budget " + fmtCompactTokens(result.tokenBudget) +
+        " tokens after weights and the 5.5 GiB activation reserve. A typical request is " +
+        result.typicalPromptTokens.toLocaleString(locale) + " prompt + " +
+        result.typicalCompletionTokens.toLocaleString(locale) +
+        " completion tokens. At " + state.dutyCyclePercent +
+        "% duty, estimated overlap is " + result.effectiveConcurrency.toFixed(2) +
+        " wide (" + result.batchedPrefillTokensPerSecond.toFixed(0) + " / " +
+        result.batchedDecodeTokensPerSecond.toFixed(1) + " tok/s batched).",
+      result.maxConcurrency + " sequences",
+    );
+    appendStep(
+      flow,
+      "5. Duty cycle",
+      (result.activeSecondsPerMonth / 3600).toFixed(0) +
+        " serving hours per 30-day month. Higher duty also assumes more overlapping requests.",
       state.dutyCyclePercent + "%",
     );
     appendStep(
       flow,
-      "5. Output capacity",
-      "One sequence at a time, with no batching",
-      fmtCompactTokens(result.outputTokensPerMonth) + " tokens/mo",
+      "6. Monthly token volume",
+      "From the live network mix of about 3,200 prompt tokens and 400 completion tokens per request.",
+      fmtCompactTokens(result.promptTokensPerMonth) + " in · " +
+        fmtCompactTokens(result.outputTokensPerMonth) + " out",
     );
     appendStep(
       flow,
-      "6. OpenRouter output pricing",
-      "Applied to " + fmtCompactTokens(result.outputTokensPerMonth) +
-        " output tokens per month",
-      fmtUSD(result.outputPriceUSDPerMillion, 3) + " / 1M tokens",
+      "7. Input and output pricing",
+      fmtUSD(result.inputRevenueUSD) + " from prefill + " +
+        fmtUSD(result.outputRevenueUSD) +
+        " from decode. Platform fee is 0% during public alpha.",
+      fmtUSD(result.inputPriceUSDPerMillion, 3) + " / " +
+        fmtUSD(result.outputPriceUSDPerMillion, 3) + " per 1M",
     );
   }
 

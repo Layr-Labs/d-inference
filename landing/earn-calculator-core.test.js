@@ -2,49 +2,78 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const Core = require("./earn-calculator-core.js");
 
-test("catalog pins the three supported models, active weights, and prices", () => {
-  assert.deepEqual(Core.CALCULATOR_MODELS.map((model) => model.displayName), [
-    "Qwen3.6 35B A3B",
-    "Gemma 4 26B A4B",
-    "GPT-OSS 20B",
+test("catalog pins current serving models, active weights, and prices", () => {
+  assert.deepEqual(Core.CALCULATOR_MODELS.map((model) => model.id), [
+    "Qwen3.5-9B",
+    "gpt-oss-20b",
+    "gemma-4-26b-qat-4bit",
+    "EigenLabs/Qwen3.8-27B-4bit-mtp",
+    "qwen3-vl-30b-a3b-instruct",
+    "nvidia-nemotron-3.5-lightning",
+    "qwen3.5-35b-a3b",
+    "qwen3.6-35b-a3b-vl-mtp-mxfp8",
   ]);
   assert.deepEqual(Core.CALCULATOR_MODELS.map((model) => model.activeParameterCount), [
-    3_000_000_000,
-    4_000_000_000,
+    9_000_000_000,
     3_600_000_000,
+    4_000_000_000,
+    27_000_000_000,
+    3_000_000_000,
+    3_000_000_000,
+    3_000_000_000,
+    3_000_000_000,
   ]);
   assert.deepEqual(Core.CALCULATOR_MODELS.map((model) => model.outputPriceMicroUSDPerMillion), [
-    700_000,
+    130_000,
+    100_000,
     220_000,
-    69_000,
+    2_000_000,
+    400_000,
+    180_000,
+    750_000,
+    700_000,
   ]);
 });
 
-test("projection uses 65% bandwidth, duty cycle, and no batching", () => {
-  const model = Core.CALCULATOR_MODELS[0];
+test("default duty cycle is 25%", () => {
+  assert.equal(Core.DEFAULT_DUTY_CYCLE_PERCENT, 25);
+});
+
+test("projection uses measured mix, prefill, and KV-limited concurrency", () => {
+  const model = Core.CALCULATOR_MODELS.find((entry) => entry.id === "qwen3.6-35b-a3b-vl-mtp-mxfp8");
   const hardware = Core.HARDWARE_OPTIONS.find(
     (option) => option.macType === "MacBook Pro" && option.chip === "M4 Max (16-core CPU)",
   );
-  const estimate = Core.calculateCapacityRevenue(model, hardware, 48, 50);
+  const estimate = Core.calculateCapacityRevenue(model, hardware, 48, 25);
   assert.ok(estimate);
-  assert.equal(estimate.activeSecondsPerMonth, 360 * 60 * 60);
-  assert.ok(Math.abs(estimate.activeWeightGBPerToken - (3 * 22) / 35) < 1e-12);
-  assert.ok(
-    Math.abs(
-      estimate.decodeTokensPerSecond -
-        (hardware.bandwidthGBs * 0.65) / ((3 * 22) / 35),
-    ) < 1e-12,
-  );
+  assert.equal(estimate.activeSecondsPerMonth, 180 * 60 * 60);
+  assert.equal(estimate.typicalPromptTokens, 3200);
+  assert.equal(estimate.typicalCompletionTokens, 400);
+  assert.ok(estimate.prefillTokensPerSecond > estimate.decodeTokensPerSecond);
+  assert.ok(estimate.inputRevenueUSD > 0);
+  assert.ok(estimate.outputRevenueUSD > 0);
+  assert.ok(Math.abs(estimate.monthlyRevenueUSD - (estimate.inputRevenueUSD + estimate.outputRevenueUSD)) < 1e-12);
+  assert.equal(estimate.maxConcurrency, 4);
+  assert.ok(estimate.effectiveConcurrency > 1);
+  assert.ok(estimate.effectiveConcurrency < estimate.maxConcurrency);
 });
 
-test("projection scales linearly with duty cycle", () => {
-  const model = Core.CALCULATOR_MODELS[0];
+test("higher duty increases overlap, so revenue is superlinear", () => {
+  const model = Core.CALCULATOR_MODELS.find((entry) => entry.id === "qwen3.6-35b-a3b-vl-mtp-mxfp8");
   const hardware = Core.HARDWARE_OPTIONS.find(
     (option) => option.macType === "MacBook Pro" && option.chip === "M4 Max (16-core CPU)",
   );
   const low = Core.calculateCapacityRevenue(model, hardware, 48, 25);
   const high = Core.calculateCapacityRevenue(model, hardware, 48, 50);
-  assert.ok(Math.abs(high.monthlyRevenueUSD - low.monthlyRevenueUSD * 2) < 1e-12);
+  assert.ok(high.monthlyRevenueUSD > low.monthlyRevenueUSD * 2);
+});
+
+test("a model that does not fit returns null", () => {
+  const nemotron = Core.CALCULATOR_MODELS.find((entry) => entry.id === "nvidia-nemotron-3.5-lightning");
+  const hardware = Core.HARDWARE_OPTIONS.find(
+    (option) => option.macType === "MacBook Pro" && option.chip === "M4 Max (16-core CPU)",
+  );
+  assert.equal(Core.calculateCapacityRevenue(nemotron, hardware, 36, 25), null);
 });
 
 test("provider options exclude unsupported Mac families and require 48 GB", () => {

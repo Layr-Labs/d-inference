@@ -76,9 +76,9 @@ export function EarningsHero({
           />
           <p className="text-[14.4px] leading-relaxed text-black">
             <strong>Estimated earning, not guaranteed.</strong>{" "}
-            While the system is bootstrapping, we are seeing significant variation in earning
-            levels among providers using the same machine type. The default duty cycle is 5% to
-            reflect this.
+            Actual earnings depend on demand, which model you serve, and how often
+            requests overlap. The default 25% duty cycle is a utilization
+            assumption, not a forecast.
           </p>
         </div>
       )}

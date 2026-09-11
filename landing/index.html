@@ -1510,12 +1510,12 @@ response = client.chat.completions.create(
             <div class="calc-duty-head">
               <div>
                 <label class="calc-duty-title" for="calc-duty-input">Duty cycle</label>
-                <p class="calc-duty-sub">Share of time this Mac is producing output tokens.</p>
+                <p class="calc-duty-sub">Share of time this Mac is serving prefill and decode. Higher duty also assumes more overlapping requests.</p>
               </div>
-              <output class="calc-duty-value" id="calc-duty-value" for="calc-duty-input">5%</output>
+              <output class="calc-duty-value" id="calc-duty-value" for="calc-duty-input">25%</output>
             </div>
-            <input id="calc-duty-input" type="range" min="5" max="100" step="5" value="5">
-            <div class="calc-duty-scale"><span>5%</span><span>Default 5%</span><span>100%</span></div>
+            <input id="calc-duty-input" type="range" min="5" max="100" step="5" value="25">
+            <div class="calc-duty-scale"><span>5%</span><span>Default 25%</span><span>100%</span></div>
           </div>
         </div>
         <p class="calc-empty" id="calc-empty">Select a Mac model, chip family, and unified memory to see your estimate.</p>
@@ -1539,14 +1539,14 @@ response = client.chat.completions.create(
             <a class="btn btn-primary" id="calc-nofit-btn" href="https://console.darkbloom.dev/earn" target="_blank">Notify me when smaller models launch ↗</a>
             <p class="sub">Smaller models aren&rsquo;t supported yet. Register on the console, and we&rsquo;ll email you when this Mac can start earning.</p>
           </div>
-          <p class="calc-disc-box"><strong>Estimated earning, not guaranteed.</strong> While the system is bootstrapping, we are seeing significant variation in earning levels among providers using the same machine type. The default duty cycle is 5% to reflect this.</p>
+          <p class="calc-disc-box"><strong>Estimated earning, not guaranteed.</strong> Actual earnings depend on demand, which model you serve, and how often requests overlap. The default 25% duty cycle is a utilization assumption, not a forecast.</p>
         </div>
 
         <details class="csec calc-acc" id="calc-flow-section" style="display:none;">
           <summary>
             <span>
               <span class="calc-flow-title">How this estimate is calculated</span>
-              <span class="calc-flow-hint">The estimate assumes bandwidth-limited, single-stream decoding, with duty cycle as the only adjustable input.</span>
+              <span class="calc-flow-hint">Prefill, decode, and KV-limited concurrency. Duty cycle is the only adjustable input.</span>
             </span>
             <span class="chev" aria-hidden="true">⌄</span>
           </summary>

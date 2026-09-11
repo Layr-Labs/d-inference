@@ -4,8 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CALCULATOR_MODELS,
   DEFAULT_DUTY_CYCLE_PERCENT,
-  DECODE_BANDWIDTH_EFFICIENCY,
   HARDWARE_OPTIONS,
+  PREFILL_TO_DECODE_RATIO,
   calculateCapacityRevenue,
 } from "@/app/earn/calc";
 import {
@@ -18,7 +18,8 @@ const MAC_STUDIO = "Mac Studio";
 const M4_MAX = "M4 Max (16-core CPU)";
 const BEST_ESTIMATE = "Best current estimate";
 const MONTHLY_EARNING = "Estimated monthly earning";
-const QWEN_DISPLAY_NAME = "Qwen3.6 35B A3B";
+const QWEN_DISPLAY_NAME = "Qwen 3.6 35B A3B";
+const QWEN_MODEL_ID = "qwen3.6-35b-a3b-vl-mtp-mxfp8";
 
 vi.mock("@/components/TopBar", () => ({
   TopBar: ({ title }: { title?: string }) => <div data-testid="topbar">{title}</div>,
@@ -45,38 +46,81 @@ function selectMac(macType = MACBOOK_PRO, chip = M4_MAX, ram = 48) {
   });
 }
 
+function qwenModel() {
+  return CALCULATOR_MODELS.find((model) => model.id === QWEN_MODEL_ID)!;
+}
+
 describe("earnings projection", () => {
-  it("pins the three supported models, active weights, and output prices", () => {
-    expect(CALCULATOR_MODELS.map((model) => model.displayName)).toEqual([
-      QWEN_DISPLAY_NAME,
-      "Gemma 4 26B A4B",
-      "GPT-OSS 20B",
+  it("pins current serving models, active weights, and prices", () => {
+    expect(CALCULATOR_MODELS.map((model) => model.id)).toEqual([
+      "Qwen3.5-9B",
+      "gpt-oss-20b",
+      "gemma-4-26b-qat-4bit",
+      "EigenLabs/Qwen3.8-27B-4bit-mtp",
+      "qwen3-vl-30b-a3b-instruct",
+      "nvidia-nemotron-3.5-lightning",
+      "qwen3.5-35b-a3b",
+      QWEN_MODEL_ID,
     ]);
     expect(CALCULATOR_MODELS.map((model) => model.activeParameterCount)).toEqual([
-      3_000_000_000,
-      4_000_000_000,
+      9_000_000_000,
       3_600_000_000,
+      4_000_000_000,
+      27_000_000_000,
+      3_000_000_000,
+      3_000_000_000,
+      3_000_000_000,
+      3_000_000_000,
     ]);
     expect(CALCULATOR_MODELS.map((model) => model.outputPriceMicroUSDPerMillion)).toEqual([
-      700_000,
+      130_000,
+      100_000,
       220_000,
-      69_000,
+      2_000_000,
+      400_000,
+      180_000,
+      750_000,
+      700_000,
+    ]);
+    expect(CALCULATOR_MODELS.map((model) => model.inputPriceMicroUSDPerMillion)).toEqual([
+      80_000,
+      20_000,
+      42_000,
+      150_000,
+      90_000,
+      65_000,
+      80_000,
+      50_000,
     ]);
   });
 
-  it("uses 65% of bandwidth, active weights, output pricing, and duty cycle", () => {
+  it("defaults duty cycle to 25%", () => {
+    expect(DEFAULT_DUTY_CYCLE_PERCENT).toBe(25);
+  });
+
+  it("uses prefill, decode, the live token mix, and KV-limited concurrency", () => {
     const hardware = HARDWARE_OPTIONS.find(
       (option) => option.macType === MACBOOK_PRO && option.chip === M4_MAX,
     )!;
-    const model = CALCULATOR_MODELS[0];
-    const estimate = calculateCapacityRevenue(model, hardware, 48, 50)!;
-    expect(estimate.activeWeightGBPerToken).toBeCloseTo((3 * 22) / 35, 12);
+    const model = qwenModel();
+    const estimate = calculateCapacityRevenue(model, hardware, 48, 25)!;
+    expect(estimate.activeWeightGBPerToken).toBeCloseTo(21.309 * (3 / 35), 12);
     expect(estimate.decodeTokensPerSecond).toBeCloseTo(
-      (hardware.bandwidthGBs * DECODE_BANDWIDTH_EFFICIENCY) / ((3 * 22) / 35),
+      (hardware.bandwidthGBs * model.decodeBandwidthEfficiency) / (21.309 * (3 / 35)),
       12,
     );
-    expect(estimate.activeSecondsPerMonth).toBe(360 * 60 * 60);
+    expect(estimate.prefillTokensPerSecond).toBeCloseTo(
+      estimate.decodeTokensPerSecond * PREFILL_TO_DECODE_RATIO,
+      12,
+    );
+    expect(estimate.activeSecondsPerMonth).toBe(180 * 60 * 60);
+    expect(estimate.typicalPromptTokens).toBe(3200);
+    expect(estimate.typicalCompletionTokens).toBe(400);
+    expect(estimate.inputPriceUSDPerMillion).toBe(0.05);
     expect(estimate.outputPriceUSDPerMillion).toBe(0.7);
+    expect(estimate.inputRevenueUSD).toBeGreaterThan(0);
+    expect(estimate.maxConcurrency).toBe(4);
+    expect(estimate.effectiveConcurrency).toBeCloseTo(1.75, 12);
   });
 
   it("keeps the console and homepage data mapping and projection identical", () => {
@@ -86,13 +130,13 @@ describe("earnings projection", () => {
     expect(landingCore.CALCULATOR_MODELS).toEqual(CALCULATOR_MODELS);
     expect(
       landingCore.calculateCapacityRevenue(
-        landingCore.CALCULATOR_MODELS[0],
+        landingCore.CALCULATOR_MODELS.find((model) => model.id === QWEN_MODEL_ID)!,
         hardware,
         48,
         50,
       ),
     ).toEqual(
-      calculateCapacityRevenue(CALCULATOR_MODELS[0], hardware, 48, 50),
+      calculateCapacityRevenue(qwenModel(), hardware, 48, 50),
     );
   });
 
@@ -145,8 +189,9 @@ describe("EarnPage", () => {
     selectMac();
     expect(await screen.findByText(BEST_ESTIMATE)).toBeInTheDocument();
     expect(screen.getAllByText(QWEN_DISPLAY_NAME).length).toBeGreaterThan(0);
-    expect(screen.getByText("3. Single-stream decode speed")).toBeInTheDocument();
-    expect(screen.getByText("6. OpenRouter output pricing")).toBeInTheDocument();
+    expect(screen.getByText("3. Prefill and decode speed")).toBeInTheDocument();
+    expect(screen.getByText("4. Concurrency this Mac can hold")).toBeInTheDocument();
+    expect(screen.getByText("7. Input and output pricing")).toBeInTheDocument();
     expect(screen.getByRole("note")).toHaveTextContent("Estimated earning, not guaranteed.");
     const setup = screen.getByText("Turn your Mac into a provider");
     const flow = screen.getByText("How this estimate is calculated");
@@ -159,7 +204,7 @@ describe("EarnPage", () => {
     selectMac();
     await screen.findByText(BEST_ESTIMATE);
     const before = screen.getByText(MONTHLY_EARNING).parentElement?.textContent;
-    fireEvent.change(screen.getByLabelText("Duty cycle"), { target: { value: "25" } });
+    fireEvent.change(screen.getByLabelText("Duty cycle"), { target: { value: "50" } });
     const after = screen.getByText(MONTHLY_EARNING).parentElement?.textContent;
     expect(after).not.toBe(before);
   });

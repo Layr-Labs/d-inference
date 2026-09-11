@@ -106,7 +106,8 @@ export function HardwareSelector({ calc }: { calc: EarningsCalculator }) {
                 Duty cycle
               </label>
               <p className="mt-0.5 text-xs text-text-secondary">
-                Share of time this Mac is producing output tokens.
+                Share of time this Mac is serving prefill and decode. Higher
+                duty also assumes more overlapping requests.
               </p>
             </div>
             <output

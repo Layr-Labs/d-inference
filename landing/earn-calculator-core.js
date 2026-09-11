@@ -5,11 +5,27 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  const DEFAULT_DUTY_CYCLE_PERCENT = 5;
+  const DEFAULT_DUTY_CYCLE_PERCENT = 25;
   const DECODE_BANDWIDTH_EFFICIENCY = 0.65;
+  const GEMMA_DECODE_BANDWIDTH_EFFICIENCY = 0.47;
+  const PREFILL_TO_DECODE_RATIO = 12;
+  const ENGINE_MAX_CONCURRENT = 4;
+  const TYPICAL_PROMPT_TOKENS = 3200;
+  const TYPICAL_COMPLETION_TOKENS = 400;
   const MONTH_SECONDS = 30 * 24 * 60 * 60;
   const MIN_PROVIDER_MEMORY_GB = 48;
   const QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION = 700000;
+  const SERVABILITY_CAP_FRACTION = 0.9;
+  const ACTIVATION_RESERVE_GB = 5.5;
+  const KV_BYTES_PER_TOKEN = 400000;
+  const BYTES_PER_GIB = 1 << 30;
+  const COLD_WEIGHT_PAD = 1.2 * (1e9 / BYTES_PER_GIB);
+  const PREFILL_BATCH_UNIT_GAIN = 0.25;
+  const BATCH_SCALE_AT_4 = {
+    gemma_moe: 1.92,
+    moe: 3.8,
+    dense: 3.2,
+  };
   const MAC_CONFIGS = [
     { macType: "MacBook Pro", chip: "M1", ramOptions: [8, 16], bandwidthGBs: 68 },
     { macType: "MacBook Pro", chip: "M1 Pro", ramOptions: [16, 32], bandwidthGBs: 200 },
@@ -63,35 +79,150 @@
     return chipDelta || MAC_TYPE_ORDER.indexOf(a.macType) - MAC_TYPE_ORDER.indexOf(b.macType);
   });
 
+  function catalogModel(spec) {
+    return Object.assign({}, spec, {
+      bytesPerParameter: spec.sizeGB / (spec.totalParameterCount / 1000000000),
+    });
+  }
+
   const CALCULATOR_MODELS = [
-    {
-      id: "qwen3.6-35b-a3b-mxfp8",
-      displayName: "Qwen3.6 35B A3B",
-      minRAMGB: 48,
-      sizeGB: 22,
-      activeParameterCount: 3000000000,
-      bytesPerParameter: 22 / 35,
-      outputPriceMicroUSDPerMillion: QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION,
-    },
-    {
-      id: "gemma-4-26b-a4b-mxfp8",
-      displayName: "Gemma 4 26B A4B",
-      minRAMGB: 32,
-      sizeGB: 17,
-      activeParameterCount: 4000000000,
-      bytesPerParameter: 17 / 26,
-      outputPriceMicroUSDPerMillion: 220000,
-    },
-    {
-      id: "gpt-oss-20b-mxfp4",
+    catalogModel({
+      id: "Qwen3.5-9B",
+      displayName: "Qwen 3.5 9B",
+      minRAMGB: 24,
+      sizeGB: 6.114,
+      totalParameterCount: 9000000000,
+      activeParameterCount: 9000000000,
+      inputPriceMicroUSDPerMillion: 80000,
+      outputPriceMicroUSDPerMillion: 130000,
+      family: "dense",
+      decodeBandwidthEfficiency: DECODE_BANDWIDTH_EFFICIENCY,
+    }),
+    catalogModel({
+      id: "gpt-oss-20b",
       displayName: "GPT-OSS 20B",
       minRAMGB: 24,
-      sizeGB: 12,
+      sizeGB: 12.104,
+      totalParameterCount: 20000000000,
       activeParameterCount: 3600000000,
-      bytesPerParameter: 12 / 20,
-      outputPriceMicroUSDPerMillion: 69000,
-    },
+      inputPriceMicroUSDPerMillion: 20000,
+      outputPriceMicroUSDPerMillion: 100000,
+      family: "moe",
+      decodeBandwidthEfficiency: DECODE_BANDWIDTH_EFFICIENCY,
+    }),
+    catalogModel({
+      id: "gemma-4-26b-qat-4bit",
+      displayName: "Gemma 4 26B",
+      minRAMGB: 36,
+      sizeGB: 15.641,
+      totalParameterCount: 26000000000,
+      activeParameterCount: 4000000000,
+      inputPriceMicroUSDPerMillion: 42000,
+      outputPriceMicroUSDPerMillion: 220000,
+      family: "gemma_moe",
+      decodeBandwidthEfficiency: GEMMA_DECODE_BANDWIDTH_EFFICIENCY,
+    }),
+    catalogModel({
+      id: "EigenLabs/Qwen3.8-27B-4bit-mtp",
+      displayName: "Qwen 3.8 27B",
+      minRAMGB: 36,
+      sizeGB: 16.32,
+      totalParameterCount: 27000000000,
+      activeParameterCount: 27000000000,
+      inputPriceMicroUSDPerMillion: 150000,
+      outputPriceMicroUSDPerMillion: 2000000,
+      family: "dense",
+      decodeBandwidthEfficiency: DECODE_BANDWIDTH_EFFICIENCY,
+    }),
+    catalogModel({
+      id: "qwen3-vl-30b-a3b-instruct",
+      displayName: "Qwen3-VL 30B A3B Instruct",
+      minRAMGB: 32,
+      sizeGB: 18.268,
+      totalParameterCount: 30000000000,
+      activeParameterCount: 3000000000,
+      inputPriceMicroUSDPerMillion: 90000,
+      outputPriceMicroUSDPerMillion: 400000,
+      family: "moe",
+      decodeBandwidthEfficiency: DECODE_BANDWIDTH_EFFICIENCY,
+    }),
+    catalogModel({
+      id: "nvidia-nemotron-3.5-lightning",
+      displayName: "Nemotron 3.5 Lightning",
+      minRAMGB: 48,
+      sizeGB: 18.544,
+      totalParameterCount: 30000000000,
+      activeParameterCount: 3000000000,
+      inputPriceMicroUSDPerMillion: 65000,
+      outputPriceMicroUSDPerMillion: 180000,
+      family: "moe",
+      decodeBandwidthEfficiency: DECODE_BANDWIDTH_EFFICIENCY,
+    }),
+    catalogModel({
+      id: "qwen3.5-35b-a3b",
+      displayName: "Qwen3.5 35B A3B",
+      minRAMGB: 36,
+      sizeGB: 20.894,
+      totalParameterCount: 35000000000,
+      activeParameterCount: 3000000000,
+      inputPriceMicroUSDPerMillion: 80000,
+      outputPriceMicroUSDPerMillion: 750000,
+      family: "moe",
+      decodeBandwidthEfficiency: DECODE_BANDWIDTH_EFFICIENCY,
+    }),
+    catalogModel({
+      id: "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      displayName: "Qwen 3.6 35B A3B",
+      minRAMGB: 32,
+      sizeGB: 21.309,
+      totalParameterCount: 35000000000,
+      activeParameterCount: 3000000000,
+      inputPriceMicroUSDPerMillion: 50000,
+      outputPriceMicroUSDPerMillion: QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION,
+      family: "moe",
+      decodeBandwidthEfficiency: DECODE_BANDWIDTH_EFFICIENCY,
+    }),
   ];
+
+  function activeWeightGBPerToken(model) {
+    return model.activeParameterCount * model.bytesPerParameter / 1000000000;
+  }
+
+  function singleStreamDecodeTps(model, hardware) {
+    return hardware.bandwidthGBs * model.decodeBandwidthEfficiency / activeWeightGBPerToken(model);
+  }
+
+  function tokenBudgetTokens(memoryGB, sizeGB) {
+    const weightsGB = sizeGB * COLD_WEIGHT_PAD;
+    const postLoadGB = SERVABILITY_CAP_FRACTION * memoryGB - weightsGB;
+    if (postLoadGB <= 0) return 0;
+    const tokens =
+      (postLoadGB * BYTES_PER_GIB - ACTIVATION_RESERVE_GB * BYTES_PER_GIB) / KV_BYTES_PER_TOKEN;
+    if (tokens <= 0) return 0;
+    return Math.floor(tokens);
+  }
+
+  function maxConcurrencyFor(model, memoryGB) {
+    const budget = tokenBudgetTokens(memoryGB, model.sizeGB);
+    const requestTokens = TYPICAL_PROMPT_TOKENS + TYPICAL_COMPLETION_TOKENS;
+    if (budget <= 0) return 1;
+    return Math.max(1, Math.min(ENGINE_MAX_CONCURRENT, Math.floor(budget / requestTokens)));
+  }
+
+  function effectiveConcurrencyFor(maxConcurrency, dutyCyclePercent) {
+    return 1 + (maxConcurrency - 1) * (dutyCyclePercent / 100);
+  }
+
+  function decodeBatchScale(family, concurrency) {
+    if (concurrency <= 1) return 1;
+    const unitGain = (BATCH_SCALE_AT_4[family] - 1) / 3;
+    return 1 + (concurrency - 1) * unitGain;
+  }
+
+  function prefillBatchScale(concurrency) {
+    if (concurrency <= 1) return 1;
+    return 1 + (concurrency - 1) * PREFILL_BATCH_UNIT_GAIN;
+  }
 
   function calculateCapacityRevenue(model, hardware, memoryGB, dutyCyclePercent) {
     const duty = dutyCyclePercent === undefined ? DEFAULT_DUTY_CYCLE_PERCENT : dutyCyclePercent;
@@ -99,28 +230,57 @@
       memoryGB < model.minRAMGB ||
       model.activeParameterCount <= 0 ||
       model.bytesPerParameter <= 0 ||
+      model.inputPriceMicroUSDPerMillion <= 0 ||
       model.outputPriceMicroUSDPerMillion <= 0 ||
       hardware.bandwidthGBs <= 0 ||
       duty < 0 || duty > 100
     ) return null;
 
-    const activeWeightGBPerToken =
-      model.activeParameterCount * model.bytesPerParameter / 1000000000;
-    const decodeTokensPerSecond =
-      hardware.bandwidthGBs * DECODE_BANDWIDTH_EFFICIENCY / activeWeightGBPerToken;
+    const weightGB = activeWeightGBPerToken(model);
+    const decodeTokensPerSecond = singleStreamDecodeTps(model, hardware);
+    const prefillTokensPerSecond = decodeTokensPerSecond * PREFILL_TO_DECODE_RATIO;
+    const tokenBudget = tokenBudgetTokens(memoryGB, model.sizeGB);
+    const maxConcurrency = maxConcurrencyFor(model, memoryGB);
+    const effectiveConcurrency = effectiveConcurrencyFor(maxConcurrency, duty);
+    const batchedDecodeTokensPerSecond =
+      decodeTokensPerSecond * decodeBatchScale(model.family, effectiveConcurrency);
+    const batchedPrefillTokensPerSecond =
+      prefillTokensPerSecond * prefillBatchScale(effectiveConcurrency);
+    if (batchedDecodeTokensPerSecond <= 0 || batchedPrefillTokensPerSecond <= 0) return null;
+
+    const requestSeconds =
+      TYPICAL_PROMPT_TOKENS / batchedPrefillTokensPerSecond +
+      TYPICAL_COMPLETION_TOKENS / batchedDecodeTokensPerSecond;
     const activeSecondsPerMonth = MONTH_SECONDS * duty / 100;
-    const outputTokensPerMonth = decodeTokensPerSecond * activeSecondsPerMonth;
+    const monthlyRequests = 1 / requestSeconds * activeSecondsPerMonth;
+    const promptTokensPerMonth = monthlyRequests * TYPICAL_PROMPT_TOKENS;
+    const outputTokensPerMonth = monthlyRequests * TYPICAL_COMPLETION_TOKENS;
+    const inputPriceUSDPerMillion = model.inputPriceMicroUSDPerMillion / 1000000;
     const outputPriceUSDPerMillion = model.outputPriceMicroUSDPerMillion / 1000000;
-    const monthlyRevenueUSD = outputTokensPerMonth / 1000000 * outputPriceUSDPerMillion;
-    if (!Number.isFinite(monthlyRevenueUSD)) return null;
+    const inputRevenueUSD = promptTokensPerMonth / 1000000 * inputPriceUSDPerMillion;
+    const outputRevenueUSD = outputTokensPerMonth / 1000000 * outputPriceUSDPerMillion;
+    const monthlyRevenueUSD = inputRevenueUSD + outputRevenueUSD;
+    if (!Number.isFinite(monthlyRevenueUSD) || monthlyRevenueUSD < 0) return null;
     return {
       model: model,
-      activeWeightGBPerToken: activeWeightGBPerToken,
+      activeWeightGBPerToken: weightGB,
       decodeTokensPerSecond: decodeTokensPerSecond,
+      prefillTokensPerSecond: prefillTokensPerSecond,
+      maxConcurrency: maxConcurrency,
+      effectiveConcurrency: effectiveConcurrency,
+      tokenBudget: tokenBudget,
+      batchedDecodeTokensPerSecond: batchedDecodeTokensPerSecond,
+      batchedPrefillTokensPerSecond: batchedPrefillTokensPerSecond,
       dutyCyclePercent: duty,
       activeSecondsPerMonth: activeSecondsPerMonth,
+      typicalPromptTokens: TYPICAL_PROMPT_TOKENS,
+      typicalCompletionTokens: TYPICAL_COMPLETION_TOKENS,
+      promptTokensPerMonth: promptTokensPerMonth,
       outputTokensPerMonth: outputTokensPerMonth,
+      inputPriceUSDPerMillion: inputPriceUSDPerMillion,
       outputPriceUSDPerMillion: outputPriceUSDPerMillion,
+      inputRevenueUSD: inputRevenueUSD,
+      outputRevenueUSD: outputRevenueUSD,
       monthlyRevenueUSD: monthlyRevenueUSD,
       annualRevenueUSD: monthlyRevenueUSD * 12,
     };
@@ -129,11 +289,18 @@
   return {
     DEFAULT_DUTY_CYCLE_PERCENT: DEFAULT_DUTY_CYCLE_PERCENT,
     DECODE_BANDWIDTH_EFFICIENCY: DECODE_BANDWIDTH_EFFICIENCY,
+    GEMMA_DECODE_BANDWIDTH_EFFICIENCY: GEMMA_DECODE_BANDWIDTH_EFFICIENCY,
+    PREFILL_TO_DECODE_RATIO: PREFILL_TO_DECODE_RATIO,
+    ENGINE_MAX_CONCURRENT: ENGINE_MAX_CONCURRENT,
+    TYPICAL_PROMPT_TOKENS: TYPICAL_PROMPT_TOKENS,
+    TYPICAL_COMPLETION_TOKENS: TYPICAL_COMPLETION_TOKENS,
     CALCULATOR_MODELS: CALCULATOR_MODELS,
     HARDWARE_OPTIONS: HARDWARE_OPTIONS,
     MIN_PROVIDER_MEMORY_GB: MIN_PROVIDER_MEMORY_GB,
     PROVIDER_HARDWARE_OPTIONS: HARDWARE_OPTIONS,
     QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION: QWEN_OUTPUT_PRICE_MICRO_USD_PER_MILLION,
     calculateCapacityRevenue: calculateCapacityRevenue,
+    tokenBudgetTokens: tokenBudgetTokens,
+    maxConcurrencyFor: maxConcurrencyFor,
   };
 });

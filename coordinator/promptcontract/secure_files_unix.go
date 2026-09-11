@@ -87,35 +87,7 @@ func secureOpenAbsoluteDirectory(name string, create bool, mode fs.FileMode) (*o
 	if cleaned == "/" {
 		return current, nil
 	}
-	for _, component := range strings.Split(strings.TrimPrefix(cleaned, "/"), "/") {
-		nextFD, openErr := unix.Openat(
-			int(current.Fd()),
-			component,
-			unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC,
-			0,
-		)
-		if errors.Is(openErr, unix.ENOENT) && create {
-			if mkdirErr := unix.Mkdirat(int(current.Fd()), component, uint32(mode.Perm())); mkdirErr != nil &&
-				!errors.Is(mkdirErr, unix.EEXIST) {
-				_ = current.Close()
-				return nil, mkdirErr
-			}
-			nextFD, openErr = unix.Openat(
-				int(current.Fd()),
-				component,
-				unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC,
-				0,
-			)
-		}
-		if openErr != nil {
-			_ = current.Close()
-			return nil, openErr
-		}
-		next := os.NewFile(uintptr(nextFD), component)
-		_ = current.Close()
-		current = next
-	}
-	return current, nil
+	return walkSecureDirectories(current, strings.Split(strings.TrimPrefix(cleaned, "/"), "/"), create, mode)
 }
 
 func secureMkdirAll(root *os.Root, name string, mode fs.FileMode) error {
@@ -187,7 +159,15 @@ func secureOpenDirectory(
 	if err != nil {
 		return nil, err
 	}
-	for _, component := range strings.Split(name, "/") {
+	return walkSecureDirectories(current, strings.Split(name, "/"), create, mode)
+}
+
+// walkSecureDirectories takes ownership of current. Every component is opened
+// relative to that descriptor with O_NOFOLLOW; failure closes the owned chain,
+// and success transfers the final descriptor to the caller. Both absolute-root
+// and root-relative walkers validate their path before calling this function.
+func walkSecureDirectories(current *os.File, components []string, create bool, mode fs.FileMode) (*os.File, error) {
+	for _, component := range components {
 		fd, openErr := unix.Openat(
 			int(current.Fd()),
 			component,

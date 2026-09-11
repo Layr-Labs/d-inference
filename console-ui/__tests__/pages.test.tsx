@@ -321,8 +321,10 @@ describe("ProvidersPage", () => {
     const ProvidersPage = (await import("@/app/providers/page")).default;
     render(<ProvidersPage />);
 
-    await screen.findByText("Apple M3 Max");
-    expect(screen.getByRole("heading", { name: "Fleet" })).toBeInTheDocument();
+    await screen.findByText(/^Apple M3 Max/);
+    expect(screen.getByLabelText("Fleet activity")).toBeInTheDocument();
+    expect(screen.queryByText(/reputation/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Provider dashboard" })).toBeInTheDocument();
     expect(
       screen.getByText("All clear — every machine is routable and earning.")
     ).toBeInTheDocument();

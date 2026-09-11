@@ -32,10 +32,12 @@ export function CardRoutingVerdict({
 
   // Offline machines describe themselves by last-seen; everyone else by the
   // top warning. Routable machines have nothing to fix.
-  const verb =
-    state === "offline"
-      ? `OFFLINE — last seen ${formatRelative(provider.last_heartbeat || provider.last_seen)}`
-      : meta.verb;
+  let verb = meta.verb;
+  if (state === "offline") {
+    verb = `OFFLINE — last seen ${formatRelative(provider.last_heartbeat || provider.last_seen)}`;
+  } else if (state === "routable" && provider.status !== "serving" && provider.pending_requests === 0) {
+    verb = "READY — waiting for requests";
+  }
 
   const why = state === "routable" ? null : topWarning?.title ?? null;
   const fix = topWarning ? resolveFix(topWarning.id) : null;

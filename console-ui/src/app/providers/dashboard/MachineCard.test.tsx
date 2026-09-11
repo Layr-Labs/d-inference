@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import { CardRoutingVerdict } from "./CardRoutingVerdict";
 import { MachineCard } from "./MachineCard";
 import { makeProvider } from "./testFixtures";
 import type { RoutingCtx } from "./routing";
@@ -40,5 +41,16 @@ describe("MachineCard remove gating", () => {
       />
     );
     expect(screen.queryByTestId(AFFORDANCE)).toBeNull();
+  });
+});
+
+describe("machine activity verdict", () => {
+  it("distinguishes an idle, ready machine from one receiving traffic", () => {
+    const provider = makeProvider({ online: true, status: "online" });
+    const { rerender } = render(<CardRoutingVerdict provider={provider} state="routable" topWarning={null} />);
+    expect(screen.getByText("READY — waiting for requests")).toBeInTheDocument();
+    rerender(<CardRoutingVerdict provider={{ ...provider, status: "serving", pending_requests: 1 }} state="routable" topWarning={null} />);
+    expect(screen.getByText(/receiving traffic/)).toBeInTheDocument();
+    expect(screen.queryByText(/waiting for requests/)).not.toBeInTheDocument();
   });
 });

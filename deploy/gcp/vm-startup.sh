@@ -28,8 +28,6 @@ IMAGE_REPO="${REGISTRY_HOST}/sepolia-ai/coordinator/coordinator"
 
 DATA_DEV="/dev/disk/by-id/google-d-inference-dev-data"
 DATA_MOUNT="/mnt/disks/userdata"
-ENV_DIR="/etc/d-inference"
-ENV_FILE="${ENV_DIR}/env"
 
 # ---- 1. Packages ----
 # Install gcloud + Docker + cloud-sql-proxy FIRST. Nothing later in this script
@@ -93,53 +91,24 @@ mountpoint -q "$DATA_MOUNT" || mount -o noatime,discard "$DATA_DEV" "$DATA_MOUNT
 grep -q "$DATA_DEV" /etc/fstab || \
   echo "$DATA_DEV $DATA_MOUNT ext4 noatime,discard 0 2" >> /etc/fstab
 
-# ---- 3. Fetch secrets ----
-mkdir -p "$ENV_DIR"
-chmod 700 "$ENV_DIR"
+# ---- 3. Fetch secrets through the same validated writer used by deploys ----
+# Both metadata values are published together by bootstrap and Cloud Build.
+refresh_environment() (
+  set -euo pipefail
+  script=$(mktemp)
+  trap 'rm -f "$script"' EXIT
+  curl -fsS --connect-timeout 5 --max-time 30 \
+    -H "Metadata-Flavor: Google" \
+    http://metadata.google.internal/computeMetadata/v1/instance/attributes/darkbloom-refresh-env \
+    -o "$script"
+  bash "$script"
+)
+refresh_environment
 
+# Datadog setup below also reads optional secrets.
 fetch() {
   gcloud --quiet secrets versions access latest --secret="$1" 2>/dev/null || true
 }
-
-cat > "$ENV_FILE" <<EOF
-EIGENINFERENCE_PORT=8080
-EIGENINFERENCE_MIN_TRUST=hardware
-EIGENINFERENCE_BILLING_MOCK=false
-EIGENINFERENCE_BASE_URL=https://api.dev.darkbloom.xyz
-EIGENINFERENCE_CONSOLE_URL=https://console.dev.darkbloom.xyz
-CORS_ORIGIN=https://console.dev.darkbloom.xyz
-EIGENINFERENCE_R2_CDN_URL=$(fetch eigeninference-r2-cdn-url)
-EIGENINFERENCE_ADMIN_EMAILS=gajesh@eigenlabs.org
-EIGENINFERENCE_REFERRAL_SHARE_PCT=15
-DOMAIN=api.dev.darkbloom.xyz
-APP_PORT=8080
-EIGENINFERENCE_MDM_URL=https://localhost:9002
-EIGENINFERENCE_ADMIN_KEY=$(fetch eigeninference-admin-key)
-EIGENINFERENCE_RELEASE_KEY=$(fetch eigeninference-release-key)
-EIGENINFERENCE_PRIVY_APP_ID=$(fetch eigeninference-privy-app-id)
-EIGENINFERENCE_PRIVY_APP_SECRET=$(fetch eigeninference-privy-app-secret)
-EIGENINFERENCE_PRIVY_VERIFICATION_KEY=$(fetch eigeninference-privy-verification-key)
-EIGENINFERENCE_DATABASE_URL=$(fetch eigeninference-database-url)
-MNEMONIC=$(fetch eigeninference-solana-mnemonic)
-MICROMDM_API_KEY=$(fetch eigeninference-micromdm-api-key)
-EIGENINFERENCE_MDM_API_KEY=$(fetch eigeninference-micromdm-api-key)
-MDM_PUSH_P12_B64=$(fetch eigeninference-mdm-push-p12-b64)
-PROFILE_SIGNING_P12_B64=$(fetch eigeninference-profile-signing-p12-b64)
-PROFILE_SIGNING_P12_PASSWORD=$(fetch eigeninference-profile-signing-p12-password)
-EIGENINFERENCE_STRIPE_SECRET_KEY=$(fetch eigeninference-stripe-secret-key)
-EIGENINFERENCE_STRIPE_WEBHOOK_SECRET=$(fetch eigeninference-stripe-webhook-secret)
-EIGENINFERENCE_STRIPE_SUCCESS_URL=$(fetch eigeninference-stripe-success-url)
-EIGENINFERENCE_STRIPE_CANCEL_URL=$(fetch eigeninference-stripe-cancel-url)
-EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET=$(fetch eigeninference-stripe-connect-webhook-secret)
-EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL=$(fetch eigeninference-stripe-connect-return-url)
-EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL=$(fetch eigeninference-stripe-connect-refresh-url)
-DD_API_KEY=$(fetch eigeninference-dd-api-key)
-DD_SITE=$(fetch eigeninference-dd-site)
-DD_ENV=development
-DD_SERVICE=d-inference-coordinator
-DD_AGENT_HOST=localhost
-EOF
-chmod 600 "$ENV_FILE"
 
 # ---- 4. cloud-sql-proxy systemd unit ----
 cat > /etc/systemd/system/cloud-sql-proxy.service <<EOF

@@ -3,7 +3,7 @@
 #
 # Creates: Artifact Registry repos, Cloud SQL (Postgres), a GCE VM running the
 # coordinator container (with a persistent data disk for MicroMDM),
-# Cloud Run for console-ui, service accounts, Secret Manager entries
+# service accounts, Secret Manager entries
 # (placeholders), firewall rules. Idempotent: safe to re-run.
 #
 # Why GCE VM for the coordinator: MicroMDM uses
@@ -230,10 +230,9 @@ gcloud projects set-iam-policy "$PROJECT" "$AUDIT_TMP" --quiet >/dev/null
 rm -f "$AUDIT_TMP"
 
 echo "==> Scope Secret Manager access per-secret (tighter than project-level)"
-# Project-level secretAccessor was granted earlier as a fallback for operational
-# simplicity. Override the MDM push cert secret specifically so only the coord
-# SA can read it — no human, no other service. Revoke here if we ever had wider
-# bindings.
+# The explicit binding records this service account's access. IAM grants are
+# additive: project-level access granted earlier, including other inherited
+# principals, still applies. This binding does not restrict those grants.
 gcloud secrets add-iam-policy-binding eigeninference-mdm-push-p12-b64 \
   --member="serviceAccount:$COORD_SA_EMAIL" \
   --role="roles/secretmanager.secretAccessor" \
@@ -306,15 +305,15 @@ if ! gcloud compute instances describe "$INSTANCE" --zone="$ZONE" >/dev/null 2>&
     --image-project=ubuntu-os-cloud \
     --boot-disk-size=20GB \
     --create-disk="name=${DATA_DISK},mode=rw,boot=no,auto-delete=no,device-name=${DATA_DISK}" \
-    --metadata-from-file=startup-script="$(dirname "$0")/vm-startup.sh"
+    --metadata-from-file="startup-script=$(dirname "$0")/vm-startup.sh,darkbloom-refresh-env=$(dirname "$0")/refresh-env.sh"
   echo "==> VM created. Startup script will run on first boot (~2-3 min)."
   echo "    Tail progress:"
-  echo "      gcloud compute ssh $INSTANCE --zone=$ZONE -- 'sudo tail -f /var/log/d-inference-startup.log'"
+  echo "      gcloud compute ssh $INSTANCE --project=$PROJECT --zone=$ZONE --tunnel-through-iap -- 'sudo tail -f /var/log/d-inference-startup.log'"
 else
   echo "==> VM $INSTANCE already exists (skipping create)"
   echo "    To refresh startup-script metadata after edits:"
   echo "      gcloud compute instances add-metadata $INSTANCE --zone=$ZONE \\"
-  echo "        --metadata-from-file=startup-script=$(dirname "$0")/vm-startup.sh"
+  echo "        --metadata-from-file=startup-script=$(dirname "$0")/vm-startup.sh,darkbloom-refresh-env=$(dirname "$0")/refresh-env.sh"
 fi
 
 cat <<EOF
@@ -327,7 +326,8 @@ Next steps:
                 eigeninference-micromdm-api-key; do
          echo -n "\$(openssl rand -hex 32)" | gcloud secrets versions add \$S --data-file=-
        done
-     Then add Privy values, the coordinator encryption mnemonic (generated fresh
+     Then add the database URL and Stripe secret/webhook keys required by
+     refresh-env.sh, Privy values, the coordinator encryption mnemonic (generated fresh
      for dev — not prod's; the secret keeps its legacy solana-mnemonic name),
      the dev R2 CDN URL (public URL of d-inf-app-dev), and the MDM push PKCS#12.
 
@@ -336,15 +336,21 @@ Next steps:
         echo -n "<prod-p12-base64url>" \\
           | gcloud secrets versions add eigeninference-mdm-push-p12-b64 --data-file=-
       This secret is CMEK-encrypted with projects/$PROJECT/.../cryptoKeys/mdm-push-cert.
-      IAM is scoped to only $COORD_SA_EMAIL — no humans, no other SAs.
+      The coordinator SA has an explicit secret binding; inherited project IAM
+      grants also apply. Review those grants separately when restricting access.
       Target: rotate to a dev-specific cert within 30 days once Apple issues
       the MDM Vendor CSR signing certificate.
+
+  1b. After populating the required secrets, rerun startup to install the service
+      units. First boot stops before unit creation while those secrets are empty:
+        gcloud compute ssh $INSTANCE --project=$PROJECT --zone=$ZONE --tunnel-through-iap \\
+          --command='sudo google_metadata_script_runner startup'
 
   2. Add DNS records on Vercel Domains:
        api.dev.darkbloom.xyz      A     $EXTERNAL_IP
        console.dev.darkbloom.xyz  CNAME cname.vercel-dns.com   (after step 4)
 
-  3. Push the first coordinator image (triggers startup-script to come to life):
+  3. Build and deploy the first coordinator image (requires step 1b):
        gcloud builds submit --config=deploy/gcp/cloudbuild.yaml --project=$PROJECT
 
   4. Deploy the console UI on **Vercel** (NOT on GCP):

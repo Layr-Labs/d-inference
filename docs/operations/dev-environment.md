@@ -1,6 +1,6 @@
 # Dev environment
 
-> Last updated: 2026-09-06 · commit `f272f8641`
+> Last updated: 2026-09-11 · commit `d983690b4`
 
 Runbook for the Darkbloom dev environment on Google Cloud (project
 `sepolia-ai`): a GCE VM running the same coordinator container as production,
@@ -59,7 +59,9 @@ deploy/gcp/bootstrap.sh          # PROJECT/REGION/ZONE/INSTANCE/MACHINE_TYPE/SQL
 Idempotent. Creates the Artifact Registry repo `coordinator`, the coordinator
 service account, empty Secret Manager entries, Cloud SQL `d-inference-dev-db`,
 the data disk, the static IP, and the VM with
-`deploy/gcp/vm-startup.sh` as its startup script. It prints the static IP.
+`deploy/gcp/vm-startup.sh` as its startup script and `deploy/gcp/refresh-env.sh`
+as the `darkbloom-refresh-env` metadata value. Publish both together when
+updating startup metadata. It prints the static IP.
 
 ### 2. Populate secrets
 
@@ -85,7 +87,19 @@ echo -n '<value>' | gcloud secrets versions add <secret-name> --data-file=- --pr
 `EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_DATABASE_URL`,
 `EIGENINFERENCE_STRIPE_SECRET_KEY`, `EIGENINFERENCE_STRIPE_WEBHOOK_SECRET`,
 `EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET` resolves empty, so set those
-before the first deploy.
+before the first deploy. Boot uses the same writer and preserves the existing
+file on critical-secret or metadata-download failure. The writer publishes a
+mode-0600 candidate by atomic rename after validation; temporary files are
+removed on exit. A failed boot refresh stops before service reconfiguration.
+
+On a new VM, bootstrap runs before these secrets are populated and therefore
+stops at that validation. After filling the required secrets, rerun startup to
+finish installing the service units before the first image deploy:
+
+```bash
+gcloud compute ssh d-inference-dev --zone=us-central1-a --project=sepolia-ai --tunnel-through-iap \
+  -- 'sudo google_metadata_script_runner startup'
+```
 
 ### 3. DNS
 
@@ -102,7 +116,7 @@ gcloud builds submit --config=deploy/gcp/cloudbuild.yaml --project=sepolia-ai
 
 The build tags `:$SHORT_SHA` and `:latest`, pushes both, then the `deploy`
 step: writes `DINF_IMAGE_TAG=$SHORT_SHA` to VM metadata, refreshes the
-`startup-script` metadata from `deploy/gcp/vm-startup.sh`, pipes
+`startup-script` and `darkbloom-refresh-env` metadata together, pipes
 `deploy/gcp/refresh-env.sh` over IAP SSH (`sudo bash -s`) to regenerate
 `/etc/d-inference/env` from Secret Manager, runs
 `sudo systemctl restart d-inference-coordinator`, and polls
@@ -140,9 +154,9 @@ with no approval step.
   `sudo bash deploy/gcp/refresh-env.sh && sudo systemctl restart d-inference-coordinator`.
 - **Non-secret value** (`EIGENINFERENCE_MIN_TRUST`, `EIGENINFERENCE_ADMIN_EMAILS`,
   `EIGENINFERENCE_REFERRAL_SHARE_PCT`, `EIGENINFERENCE_BASE_URL`, …): these are
-  literal lines in **both** `deploy/gcp/refresh-env.sh` and
-  `deploy/gcp/vm-startup.sh` (the boot path). Edit both, merge, and let Cloud
-  Build redeploy. There is no `--set-env-vars`; the env file is the only
+  literal lines in `deploy/gcp/refresh-env.sh`, shared by deploy and boot.
+  Edit that file, merge, and let Cloud Build redeploy. There is no
+  `--set-env-vars`; the env file is the only
   source.
 - Variables are read once at process start; a restart is always required.
 

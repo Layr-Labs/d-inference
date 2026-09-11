@@ -2,7 +2,7 @@
 .PHONY: help \
         coordinator-test coordinator-build coordinator-build-linux coordinator \
         prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
-        provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test tooling-test \
+        provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test tooling-install tooling-test \
         ui-install ui-build ui-lint ui-test ui \
         admin-install admin-build admin-lint admin-typecheck admin-test admin landing-test \
         e2e-integration e2e-benchmark e2e \
@@ -80,12 +80,24 @@ provider: provider-build provider-test ## Build + test provider
 benchmark-wrapper-test: ## Unit-test the Gemma benchmark wrapper (no GPU or weights)
 	cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .
 
-tooling-test: ## Run CPU-only Python tooling tests (requires pinned NumPy)
-	PYTHONPATH=scripts python3 -m unittest discover -s scripts -t scripts -p 'test_*.py'
-	python3 -m unittest discover -s scripts/benchmarks -p 'test_*.py'
-	python3 -m unittest discover -s e2e/testbed -p 'test_*.py'
-	python3 scripts/test-provider-release-resolution.py
-	python3 scripts/test-provider-signing-validation.py
+# Keep the pinned CPU dependency isolated and install only when its inputs change.
+TOOLING_VENV ?= .venv/tooling
+TOOLING_PYTHON = $(TOOLING_VENV)/bin/python
+TOOLING_REQUIREMENTS = scripts/benchmarks/attention_packet/requirements.txt
+
+$(TOOLING_VENV)/.requirements-installed: $(TOOLING_REQUIREMENTS)
+	python3 -m venv "$(TOOLING_VENV)"
+	"$(TOOLING_PYTHON)" -m pip install -r "$<"
+	touch "$@"
+
+tooling-install: $(TOOLING_VENV)/.requirements-installed ## Prepare the isolated pinned CPU tooling environment
+
+tooling-test: tooling-install ## Run CPU-only Python tooling tests
+	PYTHONPATH=scripts "$(TOOLING_PYTHON)" -m unittest discover -s scripts -t scripts -p 'test_*.py'
+	"$(TOOLING_PYTHON)" -m unittest discover -s scripts/benchmarks -p 'test_*.py'
+	"$(TOOLING_PYTHON)" -m unittest discover -s e2e/testbed -p 'test_*.py'
+	"$(TOOLING_PYTHON)" scripts/test-provider-release-resolution.py
+	"$(TOOLING_PYTHON)" scripts/test-provider-signing-validation.py
 
 benchmark-gemma-contbatch: ## Build and benchmark Gemma 4 26B continuous batching
 	python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)

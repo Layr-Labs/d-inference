@@ -126,15 +126,18 @@ text = "\n".join(body)
 # Backtick spans contain literal examples, not rendered links.
 text = re.sub(r"(?<!`)(`+)(?!`).*?\1(?!`)", "", text, flags=re.DOTALL)
 links = re.compile(
-    r"(?<!\\)\[([^]\n]*)\]"
-    r"(?:\(\s*(?:<([^>\n]+)>|([^\s)]+))[^)]*\)|\[([^]\n]*)\])?"
+    r"(?<!\\)(?P<image>!)?\[(?P<label>[^]\n]*)\]"
+    r"(?:\(\s*(?:<(?P<angle>[^>\n]+)>|(?P<bare>[^\s)]+))[^)]*\)|\[(?P<reference>[^]\n]*)\])?"
 )
 for match in links.finditer(text):
-    if match[2] is not None or match[3] is not None:
-        print(match[2] or match[3])
+    # Image targets must exist, but an image alone is not clickable navigation.
+    if mode != "all" and match["image"]:
+        continue
+    if match["angle"] is not None or match["bare"] is not None:
+        print(match["angle"] or match["bare"])
     else:
         # Full [text][id], collapsed [id][], and shortcut [id] references.
-        reference = match[4] or match[1]
+        reference = match["reference"] or match["label"]
         target = definitions.get(label(reference))
         if target is not None:
             print(target)

@@ -82,6 +82,24 @@ class DocsCheckTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("broken link -> Missing.svg", result.stderr)
 
+    def test_images_do_not_create_navigation_edges(self):
+        for usage in ("![diagram][guide]", "![guide][]", "![guide]", "![diagram](Page.md)"):
+            with self.subTest(usage=usage):
+                result = self.check(usage + "\n[guide]: Page.md\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Page.md: orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+
+    def test_broken_reference_images_are_still_checked(self):
+        result = self.check("[Page](Page.md)\n![diagram][image]\n[image]: Missing.svg\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("broken link -> Missing.svg", result.stderr)
+        self.assertNotIn("orphan", result.stderr)
+
+    def test_escaped_bang_before_reference_is_a_link(self):
+        result = self.check(r"\![guide]" + "\n[guide]: Page.md\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_orphans_and_missing_citations_are_independent_errors(self):
         result = self.check("", content="`coordinator/missing.go`\n")
         self.assertNotEqual(result.returncode, 0)

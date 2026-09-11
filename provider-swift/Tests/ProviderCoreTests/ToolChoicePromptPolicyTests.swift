@@ -76,6 +76,40 @@ struct ToolChoicePromptPolicyTests {
         }
     }
 
+    @Test("forced instructions preserve content parts and leave intermediate turns untouched")
+    func forcedInstructionContentShapes() throws {
+        let image = OpenAIContentPart.imageURL("data:image/png;base64,AAAA")
+        for systemContent in [OpenAIMessageContent.null, .text("policy"), .parts([.text("policy")])] {
+            for userContent in [OpenAIMessageContent.null, .text("question"), .parts([.text("question"), image])] {
+                var input = request(choice: .mode(.required))
+                let earlierUser = OpenAIChatMessage(role: .user, content: .text("earlier question"))
+                let assistant = OpenAIChatMessage(role: .assistant, content: .text("earlier answer"))
+                input.messages = [
+                    .init(role: .system, content: systemContent), earlierUser, assistant,
+                    .init(role: .user, content: userContent),
+                ]
+                let prepared = try ToolChoicePromptPolicy.prepare(input)
+                #expect(prepared.messages.count == 4)
+                #expect(prepared.messages[1].content == earlierUser.content)
+                #expect(prepared.messages[2].content == assistant.content)
+                for (index, original) in [(0, systemContent), (3, userContent)] {
+                    let updated = prepared.messages[index].content
+                    switch (original, updated) {
+                    case (.parts(let before), .parts(let after)):
+                        #expect(Array(after.dropLast()) == before)
+                        #expect(after.count == before.count + 1)
+                    case (.text(let before), .text(let after)):
+                        #expect(after.hasPrefix(before + "\n\nCall one"))
+                    case (.null, .text(let after)):
+                        #expect(after.hasPrefix("Call one"))
+                    default:
+                        Issue.record("instruction changed the content representation")
+                    }
+                }
+            }
+        }
+    }
+
     private func request(choice: OpenAIToolChoice) -> OpenAIChatCompletionRequest {
         OpenAIChatCompletionRequest(
             model: "gemma-4",

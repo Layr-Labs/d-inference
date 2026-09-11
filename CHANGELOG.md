@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — model input minimums
+
+- Require 32 estimated input tokens by default across all four inference endpoints; shorter inputs receive HTTP 400 `input_too_short`. Publishers can set `runtime_parameters.min_input_tokens` per model, including `0` for small-input testing and `null` to inherit the deployment default. Scalar Completions/Responses use the same message framing as Chat; alias floor validation completes before any token-quota or balance debit. The floor counts only the active endpoint's prompt, normalizes structured Responses/Anthropic text with provider lowering, includes Anthropic top-level system text, excludes unrelated metadata, rechecks inlined-media eligibility while preserving normal alias fallback, records rejection traits and servability, and refuses transient model-policy lookup failures with 503. Native-only prompt shapes retain their estimate, tool-call names/arguments and reasoning history count toward the floor, and native completion batches get no synthetic chat framing. Deferred preflight validates floor/quota/funding once before recording demand, preserving eligible terminal 429 scaling signals and refunding their balance reservations. Public README/API-console examples and dev smoke, startup, and mixed-version probes use inputs above the default floor.
+
 ## Unreleased — Gemma QAT SSD prefix caching and automatic MTP
 
 - Keep MTP preparation targets out of eviction feasibility and idle eviction, restore surviving KV grants after discarded preparation, and refresh network capacity quotes immediately when staging memory changes.

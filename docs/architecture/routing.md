@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-09-10 · commit `0a724f3ad`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -41,6 +41,51 @@ content beyond that. See [`data-flow.md`](data-flow.md) and
 [`security/encryption.md`](security/encryption.md).
 
 ## Mechanism
+
+### Minimum-input admission
+
+Before token admission and balance reservation, the inference handlers compare
+the prompt-field-only media-aware estimate against the selected model's
+`runtime_parameters.min_input_tokens`, inheriting a deployment default of 32.
+The estimate uses only the active endpoint's prompt. Responses and Anthropic
+text blocks use canonical provider lowering joins and framing, including
+Anthropic top-level `system`; images/videos retain flat media costs
+(`inputFloorPromptTokens`, `promptcontract.PromptMessagesForEstimate`). Ignored
+fields from other endpoints and block metadata contribute no tokens.
+Tool-call history adds function names and arguments; assistant reasoning strings
+also contribute to the floor estimate. Native completion batches count their
+text/token IDs without synthetic chat framing.
+Native-only generic shapes retain their active prompt estimate when canonical
+lowering is unsupported (`coordinator/api/input_token_estimate.go`).
+A terminal failure is 400 `input_too_short`; it never reaches provider dispatch.
+
+If exactly one of an alias's Desired/Previous builds allows the input, the initial
+floor decision is deferred until the normal capacity/TTFT preflight runs. The
+floor does not independently select an older build. If preflight keeps Desired,
+its floor still applies; if preflight switches builds, the fallback's floor
+applies. Alias token quota and balance admission wait for that final validation.
+The request-owned `admissionPressureGate` validates the selected floor and
+admits quota/funding once, before recording capacity/TTFT demand. Eligible
+terminal 429s retain scaling pressure and refund their balance reservation;
+unfunded, over-quota, and floor-rejected callers emit no pressure. After admission,
+the gate fixes the permitted build across later preflight/media revalidation
+(`coordinator/api/inference_admission_pressure.go`).
+Remote-media fetches still wait for quota admission and balance reservation,
+including on the deferred alias path. When both floors permit the input, media
+inlining precedes ordinary admission, so fallback sees the expanded body. If
+Desired only has protocol-0 providers whose cache buster exceeds the wire limit,
+admission probes Previous with its own body/protocol traits before returning 413. A
+deferred request reruns admission after inlining changes body/protocol traits,
+keeping the floor-compatible build; it cannot switch to a build whose floor
+failed after quota/funding (`runInferenceAdmission`). Failed registry reads produce
+503; only a genuinely absent record or omitted/null parameter inherits the
+default (`checkInitialInputFloor`, `inputFloorRegistryReadFailed`, and
+`rejectShortInput` in `coordinator/api/input_token_floor.go`).
+
+Floor rejections record vision/tools traits and use the existing bounded
+asynchronous telemetry sink to calculate `CouldHaveServed`; they are not treated
+as routing-saturation rejections. See the [API contract](../reference/api-contracts.md#minimum-input-length)
+and [per-model settings](../reference/model-registry-format.md#minimum-input-tokens).
 
 ### Entry points
 

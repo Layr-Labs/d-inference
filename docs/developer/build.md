@@ -1,13 +1,14 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-10 · commit `c09499b5e`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the two Next.js UIs. `make build` does all
 of it; the per-component steps below explain what each target runs.
 
-Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
+Model publishing prompts for a per-model minimum estimated input length (32 by
+default; enter 0 for small-input testing) and can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the
 [model publishing procedure](../operations/model-migration.md).
 
@@ -413,7 +414,10 @@ the default MicroMDM entrypoint script; see the
 
 The [startup measurement tool](../operations/coordinator-startup-measurement.md)
 requires Python 3.10+ and no third-party packages or build step. Its tests use
-local stub servers; its default observation mode sends only public GETs.
+local stub servers; its default observation mode sends only public GETs. The
+optional startup inference probe, dev smoke script, and mixed-version E2E lane
+use synthetic inputs long enough to clear the default input floor; a build
+needs no minimum-input override to run these checks.
 
 ## `make` targets
 

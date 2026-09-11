@@ -775,7 +775,8 @@ const (
 // or too slow to hit the TTFT ceiling (aliasFallbackTTFT) and Previous can serve,
 // route this request to Previous instead of returning a fast 429 / slow stream.
 // Hard constraints and permanent model-too-large failures are handled by the
-// caller and do not use this fallback. The TTFT estimate for Previous is also
+// caller and do not use this fallback, except a cache-isolation protocol floor
+// may fall back when Previous can fit its provider-bound body. The TTFT estimate for Previous is also
 // returned so the caller does not need to recompute it. ttftThreshold is the
 // request-local deadline pinned before admission and is only consulted in
 // aliasFallbackTTFT mode.
@@ -1999,6 +2000,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			maxOutputBound = rec.MaxOutputLength
 		}
 		modelMaxContext = rec.MaxContextLength
+	} else if s.inputFloorRegistryReadFailed(w, model, err) {
+		return
 	}
 	if err := validateResolvedToolConstraintParser(
 		parsed, validatedMode, model, s.registry.ModelType(model),
@@ -2027,6 +2030,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	timing.ParsedAt = time.Now()
 	rp.Mark(registry.StampReqParsed)
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
+		return
+	}
+	floorPromptTokens := inputFloorPromptTokens(parsed, promptcontract.EndpointChatCompletions)
+	if isResponsesAPI {
+		floorPromptTokens = inputFloorPromptTokens(parsed, promptcontract.EndpointResponses)
+	}
+	floorModel := model
+	floorDeferred, floorHandled := s.checkInitialInputFloor(w, r, parsed, publicModel, model, floorPromptTokens, resolvedRuntimeParameters)
+	if floorHandled {
 		return
 	}
 
@@ -2099,29 +2111,32 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// token throttle alongside RPM. Charged upfront from the input estimate
 	// and the bounded max_tokens (OpenAI-style). Runs before the balance
 	// reservation so a throttled request never touches billing.
-	tokenAdmission, ok := s.applyTokenRateLimitWithAdmission(w, r, estimatedPromptTokens, requestedMaxTokens)
-	if !ok {
+	var tokenAdmission registry.TokenAdmission
+	var reservedMicroUSD int64
+	var serviceReservation bool
+	admitAndReserve := func() bool {
+		var reserveHandled bool
+		tokenAdmission, reservedMicroUSD, serviceReservation, reserveHandled = s.admitTokensAndReserve(w, r, parsed, balanceReservationParams{
+			model:                 model,
+			publicModel:           publicModel,
+			billingPromptTokens:   billingPromptTokens,
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			stream:                stream,
+			requiresVision:        requiresVision,
+			hasTools:              hasTools,
+			policy:                policy,
+		})
+		if reserveHandled {
+			return false
+		}
+		timing.ReservedAt = time.Now()
+		rp.Mark(registry.StampReqReserved)
+		return true
+	}
+	if !floorDeferred && !admitAndReserve() {
 		return
 	}
-
-	// Pre-flight balance reservation + per-key spend cap (see
-	// reserveInferenceBalance). Self-route and a nil billing backend are free.
-	reservedMicroUSD, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
-		model:                 model,
-		publicModel:           publicModel,
-		billingPromptTokens:   billingPromptTokens,
-		estimatedPromptTokens: estimatedPromptTokens,
-		requestedMaxTokens:    requestedMaxTokens,
-		stream:                stream,
-		requiresVision:        requiresVision,
-		hasTools:              hasTools,
-		policy:                policy,
-	})
-	if reserveHandled {
-		return
-	}
-	timing.ReservedAt = time.Now()
-	rp.Mark(registry.StampReqReserved)
 
 	// Refund reservation on early errors (before inference starts).
 	refundReservation := func() {
@@ -2165,26 +2180,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// was still a ~100-byte URL. parsed is mutated in place, so every view
 	// derived from the pre-inline body is refreshed via refreshForwardBody.
 	var mediaInlined bool
-	rawBody, mediaInlined, ok = s.resolveRemoteMedia(w, r, rawBody, parsed, timing, mediaResolveMeta{
-		model:                 model,
-		publicModel:           publicModel,
-		stream:                stream,
-		estimatedPromptTokens: estimatedPromptTokens,
-		firstContentDeadline:  deadline,
-		requestedMaxTokens:    requestedMaxTokens,
-		hasTools:              hasTools,
-		requiresVision:        requiresVision,
-		selfRoute:             policy.enabled,
-		ownerAccountID:        policy.ownerAccountID,
-		traits:                routingTraits,
-	})
-	if !ok {
-		refundReservation()
-		// Token-rate admission is intentionally NOT refunded: this matches every
-		// other post-admission validation failure and makes blocked/invalid URL
-		// probes consume the caller's input/output token quota.
-		return
-	}
 
 	// refreshForwardBody re-derives every view of the provider-bound request from
 	// a freshly marshaled `parsed`: the threaded rawBody, the body actually
@@ -2232,37 +2227,64 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	// Remote media was fetched and inlined into `parsed` above, so `providerBody`
-	// (captured before the resolve) and the routing traits derived from it now
-	// describe a body that no longer exists. Without this refresh the coordinator
-	// pays for the fetch and then seals and dispatches the ORIGINAL body still
-	// carrying the http(s) URL, which the provider's data:-only guard rejects.
-	if mediaInlined {
-		if !refreshForwardBody(rawBody, model) {
-			return
-		}
-		// The reservation was taken against a body where the image was a short
-		// URL, so estimateBillingPromptTokens — the guaranteed len(bytes) >= tokens
-		// upper bound the settlement path relies on — was computed over ~100 bytes
-		// of URL instead of the inlined media. Re-reserve against the real body
-		// before dispatch; otherwise settlement's 2x-reservation overage clamp
-		// silently absorbs the difference and underpays the provider.
-		var topUpHandled bool
-		reservedMicroUSD, topUpHandled = s.topUpReservationForInlinedMedia(w, r, parsed, balanceReservationParams{
+	resolveAdmittedMedia := func() bool {
+		rawBody, mediaInlined, ok = s.resolveRemoteMedia(w, r, rawBody, parsed, timing, mediaResolveMeta{
 			model:                 model,
 			publicModel:           publicModel,
-			billingPromptTokens:   estimateBillingPromptTokens(parsed),
-			estimatedPromptTokens: estimatedPromptTokens,
-			requestedMaxTokens:    requestedMaxTokens,
 			stream:                stream,
-			requiresVision:        requiresVision,
+			estimatedPromptTokens: estimatedPromptTokens,
+			firstContentDeadline:  deadline,
+			requestedMaxTokens:    requestedMaxTokens,
 			hasTools:              hasTools,
-			policy:                policy,
-		}, reservedMicroUSD)
-		if topUpHandled {
+			requiresVision:        requiresVision,
+			selfRoute:             policy.enabled,
+			ownerAccountID:        policy.ownerAccountID,
+			traits:                routingTraits,
+		})
+		if !ok {
 			refundReservation()
-			return
+			// Token-rate admission is intentionally NOT refunded: this matches every
+			// other post-admission validation failure and makes blocked/invalid URL
+			// probes consume the caller's input/output token quota.
+			return false
 		}
+
+		// Remote media was fetched and inlined into `parsed` above, so `providerBody`
+		// (captured before the resolve) and the routing traits derived from it now
+		// describe a body that no longer exists. Without this refresh the coordinator
+		// pays for the fetch and then seals and dispatches the ORIGINAL body still
+		// carrying the http(s) URL, which the provider's data:-only guard rejects.
+		if mediaInlined {
+			if !refreshForwardBody(rawBody, model) {
+				return false
+			}
+			// The reservation was taken against a body where the image was a short
+			// URL, so estimateBillingPromptTokens — the guaranteed len(bytes) >= tokens
+			// upper bound the settlement path relies on — was computed over ~100 bytes
+			// of URL instead of the inlined media. Re-reserve against the real body
+			// before dispatch; otherwise settlement's 2x-reservation overage clamp
+			// silently absorbs the difference and underpays the provider.
+			var topUpHandled bool
+			reservedMicroUSD, topUpHandled = s.topUpReservationForInlinedMedia(w, r, parsed, balanceReservationParams{
+				model:                 model,
+				publicModel:           publicModel,
+				billingPromptTokens:   estimateBillingPromptTokens(parsed),
+				estimatedPromptTokens: estimatedPromptTokens,
+				requestedMaxTokens:    requestedMaxTokens,
+				stream:                stream,
+				requiresVision:        requiresVision,
+				hasTools:              hasTools,
+				policy:                policy,
+			}, reservedMicroUSD)
+			if topUpHandled {
+				refundReservation()
+				return false
+			}
+		}
+		return true
+	}
+	if !floorDeferred && !resolveAdmittedMedia() {
+		return
 	}
 
 	// Shared routing/capacity admission preflight (self-route / prefer / public
@@ -2274,9 +2296,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		var runtimeParameters map[string]any
 		if rec, err := s.store.GetModelRegistryRecord(newModel); err == nil {
 			runtimeParameters = rec.RuntimeParameters
+			modelMaxContext = rec.MaxContextLength
 			runtimeDefaults.apply(parsed, runtimeParameters)
 		} else {
+			if s.inputFloorRegistryReadFailed(w, newModel, err) {
+				refundReservation()
+				return false
+			}
 			runtimeDefaults.apply(parsed, nil)
+		}
+		if newModel != floorModel && s.rejectShortInput(w, r, parsed, publicModel, newModel, floorPromptTokens, runtimeParameters) {
+			refundReservation()
+			return false
 		}
 		if err := validateResolvedToolConstraintParser(
 			parsed, validatedMode, newModel, s.registry.ModelType(newModel),
@@ -2300,9 +2331,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		return refreshForwardBody(forwardBytes, newModel)
 	}
+	pressure := &admissionPressureGate{s: s, admitted: !floorDeferred, fixedBuildAfterAdmission: floorDeferred, admitRequest: func(selectedModel string) bool {
+		if selectedModel == floorModel && s.rejectShortInput(w, r, parsed, publicModel, selectedModel, floorPromptTokens, resolvedRuntimeParameters) {
+			return false
+		}
+		model = selectedModel
+		return admitAndReserve()
+	}}
 	var preflightHandled bool
 	preflightStart := time.Now()
-	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
+	admissionParams := inferenceAdmissionParams{
+		pressure:                  pressure,
 		model:                     model,
 		publicModel:               publicModel,
 		stream:                    stream,
@@ -2319,7 +2358,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		policy:                    policy,
 		refundReservation:         refundReservation,
 		onModelFallback:           onModelFallback,
-	})
+	}
+	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, admissionParams)
 	if rp != nil {
 		rp.PreflightUS = time.Since(preflightStart).Microseconds()
 		rp.Mark(registry.StampReqPreflightDone)
@@ -2331,6 +2371,26 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	if preflightHandled {
 		return
+	}
+	if floorDeferred {
+		if !pressure.admit(model) {
+			return
+		}
+		if !resolveAdmittedMedia() {
+			return
+		}
+		if mediaInlined {
+			// Inlining can change protocol/body-size eligibility. There is only
+			// one floor-admissible build on this path; never switch to the build
+			// whose floor already failed after charging/fetching media.
+			admissionParams.model = model
+			admissionParams.modelMaxContext = modelMaxContext
+			var handled bool
+			model, handled = s.runInferenceAdmission(w, r, parsed, admissionParams)
+			if handled {
+				return
+			}
+		}
 	}
 
 	// Dispatch to a provider with speculative TTFT-aware dispatch. On the
@@ -2772,7 +2832,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// unset so the pre-flight reservation bounds the generation.
 	genericMaxOutput := defaultMaxOutputTokens
 	modelMaxContext := 0
+	var resolvedRuntimeParameters map[string]any
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		resolvedRuntimeParameters = rec.RuntimeParameters
 		// Keep generic endpoints aligned with chat completions: parser defaults
 		// are catalog-owned request semantics, not provider inference guesses.
 		runtimeDefaults.apply(parsed, rec.RuntimeParameters)
@@ -2780,6 +2842,8 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			genericMaxOutput = rec.MaxOutputLength
 		}
 		modelMaxContext = rec.MaxContextLength
+	} else if s.inputFloorRegistryReadFailed(w, model, err) {
+		return
 	}
 	ensureMaxTokensBound(parsed, false, genericMaxOutput)
 
@@ -2793,42 +2857,52 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
 	}
+	floorPromptTokens := inputFloorPromptTokens(parsed, endpointKind)
+	floorModel := model
+	floorDeferred, floorHandled := s.checkInitialInputFloor(w, r, parsed, publicModel, model, floorPromptTokens, resolvedRuntimeParameters)
+	if floorHandled {
+		return
+	}
 
 	// Bind the endpoint to the cache-planning input. Successful lowering removes
 	// it from the final OpenAI chat body before that body is sealed.
 	parsed["endpoint"] = endpoint
 
 	// Per-account token rate limiting (ITPM/OTPM), before the reservation.
-	tokenAdmission, ok := s.applyTokenRateLimitWithAdmission(w, r, estimatedPromptTokens, requestedMaxTokens)
-	if !ok {
+	var tokenAdmission registry.TokenAdmission
+	var reservedMicroUSD int64
+	var serviceReservation bool
+	consumerKey := consumerKeyFromContext(r.Context())
+	consumerLocation := s.requestLocation(r)
+	admitAndReserve := func() bool {
+		var reserveHandled bool
+		tokenAdmission, reservedMicroUSD, serviceReservation, reserveHandled = s.admitTokensAndReserve(w, r, parsed, balanceReservationParams{
+			model:                 model,
+			publicModel:           publicModel,
+			billingPromptTokens:   billingPromptTokens,
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			stream:                stream,
+			requiresVision:        requiresVision,
+			hasTools:              hasTools,
+			policy:                policy,
+		})
+		if reserveHandled {
+			return false
+		}
+		timing.ReservedAt = time.Now()
+		rp.Mark(registry.StampReqReserved)
+		return true
+	}
+	if !floorDeferred && !admitAndReserve() {
 		return
 	}
 
-	// Pre-flight balance reservation + per-key spend cap (see
-	// reserveInferenceBalance). Self-route and a nil billing backend are free.
-	consumerKey := consumerKeyFromContext(r.Context())
-	consumerLocation := s.requestLocation(r)
-	reservedMicroUSD, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
-		model:                 model,
-		publicModel:           publicModel,
-		billingPromptTokens:   billingPromptTokens,
-		estimatedPromptTokens: estimatedPromptTokens,
-		requestedMaxTokens:    requestedMaxTokens,
-		stream:                stream,
-		requiresVision:        requiresVision,
-		hasTools:              hasTools,
-		policy:                policy,
-	})
-	if reserveHandled {
-		return
-	}
 	refundReservation := func() {
 		if reservedMicroUSD > 0 {
 			s.releaseInitialReservation(consumerKey, model, reservedMicroUSD, serviceReservation)
 		}
 	}
-	timing.ReservedAt = time.Now()
-	rp.Mark(registry.StampReqReserved)
 
 	lowerGenericBodyForModel := func(candidateModel string) ([]byte, []byte, error) {
 		candidateParsed := make(map[string]any, len(parsed))
@@ -2875,7 +2949,15 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			runtimeParameters = rec.RuntimeParameters
 			runtimeDefaults.apply(parsed, runtimeParameters)
 		} else {
+			if s.inputFloorRegistryReadFailed(w, newModel, err) {
+				refundReservation()
+				return false
+			}
 			runtimeDefaults.apply(parsed, nil)
+		}
+		if newModel != floorModel && s.rejectShortInput(w, r, parsed, publicModel, newModel, floorPromptTokens, runtimeParameters) {
+			refundReservation()
+			return false
 		}
 		if err := validateResolvedToolConstraintParser(
 			parsed, validatedMode, newModel, s.registry.ModelType(newModel),
@@ -2901,9 +2983,17 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 
 	// Shared routing/capacity admission preflight (self-route / prefer / public
 	// capacity+TTFT gate — see runInferenceAdmission).
+	pressure := &admissionPressureGate{s: s, admitted: !floorDeferred, fixedBuildAfterAdmission: floorDeferred, admitRequest: func(selectedModel string) bool {
+		if selectedModel == floorModel && s.rejectShortInput(w, r, parsed, publicModel, selectedModel, floorPromptTokens, resolvedRuntimeParameters) {
+			return false
+		}
+		model = selectedModel
+		return admitAndReserve()
+	}}
 	var preflightHandled bool
 	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
+		pressure:                  pressure,
 		model:                     model,
 		publicModel:               publicModel,
 		stream:                    stream,
@@ -2932,6 +3022,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 	if preflightHandled {
 		return
+	}
+	if floorDeferred {
+		if !pressure.admit(model) {
+			return
+		}
 	}
 	cachePlan := registry.CachePlan{}
 	// Response framing is determined by the caller-facing endpoint, never by

@@ -9,7 +9,7 @@ func lowerMessages(input map[string]any) (map[string]any, error) {
 	}
 	messages := make([]any, 0, len(rawMessages)+1)
 	if system, exists := input["system"]; exists {
-		if text := anthropicContentText(system); text != "" {
+		if text := AnthropicSystemText(system); text != "" {
 			messages = append(messages, map[string]any{"role": "system", "content": text})
 		}
 	}
@@ -184,6 +184,13 @@ func lowerAnthropicUser(parts []any, messages *[]any) error {
 	}
 	flush()
 	return nil
+}
+
+// AnthropicSystemText returns the text that lowering prepends as one system
+// message. Admission callers share this extraction so text-block metadata and
+// unsupported block types cannot be mistaken for prompt content.
+func AnthropicSystemText(value any) string {
+	return anthropicContentText(value)
 }
 
 func anthropicContentText(value any) string {

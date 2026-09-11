@@ -24,9 +24,10 @@ const (
 )
 
 type runtimeDefaultsAliasHarness struct {
-	ctx       context.Context
-	server    *httptest.Server
-	providers []*failoverProvider
+	coordinator *Server
+	ctx         context.Context
+	server      *httptest.Server
+	providers   []*failoverProvider
 }
 
 func newRuntimeDefaultsAliasHarness(
@@ -77,7 +78,7 @@ func newRuntimeDefaultsAliasHarness(
 		},
 	})
 
-	return runtimeDefaultsAliasHarness{ctx: ctx, server: ts, providers: providers}
+	return runtimeDefaultsAliasHarness{coordinator: srv, ctx: ctx, server: ts, providers: providers}
 }
 
 func seedRuntimeDefaultsModel(t *testing.T, st store.Store, model string, runtimeParameters map[string]any) {

@@ -42,6 +42,17 @@ type balanceReservationParams struct {
 	policy                selfRoutePolicy
 }
 
+// admitTokensAndReserve runs the cost gates only after input-floor validation.
+// Keep the token-before-balance order, including for aliases validated by preflight.
+func (s *Server) admitTokensAndReserve(w http.ResponseWriter, r *http.Request, parsed map[string]any, p balanceReservationParams) (registry.TokenAdmission, int64, bool, bool) {
+	admission, ok := s.applyTokenRateLimitWithAdmission(w, r, p.estimatedPromptTokens, p.requestedMaxTokens)
+	if !ok {
+		return admission, 0, false, true
+	}
+	amount, service, handled := s.reserveInferenceBalance(w, r, parsed, p)
+	return admission, amount, service, handled
+}
+
 // reserveInferenceBalance performs the shared pre-flight balance reservation +
 // per-key spend cap for both inference handlers. Self-route (policy.enabled) and
 // a nil billing backend skip it (the request is free). On a spend-cap or
@@ -194,6 +205,7 @@ func (s *Server) topUpReservationForInlinedMedia(w http.ResponseWriter, r *http.
 // preflight needs. model is the resolved build id; the preflight may swap it to
 // a Previous build via an alias fallback and returns the final value.
 type inferenceAdmissionParams struct {
+	pressure                  *admissionPressureGate
 	model                     string
 	publicModel               string
 	stream                    bool
@@ -242,7 +254,17 @@ func preflightScanWait(deadline time.Duration) time.Duration {
 // prefer modes short-circuit the public capacity gate exactly as before.
 func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, parsed map[string]any, p inferenceAdmissionParams) (string, bool) {
 	model := p.model
+	pressure := p.pressure
+	if pressure == nil {
+		pressure = &admissionPressureGate{s: s, admitted: true}
+	}
 	publicModel := p.publicModel
+	fallbackAlias := func() string {
+		if !pressure.allowsAliasFallback() {
+			return model
+		}
+		return publicModel
+	}
 	refundReservation := p.refundReservation
 	requestTraits := func() registry.RequestTraits {
 		if p.traits != nil {
@@ -420,7 +442,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 	// owner's machine instead (handled below).
 	candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, p.estimatedPromptTokens, p.requestedMaxTokens, modelTraits(model), p.requiresVision, p.allowedProviderSerials...)
 	if candidateCount == 0 && capacityRejections > 0 {
-		if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, 0, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
+		if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, fallbackAlias(), model, p.estimatedPromptTokens, p.requestedMaxTokens, 0, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
 			model = fallbackModel
 			candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
 			bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
@@ -496,14 +518,25 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		candidateCount == 0 &&
 		capacityRejections == 0 &&
 		modelTooLarge == 0 {
-		if rejectProviderBodyTooLarge(providerBodyErr) {
+		// A wire-size protocol floor is a property of the serving pool, not
+		// an intrinsically oversized request: Previous may serialize it without
+		// a legacy cache buster. Probe that pool using its own prepared body.
+		if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, fallbackAlias(), model, p.estimatedPromptTokens, p.requestedMaxTokens, 0, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
+			model = fallbackModel
+			candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
+			bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
+			if p.onModelFallback != nil && !p.onModelFallback(model) {
+				return model, true
+			}
+		} else if rejectProviderBodyTooLarge(providerBodyErr) {
 			return model, true
 		}
 	}
 	if candidateCount == 0 && capacityRejections > 0 {
 		// Routing v2 W3: feed the autoscaler the demand the preflight sees.
-		s.registry.RecordWarmPoolCapacityReject(model)
-		s.triggerWarmPool()
+		if !pressure.capacity(model) {
+			return model, true
+		}
 		// Queue-before-shed (default on): providers exist for this model but
 		// all are at capacity right now. Rather than an immediate 429, let the
 		// request fall through to the normal dispatch+queue path so a slot
@@ -574,9 +607,10 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		// unservable demand; it is the safety valve for the narrow window
 		// where a loadable cold provider is not yet a candidate.
 		//
-		// Feed the autoscaler the demand regardless of outcome.
-		s.registry.RecordWarmPoolCapacityReject(model)
-		s.triggerWarmPool()
+		// Feed admitted demand to the autoscaler; deferred cost gates validate it first.
+		if !pressure.capacity(model) {
+			return model, true
+		}
 		if s.coldDispatchEnabled() && s.coldSpillAvailable(model, modelTraits(model), p.requiresVision, p.allowedProviderSerials) {
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
 			// Fall through to dispatch+queue; reservation kept.
@@ -670,11 +704,12 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			// Keep the text soft-gate pressure signal, but do not teach the warm
 			// pool from a media projection that omits decode and tower work.
 			if !p.requiresVision {
-				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
-				s.triggerWarmPool()
+				if !pressure.ttftMiss(model, ttftThreshold) {
+					return model, true
+				}
 			}
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
-		} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackTTFT, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, ttftThreshold, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
+		} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackTTFT, fallbackAlias(), model, p.estimatedPromptTokens, p.requestedMaxTokens, ttftThreshold, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
 			model = fallbackModel
 			if p.onModelFallback != nil && !p.onModelFallback(model) {
 				return model, true
@@ -682,8 +717,9 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		} else {
 			// Hard TTFT gate, no faster alias: shed with a 429 + Retry-After,
 			// and feed the autoscaler a TTFT-miss so warm capacity grows.
-			s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
-			s.triggerWarmPool()
+			if !pressure.ttftMiss(model, ttftThreshold) {
+				return model, true
+			}
 			retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 			refundReservation()
 			s.recordRejection(rejectionInfo{

@@ -77,6 +77,8 @@ const (
 	expectFull mixedVersionExpect = "full"
 )
 
+const mixedVersionProbePrompt = "This is an automated inference availability check. Do not explain your reasoning or add any formatting. Follow the response instruction exactly and reply with OK."
+
 // parseMixedVersionExpect rejects unrecognised values instead of folding them
 // into expectAny: a typo'd `ful` must not silently downgrade a designated
 // runner back to a permanently green skip.
@@ -217,7 +219,7 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 	warmup, err := json.Marshal(map[string]any{
 		"model": model,
 		"messages": []map[string]string{{
-			"role": "user", "content": "Reply with OK.",
+			"role": "user", "content": mixedVersionProbePrompt,
 		}},
 		"max_tokens": 8, "temperature": 0,
 	})
@@ -320,7 +322,7 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 		{
 			name: "chat_completions", endpoint: "/v1/chat/completions",
 			body: map[string]any{
-				"model": model, "messages": []map[string]string{{"role": "user", "content": "Reply with OK."}},
+				"model": model, "messages": []map[string]string{{"role": "user", "content": mixedVersionProbePrompt}},
 				"max_tokens": 16, "temperature": 0, "stop": []string{"END"},
 				"tools": []any{tool}, "tool_choice": "auto",
 			},
@@ -329,7 +331,7 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 		{
 			name: "completions", endpoint: "/v1/completions",
 			body: map[string]any{
-				"model": model, "prompt": "Reply with OK.", "max_tokens": 16,
+				"model": model, "prompt": mixedVersionProbePrompt, "max_tokens": 16,
 				"temperature": 0, "stop": []string{"END"},
 			},
 			required: []string{`"choices"`, `"text"`},
@@ -337,7 +339,7 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 		{
 			name: "responses", endpoint: "/v1/responses",
 			body: map[string]any{
-				"model": model, "input": "Reply with OK.", "max_output_tokens": 16,
+				"model": model, "input": mixedVersionProbePrompt, "max_output_tokens": 16,
 				"temperature": 0, "tools": []any{tool}, "tool_choice": "auto",
 			},
 			required: []string{`"object":"response"`, `"output"`},
@@ -345,7 +347,7 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 		{
 			name: "messages", endpoint: "/v1/messages",
 			body: map[string]any{
-				"model": model, "messages": []map[string]string{{"role": "user", "content": "Reply with OK."}},
+				"model": model, "messages": []map[string]string{{"role": "user", "content": mixedVersionProbePrompt}},
 				"max_tokens": 16, "temperature": 0, "stop_sequences": []string{"END"},
 				"tools": []any{map[string]any{
 					"name": "lookup_weather", "description": "Look up weather.",
@@ -603,6 +605,9 @@ func pinnedReleasedDigest(t *testing.T, variable string) string {
 // binary and no SIP state, so it runs wherever the compatibility lane itself
 // is filtered in.
 func TestIntegrationMixedVersionGateContract(t *testing.T) {
+	t.Run("probe_clears_default_input_floor", func(t *testing.T) {
+		require.GreaterOrEqual(t, len(mixedVersionProbePrompt), 128, "probe must clear the default 32-token floor")
+	})
 	t.Run("booted_half_decision_matrix", func(t *testing.T) {
 		// A SIP-enabled host runs the booted half whatever CI declares.
 		for _, expect := range []mixedVersionExpect{expectAny, expectArtifact, expectFull} {

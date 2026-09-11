@@ -32,6 +32,7 @@ chmod +x "$BUILD_PAYLOAD_SCRIPT"
 build_payload() {
   local required_capabilities=$1
   local output_dir=$2
+  local runtime_parameters=${3-'{ }'}
   mkdir -p "$output_dir"
   (
     cd "$output_dir"
@@ -48,7 +49,7 @@ build_payload() {
       MAX_OUTPUT_LENGTH=1024 \
       MIN_RAM_GB=8 \
       DESCRIPTION='' \
-      RUNTIME_PARAMETERS_JSON='{}' \
+      RUNTIME_PARAMETERS_JSON="$runtime_parameters" \
       METADATA_JSON='{}' \
       PROMOTE=false \
       INPUT_PRICE=1 \
@@ -107,8 +108,9 @@ chmod +x "$FAKE_BIN/swift" "$FAKE_BIN/gcloud" "$FAKE_BIN/aws"
 run_publish() {
   local model_id=$1
   local required_capabilities=$2
-  printf '%s\n%s\n%s\n%s\n' \
-    "$MODEL_DIR" "$model_id" v1 "$required_capabilities" \
+  local minimum_input=${3:-}
+  printf '%s\n%s\n%s\n%s\n%s\n' \
+    "$MODEL_DIR" "$model_id" v1 "$minimum_input" "$required_capabilities" \
     | env \
         PATH="$FAKE_BIN:$PATH" \
         GCP_PROJECT=test-project \
@@ -159,3 +161,22 @@ unset HUGGING_FACE_ARTIFACT_JSON
 build_payload '' "$TEST_ROOT/hf-legacy"
 jq -e '.hugging_face_artifact == null' "$TEST_ROOT/hf-legacy/payload.json" >/dev/null
 printf 'Hugging Face publish payload tests passed.\n'
+
+# Floor values survive both publishing entry points; invalid values never hash.
+build_payload '' "$TEST_ROOT/floor-zero" '{"min_input_tokens":0}'
+jq -e '.runtime_parameters.min_input_tokens == 0' "$TEST_ROOT/floor-zero/payload.json" >/dev/null
+for value in 0 64; do
+  output="$(run_publish 'generic-model' '' "$value")"
+  printf '%s\n' "$output" | grep -Fq -- "-f runtime_parameters_json='{\"min_input_tokens\":$value}'"
+done
+printf '%s\n' "$generic_output" | grep -Fq -- "-f runtime_parameters_json='{\"min_input_tokens\":32}'"
+for value in -1 1.5 abc 2147483648; do
+  rm -f "$FAKE_SWIFT_MARKER"
+  if run_publish 'generic-model' '' "$value" >/dev/null 2>&1; then
+    printf 'Publisher accepted invalid floor: %s\n' "$value" >&2; exit 1
+  fi
+  if [[ -e "$FAKE_SWIFT_MARKER" ]]; then
+    printf 'Publisher hashed before rejecting floor: %s\n' "$value" >&2; exit 1
+  fi
+done
+printf 'Minimum input-token publishing tests passed.\n'

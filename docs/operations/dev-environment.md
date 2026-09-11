@@ -1,6 +1,6 @@
 # Dev environment
 
-> Last updated: 2026-09-06 · commit `f272f8641`
+> Last updated: 2026-09-10 · commit `d93c2c335`
 
 Runbook for the Darkbloom dev environment on Google Cloud (project
 `sepolia-ai`): a GCE VM running the same coordinator container as production,
@@ -179,6 +179,10 @@ gcloud builds list --project=sepolia-ai --limit=5
 gcloud compute ssh d-inference-dev --zone=us-central1-a --project=sepolia-ai --tunnel-through-iap -- \
   'sudo systemctl status d-inference-coordinator --no-pager; sudo docker logs --tail 50 d-inference-coordinator'
 ```
+
+The authenticated smoke prompt clears the default input floor and requests
+`pong` with an eight-token output limit (`scripts/smoke-dev.sh`). A model with a
+higher custom floor needs a correspondingly longer synthetic prompt.
 
 ## Rollback
 

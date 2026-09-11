@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-09-06 · commit `32b28b0a7`
+> Last updated: 2026-09-09 · commit `01d768198`
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever
@@ -79,11 +79,16 @@ ramps, or migration controllers.
 
 ### 1. Publish the new build to R2
 
+Choose `0` for a new build that needs small-input tests; restore `null` (inherit
+the default) or an explicit production minimum through its runtime-parameters
+endpoint when testing is complete. See [minimum input tokens](../reference/model-registry-format.md#minimum-input-tokens).
+
 ```bash
 R2_ACCOUNT_ID=<cloudflare account id> GCP_PROJECT=<gcp project> scripts/publish-model.sh
 #   Model directory: <local path with config.json, tokenizer, *.safetensors>
 #   Model id (for example mlx-community/foo): mlx-community/gemma-4-26B-A4B-it-qat-4bit
 #   Version (no slashes): 2026-09-03-r1
+#   Minimum estimated input tokens [32; 0 allows small-input testing]: 0
 #   Required provider capabilities (comma-separated, optional):
 ```
 

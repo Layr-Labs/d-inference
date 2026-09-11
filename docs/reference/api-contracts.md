@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-10 · commit `0a724f3ad`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -376,6 +376,50 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 When every dispatched provider rejects a request with the same deterministic client error (for example a chat template that cannot render the messages, or a body the provider caps), the provider's own 4xx status is passed through once as `invalid_request_error` with `code: model_capability` (or `payload_too_large`) rather than being retried or reclassified (`terminalClientError` handling in the exhausted branch of `dispatchState.run`, `coordinator/api/dispatch.go`).
 
 A client that disconnects before commit receives nothing; the coordinator records status 499 internally and cancels the provider job (`sendProviderCancel`, `coordinator/api/consumer.go`).
+
+### Minimum input length
+
+All four inference endpoints enforce a default minimum of **32 estimated prompt
+tokens**, configurable per concrete model. `rejectShortInput` in
+`coordinator/api/input_token_floor.go` returns 400 with this error envelope:
+
+```json
+{"error":{"message":"input is too short for model \"example\": estimated 19 input tokens; minimum is 32","type":"invalid_request_error","code":"input_too_short"}}
+```
+
+Scalar Completions and Responses inputs include the same four user-message
+framing tokens as equivalent Chat messages. Native multi-prompt completion
+batches receive no synthetic chat framing; empty strings or token arrays count
+as zero, and token IDs count individually.
+
+The floor counts only the active endpoint's prompt: Chat/Anthropic `messages`,
+Responses `input`, or Completions `prompt`. Ignored fields from other endpoints
+cannot pad the estimate. Responses and Anthropic structured text use the same
+joins and message framing as provider lowering; Anthropic top-level `system`
+text contributes too (`promptcontract.PromptMessagesForEstimate`). Media keeps
+the flat routing cost of 300 tokens per image and 1500 per video. Model names,
+sampling options, and supported text-block metadata do not contribute. Tool-call
+history contributes function names and argument text, excluding IDs and wrapper
+metadata. Assistant reasoning counts the first nonempty string among `thinking`,
+`reasoning`, and `reasoning_content`; Anthropic thinking blocks share the same
+canonical lowering. Generic endpoint shapes that cannot be lowered retain the native
+prompt estimate (`coordinator/api/input_token_estimate.go`, `inputFloorPromptTokens`);
+a document block cannot erase adjacent text. This is a heuristic,
+not the provider's exact tokenizer count. Below-minimum
+requests do not start a response stream or reach a provider. An alias may defer
+its floor decision until ordinary capacity/TTFT admission selects a build. Token
+quota and balance admission wait until that selected build passes the floor; a
+400 cannot consume token quota or be masked by an insufficient-funds 402. The lower floor alone does
+not trigger fallback. Before deferred preflight emits scaling pressure, it validates the selected
+floor and admits quota/funding once. Eligible terminal capacity/TTFT 429s still
+record demand and refund their balance reservation; ineligible callers emit no
+scaling pressure. Once admitted, a deferred request cannot switch to a build
+whose floor rejected it.
+Transient registry read failures return retryable 503
+`service_unavailable`, rather than silently substituting the deployment default.
+
+See [per-model minimum settings](model-registry-format.md#minimum-input-tokens)
+for `min_input_tokens`, including `0` for testing and `null` for inheritance.
 
 ## Inference request and response shapes
 

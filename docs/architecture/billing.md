@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-06 · commit `23e6f986f`
+> Last updated: 2026-09-10 · commit `42551bf49`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -10,6 +10,11 @@ page explains the money path and what it guarantees. Constants, formulas,
 routes, and env vars are tabulated in
 [`reference/pricing-model.md`](../reference/pricing-model.md); the consumer
 how-to is [`consumer/billing.md`](../consumer/billing.md).
+
+Input-floor validation finishes before token quota is consumed or balance is
+reserved, including aliases that require capacity/TTFT selection. A 400
+`input_too_short` therefore consumes neither. Remote media still cannot be fetched
+before quota admission and funding. See [the input-minimum contract](../reference/api-contracts.md#minimum-input-length).
 
 ## Context
 

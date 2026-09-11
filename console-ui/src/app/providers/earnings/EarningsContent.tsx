@@ -15,6 +15,7 @@ import {
   ArrowDownToLine,
 } from "lucide-react";
 import {
+  PayoutCoverageNotice,
   PayoutModal,
   StripePayoutsCard,
   StripeWithdrawModal,
@@ -186,6 +187,9 @@ export default function EarningsContent() {
           </p>
         </div>
       </div>
+
+      {/* Payout coverage caveat — set expectations before bank linking */}
+      <PayoutCoverageNotice />
 
       {/* Withdraw Earnings (Stripe Connect) */}
       <StripePayoutsCard

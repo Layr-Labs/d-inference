@@ -97,18 +97,8 @@ public enum SchedulerPrefillBenchmark {
         // VLM checkpoints load via the VLM factory and measure the exact
         // text tower owned by the wrapper (the production serving path).
         let isVLM = ThroughputSweep.readHasVisionConfig(modelDirectory: modelDirectory)
-        let container: ModelContainer
-        if isVLM {
-            container = try await VLMModelFactory.shared.loadContainer(
-                from: modelDirectory,
-                using: LocalTokenizerLoader()
-            )
-        } else {
-            container = try await LLMModelFactory.shared.loadContainer(
-                from: modelDirectory,
-                using: LocalTokenizerLoader()
-            )
-        }
+        let container = try await BenchmarkModelLoader.load(
+            directory: modelDirectory, isVLM: isVLM)
         let facts = await container.perform { ctx -> (baseTokens: [Int], weightBytes: Int) in
             eval(ctx.model.parameters().flattened().map { $0.1 })
             let encoded = ctx.tokenizer.encode(text: ThroughputSweep.seedText, addSpecialTokens: false)

@@ -1,6 +1,6 @@
 # Dev environment
 
-> Last updated: 2026-09-06 · commit `f272f8641`
+> Last updated: 2026-09-11 · commit `ef7b5a9aa`
 
 Runbook for the Darkbloom dev environment on Google Cloud (project
 `sepolia-ai`): a GCE VM running the same coordinator container as production,
@@ -169,6 +169,11 @@ so the provider can only ever register with dev. Add the host's SSH alias to
 re-runs the installer on every listed Mac.
 
 ## Verification
+
+The fleet updater visits every configured host and exits nonzero if any update
+fails. Authenticated smoke runs use a unique temporary response file and remove
+it when the process exits. Admin login and release-deactivation commands encode
+input as JSON values, preserving quotes and backslashes.
 
 ```bash
 scripts/smoke-dev.sh                              # /health, /v1/stats, /v1/models/catalog, install.sh templating

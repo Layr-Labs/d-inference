@@ -163,20 +163,15 @@ public enum WatchdogPolicy {
         crashLoopCount: Int? = nil,
         crashLoopVersion: String? = nil
     ) -> WatchdogState? {
+        var next = current
         switch decision {
         case .restart:
-            return WatchdogState(
-                downSince: nil,
-                lastRestartAt: now,
-                lastRestartVersion: crashLoopVersion ?? current.lastRestartVersion,
-                consecutiveCrashLoopRestarts: crashLoopCount
-                    ?? current.consecutiveCrashLoopRestarts)
+            next.downSince = nil
+            next.lastRestartAt = now
+            if let crashLoopVersion { next.lastRestartVersion = crashLoopVersion }
+            if let crashLoopCount { next.consecutiveCrashLoopRestarts = crashLoopCount }
         case .startGrace:
-            return WatchdogState(
-                downSince: now,
-                lastRestartAt: current.lastRestartAt,
-                lastRestartVersion: current.lastRestartVersion,
-                consecutiveCrashLoopRestarts: current.consecutiveCrashLoopRestarts)
+            next.downSince = now
         case .waiting:
             return nil
         case .healthy:
@@ -193,23 +188,15 @@ public enum WatchdogPolicy {
                     ?? true)
             let clearDown = current.downSince != nil
             guard clearDown || resetCounter else { return nil }
-            return WatchdogState(
-                downSince: nil,
-                lastRestartAt: current.lastRestartAt,
-                lastRestartVersion: current.lastRestartVersion,
-                consecutiveCrashLoopRestarts: resetCounter
-                    ? 0 : current.consecutiveCrashLoopRestarts)
+            next.downSince = nil
+            if resetCounter { next.consecutiveCrashLoopRestarts = 0 }
         case .disabled, .notManaged:
             // No uptime is being observed in either state (opted out, or the
             // provider is unloaded), so the chain is neither advanced nor
             // reset — only the outage window is cleared, as before.
-            return current.downSince == nil
-                ? nil
-                : WatchdogState(
-                    downSince: nil,
-                    lastRestartAt: current.lastRestartAt,
-                    lastRestartVersion: current.lastRestartVersion,
-                    consecutiveCrashLoopRestarts: current.consecutiveCrashLoopRestarts)
+            guard current.downSince != nil else { return nil }
+            next.downSince = nil
         }
+        return next
     }
 }

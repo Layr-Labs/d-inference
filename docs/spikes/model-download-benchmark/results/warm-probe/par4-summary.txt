@@ -1,0 +1,4 @@
+4-way parallel curl over 16 cached parts (shard-01, 1 GiB), same session as probe.log
+wall=32.3s aggregate=31.7 MiB/s
+per-stream MiB/s min/median/max = 2.2/24.5/51.6; TTFB ms min/median/max = 44/94/293
+(per-stream rows in par4.log; wall measured around the xargs -P 4 invocation)

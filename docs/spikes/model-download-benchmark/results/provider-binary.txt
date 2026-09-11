@@ -1,0 +1,9 @@
+Client binary used for every pass: the shipped provider bundle, fetched the way install.sh does.
+GET https://api.darkbloom.dev/v1/releases/latest (2026-09-01):
+  version 0.8.15, platform macos-arm64, backend mlx-swift
+  bundle_hash 15c668fec3529c60a88f9978ef52036b125588bf7d65a37318642c7dab3261ce
+  binary_hash 2d1b50225c1cc36a38ba7675bdcedf3e6adbe9f16093029f82fe99a281f56c28
+Local verification after download:
+  shasum -a 256 darkbloom-bundle-macos-arm64.tar.gz = 15c668fec3529c60a88f9978ef52036b125588bf7d65a37318642c7dab3261ce
+  shasum -a 256 bin/darkbloom                       = 2d1b50225c1cc36a38ba7675bdcedf3e6adbe9f16093029f82fe99a281f56c28
+  Darkbloom.app/Contents/MacOS/darkbloom --version  = 0.8.15

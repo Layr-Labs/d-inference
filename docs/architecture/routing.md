@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-11 · commit `ef7b5a9aa`
+> Last updated: 2026-09-11 · commit `ffd51e3ed`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -466,7 +466,7 @@ outcome exactly once at first content or completion.
 | Mechanism | File | Keyed by | Trips when | Holds for |
 |---|---|---|---|---|
 | Inference-error cooldown (`error_cooldown`) | `coordinator/registry/error_cooldown.go` | provider × model × error shape | `inferenceErrorThreshold = 2` strikes within `inferenceErrorWindow = 60 * time.Second` | `inferenceErrorCooldownTTL = 5 * time.Minute` |
-| Node-health breaker (`breaker`) | `coordinator/registry/provider_breaker.go` | stable provider identity | `providerBreakerConsecTrip = 5` consecutive genuine faults, or fail rate ≥ `providerBreakerFailRate = 0.80` over ≥ `providerBreakerMinVolume = 20` outcomes in `providerBreakerWindow = 120 * time.Second` (ring of `providerHealthRingSize = 20`) | `providerBreakerBaseCooldown = 60 * time.Second`, doubling to `providerBreakerMaxCooldown = 5 * time.Minute` |
+| Node-health breaker (`breaker`) | `coordinator/registry/provider_breaker.go` | stable provider identity | `providerBreakerConsecTrip = 5` consecutive genuine faults, or fail rate > `providerBreakerFailRate = 0.80` over ≥ `providerBreakerMinVolume = 20` outcomes in `providerBreakerWindow = 120 * time.Second` (ring of `providerHealthRingSize = 20`) | `providerBreakerBaseCooldown = 60 * time.Second`, doubling to `providerBreakerMaxCooldown = 5 * time.Minute` |
 | Health ejection (`ejection`) | `coordinator/registry/health_ejection.go` | stable provider identity | `healthEjectionConsecTrip = 8` consecutive failures, or success rate < `healthEjectionMinSuccessRate = 0.10` over ≥ `healthEjectionMinSample = 15` outcomes in `healthEjectionWindow = 10 * time.Minute`, or `healthEjectionCapacityConsecTrip = 10` consecutive capacity rejects | `healthEjectionBaseCooldown = 60 * time.Second`, doubling to `healthEjectionMaxCooldown = 10 * time.Minute` |
 | Dispatch-load cooldown (`dispatch_load_cooldown`) | `coordinator/registry/model_loading.go` | provider × model | a dispatch-time `load_model` fails | `dispatchLoadCooldownTTL = 2 * time.Minute` |
 
@@ -475,6 +475,12 @@ survives disconnect and reconnect (`Disconnect`, `coordinator/registry/provider_
 Every tracker in this table and in [gray-box capacity signals](#gray-box-capacity-signals)
 stores its state in one `gateState` per identity
 ([below](#concurrency-scan-commit-and-fault-state-gates)).
+
+The health rings share `providerHealthWindow.recordOutcome` for insertion and
+`rebuild` for identity merges and version-reset filtering. Rebuilds preserve
+each outcome's disconnect-flush marker and recompute the trailing fault streak
+from the retained chronological history (`coordinator/registry/provider_breaker.go`,
+`coordinator/registry/version_reset.go`).
 
 **Fail-open.** If the scan produced no winner, at least one provider was
 rejected only by the breaker or ejection, and there were no capacity or TTFT

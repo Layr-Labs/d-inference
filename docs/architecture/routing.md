@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-09-11 · commit `ef7b5a9aa`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -717,6 +717,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Concern | File / symbol |
 |---|---|
 | Dispatch-time selection, cost model, TTFT estimate | `coordinator/registry/scheduler.go` — `ReserveProviderWithPlan`, `scanCandidatesLocked`, `snapshotProviderIntoLockedEx`, `buildCandidateInto`, `slotStatePenalty`, `healthPenaltyMs`, `resolveEffectiveTPS`, `ttftMsFromSnapshot`, `longPromptPenalty` |
+| Provider-state projection for selection and capacity preflight | `coordinator/registry/routing_snapshot.go` — `fillRoutingSnapshotPLocked`; callers retain their own eligibility gates and hold both registry and provider locks |
 | Candidate preferences and ranking | `coordinator/registry/candidate_selection.go` — `preferRoutingCandidates`, `selectRoutingCandidate` |
 | Shared gate primitives | `coordinator/registry/routing_eligibility.go` — `providerLivenessGateReasonLocked`, `providerServesRoutableModelLocked` |
 | Closed vocabularies | `coordinator/registry/gate_reason.go` — `GateReason`, `SelectionPath`, `SlotState` |

@@ -4,7 +4,7 @@
 //  1. Consumer pays via Stripe Checkout — webhook credits internal balance
 //  2. Consumer makes inference requests — the coordinator debits per-request
 //     based on output token count
-//  3. Provider earns a payout (total cost minus 10% platform fee)
+//  3. Provider earns a payout after the configured platform fee
 //  4. Payouts are settled via Stripe Connect Express (bank/card withdrawals)
 //
 // All amounts are in micro-USD (1 USD = 1,000,000 micro-USD).

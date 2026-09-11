@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-06 · commit `23e6f986f`
+> Last updated: 2026-09-11 · commit `ef7b5a9aa`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -108,8 +108,8 @@ and which balance column moves:
 | `stripe_deposit` | `handleStripeWebhook` → `Service.CreditDeposit` → `store.Credit` | `balance` |
 | `stripe_payout` | `coordinator/api/stripe_withdraw.go` `handleStripeWithdraw` → `CreateStripeWithdrawalWithDebit` | both (guarded by `withdrawable_micro_usd >= amount`) |
 | `invite_credit` | `coordinator/api/invite_handlers.go` `handleRedeemInviteCode` → `store.Credit` | `balance` |
-| `admin_credit` | `handleAdminCredit` → `store.Credit` | `balance` |
-| `admin_reward` | `handleAdminReward` → `CreditWithdrawable` | both |
+| `admin_credit` | `handleAdminCredit` → `handleAdminBalanceAdjustment` → `store.Credit` | `balance` |
+| `admin_reward` | `handleAdminReward` → `handleAdminBalanceAdjustment` → `CreditWithdrawable` | both |
 | `provider_floor_draw` | `coordinator/store/postgres_base_rewards.go` `SettleProviderFloorDraw` | both |
 | `migration` | `coordinator/store/postgres.go` `MigrateAccountBalance` (balance moved between account identities) | both |
 | `deposit`, `withdrawal` | declared for legacy (pre-Stripe) deposit and on-chain withdrawal paths; no current handler writes them | — |
@@ -335,8 +335,8 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
    `admin_credit`, and reservation or settlement `refund` entries go through
    `Credit`; `payout`, `referral_reward`, `admin_reward`,
    `provider_floor_draw`, and withdrawal refunds go through the withdrawable
-   primitives (`coordinator/api/billing_handlers.go` `handleStripeWebhook`,
-   `handleAdminCredit`, `handleAdminReward`; `coordinator/api/invite_handlers.go`
+   primitives (`coordinator/api/billing_handlers.go` `handleStripeWebhook`;
+   `coordinator/api/admin_balance_adjustment.go` `handleAdminCredit`, `handleAdminReward`; `coordinator/api/invite_handlers.go`
    `handleRedeemInviteCode`; `coordinator/billing/referral.go`
    `DistributeReferralReward`; `coordinator/store/postgres_base_rewards.go`
    `SettleProviderFloorDraw`).
@@ -490,7 +490,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | Deposits | `coordinator/billing/stripe.go` (`CreateCheckoutSession`, `VerifyWebhookSignature`, `ParseCheckoutSession`); `coordinator/billing/billing.go` (`CreditDeposit`, `IsExternalIDProcessed`); `coordinator/api/billing_handlers.go` (`handleStripeCreateSession`, `handleStripeWebhook`, `handleStripeSessionStatus`, `handleWalletBalance`, `handleBillingMethods`) | `POST /v1/billing/stripe/create-session`, `POST /v1/billing/stripe/webhook`, `GET /v1/billing/stripe/session`, `GET /v1/billing/wallet/balance`, `GET /v1/billing/methods` |
 | Payouts | `coordinator/billing/stripe_connect.go` (`MinWithdrawMicroUSD`, `InstantFeeBps`, `InstantFeeMinMicroUSD`, `FeeForMethodMicroUSD`); `coordinator/billing/stripe_regions.go` (`RequiredServiceAgreement`); `coordinator/api/stripe_payouts.go` (`handleStripeOnboard`, `handleStripeStatus`, `handleStripeWithdrawals`, `handleStripeDashboardLink`, `handleStripeUnlink`, `microUSDToCents`); `coordinator/api/stripe_withdraw.go` (`handleStripeWithdraw`, `creditRefundOnceWithRetry`); `coordinator/api/stripe_payouts_webhooks.go` (`handleStripeConnectWebhook`, `stripeRecipientTransferDelay`); `coordinator/api/stripe_reconcile.go` (`StartStripePayoutReconciler`); `coordinator/store/postgres.go` (`CreateStripeWithdrawalWithDebit`) | `POST /v1/billing/stripe/onboard`, `GET /v1/billing/stripe/status`, `POST /v1/billing/withdraw/stripe`, `GET /v1/billing/stripe/withdrawals`, `POST /v1/billing/stripe/dashboard`, `DELETE /v1/billing/stripe/account`, `POST /v1/billing/stripe/connect/webhook` |
 | Referral | `coordinator/billing/referral.go` (`ReferralService`, `Register`, `Apply`, `DistributeReferralReward`, `validateReferralCode`); `coordinator/billing/config.go` (`ReferralSharePercent`) | `POST /v1/referral/register`, `POST /v1/referral/apply`, `GET /v1/referral/stats`, `GET /v1/referral/info` |
-| Invite codes and admin credits | `coordinator/api/invite_handlers.go` (`handleAdminCreateInviteCode`, `handleAdminListInviteCodes`, `handleAdminDeactivateInviteCode`, `handleRedeemInviteCode`, `requireAdminKey`); `coordinator/store/postgres.go` (`RedeemInviteCode`); `coordinator/api/billing_handlers.go` (`handleAdminCredit`, `handleAdminReward`) | `POST /v1/admin/invite-codes`, `GET /v1/admin/invite-codes`, `DELETE /v1/admin/invite-codes`, `POST /v1/invite/redeem`, `POST /v1/admin/credit`, `POST /v1/admin/reward` |
+| Invite codes and admin credits | `coordinator/api/invite_handlers.go` (`handleAdminCreateInviteCode`, `handleAdminListInviteCodes`, `handleAdminDeactivateInviteCode`, `handleRedeemInviteCode`, `requireAdminKey`); `coordinator/store/postgres.go` (`RedeemInviteCode`); `coordinator/api/admin_balance_adjustment.go` (`handleAdminCredit`, `handleAdminReward`) | `POST /v1/admin/invite-codes`, `GET /v1/admin/invite-codes`, `DELETE /v1/admin/invite-codes`, `POST /v1/invite/redeem`, `POST /v1/admin/credit`, `POST /v1/admin/reward` |
 | Roles and fee overrides | `coordinator/api/billing_handlers.go` (`handleAdminSetUserRole`, `handleAdminSetUserPlatformFee`); `coordinator/store/postgres.go` (`SetUserRole`, `SetUserPlatformFeePercent`) | `PUT /v1/admin/users/role`, `PUT /v1/admin/users/platform-fee` |
 | Per-key spend caps | `coordinator/api/apikey_handlers.go` (`validateKeyLimitInputs`, `checkKeySpendCap`, `apiKeyToResponse`); `coordinator/store/apikey.go` (`KeySpendWindowStart`, `NormalizeResetWindow`); `coordinator/store/postgres.go` (`KeySpendSince`) | `POST /v1/keys`, `PATCH /v1/keys/{id}`, `GET /v1/keys` |
 | Base rewards | `coordinator/payments/baserewards/` (`floor.go`, `alloc.go`, `epoch.go`, `engine.go`); `coordinator/store/postgres_base_rewards.go` (`SettleProviderFloorDraw`, `SumProviderEarningsByKey`); `coordinator/api/base_rewards_handlers.go` (`handleAdminBaseRewards`); `coordinator/api/server_config.go` (`BaseRewards`) | `GET /v1/admin/base-rewards` |

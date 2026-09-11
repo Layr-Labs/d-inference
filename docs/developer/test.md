@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-09 · commit `1c74d7a17`
+> Last updated: 2026-09-10 · commit `dcc3d0809`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -10,8 +10,23 @@ map: the console UI job lints and builds but does not run vitest, and the
 benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
 Mac with the test checkpoints cached.
 
+The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
+and `ToolCallParserIntegrationTests` in `libs/mlx-swift-lm/Tests/MLXLMServerTests`
+check SSE/collected reasoning, content, tool calls, usage and terminals without
+starting a localhost server. `MutableInputKernelTests` and
+`MutableInputExportTests` in the SDK's `Tests/OnboardingQualificationTests`
+exercise declared Metal writes, alias ownership and export/import. CI runs each
+selected suite through the nonzero/no-skip wrapper
+(`.github/workflows/ci.yml`, `scripts/run-nested-suite.sh`).
+
 For HF artifact downloads, `HuggingFaceDownloadTests` covers source preference,
-checksum rejection, fallback, and cancellation. `scripts/test-publish-model.sh`
+checksum rejection, fallback, and cancellation. Native Nemotron CI also runs
+`NemotronHTests`, `NemotronH35BackendParityTests`, `NemotronH35StorageParityTests`,
+`NemotronH35MTPTests`, and `NemotronH35MTPPrimingTests` with nonzero/no-skip guards.
+The MTP tests cover native paged storage, typed durable prefix history, rollback,
+and teardown; `CBv2QwenMTPIntegrationTests` independently covers allocation-refusal
+ownership in the shared engine. Loaded-artifact tests remain an additional gate,
+not evidence supplied by tiny fixtures. `scripts/test-publish-model.sh`
 checks the artifact workflow payload. `TestHuggingFaceArtifactPostgresAndCache`
 in `coordinator/store/hugging_face_artifact_test.go` uses a disposable
 `DATABASE_URL` to check storage and cache invalidation.

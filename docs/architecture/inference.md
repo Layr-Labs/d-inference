@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-10 · commit `dcc3d0809`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process in v0.8.16: one in-process engine (`mlx-swift-lm`
@@ -135,6 +135,7 @@ by `deadlineProjectionRateHaircut = 0.5`. `WedgeMonitor.suspectStallSeconds =
 | Target | Drafter | Activation |
 |---|---|---|
 | Qwen3.5 family (`qwen3_5`, `qwen3_5_moe`) | Embedded head (`Qwen35InlineMTPAssistant`, request-stateful) | `mtp_mode = "auto"` (default) when the checkpoint declares the embedded artifact |
+| Nemotron 3.5 Lightning (`nemotron_h`) | Embedded head (`NemotronH35MTPAssistant`, request-stateful) | The MTP artifact must retain the embedded module and declare it; the non-MTP artifact remains target-only |
 | Gemma 4 | Separate assistant checkpoint (`Gemma4AssistantDraftModel`, stateless) | Requires `mtp_mode = "on"`; `SpecDecArtifactFunnel` resolves the catalog-declared `spec_dec` artifact, with `mtp_drafter_path` as a directory override |
 
 `MTPAutomaticVerificationPolicy`: `initialDraftTokens = 1`;
@@ -151,6 +152,16 @@ Gemma verification controls retain their bounded automatic baseline and the
 existing target/drafter checks. Drafter-required modes retain priority
 (`provider-swift/Sources/ProviderCore/Inference/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
+Nemotron's assistant uses one speculative request and adaptive depth up to
+seven proposed tokens. Captured target verification, batched M=1 projections
+and KV-only trusted-history priming default on, with separate rollback controls.
+Its verifier builds a layer-major window while retaining native one-token
+recurrence and every-prefix state. These controls do not establish
+a fleet-readiness claim. Target activations retain the
+checkpoint's native dtype and persistent Mamba SSM state remains FP32
+(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP.swift`,
+`NemotronH35MTPAssistant`; controls in the
+[configuration reference](../reference/configuration.md)).
 Engine contract: `CBv2MTPConfig` with `testedMaxDraftTokens` (≤ 7) and
 `testedMaxSpeculativeBatch = 8`
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift`).
@@ -173,6 +184,16 @@ uses `CBv2MTPPrefixCheckpointDrafter` and retains its existing compact-publicati
 and conservative reservation behavior. Resident model measurements do not yet
 validate the streamed SSD path; exact gates and validation scope are in
 [`prefix-cache.md`](prefix-cache.md).
+The Nemotron embedded assistant implements the same explicit checkpoint
+contract using exact shifted post-norm target history and frontier
+(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP+PrefixCheckpoint.swift`,
+`capturePrefixCheckpoint`, `restorePrefixCheckpoint`). At a committed prefill
+boundary, the complete checkpoint pairs target attention KV and Mamba state
+with immutable trusted assistant history. Restoring it creates fresh
+request-owned assistant pages and primes them before drafting; speculative
+draft KV is never shared. This is prompt-prefix reuse, not persistence of an
+in-flight speculative round. The ordinary attention-only prefix index remains
+disabled for this hybrid model.
 
 ### Sampling parameters
 
@@ -195,6 +216,11 @@ validate the streamed SSD path; exact gates and validation scope are in
 | `n`, `best_of` | **Not represented**: one alternative | — |
 
 ### Streaming reasoning state
+
+`NativeChannelSplitter` treats tool payloads as opaque while routing reasoning
+markers. It emits unclosed-frame payload incrementally and retains only a
+possible closing-marker suffix; it does not buffer an entire unfinished tool
+call (`provider-swift/Sources/ProviderCore/Inference/NativeChannelSplitter.swift`).
 
 `ReasoningPromptProbe.streamingPrefix` in
 `provider-swift/Sources/ProviderCore/Inference/ReasoningPromptProbe.swift`
@@ -226,7 +252,8 @@ Resolution happens before submit so a bad parser name never orphans a request.
 | `gpt_oss` | `.harmony` | `HarmonyToolCallParser` |
 | prefix `gemma` (`gemma4`, `gemma4_text`) | `.gemma` | `GemmaFunctionParser` |
 | prefix `qwen3_5` | `.qwen35` | `Qwen35ToolCallParser` (XML first, framed-JSON fallback) |
-| prefix `qwen3_next`, prefix `nemotron` | `.xmlFunction` | `XMLFunctionParser` |
+| prefix `qwen3_next` | `.xmlFunction` | `XMLFunctionParser` |
+| prefix `nemotron` | `.nemotron` | Native Nemotron tool-frame parser |
 | `llama` with `vocab_size ≥ 128000` or `rope_scaling.rope_type == "llama3"` | `.llama3` | `Llama3ToolCallParser` |
 | prefix `lfm2` / `glm4` / `mistral3` | `.lfm2` / `.glm4` / `.mistral` | `PythonicToolCallParser` / `GLM4ToolCallParser` / `MistralToolCallParser` |
 | anything else, including `qwen3_vl_moe` | `nil` → `.json` | `JSONToolCallParser` (`<tool_call>…</tool_call>`) |
@@ -297,6 +324,7 @@ records tiny-model correctness and remaining release gates.
 | `qwen3_5` | Dense Qwen 3.5/3.8, recurrent state | Embedded MTP head; complete streamed SSD checkpoints on native contiguous or segmented paged KV; explicit paging requires observed native types; resident bank is opt-in |
 | `qwen3_5_moe` | Qwen 3.5/3.6 MoE, recurrent state | Same complete-checkpoint and segmented-native paging gates as dense Qwen |
 | `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; `cbv2Capabilities` all `false` (no prefix reuse, paged, compiled decode, packed prefill or MTP) |
+| `nemotron_h` | Nemotron 3.5 Lightning | Advertisement is limited to `EngineV2SupportedModels.isNemotron35ListingModelID`, not every checkpoint sharing this type. Native Mamba/MoE/attention target; `nemotron35LightningModelID` is target-only and `nemotron35LightningMTPModelID` retains the embedded head. Listing eligibility is not registry publication or performance qualification |
 
 Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `8bit`|`q8`|`int8` → `8bit`; `3bit`|`q3` → `3bit`; `bf16`; `fp16`|`f16`; else
@@ -305,6 +333,17 @@ Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `detectQuantization`). KV quantization was retired in v0.8.0. Memory sizing
 (the `1.2` padded estimate and the load gate) is in
 [`hardware-support.md`](hardware-support.md).
+
+### Coordinator-serving native channels
+
+Coordinator requests construct `MultiModelBatchSchedulerEngine` inside
+`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
+(`handleInferenceRequest`). Native Nemotron output passes through
+`NativeToolStreamRouter` and the SDK's typed `.parsed` event, so tool arguments
+are not reparsed as reasoning markers. `MLXOpenAIService.streamChatCompletionFrames`
+serializes SSE frames; the provider encrypts and sends them back over the
+coordinator connection. This integration does not start a local HTTP endpoint
+or change consumer/OpenRouter routing.
 
 ## Invariants
 

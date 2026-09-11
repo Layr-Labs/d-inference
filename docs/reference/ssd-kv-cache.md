@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-09-09 · commit `56ceac15a`
+> Last updated: 2026-09-10 · commit `dcc3d0809`
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -213,13 +213,15 @@ exact-artifact release validation claim.
 | Gemma 4 (`gemma4`, `gemma4_text`) | Historical full/window attention | Segmented paged | Effective text target has historical capability; normal stateless assistant is compatible; vision requests still stage cold |
 | Qwen 3.5/3.8 dense (`qwen3_5`) | Full KV, recurrent state and optional typed MTP | Native contiguous or segmented paged | Supported floating/affine embedding typing, full owners and verified complete codec/storage identity |
 | Qwen 3.5/3.6 MoE (`qwen3_5_moe`) | Same recurrent complete codec | Native contiguous or segmented paged | Same gate as dense Qwen |
+| Selected Nemotron 3.5 Lightning (`nemotron_h`) | Native attention KV, Mamba convolution/FP32 SSM state, and optional shifted trusted MTP history | Native contiguous or segmented paged target | Exact Lightning model ID, loaded native types, complete checkpoint identity and typed Nemotron assistant codec when MTP is active |
 | Qwen3-VL MoE (`qwen3_vl_moe`) | Unsupported | No paged capability | No complete store (`unsupported_layout`) |
 
-The global cache switch defaults on and the resident-memory switch defaults off.
-Backend `auto` still resolves contiguous: eligible Qwen can build its complete
-store there; GPT-OSS and Gemma require explicit paged selection for their
-historical complete store. Runtime identity, disk/key and loaded capability
-checks apply independently of family names.
+SSD activation and backend selection have separate exact-model defaults; see
+the [backend and cache cohorts](../architecture/prefix-cache.md#kv-layouts).
+Resident-memory retention defaults off. Runtime identity, disk/key and loaded
+capability checks apply independently of family names. A paging fallback may
+still use eligible complete recurrent checkpoints on native contiguous storage;
+GPT-OSS/Gemma historical complete checkpoints require segmented paging.
 
 All families also require a valid artifact prompt contract. The directory-based
 check requires `chat_template.jinja` and a passing render self-check. The versioned
@@ -244,10 +246,11 @@ Capability constants: `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchin
 `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+ModelAdapter.swift` (`ProductionModelAdapter`). An explicit `paged` selection is refused when the
 model lacks the required capability (reason `model_capability`); the kill switch
 can separately degrade it to contiguous.
-Eligible dense and MoE Qwen now support explicit paging only with segmented
-storage and a per-layer native type table measured from the loaded target.
-Complete Qwen restoration supports both native storage layouts; `auto` remains
-contiguous until the release validation gates are complete.
+Eligible recurrent targets use segmented paging with a per-layer native type
+table measured from the loaded target. Complete restoration supports both
+native target storage layouts. Model-scoped automatic selection is defined by
+`EngineV2KVBackendPolicy.preferredBackend`; it does not replace the loaded
+capability or checkpoint-identity gates.
 
 ## Status and outcome vocabularies
 

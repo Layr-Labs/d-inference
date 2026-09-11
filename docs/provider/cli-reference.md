@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-10 · commit `dcc3d0809`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -169,7 +169,7 @@ Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 | Backend parity | `--parity`, `--assistant-model <id>` (`String?`), `--parity-max-tokens` (`48`), `--parity-prefix-tokens` (`28672`) (`BenchmarkCommand+Parity.swift`) |
 
 `--kv-backend auto` uses the candidate's
-[exact five-artifact allowlist](../architecture/prefix-cache.md#kv-layouts): eligible
+[exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts): eligible
 cohort models try paged, all other IDs use contiguous, and automatic paged
 failures or the version-bound crash-loop guard fall back to contiguous.
 Explicit `--kv-backend paged` refuses construction failures rather than measuring
@@ -416,7 +416,7 @@ Two of the detailed checks cover the KV-backend rollout:
 
 `auto` never fails this check — it promises nothing, so whichever backend it
 lands on is honoured by definition. Candidate `auto` can report paged for the
-[exact five-artifact cohort](../architecture/prefix-cache.md#kv-layouts), or contiguous
+[exact qualified-artifact cohort](../architecture/prefix-cache.md#kv-layouts), or contiguous
 after fallback; non-cohort `auto` remains contiguous. None is a posture fault
 or validation of the candidate rollout. Explicit `paged` construction failures
 refuse the load; a policy veto that serves contiguous instead still fails the
@@ -756,7 +756,7 @@ override `provider.toml` for one process, are in
 | `[backend] idle_timeout_mins` | `60` | Unload a model idle this long; `0` disables |
 | `[backend] max_model_slots` | `3` | Resident models |
 | `[backend] engine_v2_max_concurrent` | `4` (clamped to `[1, 8]`) | Concurrent requests per engine |
-| `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Candidate `auto` tries paged only for the [exact five-artifact allowlist](../architecture/prefix-cache.md#kv-layouts), with contiguous fallback; all other IDs remain contiguous (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
+| `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Candidate `auto` tries paged only for the [exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts), with contiguous fallback; all other IDs remain contiguous (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
 | `[backend] startup_preload` | `true` | Load advertised models at start |
 | `[coordinator] url` | `"wss://api.darkbloom.dev/ws/provider"` | |
@@ -775,8 +775,8 @@ provider plist's `EnvironmentVariables`
 `passthroughEnvironment`). Every other variable — including `PATH` and all the
 media, SSD-prefix and memory-cap tunables — reaches the engine only under
 `darkbloom start --foreground` or `--local`. The `DARKBLOOM_PREFIX_CACHE` switch
-defaults to enabled for the three exact Qwen artifacts in the
-[release cohort](../design/release-090-paged-qwen-cache.md). Other models need an
+defaults to enabled for the exact Qwen and Nemotron Lightning artifacts in the
+[cache cohort](../architecture/prefix-cache.md#kv-layouts). Other models need an
 explicit affirmative value for SSD caching. Resident payload retention requires
 `DARKBLOOM_PREFIX_CACHE_MEMORY=1`; both switches are forwarded to the daemon,
 and the global disable wins (`PrefixCachePolicy.isEnabled`, `isMemoryEnabled`). Coordinator cache preference separately requires

@@ -317,9 +317,20 @@ export function effectiveConcurrencyFor(
   return 1 + (maxConcurrency - 1) * (dutyCyclePercent / 100);
 }
 
+function batchScaleAt4(family: ModelFamily): number {
+  switch (family) {
+    case "gemma_moe":
+      return BATCH_SCALE_AT_4.gemma_moe;
+    case "moe":
+      return BATCH_SCALE_AT_4.moe;
+    case "dense":
+      return BATCH_SCALE_AT_4.dense;
+  }
+}
+
 export function decodeBatchScale(family: ModelFamily, concurrency: number): number {
   if (concurrency <= 1) return 1;
-  const unitGain = (BATCH_SCALE_AT_4[family] - 1) / 3;
+  const unitGain = (batchScaleAt4(family) - 1) / 3;
   return 1 + (concurrency - 1) * unitGain;
 }
 

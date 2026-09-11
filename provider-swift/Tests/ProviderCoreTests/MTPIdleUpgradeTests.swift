@@ -31,7 +31,13 @@ private actor UpgradeServingFixture {
     var stale = false
     var failPreparation = false
     var discarded = 0
+    var draining = false
+    var drainStarts = 0
+    var drainEnds = 0
     func serve() -> Int { requests += 1; return serving }
+    func admit() -> Int? { draining ? nil : serving }
+    func beginDrain(_ candidate: Int) { draining = true; drainStarts += 1 }
+    func finishDrain(_ candidate: Int) { if draining { drainEnds += 1 }; draining = false }
     func setBusy(_ value: Bool) { busy = value }
     func setStale() { stale = true }
     func setFailure() { failPreparation = true }
@@ -48,7 +54,7 @@ private actor UpgradeServingFixture {
     func discard(_ candidate: Int) { discarded += 1 }
 }
 
-@Suite("MTP optional idle upgrade lifecycle")
+@Suite("MTP prepared drain and idle swap lifecycle")
 struct MTPIdleUpgradeTests {
     @Test func slowPreparationKeepsTwoIndependentProvidersServing() async {
         let providers = [UpgradeServingFixture(), UpgradeServingFixture()]
@@ -58,8 +64,10 @@ struct MTPIdleUpgradeTests {
             Task {
                 await MTPIdleUpgrade.run(
                     prepare: { await fetch.wait(); return try await provider.prepare() },
+                    beginDrain: { await provider.beginDrain($0) },
                     commitIfIdle: { try await provider.commit($0) },
                     discard: { await provider.discard($0) },
+                    finishDrain: { await provider.finishDrain($0) },
                     pause: { await busy.wait() })
             }
         }
@@ -69,6 +77,7 @@ struct MTPIdleUpgradeTests {
         await busy.observeEntry()
         for provider in providers {
             #expect(await provider.serve() == 0)
+            #expect(await provider.admit() == nil)
             await provider.setBusy(false)
         }
         await busy.release()
@@ -76,27 +85,36 @@ struct MTPIdleUpgradeTests {
         for provider in providers {
             #expect(await provider.serve() == 1)
             #expect(await provider.discarded == 0)
+            #expect(await provider.admit() == 1)
+            #expect(await provider.drainEnds == 1)
         }
     }
 
-    @Test func failedFetchAndBusyTimeoutNeverWithdrawOriginal() async {
+    @Test func failedFetchNeverDrainsAndBusyTimeoutReopensOriginal() async {
         let provider = UpgradeServingFixture()
         await provider.setFailure()
         let failed = await MTPIdleUpgrade.run(
             prepare: { try await provider.prepare() },
+            beginDrain: { await provider.beginDrain($0) },
             commitIfIdle: { try await provider.commit($0) },
-            discard: { await provider.discard($0) })
+            discard: { await provider.discard($0) },
+            finishDrain: { await provider.finishDrain($0) })
         #expect(failed == .failed)
         #expect(await provider.serve() == 0)
         #expect(await provider.discarded == 0)
+        #expect(await provider.drainStarts == 0)
         let busy = UpgradeServingFixture()
         let deferred = await MTPIdleUpgrade.run(maximumIdleChecks: 2,
             prepare: { try await busy.prepare() },
+            beginDrain: { await busy.beginDrain($0) },
             commitIfIdle: { try await busy.commit($0) },
-            discard: { await busy.discard($0) }, pause: {})
+            discard: { await busy.discard($0) },
+            finishDrain: { await busy.finishDrain($0) }, pause: {})
         #expect(deferred == .deferred)
         #expect(await busy.serve() == 0)
         #expect(await busy.discarded == 1)
+        #expect(await busy.admit() == 0)
+        #expect(await busy.drainEnds == 1)
     }
 
     @Test func cancellationAndStaleGenerationDiscardUnpublishedReplacement() async {
@@ -106,8 +124,10 @@ struct MTPIdleUpgradeTests {
             let task = Task {
                 await MTPIdleUpgrade.run(
                     prepare: { try await provider.prepare() },
+                    beginDrain: { await provider.beginDrain($0) },
                     commitIfIdle: { try await provider.commit($0) },
-                    discard: { await provider.discard($0) }, pause: { await gate.wait() })
+                    discard: { await provider.discard($0) },
+                    finishDrain: { await provider.finishDrain($0) }, pause: { await gate.wait() })
             }
             await gate.observeEntry()
             if cancel { task.cancel() } else { await provider.setStale() }
@@ -116,8 +136,91 @@ struct MTPIdleUpgradeTests {
             #expect(await task.value == (cancel ? .cancelled : .failed))
             #expect(await provider.serve() == 0)
             #expect(await provider.discarded == 1)
+            #expect(await provider.admit() == 0)
+            #expect(await provider.drainEnds == 1)
         }
     }
+
+    @Test func staggerStillServesAndCancellationNeverClosesAdmission() async {
+        let provider = UpgradeServingFixture()
+        let gate = UpgradeBarrier()
+        let task = Task {
+            await MTPIdleUpgrade.run(
+                prepare: { try await provider.prepare() },
+                waitBeforeDrain: { await gate.wait() },
+                beginDrain: { await provider.beginDrain($0) },
+                commitIfIdle: { try await provider.commit($0) },
+                discard: { await provider.discard($0) },
+                finishDrain: { await provider.finishDrain($0) })
+        }
+        await gate.observeEntry()
+        #expect(await provider.admit() == 0)
+        #expect(await provider.drainStarts == 0)
+        task.cancel()
+        await gate.release()
+        #expect(await task.value == .cancelled)
+        #expect(await provider.admit() == 0)
+        #expect(await provider.discarded == 1)
+        #expect(await provider.drainStarts == 0)
+    }
+
+    @Test func partiallyFailedBeginReopensAdmission() async {
+        let provider = UpgradeServingFixture()
+        let result = await MTPIdleUpgrade.run(
+            prepare: { try await provider.prepare() },
+            beginDrain: {
+                await provider.beginDrain($0)
+                throw UpgradeServingFixture.Failure.stale
+            },
+            commitIfIdle: { try await provider.commit($0) },
+            discard: { await provider.discard($0) },
+            finishDrain: { await provider.finishDrain($0) })
+        #expect(result == .failed)
+        #expect(await provider.discarded == 1)
+        #expect(await provider.admit() == 0)
+        #expect(await provider.drainEnds == 1)
+    }
+
+    @Test func cancellationAfterPublicationNeverDiscardsInstalledEngine() async {
+        let provider = UpgradeServingFixture()
+        await provider.setBusy(false)
+        let published = UpgradeBarrier()
+        let task = Task {
+            await MTPIdleUpgrade.run(
+                prepare: { try await provider.prepare() },
+                beginDrain: { await provider.beginDrain($0) },
+                commitIfIdle: {
+                    let installed = try await provider.commit($0)
+                    await published.wait()
+                    return installed
+                },
+                discard: { await provider.discard($0) },
+                finishDrain: { await provider.finishDrain($0) })
+        }
+        await published.observeEntry()
+        task.cancel()
+        await published.release()
+        #expect(await task.value == .installed)
+        #expect(await provider.admit() == 1)
+        #expect(await provider.discarded == 0)
+        #expect(await provider.drainEnds == 1)
+    }
+
+    @Test func staleOwnerCannotReopenSuccessorDrain() {
+        var drains = MTPAdmissionDrains()
+        let old = UUID(), next = UUID()
+        #expect(drains.begin("gemma", owner: old))
+        #expect(!drains.contains("qwen"))
+        #expect(!drains.begin("gemma", owner: next))
+        #expect(drains.end("gemma", owner: old))
+        #expect(drains.begin("gemma", owner: next))
+        let generation = drains.generation
+        #expect(!drains.end("gemma", owner: old))
+        #expect(drains.contains("gemma"))
+        #expect(drains.generation == generation)
+        #expect(drains.end("gemma", owner: next))
+    }
+
 }
 
 

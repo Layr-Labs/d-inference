@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-10 · commit `213b8c2b6`
+> Last updated: 2026-09-10 · commit `05f987729`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process in v0.8.16: one in-process engine (`mlx-swift-lm`
@@ -155,21 +155,59 @@ Discard releases the actual target references before removing that charge and
 regrowing survivor KV grants under the reslice/load gate. Network capacity quotes
 refresh at staging changes and reject snapshots from older staging generations.
 Reservations follow the load generation, so delayed cleanup cannot release a
-new candidate's budget. Existing requests continue on the old
-engine. Publication waits for both network requests and local reservations to
-finish, briefly queues new admissions, then swaps engines and releases the old
-idle pool before regrowing grants. Failure, cancellation, a replaced target or
-insufficient staging memory leaves the serving engine intact; no model is evicted
-for this optional upgrade. The readiness loop polls with 10–15 second jitter,
-makes up to 120 idle checks spaced 500 ms apart for an idle cutover, and retries unsuccessful staging
-after five minutes. Failed artifact fetches independently back off exponentially
-with jitter, capped at five minutes
-(`provider-swift/Sources/ProviderCore/ProviderLoop+MTPUpgrade.swift`,
-`provider-swift/Sources/ProviderCore/Inference/MTPIdleUpgrade.swift`,
-`provider-swift/Sources/ProviderCore/Server/StandaloneServer+MTPUpgrade.swift`).
+new candidate's budget.
+
+Once preparation succeeds, network providers keep serving during a random delay
+from `UpdateJitter.delay`, using the existing
+[`[provider] update_jitter_seconds`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)
+setting. This staggers independent providers; it does not reserve fleet capacity
+or guarantee that another provider remains available. Standalone serving skips
+this fleet delay.
+
+`MTPIdleUpgrade.run` then closes new admissions for this model through
+`beginDrain`, while accepted network requests and local reservations finish on
+the original engine. The admission fence is separate from the final publication
+gate: accepted requests can still pass `ensureModelLoaded` and reach completion.
+Network capacity advertises the existing `reloading` slot state and rejects
+racing admissions with transient 503 `slotState` refusals. Other models remain
+eligible; this does not put the whole provider into its update-draining state.
+Standalone new acquisitions also receive 503 during the model drain.
+
+The helper makes up to 120 idle checks with 500 ms pauses: about 60 seconds of
+waiting plus actor-call latency, rather than a strict wall-clock deadline.
+`commitIfIdle` requires no accepted work, queued engine requests or reserved KV
+before taking the final swap gate. It publishes the replacement and releases the
+old idle pool before regrowing grants; `finishDrain` reopens admission. On timeout,
+cancellation or failure before publication, the helper discards the candidate
+and reopens the original engine without force-cancelling accepted work. Target
+replacement and insufficient staging memory also preserve the current owner;
+no model is evicted for this optional upgrade. The readiness loop polls with
+10–15 second jitter and retries unsuccessful staging after five minutes. Failed
+artifact fetches independently back off exponentially with jitter, capped at
+five minutes (`provider-swift/Sources/ProviderCore/Inference/MTPIdleUpgrade.swift`,
+`MTPIdleUpgrade.run`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`,
+`waitBeforeMTPUpgradeDrain`, `beginMTPUpgradeDrain`;
+`provider-swift/Sources/ProviderCore/ProviderLoop+MTPUpgrade.swift`, `commitMTPUpgradeIfIdle`;
+`provider-swift/Sources/ProviderCore/Server/StandaloneServer+MTPUpgrade.swift`,
+`commitMTPUpgradeIfIdle`).
+
+```mermaid
+flowchart LR
+  A[Target serves] --> B[Download, verify and prepare candidate]
+  B --> C[Network: waitBeforeDrain jitter while serving]
+  B -->|Standalone| D[beginDrain: close new model admissions]
+  C --> D
+  D --> E[Accepted work finishes on original engine]
+  E --> F{commitIfIdle within check budget?}
+  F -->|Yes| G[Separate swap gate: publish replacement]
+  F -->|No, failure or cancellation| H[Discard candidate, retain original]
+  G --> I[finishDrain: reopen model admissions]
+  H --> I
+```
+
 Standalone uses the same coordinator catalog authority as the provider CLI
 (`coordinator.url`), downloads in the background, and retains explicit local
-assistant overrides. Transition logs report preparation duration, waiting for idle,
+assistant overrides. Transition logs report preparation duration, draining accepted work,
 installation and fallback without repeating every readiness poll. Unpublished
 candidates suppress periodic serving posture/cache logs; these start after the
 old engine shuts down at commit, and closed bridges reject queued posture ticks. Missing, incompatible, or

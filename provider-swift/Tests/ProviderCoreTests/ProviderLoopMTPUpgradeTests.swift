@@ -6,6 +6,25 @@ import ProviderCoreFoundation
 
 private let upgradeModelID = "gemma-4-26b-qat-4bit"
 
+private func upgradeQuote(state: ProviderState, modelID: String) -> ProviderMessage.CapacityQuote {
+    CapacityQuoteEngine.quote(.init(
+        probe: .init(quoteId: "upgrade-quote", model: modelID,
+            promptTokensBucket: 512, maxOutputTokens: 128,
+            requiresVision: false, visionImageCount: 0, deadlineRemainingMs: 9000),
+        capacity: state.publishedCapacity,
+        model: ModelInfo(id: modelID, sizeBytes: 1, estimatedMemoryGb: 1),
+        ttft: nil,
+        visionLimits: .init(maxBufferBytes: 38 << 30, attentionElementBytes: 2, headFactor: 1),
+        refusingNewWork: state.refusingNewWork(forModel: modelID)))
+}
+
+private final class UpgradeMessageCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var messages: [OutboundMessage] = []
+    func append(_ message: OutboundMessage) { lock.withLock { messages.append(message) } }
+    var all: [OutboundMessage] { lock.withLock { messages } }
+}
+
 private final class UpgradeScriptedEngine: CBv2Engine, @unchecked Sendable {
     private let lock = NSLock()
     private var bytes: Int
@@ -139,6 +158,12 @@ private struct ProviderUpgradeFixture {
 private extension ProviderLoop {
     func setUpgradeCoordinatorPin(_ pinned: Bool) {
         requestToModel["upgrade-test-request"] = pinned ? upgradeModelID : nil
+    }
+    func hasUpgradeCoordinatorPin() -> Bool { requestToModel["upgrade-test-request"] == upgradeModelID }
+    func upgradeDrainActive() -> Bool { mtpAdmissionDrains.contains(upgradeModelID) }
+    func upgradePublicationActive() -> Bool { mtpUpgradeTransitions.contains(upgradeModelID) }
+    func advertiseUpgradePeer(_ modelID: String) {
+        advertisedModels[modelID] = ModelInfo(id: modelID, modelType: "qwen3", sizeBytes: 1, estimatedMemoryGb: 1)
     }
     func weakUpgradeTarget() -> UpgradeWeakTarget { UpgradeWeakTarget(modelSlots[upgradeModelID]?.container) }
     func configureUpgradeEvictionProbe() {
@@ -276,8 +301,10 @@ struct ProviderLoopMTPUpgradeTests {
         await fixture.loop.acquireResliceGateForTesting()
         let task = Task {
             await MTPIdleUpgrade.run(prepare: { staged },
+                beginDrain: { try await fixture.loop.beginMTPUpgradeDrain($0) },
                 commitIfIdle: { try await fixture.loop.commitMTPUpgradeIfIdle($0) },
-                discard: { await fixture.loop.discardMTPUpgrade($0) }, pause: {})
+                discard: { await fixture.loop.discardMTPUpgrade($0) },
+                finishDrain: { await fixture.loop.finishMTPUpgradeDrain($0) }, pause: {})
         }
         for _ in 0..<2_000 {
             if await fixture.loop.upgradeResliceWaiterCount() > 0 { break }
@@ -378,4 +405,147 @@ struct ProviderLoopMTPUpgradeTests {
         #expect(await fixture.original.engineKVBytesCapacity() == fullGrant)
         await fixture.clean()
     }
+    @Test("prepared drain closes only new target admission while accepted work and another slot stay live")
+    func preparedDrainIsModelScopedAndPreservesAcceptedWork() async throws {
+        let fixture = try await ProviderUpgradeFixture.make()
+        defer { fixture.cleanFiles() }
+        let peerID = "upgrade-peer"
+        let peer = EngineV2Bridge(engine: UpgradeScriptedEngine(bytes: 1 << 30), modelId: peerID,
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()), eosTokenIds: [])
+        await fixture.loop.advertiseUpgradePeer(peerID)
+        await fixture.runtime.register(modelId: peerID, bridge: peer)
+        await fixture.loop.installModelSlotForTesting(modelId: peerID,
+            container: mtpFloorContainer(), tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            engineV2: peer, sizing: mtpFloorSizing(weightsGiB: 1), modelType: "qwen3")
+        let staged = try #require(try await fixture.prepare())
+        let state = await fixture.loop.state
+        _ = state.stampAndPublishHeartbeatCapacity(await fixture.loop.backendCapacityForTesting())
+        let publishedSequence = state.publishedCapacity?.capacitySeq
+        #expect(upgradeQuote(state: state, modelID: upgradeModelID).admissibleNow)
+        let acceptedLocal = try await fixture.loop.acquireModelForLocal(upgradeModelID)
+        await fixture.loop.setUpgradeCoordinatorPin(true)
+        fixture.originalEngine.setBusy(true)
+        try await fixture.loop.beginMTPUpgradeDrain(staged)
+        #expect(await fixture.loop.upgradeDrainActive())
+        #expect(await !fixture.loop.upgradePublicationActive())
+        #expect(!state.refusingNewWork)
+        #expect(state.publishedCapacity?.capacitySeq == publishedSequence,
+            "the fixture has no client: the last-sent heartbeat deliberately stays stale")
+        let quote = upgradeQuote(state: state, modelID: upgradeModelID)
+        #expect(!quote.admissibleNow)
+        #expect(quote.rejectionReason == .slotState)
+        #expect(upgradeQuote(state: state, modelID: peerID).admissibleNow)
+        let capacity = try #require(await fixture.loop.backendCapacityForTesting())
+        let draining = try #require(capacity.slots.first { $0.model == upgradeModelID })
+        #expect(draining.state == "reloading")
+        #expect(draining.numRunning == 1, "withdraw admission without erasing accepted work")
+        #expect(capacity.slots.first { $0.model == peerID }?.state == "idle")
+        #expect(try await !fixture.loop.commitMTPUpgradeIfIdle(staged))
+        // This is the post-accept load call. It must not wait for a drain that
+        // itself waits for this already-counted request to finish.
+        try await fixture.loop.ensureModelLoaded(modelId: upgradeModelID)
+        #expect(await fixture.loop.hasUpgradeCoordinatorPin())
+        #expect(acceptedLocal.engineV2Bridge === fixture.original)
+        await #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            _ = try await fixture.loop.acquireModelForLocal(upgradeModelID)
+        }
+        let peerRequest = try await fixture.loop.acquireModelForLocal(peerID)
+        #expect(peerRequest.engineV2Bridge === peer)
+        await peerRequest.releaseToken.fire()
+
+        let capture = UpgradeMessageCapture()
+        let send = SendHandle { capture.append($0) }
+        #expect(await fixture.loop.rejectIfDrainingForMTP(modelId: upgradeModelID,
+            requestId: "new-target", send: send,
+            lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer(callback: nil)))
+        #expect(await !fixture.loop.rejectIfDrainingForMTP(modelId: peerID,
+            requestId: "new-peer", send: send,
+            lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer(callback: nil)))
+        #expect(capture.all.count == 1)
+        let data = try CoordinatorClientCodec.encodeOutboundMessage(try #require(capture.all.first))
+        let frame = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(frame["type"] as? String == "inference_error")
+        #expect(frame["status_code"] as? Int == 503)
+        #expect(frame["failure_code"] as? String == "capacity")
+        #expect(frame["rejection_reason"] as? String == "slot_state")
+        #expect(frame["error_reason"] as? String != "draining")
+        await fixture.checkOriginal()
+
+        await acceptedLocal.releaseToken.fire()
+        await fixture.loop.setUpgradeCoordinatorPin(false)
+        fixture.originalEngine.setBusy(false)
+        #expect(try await fixture.loop.commitMTPUpgradeIfIdle(staged))
+        await fixture.loop.finishMTPUpgradeDrain(staged)
+        #expect(await !fixture.loop.upgradeDrainActive())
+        #expect(upgradeQuote(state: state, modelID: upgradeModelID).admissibleNow)
+        let reopened = try await fixture.loop.acquireModelForLocal(upgradeModelID)
+        #expect(reopened.engineV2Bridge === staged.replacement.bridge)
+        await reopened.releaseToken.fire()
+        let reopenedCapacity = await fixture.loop.backendCapacityForTesting()
+        #expect(reopenedCapacity?.slots.first(where: { $0.model == upgradeModelID })?.state == "idle")
+        await fixture.runtime.unregister(modelId: peerID)
+        await peer.shutdown()
+        await fixture.loop.removeModelSlotForTesting(modelId: peerID)
+        await fixture.clean()
+    }
+
+    @Test("drain timeout or cancellation reopens the old engine without cancelling accepted work", arguments: [false, true])
+    func abandonedDrainPreservesAcceptedWork(cancel: Bool) async throws {
+        let fixture = try await ProviderUpgradeFixture.make()
+        defer { fixture.cleanFiles() }
+        let staged = try #require(try await fixture.prepare())
+        await fixture.loop.setUpgradeCoordinatorPin(true)
+        let pause = UpgradeBarrier()
+        let task = Task {
+            await MTPIdleUpgrade.run(maximumIdleChecks: 1, prepare: { staged },
+                beginDrain: { try await fixture.loop.beginMTPUpgradeDrain($0) },
+                commitIfIdle: { try await fixture.loop.commitMTPUpgradeIfIdle($0) },
+                discard: { await fixture.loop.discardMTPUpgrade($0) },
+                finishDrain: { await fixture.loop.finishMTPUpgradeDrain($0) },
+                pause: { await pause.wait(); try Task.checkCancellation() })
+        }
+        await pause.observeEntry()
+        #expect(await fixture.loop.upgradeDrainActive())
+        #expect(await fixture.loop.hasUpgradeCoordinatorPin())
+        if cancel { task.cancel() }
+        await pause.release()
+        #expect(await task.value == (cancel ? .cancelled : .deferred))
+        #expect(await !fixture.loop.upgradeDrainActive())
+        #expect(await fixture.loop.hasUpgradeCoordinatorPin())
+        #expect(await fixture.loop.outstandingKVReservationBytesForTesting() == 0)
+        #expect(await fixture.loop.backendCapacityForTesting()?.slots.first?.state == "idle")
+        await fixture.checkOriginal()
+        let reopened = try await fixture.loop.acquireModelForLocal(upgradeModelID)
+        #expect(reopened.engineV2Bridge === fixture.original)
+        await reopened.releaseToken.fire()
+        await fixture.loop.setUpgradeCoordinatorPin(false)
+        await fixture.clean()
+    }
+
+    @Test("stale drain cleanup cannot clear a newer candidate admission fence")
+    func drainCleanupRequiresItsCandidateOwner() async throws {
+        let fixture = try await ProviderUpgradeFixture.make()
+        defer { fixture.cleanFiles() }
+        let first = try #require(try await fixture.prepare())
+        let second = try #require(try await fixture.prepare())
+        try await fixture.loop.beginMTPUpgradeDrain(first)
+        await #expect(throws: CancellationError.self) {
+            try await fixture.loop.beginMTPUpgradeDrain(second)
+        }
+        await fixture.loop.finishMTPUpgradeDrain(second)
+        #expect(await fixture.loop.upgradeDrainActive())
+        await fixture.loop.finishMTPUpgradeDrain(first)
+        try await fixture.loop.beginMTPUpgradeDrain(second)
+        await fixture.loop.finishMTPUpgradeDrain(first)
+        #expect(await fixture.loop.upgradeDrainActive())
+        #expect(await fixture.loop.state.refusingNewWork(forModel: upgradeModelID))
+        #expect(await fixture.loop.backendCapacityForTesting()?.slots.first?.state == "reloading")
+        await fixture.loop.discardMTPUpgrade(first)
+        await fixture.loop.discardMTPUpgrade(second)
+        await fixture.loop.finishMTPUpgradeDrain(second)
+        #expect(await !fixture.loop.upgradeDrainActive())
+        #expect(await fixture.loop.outstandingKVReservationBytesForTesting() == 0)
+        await fixture.clean()
+    }
+
 }

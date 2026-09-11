@@ -261,6 +261,7 @@ public actor StandaloneServer {
     let kvBudget: GlobalKVCacheBudget
     var specDecFunnel: SpecDecArtifactFunnel
     var mtpStagingReservations = MTPStagingReservations()
+    var mtpAdmissionDrains = MTPAdmissionDrains()
     var mtpUpgradeMonitorTask: Task<Void, Never>?
     var mtpUpgradeTransitions: Set<String> = []
     var mtpUpgradeWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
@@ -1264,6 +1265,7 @@ public actor StandaloneServer {
     /// reservation if the lookup somehow fails so a partial-acquire
     /// doesn't pin a missing model forever.
     func acquireModel(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+        try throwIfMTPUpgradeDraining(modelId)
         do {
             try await ensureModelLoaded(modelId)
         } catch StandaloneServerError.modelNotFound {
@@ -1283,6 +1285,8 @@ public actor StandaloneServer {
             )
         }
         await waitForMTPUpgrade(modelId)
+        try Task.checkCancellation()
+        try throwIfMTPUpgradeDraining(modelId)
         reserveSlot(modelId)
         guard let slot = slots[modelId], !evictingModels.contains(modelId) else {
             // Roll the reservation back; the model is gone (evicted

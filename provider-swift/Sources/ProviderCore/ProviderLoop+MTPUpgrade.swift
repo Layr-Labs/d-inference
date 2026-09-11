@@ -5,6 +5,7 @@ import MLX
 /// replacement owns only new assistant and KV resources.
 final class StagedProviderMTPUpgrade: @unchecked Sendable {
     let modelID: String
+    let drainID = UUID()
     // Mutated only by the owning provider actor; cleared before crediting freed weights.
     var original: ProviderLoop.ModelSlot?
     let replacement: ProviderEngineBundle
@@ -48,8 +49,11 @@ extension ProviderLoop {
                     }
                     let outcome = await MTPIdleUpgrade.run(
                         prepare: { try await self.prepareMTPUpgrade(modelID) },
+                        waitBeforeDrain: { try await self.waitBeforeMTPUpgradeDrain(modelID) },
+                        beginDrain: { try await self.beginMTPUpgradeDrain($0) },
                         commitIfIdle: { try await self.commitMTPUpgradeIfIdle($0) },
-                        discard: { await self.discardMTPUpgrade($0) })
+                        discard: { await self.discardMTPUpgrade($0) },
+                        finishDrain: { await self.finishMTPUpgradeDrain($0) })
                     if outcome != lastOutcome[modelID], outcome != .installed {
                         await self.logMTPUpgrade("upgrade outcome=\(outcome); retaining current engine", modelID: modelID)
                     }
@@ -69,7 +73,7 @@ extension ProviderLoop {
         logger.info("mtp: model=\(modelID) \(message)")
     }
 
-    private func pendingMTPUpgradeModels() -> [String] {
+    func pendingMTPUpgradeModels() -> [String] {
         guard !isShuttingDown, !state.refusingNewWork,
             SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment)
         else { return [] }
@@ -169,7 +173,7 @@ extension ProviderLoop {
                 pagedPoolBytes: await replacement.bridge.kvBackendPoolBytes(),
                 activationReserveBytes: resolvedActivationReserveBytes)
             else { throw CancellationError() }
-            logger.info("mtp: model=\(modelID) verified replacement prepared in \(preparationStarted.duration(to: .now)); waiting for natural idle")
+            logger.info("mtp: model=\(modelID) verified replacement prepared in \(preparationStarted.duration(to: .now)); ready to drain accepted requests")
             return StagedProviderMTPUpgrade(modelID: modelID, original: original,
                 replacement: replacement, sizing: sizing, lease: lease)
         } catch {
@@ -206,7 +210,8 @@ extension ProviderLoop {
             return false
         }
         // No suspension between the last owner check and the admission gate.
-        // Work arriving during publication waits; existing work is never drained.
+        // Accepted work has finished; this separate publication gate keeps
+        // slot/runtime ownership coherent until replacement cleanup completes.
         mtpUpgradeTransitions.insert(modelID)
         defer { finishMTPUpgradeTransition(modelID) }
         await engineV2Runtime.register(modelId: modelID, bridge: staged.replacement.bridge)

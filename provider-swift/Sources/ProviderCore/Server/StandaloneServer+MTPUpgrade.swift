@@ -5,6 +5,7 @@ import MLX
 /// replacement owns only new assistant and KV resources.
 final class StagedStandaloneMTPUpgrade: @unchecked Sendable {
     let modelID: String
+    let drainID = UUID()
     // Mutated only by the owning standalone actor; cleared before crediting freed weights.
     var original: StandaloneServer.CachedSlot?
     let replacement: ProviderEngineBundle
@@ -48,8 +49,10 @@ extension StandaloneServer {
                     }
                     let outcome = await MTPIdleUpgrade.run(
                         prepare: { try await self.prepareMTPUpgrade(modelID) },
+                        beginDrain: { try await self.beginMTPUpgradeDrain($0) },
                         commitIfIdle: { try await self.commitMTPUpgradeIfIdle($0) },
-                        discard: { await self.discardMTPUpgrade($0) })
+                        discard: { await self.discardMTPUpgrade($0) },
+                        finishDrain: { await self.finishMTPUpgradeDrain($0) })
                     if outcome != lastOutcome[modelID], outcome != .installed {
                         await self.logMTPUpgrade("upgrade outcome=\(outcome); retaining current engine", modelID: modelID)
                     }
@@ -69,7 +72,7 @@ extension StandaloneServer {
         standaloneLogger.info("mtp: model=\(modelID) \(message)")
     }
 
-    private func pendingMTPUpgradeModels() -> [String] {
+    func pendingMTPUpgradeModels() -> [String] {
         guard lifecycleState == .running,
             SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment)
         else { return [] }
@@ -175,7 +178,7 @@ extension StandaloneServer {
                 pagedPoolBytes: await replacement.bridge.kvBackendPoolBytes(),
                 activationReserveBytes: resolvedActivationReserveBytes)
             else { throw CancellationError() }
-            standaloneLogger.info("mtp: model=\(modelID) verified replacement prepared in \(String(describing: preparationStarted.duration(to: .now))); waiting for natural idle")
+            standaloneLogger.info("mtp: model=\(modelID) verified replacement prepared in \(String(describing: preparationStarted.duration(to: .now))); ready to drain accepted requests")
             await finishMTPUpgradeLoad()
             return StagedStandaloneMTPUpgrade(modelID: modelID, original: original,
                 replacement: replacement, sizing: sizing, lease: lease)
@@ -212,7 +215,8 @@ extension StandaloneServer {
         guard slotReservations[modelID, default: 0] == 0, !isLoadingAny else { return false }
         isLoadingAny = true
         // No suspension between the last owner check and the admission gate.
-        // Work arriving during publication waits; existing work is never drained.
+        // Only accepted work has reached idle; final publication has its own
+        // gate so accepted requests never wait behind their admission drain.
         mtpUpgradeTransitions.insert(modelID)
         slots[modelID] = CachedSlot(
             bundle: staged.replacement, container: original.container,

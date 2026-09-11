@@ -191,6 +191,65 @@ struct StandaloneMTPUpgradeTests {
         await fixture.clean()
     }
 
+    @Test("prepared upgrade drains existing reservations while refusing new admissions")
+    func preparedDrainThenSwap() async throws {
+        let fixture = try await StandaloneUpgradeFixture.make()
+        let existing = try await fixture.server.acquireModel(standaloneUpgradeModelID)
+        let staged = try #require(try await fixture.prepare())
+        let paused = UpgradeBarrier()
+        let task = Task {
+            await MTPIdleUpgrade.run(prepare: { staged },
+                beginDrain: { try await fixture.server.beginMTPUpgradeDrain($0) },
+                commitIfIdle: { try await fixture.server.commitMTPUpgradeIfIdle($0) },
+                discard: { await fixture.server.discardMTPUpgrade($0) },
+                finishDrain: { await fixture.server.finishMTPUpgradeDrain($0) },
+                pause: { await paused.wait() })
+        }
+        await paused.observeEntry()
+        await fixture.checkOriginal()
+        #expect(await fixture.server.debugSlotReservationCount(modelId: standaloneUpgradeModelID) == 1)
+        await #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            let rejected = try await fixture.server.acquireModel(standaloneUpgradeModelID)
+            await rejected.releaseToken.fire()
+        }
+        // Accepted work is allowed to obtain/use its existing engine while
+        // new acquisition is fenced. The publication gate must remain open.
+        try await fixture.server.ensureModelLoaded(standaloneUpgradeModelID)
+        #expect(existing.engineV2Bridge === fixture.original)
+        await existing.releaseToken.fire()
+        await paused.release()
+        #expect(await task.value == .installed)
+        let next = try await fixture.server.acquireModel(standaloneUpgradeModelID)
+        #expect(next.engineV2Bridge === staged.replacement.bridge)
+        await next.releaseToken.fire()
+        #expect(fixture.originalEngine.shutdownCount == 1)
+        #expect(await fixture.server.mtpStagingBytes == 0)
+        await fixture.clean()
+    }
+
+    @Test("drain timeout reopens original admission without cancelling accepted work")
+    func drainTimeoutReopensOriginal() async throws {
+        let fixture = try await StandaloneUpgradeFixture.make()
+        let existing = try await fixture.server.acquireModel(standaloneUpgradeModelID)
+        let staged = try #require(try await fixture.prepare())
+        let outcome = await MTPIdleUpgrade.run(maximumIdleChecks: 2, prepare: { staged },
+            beginDrain: { try await fixture.server.beginMTPUpgradeDrain($0) },
+            commitIfIdle: { try await fixture.server.commitMTPUpgradeIfIdle($0) },
+            discard: { await fixture.server.discardMTPUpgrade($0) },
+            finishDrain: { await fixture.server.finishMTPUpgradeDrain($0) }, pause: {})
+        #expect(outcome == .deferred)
+        await fixture.checkOriginal()
+        #expect(await fixture.server.debugSlotReservationCount(modelId: standaloneUpgradeModelID) == 1)
+        let next = try await fixture.server.acquireModel(standaloneUpgradeModelID)
+        #expect(next.engineV2Bridge === fixture.original)
+        await next.releaseToken.fire()
+        await existing.releaseToken.fire()
+        #expect(fixture.factory.latest?.shutdownCount == 1)
+        #expect(await fixture.server.mtpStagingBytes == 0)
+        #expect(await fixture.server.debugOutstandingKVReservationBytes() == 0)
+        await fixture.clean()
+    }
+
     @Test("failed real staging keeps target and releases both reservation ledgers")
     func buildFailure() async throws {
         let gate = UpgradeBarrier()
@@ -258,14 +317,19 @@ struct StandaloneMTPUpgradeTests {
         fixture.originalEngine.setBusy(true)
         let task = Task {
             await MTPIdleUpgrade.run(prepare: { staged },
+                beginDrain: { try await fixture.server.beginMTPUpgradeDrain($0) },
                 commitIfIdle: { try await fixture.server.commitMTPUpgradeIfIdle($0) },
                 discard: { await fixture.server.discardMTPUpgrade($0) },
+                finishDrain: { await fixture.server.finishMTPUpgradeDrain($0) },
                 pause: { await pause.wait() })
         }
         await pause.observeEntry()
         task.cancel()
         await pause.release()
         #expect(await task.value == .cancelled)
+        let resumed = try await fixture.server.acquireModel(standaloneUpgradeModelID)
+        #expect(resumed.engineV2Bridge === fixture.original)
+        await resumed.releaseToken.fire()
         await fixture.checkOriginal()
         #expect(fixture.factory.latest?.shutdownCount == 1)
         #expect(await fixture.server.debugOutstandingKVReservationBytes() == 0)

@@ -78,10 +78,11 @@ extension ProviderLoop {
         // publishes a replacement, so a tripped guard RECOMPUTES rather
         // than returns. For activation-reserve epochs the third attempt
         // may publish one epoch behind rather than wait until the next tick.
-        // Staging changes always invalidate the old snapshot; their mutation
+        // Staging and model-drain changes invalidate the old snapshot; their mutation
         // paths explicitly publish a replacement.
         let reserveEpochAtEntry = activationReserveEpoch
         let stagingGenerationAtEntry = mtpStagingReservations.generation
+        let drainGenerationAtEntry = mtpAdmissionDrains.generation
         // ONE ENGINE (v0.7.5): `EngineV2Runtime.capacitySummary` is the ONLY
         // slot source — every loaded model serves through a v2 bridge; the
         // legacy scheduler fold is gone. Same `BackendSlotCapacity` wire
@@ -176,13 +177,15 @@ extension ProviderLoop {
         // free_for_load_gb here predate the floor the KV gate already
         // enforces. Recompute over the current state instead of publishing
         // them; bounded so a push storm cannot starve the publish.
-        // A newer staging refresh owns the replacement snapshot. Never let
-        // the bounded reserve retry publish obsolete staging capacity.
-        if mtpStagingReservations.generation != stagingGenerationAtEntry && attempt >= 2 { return }
+        // A newer staging/drain refresh owns the replacement snapshot. Never let
+        // the bounded reserve retry publish obsolete staging or admission capacity.
+        if (mtpStagingReservations.generation != stagingGenerationAtEntry
+            || mtpAdmissionDrains.generation != drainGenerationAtEntry) && attempt >= 2 { return }
         guard (activationReserveEpoch == reserveEpochAtEntry
-            && mtpStagingReservations.generation == stagingGenerationAtEntry) || attempt >= 2 else {
+            && mtpStagingReservations.generation == stagingGenerationAtEntry
+            && mtpAdmissionDrains.generation == drainGenerationAtEntry) || attempt >= 2 else {
             logger.info(
-                "Capacity snapshot recomputed: activation reserve or MTP staging moved during refresh (attempt \(attempt + 1))")
+                "Capacity snapshot recomputed: activation reserve, MTP staging or admission drain moved during refresh (attempt \(attempt + 1))")
             return await updateAggregateCapacity(attempt: attempt + 1)
         }
 
@@ -202,6 +205,11 @@ extension ProviderLoop {
             inflightTasks: Int64(inflightTasks.count),
             processMemory: processMemoryTelemetrySampler.capture(processMemory))
 
+        // Existing coordinators reject reloading per model; an unknown new
+        // state would remain routable. Keep other slots and provider status live.
+        for index in allSlots.indices where mtpAdmissionDrains.contains(allSlots[index].model) {
+            allSlots[index].state = "reloading"
+        }
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
             gpuMemoryActiveGb: Double(mlxActiveBytes) / gbDivisor,

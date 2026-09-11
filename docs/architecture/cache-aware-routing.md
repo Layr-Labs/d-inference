@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-10 · commit `05f987729`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -270,6 +270,26 @@ provider epochs ([`EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS`](../reference/confi
 heap-evicted. V1 receipt
 frames remain decodable for mixed-version safety but cannot mutate routing
 evidence (`coordinator/registry/cache_receipts.go`).
+
+### Prepared assistant replacement
+
+A prepared Gemma QAT assistant upgrade temporarily advertises only that model's
+slot as `reloading`. Normal eligibility gates exclude the slot even when it has
+valid cache-holder evidence; racing provider admissions receive a transient 503
+`slotState` refusal. Other model slots continue serving. Accepted work finishes
+on the original engine before publication. The network provider's configured
+rollout jitter occurs before admission closes and only spreads independent
+upgrades; it provides no fleet-wide availability guarantee
+(`provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift`,
+`updateAggregateCapacity`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`,
+`rejectIfDrainingForMTP`). The drain, timeout fallback and standalone
+behavior are defined in [inference → Multi-token prediction](inference.md#multi-token-prediction).
+
+Replacement keeps the complete checkpoint's assistant and runtime identity
+checks. A target-only checkpoint can miss after MTP activates; old holder evidence
+does not authorize reuse under the replacement's cache capability or epoch.
+Unchanged models retain their evidence under the normal
+[holder lifecycle](#holder-lifecycle).
 
 ### Scheduler
 

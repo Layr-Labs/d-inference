@@ -311,6 +311,7 @@ public actor ProviderLoop {
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false
     internal var mtpStagingReservations = MTPStagingReservations()
+    internal var mtpAdmissionDrains = MTPAdmissionDrains()
     internal var mtpUpgradeMonitorTask: Task<Void, Never>?
     internal var mtpUpgradeTransitions: Set<String> = []
     internal var mtpUpgradeWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]

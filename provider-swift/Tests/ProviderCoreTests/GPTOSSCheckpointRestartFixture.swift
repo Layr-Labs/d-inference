@@ -130,20 +130,20 @@ final class GPTOSSCheckpointRestartFixture {
         return store
     }
 
-    func makeBridge(store: SSDHybridCheckpointStore?) throws -> EngineV2Bridge {
+    func makeBridge(store: SSDHybridCheckpointStore?, maxConcurrentRequests: Int = 1) throws -> EngineV2Bridge {
         try #require(PrefixCachePolicy.isEnabled(modelId: Self.modelID, environment: [:]),
                      "the exact catalog model must activate caching without an opt-in")
         #expect(!PrefixCachePolicy.isMemoryEnabled(environment: [:]))
         let build = try EngineV2Factory.makeProductionBuild(
             model: model, modelID: Self.modelID, tokenizer: tokenizer.inner,
-            kvBytesCapacity: 16 << 30, maxConcurrentRequests: 1,
+            kvBytesCapacity: 16 << 30, maxConcurrentRequests: maxConcurrentRequests,
             completePrefixCache: store, kvBackend: .auto,
             environment: store == nil ? ["DARKBLOOM_PREFIX_CACHE": "0"] : [:])
         try #require(build.kvBackendKind == .paged && build.kvBackendFallbackReason == nil,
                      "default GPT-OSS serving must resolve to paged without fallback")
         let bridge = EngineV2Bridge(engine: build.engine, modelId: Self.modelID,
             tokenizer: tokenizer, eosTokenIds: eos, extraEOSTokens: extraEOSTokens,
-            maxConcurrentRequests: 1, fixedRequestBytes: build.fixedRequestBytes,
+            maxConcurrentRequests: maxConcurrentRequests, fixedRequestBytes: build.fixedRequestBytes,
             ssdHybridCheckpointStore: store, kvBackendKind: .paged)
         bridges.append(bridge)
         return bridge

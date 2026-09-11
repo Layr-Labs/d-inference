@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-11 · commit `7c394fa2b`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -110,6 +110,19 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 `postgres:16` service with user/password/db `testbed`. The pre-push hook runs
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
+
+#### Load and event reports
+
+`e2e/testbed/load_report.go` owns load-result statistics and the stable text/Markdown
+segment order. Its percentile convention remains the load harness's existing
+integer index; the event profiler keeps its separate nearest-rank convention.
+`e2e/testbed/profile/profile.go` indexes one event snapshot while preserving
+request-start order, repeated starts and individual error counts. Reports should
+be built after event producers have finished.
+
+```bash
+go test -race -short ./e2e/testbed/...
+```
 
 #### Provider config cleanup
 

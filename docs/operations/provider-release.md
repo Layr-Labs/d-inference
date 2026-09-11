@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-11 · commit `d44791a21`
+> Last updated: 2026-09-11 · commit `101a97ad5`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -322,10 +322,13 @@ curl -fsS "$COORD/v1/admin/releases" -H "Authorization: Bearer $ADMIN_KEY" | jq 
 ## Rollback
 
 For a local installer swap failure, `scripts/install.sh` attempts to restore the
-previous app or flat bundle. If that rename also fails, it leaves the old payload
+previous app and bin paths, including directory symlinks. Permissions and bin
+links are prepared before replacement, and unrelated bin entries are preserved.
+If a restoration rename fails, it leaves that old payload
 in the reported `.install-backup-*` directory and exits unsuccessfully. Preserve
 that directory, resolve the reported filesystem error, and restore its
-`Darkbloom.app` or `bin` payload before retrying. Installer output does not claim
+`Darkbloom.app` and/or `bin` payload before retrying. Keep relative symlinks as
+symlinks when moving them back to their original path. Installer output does not claim
 that a failed restoration left the live installation unchanged.
 
 A registered release is immutable (hash-pinned); rollback means **deactivating

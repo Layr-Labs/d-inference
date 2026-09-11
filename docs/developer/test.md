@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d44791a21`
+> Last updated: 2026-09-11 · commit `101a97ad5`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -912,8 +912,11 @@ install/replace path of `scripts/install.sh` in a temp dir (and runs
 `scripts/sync-install-embed.sh check` first).
 
 `python3 -m unittest discover -s scripts -p test_installer_rollback.py` injects
-rename failures into app and legacy-flat commit functions. It checks successful
-restoration and retention of the previous payload if restoration also fails.
+permission, link, copy and rename failures into app and legacy-flat commit
+functions under conditional invocation (where Bash disables `errexit`). It checks
+unchanged live paths after preparation failures, rollback of both app and bin,
+relative/dangling symlink restoration, retention after rollback failure, unrelated
+bin entries, and private download-file permissions and cleanup.
 These fixtures use temporary directories without downloads, signing, enrollment,
 or running the provider; Release Integrity CI runs them on Linux.
 

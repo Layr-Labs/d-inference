@@ -188,67 +188,102 @@ verify_staged_app_payload() {
 restore_install_path() {
     local previous=$1
     local destination=$2
-    [ -d "$previous" ] || return 0
+    [ -e "$previous" ] || [ -L "$previous" ] || return 0
     mv "$previous" "$destination" || {
         fail_install "Could not restore $destination; previous installation retained at $previous."
         return 1
     }
 }
 
+# Preserve entries outside the release's payload (including dangling symlinks).
+# Work only in staging: copying or preparing a link must not change the live bin.
+preserve_extra_bin_entries() (
+    local previous=$1
+    local staged=$2
+    local entry name
+    [ -d "$previous" ] || return 0
+    shopt -s dotglob nullglob
+    for entry in "$previous"/*; do
+        name=${entry##*/}
+        if [ ! -e "$staged/$name" ] && [ ! -L "$staged/$name" ]; then
+            cp -a "$entry" "$staged/$name" || return 1
+        fi
+    done
+)
+
+# Replace the app and bin as one recoverable operation. Preparation has already
+# completed; every successful move is tracked so rollback touches only our paths.
+commit_install_paths() {
+    local install_dir=$1
+    local staged_bin=$2
+    local staged_app=${3:-}
+    local backup i j rollback_failed=0
+    local -a sources=() names=() saved=() installed=()
+    backup=$(mktemp -d "$install_dir/.install-backup-XXXXXX") || return 1
+    if [ -n "$staged_app" ]; then
+        sources+=("$staged_app")
+        names+=("Darkbloom.app")
+    fi
+    sources+=("$staged_bin")
+    names+=("bin")
+    for ((i=0; i<${#names[@]}; i++)); do
+        saved[i]=0
+        installed[i]=0
+        if [ -e "$install_dir/${names[i]}" ] || [ -L "$install_dir/${names[i]}" ]; then
+            mv "$install_dir/${names[i]}" "$backup/${names[i]}" || break
+            saved[i]=1
+        fi
+        mv "${sources[i]}" "$install_dir/${names[i]}" || break
+        installed[i]=1
+    done
+    if [ "$i" -eq "${#names[@]}" ]; then
+        rm -rf "$backup"
+        return $?
+    fi
+    for ((j=i; j>=0; j--)); do
+        if [ "${installed[j]}" -eq 1 ]; then
+            if ! rm -rf "$install_dir/${names[j]}"; then
+                fail_install "Could not remove failed installation at $install_dir/${names[j]}; recovery backup retained at $backup."
+                rollback_failed=1
+                continue
+            fi
+        fi
+        if [ "${saved[j]}" -eq 1 ]; then
+            restore_install_path "$backup/${names[j]}" "$install_dir/${names[j]}" || rollback_failed=1
+        fi
+    done
+    [ "$rollback_failed" -eq 0 ] && rm -rf "$backup"
+    return 1
+}
+
 commit_staged_app() {
     local staged_app=$1
     local install_dir=$2
-    local backup="$install_dir/.install-backup-$$-$RANDOM"
-    local destination="$install_dir/Darkbloom.app"
-    mkdir -p "$backup" "$install_dir/bin"
-
-    if [ -d "$destination" ]; then
-        mv "$destination" "$backup/Darkbloom.app" || {
-            rm -rf "$backup"
-            return 1
-        }
-    fi
-    if ! mv "$staged_app" "$destination"; then
-        restore_install_path "$backup/Darkbloom.app" "$destination" || return 1
-        rm -rf "$backup"
-        return 1
-    fi
-
-    local app_bin="$destination/Contents/MacOS"
-    if ! ln -sfn "../Darkbloom.app/Contents/MacOS/darkbloom" "$install_dir/bin/darkbloom" \
-        || ! ln -sfn "../Darkbloom.app/Contents/MacOS/darkbloom-enclave" "$install_dir/bin/darkbloom-enclave" \
-        || ! ln -sfn "../Darkbloom.app/Contents/MacOS/mlx.metallib" "$install_dir/bin/mlx.metallib" \
-        || ! ln -sfn "darkbloom-enclave" "$install_dir/bin/eigeninference-enclave"
+    local staged_bin
+    # chmod and symlink failures are checked explicitly: callers use `if`/`||`,
+    # which disables Bash errexit inside the entire function call.
+    chmod +x "$staged_app/Contents/MacOS/darkbloom" "$staged_app/Contents/MacOS/darkbloom-enclave" || return 1
+    staged_bin=$(mktemp -d "$install_dir/.install-bin-XXXXXX") || return 1
+    if ln -s "../Darkbloom.app/Contents/MacOS/darkbloom" "$staged_bin/darkbloom" \
+        && ln -s "../Darkbloom.app/Contents/MacOS/darkbloom-enclave" "$staged_bin/darkbloom-enclave" \
+        && ln -s "../Darkbloom.app/Contents/MacOS/mlx.metallib" "$staged_bin/mlx.metallib" \
+        && ln -s "darkbloom-enclave" "$staged_bin/eigeninference-enclave" \
+        && preserve_extra_bin_entries "$install_dir/bin" "$staged_bin" \
+        && commit_install_paths "$install_dir" "$staged_bin" "$staged_app"
     then
-        rm -rf "$destination"
-        restore_install_path "$backup/Darkbloom.app" "$destination" || return 1
-        rm -rf "$backup"
-        return 1
+        return 0
     fi
-    chmod +x "$app_bin/darkbloom" "$app_bin/darkbloom-enclave"
-    rm -rf "$backup"
+    rm -rf "$staged_bin"
+    return 1
 }
 
 commit_staged_flat_bundle() {
     local staged_bin=$1
     local install_dir=$2
-    local backup="$install_dir/.install-backup-$$-$RANDOM"
-    local destination="$install_dir/bin"
-    mkdir -p "$backup"
-    if [ -d "$destination" ]; then
-        mv "$destination" "$backup/bin" || {
-            rm -rf "$backup"
-            return 1
-        }
-    fi
-    if ! mv "$staged_bin" "$destination"; then
-        restore_install_path "$backup/bin" "$destination" || return 1
-        rm -rf "$backup"
-        return 1
-    fi
-    chmod +x "$destination/darkbloom" "$destination/darkbloom-enclave"
-    ln -sfn "darkbloom-enclave" "$destination/eigeninference-enclave"
-    rm -rf "$backup"
+    chmod +x "$staged_bin/darkbloom" "$staged_bin/darkbloom-enclave" \
+        && ln -sfn "darkbloom-enclave" "$staged_bin/eigeninference-enclave" \
+        && preserve_extra_bin_entries "$install_dir/bin" "$staged_bin" \
+        && commit_install_paths "$install_dir" "$staged_bin"
 }
 
 install_bundle_atomically() {

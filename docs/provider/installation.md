@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-11 · commit `e9018bb41`
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -78,17 +78,25 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
      `DARKBLOOM_NO_UPDATE_CHECK=1 DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 MLX_GATHER_QMM_EXPERT_SLICES=1 darkbloom runtime-smoke`
      (`provider-swift/Sources/darkbloom/RuntimeSmokeCommand.swift`,
      `RuntimeSmoke`);
-   - `commit_staged_app` moves any existing `~/.darkbloom/Darkbloom.app` to
-     `~/.darkbloom/.install-backup-<pid>-<random>`, moves the staged app in,
-     writes the symlinks `~/.darkbloom/bin/darkbloom`, `darkbloom-enclave`,
-     `mlx.metallib` → `../Darkbloom.app/Contents/MacOS/*` and the legacy alias
-     `bin/eigeninference-enclave → darkbloom-enclave`, and `chmod +x`. Any
-     failure moves the backup back;
+   - `commit_staged_app` prepares executable permissions and the staged bin
+     symlinks (`darkbloom`, `darkbloom-enclave`, `mlx.metallib` and the legacy
+     `eigeninference-enclave` alias), preserving unrelated existing bin entries.
+     `commit_install_paths` then moves the old app and bin into a private
+     `~/.darkbloom/.install-backup-*` directory and installs the staged paths;
    - a tarball without `Darkbloom.app` (legacy flat layout) gets
      `codesign --verify --strict -R=…` on `bin/darkbloom` and
-     `commit_staged_flat_bundle` swaps `~/.darkbloom/bin` the same way;
-   - the staging directory is removed; on any failure the script prints
-     `Existing installation was left unchanged.` and exits 1.
+     `commit_staged_flat_bundle` prepares and swaps the bin with the same
+     recovery mechanism;
+   - preparation or verification failures leave the live installation unchanged.
+     A replacement failure reverses completed moves before exiting 1. If a
+     restoration rename or candidate removal also fails, the affected live path
+     may be absent or incomplete: the installer retains the previous copy in
+     `.install-backup-*` and prints its recovery location. Keep that directory
+     and follow [installer rollback](../operations/provider-release.md#rollback)
+     before retrying or removing any backup. Relative and dangling symlink
+     backups are retained and restored as links. Once both live paths are installed,
+     backup cleanup failure emits a warning with the obsolete backup path and
+     continues successfully; the new installation remains active.
 4. **PATH.** `ln -sf ~/.darkbloom/bin/darkbloom /usr/local/bin/darkbloom`
    (errors ignored). The rc file is `~/.zshrc`, or `~/.bashrc` only when
    `~/.zshrc` does not exist. If the rc does not already mention

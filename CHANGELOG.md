@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Provider installation retains the previous app or legacy bundle if restoring it after a failed swap also fails. The installer reports the recovery path instead of deleting the only backup or claiming successful restoration.
+- Installer downloads use private temporary files and remove incomplete downloads on failure.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

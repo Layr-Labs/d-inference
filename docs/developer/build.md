@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-12 · commit `2619389bc`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -244,6 +244,13 @@ and retain their hashes with the build's source/dependency inventory. See
 <a id="resident-prefix-benchmark-executable"></a>
 
 #### Prefix-cache benchmark executable
+
+The radix Python replay and process-cleanup fixtures run with the standard
+library alone, without building their native executables
+(`scripts/benchmarks/test_radix_prefix_cache.py`, `ReplayInputTests`;
+`scripts/benchmarks/test_radix_process_cleanup.py`, `ProcessCleanupTests`).
+Use the [prefix-cache benchmark checks](test.md#prefix-cache-benchmark-validation)
+before running an authorized live measurement.
 
 [`scripts/benchmarks/radix-engine`](../../scripts/benchmarks/radix-engine/Package.swift)
 links the real provider factory and MLX packages from an explicitly selected

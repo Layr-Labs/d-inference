@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-10 · commit `213b8c2b6`
+> Last updated: 2026-09-11 · commit `f8503600f`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -236,6 +236,13 @@ from `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT_BY_MODEL`; the solo
 decode rate is the provider's median solo sample (at least
 `defaultQualityCapSoloMinSamples`, the default of
 `EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES`), or a seeded/benchmark rate.
+
+Solo samples require at most one running or waiting request across the whole
+provider and a running decode in the sampled slot (`coordinator/registry/solo_tps.go`,
+`soloSampleEligible`; `coordinator/registry/heartbeat.go`). Each occupancy count
+is compared against the remaining allowance before addition, so an overflowing
+busy report cannot enter the solo sample pool. The separate load-inclusive TPS
+store still receives valid observed rates from busy providers.
 
 ### Model slots, pending loads and swaps
 

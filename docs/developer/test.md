@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `ec4a8dbfb`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -65,6 +65,14 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 ```
 
 ### 2. Coordinator (Go)
+
+`TestMapQuantizationToOpenRouter` (`coordinator/api/openrouter_models_test.go`)
+repeats overlapping decorated-label cases to detect map-order-dependent precision
+metadata. Run the focused check from the repository root:
+
+```bash
+go test -race ./coordinator/api -run '^TestMapQuantizationToOpenRouter$' -count=1
+```
 
 Run prediction telemetry checks from the repository root:
 

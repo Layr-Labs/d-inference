@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Geolocation failure logs** — Omit the PRO lookup URL and its API key from transport-error diagnostics while retaining the underlying failure cause.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

@@ -45,6 +45,11 @@ enum EngineV2Translation {
     /// * `multimodal` (v0.7.5) carries the precomputed vision-prefill spans
     ///   + embeddings for image requests (`EngineV2VisionPrefill`); nil for
     ///   text requests keeps the engine's text path byte-identical.
+    /// * `samplingDefaults` are the artifact's `generation_config.json`
+    ///   sampling values resolved once at slot construction
+    ///   (`EngineV2SamplingDefaults`); they fill only the sampling fields
+    ///   the request omits. `.legacy` reproduces the historical greedy
+    ///   defaults exactly.
     static func cbv2Request(
         id: CBv2RequestID,
         promptTokens: [Int],
@@ -54,12 +59,13 @@ enum EngineV2Translation {
         cacheScope: String = "",
         cacheEnabled: Bool = true,
         multimodal: CBv2MultimodalInput? = nil,
-        tokenConstraint: (any CBv2TokenConstraint)? = nil
+        tokenConstraint: (any CBv2TokenConstraint)? = nil,
+        samplingDefaults: EngineV2SamplingDefaults = .legacy
     ) -> CBv2Request {
         CBv2Request(
             id: id,
             promptTokens: promptTokens,
-            sampling: samplingParams(from: request),
+            sampling: samplingParams(from: request, defaults: samplingDefaults),
             maxTokens: request.max_tokens ?? defaultMaxTokens,
             stopTokens: stopTokenIds,
             stopStrings: request.stop?.asArray ?? [],
@@ -71,12 +77,17 @@ enum EngineV2Translation {
         )
     }
 
-    /// Per-request sampling translation. Defaults deliberately mirror the
-    /// legacy engine path (temperature `?? 0.0` — greedy — exactly as
+    /// Per-request sampling translation. An omitted knob takes the
+    /// artifact default when the model's family honors its
+    /// `generation_config.json` (`EngineV2SamplingDefaults`), otherwise the
+    /// legacy engine-path value (temperature `?? 0.0` — greedy — exactly as
     /// `BatchScheduler.submit`; unset knobs collapse to the contract's
     /// no-op values so the v2 sampler applies no transform the legacy
-    /// sampler would not have applied).
-    static func samplingParams(from request: ChatCompletionRequest) -> CBv2SamplingParams {
+    /// sampler would not have applied). Explicit request values always win.
+    static func samplingParams(
+        from request: ChatCompletionRequest,
+        defaults: EngineV2SamplingDefaults = .legacy
+    ) -> CBv2SamplingParams {
         let (logitBias, droppedBiasKeys) = parseLogitBiasCountingDropped(request.logit_bias)
         if droppedBiasKeys > 0 {
             // Count only — NEVER the keys/values (they are request content).
@@ -88,11 +99,11 @@ enum EngineV2Translation {
             #endif
         }
         return CBv2SamplingParams(
-            temperature: request.temperature ?? 0.0,
-            topP: request.top_p ?? 1.0,
-            topK: request.top_k ?? 0,
+            temperature: request.temperature ?? defaults.temperature ?? 0.0,
+            topP: request.top_p ?? defaults.topP ?? 1.0,
+            topK: request.top_k ?? defaults.topK ?? 0,
             minP: 0,
-            repetitionPenalty: request.repetition_penalty ?? 1.0,
+            repetitionPenalty: request.repetition_penalty ?? defaults.repetitionPenalty ?? 1.0,
             frequencyPenalty: request.frequency_penalty ?? 0,
             presencePenalty: request.presence_penalty ?? 0,
             seed: request.seed,

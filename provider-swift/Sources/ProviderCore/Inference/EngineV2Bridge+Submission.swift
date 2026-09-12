@@ -168,7 +168,8 @@ extension EngineV2Bridge {
             cacheScope: cacheScope,
             cacheEnabled: cacheEnabled,
             multimodal: multimodal,
-            tokenConstraint: tokenConstraint
+            tokenConstraint: tokenConstraint,
+            samplingDefaults: samplingDefaults
         )
         cbv2Request.positionState = positionState ?? multimodal?.positionState
         try await checkFirstContentDeadline(

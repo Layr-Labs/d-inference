@@ -69,6 +69,10 @@ public actor EngineV2Bridge {
     /// tokens) — `buildStopTokenIds` semantics, computed ONCE at bridge
     /// construction so B=1 and batched behavior stay identical.
     let stopTokenIds: Set<Int>
+    /// Artifact sampling defaults resolved once at construction
+    /// (`EngineV2SamplingDefaults.resolve`); `.legacy` for every family
+    /// that has not been admitted.
+    let samplingDefaults: EngineV2SamplingDefaults
     let defaultMaxTokens: Int
     let maxConcurrentRequests: Int
     /// Operational control for atomic first-token deadline admission.
@@ -296,6 +300,7 @@ public actor EngineV2Bridge {
         tokenizer: TokenizerHandle,
         eosTokenIds: Set<Int>,
         extraEOSTokens: [String] = [],
+        samplingDefaults: EngineV2SamplingDefaults = .legacy,
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
         prefillDeadlineMode: PrefillDeadlineMode = PrefillDeadlineMode.resolve(),
@@ -328,6 +333,7 @@ public actor EngineV2Bridge {
             extraEOSTokens: extraEOSTokens,
             convertTokenToId: { [inner = tokenizer.inner] in inner.convertTokenToId($0) }
         )
+        self.samplingDefaults = samplingDefaults
         self.defaultMaxTokens = defaultMaxTokens
         self.maxConcurrentRequests = maxConcurrentRequests
         self.prefillDeadlineMode = prefillDeadlineMode

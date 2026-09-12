@@ -10,8 +10,13 @@ Prompt caching is used on the static threat model content so repeated
 pushes to the same PR pay only for the diff tokens.
 """
 
+from __future__ import annotations
+
 import argparse
+import ast
 import fnmatch
+import io
+import re
 import sys
 
 import anthropic
@@ -39,7 +44,8 @@ Three components:
 - console-ui/    Next.js 16 frontend
 
 Trust model: coordinator is trusted; providers and consumers are adversarial.
-Inference traffic is E2E encrypted via X25519/NaCl box on the coordinator→provider leg.
+Request encryption is hop by hop: the coordinator decrypts and re-seals the
+request to the provider's attested key (docs/architecture/security/encryption.md).
 Apple Secure Enclave (non-exportable P-256 key) provides hardware-bound attestation.
 SIP must be enabled; disabling requires a reboot that kills the process.
 
@@ -74,23 +80,59 @@ def load_threat_model(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def git_path(path: str) -> str:
+    """Decode Git's optional C quoting, including octal UTF-8 bytes."""
+    if not path.startswith('"'):
+        return path
+    value = ast.literal_eval(path)
+    try:
+        return value.encode("latin-1").decode("utf-8")
+    except UnicodeError:
+        return value  # core.quotePath=false can leave literal Unicode.
+
+
+def diff_destination(header: str) -> str | None:
+    paths = re.findall(r'"(?:\\.|[^"\\])*"|\S+', header)
+    if len(paths) == 2:
+        destination = git_path(paths[1])
+        return destination[2:] if destination.startswith("b/") else None
+    # Git leaves spaces unquoted. Mode/binary-only changes use the same path
+    # on both sides; renames/copies also provide explicit destination metadata.
+    length = (len(header) - 5) // 2
+    candidate = header[2:2 + length]
+    return candidate if header == f"a/{candidate} b/{candidate}" else None
+
+
 def parse_diff_by_file(diff_text: str) -> dict[str, str]:
     """Return ordered {filepath: diff_section_text}."""
     files: dict[str, str] = {}
     current_file: str | None = None
     buf: list[str] = []
+    in_headers = False
 
-    for line in diff_text.splitlines(keepends=True):
+    # Git separates patch lines with LF. Unicode separators inside a hunk are
+    # file content and must not introduce new apparent diff headers.
+    for line in io.StringIO(diff_text):
         if line.startswith("diff --git "):
             if current_file is not None:
                 files[current_file] = "".join(buf)
-            current_file = None
+            current_file = diff_destination(line[len("diff --git "):].rstrip("\n"))
             buf = [line]
-        elif line.startswith("+++ b/"):
-            current_file = line[6:].strip()
-            buf.append(line)
-        else:
-            buf.append(line)
+            in_headers = True
+            continue
+        if line.startswith("@@ "):
+            in_headers = False
+        if in_headers:
+            if line.startswith(("--- ", "+++ ")):
+                # Unquoted names with spaces end in a tab separator. Literal
+                # tabs in filenames are C-quoted by Git; filename spaces stay.
+                path = git_path(line[4:].rstrip("\n").split("\t", 1)[0])
+                # Keep the old path for deletions (+++ /dev/null).
+                if path.startswith(("a/", "b/")):
+                    current_file = path[2:]
+            elif line.startswith(("rename to ", "copy to ")):
+                current_file = git_path(line.split(" to ", 1)[1].rstrip("\n"))
+        buf.append(line)
 
     if current_file is not None:
         files[current_file] = "".join(buf)
@@ -124,16 +166,26 @@ def build_focused_diff(
 
     for filepath, section in file_diffs.items():
         tids = threats_for_file(filepath, threats)
+        # A move/copy retains the source's threat context. Match both sides,
+        # but show and budget the patch only once under its destination path.
+        for line in io.StringIO(section):
+            if line.startswith("@@ "):
+                break
+            if line.startswith(("rename from ", "copy from ")):
+                source = git_path(line.split(" from ", 1)[1].rstrip("\n"))
+                tids = list(dict.fromkeys(tids + threats_for_file(source, threats)))
         if not tids:
             uncovered.append(filepath)
             continue
         if char_budget <= 0:
             # Budget exhausted — still record that the file is covered
-            covered[filepath] = (tids, "[diff omitted — total diff budget exhausted]\n")
+            covered[filepath] = (tids, "")
             continue
-        snippet = section[:MAX_FILE_DIFF_CHARS]
-        if len(section) > MAX_FILE_DIFF_CHARS:
-            snippet += f"\n[...{filepath} truncated at {MAX_FILE_DIFF_CHARS} chars...]\n"
+        limit = min(MAX_FILE_DIFF_CHARS, char_budget)
+        snippet = section[:limit]
+        if len(section) > limit:
+            marker = "\n[diff truncated]\n"
+            snippet = snippet[:limit - len(marker)] + marker if limit >= len(marker) else ""
         covered[filepath] = (tids, snippet)
         char_budget -= len(snippet)
 
@@ -173,6 +225,8 @@ def build_user_message(
     parts.append("\n## Focused diff (security-relevant files only)\n")
     for filepath, (tids, snippet) in covered.items():
         parts.append(f"### `{filepath}`  _(threats: {', '.join(tids)})_\n")
+        if not snippet:
+            snippet = "[diff omitted — total diff budget exhausted]\n"
         parts.append(f"```diff\n{snippet}\n```\n")
 
     parts.append(

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-12 · commit `456933f24`
+> Last updated: 2026-09-12 · commit `60bae5844`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1011,7 +1011,7 @@ The released-provider artifact gate has CPU-only fixtures that do not launch a
 provider, inspect SIP, or download a release:
 
 ```bash
-go test -race ./e2e -short -run 'TestIntegrationMixedVersionGateContract|TestMixedVersionArtifact' -count=1
+go test -race ./e2e -short -run 'TestIntegrationMixedVersion(GateContract|Artifact)' -count=1
 ```
 
 `e2e/mixed_version_artifacts_test.go` verifies both bundle hashes, executable

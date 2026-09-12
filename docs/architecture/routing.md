@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-09-12 · commit `d0eba9b41`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -622,6 +622,11 @@ When the consumer path sheds a request with `429`, `estimateRetryAfter` (`coordi
 For a TTFT shed, `estimateTTFTRetryAfter` uses `ceil(bestTTFT − threshold)`
 in seconds, floored at the base estimate and clamped to [2, 30]. Self-route
 sheds use fixed values.
+
+After dispatch exhaustion, a positive provider `feasible_after_ms` replaces the
+queue estimate in `dispatchState.run` (`coordinator/api/dispatch.go`). Bound the
+milliseconds before rounding up so even the largest signed integer preserves
+the [header contract](../reference/api-contracts.md#set-by-the-coordinator).
 
 ### Routing simulation harness (`routingsim`)
 

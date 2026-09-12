@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-12 · commit `d0eba9b41`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -414,6 +414,9 @@ the default MicroMDM entrypoint script; see the
 The [startup measurement tool](../operations/coordinator-startup-measurement.md)
 requires Python 3.10+ and no third-party packages or build step. Its tests use
 local stub servers; its default observation mode sends only public GETs.
+
+The [provider retry-hint regression](test.md#2-coordinator-go) uses local Go HTTP
+and WebSocket fixtures; it needs no model runtime, database or external service.
 
 ## `make` targets
 

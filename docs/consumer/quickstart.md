@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-12 · commit `d0eba9b41`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -129,7 +129,7 @@ defines refresh intervals, maximum cached staleness, and window aliases.
 | 403 `model_not_allowed` | The key was created with an `allowed_models` list that excludes this model | Pick an id from the list, or `PATCH` the key ([`authentication.md`](authentication.md)) |
 | 404 `model_not_found` | The `model` is not an id that `GET /v1/models` returns | Use an id from step 3 ([`models.md`](models.md)) |
 | 503 `model_unavailable` (no `Retry-After`) | No routable provider for the model right now | Retry later, or pick another model ([`models.md`](models.md)) |
-| 429 `rate_limit_exceeded` with `Retry-After` | Key `rpm_limit`, the account limiter, or the token-per-minute limits | Wait `Retry-After` seconds ([`../reference/api-contracts.md`](../reference/api-contracts.md#error-envelope-and-status-codes)) |
+| 429 `rate_limit_exceeded` with `Retry-After` | Key/account limits, token limits, or exhausted provider capacity | Wait `Retry-After` seconds, including a bounded provider availability forecast ([`../reference/api-contracts.md`](../reference/api-contracts.md#error-envelope-and-status-codes)) |
 | Silence before the first byte | Expected: nothing is sent until a provider has produced content (`commitFirstContent`) | Wait; a real error status can still arrive |
 
 ## Related

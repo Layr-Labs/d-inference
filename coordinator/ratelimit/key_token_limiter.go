@@ -66,14 +66,12 @@ func (t *KeyTokenLimiter) Allow(key string, inputTokens, outputTokens int,
 	defer lock.Unlock()
 
 	if inputEnforced {
-		if !t.input.CanNWithRate(key, inputTokens, inRPS, inBurst) {
-			_, retry := t.input.AllowNWithRate(key, inputTokens, inRPS, inBurst)
+		if ok, retry := t.input.CheckNWithRate(key, inputTokens, inRPS, inBurst); !ok {
 			return false, "input_tokens", retry
 		}
 	}
 	if outputEnforced {
-		if !t.output.CanNWithRate(key, outputTokens, outRPS, outBurst) {
-			_, retry := t.output.AllowNWithRate(key, outputTokens, outRPS, outBurst)
+		if ok, retry := t.output.CheckNWithRate(key, outputTokens, outRPS, outBurst); !ok {
 			return false, "output_tokens", retry
 		}
 	}
@@ -104,13 +102,15 @@ func (t *KeyTokenLimiter) Peek(key string, inputTokens, outputTokens int,
 	lock.Lock()
 	defer lock.Unlock()
 
-	if inputEnforced && !t.input.CanNWithRate(key, inputTokens, inRPS, inBurst) {
-		_, retry := t.input.AllowNWithRate(key, inputTokens, inRPS, inBurst)
-		return false, "input_tokens", retry
+	if inputEnforced {
+		if ok, retry := t.input.CheckNWithRate(key, inputTokens, inRPS, inBurst); !ok {
+			return false, "input_tokens", retry
+		}
 	}
-	if outputEnforced && !t.output.CanNWithRate(key, outputTokens, outRPS, outBurst) {
-		_, retry := t.output.AllowNWithRate(key, outputTokens, outRPS, outBurst)
-		return false, "output_tokens", retry
+	if outputEnforced {
+		if ok, retry := t.output.CheckNWithRate(key, outputTokens, outRPS, outBurst); !ok {
+			return false, "output_tokens", retry
+		}
 	}
 	return true, "", 0
 }

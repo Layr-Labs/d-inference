@@ -1,6 +1,8 @@
 package api
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"log/slog"
 	"math"
 	"testing"
 )
@@ -80,4 +82,12 @@ func TestSetPromptContextCalibrationFromEnv(t *testing.T) {
 	if got := calibratedContextPromptTokens("gpt-oss-20b", 100); got != math.MaxInt {
 		t.Errorf("overflowed finite product = %d, want saturated %d", got, math.MaxInt)
 	}
+	reg := registry.New(slog.Default())
+	verdict := reg.PredictServable("gpt-oss-20b", 100,
+		calibratedContextPromptTokens("gpt-oss-20b", 100),
+		1, 1000, registry.RequestTraits{}, false)
+	if verdict.Servable || verdict.Reason != registry.ServabilityContextExceeded {
+		t.Fatalf("saturated calibration bypassed the context gate: %+v", verdict)
+	}
+
 }

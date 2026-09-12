@@ -104,16 +104,21 @@ func TestAllocateDraws_PerAccountCapAcrossRuns(t *testing.T) {
 }
 
 func TestAllocateDraws_Deterministic(t *testing.T) {
+	// Account order opposes ProviderKey order among the equally ranked workhorses.
 	cands := []Candidate{
 		{ProviderKey: "c", AccountID: "acc-c", MemGB: 512, Floor: 40_000_000, Draw: 40_000_000},
-		{ProviderKey: "a", AccountID: "acc-a", MemGB: 64, Floor: 18_000_000, Draw: 18_000_000},
-		{ProviderKey: "b", AccountID: "acc-b", MemGB: 96, Floor: 22_000_000, Draw: 22_000_000},
-		{ProviderKey: "d", AccountID: "acc-d", MemGB: 64, Floor: 18_000_000, Draw: 18_000_000},
+		{ProviderKey: "a", AccountID: "acc-z", MemGB: 64, Floor: 18_000_000, Draw: 18_000_000},
+		{ProviderKey: "b", AccountID: "acc-y", MemGB: 96, Floor: 22_000_000, Draw: 22_000_000},
+		{ProviderKey: "d", AccountID: "acc-x", MemGB: 64, Floor: 18_000_000, Draw: 18_000_000},
 	}
 	budget := int64(25_000_000) // binds — forces ranking decisions
 	// Disable the independent per-account cap so the pool cannot fund every
 	// candidate; ranking and its ProviderKey tiebreaker must determine payouts.
 	first := AllocateDraws(cands, budget, budget, 0.5, 0, nil)
+	want := map[string]int64{"a": 18_000_000, "b": 7_000_000, "c": 0, "d": 0}
+	if got := grantedByKey(first); !reflect.DeepEqual(got, want) {
+		t.Fatalf("grants = %+v, want ProviderKey-ordered grants %+v", got, want)
+	}
 
 	// Re-run with a shuffled input order; result-by-key must be identical.
 	shuffled := []Candidate{cands[2], cands[0], cands[3], cands[1]}

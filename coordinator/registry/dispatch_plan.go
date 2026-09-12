@@ -424,55 +424,11 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 		}
 		relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
 
-		// Snapshot, cost, admit and reservation under ONE p.mu hold — the same
-		// commit sequence as commitProviderReservation, so nothing can change
-		// the provider between the admit re-check and the debit.
-		p.mu.Lock()
-		// Registry/provider lock waits consume the same request clock as the
-		// dispatcher's earlier refresh. Recheck after both locks, before any
-		// admission debit, and tighten an enabled TTFT ceiling to what remains.
-		now := time.Now()
-		if !pr.RefreshFirstContentBudget(now) {
-			p.mu.Unlock()
+		candidate := r.commitPlanEntry(p, model, pr, relaxTrust, enforceTTFT)
+		if candidate == nil {
 			skip(PlanSkipGateRejected)
 			return nil, RoutingDecision{}, false
 		}
-		var snap routingSnapshot
-		if ok, _ := r.snapshotProviderIntoPLockedEx(&snap, p, model, pr.Traits, relaxTrust, false, now); !ok {
-			p.mu.Unlock()
-			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
-		}
-		candidate, _, ok := r.buildCandidateWithReason(snap, pr, now)
-		if !ok {
-			p.mu.Unlock()
-			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
-		}
-		if enforceTTFT && snap.hasBackendCapacity && candidate.breakdown.TTFTMs > pr.MaxTTFTMs {
-			p.mu.Unlock()
-			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
-		}
-		if !r.providerCanAdmitLockedEx(p, model, pr.Traits, relaxTrust, false, now) ||
-			(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust)) {
-			p.mu.Unlock()
-			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
-		}
-		// Half-open capacity probe: check-and-claim under gate.mu, identical to
-		// the primary reservation path (p.mu → gate.mu).
-		if !r.tryClaimCapacityProbe(p, model, now) {
-			p.mu.Unlock()
-			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
-		}
-		pr.ProviderID = p.ID
-		p.addPendingLocked(pr)
-		if p.Status != StatusUntrusted && p.Status != StatusOffline {
-			p.Status = StatusServing
-		}
-		p.mu.Unlock()
 
 		if !slotStateModelLoaded(candidate.snapshot.slotState) {
 			r.RecordWarmPoolColdDispatch(model)
@@ -547,6 +503,47 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 	}
 	skips = append(skips, PlanSkip{Reason: PlanSkipExhausted})
 	return nil, RoutingDecision{Model: model}, skips
+}
+
+// commitPlanEntry snapshots, checks and debits one identity-verified alternate
+// under a single provider lock. Caller holds the registry commit lock, preserving
+// session identity. Rejections leave no pending debit; telemetry runs in the
+// caller only after this method releases p.mu.
+func (r *Registry) commitPlanEntry(p *Provider, model string, pr *PendingRequest, relaxTrust, enforceTTFT bool) *routingCandidate {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Lock waits consume the request clock. Refresh after both locks, before
+	// admission, and tighten an enabled TTFT ceiling to the remaining budget.
+	now := time.Now()
+	if !pr.RefreshFirstContentBudget(now) {
+		return nil
+	}
+	var snap routingSnapshot
+	if ok, _ := r.snapshotProviderIntoPLockedEx(&snap, p, model, pr.Traits, relaxTrust, false, now); !ok {
+		return nil
+	}
+	candidate, _, ok := r.buildCandidateWithReason(snap, pr, now)
+	if !ok {
+		return nil
+	}
+	if enforceTTFT && snap.hasBackendCapacity && candidate.breakdown.TTFTMs > pr.MaxTTFTMs {
+		return nil
+	}
+	if !r.providerCanAdmitLockedEx(p, model, pr.Traits, relaxTrust, false, now) ||
+		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust)) {
+		return nil
+	}
+	// Claim the half-open capacity probe in the existing p.mu -> gate.mu order.
+	if !r.tryClaimCapacityProbe(p, model, now) {
+		return nil
+	}
+	pr.ProviderID = p.ID
+	p.addPendingLocked(pr)
+	if p.Status != StatusUntrusted && p.Status != StatusOffline {
+		p.Status = StatusServing
+	}
+	return candidate
 }
 
 // RefreshDispatchPlan performs the plan's single full re-scan refresh: a fresh

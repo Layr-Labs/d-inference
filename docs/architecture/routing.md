@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-09-11 · commit `31e1e1c2a`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -511,8 +511,10 @@ onto the formerly cheapest provider), the admit re-check
 (`providerCanAdmitLockedEx`), the half-open capacity-probe claim
 (`tryClaimCapacityProbe`, check-and-claim under `gate.mu`) and the pending
 debit (`addPendingLocked`). `ReserveNextFromPlan`
-(`coordinator/registry/dispatch_plan.go`) commits each plan entry the same
-way. `commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
+(`coordinator/registry/dispatch_plan.go`) delegates that atomic provider
+transaction to `commitPlanEntry`, which acquires and releases `p.mu` on every
+path. The caller handles the common rejection outcome and publishes successful
+cold-dispatch/calibration telemetry after the provider lock is released. `commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
 mode: `reserveCommitShared` as described, or `reserveCommitGlobal`, which
 takes `r.mu.Lock()` for the commit — the previous fleet-wide serialization,
 kept as the kill switch behind

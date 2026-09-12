@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `9e79160f1`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -508,6 +508,27 @@ The standalone scripts under [`scripts/benchmarks`](../../scripts/benchmarks/rad
 retain complete requests, SSE events, token counts, cache evidence, and GPU
 telemetry. Use a dedicated idle Mac with the model already downloaded. The
 runner refuses concurrent ranked work and owns only its child processes.
+
+Before live execution, run the CPU-only replay, cleanup and comparison fixtures:
+
+```bash
+PYTHONPATH=scripts/benchmarks python3 -m unittest discover -s scripts/benchmarks -p 'test_*radix*.py'
+```
+
+Replay preflight requires nonempty, ordered rows with matching model IDs,
+earlier comparison targets and unique safe artifact names. Non-null comparison
+targets must be nonempty strings. It rejects path traversal, reserved filenames,
+case/Unicode filename collisions, overlong filenames including the `.json` suffix,
+and empty plans before sending requests or creating output
+(`scripts/benchmarks/radix_prefix_cache.py`, `load_replay`). The owned provider
+wrapper calls the same preflight before host probes, output creation or model
+startup (`scripts/benchmarks/run_radix_http.py`, `main`); the HTTP child validates
+again before using the replay.
+`scripts/benchmarks/run_radix_http.py` (`terminate`) still reaps an owned process
+when its group disappears between polling and signaling. Permission errors and
+unconfirmed termination still fail. Comparison identities are hashed once per
+participating observation, with the same ordered records and strict/record policy
+(`scripts/benchmarks/radix_generation_comparison.py`, `comparison_records`).
 
 ```bash
 # Use the attention-analysis environment below for the NumPy-dependent tests.

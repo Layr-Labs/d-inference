@@ -17,6 +17,8 @@ import sys
 import time
 import urllib.request
 
+from radix_prefix_cache import load_replay
+
 
 def ranked_job():
     return subprocess.run(["pgrep", "-f", r"Runner\.Worker|benchctl measure-job|measure-job\.sh"],
@@ -26,11 +28,17 @@ def ranked_job():
 def terminate(process):
     if process is None or process.poll() is not None:
         return
-    os.killpg(process.pid, signal.SIGTERM)
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass  # The owned group exited between poll and signal; still reap it.
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # The owned group exited after timeout; still reap its child.
         process.wait(timeout=5)
 
 
@@ -47,6 +55,8 @@ def main():
     parser.add_argument("--lengths", default="512,2048,8192")
     parser.add_argument("--replay")
     args = parser.parse_args()
+    if args.replay:
+        load_replay(args.replay, args.model, args.output)
     if ranked_job() or subprocess.run(["pgrep", "-x", "darkbloom"], stdout=subprocess.DEVNULL).returncode == 0:
         raise SystemExit("Dedicated host is busy")
     if os.getloadavg()[0] > 4:

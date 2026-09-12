@@ -69,7 +69,10 @@ func (s *Server) openRouterFeedEntries() ([]types.OpenRouterModel, error) {
 	// purchasable entry and its member builds are hidden, so the marketplace
 	// never lists a raw quant build that a migration will later retire (a
 	// retired build would otherwise stay listed and black-hole requests).
-	aliasEntries, hiddenBuilds := s.openRouterAliasEntries(catalogByID, registryByID, aggTypeByID)
+	aliasEntries, hiddenBuilds, err := s.openRouterAliasEntries(catalogByID, registryByID, aggTypeByID)
+	if err != nil {
+		return nil, err
+	}
 
 	// Stable output order.
 	ids := make([]string, 0, len(catalogByID))
@@ -106,12 +109,11 @@ func (s *Server) openRouterAliasEntries(
 	catalogByID map[string]store.SupportedModel,
 	registryByID map[string]store.ModelRegistryEntry,
 	aggTypeByID map[string]string,
-) ([]types.OpenRouterModel, map[string]struct{}) {
+) ([]types.OpenRouterModel, map[string]struct{}, error) {
 	hidden := make(map[string]struct{})
 	aliases, err := s.store.ListModelAliases()
 	if err != nil {
-		s.logger.Error("openrouter models: failed to list aliases", "error", err)
-		return nil, hidden
+		return nil, nil, err
 	}
 	sort.Slice(aliases, func(i, j int) bool { return aliases[i].AliasID < aliases[j].AliasID })
 
@@ -213,7 +215,7 @@ func (s *Server) openRouterAliasEntries(
 		entries = append(entries, clone)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
-	return entries, hidden
+	return entries, hidden, nil
 }
 
 // aliasDatacenters unions the datacenter country codes across an alias's member

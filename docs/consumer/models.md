@@ -1,6 +1,6 @@
 # Models reference
 
-> Last updated: 2026-09-11 · commit `49b62bfe6`
+> Last updated: 2026-09-12 · commit `0b3096252`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
@@ -28,6 +28,12 @@ What is listed (`listModelEntries`, `aliasModelEntries`):
 - `?include_builds=1` adds the hidden builds (operations/debugging).
 - OpenRouter-only aliases are excluded; they appear only in `GET /v1/models/openrouter` (`handleListModelsOpenRouter`, `coordinator/api/openrouter_endpoint.go`).
 - With `X-Darkbloom-Route: self`, or on a key created with `self_route_only`, the list is instead the account's own machines' models, filtered by the key's `allowed_models` (`selfRouteModelEntries`, `filterEntriesByKeyAllowList`). See [`../provider/self-route.md`](../provider/self-route.md).
+
+Public catalog reads return 500 `internal_error` if the catalog or alias store
+cannot be read. This includes `?include_builds=1` and
+`GET /v1/models/openrouter`. Failed reads are not cached; an existing successful
+cached response can still be served while valid (`handleListModels`,
+`cachedModelListBody`, `handleListModelsOpenRouter`).
 
 ### `ModelEntry` fields
 
@@ -70,7 +76,11 @@ What is listed (`listModelEntries`, `aliasModelEntries`):
 
 ## `GET /v1/models/{id}`
 
-Handler `handleGetModel`. Returns one `ModelEntry` for a listed id, a hidden build id, or an alias; 404 `model_not_found` with `param: "model"` otherwise. Self-route requests retrieve from the owned-model view so list and retrieve always agree.
+Handler `handleGetModel` (`coordinator/api/models_endpoints.go`). Returns one
+`ModelEntry` for a listed id, a hidden build id, or an alias. A successful catalog
+read with no matching id returns 404 `model_not_found` with `param: "model"`;
+a catalog or alias store read failure returns 500 `internal_error`. Self-route
+requests retrieve from the owned-model view so list and retrieve always agree.
 
 ## How `model` is resolved on inference
 

@@ -193,7 +193,10 @@ func TestAliasModelEntriesHidesBuilds(t *testing.T) {
 		"gemma-4-26b-retired": {ModelID: "gemma-4-26b-retired", RoutableProviders: 10, WarmProviders: 10, CanAccept: true},
 	}
 
-	entries, hidden := srv.aliasModelEntries(capByModel, catalogByID, registryByID)
+	entries, hidden, err := srv.aliasModelEntries(capByModel, catalogByID, registryByID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(entries) != 1 || entries[0].ID != "gemma-4-26b" {
 		t.Fatalf("expected one alias entry, got %+v", entries)
 	}
@@ -245,7 +248,10 @@ func TestAliasModelEntriesDesiredNotInCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	catalogByID := map[string]store.SupportedModel{aliasFP8: {ID: aliasFP8, Active: true, ModelType: "text"}}
-	entries, hidden := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID)
+	entries, hidden, err := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(entries) != 1 || entries[0].ID != "gemma-4-26b" {
 		t.Fatalf("only the alias with an in-catalog build should list, got %+v", entries)
 	}
@@ -1026,7 +1032,10 @@ func TestListModelsHidesRetiredAliasBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	catalogByID := map[string]store.SupportedModel{aliasFP8: {ID: aliasFP8, Active: true, ModelType: "text"}, aliasQAT: {ID: aliasQAT, Active: true, ModelType: "text"}}
-	_, hidden := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID)
+	_, hidden, err := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := hidden[aliasFP8]; !ok {
 		t.Fatalf("retired build should be in the hidden set: %v", hidden)
 	}

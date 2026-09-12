@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Model quantization metadata** — Map decorated labels consistently: `bfloat16-gs64` remains `bf16`. Prefer the longest recognized spelling, then the first occurrence in the label, so repeated model-list requests cannot change precision metadata with map iteration order.
+- **Model quantization metadata** — Map decorated labels consistently: `bfloat16-gs64` remains `bf16`. Prefer the earliest recognized format, then the longest spelling at that position (`q4-bfloat16` maps to `int4`), so repeated model-list requests cannot change precision metadata with map iteration order.
 
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 

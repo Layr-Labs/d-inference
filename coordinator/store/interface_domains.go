@@ -549,7 +549,9 @@ type InviteStore interface {
 	// DeactivateInviteCode sets active=false on an invite code.
 	DeactivateInviteCode(code string) error
 
-	// RedeemInviteCode atomically increments used_count and records the redemption.
+	// RedeemInviteCode atomically increments used_count, records the redemption,
+	// and credits the invite amount to the non-withdrawable balance and ledger.
+	// A credit failure returns ErrInviteCredit and leaves no claim or use count.
 	// Returns error if code is inactive, expired, fully used, or already redeemed by this account.
 	RedeemInviteCode(code string, accountID string) error
 

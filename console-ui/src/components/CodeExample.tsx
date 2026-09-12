@@ -1,23 +1,32 @@
 "use client";
 
-import { useId, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { AlertCircle, Check, Copy, Loader2 } from "lucide-react";
-import { useClipboard, type CopyStatus } from "@/hooks/useClipboard";
 
 interface CodeExampleProps {
   examples: { label: string; language: string; code: string }[];
 }
 
+type CopyStatus = "idle" | "copying" | "copied" | "error";
+
 export function CodeExample({ examples }: CodeExampleProps) {
   const [activeTab, setActiveTab] = useState(0);
-  const { status: copyStatus, copy, reset } = useClipboard();
+  const [copyStatus, setCopyStatus] = useState<CopyStatus>("idle");
+  const copyAttempt = useRef(0);
   const tabRefs = useRef(new Map<number, HTMLButtonElement | null>());
   const id = useId();
   const activeExample = examples.at(activeTab);
 
+  useEffect(() => {
+    if (copyStatus !== "copied") return;
+    const timer = setTimeout(() => setCopyStatus("idle"), 2000);
+    return () => clearTimeout(timer);
+  }, [copyStatus]);
+
   const selectTab = (index: number) => {
-    reset();
+    copyAttempt.current += 1;
     setActiveTab(index);
+    setCopyStatus("idle");
   };
 
   const handleTabKey = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -32,6 +41,17 @@ export function CodeExample({ examples }: CodeExampleProps) {
     event.preventDefault();
     selectTab(nextIndex);
     tabRefs.current.get(nextIndex)?.focus();
+  };
+
+  const copyCode = async () => {
+    const attempt = ++copyAttempt.current;
+    setCopyStatus("copying");
+    try {
+      await navigator.clipboard.writeText(activeExample?.code ?? "");
+      if (copyAttempt.current === attempt) setCopyStatus("copied");
+    } catch {
+      if (copyAttempt.current === attempt) setCopyStatus("error");
+    }
   };
 
   const { Icon: CopyIcon, label: copyLabel } = copyFeedback(copyStatus);
@@ -59,7 +79,7 @@ export function CodeExample({ examples }: CodeExampleProps) {
             </button>
           ))}
         </div>
-        <button type="button" onClick={() => copy(activeExample.code)} disabled={copyStatus === "copying"} className="ml-auto flex min-h-11 shrink-0 items-center gap-1.5 px-3 py-2 text-xs font-medium text-text-secondary transition-colors hover:text-text-primary disabled:cursor-wait">
+        <button type="button" onClick={copyCode} disabled={copyStatus === "copying"} className="ml-auto flex min-h-11 shrink-0 items-center gap-1.5 px-3 py-2 text-xs font-medium text-text-secondary transition-colors hover:text-text-primary disabled:cursor-wait">
           <CopyIcon size={14} className={copyStatus === "copying" ? "animate-spin" : undefined} />
           <span aria-live="polite">{copyLabel}</span>
         </button>

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 from pathlib import PurePosixPath
 import re
 import stat
@@ -59,9 +60,16 @@ def parse_json(raw):
         return result
     def constant(value):
         raise PacketError("nonstandard JSON constant: " + value)
+    def finite_number(text):
+        value = float(text)
+        require(math.isfinite(value), "nonfinite JSON number")
+        return value
     try:
-        value = json.loads(raw, object_pairs_hook=unique, parse_constant=constant)
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
+        value = json.loads(raw, object_pairs_hook=unique, parse_constant=constant,
+                           parse_float=finite_number)
+    except PacketError:
+        raise  # Preserve the precise duplicate-key/constant/number refusal.
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise PacketError("invalid bounded packet JSON") from error
     require(isinstance(value, dict), "packet JSON must be an object")
     return value

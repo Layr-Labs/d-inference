@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `248f26d91`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -437,6 +437,13 @@ then run from the repository root:
 PYTHONPATH=scripts/benchmarks /tmp/darkbloom-attention-venv/bin/python -B -m attention_packet /absolute/packet.json --output /absolute/new-analysis.json
 ```
 
+The JSON admission checks in `scripts/benchmarks/attention_packet/files.py`
+(`parse_json`) reject numeric overflow and normalize integer-conversion failures
+as packet refusals, preserving a complete error artifact. Native tensor nonfinite
+values retain their diagnostic handling. The regression fixture is
+`scripts/benchmarks/test_attention_packet_json.py`
+(`PacketJSONTests.test_overflow_metadata_keeps_a_complete_exclusive_refusal_artifact`).
+
 The output path must be new. Review the reported status, original-query reference,
 nonfinite counts and last-row consistency. `analyzed` means the calculation ran;
 it does not establish model correctness or pass a release gate. Unsupported or
@@ -452,7 +459,7 @@ sequentially on identical Q/K/V bytes. From `scripts/benchmarks`, use the dedica
 NumPy environment:
 
 ```bash
-python -B -m unittest -v test_attention_replay test_attention_packet test_attention_packet_numerics
+python -B -m unittest -v test_attention_replay test_attention_packet test_attention_packet_json test_attention_packet_numerics
 python -B -m attention_replay --packet /owned/capture/packet.json \
   --output /owned/new-replay --prepare-only
 python -B -m attention_replay --packet /owned/capture/packet.json \
@@ -479,7 +486,9 @@ fixed/segmented output identity are separate checks. The [milestone](../reports/
 retains exact source and test provenance.
 
 Original Q drives the independent CPU FP32 reference; a narrowed-Q counterfactual
-is separate. Storage mismatch, nonfinite output or failure to reproduce the
+is separate. The collector in `scripts/benchmarks/attention_replay/report.py`
+(`collect`) computes that same-input counterfactual once, then derives independent
+per-arm comparison objects. All original-query comparisons remain primary. Storage mismatch, nonfinite output or failure to reproduce the
 originally captured backend output makes interpretation inconclusive. Failed arms
 stop and retain their process receipt even if log hashing fails. No model-token
 or numerical release gate is evaluated. Supplied-history placement does not prove

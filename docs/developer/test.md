@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `9d0d9fc57`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -110,6 +110,25 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 `postgres:16` service with user/password/db `testbed`. The pre-push hook runs
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
+
+#### Stripe deposit replay
+
+Run the signed HTTP regression and shared ledger contract from the repository
+root. Set `DATABASE_URL` only to an owned disposable PostgreSQL database for
+the store command; without it, only the memory cases run.
+
+```bash
+go test -race ./coordinator/api -run '^TestStripeCheckoutWebhookCreditsEachSessionOnce$' -count=1
+go test -race ./coordinator/store -run '^Test(LedgerCreditOnceAcrossConcurrentHandles|CreditOnceRecognizesPriorLedgerAndIndependentIdentities)$' -count=1
+```
+
+`coordinator/api/stripe_deposit_replay_test.go` sends real signed webhook
+requests through an isolated HTTP server and MemoryStore. It checks missing
+session metadata, a missing row, a failed completion write, and completed
+session replay. `coordinator/store/ledger_once_test.go` checks simultaneous
+credits through independent PostgreSQL pools, deposits versus withdrawable
+refunds, prior ledger entries, and independent account/type/reference keys.
+The fixtures use no external Stripe service.
 
 #### Provider config cleanup
 

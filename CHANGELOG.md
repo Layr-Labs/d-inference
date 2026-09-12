@@ -67,6 +67,9 @@ coordinator and console changes require their own deployments.
 ## Unreleased — Stripe reversal settlement
 
 - Serialize a full transfer-reversal refund with payout completion. Recheck the current withdrawal under its store lock and commit principal/fee refunds with the terminal state, preventing a stale webhook read from refunding an already-paid withdrawal. A failed transaction leaves both balances and withdrawal state unchanged.
+## Unreleased — Stripe deposit replay
+
+- Credit each Stripe Checkout payment once per account even when its local billing-session metadata is absent or completion bookkeeping fails. Serialize repeated credits across coordinator store connections while preserving non-withdrawable deposits and existing withdrawal refunds.
 
 ## Unreleased — stats request-flow refresh
 

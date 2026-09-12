@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-12 · commit `9d0d9fc57`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -119,13 +119,19 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 
 | Store method | `balance_micro_usd` | `withdrawable_micro_usd` | Idempotent | Citation |
 |---|---|---|---|---|
-| `Credit` | + | — | no | `coordinator/store/postgres.go` (`creditTx`) |
-| `CreditWithdrawable` | + | + | no | `creditWithdrawableTx` |
-| `CreditWithdrawableOnce` | + | + | on `(account_id, entry_type, reference)` under `pg_advisory_xact_lock` | `CreditWithdrawableOnce` |
+| `Credit` | + | — | no | `coordinator/store/postgres.go` (`creditBalance`) |
+| `CreditOnce` | + | — | on `(account_id, entry_type, reference)` under `pg_advisory_xact_lock` | `coordinator/store/postgres_ledger_once.go` (`CreditOnce`) |
+| `CreditWithdrawable` | + | + | no | `coordinator/store/postgres.go` (`creditWithdrawableBalance`) |
+| `CreditWithdrawableOnce` | + | + | on `(account_id, entry_type, reference)` under `pg_advisory_xact_lock` | `coordinator/store/postgres_ledger_once.go` (`CreditWithdrawableOnce`) |
 | `Debit` | − (fails with `ErrInsufficientBalance` if `balance < amount`) | `LEAST(withdrawable, balance − amount)` | no | `Debit` |
 | `CreateStripeWithdrawalWithDebit` | − | − (fails unless `withdrawable >= amount`) | row insert in the same transaction | `CreateStripeWithdrawalWithDebit` |
 | `CreditProviderAccount` | + | + | on `provider_earnings.job_id` | `CreditProviderAccount`; index `idx_provider_earnings_job` |
 | `SettleProviderFloorDraw` | + | + | on `(provider_key, epoch_id)` | `coordinator/store/postgres_base_rewards.go` |
+
+`CreditOnce` and `CreditWithdrawableOnce` return whether a credit was applied.
+A matching pre-existing ledger row returns `false` without changing either
+balance. The memory implementation applies the same identity check while
+holding its store mutex (`coordinator/store/memory_ledger_once.go` `creditOnce`).
 
 ## Per-key spend caps
 

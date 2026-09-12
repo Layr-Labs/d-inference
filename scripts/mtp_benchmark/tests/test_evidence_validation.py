@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import test_contract as contracts
+from mtp_benchmark.tests import test_contract as contracts
 from mtp_benchmark import artifacts
 
 

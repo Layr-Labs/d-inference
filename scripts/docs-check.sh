@@ -83,73 +83,88 @@ normpath() {
     printf '%s\n' "${out[*]}"
 }
 
-# One parser feeds existence checks and the navigation graph. Definitions are
-# checked even when unused, but only rendered link uses create navigation edges.
-link_targets() {
-    python3 - "$1" "${2:-all}" <<'PY_LINKS'
+# Parse every file once in one interpreter. Cache both views by array index so
+# filenames with spaces need no encoding and both shell checks share the parse.
+# Definitions are checked even when unused; only rendered links create edges.
+LINK_FILES=("${FILES[@]}" "${EXTRA_LINK_FILES[@]}")
+LINK_CACHE=$(mktemp -d) || exit 1
+trap 'rm -rf "$LINK_CACHE"' EXIT
+if ! python3 - "$LINK_CACHE" "${LINK_FILES[@]}" <<'PY_LINKS'
 from pathlib import Path
 import re
 import sys
-
-source, mode = sys.argv[1:]
-lines = []
-fence = None
-for line in Path(source).read_text().splitlines():
-    marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
-    if fence is not None:
-        if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
-            fence = None
-        continue
-    if marker:
-        fence = marker[1]
-        continue
-    lines.append(line)
-
 
 def label(value):
     return " ".join(value.split()).casefold()
 
 
-definitions = {}
-body = []
-for line in lines:
-    definition = re.match(r"^ {0,3}\[([^]\n]+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))", line)
-    if definition:
-        target = definition[2] or definition[3]
-        definitions.setdefault(label(definition[1]), target)
-        if mode == "all":
-            print(target)
-    else:
-        body.append(line)
-
-text = "\n".join(body)
-# Backtick spans contain literal examples, not rendered links.
-text = re.sub(r"(?<!`)(`+)(?!`).*?\1(?!`)", "", text, flags=re.DOTALL)
+# An escaped bracket is label text, including inside a clickable image. Keep
+# backslashes out of the ordinary branch so backtracking cannot close early.
+definition_pattern = re.compile(r"^ {0,3}\[((?:\\.|[^\]\\\n])+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))")
 links = re.compile(
-    r"(?<!\\)(?P<image>!)?\[(?P<label>(?:[^\[\]\n]|\[[^\[\]\n]*\])*)\]"
-    r"(?:\(\s*(?:<(?P<angle>[^>\n]+)>|(?P<bare>[^\s)]+))[^)]*\)|\[(?P<reference>[^]\n]*)\])?"
+    r"(?<!\\)(?P<image>!)?\[(?P<label>(?:\\.|[^\[\]\\\n]|\[(?:\\.|[^\[\]\\\n])*\])*)\]"
+    r"(?:\(\s*(?:<(?P<angle>[^>\n]+)>|(?P<bare>[^\s)]+))[^)]*\)|\[(?P<reference>(?:\\.|[^\]\\\n])*)\])?"
 )
-def print_targets(text):
+
+
+def rendered_targets(text, definitions):
     for match in links.finditer(text):
         # A link label may itself be an image: [![alt](image)](page). Check
         # the image destination too, but only the outer link navigates.
-        if mode == "all" and not match["image"]:
-            print_targets(match["label"])
-        if mode != "all" and match["image"]:
-            continue
+        if not match["image"]:
+            for target, _ in rendered_targets(match["label"], definitions):
+                yield target, False
         if match["angle"] is not None or match["bare"] is not None:
-            print(match["angle"] or match["bare"])
+            target = match["angle"] or match["bare"]
         else:
             # Full [text][id], collapsed [id][], and shortcut [id] references.
             reference = match["reference"] or match["label"]
             target = definitions.get(label(reference))
-            if target is not None:
-                print(target)
+        if target is not None:
+            yield target, not match["image"]
 
 
-print_targets(text)
+def parse(source):
+    definitions, body, all_targets, navigation = {}, [], [], []
+    fence = None
+    for line in source.read_text().splitlines():
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if fence is not None:
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
+                fence = None
+            continue
+        if marker:
+            fence = marker[1]
+            continue
+        definition = definition_pattern.match(line)
+        if definition:
+            target = definition[2] or definition[3]
+            definitions.setdefault(label(definition[1]), target)
+            all_targets.append(target)
+        else:
+            body.append(line)
+
+    # Backtick spans contain literal examples, not rendered links.
+    text = re.sub(r"(?<!`)(`+)(?!`).*?\1(?!`)", "", "\n".join(body), flags=re.DOTALL)
+    for target, navigates in rendered_targets(text, definitions):
+        all_targets.append(target)
+        if navigates:
+            navigation.append(target)
+    return all_targets, navigation
+
+
+cache = Path(sys.argv[1])
+for index, filename in enumerate(sys.argv[2:]):
+    source = Path(filename)
+    if source.is_file():
+        all_targets, navigation = parse(source)
+        for mode, targets in (("all", all_targets), ("navigation", navigation)):
+            (cache / f"{index}.{mode}").write_text("".join(target + "\n" for target in targets))
 PY_LINKS
-}
+then
+    fail "unable to parse Markdown links"
+    exit 1
+fi
 
 relative_targets() {
     local target
@@ -158,14 +173,14 @@ relative_targets() {
         target=${target%%#*}
         target=${target%%\?*}
         [ -n "$target" ] && printf '%s\n' "${target//%20/ }"
-    done < <(link_targets "$1" "${2:-all}")
+    done < "$LINK_CACHE/$1.${2:-all}"
 }
 
 # ---------------------------------------------------------------------------
 # 2. Relative links
 # ---------------------------------------------------------------------------
 check_links() {
-    local f=$1 dir target path
+    local f=$1 index=$2 dir target path
     dir=$(dirname "$f")
     # Inline links [text](target) and reference definitions [id]: target.
     # The loop reads from process substitution (not a pipeline) so that `fail`
@@ -178,12 +193,13 @@ check_links() {
         if [ ! -e "$path" ]; then
             fail "$f: broken link -> $target"
         fi
-    done < <(relative_targets "$f")
+    done < <(relative_targets "$index")
 }
 
-for f in "${FILES[@]}" "${EXTRA_LINK_FILES[@]}"; do
+for index in "${!LINK_FILES[@]}"; do
+    f=${LINK_FILES[$index]}
     [ -f "$f" ] || continue
-    check_links "$f"
+    check_links "$f" "$index"
 done
 
 # ---------------------------------------------------------------------------
@@ -238,12 +254,12 @@ done
 # ---------------------------------------------------------------------------
 if [ "$ORPHAN_CHECK" -eq 1 ]; then
     # Build the set of link targets, normalised to repo-relative paths.
-    LINKED=$(mktemp)
-    trap 'rm -f "$LINKED"' EXIT
-    for f in "${FILES[@]}" "${EXTRA_LINK_FILES[@]}"; do
+    LINKED="$LINK_CACHE/linked"
+    for index in "${!LINK_FILES[@]}"; do
+        f=${LINK_FILES[$index]}
         [ -f "$f" ] || continue
         dir=$(dirname "$f")
-        relative_targets "$f" navigation |
+        relative_targets "$index" navigation |
         while IFS= read -r target; do
             case "$target" in
                 /*) path=".${target}" ;;
@@ -262,7 +278,6 @@ if [ "$ORPHAN_CHECK" -eq 1 ]; then
             fail "$f: orphan (no doc links to it — add it to the nearest README index)"
         fi
     done
-    rm -f "$LINKED"
 fi
 
 # ---------------------------------------------------------------------------

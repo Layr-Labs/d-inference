@@ -1,8 +1,10 @@
 """Validate documentation navigation using tiny, isolated repository fixtures."""
 
 from pathlib import Path
+import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -21,13 +23,50 @@ class DocsCheckTests(unittest.TestCase):
         shutil.copy2(SCRIPT, self.root / "scripts/docs-check.sh")
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
 
-    def check(self, index, page="Page.md", content="", tracked=True):
+    def check(self, index, page="Page.md", content="", tracked=True, env=None):
         (self.root / "docs/README.md").write_text(STAMP + index)
         (self.root / "docs" / page).write_text(STAMP + content)
         if tracked:
             subprocess.run(["git", "add", "docs"], cwd=self.root, check=True)
         return subprocess.run(["bash", "scripts/docs-check.sh", *([] if tracked else ["--all"])],
-                              cwd=self.root, capture_output=True, text=True)
+                              cwd=self.root, capture_output=True, text=True, env=env)
+
+    def test_all_documents_share_one_parser_process(self):
+        launcher = self.root / "bin"
+        launcher.mkdir()
+        wrapper = launcher / "python3"
+        wrapper.write_text('#!/bin/sh\nprintf "invoked\\n" >> "$DOCS_CHECK_PYTHON_TRACE"\n'
+                           'exec "$DOCS_CHECK_PYTHON" "$@"\n')
+        wrapper.chmod(0o755)
+        trace = self.root / "python-invocations"
+        environment = dict(os.environ, PATH=str(launcher) + os.pathsep + os.environ["PATH"],
+                           DOCS_CHECK_PYTHON=sys.executable, DOCS_CHECK_PYTHON_TRACE=str(trace))
+        links = ["[Page](Page.md)"]
+        for index in range(20):
+            page = f"extra-{index}.md"
+            (self.root / "docs" / page).write_text(STAMP)
+            links.append(f"[Extra]({page})")
+        result = self.check("\n".join(links), env=environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(trace.read_text().splitlines(), ["invoked"])
+
+    def test_escaped_brackets_in_link_labels_preserve_navigation(self):
+        for usage in (
+            r"[Guide \] details](Page.md)",
+            r"[Guide \[ details](Page.md)",
+            r"[Guide \\](Page.md)",
+            r"[Guide \] details][guide]" + "\n[guide]: Page.md",
+            r"[guide\]][]" + "\n" + r"[guide\]]: Page.md",
+            r"[guide\]]" + "\n" + r"[guide\]]: Page.md",
+        ):
+            with self.subTest(usage=usage):
+                result = self.check(usage + "\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_escaped_label_does_not_hide_a_missing_target(self):
+        result = self.check("[Page](Page.md)\n" + r"[Guide \] details](Missing.md)" + "\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("broken link -> Missing.md", result.stderr)
 
     def test_reference_links_and_encoded_spaces_count_as_navigation(self):
         result = self.check("[Guide][guide]\n\n[guide]: Some%20Page.md#details\n", page="Some Page.md")

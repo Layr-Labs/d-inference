@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -40,6 +41,16 @@ class AttentionNumericsTests(unittest.TestCase):
                                   f.values["storedValues"], f.scale)
                 np.testing.assert_allclose(reference, expected, rtol=0, atol=2e-5)
                 self.assertEqual(report["referenceRoundedToOutputDType"]["dtype"], q_dtype)
+                # Bound the generated rounded comparison as well: the FP32
+                # operator tolerance plus one output ULP at the fixture's
+                # largest magnitude permits midpoint crossings, not a broken
+                # rounded-reference report. Precision includes the leading bit.
+                precision = {"float16": 11, "bfloat16": 8, "float32": 24}[q_dtype]
+                _, exponent = math.frexp(float(np.max(np.abs(expected))))
+                output_ulp = math.ldexp(1.0, exponent - precision)
+                self.assertLessEqual(
+                    report["referenceRoundedToOutputDType"]["comparison"]["global"]["linf"],
+                    2e-5 + output_ulp)
                 counterfactual = report["narrowedQueryCounterfactual"]
                 if q_dtype == "float32" and kv_dtype != "float32":
                     self.assertGreater(counterfactual["differenceFromOriginalReference"]["global"]["linf"], 0)

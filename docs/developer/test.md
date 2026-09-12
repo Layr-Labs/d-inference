@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `04fec721a`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -922,6 +922,22 @@ node --test landing/earn-calculator-core.test.js
 ```
 
 ### 6. Scripts and release integrity
+
+Run the measurement-helper fixtures without a provider, model, API key or network
+service:
+
+```bash
+PYTHONPATH=scripts python3 -m unittest test_load_measurements startup_measurement.test_http_probe startup_measurement.test_observer
+```
+
+`scripts/test_load_measurements.py` (`SoakTests`, `LightBenchmarkTests`) checks
+completion after the admission deadline, interruption before executor drain,
+consistent window/cumulative CSV counters, and response-body latency. The soak's
+last CSV window includes in-flight completions and their drain time; its existing
+`ttfb_*` columns still hold non-streaming total latency (`scripts/load_soak.py`,
+`run_soak`, `do_request`). The lightweight driver's token rate also uses completed
+response time (`scripts/benchmark-light.py`, `worker`), not streaming decode speed.
+These fixtures make no live inference calls and do not qualify cache hits.
 
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)

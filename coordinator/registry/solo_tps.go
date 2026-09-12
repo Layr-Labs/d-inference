@@ -129,11 +129,15 @@ func soloSampleEligible(bc *protocol.BackendCapacity) bool {
 	}
 	load := 0
 	for _, slot := range bc.Slots {
-		if n := slot.NumRunning + slot.NumWaiting; n > 0 {
-			load += n
-		}
-		if load > 1 {
-			return false
+		for _, n := range [...]int{slot.NumRunning, slot.NumWaiting} {
+			// Compare before adding untrusted counts: load stays in [0, 1],
+			// so an overflowing busy report cannot appear uncontended.
+			if n > 1-load {
+				return false
+			}
+			if n > 0 {
+				load += n
+			}
 		}
 	}
 	return true

@@ -28,7 +28,7 @@ type providerCapSnap struct {
 	model                 string
 	warm                  bool
 	running               bool
-	hasHeadroom           bool // pending < maxConcurrency
+	hasHeadroom           bool // public model gates and concurrency both pass
 	effectiveTPS          float64
 	prefillTPS            float64
 	activeRequests        int // numRunning + numWaiting from backend slot, or pendingCount
@@ -108,7 +108,8 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			// path enforces, so the public capacity feed doesn't advertise a capped
 			// box (e.g. Gemma at 2) as routable up to the flat fallback (24) and lure
 			// upstream routers into sending requests this coordinator immediately 429s.
-			hasHeadroom := r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, m.ID)
+			hasHeadroom := r.providerPassesRoutingGatesLocked(p, m.ID, RequestTraits{}, false, now) &&
+				r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, m.ID)
 			// Count only pending requests for this specific model, not the
 			// total across all models. Using the total inflates
 			// activeRequests for multi-model providers.

@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-12 · commit `9d0d9fc57`
+> Last updated: 2026-09-12 · commit `67412a710`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -132,6 +132,8 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 A matching pre-existing ledger row returns `false` without changing either
 balance. The memory implementation applies the same identity check while
 holding its store mutex (`coordinator/store/memory_ledger_once.go` `creditOnce`).
+PostgreSQL lookup/index behavior and concurrent startup preparation are defined
+in [Storage](../architecture/storage.md#migrations-run-inside-the-process-at-every-boot).
 
 ## Per-key spend caps
 

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-12 · commit `9d0d9fc57`
+> Last updated: 2026-09-12 · commit `67412a710`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -90,7 +90,8 @@ The [provider config cleanup tests](test.md#provider-config-cleanup) run with
 temporary home directories and need no provider build or model.
 The [deposit replay checks](test.md#stripe-deposit-replay) need only Go and a
 disposable PostgreSQL 16 database; they use fixture webhook signatures and
-make no Stripe network calls.
+make no Stripe network calls. They also cover the concurrent ledger lookup
+index and require rebuilding the Go test binary after index or query changes.
 
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator

@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-12 · commit `9d0d9fc57`
+> Last updated: 2026-09-12 · commit `67412a710`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -132,7 +132,10 @@ ledger identity in `coordinator/store/memory_ledger_once.go`):
 
 Both `Once` methods share `creditOnce`. In Postgres it takes a
 `pg_advisory_xact_lock` on `entry_type:reference`, checks existing ledger rows,
-and commits the balance and ledger credit in the same transaction. The memory
+and commits the balance and ledger credit in the same transaction. The
+[ledger identity index](storage.md#migrations-run-inside-the-process-at-every-boot)
+narrows this lookup while preserving exact reference equality and support for
+long references. The memory
 store holds its mutex across the same check and credit. Existing rows written
 before adoption of these methods also suppress a matching replay. Reversal
 refunds retain the caller-owned lock or transaction through

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-12 · commit `9d0d9fc57`
+> Last updated: 2026-09-12 · commit `67412a710`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -128,7 +128,19 @@ session metadata, a missing row, a failed completion write, and completed
 session replay. `coordinator/store/ledger_once_test.go` checks simultaneous
 credits through independent PostgreSQL pools, deposits versus withdrawable
 refunds, prior ledger entries, and independent account/type/reference keys.
-The fixtures use no external Stripe service.
+`coordinator/store/ledger_identity_index_test.go` captures the query executed by
+`CreditOnce` and verifies that its plan indexes the account/type/reference
+digest while retaining exact reference equality. It rebuilds the concurrent
+index over long references and duplicate historical ledger rows, then checks
+replay, a different long reference and the same index OID after repeat startup.
+These PostgreSQL-only cases skip without a disposable `DATABASE_URL`:
+
+```bash
+go test -race ./coordinator/store -run '^TestPostgresLedgerOnce' -count=1
+```
+
+The fixtures use no external Stripe service. Query-plan assertions establish
+index applicability, not a production latency measurement.
 
 #### Provider config cleanup
 

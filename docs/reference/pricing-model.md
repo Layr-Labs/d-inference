@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-11 · commit `1ac25845d`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -154,6 +154,8 @@ Connected-account status `users.stripe_account_status`
 (`coordinator/api/stripe_payouts.go`): `""` → `pending` → `ready` \|
 `restricted` \| `rejected`. Service agreements (`coordinator/billing/stripe_regions.go`):
 `full`, `recipient`.
+
+Connect submission and legacy refunded-row progress writes use `CompareAndSwapStripeWithdrawal` in `coordinator/store/stripe_withdrawal_progress.go`. They require the caller's previous mutable state, preserve newer webhook transitions, and treat the exact desired state as successful retry. Immutable account and money fields stay unchanged. Concurrent progress returns 409 `withdrawal_state_changed` from the submission endpoint; inspect withdrawal history before submitting again.
 
 ## Base rewards
 

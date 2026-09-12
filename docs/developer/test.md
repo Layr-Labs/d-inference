@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-12 · commit `2619389bc`
+> Last updated: 2026-09-12 · commit `9e79160f1`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -516,10 +516,14 @@ PYTHONPATH=scripts/benchmarks python3 -m unittest discover -s scripts/benchmarks
 ```
 
 Replay preflight requires nonempty, ordered rows with matching model IDs,
-earlier comparison targets and unique safe artifact names. It rejects path
-traversal, reserved filenames, case/Unicode filename collisions and empty plans
-before sending requests or creating output
-(`scripts/benchmarks/radix_prefix_cache.py`, `load_replay`).
+earlier comparison targets and unique safe artifact names. Non-null comparison
+targets must be nonempty strings. It rejects path traversal, reserved filenames,
+case/Unicode filename collisions, overlong filenames including the `.json` suffix,
+and empty plans before sending requests or creating output
+(`scripts/benchmarks/radix_prefix_cache.py`, `load_replay`). The owned provider
+wrapper calls the same preflight before host probes, output creation or model
+startup (`scripts/benchmarks/run_radix_http.py`, `main`); the HTTP child validates
+again before using the replay.
 `scripts/benchmarks/run_radix_http.py` (`terminate`) still reaps an owned process
 when its group disappears between polling and signaling. Permission errors and
 unconfirmed termination still fail. Comparison identities are hashed once per

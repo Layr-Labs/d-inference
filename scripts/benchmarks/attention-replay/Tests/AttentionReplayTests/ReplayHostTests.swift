@@ -20,10 +20,13 @@ struct ReplayHostTests {
         }
         let withoutWriter = finished.wait(timeout: .now() + .seconds(2))
         if withoutWriter == .timedOut {
-            // Unblock a regressed reader so a failed fixture does not leak work.
-            let writer = open(fifo.path, O_WRONLY | O_NONBLOCK | O_CLOEXEC)
-            if writer >= 0 { close(writer) }
-            #expect(finished.wait(timeout: .now() + .seconds(2)) == .success)
+            // Keep a writer open until the owned reader has exited, including
+            // a reader that the scheduler has not started yet. O_RDWR does not
+            // require that reader to have entered open before recovery begins.
+            let writer = open(fifo.path, O_RDWR | O_NONBLOCK | O_CLOEXEC)
+            try #require(writer >= 0)
+            finished.wait()
+            close(writer)
         }
         #expect(withoutWriter == .success)
     }

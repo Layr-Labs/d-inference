@@ -239,6 +239,26 @@ public actor ProviderLoop {
     /// model out from under a local stream. See `LocalReservationCounter`.
     internal var localReservations = LocalReservationCounter()
 
+    // Residency operations outlive WebSocket reconnects; never clear uncertain
+    // ownership on a transport timeout. Fresh heartbeats reconcile completion.
+    internal var autopilotCommand: ModelAutopilotCommand?
+    internal var autopilotTask: Task<Void, Never>?
+    internal var autopilotMutationStarted = false
+    internal var autopilotGeneration: UInt64 = 0
+    internal var autopilotHistory: [String: (ModelAutopilotCommand, ModelAutopilotStatus.State, String?)] = [:]
+    internal var autopilotHistoryOrder: [String] = []
+    internal var autopilotLastCommandId: String?
+    internal var autopilotLastCommandStatus: ModelAutopilotStatus.State?
+    internal var autopilotResidentSince: [String: ContinuousClock.Instant] = [:]
+    internal var autopilotLeaseUntil: [String: ContinuousClock.Instant] = [:]
+    internal var autopilotFreeNoEvictGb: Double?
+    internal var autopilotDeferredDesiredModels: [CoordinatorMessage.DesiredModelEntry]?
+    internal var autopilotDeferredDrops: Set<String> = []
+    /// Explicit desired-build retirements, never inferred from missing catalog
+    /// entries. Release cleanup is distinct from network placement authority.
+    internal var autopilotSupersededModels: Set<String> = []
+
+
     /// The running local OpenAI HTTP server task (unified mode), if any.
     internal var localServerTask: Task<Void, Never>?
 
@@ -374,6 +394,8 @@ public actor ProviderLoop {
     /// inside `engineV2RecoveryCooldown` unloads the slot instead of
     /// thrashing rebuilds).
     internal var engineV2LastRecoveryAt: [String: ContinuousClock.Instant] = [:]
+    /// Unlike network request pins, maintenance ownership survives disconnect.
+    internal var engineV2RecoveryInProgress: Set<String> = []
 
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     internal var inflightTasks: [String: Task<Void, Never>] = [:]
@@ -563,7 +585,7 @@ public actor ProviderLoop {
 
     /// Background task that periodically checks idle state and unloads
     /// the model when the timeout has elapsed. nil when disabled
-    /// (`idleTimeoutMins == 0`) or before `run()` starts it.
+    /// (`idleTimeoutMins == 0` or model autopilot) or before `run()` starts it.
     internal var idleMonitorTask: Task<Void, Never>?
 
     /// Periodically refreshes provider-reported backend capacity so heartbeats

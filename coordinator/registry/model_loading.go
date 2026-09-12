@@ -179,6 +179,9 @@ func (r *Registry) hasWarmProviderLocked(model string, now time.Time) bool {
 // with stale attestation or failed privacy checks should not suppress swap
 // planning. Caller must hold p.mu. Caller must hold r.mu (read or write).
 func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now time.Time) bool {
+	if providerAutopilotTransitionLocked(p) {
+		return false
+	}
 	// Liveness/trust/privacy core, with NO owner relaxation: private-only
 	// providers serve only their owner's self-route traffic, never the public
 	// fleet, and must not suppress public swap planning — otherwise a
@@ -256,6 +259,9 @@ func (r *Registry) bestModelLoadProviderLocked(model string, now time.Time, sele
 func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, now time.Time) (int, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if providerLegacyModelChangesBlockedLocked(p) {
+		return 0, false
+	}
 
 	// Liveness/trust/privacy core + catalog membership + dedicated-box
 	// isolation, with NO owner relaxation: this is a public load_model target
@@ -308,7 +314,7 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 	for _, action := range actions {
 		if p, ok := r.providers[action.providerID]; ok {
 			p.mu.Lock()
-			eligible := r.providerCanAcquireCatalogModelLocked(p, action.modelID)
+			eligible := !providerLegacyModelChangesBlockedLocked(p) && r.providerCanAcquireCatalogModelLocked(p, action.modelID)
 			p.mu.Unlock()
 			if !eligible {
 				continue

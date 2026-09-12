@@ -15,6 +15,7 @@ import (
 type Config struct {
 	MinTrustLevel string
 	WarmPool      WarmPoolConfig
+	Autopilot     AutopilotConfig
 	CacheRouting  CacheRoutingConfig
 	QualityCap    QualityCapConfig
 }
@@ -146,6 +147,7 @@ func ReadConfig() Config {
 	artifacts, artifactsErr := readCacheRoutingArtifacts()
 	return Config{
 		MinTrustLevel: os.Getenv(env.EnvPrefix + "_MIN_TRUST"),
+		Autopilot:     autopilotConfigFromEnv(),
 		WarmPool: WarmPoolConfig{
 			Enabled:                   env.EnvBool(env.EnvPrefix+"_WARM_POOL_ENABLED", true),
 			ObserveOnly:               env.EnvBool(env.EnvPrefix+"_WARM_POOL_OBSERVE_ONLY", false),
@@ -230,6 +232,9 @@ func (c Config) Check() error {
 			c.MinTrustLevel, TrustNone, TrustSelfSigned, TrustHardware)
 	}
 	if err := c.WarmPool.Check(); err != nil {
+		return err
+	}
+	if err := c.Autopilot.Check(); err != nil {
 		return err
 	}
 	if err := c.CacheRouting.Check(); err != nil {

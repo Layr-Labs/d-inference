@@ -759,6 +759,14 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// goroutine or the original connection (reconnect).
 			s.handleCodeAttestationResponse(providerID, provider, respMsg)
 
+		case protocol.TypeModelAutopilotStatus:
+			statusMsg := msg.Payload.(*protocol.ModelAutopilotStatusMessage)
+			if s.registry.HandleAutopilotStatus(providerID, provider, statusMsg) {
+				s.ddIncr("provider.model_autopilot_status", []string{"status:" + statusMsg.Status})
+			} else {
+				s.ddIncr("provider.model_autopilot_status_rejected", nil)
+			}
+
 		case protocol.TypeLoadModelStatus:
 			statusMsg := msg.Payload.(*protocol.LoadModelStatusMessage)
 			if !validLoadModelStatus(statusMsg.Status) {

@@ -64,6 +64,7 @@ extension ProviderLoop {
         kvBudget.proactiveReclaimSweep()
         await updateAggregateCapacity()
         await recoverWedgedEngineV2Slots()
+        await cleanupAutopilotSupersededModels()
         writeDaemonState()
     }
 
@@ -80,6 +81,7 @@ extension ProviderLoop {
         // may publish one epoch behind rather than wait until the next tick.
         // Staging and model-drain changes invalidate the old snapshot; their mutation
         // paths explicitly publish a replacement.
+        let autopilotGenerationAtEntry = autopilotGeneration
         let reserveEpochAtEntry = activationReserveEpoch
         let stagingGenerationAtEntry = mtpStagingReservations.generation
         let drainGenerationAtEntry = mtpAdmissionDrains.generation
@@ -162,6 +164,13 @@ extension ProviderLoop {
             // coordinator's cold-load routing desyncs from it.
             headroomGb: loadHeadroomGb,
             outstandingReservationBytes: unmaterializedCommitments)
+        // Same coherent process sample and reserve as load admission, without
+        // credit for any resident model. This is weight-only headroom.
+        let freeForLoadNoEvictGb = max(0, ModelLoadAdmission.freeForLoadGb(
+            totalBytes: totalMem, systemAvailableBytes: processMemory.systemAvailableBytes,
+            gpuActiveBytes: mlxActiveBytes, gpuCacheBytes: mlxCacheBytes,
+            reserveBytes: loadReserve, outstandingReservationBytes: unmaterializedCommitments)
+            - loadHeadroomGb)
         let reclaimer = kvBudget.cacheReclaimerTelemetrySnapshot()
         let reclaimerTelemetry = MLXCacheReclaimerTelemetry(
             cacheLimitBytes: UInt64(max(
@@ -178,10 +187,14 @@ extension ProviderLoop {
         // enforces. Recompute over the current state instead of publishing
         // them; bounded so a push storm cannot starve the publish.
         // A newer staging/drain refresh owns the replacement snapshot. Never let
-        // the bounded reserve retry publish obsolete staging or admission capacity.
-        if (mtpStagingReservations.generation != stagingGenerationAtEntry
+        // the bounded reserve retry publish obsolete staging, admission or
+        // command-terminal state. An old refresh must not pair pre-command
+        // engine slots with a new terminal command acknowledgement.
+        if (autopilotGeneration != autopilotGenerationAtEntry
+            || mtpStagingReservations.generation != stagingGenerationAtEntry
             || mtpAdmissionDrains.generation != drainGenerationAtEntry) && attempt >= 2 { return }
-        guard (activationReserveEpoch == reserveEpochAtEntry
+        guard (autopilotGeneration == autopilotGenerationAtEntry
+            && activationReserveEpoch == reserveEpochAtEntry
             && mtpStagingReservations.generation == stagingGenerationAtEntry
             && mtpAdmissionDrains.generation == drainGenerationAtEntry) || attempt >= 2 else {
             logger.info(
@@ -207,10 +220,10 @@ extension ProviderLoop {
 
         // Existing coordinators reject reloading per model; an unknown new
         // state would remain routable. Keep other slots and provider status live.
-        for index in allSlots.indices where mtpAdmissionDrains.contains(allSlots[index].model) {
+        for index in allSlots.indices where autopilotCommand != nil || mtpAdmissionDrains.contains(allSlots[index].model) {
             allSlots[index].state = "reloading"
         }
-        state.backendCapacity = BackendCapacity(
+        let capacity = BackendCapacity(
             slots: allSlots,
             gpuMemoryActiveGb: Double(mlxActiveBytes) / gbDivisor,
             gpuMemoryPeakGb: Double(mlxPeakBytes) / gbDivisor,
@@ -221,6 +234,9 @@ extension ProviderLoop {
             telemetry: capacityTelemetry,
             prefixCacheMaintenance: PrefixCacheMaintenanceTelemetry(SSDWholeRootMaintainer.shared.statsSnapshot())
         )
+        autopilotFreeNoEvictGb = freeForLoadNoEvictGb
+        publishModelAutopilotSnapshot()
+        state.setModelAutopilotCapacity(capacity, snapshot: state.modelAutopilot)
         state.inferenceActive = totalActive > 0
         let loadedSlots = modelSlots.compactMap { modelId, slot
             -> (String, EngineV2Bridge)? in

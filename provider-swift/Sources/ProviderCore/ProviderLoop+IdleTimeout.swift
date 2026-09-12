@@ -27,6 +27,15 @@ extension ProviderLoop {
     /// resident forever).
     internal func startIdleMonitor() {
         idleMonitorTask?.cancel()
+        idleMonitorTask = nil
+        // Explicit autopilot enrollment transfers idle-residency decisions to
+        // the controller. Keeping the old timer as a second authority would
+        // unload its warm floor each hour, followed by an immediate reload.
+        // The configured idle policy resumes unchanged after opting out.
+        guard !modelAutopilotEnabled else {
+            logger.info("Idle residency is managed by model autopilot; local idle timer paused")
+            return
+        }
         let timeoutMinutes = loopConfig.config.backend.idleTimeoutMins
         guard timeoutMinutes > 0 else {
             logger.info("Idle-timeout disabled (idle_timeout_mins=0)")
@@ -51,7 +60,7 @@ extension ProviderLoop {
     /// Re-validates each candidate before unloading since `await unloadModel`
     /// is a suspension point that could allow new requests to arrive.
     private func tickIdleMonitor(timeout: Duration) async {
-        guard !modelSlots.isEmpty else { return }
+        guard !modelSlots.isEmpty, !modelAutopilotEnabled, autopilotCommand == nil else { return }
 
         let now = ContinuousClock.now
 
@@ -74,7 +83,8 @@ extension ProviderLoop {
         for modelId in candidates {
             guard !isMTPUpgradeTargetRetained(modelId) else { continue }
             let currentInflight = Set(requestToModel.values)
-            guard !currentInflight.contains(modelId),
+            guard autopilotCommand == nil, !modelAutopilotEnabled,
+                  !currentInflight.contains(modelId),
                   !hasLocalReservation(modelId),
                   !modelsUnloading.contains(modelId),
                   let slot = modelSlots[modelId] else { continue }

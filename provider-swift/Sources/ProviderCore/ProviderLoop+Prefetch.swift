@@ -289,6 +289,10 @@ extension ProviderLoop {
     }
 
     func applyVerifiedPrefetch(modelId: String) async {
+        if autopilotCommand != nil {
+            reserveDeferredPrefetches.insert(modelId)
+            return
+        }
         guard ModelRuntimeRequirements.isEligible(
             modelID: modelId, available: loopConfig.runtimeCapabilities)
         else {
@@ -318,6 +322,10 @@ extension ProviderLoop {
             return (withHash, hash)
         }.value
 
+        if autopilotCommand != nil {
+            reserveDeferredPrefetches.insert(modelId)
+            return
+        }
         // A verified prefetch whose snapshot we can't scan must NOT be
         // advertised: a synthetic zero-size ModelInfo would be routed with
         // estimatedMemoryGb == 0, bypassing memory sizing/admission until the
@@ -399,7 +407,7 @@ extension ProviderLoop {
         // can act — the pending-load reservation fences competing KV
         // grants, not this. Defer through the desired-build backoff; the
         // load's install clears the marker well within the retry budget.
-        guard modelsLoading.isEmpty else {
+        guard modelsLoading.isEmpty, autopilotCommand == nil else {
             logger.info(
                 "Prefetch verified \(modelId) while a load is in flight (\(modelsLoading.sorted())); "
                     + "deferring the advertisement")
@@ -438,7 +446,7 @@ extension ProviderLoop {
         // bridge's grant): a load admitted during those hops passed its gate
         // against the pre-raise floor and is not in `modelSlots` yet, so the
         // preflight neither counted its weights nor covered its transient.
-        guard modelsLoading.isEmpty else {
+        guard modelsLoading.isEmpty, autopilotCommand == nil else {
             releaseResliceGate()
             logger.info(
                 "Prefetch verified \(modelId) but a load entered during the preflight; "
@@ -557,9 +565,16 @@ extension ProviderLoop {
 
     /// Locally retire a superseded build: stop advertising it (so no new requests
     /// route to it and the next register won't re-announce it) and forget its hash.
-    /// The GPU slot, if resident, is left to the idle monitor — a lazy drop.
+    /// The GPU slot, if resident, drains lazily. Legacy providers use their
+    /// idle timer; autopilot providers track this explicit release retirement
+    /// for bounded cleanup once the old build is inactive and unpinned.
     private func dropAdvertisedBuild(_ buildID: String) async {
+        if autopilotCommand != nil {
+            autopilotDeferredDrops.insert(buildID)
+            return
+        }
         guard advertisedModels[buildID] != nil else { return }
+        if modelAutopilotEnabled { autopilotSupersededModels.insert(buildID) }
         advertisedModels.removeValue(forKey: buildID)
         modelHashes.removeValue(forKey: buildID)
         await coordinatorClient?.unadvertiseModel(buildID)
@@ -580,6 +595,10 @@ extension ProviderLoop {
     /// build is dropped; missing → background-prefetch it (applyVerifiedPrefetch
     /// advertises it + drops the previous build once verified).
     internal func reconcileDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
+        if autopilotCommand != nil {
+            autopilotDeferredDesiredModels = entries
+            return
+        }
         let requestedDesired = Set(entries.map(\.desiredBuild).filter { !$0.isEmpty })
         let currentDesired = Set(requestedDesired.filter {
             ModelRuntimeRequirements.isEligible(
@@ -643,4 +662,18 @@ extension ProviderLoop {
         return ModelScanner.parseModelInfo(snapshotDir: snapshot, modelName: modelId)
     }
 
+}
+
+
+extension ProviderLoop {
+    internal func resumeAutopilotDeferredModelChanges(send: SendHandle) async {
+        guard autopilotCommand == nil, !isShuttingDown else { return }
+        let drops = autopilotDeferredDrops
+        autopilotDeferredDrops.removeAll()
+        for model in drops.sorted() { await dropAdvertisedBuild(model) }
+        if let desired = autopilotDeferredDesiredModels {
+            autopilotDeferredDesiredModels = nil
+            await reconcileDesiredModels(desired, send: send)
+        }
+    }
 }

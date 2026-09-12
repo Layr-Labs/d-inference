@@ -162,6 +162,7 @@ extension ProviderLoop {
         )
 
         // 4. Create coordinator client and start connection
+        publishModelAutopilotSnapshot()
         let coordinator = CoordinatorClient(
             config: coordinatorConfig,
             stats: stats,
@@ -285,6 +286,9 @@ extension ProviderLoop {
                         logger.warning("  \(m.component): expected=\(m.expected), got=\(m.got)")
                     }
 
+                case .modelAutopilot(let command):
+                    handleModelAutopilot(command, send: send)
+
                 case .loadModel(let modelId):
                     handleLoadModelRequest(modelId: modelId, send: send)
 
@@ -351,6 +355,7 @@ extension ProviderLoop {
         // any still-running startup preload driver (it outlives the readiness
         // gate when the timeout passed).
         var preloads = Array(preloadTasks.values)
+        if let autopilotTask { preloads.append(autopilotTask) }
         if let startupTask = startupPreloadTask {
             preloads.append(startupTask)
         }

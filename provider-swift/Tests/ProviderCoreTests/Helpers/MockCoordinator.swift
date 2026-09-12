@@ -607,6 +607,7 @@ public final class MockCoordinator: @unchecked Sendable {
             case .inferenceResponseChunk(let c): captured.inferenceChunks.append(c)
             case .inferenceComplete(let c):   captured.inferenceComplete.append(c)
             case .inferenceError(let e):      captured.inferenceErrors.append(e)
+            case .modelAutopilotStatus: break // Observable through providerMessage event stream.
             case .loadModelStatus(let s):    captured.loadModelStatuses.append(s)
             case .prefetchModelStatus(let s): captured.prefetchModelStatuses.append(s)
             case .modelsUpdate(let u):       captured.modelsUpdates.append(u)

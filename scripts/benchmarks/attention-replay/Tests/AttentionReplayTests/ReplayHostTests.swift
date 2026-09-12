@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import MLX
 import Testing
 @_spi(Benchmarking) import MLXLMCommon
@@ -6,6 +7,27 @@ import Testing
 
 /// These fixtures construct only Data and JSON; no operator or model is called.
 struct ReplayHostTests {
+    @Test func fifoInputIsRejectedWithoutWaitingForAWriter() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fifo = root.appendingPathComponent("input.fifo")
+        try #require(mkfifo(fifo.path, 0o600) == 0)
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            defer { finished.signal() }
+            #expect(throws: (any Error).self) { try readBounded(fifo, limit: 3) }
+        }
+        let withoutWriter = finished.wait(timeout: .now() + .seconds(2))
+        if withoutWriter == .timedOut {
+            // Unblock a regressed reader so a failed fixture does not leak work.
+            let writer = open(fifo.path, O_WRONLY | O_NONBLOCK | O_CLOEXEC)
+            if writer >= 0 { close(writer) }
+            #expect(finished.wait(timeout: .now() + .seconds(2)) == .success)
+        }
+        #expect(withoutWriter == .success)
+    }
+
     private func options(input: URL, hash: String, output: URL) throws -> ReplayOptions {
         try ReplayOptions(["--input", input.path, "--input-sha256", hash,
                            "--output", output.path, "--arm", "nativeSDPA"])

@@ -69,3 +69,10 @@ def environment(inherited, overrides=()):
     result.update(explicit)
     result.update(FIXED_CONTROLS)
     return result, {k: result[k] for k in sorted(set(explicit) | set(FIXED_CONTROLS))}
+
+
+def instrumentation_controls(controls):
+    """Enabled diagnostic knobs are not valid measurement controls."""
+    return [key for key, value in controls.items()
+            if any(word in key for word in ("PROFILE", "TRACE", "TIMING", "CAPTURE", "DEBUG"))
+            and value.lower() not in {"0", "false", "no", "off", ""}]

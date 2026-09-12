@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from .config import cells, command, environment
+from .config import cells, command, environment, instrumentation_controls
 from .process import run
 from .power import power_failure
 from .provenance import assert_artifacts_unchanged, digest, file_pin, fingerprint, host_snapshot, model_pin, now, source_pin, write_json
@@ -63,9 +63,7 @@ def execute(args):
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise ValueError("--binary must name an existing executable; this runner does not build")
     child_env, controls = environment(os.environ, args.env)
-    instrumentation = [key for key, value in controls.items()
-                       if any(word in key for word in ("PROFILE", "TRACE", "TIMING", "CAPTURE", "DEBUG"))
-                       and value.lower() not in {"0", "false", "no", "off", ""}]
+    instrumentation = instrumentation_controls(controls)
     if args.mode == "measurement" and instrumentation:
         raise ValueError(f"Instrumentation controls require --mode diagnostic: {instrumentation}")
     print("Hashing binary, Metal libraries, and model snapshot for run provenance…", flush=True)

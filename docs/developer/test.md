@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-11 · commit `e10709696`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -997,6 +997,21 @@ This prevents task scheduling from silently changing admission order. Sources: `
 (`execute_controls`), `scripts/gptoss_profile/control_report.py`
 (`summarize_controls`), `provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`
 (`measureDecode`). See [GPT-OSS optimization results](../reports/2026-09-05-gptoss20b-optimization-results.md).
+
+#### Model publishing script checks
+
+Run `python3 scripts/test_model_publishing.py` from the repository root. These
+offline fixtures replace `gcloud`, `aws`, `curl` and `swift` with local stubs.
+They verify failed/empty credential lookup refusal before uploads, rollback
+identifier and positive-int64 validation before remote operations, upload/API
+ordering, and owned staging cleanup after failure. The successful rollback
+case also reaches promotion with the system Bash used by the caller.
+
+The Release Integrity job runs these fixtures in `.github/workflows/ci.yml`.
+Run `bash scripts/test-publish-model.sh` for the existing required-capability
+and pinned Hugging Face workflow payload checks. Neither command publishes a
+model or proves that a real artifact loads; use the
+[model migration runbook](../operations/model-migration.md) for those checks.
 
 ### 7. Docs lint
 

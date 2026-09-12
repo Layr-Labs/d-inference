@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-09-06 · commit `32b28b0a7`
+> Last updated: 2026-09-11 · commit `e10709696`
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever
@@ -102,6 +102,8 @@ from id + version), uploads every file plus the manifest to
 `s3://darkbloom-models/<r2_prefix>/` with concurrency 8, and prints the exact
 `gh workflow run register-model.yml …` command for step 2. Manifest fields:
 [`../reference/model-registry-format.md`](../reference/model-registry-format.md).
+Failed or empty Secret Manager credential reads stop the publisher before any
+R2 upload; inspect the reported lookup error before retrying.
 
 ### 2. Register the build in the coordinator catalog
 
@@ -240,6 +242,14 @@ R2_ACCOUNT_ID=… GCP_PROJECT=… scripts/preposition-rollback-build.sh \
   8bit 36 131072 16384 30000 165000 chat
 #  <src-model-id> <src-version> <new-model-id> <coordinator> <key> <quant> <min-ram-gb> <max-ctx> <max-out> <in-µ$/Mtok> <out-µ$/Mtok> [caps-csv]
 ```
+
+The helper requires a distinct destination ID and prepares registration and
+promotion JSON before copying objects. Invalid registry identifiers, empty
+quantization, non-positive or out-of-range integer fields, and failed/empty R2
+credential lookups stop before remote writes. It removes its local staging
+directory on exit. A later copy or API failure can still leave destination R2
+objects or a registered model; inspect that state before retrying. The script
+does not undo completed remote operations.
 
 ## Verification
 

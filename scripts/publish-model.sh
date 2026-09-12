@@ -123,8 +123,13 @@ PY
 )"
 
 printf 'Fetching R2 credentials from GCP Secret Manager...\n'
-export AWS_ACCESS_KEY_ID="$(gcloud secrets versions access latest --project "$GCP_PROJECT" --secret "$R2_ACCESS_KEY_SECRET")"
-export AWS_SECRET_ACCESS_KEY="$(gcloud secrets versions access latest --project "$GCP_PROJECT" --secret "$R2_SECRET_KEY_SECRET")"
+AWS_ACCESS_KEY_ID="$(gcloud secrets versions access latest --project "$GCP_PROJECT" --secret "$R2_ACCESS_KEY_SECRET")"
+AWS_SECRET_ACCESS_KEY="$(gcloud secrets versions access latest --project "$GCP_PROJECT" --secret "$R2_SECRET_KEY_SECRET")"
+if [[ -z "$AWS_ACCESS_KEY_ID" || -z "$AWS_SECRET_ACCESS_KEY" ]]; then
+  printf 'R2 credentials must not be empty.\n' >&2
+  exit 1
+fi
+export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 export AWS_DEFAULT_REGION="auto"
 export R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 

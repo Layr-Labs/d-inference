@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — provider retry hints
+
+- Preserve the 30-second retry ceiling for very large provider availability forecasts by bounding milliseconds before rounding. Ordinary retry rounding and the two-second floor are unchanged.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

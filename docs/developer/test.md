@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `d0eba9b41`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -110,6 +110,16 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 `postgres:16` service with user/password/db `testbed`. The pre-push hook runs
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
+
+`TestDispatchRetryAfterPreservesBoundedProviderForecast` in
+`coordinator/api/dispatch_retry_hint_test.go` sends real provider capacity refusals
+through the WebSocket handler and checks the resulting HTTP `Retry-After`. The
+cases cover the floor, ceiling rounding, upper bound and signed-integer limit;
+each must dispatch exactly once. Run without model weights or Postgres:
+
+```bash
+go test -race ./coordinator/api -run '^TestDispatchRetryAfterPreservesBoundedProviderForecast$' -count=1
+```
 
 #### Provider config cleanup
 

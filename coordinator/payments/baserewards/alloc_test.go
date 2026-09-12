@@ -111,18 +111,20 @@ func TestAllocateDraws_Deterministic(t *testing.T) {
 		{ProviderKey: "d", AccountID: "acc-d", MemGB: 64, Floor: 18_000_000, Draw: 18_000_000},
 	}
 	budget := int64(25_000_000) // binds — forces ranking decisions
-	first := AllocateDraws(cands, budget, budget, 0.5, 0.05, nil)
+	// Disable the independent per-account cap so the pool cannot fund every
+	// candidate; ranking and its ProviderKey tiebreaker must determine payouts.
+	first := AllocateDraws(cands, budget, budget, 0.5, 0, nil)
 
 	// Re-run with a shuffled input order; result-by-key must be identical.
 	shuffled := []Candidate{cands[2], cands[0], cands[3], cands[1]}
-	second := AllocateDraws(shuffled, budget, budget, 0.5, 0.05, nil)
+	second := AllocateDraws(shuffled, budget, budget, 0.5, 0, nil)
 
 	if !reflect.DeepEqual(grantedByKey(first), grantedByKey(second)) {
 		t.Fatalf("allocation not deterministic across input order:\n first=%+v\n second=%+v",
 			grantedByKey(first), grantedByKey(second))
 	}
-	if total := sumGranted(first); total > budget {
-		t.Fatalf("Σ granted %d exceeds budget %d", total, budget)
+	if total := sumGranted(first); total != budget {
+		t.Fatalf("Σ granted %d, want fully used budget %d", total, budget)
 	}
 }
 

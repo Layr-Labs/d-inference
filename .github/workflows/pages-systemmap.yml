@@ -1,0 +1,70 @@
+name: System Map Pages
+
+# Publishes the Darkbloom system map to GitHub Pages. The map is generated here,
+# from the master commit being published, and is not committed to the repository:
+# the page therefore describes exactly the code at that commit, and it cannot
+# drift because nothing about it is stored. Generation fails when the curated
+# overlay no longer explains source, so an unexplained boundary blocks the deploy
+# instead of quietly appearing on the page.
+#
+# One-time human step: Settings → Pages → Build and deployment → Source =
+# "GitHub Actions". Until that is set, this workflow fails at the deploy step.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'docs/reference/api-map/**'
+      - 'tools/systemmap/**'
+      - 'coordinator/**'
+      - '.github/workflows/pages-systemmap.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and never cancel one mid-flight: a cancelled deploy
+# can leave the site on a half-uploaded artifact.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build site
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: go.mod
+      - name: Build the map
+        # Fails on drift, which is what keeps an unexplained route or table off
+        # the published page.
+        run: make -C tools/systemmap
+      - name: Stage the site
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          # The explorer is self-contained: one HTML file with the inventory
+          # inlined. inventory.json and report.md ship beside it so the data and
+          # the drift report are addressable without cloning the repo.
+          cp docs/reference/api-map/system-map.html _site/index.html
+          cp docs/reference/api-map/inventory.json _site/inventory.json
+          cp docs/reference/api-map/report.md _site/report.md
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

@@ -1,6 +1,6 @@
 # Reference — exact shapes and values
 
-> Last updated: 2026-09-07 · commit `53646bc9b`
+> Last updated: 2026-09-08 · commit `a34e8994c`
 
 Tables and schemas for Darkbloom's public interfaces, wire protocol,
 configuration, and formats. Consult these; do not read them front to back.
@@ -13,6 +13,7 @@ Every row cites the code that defines it. For how and why things work, use
 |---|---|
 | [api-contracts.md](api-contracts.md) | Every coordinator HTTP route: method, path, auth, request and response shapes, headers, status codes, SSE framing |
 | [protocol-messages.md](protocol-messages.md) | Every WebSocket message between coordinator and provider, field by field, with the Go and Swift types |
+| [api-map/](api-map/README.md) | Generated Darkbloom system map: clustered knowledge graph, per-route auth, state reached, R/W mode, citations |
 
 ## Configuration and schemas
 

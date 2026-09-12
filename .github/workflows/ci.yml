@@ -17,6 +17,7 @@ jobs:
           python3 scripts/test-provider-release-resolution.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
+          python3 scripts/test_cache_soak_monitor.py
       - name: Test startup observer against local stubs
         run: python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
 

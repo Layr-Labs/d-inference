@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `31e63a9d9`
+> Last updated: 2026-09-12 · commit `c7d9a38c4`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -220,6 +220,13 @@ make provider-test
 #   cp mlx.metallib into every <bin-path>/*PackageTests.xctest/Contents/MacOS/
 #   cd provider-swift && swift test --skip-build
 ```
+
+`PagedKernelPreflightTests.noisyChildCannotDeadlock` runs an owned failing child
+with more stderr than a pipe buffer. It checks the bounded result ends with the
+child's unique final diagnostic and excludes its initial marker, so keeping the
+first bytes cannot pass as a valid tail. The same suite covers child failure,
+fast-exit diagnostics, timeout and model-specific native smoke shapes. Run it
+with the staged test product described here.
 
 The metallib staging is not optional: MLX loads `mlx.metallib` from beside the
 running executable, and for tests the executable is the `.xctest` runner.

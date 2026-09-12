@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import math
 from typing import Any
 
 from .constants import REPORT_NAME, MAX_REPORT_BYTES, REPORT_SCHEMA_VERSION, PERFORMANCE_KEYS, HEX_DIGITS
@@ -136,6 +137,17 @@ def validate_report_artifact(
         raise ValueError(f"report {label} quantization bits do not match launch config.json")
 
 
+def nonnegative_finite_number(value: Any) -> bool:
+    # Zero is valid for one-token/zero-interval samples. Booleans are JSON
+    # control values, even though Python treats them as integers.
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value >= 0
+        and (not isinstance(value, float) or math.isfinite(value))
+    )
+
+
 def validate_report(
     run: SecureRunDirectory,
     *,
@@ -217,8 +229,12 @@ def validate_report(
             raise ValueError(
                 f"non-performance report recursively exposes performance keys: {sorted(exposed)}"
             )
-    elif not isinstance(report.get("elapsedMs"), (int, float)):
-        raise ValueError("production performance report omitted elapsedMs")
+    else:
+        elapsed = report.get("elapsedMs")
+        if elapsed is None:
+            raise ValueError("production performance report omitted elapsedMs")
+        if not nonnegative_finite_number(elapsed):
+            raise ValueError("production performance elapsedMs must be a finite nonnegative number")
 
     started_at = parse_timestamp(report.get("startedAt"), "startedAt")
     generated_at = parse_timestamp(report.get("generatedAt"), "generatedAt")
@@ -305,8 +321,11 @@ def validate_report(
         elif baseline_rows.get(batch) != row_evidence:
             raise ValueError(f"{label} opaque evidence differs from baseline")
         if mode != "raw-parity":
-            if case.get("medianAggregateDecodeTokensPerSecond") is None:
+            throughput = case.get("medianAggregateDecodeTokensPerSecond")
+            if throughput is None:
                 raise ValueError("production performance case omitted aggregate throughput")
+            if not nonnegative_finite_number(throughput):
+                raise ValueError(f"{label} aggregate throughput must be a finite nonnegative number")
 
         validate_case_metrics(
             case.get("metrics", {}), kind=kind, width=width, batch=batch,

@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-09-11 · commit `fd31a0570`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -313,12 +313,26 @@ still contain the retired `cache_tiebreak` string. The
 runner-up (the lowest-cost candidate other than the winner) is recorded for telemetry
 and as the first alternate in the dispatch plan.
 
+The public capacity snapshot (`coordinator/registry/model_capacity.go`,
+`ModelCapacitySnapshot`) applies the same model routing gates before counting a
+provider as ready, together with the existing concurrency and token headroom
+checks. A broken template, mixed dedicated-family catalog or active routing
+cooldown therefore cannot advertise immediate readiness. Warm/cold inventory
+counts still describe the advertised models independently of readiness.
+
 ### Hedged (speculative) dispatch
 
 A request that has not produced first content by its **speculative point**
 launches a backup and races the two. The mechanics live in
 `coordinator/api/dispatch.go` (`runSpeculative`, `runRace`) with timing in
 `coordinator/api/hedge_schedule.go` and `coordinator/api/first_token_clock.go`.
+
+Capacity probes settle exactly once through `quoteTracker` in
+`coordinator/registry/capacity_quotes.go`. A quote, send failure, disconnect or
+expiry claims the pending entry. Opportunistic expiry sweeps deliver a timeout
+to the owning collector as well as removing the entry; otherwise a collector
+could wait indefinitely for a delivery that no longer has an owner. The
+collector demotes an expired alternate before publishing its timeout outcome.
 
 **Launch offset.** The initial speculative point is
 `deadline × speculativeTimerRatio`, `speculativeTimerRatio = 0.5`
@@ -376,6 +390,12 @@ reasons:
   budget and `estimatedPromptTokens + max_tokens` exceeds the largest
   (`FleetMaxBudget`). If any eligible provider's budget is unknown the
   verdict stays servable.
+
+`servableRequestTokens` shares negative-prompt normalization and the default
+output allowance with the live provider-fit check. It adds the two counts in
+`uint64`, so a request larger than the signed integer range still exceeds known
+context or budget limits. Only the displayed `ServabilityVerdict.RequestTokens`
+is capped to the largest `int`; unknown budgets retain their fail-open policy.
 
 A provider's structural budget (`snapshotStructuralBudget`) is its reported
 `ActiveTokenBudgetMax` when the slot reports one; for a provider that is not

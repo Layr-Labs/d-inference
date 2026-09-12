@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-11 · commit `e3993c611`
+> Last updated: 2026-09-11 · commit `beb33a8c7`
 
 How the coordinator's `promptsidecar` child process derives deterministic,
 provider-compatible token boundaries so exact-cache routing can predict which
@@ -152,6 +152,12 @@ this instruction itself. Qwen and Harmony system-turn folding then mirrors
 `Qwen35TemplateFix` / `GPTOSSHarmonyTemplateFix` / `LeadingSystemMessageNormalizer` before rendering
 (`coordinator/promptsidecar/src/leading_system.rs`, `normalize_messages`). Invalid or
 unsupported shapes fail cold.
+
+Constrained tool validation and grammar-cost accounting inspect the same borrowed
+`const`/`enum` values from the parsed schema; they do not allocate temporary
+reference vectors. Numeric, nullable, delimiter and grammar-complexity bounds
+remain in `coordinator/promptsidecar/src/tool_constraint.rs`
+(`validate_finite_values`, `constrained_schema_grammar_cost`).
 
 The production parity gate captures the request entering the engine through
 `MLXOpenAIService.streamChatCompletionFrames`, then checks tokens and scoped

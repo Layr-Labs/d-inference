@@ -95,9 +95,10 @@ func TestUsageLocationBucketsMatchesOriginalAggregate(t *testing.T) {
 	for i, b := range got {
 		expected, ok := indexed[key(b)]
 		if !ok {
-			t.Fatalf("unexpected location: %+v", b)
+			t.Fatalf("unexpected or duplicate location: %+v", b)
 		}
-		if math.Abs(b.Latitude-expected.Latitude) > 1e-10 || math.Abs(b.Longitude-expected.Longitude) > 1e-10 {
+		delete(indexed, key(b))
+		if !(math.Abs(b.Latitude-expected.Latitude) <= 1e-10 && math.Abs(b.Longitude-expected.Longitude) <= 1e-10) {
 			t.Fatalf("coordinate averages differ: got %+v, want %+v", b, expected)
 		}
 		b.Latitude, b.Longitude = expected.Latitude, expected.Longitude

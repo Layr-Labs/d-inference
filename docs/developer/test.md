@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `a6607627f`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -110,6 +110,24 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 `postgres:16` service with user/password/db `testbed`. The pre-push hook runs
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
+
+#### Bounded telemetry reads
+
+Run the memory-store allocation and filtered-read regressions from the repository root:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/store -count=1 \
+  -run '^Test(MemoryTelemetryReadBuffersAreBounded|RequestProfilesSinceFilteredAppliesPredicatesBeforeTheCap)$'
+```
+
+`telemetry_read_allocation_test.go` seeds 50,001 rows per reader and checks
+that route, rejection, request-profile and fleet-snapshot results retain at most
+50,000 rows of buffer capacity, including recent and empty time windows.
+It also checks inclusive filtering, non-nil empty results and newest-first row
+order. The existing profile-filter regression checks that predicates apply
+before the result cap. No provider, model or database is needed for these focused
+checks; use the full store suite with a disposable `DATABASE_URL` to cover both
+storage backends and their existing telemetry contracts.
 
 #### Provider config cleanup
 

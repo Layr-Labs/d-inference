@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/google/uuid"
 )
 
 // mdmSchedulerBusyRetryDelay is the dispatcher's wake interval while due work
@@ -176,7 +177,8 @@ func (s *mdmVerificationScheduler) claimAndDispatch(key string, now time.Time) {
 	}
 	rec := job.record
 	s.mu.Unlock()
-	claimed, ok, err := s.store.ClaimVerificationJob(s.ctx, rec.SEPubKey, rec.Kind, s.owner, now, now.Add(s.cfg.ClaimTTL))
+	owner := s.owner + "/" + uuid.NewString()
+	claimed, ok, err := s.store.ClaimVerificationJob(s.ctx, rec.SEPubKey, rec.Kind, owner, now, now.Add(s.cfg.ClaimTTL))
 	if err != nil || !ok {
 		if err != nil && s.ctx.Err() == nil {
 			s.server.logger.Error("failed to claim MDM scheduler job", "error", err)
@@ -191,7 +193,7 @@ func (s *mdmVerificationScheduler) claimAndDispatch(key string, now time.Time) {
 		s.mu.Unlock()
 		cleanupCtx, cancel := mdmSchedulerCleanupContext()
 		_ = s.store.ReleaseVerificationJob(
-			cleanupCtx, rec.SEPubKey, rec.Kind, s.owner, s.deps.now().UTC(),
+			cleanupCtx, rec.SEPubKey, rec.Kind, owner, s.deps.now().UTC(),
 		)
 		cancel()
 		return
@@ -247,11 +249,12 @@ func (s *mdmVerificationScheduler) finishAttempt(work mdmSchedulerWork, result m
 	if isUrgentVerification(work.job) && s.activeUrgent > 0 {
 		s.activeUrgent--
 	}
-	if job != nil {
+	ownsAttempt := job != nil && job.record.ClaimOwner == work.job.ClaimOwner
+	if ownsAttempt {
 		job.running = false
 		job.attemptCancel = nil
 	}
-	current := job != nil && binding != nil &&
+	current := ownsAttempt && binding != nil &&
 		binding.generation == work.binding.generation &&
 		job.bindingGen == work.binding.generation
 	s.mu.Unlock()
@@ -259,7 +262,7 @@ func (s *mdmVerificationScheduler) finishAttempt(work mdmSchedulerWork, result m
 	if !current || work.ctx.Err() != nil {
 		cleanupCtx, cancel := mdmSchedulerCleanupContext()
 		err := s.store.ReleaseVerificationJob(
-			cleanupCtx, work.job.SEPubKey, work.job.Kind, s.owner, now,
+			cleanupCtx, work.job.SEPubKey, work.job.Kind, work.job.ClaimOwner, now,
 		)
 		cancel()
 		if err != nil {
@@ -267,7 +270,8 @@ func (s *mdmVerificationScheduler) finishAttempt(work mdmSchedulerWork, result m
 			s.mu.Lock()
 			orphan := s.jobs[work.key]
 			if s.bindings[work.job.SEPubKey] == nil && orphan != nil &&
-				orphan.bindingGen == work.binding.generation {
+				orphan.bindingGen == work.binding.generation &&
+				orphan.record.ClaimOwner == work.job.ClaimOwner {
 				if orphan.record.UDID != "" && s.byUDID[orphan.record.UDID] == work.key {
 					delete(s.byUDID, orphan.record.UDID)
 				}
@@ -275,7 +279,7 @@ func (s *mdmVerificationScheduler) finishAttempt(work mdmSchedulerWork, result m
 			}
 			s.mu.Unlock()
 		} else if s.ctx.Err() == nil {
-			s.refreshReleasedJob(work)
+			s.refreshReboundJob(work)
 		}
 		s.signal()
 		return
@@ -284,12 +288,13 @@ func (s *mdmVerificationScheduler) finishAttempt(work mdmSchedulerWork, result m
 	if result.udid != "" {
 		work.job.UDID = result.udid
 		work.job.UpdatedAt = now
-		if updated, err := s.store.UpsertVerificationJob(s.ctx, work.job); err == nil {
-			work.job = updated
-		}
+		// Retain this attempt's claim token even if a concurrent reconnect
+		// changed the durable record returned by the metadata update.
+		_, _ = s.store.UpsertVerificationJob(s.ctx, work.job)
 		s.mu.Lock()
 		if currentJob := s.jobs[work.key]; currentJob != nil &&
-			currentJob.bindingGen == work.binding.generation {
+			currentJob.bindingGen == work.binding.generation &&
+			currentJob.record.ClaimOwner == work.job.ClaimOwner {
 			currentJob.record.UDID = result.udid
 			if currentJob.callbackGen == work.binding.generation &&
 				currentJob.callbackUUID != "" {
@@ -303,18 +308,28 @@ func (s *mdmVerificationScheduler) finishAttempt(work mdmSchedulerWork, result m
 		cleanupCtx, cancel := mdmSchedulerCleanupContext()
 		err := s.store.CompleteVerificationJob(
 			cleanupCtx, work.job.SEPubKey, work.job.Kind,
-			s.owner, result.outcome, now,
+			work.job.ClaimOwner, result.outcome, now,
 		)
 		cancel()
 		if err != nil {
 			s.server.logger.Error("failed to complete MDM scheduler job", "error", err)
 		}
 		s.mu.Lock()
-		delete(s.jobs, work.key)
-		if work.job.UDID != "" && s.byUDID[work.job.UDID] == work.key {
-			delete(s.byUDID, work.job.UDID)
+		currentJob := s.jobs[work.key]
+		completedCurrent := currentJob != nil && currentJob.bindingGen == work.binding.generation &&
+			currentJob.record.ClaimOwner == work.job.ClaimOwner
+		if completedCurrent {
+			delete(s.jobs, work.key)
+			if work.job.UDID != "" && s.byUDID[work.job.UDID] == work.key {
+				delete(s.byUDID, work.job.UDID)
+			}
 		}
 		s.mu.Unlock()
+		if !completedCurrent {
+			s.refreshReboundJob(work)
+			s.signal()
+			return
+		}
 		if result.granted && work.job.Kind == store.VerificationTaskSecurityInfo {
 			s.finishSecurityInfo(work.binding, result.udid)
 		} else {
@@ -333,7 +348,7 @@ func (s *mdmVerificationScheduler) finishAttempt(work mdmSchedulerWork, result m
 	next := now.Add(delay)
 	cleanupCtx, cancel := mdmSchedulerCleanupContext()
 	err := s.store.RescheduleVerificationJob(
-		cleanupCtx, work.job.SEPubKey, work.job.Kind, s.owner, priority, stage,
+		cleanupCtx, work.job.SEPubKey, work.job.Kind, work.job.ClaimOwner, priority, stage,
 		delay, next, result.outcome, now,
 	)
 	cancel()
@@ -341,8 +356,11 @@ func (s *mdmVerificationScheduler) finishAttempt(work mdmSchedulerWork, result m
 		s.server.logger.Error("failed to reschedule MDM scheduler job", "error", err)
 	}
 	s.mu.Lock()
-	if currentJob := s.jobs[work.key]; currentJob != nil &&
-		currentJob.bindingGen == work.binding.generation {
+	currentJob := s.jobs[work.key]
+	rebound := currentJob != nil && currentJob.bindingGen != work.binding.generation
+	if currentJob != nil &&
+		currentJob.bindingGen == work.binding.generation &&
+		currentJob.record.ClaimOwner == work.job.ClaimOwner {
 		currentJob.record.State = store.VerificationStateBackoff
 		currentJob.record.Priority = priority
 		currentJob.record.RetryStage = stage
@@ -353,6 +371,9 @@ func (s *mdmVerificationScheduler) finishAttempt(work mdmSchedulerWork, result m
 		currentJob.record.ClaimExpiresAt = nil
 	}
 	s.mu.Unlock()
+	if rebound {
+		s.refreshReboundJob(work)
+	}
 	if s.server.metrics != nil {
 		s.server.metrics.ObserveHistogram(
 			"mdm_scheduler_retry_delay_seconds", delay.Seconds(),

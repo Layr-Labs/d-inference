@@ -3756,7 +3756,9 @@ func (s *MemoryStore) CompleteVerificationJob(_ context.Context, seKey string, k
 	if !ok {
 		return nil
 	}
-	if rec.ClaimOwner != "" && rec.ClaimOwner != owner {
+	// A retired token must not complete work after its claim was released.
+	// Empty-owner late callbacks still match an unclaimed row explicitly.
+	if rec.ClaimOwner != owner {
 		return nil
 	}
 	if rec.ReopenPending {

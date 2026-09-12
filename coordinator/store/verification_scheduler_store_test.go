@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -89,6 +90,15 @@ func exerciseVerificationJobStore(t *testing.T, st verificationJobStore, prefix 
 	gotPtr, err := st.GetVerificationJob(ctx, seRecovery, VerificationTaskSecurityInfo)
 	if err != nil || gotPtr == nil || gotPtr.State != VerificationStateBackoff || gotPtr.RetryStage != 3 || !gotPtr.NextAttemptAt.Equal(next) || gotPtr.ClaimOwner != "" {
 		t.Fatalf("reschedule state = %+v, err=%v", gotPtr, err)
+	}
+	// Retired attempt tokens cannot complete a row after its claim was
+	// cleared. A current late callback may still complete it with owner "".
+	if err := st.CompleteVerificationJob(ctx, seRecovery, VerificationTaskSecurityInfo, "owner-b", VerificationOutcomeSuccess, now.Add(90*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	afterRetired, err := st.GetVerificationJob(ctx, seRecovery, VerificationTaskSecurityInfo)
+	if err != nil || !reflect.DeepEqual(afterRetired, gotPtr) {
+		t.Fatalf("retired owner changed unclaimed verification: before=%+v after=%+v err=%v", gotPtr, afterRetired, err)
 	}
 	if err := st.CompleteVerificationJob(ctx, seRecovery, VerificationTaskSecurityInfo, "", VerificationOutcomeSuccess, now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)

@@ -70,7 +70,7 @@ func (s *mdmVerificationScheduler) Submit(ctx context.Context, providerID string
 		return generation
 	}
 	if record.State == store.VerificationStateRunning &&
-		record.ClaimOwner != "" && record.ClaimOwner != s.owner {
+		record.ClaimOwner != "" && !s.ownsClaim(record.ClaimOwner) {
 		s.mu.Unlock()
 		s.metricCounter("mdm_scheduler_deduplicated_total", "state", string(record.State))
 		s.signal()
@@ -330,7 +330,7 @@ func (s *mdmVerificationScheduler) loadDueRows() {
 			claimExpired := rec.State == store.VerificationStateRunning &&
 				rec.ClaimExpiresAt != nil && !rec.ClaimExpiresAt.After(now)
 			stalePlaceholder := !existing.running &&
-				rec.ClaimOwner != s.owner &&
+				!s.ownsClaim(rec.ClaimOwner) &&
 				claimExpired
 			if !stalePlaceholder {
 				continue
@@ -357,13 +357,19 @@ func (s *mdmVerificationScheduler) loadDueRows() {
 	s.mu.Unlock()
 }
 
-// refreshReleasedJob reconciles a rebound live job with durable state after the
-// prior connection generation releases its claim. Reconnect submission can race
-// an in-flight attempt and therefore observe the durable row while it is still
-// running. The release is authoritative: copy its preserved retry stage and due
-// time into the new generation before redispatching. Never synthesize an
-// immediate retry or reuse the stale generation's in-memory state.
-func (s *mdmVerificationScheduler) refreshReleasedJob(work mdmSchedulerWork) {
+// refreshReboundJob reconciles queued reconnect work after the prior generation
+// settles its claim. Adopt the durable retry stage and due time only while the
+// same queued snapshot remains; a newer attempt owns its own settlement.
+func (s *mdmVerificationScheduler) refreshReboundJob(work mdmSchedulerWork) {
+	s.mu.Lock()
+	expected := s.jobs[work.key]
+	if expected == nil || expected.running {
+		s.mu.Unlock()
+		return
+	}
+	record, generation := expected.record, expected.bindingGen
+	s.mu.Unlock()
+
 	rec, err := s.store.GetVerificationJob(
 		s.ctx, work.job.SEPubKey, work.job.Kind,
 	)
@@ -377,7 +383,7 @@ func (s *mdmVerificationScheduler) refreshReleasedJob(work mdmSchedulerWork) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	job := s.jobs[work.key]
-	if job == nil {
+	if job != expected || job.running || job.bindingGen != generation || job.record != record {
 		return
 	}
 	binding := s.bindings[work.job.SEPubKey]

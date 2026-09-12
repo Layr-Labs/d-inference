@@ -86,26 +86,14 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 		if s.MaxTokensPotential < 0 || s.MaxTokensPotential > maxTokensPotential {
 			logger.Warn("provider slot max_tokens_potential out of range, clamping",
 				"provider_id", providerID, "model", s.Model, "reported", s.MaxTokensPotential)
-			if s.MaxTokensPotential < 0 {
-				s.MaxTokensPotential = 0
-			} else {
-				s.MaxTokensPotential = maxTokensPotential
-			}
+			s.MaxTokensPotential = min(max(s.MaxTokensPotential, 0), maxTokensPotential)
 		}
-		if s.NumRunning < 0 {
-			s.NumRunning = 0
-		}
-		if s.NumWaiting < 0 {
-			s.NumWaiting = 0
-		}
+		s.NumRunning = max(s.NumRunning, 0)
+		s.NumWaiting = max(s.NumWaiting, 0)
 		if s.MaxConcurrency < 0 || s.MaxConcurrency > maxReportedMaxConcurrency {
 			logger.Warn("provider slot max_concurrency out of range, clamping",
 				"provider_id", providerID, "model", s.Model, "reported", s.MaxConcurrency)
-			if s.MaxConcurrency < 0 {
-				s.MaxConcurrency = 0
-			} else {
-				s.MaxConcurrency = maxReportedMaxConcurrency
-			}
+			s.MaxConcurrency = min(max(s.MaxConcurrency, 0), maxReportedMaxConcurrency)
 		}
 		if v, changed := clampNonNeg(s.ObservedDecodeTPS, maxDecodeTPS); changed {
 			logger.Warn("provider slot observed_decode_tps out of range, clamping",
@@ -128,33 +116,11 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 		if s.ModelLoadTimeMS < 0 || s.ModelLoadTimeMS > maxModelLoadTimeMS {
 			logger.Warn("provider slot model_load_time_ms out of range, clamping",
 				"provider_id", providerID, "model", s.Model, "reported", s.ModelLoadTimeMS)
-			if s.ModelLoadTimeMS < 0 {
-				s.ModelLoadTimeMS = 0
-			} else {
-				s.ModelLoadTimeMS = maxModelLoadTimeMS
-			}
+			s.ModelLoadTimeMS = min(max(s.ModelLoadTimeMS, 0), maxModelLoadTimeMS)
 		}
-		if s.ActiveTokenBudgetUsed < 0 || s.ActiveTokenBudgetUsed > maxTokenBudgetCap {
-			if s.ActiveTokenBudgetUsed < 0 {
-				s.ActiveTokenBudgetUsed = 0
-			} else {
-				s.ActiveTokenBudgetUsed = maxTokenBudgetCap
-			}
-		}
-		if s.ActiveTokenBudgetMax < 0 || s.ActiveTokenBudgetMax > maxTokenBudgetCap {
-			if s.ActiveTokenBudgetMax < 0 {
-				s.ActiveTokenBudgetMax = 0
-			} else {
-				s.ActiveTokenBudgetMax = maxTokenBudgetCap
-			}
-		}
-		if s.QueuedTokenBudget < 0 || s.QueuedTokenBudget > maxTokenBudgetCap {
-			if s.QueuedTokenBudget < 0 {
-				s.QueuedTokenBudget = 0
-			} else {
-				s.QueuedTokenBudget = maxTokenBudgetCap
-			}
-		}
+		s.ActiveTokenBudgetUsed = min(max(s.ActiveTokenBudgetUsed, 0), maxTokenBudgetCap)
+		s.ActiveTokenBudgetMax = min(max(s.ActiveTokenBudgetMax, 0), maxTokenBudgetCap)
+		s.QueuedTokenBudget = min(max(s.QueuedTokenBudget, 0), maxTokenBudgetCap)
 		if t := s.Telemetry; t != nil {
 			// System-profiler slot telemetry (measurement only). Silent
 			// clamps, like the token-budget fields above: nothing routes on
@@ -460,31 +426,17 @@ func applyHeartbeatStatsDelta(total *protocol.HeartbeatStats, previous, current 
 
 func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) protocol.HeartbeatStats {
 	merged := current
-	if merged.CancellationsReceived == 0 {
-		merged.CancellationsReceived = previous.CancellationsReceived
-	}
-	if merged.CancellationsBeforeOutput == 0 {
-		merged.CancellationsBeforeOutput = previous.CancellationsBeforeOutput
-	}
-	if merged.CancellationsPartialComplete == 0 {
-		merged.CancellationsPartialComplete = previous.CancellationsPartialComplete
-	}
-	if merged.GenerationErrorsAfterOutput == 0 {
-		merged.GenerationErrorsAfterOutput = previous.GenerationErrorsAfterOutput
-	}
-	if merged.ChunkEncryptionErrors == 0 {
-		merged.ChunkEncryptionErrors = previous.ChunkEncryptionErrors
-	}
-	if merged.StreamClosedWithoutTerminal == 0 {
-		merged.StreamClosedWithoutTerminal = previous.StreamClosedWithoutTerminal
-	}
-	if merged.CancelDuringModelLoad == 0 {
-		merged.CancelDuringModelLoad = previous.CancelDuringModelLoad
-	}
-	if merged.UsageGaps == 0 {
-		merged.UsageGaps = previous.UsageGaps
-	}
+	// Required primary counters may reset to zero; omitted optional counters
+	// retain the previous sample so a legacy heartbeat cannot double-count them.
 	for _, f := range []struct{ cur, prev *int64 }{
+		{&merged.CancellationsReceived, &previous.CancellationsReceived},
+		{&merged.CancellationsBeforeOutput, &previous.CancellationsBeforeOutput},
+		{&merged.CancellationsPartialComplete, &previous.CancellationsPartialComplete},
+		{&merged.GenerationErrorsAfterOutput, &previous.GenerationErrorsAfterOutput},
+		{&merged.ChunkEncryptionErrors, &previous.ChunkEncryptionErrors},
+		{&merged.StreamClosedWithoutTerminal, &previous.StreamClosedWithoutTerminal},
+		{&merged.CancelDuringModelLoad, &previous.CancelDuringModelLoad},
+		{&merged.UsageGaps, &previous.UsageGaps},
 		{&merged.CancelStagePreAcceptTotal, &previous.CancelStagePreAcceptTotal},
 		{&merged.CancelStagePreEngineTotal, &previous.CancelStagePreEngineTotal},
 		{&merged.CancelStagePrefillTotal, &previous.CancelStagePrefillTotal},

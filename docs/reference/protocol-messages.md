@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-09 · commit `af7a74126`
+> Last updated: 2026-09-11 · commit `e825fadad`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -183,6 +183,14 @@ the sinks of each field are in [`telemetry-inventory.md`](telemetry-inventory.md
 Go `HeartbeatStats` · Swift `ProviderStats`. All `int64` in Go, `UInt64` in
 Swift; cumulative per provider session and delta-merged by the registry.
 `requests_served` and `tokens_generated` are required; the rest are `omitempty`.
+
+`applyHeartbeatStatsDelta` adds positive growth to lifetime totals; a smaller
+positive reading starts a new session contribution. Non-positive readings add
+nothing. `mergeHeartbeatSessionStats` retains the previous optional counter
+when its new reading is zero (including omission by an older provider), while
+the two required counters keep their reported zero. Both helpers are in
+`coordinator/registry/heartbeat.go`; these rules prevent an omitted optional
+counter from being counted again when reporting resumes.
 
 | Group | Keys |
 |---|---|

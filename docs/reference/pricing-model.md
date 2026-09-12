@@ -150,6 +150,8 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 
 `stripe_withdrawals.status` (`coordinator/api/stripe_withdraw.go`
 `handleStripeWithdraw`): `pending` → `transferred` → `paid` \| `failed`.
+An automatic payout failure can reopen `paid` as `transferred`; see
+[Connect sweep recovery](#connect-sweep-recovery) for the ownership guard.
 Connected-account status `users.stripe_account_status`
 (`coordinator/api/stripe_payouts.go`): `""` → `pending` → `ready` \|
 `restricted` \| `rejected`. Service agreements (`coordinator/billing/stripe_regions.go`):

@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-09 · commit `4c77fc285`
+> Last updated: 2026-09-12 · commit `db418ae70`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -211,6 +211,16 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 | Provider fleet and trust | `providers`, `provider_reputation`, `provider_sessions`, `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets`, `provider_log_reports` | Trust reuse and code attestations are durable. `code_attestations.continuous_coverage_until` is compare-and-updated only for the exact original proof tuple; it never refreshes `attested_at` or inserts proof. This allows bounded same-process resume after a redeploy; see [`security/attestation.md`](security/attestation.md). `provider_log_reports.serial_number` is kept empty by trigger. |
 | Models and releases | `model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `releases` | The catalog the registry syncs at boot; see [`model-registry.md`](model-registry.md). |
 | Bookkeeping | `schema_migrations`, `earnings_summary_backfill_pending` | Completion/plan markers and resumable per-key historical deltas. |
+
+### Verification job ownership
+
+`CompleteVerificationJob` compares the supplied claim owner with the stored
+owner exactly in both `MemoryStore` and `PostgresStore`. A stale nonempty
+attempt token cannot complete a replacement job whose claim is empty. A late
+callback can still complete an unclaimed job by supplying the empty owner
+(`coordinator/store/memory.go`, `coordinator/store/postgres.go`). See
+[MDM attempt ownership](security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)
+for how scheduler attempts retain their tokens across reconnects.
 
 ### Global Payouts state
 

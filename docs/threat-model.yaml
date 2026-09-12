@@ -12,6 +12,10 @@ created: "2026-05-14"
 # donation payload. This does not re-verify the surrounding cache threat claims.
 # MDA handoff cleanup re-checked 2026-09-12 against f87bd0e77: only the completing
 # connection generation is removed. Other TB-005 claims were not re-verified.
+# MDM worker settlement re-checked 2026-09-12 against db418ae70: claims carry
+# unique attempt tokens; stores require exact completion-owner equality; queue
+# cleanup and rebound reads retain replacement ownership. This does not
+# re-verify other TB-005 claims or the complete late-callback lifecycle.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference

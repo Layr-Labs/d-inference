@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-12 · commit `f87bd0e77`
+> Last updated: 2026-09-12 · commit `db418ae70`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -47,6 +47,9 @@ The grant and loss conditions for each level are tabulated in
 the challenge cadence is in [Layer 2](../architecture/security/attestation.md#layer-2--periodic-challenge)
 and the routing freshness window is
 [`challengeFreshnessMaxAge`](../architecture/routing.md#challenge-freshness).
+Verification attempts keep their own claim tokens across a provider reconnect,
+so an older worker's cleanup preserves the replacement's pending verification
+([MDM attempt ownership](../architecture/security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)).
 
 `mda_verified: true` adds that Apple issued a Managed Device Attestation whose
 certificate chain verifies to the Apple Enterprise Attestation Root CA and

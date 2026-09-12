@@ -62,7 +62,7 @@ func (a *Asserter) Evaluate(stats map[testbed.Segment]*SegmentStatsView) *Assert
 
 	for _, t := range a.thresholds {
 		s, ok := stats[t.Segment]
-		if !ok {
+		if !ok || s == nil || s.Count <= 0 {
 			report.Results = append(report.Results, AssertionResult{
 				Name:    fmt.Sprintf("%s:present", t.Segment),
 				Passed:  false,
@@ -72,48 +72,23 @@ func (a *Asserter) Evaluate(stats map[testbed.Segment]*SegmentStatsView) *Assert
 			continue
 		}
 
-		if t.MaxMean > 0 {
-			passed := s.Mean <= t.MaxMean
-			report.Results = append(report.Results, AssertionResult{
-				Name:    fmt.Sprintf("%s:mean<=%s", t.Segment, t.MaxMean),
-				Passed:  passed,
-				Message: fmt.Sprintf("mean=%s (threshold=%s)", s.Mean, t.MaxMean),
-			})
-			if !passed {
-				report.Passed = false
+		for _, check := range []struct {
+			name       string
+			value, max time.Duration
+		}{
+			{"mean", s.Mean, t.MaxMean},
+			{"p95", s.P95, t.MaxP95},
+			{"p99", s.P99, t.MaxP99},
+			{"median", s.Median, t.MaxMedian},
+		} {
+			if check.max <= 0 {
+				continue
 			}
-		}
-
-		if t.MaxP95 > 0 {
-			passed := s.P95 <= t.MaxP95
+			passed := check.value <= check.max
 			report.Results = append(report.Results, AssertionResult{
-				Name:    fmt.Sprintf("%s:p95<=%s", t.Segment, t.MaxP95),
+				Name:    fmt.Sprintf("%s:%s<=%s", t.Segment, check.name, check.max),
 				Passed:  passed,
-				Message: fmt.Sprintf("p95=%s (threshold=%s)", s.P95, t.MaxP95),
-			})
-			if !passed {
-				report.Passed = false
-			}
-		}
-
-		if t.MaxP99 > 0 {
-			passed := s.P99 <= t.MaxP99
-			report.Results = append(report.Results, AssertionResult{
-				Name:    fmt.Sprintf("%s:p99<=%s", t.Segment, t.MaxP99),
-				Passed:  passed,
-				Message: fmt.Sprintf("p99=%s (threshold=%s)", s.P99, t.MaxP99),
-			})
-			if !passed {
-				report.Passed = false
-			}
-		}
-
-		if t.MaxMedian > 0 {
-			passed := s.Median <= t.MaxMedian
-			report.Results = append(report.Results, AssertionResult{
-				Name:    fmt.Sprintf("%s:median<=%s", t.Segment, t.MaxMedian),
-				Passed:  passed,
-				Message: fmt.Sprintf("median=%s (threshold=%s)", s.Median, t.MaxMedian),
+				Message: fmt.Sprintf("%s=%s (threshold=%s)", check.name, check.value, check.max),
 			})
 			if !passed {
 				report.Passed = false

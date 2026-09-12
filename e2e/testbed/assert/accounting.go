@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -114,82 +115,43 @@ func (pa *PostgresAccountingAsserter) EvaluateAll(ctx context.Context) *Assertio
 		return report
 	}
 
-	pa.assertBalanceIntegritySQL(ctx, report)
-	pa.assertNoNegativeBalancesSQL(ctx, report)
-	pa.assertLedgerContinuitySQL(ctx, report)
-	pa.assertPaymentEarningsParitySQL(ctx, report)
-	pa.assertEarningsMatchesPaymentsSQL(ctx, report)
-	pa.assertBillingSessionConsistencySQL(ctx, report)
+	for _, check := range accountingSQLChecks() {
+		check.evaluate(report, pa.pool.QueryRow(ctx, check.query))
+	}
 
 	return report
 }
 
-func (pa *PostgresAccountingAsserter) assertBalanceIntegritySQL(ctx context.Context, report *AssertionReport) {
-	name := "balance_integrity_sql"
+// observation preserves the two existing informational accounting results: their
+// counts are reported, but they do not establish payment/earnings equality.
+type accountingSQLCheck struct {
+	name, query, message string
+	observation          bool
+}
 
-	row := pa.pool.QueryRow(ctx, `
+func accountingSQLChecks() []accountingSQLCheck {
+	return []accountingSQLCheck{
+		{
+			name: "balance_integrity_sql",
+			query: `
 		SELECT COUNT(*) FROM balances b
 		WHERE b.balance_micro_usd != COALESCE((
 			SELECT SUM(amount_micro_usd) FROM ledger_entries
 			WHERE account_id = b.account_id
 		), 0)
-	`)
-
-	var driftCount int
-	if err := row.Scan(&driftCount); err != nil {
-		report.Results = append(report.Results, AssertionResult{
-			Name:    name,
-			Passed:  false,
-			Message: fmt.Sprintf("query failed: %v", err),
-		})
-		report.Passed = false
-		return
-	}
-
-	passed := driftCount == 0
-	report.Results = append(report.Results, AssertionResult{
-		Name:    name,
-		Passed:  passed,
-		Message: fmt.Sprintf("%d accounts with balance drift", driftCount),
-	})
-	if !passed {
-		report.Passed = false
-	}
-}
-
-func (pa *PostgresAccountingAsserter) assertNoNegativeBalancesSQL(ctx context.Context, report *AssertionReport) {
-	name := "no_negative_balances_sql"
-
-	row := pa.pool.QueryRow(ctx, `
+	`,
+			message: "%d accounts with balance drift",
+		},
+		{
+			name: "no_negative_balances_sql",
+			query: `
 		SELECT COUNT(*) FROM balances WHERE balance_micro_usd < 0
-	`)
-
-	var negCount int
-	if err := row.Scan(&negCount); err != nil {
-		report.Results = append(report.Results, AssertionResult{
-			Name:    name,
-			Passed:  false,
-			Message: fmt.Sprintf("query failed: %v", err),
-		})
-		report.Passed = false
-		return
-	}
-
-	passed := negCount == 0
-	report.Results = append(report.Results, AssertionResult{
-		Name:    name,
-		Passed:  passed,
-		Message: fmt.Sprintf("%d accounts with negative balance", negCount),
-	})
-	if !passed {
-		report.Passed = false
-	}
-}
-
-func (pa *PostgresAccountingAsserter) assertLedgerContinuitySQL(ctx context.Context, report *AssertionReport) {
-	name := "ledger_continuity_sql"
-
-	row := pa.pool.QueryRow(ctx, `
+	`,
+			message: "%d accounts with negative balance",
+		},
+		{
+			name: "ledger_continuity_sql",
+			query: `
 		SELECT COUNT(*) FROM (
 			SELECT le.id,
 			       le.account_id,
@@ -200,113 +162,54 @@ func (pa *PostgresAccountingAsserter) assertLedgerContinuitySQL(ctx context.Cont
 		) sub
 		WHERE prev_balance_after IS NOT NULL
 		  AND prev_balance_after + amount_micro_usd != balance_after
-	`)
-
-	var gapCount int
-	if err := row.Scan(&gapCount); err != nil {
-		report.Results = append(report.Results, AssertionResult{
-			Name:    name,
-			Passed:  false,
-			Message: fmt.Sprintf("query failed: %v", err),
-		})
-		report.Passed = false
-		return
-	}
-
-	passed := gapCount == 0
-	report.Results = append(report.Results, AssertionResult{
-		Name:    name,
-		Passed:  passed,
-		Message: fmt.Sprintf("%d ledger continuity gaps found", gapCount),
-	})
-	if !passed {
-		report.Passed = false
-	}
-}
-
-func (pa *PostgresAccountingAsserter) assertPaymentEarningsParitySQL(ctx context.Context, report *AssertionReport) {
-	name := "payment_earnings_parity_sql"
-
-	row := pa.pool.QueryRow(ctx, `
+	`,
+			message: "%d ledger continuity gaps found",
+		},
+		{
+			name: "payment_earnings_parity_sql",
+			query: `
 		SELECT COUNT(*) FROM (
 			SELECT le.account_id
 			FROM ledger_entries le
 			WHERE le.entry_type = 'platform_fee'
 			GROUP BY le.account_id
 		) sub
-	`)
-
-	var feeAccountCount int
-	if err := row.Scan(&feeAccountCount); err != nil {
-		report.Results = append(report.Results, AssertionResult{
-			Name:    name,
-			Passed:  false,
-			Message: fmt.Sprintf("query failed: %v", err),
-		})
-		report.Passed = false
-		return
-	}
-
-	report.Results = append(report.Results, AssertionResult{
-		Name:    name,
-		Passed:  true,
-		Message: fmt.Sprintf("%d accounts with platform fee entries recorded", feeAccountCount),
-	})
-}
-
-func (pa *PostgresAccountingAsserter) assertEarningsMatchesPaymentsSQL(ctx context.Context, report *AssertionReport) {
-	name := "earnings_matches_payments_sql"
-
-	row := pa.pool.QueryRow(ctx, `
+	`,
+			message:     "%d accounts with platform fee entries recorded",
+			observation: true,
+		},
+		{
+			name: "earnings_matches_payments_sql",
+			query: `
 		SELECT COALESCE(SUM(le.amount_micro_usd), 0)
 		FROM ledger_entries le
 		WHERE le.entry_type IN ('charge', 'refund')
-	`)
-
-	var totalCharges int
-	if err := row.Scan(&totalCharges); err != nil {
-		report.Results = append(report.Results, AssertionResult{
-			Name:    name,
-			Passed:  false,
-			Message: fmt.Sprintf("query failed: %v", err),
-		})
-		report.Passed = false
-		return
-	}
-
-	report.Results = append(report.Results, AssertionResult{
-		Name:    name,
-		Passed:  true,
-		Message: fmt.Sprintf("net charges across all accounts: %d micro-USD", totalCharges),
-	})
-}
-
-func (pa *PostgresAccountingAsserter) assertBillingSessionConsistencySQL(ctx context.Context, report *AssertionReport) {
-	name := "billing_session_consistency_sql"
-
-	row := pa.pool.QueryRow(ctx, `
+	`,
+			message:     "net charges across all accounts: %d micro-USD",
+			observation: true,
+		},
+		{
+			name: "billing_session_consistency_sql",
+			query: `
 		SELECT COUNT(*) FROM billing_sessions
 		WHERE completed_at IS NOT NULL AND status != 'completed'
-	`)
-
-	var inconsistent int
-	if err := row.Scan(&inconsistent); err != nil {
-		report.Results = append(report.Results, AssertionResult{
-			Name:    name,
-			Passed:  false,
-			Message: fmt.Sprintf("query failed: %v", err),
-		})
-		report.Passed = false
-		return
+	`,
+			message: "%d billing sessions with completed_at set but status != 'completed'",
+		},
 	}
+}
 
-	passed := inconsistent == 0
-	report.Results = append(report.Results, AssertionResult{
-		Name:    name,
-		Passed:  passed,
-		Message: fmt.Sprintf("%d billing sessions with completed_at set but status != 'completed'", inconsistent),
-	})
-	if !passed {
+func (check accountingSQLCheck) evaluate(report *AssertionReport, row pgx.Row) {
+	var count int
+	result := AssertionResult{Name: check.name}
+	if err := row.Scan(&count); err != nil {
+		result.Message = fmt.Sprintf("query failed: %v", err)
+	} else {
+		result.Passed = check.observation || count == 0
+		result.Message = fmt.Sprintf(check.message, count)
+	}
+	report.Results = append(report.Results, result)
+	if !result.Passed {
 		report.Passed = false
 	}
 }

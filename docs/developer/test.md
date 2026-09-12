@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-11 · commit `cdb7bf231`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -922,6 +922,10 @@ node --test landing/earn-calculator-core.test.js
 ```
 
 ### 6. Scripts and release integrity
+
+For changes to [dependency update configuration](../../.github/dependabot.yml),
+confirm that each update directory contains its ecosystem’s manifest, then run
+the relevant component checks in this guide.
 
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)

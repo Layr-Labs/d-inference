@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Contributor guidance** — Issue forms and the PR template reference the current components, provider commands and review requirements. Go dependency update checks use the repository's root module.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

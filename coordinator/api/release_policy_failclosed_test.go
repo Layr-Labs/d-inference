@@ -381,8 +381,8 @@ func TestReleaseDeactivationReadFailureConvergesPolicyFromCommittedDeactivation(
 
 	// The runtime manifest converged from the retained snapshot: the shared
 	// metallib survives via the remaining 2.1.0 release.
-	if srv.knownRuntimeManifest == nil || !srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"][trHashC] {
-		t.Fatalf("runtime manifest did not converge with the committed deactivation: %+v", srv.knownRuntimeManifest)
+	if srv.knownRuntimeManifest.Load() == nil || !srv.knownRuntimeManifest.Load().TemplateHashes["mlx_metallib"][trHashC] {
+		t.Fatalf("runtime manifest did not converge with the committed deactivation: %+v", srv.knownRuntimeManifest.Load())
 	}
 
 	// Recovery rebuilds the identical authorized set from the exact inventory.
@@ -513,8 +513,8 @@ func TestRegisterReleaseInventoryFailureConvergesPolicyWithCommittedRelease(t *t
 	}
 
 	// The runtime manifest converged with the committed release too.
-	if srv.knownRuntimeManifest == nil || !srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"][trHashC] {
-		t.Fatalf("runtime manifest did not converge with the committed release: %+v", srv.knownRuntimeManifest)
+	if srv.knownRuntimeManifest.Load() == nil || !srv.knownRuntimeManifest.Load().TemplateHashes["mlx_metallib"][trHashC] {
+		t.Fatalf("runtime manifest did not converge with the committed release: %+v", srv.knownRuntimeManifest.Load())
 	}
 
 	// Routine registration during the outage must not deroute the approved fleet.

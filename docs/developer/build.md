@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-12 · commit `f1ccb8d43`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -76,6 +76,11 @@ Continue with the per-component steps when you need one piece or want to
 understand what `make` runs.
 
 ### 3. Coordinator (Go)
+
+Runtime-manifest publication and verification live in
+`coordinator/api/runtime_manifest.go`; the standard coordinator target builds
+these operations with the HTTP server. Their concurrency checks run without a
+provider binary ([test procedure](test.md#2-coordinator-go)).
 
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only

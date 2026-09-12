@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-10 · commit `5f021ba4d`
+> Last updated: 2026-09-12 · commit `f1ccb8d43`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -22,8 +22,8 @@ A coordinator binary upgrade is not required solely to register 0.9.2. The
 binary/metallib trust, preserves other active releases and serves the new
 version through `GET /v1/releases/latest`. `LatestProviderVersion` is a display
 fallback, not an exact-version admission pin (`coordinator/api/release_handlers.go`,
-`handleRegisterRelease`; `coordinator/api/server.go`, `SyncBinaryHashes` and
-`SyncRuntimeManifest`).
+`handleRegisterRelease`; `coordinator/api/server.go`, `SyncBinaryHashes`;
+`coordinator/api/runtime_manifest.go`, `SyncRuntimeManifest`).
 
 The 0.9.2 assistant transition uses existing slot state `reloading`, capacity
 quotes and 503 `slot_state` refusals; accepted requests keep their old engine

@@ -42,10 +42,10 @@ func TestSyncRuntimeManifestIncludesSwiftMetallibHash(t *testing.T) {
 
 	srv.SyncRuntimeManifest()
 
-	if srv.knownRuntimeManifest == nil {
+	if srv.knownRuntimeManifest.Load() == nil {
 		t.Fatal("knownRuntimeManifest = nil")
 	}
-	if accepted := srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"]; !accepted[metallibHash] {
+	if accepted := srv.knownRuntimeManifest.Load().TemplateHashes["mlx_metallib"]; !accepted[metallibHash] {
 		t.Fatalf("mlx_metallib accepted hashes = %v, want %q", sortedTemplateHashes(accepted), metallibHash)
 	}
 }
@@ -151,11 +151,11 @@ func TestSyncRuntimeManifestUnionsTemplateHashesAcrossActiveReleases(t *testing.
 	if srv.minProviderVersion != "" {
 		t.Fatalf("minProviderVersion should not be auto-set, got %q", srv.minProviderVersion)
 	}
-	if srv.knownRuntimeManifest == nil {
+	if srv.knownRuntimeManifest.Load() == nil {
 		t.Fatal("knownRuntimeManifest = nil")
 	}
 
-	manifest := srv.knownRuntimeManifest
+	manifest := srv.knownRuntimeManifest.Load()
 	if !manifest.PythonHashes["new-python"] {
 		t.Fatal("latest python hash missing from runtime manifest")
 	}
@@ -194,7 +194,7 @@ func TestSyncRuntimeManifestClearsStaleHashesWhenLatestReleaseHasNoRuntimeMetada
 	}
 
 	srv.SyncRuntimeManifest()
-	if srv.knownRuntimeManifest == nil {
+	if srv.knownRuntimeManifest.Load() == nil {
 		t.Fatal("expected initial runtime manifest")
 	}
 
@@ -217,10 +217,10 @@ func TestSyncRuntimeManifestClearsStaleHashesWhenLatestReleaseHasNoRuntimeMetada
 	// With multi-version manifest, old release hashes are retained so older
 	// providers still pass — manifest is NOT cleared just because a new
 	// release lacks metadata.
-	if srv.knownRuntimeManifest == nil {
+	if srv.knownRuntimeManifest.Load() == nil {
 		t.Fatal("manifest should retain old release hashes")
 	}
-	if !srv.knownRuntimeManifest.PythonHashes["old-python"] {
+	if !srv.knownRuntimeManifest.Load().PythonHashes["old-python"] {
 		t.Fatal("old python hash should still be accepted")
 	}
 }

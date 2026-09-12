@@ -198,23 +198,9 @@ func (b *profileBounds) count(p *int) *int {
 	return &v
 }
 
-func cloneBoolPtr(p *bool) *bool {
-	if p == nil {
-		return nil
-	}
-	v := *p
-	return &v
-}
-
-func cloneInt64Ptr(p *int64) *int64 {
-	if p == nil {
-		return nil
-	}
-	v := *p
-	return &v
-}
-
-func cloneIntPtr(p *int) *int {
+// cloneProfileValue preserves an absent scalar and gives each projection its
+// own value. Range-checked numerics still go through profileBounds.
+func cloneProfileValue[T bool | int | int64](p *T) *T {
 	if p == nil {
 		return nil
 	}
@@ -266,8 +252,8 @@ func decodeInferenceProfile(raw []byte, receivedAt time.Time) (stored *StoredInf
 
 	var b profileBounds
 	stored = &StoredInferenceProfile{
-		Schema: cloneIntPtr(w.Schema),
-		WallMS: cloneInt64Ptr(w.WallMS),
+		Schema: cloneProfileValue(w.Schema),
+		WallMS: cloneProfileValue(w.WallMS),
 
 		DequeuedUS:        b.us(w.DequeuedUS),
 		DecryptedUS:       b.us(w.DecryptedUS),
@@ -318,11 +304,11 @@ func decodeInferenceProfile(raw []byte, receivedAt time.Time) (stored *StoredInf
 		MLXActiveBytesAtFinish: b.bytes(w.MLXActiveBytesAtFinish),
 		MLXPeakBytes:           b.bytes(w.MLXPeakBytes),
 
-		UsageRecovered: cloneBoolPtr(w.UsageRecovered),
-		LoadCold:       cloneBoolPtr(w.LoadCold),
-		LoadParked:     cloneBoolPtr(w.LoadParked),
-		MTPActive:      cloneBoolPtr(w.MTPActive),
-		LowPowerMode:   cloneBoolPtr(w.LowPowerMode),
+		UsageRecovered: cloneProfileValue(w.UsageRecovered),
+		LoadCold:       cloneProfileValue(w.LoadCold),
+		LoadParked:     cloneProfileValue(w.LoadParked),
+		MTPActive:      cloneProfileValue(w.MTPActive),
+		LowPowerMode:   cloneProfileValue(w.LowPowerMode),
 
 		DeadlineMode: w.DeadlineMode.Fold(),
 		ThermalState: w.ThermalState.Fold(),
@@ -436,7 +422,8 @@ func spanUS(start, end *int64) *int64 {
 // profile into the typed hot columns and the long-tail JSONB. It runs on the
 // profile sink path, never on the WS read loop. rec already carries the
 // coordinator stamps (WriteDoneUS, CompleteIngressUS, ChunksIn, ReceivedAt)
-// this needs; the AttemptProfile is not consulted.
+// this needs; the AttemptProfile supplies retained terminal usage for the
+// consistency check.
 //
 // The typed columns, the transport estimate and the consistency flag are
 // filled only from a VALID profile; a range/order-flagged profile keeps its
@@ -472,27 +459,27 @@ func (s *Server) applyProviderProfile(rec *store.RequestProfileRecord, ap *regis
 		return
 	}
 
-	rec.ProvTotalUS = cloneInt64Ptr(stored.TotalUS)
-	rec.ProvFirstDeltaUS = cloneInt64Ptr(stored.FirstDeltaUS)
-	rec.ProvEngineSubmitUS = cloneInt64Ptr(stored.EngineSubmitUS)
-	rec.ProvEngineAdmittedUS = cloneInt64Ptr(stored.EngineAdmittedUS)
+	rec.ProvTotalUS = cloneProfileValue(stored.TotalUS)
+	rec.ProvFirstDeltaUS = cloneProfileValue(stored.FirstDeltaUS)
+	rec.ProvEngineSubmitUS = cloneProfileValue(stored.EngineSubmitUS)
+	rec.ProvEngineAdmittedUS = cloneProfileValue(stored.EngineAdmittedUS)
 	rec.ProvPromptPrepUS = spanUS(stored.PromptPrepStartUS, stored.PromptPrepEndUS)
 	rec.ProvLoadWaitUS = spanUS(stored.LoadWaitStartUS, stored.LoadWaitEndUS)
-	rec.ProvLoadCold = cloneBoolPtr(stored.LoadCold)
-	rec.ProvRunningAtAdmit = cloneIntPtr(stored.RunningAtAdmit)
-	rec.ProvWaitingAtAdmit = cloneIntPtr(stored.WaitingAtAdmit)
-	rec.ProvKVBytesInUseAtAdmit = cloneInt64Ptr(stored.KVBytesInUseAtAdmit)
+	rec.ProvLoadCold = cloneProfileValue(stored.LoadCold)
+	rec.ProvRunningAtAdmit = cloneProfileValue(stored.RunningAtAdmit)
+	rec.ProvWaitingAtAdmit = cloneProfileValue(stored.WaitingAtAdmit)
+	rec.ProvKVBytesInUseAtAdmit = cloneProfileValue(stored.KVBytesInUseAtAdmit)
 	rec.ProvCancelStage = string(stored.CancelStage)
 	if e := stored.Engine; e != nil {
-		rec.EngQueueWaitNS = cloneInt64Ptr(e.AdmittedNS)
-		rec.EngFirstTokenNS = cloneInt64Ptr(e.FirstTokenNS)
-		rec.EngPromptComputedNS = cloneInt64Ptr(e.PromptComputedNS)
-		rec.EngPrefillChunks = cloneIntPtr(e.PrefillChunks)
-		rec.EngDecodeSteps = cloneIntPtr(e.DecodeSteps)
-		rec.EngMTPAccepted = cloneIntPtr(e.MTPAccepted)
+		rec.EngQueueWaitNS = cloneProfileValue(e.AdmittedNS)
+		rec.EngFirstTokenNS = cloneProfileValue(e.FirstTokenNS)
+		rec.EngPromptComputedNS = cloneProfileValue(e.PromptComputedNS)
+		rec.EngPrefillChunks = cloneProfileValue(e.PrefillChunks)
+		rec.EngDecodeSteps = cloneProfileValue(e.DecodeSteps)
+		rec.EngMTPAccepted = cloneProfileValue(e.MTPAccepted)
 		rec.EngFinishReason = string(e.FinishReason)
 	}
-	rec.SleptUS = cloneInt64Ptr(stored.SleptUS)
+	rec.SleptUS = cloneProfileValue(stored.SleptUS)
 
 	// Consistency flag (never invalidates). Two checks, each evaluated
 	// independently and only when both of its inputs are present:

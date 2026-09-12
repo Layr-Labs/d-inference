@@ -1,10 +1,9 @@
 package api
 
 // Builds the persisted store.RequestProfileRecord from an in-memory
-// registry.RequestProfile / AttemptProfile. Runs on whichever goroutine
-// finalized the attempt (never under any registry lock) and only enqueues onto
-// the profile sink; all JSON encoding of the decision context happens here,
-// off the reserve path.
+// registry.RequestProfile / AttemptProfile on the profile sink worker.
+// Finalizing goroutines only enqueue; flattening, decision JSON encoding and
+// sampling happen off the request and reserve paths.
 
 import (
 	"encoding/json"
@@ -23,7 +22,7 @@ const (
 	providerProfileAbsent = "absent"
 )
 
-// foldChipFamily maps a provider-reported chip family to {m1,m2,m3,m4,m5,other}.
+// foldChipFamily maps m1 through m9 prefixes to their family, else other.
 func foldChipFamily(raw string) string {
 	v := strings.ToLower(strings.TrimSpace(raw))
 	switch v {

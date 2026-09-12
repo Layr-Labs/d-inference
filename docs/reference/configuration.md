@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-11 · commit `ef7b5a9aa`
+> Last updated: 2026-09-11 · commit `9f8ad60d4`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -113,7 +113,7 @@ Trust floor, model routing and per-request quality:
 | `EIGENINFERENCE_LONG_PROMPT_TOKENS` | integer > 0 | unset (preference off) | `coordinator/cmd/coordinator/main.go` (`SetLongPromptThreshold`) | Prompts above this size prefer the fastest provider tier. |
 | `EIGENINFERENCE_LONG_PROMPT_PREFILL_WEIGHT` | float (values below 1 clamp to neutral) | `2.0` | `coordinator/cmd/coordinator/main.go` (`SetLongPromptPrefillWeight`) | Prefill weight applied to long prompts; read only when the threshold is set. |
 | `EIGENINFERENCE_PREFILL_DECODE_RATIO` | float > 0 | `12.0` | `coordinator/cmd/coordinator/main.go`; `coordinator/registry/scheduler.go` (`SetPrefillToDecodeRatio`) | Prefill-to-decode speed ratio in the TTFT estimate. |
-| `EIGENINFERENCE_PROMPT_CALIBRATION` | `family:factor,…` (factors ≥ 1.0) | built-in table (`gpt-oss:1.3`) | `coordinator/api/prompt_calibration.go` (`SetPromptContextCalibrationFromEnv`) | Replaces the per-family prompt-token calibration used by the context gate. |
+| `EIGENINFERENCE_PROMPT_CALIBRATION` | `family:factor,…` (finite factors ≥ 1.0) | built-in table (`gpt-oss:1.3`) | `coordinator/api/prompt_calibration.go` (`SetPromptContextCalibrationFromEnv`) | Replaces the per-family prompt-token calibration used by the context gate when at least one valid pair exists; invalid pairs are skipped. Scaled estimates saturate at the maximum integer before conversion. |
 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES` | `model=upstream_ms,…` (`0`/`off` removes) | built-in table | `coordinator/modelpolicy/first_content_deadline.go` (`SetFirstContentBasesFromEnv`) | Overrides exact-model first-content deadline bases. |
 | `EIGENINFERENCE_HEALTH_EJECTION` | `off`/`0`/`false`/`no` disables | on | `coordinator/registry/health_ejection_switch.go` (`healthEjectionSwitch`, parsed once at package init); `coordinator/registry/health_ejection.go` (`healthEjectionEnabled`) | Kill switch for provider health ejection; see [`../architecture/routing.md`](../architecture/routing.md). |
 | `EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP` | bool | `false` | `coordinator/cmd/coordinator/main.go` (`SetDisableClientErrorStop`) | Lets deterministic provider 4xx errors fail over instead of stopping the dispatch ladder. |
@@ -163,7 +163,7 @@ Quality concurrency cap:
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_QUALITY_CONCURRENCY_CAP` | bool | `true` | `coordinator/registry/config.go` (`ReadConfig`) | Per-provider admission cap derived from each model's quality concurrency instead of the flat cap. |
-| `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT` | float ≥ 0 | `1.2` (`defaultQualityCapOvercommit`; the `2.0` fallback in `ReadConfig` is replaced when the variable is unset) | `coordinator/registry/config.go` (`ReadConfig`); `coordinator/registry/concurrency_cap.go` (`SetQualityConcurrencyCap`) | Multiplier on the strict decode-floor batch. |
+| `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT` | finite float ≥ 0 | `1.2` (`defaultQualityCapOvercommit`; the `2.0` fallback in `ReadConfig` is replaced when the variable is unset) | `coordinator/registry/config.go` (`ReadConfig`); `coordinator/registry/concurrency_cap.go` (`SetQualityConcurrencyCap`) | Multiplier on the strict decode-floor batch. |
 | `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT_BY_MODEL` | `model=factor,…` | unset | `coordinator/registry/concurrency_cap.go` (`SetQualityConcurrencyCap`) | Per-model overcommit overrides. |
 | `EIGENINFERENCE_QUALITY_CAP_PER_MODEL_TPS` | bool | `true` | `coordinator/registry/concurrency_cap.go` | Use per-model solo decode rates (not the provider-level rate) for the cap. |
 | `EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES` | integer | `5` | `coordinator/registry/concurrency_cap.go` | Solo samples required before a per-model median is trusted. |
@@ -183,13 +183,14 @@ they tune is explained in
 | `EIGENINFERENCE_WARM_POOL_MIN_DWELL` | Go duration | `5m` | `coordinator/registry/config.go` | Minimum time a model stays warm before it may be unloaded. |
 | `EIGENINFERENCE_WARM_POOL_QUEUE_AGE_THRESHOLD` | Go duration | `0` | `coordinator/registry/config.go` | Queue age that counts as pressure. |
 | `EIGENINFERENCE_WARM_POOL_CAPACITY_REJECT_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | Capacity rejects per tick that count as pressure. |
-| `EIGENINFERENCE_WARM_POOL_WARM_SATURATION_THRESHOLD` | float 0–1 | `0.8` | `coordinator/registry/config.go` | Warm-slot utilisation that counts as pressure. |
+| `EIGENINFERENCE_WARM_POOL_WARM_SATURATION_THRESHOLD` | finite float 0–1 | `0.8` | `coordinator/registry/config.go` | Warm-slot utilisation that counts as pressure. |
 | `EIGENINFERENCE_WARM_POOL_TTFT_MISS_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | TTFT misses per tick that count as pressure. |
 | `EIGENINFERENCE_WARM_POOL_SPECULATIVE_START_THRESHOLD` | integer ≥ 1 | `2` | `coordinator/registry/config.go` | Speculative dispatch starts per tick that count as pressure. |
 | `EIGENINFERENCE_WARM_POOL_SPECULATIVE_WIN_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | Speculative wins per tick that count as pressure. |
 | `EIGENINFERENCE_WARM_POOL_COLD_DISPATCH_THRESHOLD` | integer ≥ 1 | `1` | `coordinator/registry/config.go` | Cold dispatches per tick that count as pressure. |
 | `EIGENINFERENCE_WARM_POOL_LOAD_DURATION_THRESHOLD` | Go duration | `20s` | `coordinator/registry/config.go` | Load duration above which a load is counted as slow. |
-| `EIGENINFERENCE_WARM_POOL_DECODE_FLOOR_TPS` | float (≤ 0 disables) | `15` | `coordinator/registry/config.go` | Per-request decode floor used to derive quality concurrency for the target. |
+| `EIGENINFERENCE_WARM_POOL_DECODE_FLOOR_TPS` | finite float ≥ 0 (`0` disables) | `15` | `coordinator/registry/config.go` | Per-request decode floor used to derive quality concurrency for the target. |
+| `EIGENINFERENCE_WARM_POOL_HEADROOM_LOAD_WINDOWS` | finite float ≥ 0 (`0` uses one window) | `1.0` | `coordinator/registry/config.go` | Control intervals of demand growth covered by the derived headroom floor. |
 | `EIGENINFERENCE_WARM_POOL_BURST_BUFFER` | integer ≥ 0 | `1` | `coordinator/registry/config.go` | Spare warm providers added to the demand-derived target. |
 | `EIGENINFERENCE_WARM_POOL_FALLBACK_QUALITY_CONCURRENCY` | integer ≥ 1 | `4` | `coordinator/registry/config.go` | Per-provider concurrency assumed when rates are unknown. |
 | `EIGENINFERENCE_WARM_POOL_ASSUMED_PROMPT_TOKENS` | integer ≥ 0 | `512` | `coordinator/registry/config.go` | Representative prompt size for the service-time estimate. |
@@ -197,8 +198,13 @@ they tune is explained in
 | `EIGENINFERENCE_WARM_POOL_MIN_WARM` | `model=count,…` | unset | `coordinator/registry/config.go` (`envModelIntMap`) | Operator floor of warm providers per concrete model id. |
 | `EIGENINFERENCE_WARM_POOL_MAX_LOADS_PER_TICK` | integer ≥ 0 (`0` = observe) | `4` | `coordinator/registry/config.go` | Baseline load burst per tick. |
 | `EIGENINFERENCE_WARM_POOL_MAX_LOADS_PER_TICK_CEILING` | integer ≥ 0 | `16` | `coordinator/registry/config.go` | Hard per-tick maximum after gap scaling. |
-| `EIGENINFERENCE_WARM_POOL_RAMP_GAP_FRACTION` | float ≥ 0 | `0.5` | `coordinator/registry/config.go` | Scales the burst with the remaining target gap. |
+| `EIGENINFERENCE_WARM_POOL_RAMP_GAP_FRACTION` | finite float ≥ 0 | `0.5` | `coordinator/registry/config.go` | Scales the burst with the remaining target gap. |
 | `EIGENINFERENCE_WARM_POOL_MAX_GLOBAL_PENDING_LOADS` | integer ≥ 0 | `16` | `coordinator/registry/config.go` | Fleet-wide cap on in-flight loads. |
+
+`QualityCapConfig.Check` and `WarmPoolConfig.Check` in
+`coordinator/registry/config.go` reject non-finite floating-point tunables at
+startup, including when the warm controller is disabled. Existing finite ranges
+and zero-value disable/fallback semantics remain in effect.
 
 Cache-aware routing (semantics in [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md)). `refresh-env.sh` seeds absent keys from `deploy/gcp/prod/release-env-defaults` — production ships `MODE=off`, `PERCENT=1`, `MAX_PLAN_QPS=1` — and never overwrites a value an operator has set:
 

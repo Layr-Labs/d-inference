@@ -206,10 +206,19 @@ func (r *QueuedRequest) rejectAssignment() {
 func (r *QueuedRequest) failWithReason(reason error) {
 	r.init()
 	r.FailureReason = reason
+	r.finishWithoutProvider()
+}
+
+// finishWithoutProvider releases any offered reservation before publishing the
+// nil sentinel. Report whether this call notified the waiter so model-wide
+// rejection counts keep excluding channels which were already signaled.
+func (r *QueuedRequest) finishWithoutProvider() bool {
 	r.markDone()
 	select {
 	case r.ResponseCh <- nil:
+		return true
 	default:
+		return false
 	}
 }
 
@@ -384,11 +393,7 @@ func (q *RequestQueue) PopNextFresh(model string) *QueuedRequest {
 			delete(q.queues, model)
 		}
 		if now.Sub(req.EnqueuedAt) > q.maxWait {
-			req.markDone()
-			select {
-			case req.ResponseCh <- nil:
-			default:
-			}
+			req.finishWithoutProvider()
 			continue
 		}
 		return req
@@ -586,11 +591,8 @@ func (q *RequestQueue) FailQueuedRequestsForModel(model string, preferOwnerEligi
 				continue
 			}
 		}
-		req.markDone()
-		select {
-		case req.ResponseCh <- nil:
+		if req.finishWithoutProvider() {
 			failed++
-		default:
 		}
 	}
 	if len(survivors) == 0 {
@@ -642,12 +644,8 @@ func (q *RequestQueue) cleanStaleLocked(model string) {
 	var fresh []*QueuedRequest
 	for _, req := range queue {
 		if now.Sub(req.EnqueuedAt) > q.maxWait {
-			// Close the response channel to signal timeout
-			req.markDone()
-			select {
-			case req.ResponseCh <- nil:
-			default:
-			}
+			// Publish the nil sentinel to signal timeout.
+			req.finishWithoutProvider()
 		} else {
 			fresh = append(fresh, req)
 		}

@@ -826,3 +826,26 @@ func TestWarmPoolRampBoundedByCeiling(t *testing.T) {
 		t.Fatalf("sent loads = %d, want 5 (ceiling-bounded)", len(*sent))
 	}
 }
+
+func TestWarmPoolFleetRatesIncludeWarmAndEligibleColdOnly(t *testing.T) {
+	reg := New(testLogger())
+	model := "warm-pool-rate-cohort"
+	warm := makeSchedulerProvider(t, reg, "warm", model, 23)
+	warm.mu.Lock()
+	warm.BackendCapacity.Slots[0].ObservedDecodeTPS = 73
+	warm.BackendCapacity.Slots[0].ObservedPrefillTPS = 1000
+	warm.mu.Unlock()
+	makeWarmPoolColdProvider(t, reg, "cold", model, 57, 64, 8)
+	ineligible := makeWarmPoolColdProvider(t, reg, "overheated", model, 1000, 64, 8)
+	ineligible.mu.Lock()
+	ineligible.SystemMetrics.ThermalState = "critical"
+	ineligible.mu.Unlock()
+
+	snap := reg.warmPoolFleetSnapshot(time.Now())[model]
+	if snap.warm != 1 || len(snap.eligibleCold) != 1 || snap.coldIneligible != 1 || snap.coldDisq[warmColdThermal] != 1 {
+		t.Fatalf("unexpected warm/cold classification: %+v", snap)
+	}
+	if snap.soloDecodeTPS != 40 || snap.serviceDecodeTPS != 65 || snap.prefillTPS != (1000+57*PrefillToDecodeRatio())/2 {
+		t.Fatalf("rate medians must include warm and eligible cold providers only: %+v", snap)
+	}
+}

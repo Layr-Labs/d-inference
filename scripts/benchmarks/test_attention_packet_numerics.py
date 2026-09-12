@@ -7,6 +7,7 @@ import numpy as np
 
 from attention_packet.files import PacketError
 from attention_packet.packet import load_packet
+from attention_packet.native import rounded
 from attention_packet.reference import analyze, attention, statistics
 from attention_packet_fixtures import Fixture, oracle
 
@@ -29,7 +30,16 @@ class AttentionNumericsTests(unittest.TestCase):
                 primary = report["originalQueryReference"]["comparison"]
                 self.assertEqual(len(primary["perHead"]), 16)
                 self.assertLess(primary["global"]["relativeL2"], 0.003)
-                self.assertLess(report["referenceRoundedToOutputDType"]["comparison"]["global"]["linf"], 2e-5)
+                # Compare the operator before output quantization. FP32 BLAS
+                # reductions may land on opposite sides of a native rounding
+                # midpoint from the independent FP64 formula; rounding can
+                # turn that tiny difference into one full fp16/bf16 ULP.
+                reference, _ = attention(f.values["queries"], f.values["storedKeys"],
+                                         f.values["storedValues"], f.scale)
+                expected = oracle(f.values["queries"], f.values["storedKeys"],
+                                  f.values["storedValues"], f.scale)
+                np.testing.assert_allclose(reference, expected, rtol=0, atol=2e-5)
+                self.assertEqual(report["referenceRoundedToOutputDType"]["dtype"], q_dtype)
                 counterfactual = report["narrowedQueryCounterfactual"]
                 if q_dtype == "float32" and kv_dtype != "float32":
                     self.assertGreater(counterfactual["differenceFromOriginalReference"]["global"]["linf"], 0)
@@ -37,6 +47,19 @@ class AttentionNumericsTests(unittest.TestCase):
                 else:
                     self.assertIsNone(counterfactual)
                 json.dumps(report, allow_nan=False)
+
+    def test_output_rounding_amplifies_a_tiny_midpoint_difference(self):
+        lower = np.float16(1)
+        upper = np.nextafter(lower, np.float16(np.inf))
+        midpoint = np.float32((float(lower) + float(upper)) / 2)
+        below = np.array([np.nextafter(midpoint, np.float32(-np.inf))])
+        above = np.array([np.nextafter(midpoint, np.float32(np.inf))])
+        self.assertLess(statistics(below, above)["linf"], 2e-5)
+        np.testing.assert_array_equal(rounded(below, "float16"), [lower])
+        np.testing.assert_array_equal(rounded(above, "float16"), [upper])
+        self.assertEqual(statistics(rounded(below, "float16"),
+                                    rounded(above, "float16"))["linf"],
+                         float(upper) - float(lower))
 
     def test_uniform_softmax_analytic_reference_and_contiguous_gqa_groups(self):
         f = Fixture(self.root / "uniform", uniform=True, length=19, dimension=16)

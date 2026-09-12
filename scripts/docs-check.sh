@@ -83,6 +83,84 @@ normpath() {
     printf '%s\n' "${out[*]}"
 }
 
+# One parser feeds existence checks and the navigation graph. Definitions are
+# checked even when unused, but only rendered link uses create navigation edges.
+link_targets() {
+    python3 - "$1" "${2:-all}" <<'PY_LINKS'
+from pathlib import Path
+import re
+import sys
+
+source, mode = sys.argv[1:]
+lines = []
+fence = None
+for line in Path(source).read_text().splitlines():
+    marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+    if fence is not None:
+        if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
+            fence = None
+        continue
+    if marker:
+        fence = marker[1]
+        continue
+    lines.append(line)
+
+
+def label(value):
+    return " ".join(value.split()).casefold()
+
+
+definitions = {}
+body = []
+for line in lines:
+    definition = re.match(r"^ {0,3}\[([^]\n]+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))", line)
+    if definition:
+        target = definition[2] or definition[3]
+        definitions.setdefault(label(definition[1]), target)
+        if mode == "all":
+            print(target)
+    else:
+        body.append(line)
+
+text = "\n".join(body)
+# Backtick spans contain literal examples, not rendered links.
+text = re.sub(r"(?<!`)(`+)(?!`).*?\1(?!`)", "", text, flags=re.DOTALL)
+links = re.compile(
+    r"(?<!\\)(?P<image>!)?\[(?P<label>(?:[^\[\]\n]|\[[^\[\]\n]*\])*)\]"
+    r"(?:\(\s*(?:<(?P<angle>[^>\n]+)>|(?P<bare>[^\s)]+))[^)]*\)|\[(?P<reference>[^]\n]*)\])?"
+)
+def print_targets(text):
+    for match in links.finditer(text):
+        # A link label may itself be an image: [![alt](image)](page). Check
+        # the image destination too, but only the outer link navigates.
+        if mode == "all" and not match["image"]:
+            print_targets(match["label"])
+        if mode != "all" and match["image"]:
+            continue
+        if match["angle"] is not None or match["bare"] is not None:
+            print(match["angle"] or match["bare"])
+        else:
+            # Full [text][id], collapsed [id][], and shortcut [id] references.
+            reference = match["reference"] or match["label"]
+            target = definitions.get(label(reference))
+            if target is not None:
+                print(target)
+
+
+print_targets(text)
+PY_LINKS
+}
+
+relative_targets() {
+    local target
+    while IFS= read -r target; do
+        case "$target" in http://*|https://*|mailto:*|\#*|tel:*) continue ;; esac
+        target=${target%%#*}
+        target=${target%%\?*}
+        [ -n "$target" ] && printf '%s\n' "${target//%20/ }"
+    done < <(link_targets "$1" "${2:-all}")
+}
+
 # ---------------------------------------------------------------------------
 # 2. Relative links
 # ---------------------------------------------------------------------------
@@ -94,24 +172,13 @@ check_links() {
     # increments ERRORS in this shell rather than in a throwaway subshell.
     while IFS= read -r target; do
         case "$target" in
-            http://*|https://*|mailto:*|\#*|tel:*) continue ;;
-        esac
-        target=${target%%#*}
-        target=${target%%\?*}
-        [ -z "$target" ] && continue
-        # Percent-decode spaces only (the common case).
-        target=${target//%20/ }
-        case "$target" in
             /*) path=".${target}" ;;   # repo-absolute
             *)  path="$dir/$target" ;;
         esac
         if [ ! -e "$path" ]; then
             fail "$f: broken link -> $target"
         fi
-    done < <(
-        { grep -oE '\]\([^)[:space:]]+' "$f" | sed 's/^](//' ;
-          grep -oE '^\[[^]]+\]:[[:space:]]+[^[:space:]]+' "$f" | sed -E 's/^\[[^]]+\]:[[:space:]]+//' ; } 2>/dev/null
-    )
+    done < <(relative_targets "$f")
 }
 
 for f in "${FILES[@]}" "${EXTRA_LINK_FILES[@]}"; do
@@ -172,14 +239,12 @@ done
 if [ "$ORPHAN_CHECK" -eq 1 ]; then
     # Build the set of link targets, normalised to repo-relative paths.
     LINKED=$(mktemp)
+    trap 'rm -f "$LINKED"' EXIT
     for f in "${FILES[@]}" "${EXTRA_LINK_FILES[@]}"; do
         [ -f "$f" ] || continue
         dir=$(dirname "$f")
-        grep -oE '\]\([^)[:space:]]+' "$f" 2>/dev/null | sed 's/^](//' |
+        relative_targets "$f" navigation |
         while IFS= read -r target; do
-            case "$target" in http://*|https://*|mailto:*|\#*) continue ;; esac
-            target=${target%%#*}; target=${target%%\?*}
-            [ -z "$target" ] && continue
             case "$target" in
                 /*) path=".${target}" ;;
                 *)  path="$dir/$target" ;;

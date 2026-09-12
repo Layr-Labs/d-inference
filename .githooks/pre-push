@@ -10,26 +10,22 @@ set -euo pipefail
 
 FAILED=0
 
-# Check which components have changes being pushed.
-# Compare local HEAD against the remote ref being pushed to.
+# Inspect every pushed ref. New branches compare commits absent from the remote,
+# not the commit against the clean working tree (which reports no changes).
 REMOTE="$1"
-RANGE=""
-while read local_ref local_sha remote_ref remote_sha; do
-    if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
-        continue  # deleting branch
-    fi
-    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
-        RANGE="$local_sha"  # new branch
-    else
-        RANGE="$remote_sha..$local_sha"
-    fi
-done
-
-if [ -z "$RANGE" ]; then
-    exit 0
-fi
-
-CHANGED_FILES=$(git diff --name-only "$RANGE" 2>/dev/null || git diff --name-only HEAD~1)
+CHANGED_FILES=$(
+    while read -r local_ref local_sha remote_ref remote_sha; do
+        if [[ "$local_sha" =~ ^0+$ ]]; then
+            continue  # deleting branch
+        fi
+        if [[ "$remote_sha" =~ ^0+$ ]]; then
+            git rev-list "$local_sha" --not "--remotes=$REMOTE" |
+                git diff-tree --stdin --no-commit-id --name-only --root -r -m || exit 1
+        else
+            git diff --name-only "$remote_sha" "$local_sha" || exit 1
+        fi
+    done
+)
 
 HAS_GO=$(echo "$CHANGED_FILES" | grep -q '^coordinator/' && echo 1 || echo 0)
 HAS_TS=$(echo "$CHANGED_FILES" | grep -q '^console-ui/' && echo 1 || echo 0)
@@ -39,8 +35,10 @@ HAS_TS=$(echo "$CHANGED_FILES" | grep -q '^console-ui/' && echo 1 || echo 0)
 # ---------------------------------------------------------------------------
 if [ "$HAS_GO" = "1" ]; then
     echo ">> [pre-push] Go formatting check..."
-    UNFORMATTED=$(cd coordinator && gofmt -l . 2>/dev/null || true)
-    if [ -n "$UNFORMATTED" ]; then
+    if ! UNFORMATTED=$(cd coordinator && gofmt -l .); then
+        echo "ERROR: Go formatting check could not run."
+        FAILED=1
+    elif [ -n "$UNFORMATTED" ]; then
         echo "ERROR: Unformatted Go files:"
         echo "$UNFORMATTED" | sed 's/^/  /'
         echo "Fix with: cd coordinator && gofmt -w ."
@@ -48,9 +46,8 @@ if [ "$HAS_GO" = "1" ]; then
     fi
 
     echo ">> [pre-push] Go tests..."
-    # Skip internal/api — its WebSocket integration tests are slow (~5 min) and
-    # timing-sensitive. They run in CI instead.
-    if ! (cd coordinator && go test $(go list ./... | grep -v /internal/api) 2>&1 | tail -15); then
+    # API packages live directly under coordinator; run the full package set.
+    if ! (cd coordinator && go test ./... 2>&1 | tail -15); then
         echo "ERROR: Go tests failed."
         FAILED=1
     fi

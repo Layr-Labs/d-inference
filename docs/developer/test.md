@@ -1,13 +1,12 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `95ac26523`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
-lint — and which CI workflow runs what. `make test` runs every unit suite plus
-the docs lint locally; CI runs a subset per pull request (see the CI workflow
-map: the console UI job lints and builds but does not run vitest, and the
-benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
+lint — and which CI workflow runs what. `make test` runs the component unit suites, CPU tooling checks and docs lint
+locally. PR CI also runs console Vitest, admin lint/types/tests/build, landing
+tests, and the Python tooling suites (see the CI workflow map). The e2e suite needs an Apple Silicon
 Mac with the test checkpoints cached.
 
 The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
@@ -39,7 +38,8 @@ prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
 
 ## Prerequisites
 
-- Toolchain from [build.md](build.md) (`mise install`, submodules, `cmake`).
+- Complete the [build setup](build.md#1-install-the-toolchain-and-hooks): pinned
+  toolchain, submodules, `cmake`, and `make ui-install admin-install tooling-install`.
 - **Postgres 16** for the coordinator store tests and the e2e suite: either
   Docker (`postgres:16` image is pulled automatically by the testbed) or a
   native `postgres`/`initdb` on `PATH` (`brew install postgresql@16`, then
@@ -61,7 +61,7 @@ prompts or model weights are needed (`scripts/verify-prompt-parity.sh`).
 ### 1. Run everything CI runs as unit tests
 
 ```bash
-make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test docs-check
+make test   # coordinator-test prompt-sidecar-test provider-test ui-test admin-test landing-test tooling-test docs-check
 ```
 
 ### 2. Coordinator (Go)
@@ -107,9 +107,9 @@ positive, negative and missing operands in
 
 Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 (`coordinator/store/harness_test.go`, `testPostgresStore`); CI provides a
-`postgres:16` service with user/password/db `testbed`. The pre-push hook runs
-`go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
-the slow WebSocket integration tests; run the full set before merging.
+`postgres:16` service with user/password/db `testbed`. The pre-push hook runs `go test ./...` from `coordinator/` when any pushed
+ref changes coordinator code. New branches select commits not already present
+in the remote tracking refs; deletion-only pushes skip checks.
 
 #### Provider config cleanup
 
@@ -132,7 +132,7 @@ production supervisor deadlines are unchanged (`coordinator/promptcontract/super
 
 The [startup observer](../operations/coordinator-startup-measurement.md) has
 standard-library tests using only local HTTP stubs and a deterministic clock.
-They run in Release Integrity CI and make no external inference calls:
+They run in the `Tooling Tests` CI job and make no external inference calls:
 
 ```bash
 python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
@@ -917,11 +917,31 @@ install/replace path of `scripts/install.sh` in a temp dir (and runs
 make ui-test                     # cd console-ui && npm test  (vitest run)
 make ui-lint                     # npx eslint src/
 make ui-build                    # next build
-cd admin-ui && npm test && npm run lint && npm run build
-node --test landing/earn-calculator-core.test.js
+make admin-install admin-lint admin-typecheck admin-test admin-build
+make landing-test
 ```
 
 ### 6. Scripts and release integrity
+
+Prepare and run the CPU tooling checks from the repository root:
+
+```bash
+make tooling-install  # isolated .venv/tooling with pinned NumPy
+make tooling-test     # also bootstraps the environment if needed
+```
+
+The environment is reused until `scripts/benchmarks/attention_packet/requirements.txt`
+changes; ordinary test invocations do not run pip or access the package index.
+Set `TOOLING_VENV` to choose another isolated directory. To rebuild a damaged
+environment, remove that directory and run `make tooling-install` again.
+`scripts/test_make_tooling.py`
+(`test_outer_make_override_does_not_change_stub_environment`) checks an actual
+outer make override while isolating the fixture's temporary Makefile defaults.
+
+This target runs Gemma/GPT-OSS report validators, startup observers, offline
+attention/reference tests, owned-host process fixtures, release-validation
+fixtures, and Git-hook/docs navigation regressions. It launches no Swift, Metal
+or model workload. CI runs the same target in the `Tooling Tests` job.
 
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)
@@ -999,6 +1019,9 @@ This prevents task scheduling from silently changing admission order. Sources: `
 (`measureDecode`). See [GPT-OSS optimization results](../reports/2026-09-05-gptoss20b-optimization-results.md).
 
 ### 7. Docs lint
+
+Link existence and orphan detection share the same target parser, including
+reference definitions and percent-encoded spaces.
 
 ```bash
 make docs-check          # scripts/docs-check.sh — stamps, relative links, cited paths, orphans
@@ -1156,7 +1179,7 @@ token IDs are accepted.
 
 | Workflow | Trigger | Jobs (name → what runs) |
 |---|---|---|
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt` on tracked Go files outside frozen report evidence · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22 install/lint/Vitest/build · **Admin UI Checks** — install/lint/types/Vitest/build with a dummy local DB URL · **Landing Tests** — dependency-free Node tests · **Tooling Tests** — pinned NumPy environment and `make tooling-test` |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 120 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) → current coordinator vs released v0.7.12 provider (`scripts/fetch-v0712-provider.sh`, `DARKBLOOM_MIXED_VERSION_EXPECT=artifact`, fails unless `MIXED_VERSION_TIER_ARTIFACT_OK` appears) → released v0.7.12 coordinator (`git worktree add … v0.7.12`) vs candidate provider (`NonStreamingInference`, `StreamingInference`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
 | [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |

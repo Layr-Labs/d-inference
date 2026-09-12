@@ -2,8 +2,9 @@
 .PHONY: help \
         coordinator-test coordinator-build coordinator-build-linux coordinator \
         prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
-        provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
+        provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test tooling-install tooling-test \
         ui-install ui-build ui-lint ui-test ui \
+        admin-install admin-build admin-lint admin-typecheck admin-test admin landing-test \
         e2e-integration e2e-benchmark e2e \
         docs-check docs-stamp \
         test build all clean
@@ -79,6 +80,25 @@ provider: provider-build provider-test ## Build + test provider
 benchmark-wrapper-test: ## Unit-test the Gemma benchmark wrapper (no GPU or weights)
 	cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .
 
+# Keep the pinned CPU dependency isolated and install only when its inputs change.
+TOOLING_VENV ?= .venv/tooling
+TOOLING_PYTHON = $(TOOLING_VENV)/bin/python
+TOOLING_REQUIREMENTS = scripts/benchmarks/attention_packet/requirements.txt
+
+$(TOOLING_VENV)/.requirements-installed: $(TOOLING_REQUIREMENTS)
+	python3 -m venv "$(TOOLING_VENV)"
+	"$(TOOLING_PYTHON)" -m pip install -r "$<"
+	touch "$@"
+
+tooling-install: $(TOOLING_VENV)/.requirements-installed ## Prepare the isolated pinned CPU tooling environment
+
+tooling-test: tooling-install ## Run CPU-only Python tooling tests
+	PYTHONPATH=scripts "$(TOOLING_PYTHON)" -m unittest discover -s scripts -t scripts -p 'test_*.py'
+	"$(TOOLING_PYTHON)" -m unittest discover -s scripts/benchmarks -p 'test_*.py'
+	"$(TOOLING_PYTHON)" -m unittest discover -s e2e/testbed -p 'test_*.py'
+	"$(TOOLING_PYTHON)" scripts/test-provider-release-resolution.py
+	"$(TOOLING_PYTHON)" scripts/test-provider-signing-validation.py
+
 benchmark-gemma-contbatch: ## Build and benchmark Gemma 4 26B continuous batching
 	python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)
 
@@ -97,6 +117,26 @@ ui-test: ## vitest for console-ui
 	cd console-ui && npm test
 
 ui: ui-install ui-lint ui-test ui-build ## Install, lint, test, build console-ui
+
+admin-install: ## Install locked dependencies for admin-ui
+	cd admin-ui && npm ci
+
+admin-build: ## Build the admin dashboard
+	cd admin-ui && ADMIN_DB_URL="$${ADMIN_DB_URL:-postgresql://unused:unused@127.0.0.1:1/unused}" npm run build
+
+admin-lint: ## Lint admin dashboard sources
+	cd admin-ui && npm run lint
+
+admin-typecheck: ## Check all admin dashboard TypeScript
+	cd admin-ui && npx tsc --noEmit
+
+admin-test: ## Run admin dashboard unit tests
+	cd admin-ui && npm test
+
+admin: admin-install admin-lint admin-typecheck admin-test admin-build ## Check and build admin-ui
+
+landing-test: ## Run dependency-free landing page tests
+	node --test landing/*.test.js
 
 # ---- E2E integration tests -------------------------------------------------
 # Requires Postgres + Swift provider binary + MLX model downloaded.
@@ -119,12 +159,12 @@ docs-stamp: ## Refresh the freshness stamp on changed docs (FILES=... to target 
 
 # ---- Aggregates ------------------------------------------------------------
 
-test: coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test docs-check ## Run all unit tests + docs lint
+test: coordinator-test prompt-sidecar-test provider-test ui-test admin-test landing-test tooling-test docs-check ## Run all unit tests + docs lint
 
-build: coordinator-build prompt-sidecar-build provider-build ui-build ## Build all components
+build: coordinator-build prompt-sidecar-build provider-build ui-build admin-build ## Build all components
 
 all: test build ## Test + build everything
 
 clean: ## Remove built artifacts
 	rm -f coordinator/coordinator coordinator/coordinator-linux
-	rm -rf coordinator/promptsidecar/target provider-swift/.build console-ui/.next console-ui/node_modules
+	rm -rf coordinator/promptsidecar/target provider-swift/.build console-ui/.next console-ui/node_modules admin-ui/.next admin-ui/node_modules

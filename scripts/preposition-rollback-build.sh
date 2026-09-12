@@ -48,6 +48,48 @@ R2_SECRET_KEY_SECRET="${R2_SECRET_KEY_SECRET:-darkbloom-r2-secret-access-key}"
 : "${R2_ACCOUNT_ID:?R2_ACCOUNT_ID is required}"
 : "${GCP_PROJECT:?GCP_PROJECT is required}"
 
+for tool in python3 gcloud aws curl; do
+  command -v "$tool" >/dev/null 2>&1 || { printf 'Missing required command: %s\n' "$tool" >&2; exit 1; }
+done
+
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-model-rollback.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
+
+# Validate and encode both API requests before any credential lookup or copy.
+python3 - "$TMP" "$SRC_MODEL_ID" "$NEW_MODEL_ID" "$SRC_VERSION" "$QUANT" "$MIN_RAM_GB" "$MAX_CONTEXT" "$MAX_OUTPUT" "$INPUT_PRICE" "$OUTPUT_PRICE" "$CAPABILITIES" <<'PY'
+import json, re, sys
+from pathlib import Path
+
+directory, source_id, new_id, version, quant, *values, caps = sys.argv[1:]
+# Match validRegistryIdentifier and positive int64 fields in
+# coordinator/api/model_registry_handlers.go (validateRegisterModelRequest).
+for name, value, pattern in (("source model id", source_id, r"[A-Za-z0-9._/-]+"),
+                             ("new model id", new_id, r"[A-Za-z0-9._/-]+"),
+                             ("version", version, r"[A-Za-z0-9._-]+")):
+    if not re.fullmatch(pattern, value) or value.startswith("/") or ".." in value:
+        raise SystemExit(f"Invalid {name}")
+if source_id == new_id:
+    raise SystemExit("Rollback requires a distinct new model id")
+if not quant.strip():
+    raise SystemExit("quantization is required")
+fields = ("min_ram_gb", "max_context_length", "max_output_length", "input_price", "output_price")
+numbers = {}
+for name, value in zip(fields, values):
+    try:
+        number = int(value)
+    except ValueError:
+        raise SystemExit(f"{name} must be a positive int64")
+    if not 0 < number <= 2**63 - 1:
+        raise SystemExit(f"{name} must be a positive int64")
+    numbers[name] = number
+payload = {"model_id": new_id, "version": version,
+           "display_name": new_id + " (rollback)", "quantization": quant,
+           **numbers, "capabilities": [c for c in caps.split(",") if c]}
+root = Path(directory)
+(root / "register.json").write_text(json.dumps(payload), encoding="utf-8")
+(root / "promote.json").write_text(json.dumps({"version": version}), encoding="utf-8")
+PY
+
 # Mirror coordinator/api/model_registry_handlers.go readableModelSlug+modelR2Prefix:
 # slug = sanitized id, trimmed of '-', + "--" + first 12 hex of sha256(model_id);
 # prefix = v2/<slug>/<version>
@@ -64,15 +106,19 @@ SRC_PREFIX="v2/$(slug "$SRC_MODEL_ID")/$SRC_VERSION"
 NEW_PREFIX="v2/$(slug "$NEW_MODEL_ID")/$SRC_VERSION"
 ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
-export AWS_ACCESS_KEY_ID="$(gcloud secrets versions access latest --project "$GCP_PROJECT" --secret "$R2_ACCESS_KEY_SECRET")"
-export AWS_SECRET_ACCESS_KEY="$(gcloud secrets versions access latest --project "$GCP_PROJECT" --secret "$R2_SECRET_KEY_SECRET")"
+AWS_ACCESS_KEY_ID="$(gcloud secrets versions access latest --project "$GCP_PROJECT" --secret "$R2_ACCESS_KEY_SECRET")"
+AWS_SECRET_ACCESS_KEY="$(gcloud secrets versions access latest --project "$GCP_PROJECT" --secret "$R2_SECRET_KEY_SECRET")"
+if [[ -z "$AWS_ACCESS_KEY_ID" || -z "$AWS_SECRET_ACCESS_KEY" ]]; then
+  printf 'R2 credentials must not be empty.\n' >&2
+  exit 1
+fi
+export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 
 echo "Copying s3://$R2_BUCKET/$SRC_PREFIX → s3://$R2_BUCKET/$NEW_PREFIX (server-side)…"
 aws s3 cp "s3://$R2_BUCKET/$SRC_PREFIX/" "s3://$R2_BUCKET/$NEW_PREFIX/" \
   --recursive --endpoint-url "$ENDPOINT" --copy-props none
 
 echo "Rewriting manifest model_id/r2_prefix…"
-TMP=$(mktemp -d)
 aws s3 cp "s3://$R2_BUCKET/$NEW_PREFIX/manifest.json" "$TMP/manifest.json" --endpoint-url "$ENDPOINT"
 python3 - "$TMP/manifest.json" "$NEW_MODEL_ID" "$NEW_PREFIX" <<'PY'
 import json, sys
@@ -85,30 +131,13 @@ PY
 aws s3 cp "$TMP/manifest.json" "s3://$R2_BUCKET/$NEW_PREFIX/manifest.json" --endpoint-url "$ENDPOINT"
 
 echo "Registering $NEW_MODEL_ID with the coordinator…"
-python3 - "$NEW_MODEL_ID" "$SRC_VERSION" "$QUANT" "$MIN_RAM_GB" "$MAX_CONTEXT" "$MAX_OUTPUT" "$INPUT_PRICE" "$OUTPUT_PRICE" "$CAPABILITIES" <<'PY' > "$TMP/register.json"
-import json, sys
-new_id, version, quant, min_ram, max_ctx, max_out, in_p, out_p, caps = sys.argv[1:10]
-print(json.dumps({
-  "model_id": new_id,
-  "version": version,
-  "display_name": new_id + " (rollback)",
-  "quantization": quant,
-  "min_ram_gb": int(min_ram),
-  "max_context_length": int(max_ctx),
-  "max_output_length": int(max_out),
-  "input_price": int(in_p),
-  "output_price": int(out_p),
-  "capabilities": [c for c in caps.split(",") if c],
-}))
-PY
 curl -fsS -X POST "$COORD/v1/admin/models/register" \
   -H "Authorization: Bearer $PUBLISH_KEY" -H "Content-Type: application/json" \
   --data @"$TMP/register.json"
 echo
-echo "Promoting $NEW_MODEL_ID $SRC_VERSION…"
+printf 'Promoting %s %s...\n' "$NEW_MODEL_ID" "$SRC_VERSION"
 curl -fsS -X POST "$COORD/v1/admin/models/$NEW_MODEL_ID/promote" \
   -H "Authorization: Bearer $PUBLISH_KEY" -H "Content-Type: application/json" \
-  --data "{\"version\": \"$SRC_VERSION\"}"
+  --data @"$TMP/promote.json"
 echo
 echo "Done. Rollback is now a normal alias flip: desired_build=$NEW_MODEL_ID."
-rm -rf "$TMP"

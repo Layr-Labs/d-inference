@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-12 · commit `248f26d91`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -348,6 +348,10 @@ python3 -m venv /tmp/darkbloom-attention-venv
 ```
 
 Use that interpreter for [packet analysis and its tests](test.md#offline-attention-packet-analysis).
+The CPU suite also checks malformed JSON metadata refusals and identical replay
+comparison results without launching the native probe; its mocked execution
+boundary preserves the requirement for an explicitly selected, hashed probe in
+an actual operator replay.
 
 ### 6. Console UI (Next.js)
 

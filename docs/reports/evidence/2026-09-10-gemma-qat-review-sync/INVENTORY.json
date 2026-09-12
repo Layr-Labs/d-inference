@@ -1,0 +1,35 @@
+{
+  "status": "Frozen September10 review-sync snapshot: build/review fixes pass; full new-artifact model/HTTP qualification incomplete due M5 contention",
+  "archives": [
+    {
+      "path": "native.tar.gz",
+      "bytes": 182959,
+      "sha256": "b32b8f91035694c47a3e0b89abddd931cf5d896dc5e3a0de7edf7a5752f03ba8",
+      "payload_files": 11
+    },
+    {
+      "path": "provider.tar.gz",
+      "bytes": 69969,
+      "sha256": "2147a92adccde0a381dbe0d4a036fe849206d1ab42db3d00bade1a88865eafc8",
+      "payload_files": 15
+    },
+    {
+      "path": "common.tar.gz",
+      "bytes": 752024,
+      "sha256": "a8bb4e7564f2bd4edaeb592484eb67e8bbb7017baf554867e2ee510c6b6254da",
+      "payload_files": 21
+    },
+    {
+      "path": "b1-on2.tar.gz",
+      "bytes": 219237,
+      "sha256": "4285ec155779bbebfe50067138809cb02c77b9148ca6a32e8982e050834005fc",
+      "payload_files": 13
+    },
+    {
+      "path": "interrupted-b1-attempts.tar.gz",
+      "bytes": 249799,
+      "sha256": "79f35d3412ae92aa3c070617db49120d19eb119928caf7dc0b0452f9b62b2647",
+      "payload_files": 16
+    }
+  ]
+}

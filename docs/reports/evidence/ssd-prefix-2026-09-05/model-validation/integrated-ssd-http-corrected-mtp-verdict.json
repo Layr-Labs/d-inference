@@ -1,0 +1,42 @@
+{
+  "passed": true,
+  "scope": "Offline comparison of retained HTTP execution against correct MTP-on baseline. Initial runner exit1 used MTP-off expected decode text; no model request rerun or source change. HTTP does not expose generated token IDs.",
+  "baseline": "docs/reports/evidence/2026-09-05-radix-prefix-cache/baseline-mtp-http-report.json.gz",
+  "baseline_compressed_sha256": "b5e26f09ad07f832577d67560bf43728d81b4bd85c0087666c1063f25eb2d9ec",
+  "candidate_report_sha256": "924eaba021b49b81079eb6f9764dd861e2721afd8e74c17b68b4e5dfb15f8760",
+  "rows": [
+    {
+      "id": "p8192-r0-first",
+      "request_equal": true,
+      "equality": {
+        "text_and_counts_equal": true,
+        "differences": [],
+        "generated_token_ids_compared": false
+      },
+      "baseline_ttft_s": 6.14219475,
+      "candidate_ttft_s": 6.136914916999999
+    },
+    {
+      "id": "p8192-r0-repeat",
+      "request_equal": true,
+      "equality": {
+        "text_and_counts_equal": true,
+        "differences": [],
+        "generated_token_ids_compared": false
+      },
+      "baseline_ttft_s": 6.566205791,
+      "candidate_ttft_s": 1.8534549590000005
+    },
+    {
+      "id": "decode-0",
+      "request_equal": true,
+      "equality": {
+        "text_and_counts_equal": true,
+        "differences": [],
+        "generated_token_ids_compared": false
+      },
+      "baseline_ttft_s": 0.09539770900000377,
+      "candidate_ttft_s": 0.09107466700000089
+    }
+  ]
+}

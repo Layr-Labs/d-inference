@@ -1,0 +1,5 @@
+provider-swift/Sources/ProviderCore/KVCacheSSD/SSDNativePrefixBuilder.swift
+provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift
+provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWindowSidecar.swift
+provider-swift/Tests/ProviderCoreTests/SSDNativePrefixBuilderTests.swift
+provider-swift/Tests/ProviderCoreTests/SSDPrefixCacheTests.swift

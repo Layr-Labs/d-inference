@@ -82,16 +82,17 @@ func runProof(ctx context.Context, args arguments) (proofSummary, error) {
 		return summary, err
 	}
 	summary.Preload = preloadSummary{
-		Requested:       coldPreload.Requested,
-		Warm:            coldPreload.Warm,
-		Cold:            coldPreload.Cold,
-		Failed:          coldPreload.Failed,
-		RepeatWarm:      warmPreload.Warm,
-		RepeatCold:      warmPreload.Cold,
-		RepeatFailed:    warmPreload.Failed,
-		MetricColdLoads: warmPreload.Metrics.ContractLoads.Cold,
-		MetricWarmLoads: warmPreload.Metrics.ContractLoads.Warm,
-		MetricLoadWaits: warmPreload.Metrics.ContractLoads.Waited,
+		Requested:         coldPreload.Requested,
+		Warm:              coldPreload.Warm,
+		Cold:              coldPreload.Cold,
+		Failed:            coldPreload.Failed,
+		RepeatWarm:        warmPreload.Warm,
+		RepeatCold:        warmPreload.Cold,
+		RepeatFailed:      warmPreload.Failed,
+		MetricColdLoads:   warmPreload.Metrics.ContractLoads.Cold,
+		MetricWarmLoads:   warmPreload.Metrics.ContractLoads.Warm,
+		MetricLoadWaits:   warmPreload.Metrics.ContractLoads.Waited,
+		ColdLoadLatencyUS: warmPreload.Metrics.ContractLoads.ColdLatencyUS,
 	}
 	metricsBefore, err := supervisor.Client().Metrics(ctx)
 	if err != nil {
@@ -140,6 +141,7 @@ func runProof(ctx context.Context, args arguments) (proofSummary, error) {
 			Failed: counterDelta(metricsBefore.Metrics.ContractLoads.Failed, metricsAfter.Metrics.ContractLoads.Failed),
 		},
 		FailureSamples: load.FailureSamples,
+		PlanLatencyUS:  metricsAfter.Metrics.Plans.LatencyUS,
 	}
 	statusAfter := supervisor.Status()
 	statsAfter := supervisor.Client().Stats()

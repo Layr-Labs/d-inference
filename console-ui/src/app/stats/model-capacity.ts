@@ -1,6 +1,6 @@
 export interface ModelAvailability {
   connected: number;
-  eligible: number;
+  eligible: number | null;
   accepting: number | null;
   acceptingPct: number | null;
 }
@@ -12,19 +12,21 @@ function nonNegativeInteger(value: number | undefined): number {
 /**
  * Reconciles the unique provider count from /v1/stats with the stricter,
  * load-aware count from /v1/models/capacity. Alias capacity can sum multiple
- * concrete builds, so accepting is bounded by the unique eligible provider
- * count before it is presented as a percentage.
+ * concrete builds, so accepting is bounded by the unique connected count.
+ * When every provider has an explicit routing verdict, that eligible count
+ * provides a tighter bound. Missing route verdicts remain unknown; public
+ * verification fields must never override the independent capacity report.
  */
 export function calculateModelAvailability(
   totalNodes: number,
-  eligibleNodes: number,
+  eligibleNodes: number | undefined,
   reportedAcceptingNodes?: number,
 ): ModelAvailability {
   const connected = nonNegativeInteger(totalNodes);
-  const eligible = Math.min(connected, nonNegativeInteger(eligibleNodes));
+  const eligible = eligibleNodes === undefined ? null : Math.min(connected, nonNegativeInteger(eligibleNodes));
   const accepting = reportedAcceptingNodes === undefined
     ? null
-    : Math.min(eligible, nonNegativeInteger(reportedAcceptingNodes));
+    : Math.min(eligible ?? connected, nonNegativeInteger(reportedAcceptingNodes));
   let acceptingPct: number | null = null;
   if (accepting !== null) {
     acceptingPct = connected > 0 ? Math.round((accepting / connected) * 100) : 0;

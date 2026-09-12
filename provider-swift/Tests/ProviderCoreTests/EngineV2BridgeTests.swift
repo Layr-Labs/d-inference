@@ -23,7 +23,7 @@
 import CryptoKit
 import Foundation
 import MLX
-import MLXLMCommon
+@testable import MLXLMCommon
 import Testing
 
 @testable import ProviderCore
@@ -49,6 +49,8 @@ private final class ScriptedCBv2Engine: CBv2Engine, @unchecked Sendable {
     private var _submitted: [CBv2Request] = []
     private var _cancelled: [CBv2RequestID] = []
     private var _shutdownCalls = 0
+    private let residentCandidate: CBv2ResidentPrefixCandidate?
+    private var _residentCandidateRequests: [CBv2Request] = []
     /// ALL manual continuations, in submit order — retained so an earlier
     /// request's event stream is not torn down (continuation deinit ⇒
     /// stream finish) when a later manual submit arrives.
@@ -60,15 +62,20 @@ private final class ScriptedCBv2Engine: CBv2Engine, @unchecked Sendable {
         capacity: CBv2CapacitySnapshot = CBv2CapacitySnapshot(
             activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
             kvBytesCapacity: 0, activeTokens: 0
-        )
+        ),
+        residentCandidate: CBv2ResidentPrefixCandidate? = nil
     ) {
         self.script = script
         self.capacitySnapshot = capacity
+        self.residentCandidate = residentCandidate
     }
 
     var submitted: [CBv2Request] { lock.withLock { _submitted } }
     var cancelled: [CBv2RequestID] { lock.withLock { _cancelled } }
     var shutdownCalls: Int { lock.withLock { _shutdownCalls } }
+    var residentCandidateRequests: [CBv2Request] {
+        lock.withLock { _residentCandidateRequests }
+    }
     var manualContinuation: AsyncStream<CBv2Event>.Continuation? {
         lock.withLock { _manualContinuations.last }
     }
@@ -99,6 +106,15 @@ private final class ScriptedCBv2Engine: CBv2Engine, @unchecked Sendable {
         lock.withLock { _cancelled.append(id) }
     }
 
+    func residentPrefixCandidate(
+        for request: CBv2Request
+    ) -> CBv2ResidentPrefixCandidate? {
+        lock.withLock {
+            _residentCandidateRequests.append(request)
+            return residentCandidate
+        }
+    }
+
     func capacity() -> CBv2CapacitySnapshot {
         lock.withLock { capacitySnapshot }
     }
@@ -106,6 +122,10 @@ private final class ScriptedCBv2Engine: CBv2Engine, @unchecked Sendable {
     func updateKVBytesCapacity(_ bytes: Int) {
         lock.withLock {
             capacitySnapshot.kvBytesCapacity = max(0, bytes)
+            if capacitySnapshot.pagedStorage != nil {
+                capacitySnapshot.kvBytesBackendCapacity = max(0, bytes)
+                capacitySnapshot.pagedStorage?.grantBytes = max(0, bytes)
+            }
         }
     }
 
@@ -220,6 +240,129 @@ private func waitForBudgetRelease(
 
 // MARK: - Shared builders
 
+/// Real engine/cache lifetime with tiny deterministic tensors. The first
+/// forward waits until submit has returned, so publication cannot race the
+/// assertion that the pump still owns its receipt.
+private final class PumpReceiptModel: CBv2RecurrentSteppableModel,
+    CBv2CompleteCheckpointKVTypeProviding
+{
+    let kinds = [CBv2LayerKind(
+        attention: .full, headDim: 64, kvHeads: 1, queryHeads: 1, modelLayerIndex: 0)]
+    let cbv2Capabilities = CBv2ModelCapabilities(
+        supportsPrefixReuse: false, supportsRecurrentCheckpointReuse: true,
+        supportsPagedKV: false, supportsCompiledDecode: false,
+        supportsPackedPrefill: false, supportsMTP: false)
+    let cbv2CompleteCheckpointKVDTypes: [DType]? = [.float32]
+    let recurrentStateSpec: CBv2RecurrentStateSpec? = .init(layers: [.init(
+        modelLayerIndex: 1, convShape: [1, 2, 2], convDType: .float32,
+        ssmShape: [1, 2, 2, 2], ssmDType: .float32)])
+    private let gate = DispatchSemaphore(value: 0)
+    private var firstForward = true
+
+    func allowForward() { gate.signal() }
+
+    func forward(tokens: MLXArray, caches: [CBv2AttendingLayerCache]) -> MLXArray {
+        preconditionFailure("fixture requires the real request-owned recurrent path")
+    }
+
+    func forward(
+        tokens: MLXArray, caches: [CBv2AttendingLayerCache],
+        recurrentState: [CBv2RecurrentStateEvaluation]
+    ) -> MLXArray {
+        if firstForward {
+            firstForward = false
+            _ = gate.wait(timeout: .now() + 10)
+        }
+        let batch = tokens.dim(0), length = tokens.dim(1)
+        let kv = MLXArray.ones([batch, 1, length, 64], dtype: .float32)
+        for cache in caches {
+            _ = cache.updateAndAttend(queries: kv, keys: kv, values: kv, scale: 0.125, sinks: nil)
+        }
+        for evaluation in recurrentState {
+            let previous = evaluation.inputState(modelLayerIndex: 1)
+            try! evaluation.stage(
+                modelLayerIndex: 1,
+                conv: (previous?.conv ?? MLXArray.zeros([1, 2, 2])) + Float(length),
+                ssm: (previous?.ssm ?? MLXArray.zeros([1, 2, 2, 2])) + Float(length))
+        }
+        return broadcast(
+            MLXArray([Float(0), 0, 0, 0, 0, 1, 0, 0]).reshaped([1, 1, 8]),
+            to: [batch, length, 8])
+    }
+}
+
+@Suite("Bridge complete-checkpoint pump ownership", .serialized)
+private struct EngineV2BridgePumpReceiptTests {
+    private func engine(model: PumpReceiptModel, store: SSDHybridCheckpointStore) -> EngineV2 {
+        EngineV2(
+            model: model, layerKinds: model.kinds,
+            backend: CBv2ContiguousKVBackend(config: .init(bytesCapacity: 128 << 20)),
+            cacheProvider: CBv2LayerCacheBank(layerKinds: model.kinds),
+            schedulerConfig: .init(
+                maxConcurrentRequests: 1, maxBatchedTokensPerStep: 256,
+                prefillChunkSize: 256, maxWaiting: 4, enablePrefixCache: true),
+            completePrefixCache: store)
+    }
+
+    @Test("successful submit retains its receipt until asynchronous durable publication")
+    func readyAfterSubmitReturns() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.makeStore(useGlobalBudget: false)
+        let model = PumpReceiptModel()
+        defer { model.allowForward() }
+        let owned = engine(model: model, store: store)
+        let bridge = makeBridge(
+            engine: owned, modelId: "fixture-model", ssdHybridCheckpointStore: store)
+        let received = ReceiptNonceBox()
+        let stream = await bridge.submitTokenized(
+            promptTokens: fixture.tokens, request: makeRequest(maxTokens: 1),
+            requestId: "receipt-pump-success", cacheScope: "tenant-a",
+            usageSignal: EngineV2RequestUsageSignal(onCacheReady: {
+                received.append(nonce: "durable", result: $0)
+            }))
+        // Regression: the old successful-return defer removed this receipt,
+        // even though no engine terminal or durable publication happened yet.
+        #expect(store.lock.withLock { store.readyReceipts.count } == 1)
+        #expect(received.snapshot.isEmpty)
+        model.allowForward()
+        _ = await record(stream)
+        #expect(store.stats().filesWritten > 0)
+        #expect(await received.waitForCount(1))
+        #expect(received.snapshot == ["durable:512"])
+        #expect(store.lock.withLock { store.readyReceipts.isEmpty })
+        #expect(store.stats().stagedBytesInUse == 0)
+        await bridge.shutdown()
+    }
+
+    @Test("cancellation transfers receipt cleanup to the pump without publishing a donor")
+    func cancelAfterSubmitRetiresReceipt() async throws {
+        let fixture = try SSDHybridCheckpointTestFixture()
+        defer { fixture.remove() }
+        let store = try fixture.makeStore(useGlobalBudget: false)
+        let model = PumpReceiptModel()
+        defer { model.allowForward() }
+        let owned = engine(model: model, store: store)
+        let bridge = makeBridge(
+            engine: owned, modelId: "fixture-model", ssdHybridCheckpointStore: store)
+        let received = ReceiptNonceBox()
+        let stream = await bridge.submitTokenized(
+            promptTokens: fixture.tokens, request: makeRequest(maxTokens: 8),
+            requestId: "receipt-pump-cancel", cacheScope: "tenant-a",
+            usageSignal: EngineV2RequestUsageSignal(onCacheReady: {
+                received.append(nonce: "cancelled", result: $0)
+            }))
+        #expect(store.lock.withLock { store.readyReceipts.count } == 1)
+        await bridge.cancel(requestId: "receipt-pump-cancel")
+        model.allowForward()
+        _ = await record(stream)
+        #expect(received.snapshot.isEmpty)
+        #expect(store.lock.withLock { store.readyReceipts.isEmpty })
+        #expect(store.stats().stagedBytesInUse == 0)
+        await bridge.shutdown()
+    }
+}
+
 private func makeBridge(
     engine: any CBv2Engine,
     tokenizer: StubTokenizer = StubTokenizer(),
@@ -234,6 +377,7 @@ private func makeBridge(
     auxiliaryTokenAllocationPadding: Int = 0,
     kvBudget: GlobalKVCacheBudget? = nil,
     ssdPrefixCache: SSDPrefixCache? = nil,
+    ssdHybridCheckpointStore: SSDHybridCheckpointStore? = nil,
     kvBackendKind: EngineV2KVBackendKind = .contiguous,
     telemetry: TelemetrySink? = nil
 ) -> EngineV2Bridge {
@@ -252,6 +396,7 @@ private func makeBridge(
         auxiliaryTokenAllocationPadding: auxiliaryTokenAllocationPadding,
         kvBudget: kvBudget,
         ssdPrefixCache: ssdPrefixCache,
+        ssdHybridCheckpointStore: ssdHybridCheckpointStore,
         kvBackendKind: kvBackendKind,
         emitTelemetry: telemetry?.callback()
     )
@@ -466,6 +611,7 @@ struct EngineV2TranslationTests {
     @Test("engine logprobs convert to the OpenAI streaming entry shape")
     func sseTokenLogprobConversion() {
         let names = [10: "Hi", 11: "Yo"]
+        var decodedTokens: [Int] = []
         let entries = EngineV2Translation.sseTokenLogprobs(
             [
                 CBv2TokenLogprob(
@@ -474,7 +620,10 @@ struct EngineV2TranslationTests {
                 ),
                 CBv2TokenLogprob(token: 11, logprob: -0.5),
             ],
-            decodeToken: { names[$0] ?? "?" }
+            decodeToken: {
+                decodedTokens.append($0)
+                return names[$0] ?? "?"
+            }
         )
         #expect(entries.count == 2)
         #expect(entries[0].token == "Hi")
@@ -487,6 +636,22 @@ struct EngineV2TranslationTests {
         // No alternatives requested → empty top_logprobs, entry still carried.
         #expect(entries[1].token == "Yo")
         #expect(entries[1].topLogprobs.isEmpty)
+        #expect(decodedTokens == [10, 11, 11])
+    }
+
+    @Test("logprobs preserve Unicode bytes and alternative probabilities")
+    func sseTokenLogprobUnicode() {
+        let entries = EngineV2Translation.sseTokenLogprobs(
+            [CBv2TokenLogprob(
+                token: 10, logprob: -0.5,
+                topLogprobs: [(token: 11, logprob: -0.1), (token: 10, logprob: -0.6)])],
+            decodeToken: { $0 == 10 ? "é🙂" : "" })
+        #expect(entries[0].bytes == [195, 169, 240, 159, 153, 130])
+        #expect(entries[0].topLogprobs[0].token == "")
+        #expect(entries[0].topLogprobs[0].bytes == [])
+        #expect(entries[0].topLogprobs[1].token == entries[0].token)
+        #expect(entries[0].topLogprobs[1].bytes == entries[0].bytes)
+        #expect(entries[0].topLogprobs[1].logprob == -0.6)
     }
 
     @Test("stop resolution follows buildStopTokenIds semantics")
@@ -2179,6 +2344,143 @@ struct EngineV2LookupReceiptCoverageTests {
         #expect(box.snapshot.count == 1)
         #expect(box.snapshot.first?.outcome == .skippedPolicy)
     }
+
+    @Test("resident preflight skips equal or shorter SSD matches and stages longer ones")
+    func residentPreflightOrdersMemoryBeforeSSD() async throws {
+        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("bridge-l1-l2-\(UUID().uuidString)", isDirectory: true)
+        let root = parent.appendingPathComponent("aaaaaaaaaaaa", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(dedicatedRoot: parent, modelRoot: root)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let layerKinds = [
+            CBv2LayerKind(attention: .full, headDim: 4, kvHeads: 1, queryHeads: 1)
+        ]
+        let kek = SymmetricKey(size: .bits256)
+        let cache = SSDPrefixCache(
+            config: .init(
+                modelId: "bridge-l1-l2-model",
+                promptContractID: "bridge-l1-l2-contract",
+                weightHash: "bridge-l1-l2-weight",
+                blockSize: 8,
+                adoptionBoundTokens: 0,
+                layoutEpoch: SSDBlockStore.layoutEpoch(
+                    blockSize: 8, layerKinds: layerKinds),
+                root: root,
+                dedicatedRoot: parent,
+                ttlSeconds: 900,
+                minEffectiveTokens: 8,
+                maxStageBytes: 1 << 20,
+                maxStageMillis: 10_000,
+                nowSeconds: { 10_000 }),
+            kekKey: kek,
+            kvBudget: nil,
+            diskBudget: SSDDiskBudget(),
+            maxWriteBytesPerDay: 0,
+            diskBudgetBytes: { 1 << 20 })
+        defer { cache.close() }
+        let prompt = Array(0 ... 64)
+
+        let residentEngine = ScriptedCBv2Engine(
+            script: .stream([
+                .finished(
+                    reason: .stop,
+                    usage: CBv2Usage(
+                        promptTokens: prompt.count,
+                        completionTokens: 0,
+                        prefixCacheOutcome: .adoptionFailed)),
+            ]),
+            residentCandidate: CBv2ResidentPrefixCandidate(
+                matchedTokens: 64,
+                prefillTokensSaved: 64))
+        let residentSignal = EngineV2RequestUsageSignal()
+        _ = await record(await makeBridge(
+            engine: residentEngine,
+            ssdPrefixCache: cache
+        ).submitTokenized(
+            promptTokens: prompt,
+            request: makeRequest(maxTokens: 1),
+            requestId: "req-resident-stale",
+            cacheScope: "scope",
+            usageSignal: residentSignal))
+
+        #expect(residentEngine.residentCandidateRequests.count == 1)
+        #expect(residentEngine.submitted.first?.prefixCacheReceiptID != nil,
+            "the skipped read must not disable terminal SSD donation")
+        #expect(cache.bytesInUse == 0)
+        let staleResult = try #require(residentSignal.lookupResult)
+        #expect(staleResult.outcome == .skippedPolicy)
+        #expect(staleResult.tier == .memory,
+            "a stale advisory is an L1 race, not an invented SSD miss")
+        #expect(staleResult.stageMs == nil)
+        #expect(staleResult.promptAnchor == nil)
+
+        let l2Engine = ScriptedCBv2Engine(script: .stream([
+            .finished(
+                reason: .stop,
+                usage: CBv2Usage(
+                    promptTokens: prompt.count,
+                    completionTokens: 0,
+                    prefixCacheOutcome: .miss)),
+        ]))
+        let l2Signal = EngineV2RequestUsageSignal()
+        _ = await record(await makeBridge(
+            engine: l2Engine,
+            ssdPrefixCache: cache
+        ).submitTokenized(
+            promptTokens: prompt,
+            request: makeRequest(maxTokens: 1),
+            requestId: "req-l2-miss",
+            cacheScope: "scope",
+            usageSignal: l2Signal))
+
+        #expect(l2Engine.residentCandidateRequests.count == 1)
+        #expect(cache.bytesInUse == 0)
+        let l2Result = try #require(l2Signal.lookupResult)
+        #expect(l2Result.outcome == .missAbsent)
+        #expect(l2Result.tier == .ssd)
+        #expect(l2Result.stageMs != nil,
+            "stage timing proves an L1 miss fell through to the SSD probe")
+        #expect(l2Result.promptAnchor?.tokenCount == 64,
+            "the SSD probe must retain content-free prompt evidence")
+
+        // An index-only durable candidate deliberately has no files: this
+        // proves equal/shorter SSD matches do no I/O, while a longer match
+        // reaches real staging and is authenticated before any reuse.
+        let hasher = CBv2BlockHasher(
+            blockSize: 8, promptContractID: "bridge-l1-l2-contract", scopeID: "scope")
+        let keys = SSDLookupKeys(kek: kek)
+        for hash in hasher.chainHashes(tokens: prompt).prefix(6) {
+            cache.index.insert(
+                tag16: keys.tag16(chainHash: hash, cacheSalt: "scope"),
+                fileBytes: 100, lastAccess: 10_000)
+        }
+        for residentSaved in [64, 48, 16] {
+            let engine = ScriptedCBv2Engine(
+                script: .stream([
+                    .finished(reason: .stop, usage: CBv2Usage(
+                        promptTokens: prompt.count, completionTokens: 0,
+                        prefixCacheOutcome: .miss)),
+                ]),
+                residentCandidate: CBv2ResidentPrefixCandidate(
+                    matchedTokens: residentSaved, prefillTokensSaved: residentSaved))
+            let signal = EngineV2RequestUsageSignal()
+            _ = await record(await makeBridge(engine: engine, ssdPrefixCache: cache).submitTokenized(
+                promptTokens: prompt, request: makeRequest(maxTokens: 1),
+                requestId: "tier-choice-\(residentSaved)", cacheScope: "scope", usageSignal: signal))
+            let result = try #require(signal.lookupResult)
+            if residentSaved >= 48 {
+                #expect(result.stageMs == nil)
+                #expect(cache.stats().corruptDropped == 0)
+                #expect(cache.index.count == 6)
+            } else {
+                #expect(result.stageMs != nil)
+                #expect(result.outcome == .missCorrupt)
+                #expect(cache.stats().corruptDropped == 1)
+            }
+            #expect(cache.bytesInUse == 0)
+        }
+
+    }
 }
 
 // MARK: - Hardening (request-id validation, id overflow, pump lifecycle)
@@ -2647,7 +2949,7 @@ struct EngineV2BridgePagedKVTests {
                 .activeTokenBudgetMax == 40)
     }
 
-    @Test("ledger-only reslice never claims physical reclaim or grows past the pool")
+    @Test("fixed-reference reslice never claims physical reclaim or grows past the pool")
     func pagedResliceKeepsPhysicalTruth() async {
         let engine = ScriptedCBv2Engine(
             script: .manual,
@@ -2672,6 +2974,33 @@ struct EngineV2BridgePagedKVTests {
         #expect(engine.capacity().kvBytesCapacity == 60_000)
         #expect(engine.capacity().kvBytesBackendCapacity == 60_000)
         #expect(await bridge.backendSlotCapacity().activeTokenBudgetMax == 60)
+    }
+
+    @Test("segmented reslice follows shrink and regrow while retaining live ownership")
+    func segmentedResliceFollowsAdmittedGrant() async throws {
+        let storage = PagedKVStorageSnapshot(
+            generation: UUID(), captureSequence: 1, capturedUptimeNanoseconds: 1,
+            grantBytes: 60_000, committedBytes: 40_000, reservedPageBytes: 32_000,
+            livePageBytes: 32_000, poisonBytes: 4_000, slackBytes: 4_000,
+            segmentCount: 1, addressPages: 16, nominalKVBytes: 32_000,
+            physicalFloorOverheadBytes: 8_000, allocationFailures: 0,
+            admissionRefusals: 0, grantRefusals: 0, grantEpochRetries: 0)
+        let engine = ScriptedCBv2Engine(script: .manual, capacity: .init(
+            activeRequests: 1, waitingRequests: 0, kvBytesInUse: 32_000,
+            kvBytesCapacity: 60_000, kvBytesBackendCapacity: 60_000,
+            kvBytesReserved: 40_000, activeTokens: 32, pagedStorage: storage))
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 1_000, kvBackendKind: .paged)
+        await bridge.updateKVBytesCapacity(20_000)
+        #expect(engine.capacity().kvBytesCapacity == 20_000)
+        #expect(engine.capacity().pagedStorage?.committedBytes == 40_000)
+        #expect(engine.capacity().pagedStorage?.overGrantBytes == 20_000)
+        #expect(await bridge.pagedPoolResizeShortfall() == nil)
+        await bridge.updateKVBytesCapacity(100_000)
+        #expect(engine.capacity().kvBytesCapacity == 100_000)
+        #expect(engine.capacity().pagedStorage?.committedBytes == 40_000)
+        #expect(await bridge.kvBackendPoolBytes() == 100_000)
+        #expect(await bridge.backendSlotCapacity().activeTokenBudgetMax == 100)
+        #expect(await bridge.pagedPoolResizeShortfall() == nil)
     }
 
     @Test("unknown backend capacity (0) does not bind")

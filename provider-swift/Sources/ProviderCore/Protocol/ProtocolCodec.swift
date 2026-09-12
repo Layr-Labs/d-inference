@@ -132,6 +132,9 @@ public enum ProviderProtocolCodec {
         if let models = register.prefixCacheV2Models, !models.isEmpty {
             try fields.append(("prefix_cache_v2_models", encodeValue(models)))
         }
+        if let models = register.prefixCacheMemoryModels, !models.isEmpty {
+            try fields.append(("prefix_cache_memory_models", encodeValue(models)))
+        }
         if let statuses = register.prefixCacheStatuses {
             try fields.append(("prefix_cache_statuses", encodeValue(statuses)))
         }

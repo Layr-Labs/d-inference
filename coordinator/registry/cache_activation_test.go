@@ -138,7 +138,7 @@ func TestPlanCacheRouteOffAndOperationalThrottleFailCold(t *testing.T) {
 
 	if err := reg.ConfigureCacheRouting(CacheRoutingConfig{
 		Mode: CacheRoutingOn, ActivationPct: 100, MaxPlanQPS: 1,
-		TTL: time.Minute, MaxHolders: 4, MaxDiscountMs: 1000, MaxCostFraction: .35,
+		TTL: time.Minute, MaxHolders: 4, MaxDiscountMs: f64(1000), MaxCostFraction: f64(.35),
 		MasterKey: base64.RawURLEncoding.EncodeToString(
 			[]byte("0123456789abcdef0123456789abcdef")),
 	}); err != nil {
@@ -197,7 +197,7 @@ func TestPlanCacheRouteClassifiesDynamicContractAsHealthyColdOnly(t *testing.T) 
 	reg := New(testLogger())
 	if err := reg.ConfigureCacheRouting(CacheRoutingConfig{
 		Mode: CacheRoutingOn, ActivationPct: 100,
-		TTL: time.Minute, MaxHolders: 4, MaxDiscountMs: 1000, MaxCostFraction: .35,
+		TTL: time.Minute, MaxHolders: 4, MaxDiscountMs: f64(1000), MaxCostFraction: f64(.35),
 		MasterKey: base64.RawURLEncoding.EncodeToString(
 			[]byte("0123456789abcdef0123456789abcdef")),
 	}); err != nil {

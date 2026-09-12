@@ -11,7 +11,7 @@ import (
 // testPostgresStore returns a PostgresStore connected to the test database.
 // It skips the test if DATABASE_URL is not set.
 // Each test gets a clean slate by truncating all tables.
-func testPostgresStore(t *testing.T) *PostgresStore {
+func testPostgresStore(t testing.TB) *PostgresStore {
 	t.Helper()
 
 	dbURL := os.Getenv("DATABASE_URL")
@@ -46,13 +46,18 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 		"provider_payouts",
 		"providers",
 		"stripe_withdrawals",
+		"global_payout_withdrawals",
+		"global_payout_recipients",
 		"provider_sessions",
 		"inference_routes",
 		"request_rejections",
+		"request_outcomes",
 		"provider_trust_reuse",
 		"provider_floor_draws",
 		"code_attestations",
 		"code_attest_push_budgets",
+		"request_profiles",
+		"fleet_snapshots",
 	} {
 		if _, err := s.pool.Exec(ctx, "TRUNCATE "+table+" CASCADE"); err != nil {
 			t.Fatalf("truncate %s: %v", table, err)

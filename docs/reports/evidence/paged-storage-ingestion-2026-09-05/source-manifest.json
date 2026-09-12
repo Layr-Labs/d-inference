@@ -1,0 +1,116 @@
+{
+  "base_commit": "544cfa5eef9c6a02021d81f0054a5bbe624e89d3",
+  "scope": "Coordinator/console optional paged-storage ingestion, producer pending; no admission or routing behavior changes",
+  "owned_paths": [
+    {
+      "path": "console-ui/src/app/providers/types.ts",
+      "bytes": 7763,
+      "sha256": "3555c206753f0591112ccd5388577159b29a2a92afcb4b6f35d2a0443baf9f74"
+    },
+    {
+      "path": "coordinator/api/provider_heartbeat.go",
+      "bytes": 993,
+      "sha256": "e2a3227bb2a3279585bb6274984e34665240f3e09ef3fe83efc1ba56b55c6edd"
+    },
+    {
+      "path": "coordinator/api/provider_paged_storage_telemetry.go",
+      "bytes": 2543,
+      "sha256": "9d36243d796d973c36e135bd91d331efe176adf17d0cdfea2f0e7b25d5be12c5"
+    },
+    {
+      "path": "coordinator/api/provider_paged_storage_telemetry_test.go",
+      "bytes": 3780,
+      "sha256": "ab0f78cadbf3e64ed1af7dab77c9c63470f9b93288684ce48d0adb662aba7baf"
+    },
+    {
+      "path": "coordinator/api/provider_prefix_cache_telemetry.go",
+      "bytes": 3685,
+      "sha256": "e6758627e1e1e579cfaeb6761228fff8d919792d8d4a2f17709e23c9c87d725b"
+    },
+    {
+      "path": "coordinator/api/provider_prefix_cache_telemetry_test.go",
+      "bytes": 4065,
+      "sha256": "b513f623236b8c23f1ccb8535eea0d676aa00bb75a066f05b136c15a6ab8238e"
+    },
+    {
+      "path": "coordinator/protocol/messages.go",
+      "bytes": 61774,
+      "sha256": "cc2ffdbcd5d7a627d68b9b26915969423fd6300a00538c6d94650d71fcf63d6e"
+    },
+    {
+      "path": "coordinator/protocol/paged_storage_telemetry.go",
+      "bytes": 1773,
+      "sha256": "ab7a0502e12a1c721878716e4f64351946fbf68360c8ca8ff40548ed2673b183"
+    },
+    {
+      "path": "coordinator/protocol/paged_storage_telemetry_test.go",
+      "bytes": 1667,
+      "sha256": "bce480048166648f5680f5aa6fd696b5fd77a111b2bb40ec96dc5804cd6ef081"
+    },
+    {
+      "path": "coordinator/registry/capacity_sample_freshness.go",
+      "bytes": 2622,
+      "sha256": "2cb4a503620c4716c08aaf72109493573a7e86a7777e88251ffc9357317d459a"
+    },
+    {
+      "path": "coordinator/registry/heartbeat.go",
+      "bytes": 28244,
+      "sha256": "8afd21fd33430157a461afe9d46539664424ba5fc1f061082eb5acfc344730bb"
+    },
+    {
+      "path": "coordinator/registry/paged_storage_telemetry.go",
+      "bytes": 963,
+      "sha256": "cc80cc2b587b4ac592acd86c39fa6d5532407dfe6242c401488d2ad61026bf4f"
+    },
+    {
+      "path": "coordinator/registry/paged_storage_telemetry_test.go",
+      "bytes": 6295,
+      "sha256": "6a6be854018e54f6a232f704692b2641f27f35b3f80daf11e9e0b073aaeaa621"
+    },
+    {
+      "path": "coordinator/registry/prefix_cache_telemetry.go",
+      "bytes": 1237,
+      "sha256": "321eedeaaa9cd16d2dcc809ce273e86821831d5aa3778f1e198c12bfb1270c9a"
+    },
+    {
+      "path": "coordinator/registry/prefix_cache_telemetry_test.go",
+      "bytes": 2723,
+      "sha256": "193f2d8cb43cc6fbbb9b938f4ebcd9100ea93fb4bd91a01fc3af8cb6586527db"
+    },
+    {
+      "path": "coordinator/registry/provider.go",
+      "bytes": 22984,
+      "sha256": "6f43affd17807a7879ba4dcd91747f8a3fb51de369d925d960b7266ef379f171"
+    },
+    {
+      "path": "docs/architecture/system-profiler.md",
+      "bytes": 42909,
+      "sha256": "109f2e63f9e618540e2815fc62e37773a363a2f88ca14564ed364fbc301c7445"
+    },
+    {
+      "path": "docs/architecture/telemetry.md",
+      "bytes": 18832,
+      "sha256": "7d6d35bd369de4e6c868044c0b049d0d10bc3166744f29349847fce53dafa882"
+    },
+    {
+      "path": "docs/reference/api-contracts.md",
+      "bytes": 60803,
+      "sha256": "8cd0aa4a563fe5c0d563c2c60ca83903233eb0139abb564e0952aade131440c7"
+    },
+    {
+      "path": "docs/reference/protocol-messages.md",
+      "bytes": 49139,
+      "sha256": "a2bb1ae59c0cef86871e3b53b3b7ba8289ceac3a3d3406b586bb8368ab89c434"
+    },
+    {
+      "path": "docs/reference/telemetry-inventory.md",
+      "bytes": 32507,
+      "sha256": "1a9c21aaa16a0581abd9daeefa5aee72c62b1775e770d4630f6b40766a2127d3"
+    },
+    {
+      "path": "docs/reference/telemetry-schema.md",
+      "bytes": 13275,
+      "sha256": "d9b1db095d515fc39a2b3bbf2f77e4eb61537d2752e6bc3fd5f88d46a00bb2d2"
+    }
+  ]
+}

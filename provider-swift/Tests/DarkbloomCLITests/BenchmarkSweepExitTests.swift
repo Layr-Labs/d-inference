@@ -53,6 +53,27 @@ private func coverage(
 @Suite("benchmark sweep exit status")
 struct BenchmarkSweepExitTests {
 
+    @Test("backend help describes exact-model auto selection and its fallback contract")
+    func backendHelpDescribesCandidateAuto() throws {
+        let defaults = try Benchmark.parse([])
+        #expect(defaults.kvBackend == "auto")
+        let help = Benchmark.helpMessage().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        #expect(help.contains("auto|contiguous|paged (default auto)"))
+        #expect(help.contains("Candidate auto selects paged only for exact model IDs "
+            + "qwen3.5-35b-a3b, qwen3.6-35b-a3b-vl-mtp-mxfp8, "
+            + "and EigenLabs/Qwen3.8-27B-4bit-mtp; all other models use contiguous"))
+        #expect(help.contains("Automatic paged failures and the version-bound crash-loop guard "
+            + "still fall back to contiguous"))
+        #expect(help.contains("automatic fallback can produce different resolved backends"))
+        #expect(help.contains("An explicit paged selection FAILS the run rather than degrading"))
+        #expect(help.contains("DARKBLOOM_CBV2_PAGED_KV=0 and capability/span-mask vetoes "
+            + "can still force contiguous"))
+        #expect(help.contains("Candidate rollout is not yet validated"))
+        #expect(help.contains("docs/design/qwen-first-paged-ssd-rollout.md"))
+        #expect(!help.contains("resolves to CONTIGUOUS as of v0.8.1"))
+        #expect(!help.contains("never measure different arms"))
+    }
+
     @Test("explicit paged with zero decode cells fails and names the reason")
     func explicitPagedFails() throws {
         let message = Benchmark.sweepFailureMessage(
@@ -126,13 +147,6 @@ struct BenchmarkSweepExitTests {
 
     @Test("auto with an unmeasured cell still exits 0")
     func autoPartialCoverageSucceeds() {
-        // Under `auto` the operator named no backend, so a cell that could
-        // not build one is an ordinary bad run, not a broken promise — the
-        // same asymmetry `EngineV2KVBackendPolicy.degradesPagedFailure`
-        // encodes for the engine. `auto` resolves contiguous as of v0.8.1,
-        // so a paged capacity refusal is not reachable here; what is reachable
-        // is an ordinary construction error, and it keeps its exit status. The
-        // degrade rule remains for any future release that resolves auto paged.
         // Nil message ⇒ `runThroughputSweep` returns normally ⇒ 0.
         #expect(Benchmark.sweepFailureMessage(
             backend: .auto, failure: nil, coverage: coverage()) == nil)

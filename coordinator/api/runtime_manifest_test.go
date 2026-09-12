@@ -45,8 +45,8 @@ func TestSyncRuntimeManifestIncludesSwiftMetallibHash(t *testing.T) {
 	if srv.knownRuntimeManifest == nil {
 		t.Fatal("knownRuntimeManifest = nil")
 	}
-	if got := srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"]; got != metallibHash {
-		t.Fatalf("mlx_metallib hash = %q, want %q", got, metallibHash)
+	if accepted := srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"]; !accepted[metallibHash] {
+		t.Fatalf("mlx_metallib accepted hashes = %v, want %q", sortedTemplateHashes(accepted), metallibHash)
 	}
 }
 
@@ -56,7 +56,7 @@ func TestVerifyRuntimeHashesForSwiftRequiresMetallibButNotLegacyRuntime(t *testi
 	srv.SetRuntimeManifest(&RuntimeManifest{
 		PythonHashes:   map[string]bool{"legacy-python": true},
 		RuntimeHashes:  map[string]bool{"legacy-runtime": true},
-		TemplateHashes: map[string]string{"qwen3.5": "legacy-template", "mlx_metallib": metallibHash},
+		TemplateHashes: map[string]map[string]bool{"qwen3.5": {"legacy-template": true}, "mlx_metallib": {metallibHash: true}},
 	})
 
 	ok, mismatches := srv.verifyRuntimeHashesForBackend("mlx-swift", "", "", map[string]string{
@@ -80,13 +80,13 @@ func TestVerifyRuntimeHashesForSwiftRequiresMetallibButNotLegacyRuntime(t *testi
 func TestRuntimeManifestApprovalRequiresExplicitMetallibEntry(t *testing.T) {
 	hash := strings.Repeat("a", 64)
 	if runtimeManifestApprovesMetallib(
-		&RuntimeManifest{TemplateHashes: map[string]string{}},
+		&RuntimeManifest{TemplateHashes: map[string]map[string]bool{}},
 		map[string]string{"mlx_metallib": hash},
 	) {
 		t.Fatal("missing approved mlx_metallib entry was accepted")
 	}
 	if !runtimeManifestApprovesMetallib(
-		&RuntimeManifest{TemplateHashes: map[string]string{"mlx_metallib": hash}},
+		&RuntimeManifest{TemplateHashes: map[string]map[string]bool{"mlx_metallib": {hash: true}}},
 		map[string]string{"mlx_metallib": hash},
 	) {
 		t.Fatal("explicit matching mlx_metallib entry was rejected")
@@ -98,7 +98,7 @@ func TestVerifyRuntimeHashesForLegacyBackendRejected(t *testing.T) {
 	srv.SetRuntimeManifest(&RuntimeManifest{
 		PythonHashes:   map[string]bool{"legacy-python": true},
 		RuntimeHashes:  map[string]bool{"legacy-runtime": true},
-		TemplateHashes: map[string]string{"qwen3.5": "legacy-template", "mlx_metallib": strings.Repeat("a", 64)},
+		TemplateHashes: map[string]map[string]bool{"qwen3.5": {"legacy-template": true}, "mlx_metallib": {strings.Repeat("a", 64): true}},
 	})
 
 	ok, mismatches := srv.verifyRuntimeHashesForBackend("vllm-mlx", "legacy-python", "legacy-runtime", map[string]string{
@@ -112,7 +112,10 @@ func TestVerifyRuntimeHashesForLegacyBackendRejected(t *testing.T) {
 	}
 }
 
-func TestSyncRuntimeManifestUsesLatestReleaseOnly(t *testing.T) {
+// Every active release contributes to every set — template hashes included.
+// The pre-2026-09-03 behaviour ("newest release's template hash wins") is the
+// bug that derouted the fleet on release registration.
+func TestSyncRuntimeManifestUnionsTemplateHashesAcrossActiveReleases(t *testing.T) {
 	srv, st := runtimeManifestTestServer(t)
 
 	if err := st.SetRelease(&store.Release{
@@ -165,11 +168,11 @@ func TestSyncRuntimeManifestUsesLatestReleaseOnly(t *testing.T) {
 	if !manifest.RuntimeHashes["old-runtime"] {
 		t.Fatal("old runtime hash should remain accepted so older providers still pass")
 	}
-	if got := manifest.TemplateHashes["qwen3.5"]; got != "new-template" {
-		t.Fatalf("qwen3.5 template hash = %q, want %q", got, "new-template")
+	if got := manifest.TemplateHashes["qwen3.5"]; len(got) != 2 || !got["new-template"] || !got["old-template"] {
+		t.Fatalf("qwen3.5 accepted hashes = %v, want both old-template and new-template", sortedTemplateHashes(got))
 	}
-	if got := manifest.TemplateHashes["minimax"]; got != "new-minimax-template" {
-		t.Fatalf("minimax template hash = %q, want %q", got, "new-minimax-template")
+	if got := manifest.TemplateHashes["minimax"]; len(got) != 1 || !got["new-minimax-template"] {
+		t.Fatalf("minimax accepted hashes = %v, want %q", sortedTemplateHashes(got), "new-minimax-template")
 	}
 }
 

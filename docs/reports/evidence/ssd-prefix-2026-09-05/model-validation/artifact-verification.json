@@ -1,0 +1,45 @@
+{
+  "artifact_checks": {
+    "candidate-ssd-build3": {
+      "darkbloom": true,
+      "harness-source-manifest.json": true,
+      "harness.patch.gz": true,
+      "mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": true,
+      "mlx.metallib": true,
+      "radix-engine": true,
+      "run_radix_engine.py": true,
+      "run_radix_http.py": true,
+      "source-manifest.json": true,
+      "swift-crypto_Crypto.bundle/PrivacyInfo.xcprivacy": true,
+      "swift-nio_NIOPosix.bundle/PrivacyInfo.xcprivacy": true,
+      "swift-transformers_Hub.bundle/gpt2_tokenizer_config.json": true,
+      "swift-transformers_Hub.bundle/t5_tokenizer_config.json": true
+    },
+    "integrated-ssd-build1": {
+      "darkbloom": true,
+      "harness-source-manifest.json": true,
+      "mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": true,
+      "mlx.metallib": true,
+      "radix-engine": true,
+      "radix_prefix_cache.py": true,
+      "run_radix_engine.py": true,
+      "run_radix_http.py": true,
+      "source-manifest.json": true,
+      "swift-crypto_Crypto.bundle/PrivacyInfo.xcprivacy": true,
+      "swift-nio_NIOPosix.bundle/PrivacyInfo.xcprivacy": true,
+      "swift-transformers_Hub.bundle/gpt2_tokenizer_config.json": true,
+      "swift-transformers_Hub.bundle/t5_tokenizer_config.json": true
+    }
+  },
+  "source_checks": {
+    "candidate-ssd-build3": {
+      "checked_files": 1050,
+      "all_match_current_committed_source": true
+    },
+    "integrated-ssd-build1": {
+      "checked_files": 1058,
+      "all_match_current_committed_source": true
+    }
+  },
+  "no_model_or_binary_payloads_in_this_evidence_directory": true
+}

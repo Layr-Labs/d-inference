@@ -1,0 +1,199 @@
+{
+  "schema": 1,
+  "record_date": "2026-09-06",
+  "checked_against_repository_commit": "5073f696d46adfe98a835e7795633a0ecd50ac3c",
+  "status": "FROZEN_FAILED_PILOT_EVIDENCE_ONLY",
+  "source_directory": "/private/tmp/darkbloom-gpt-b2-causal-diagnostic1",
+  "source_inputs": {
+    "ROOT-review.md": {
+      "bytes": 5764,
+      "sha256": "5657119dc70f08cf3fa56d560bea6408e767543a3196e3bfffb9f1a18ed797c5"
+    },
+    "capsule2-receipt.json": {
+      "bytes": 490,
+      "sha256": "91b877e2274077c723d61a5aedbd181ea2c44335c5e0020495f630adf1f9755d"
+    },
+    "verify_capsule.py": {
+      "bytes": 2727,
+      "sha256": "03c2e0c12f56f3181e8a009360400473923b7dcdbfe6834d8d6bdd39f72d6e7d"
+    }
+  },
+  "source_receipt": {
+    "archive": "/private/tmp/darkbloom-gpt-b2-causal-diagnostic1/gpt-b2-raw-capsule2.tar.gz",
+    "archive_bytes": 816609,
+    "archive_sha256": "9d29e690659c2101e736a2f79141b4d1a5c16ce140ea500491b7ea71db226e8f",
+    "capsule_manifest_sha256": "ed5e979d7f823bb9f3d0359de1a763ac0c43d4f052632f18cf8cb9da8a6856fd",
+    "files": 85,
+    "raw_files": 56,
+    "full_archive_unchanged": true,
+    "full_archive_sha256": "2ec198a22631ad667facd253af366236250e7736c4b028218a5279af727c7c5c",
+    "published": false
+  },
+  "banked_files": {
+    "gpt-b2-raw-capsule2.tar.gz": {
+      "bytes": 816609,
+      "sha256": "9d29e690659c2101e736a2f79141b4d1a5c16ce140ea500491b7ea71db226e8f"
+    },
+    "capsule-manifest.json": {
+      "bytes": 23829,
+      "sha256": "ed5e979d7f823bb9f3d0359de1a763ac0c43d4f052632f18cf8cb9da8a6856fd"
+    }
+  },
+  "independent_safety_validation": {
+    "archive_and_manifest_hashes_match_reviewed_receipt": true,
+    "unique_regular_members": 86,
+    "inventoried_files_excluding_manifest": 85,
+    "exact_inventory_no_unlisted_members": true,
+    "no_absolute_traversal_duplicate_link_or_special_members": true,
+    "all_members_utf8_without_binary_control_characters": true,
+    "allowed_member_suffixes": [
+      ".cpp",
+      ".csv",
+      ".json",
+      ".jsonl",
+      ".log",
+      ".md",
+      ".py",
+      ".swift"
+    ],
+    "credential_scan_patterns": {
+      "private_key": "-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----",
+      "aws_access": "\\b(?:AKIA|ASIA)[A-Z0-9]{16}\\b",
+      "github_token": "\\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})\\b",
+      "api_key": "\\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{24,}\\b",
+      "jwt": "\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b",
+      "credential_assignment": "(?i)[\"']?(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|private[_-]?key|secret[_-]?key)[\"']?\\s*[:=]\\s*[\"'][^\"'\\n]{12,}[\"']",
+      "bearer": "(?i)\\bbearer\\s+[A-Za-z0-9._~+/-]{16,}"
+    },
+    "credential_scan_findings": [],
+    "original_inventory_files": 131,
+    "included_raw_files": 56,
+    "excluded_original_files": 75,
+    "included_and_excluded_form_disjoint_complete_partition": true,
+    "included_raw_bytes_match_original_local_pilot_evidence": true,
+    "original_evidence_manifest_sha256": "a8b0d59e86c721b45d83b00ad02581b0ffa7b068f1400c9602204059cd5a4807",
+    "source_verifier_matches_capsule_verifier": true,
+    "explicit_exclusions": [
+      "Runtime executables, metallib and dynamic libraries (hash manifests retained)",
+      "Model weight payloads (manifest identities retained)",
+      "All prefix-cache/checkpoint ciphertext payloads",
+      "Key material, credentials and private-key files",
+      "Transport/SSH preparation scripts and redundant preparation artifacts"
+    ],
+    "content_review": "Reviewed text-only inventory, raw logs/metadata, and persistent-test key helper/provenance; no key payloads. Credential pattern scan is bounded, not a general proof of absence of arbitrary secrets.",
+    "full_archive_banked": false,
+    "full_archive_hash_scope": "Retained source receipt/provenance only; this banking validation does not rehash the 1.57 GB archive."
+  },
+  "cpu_validation": {
+    "execution": "Only frozen verify_capsule.py, compare_radix_engine.compare and analyze_trajectories.py, from a freshly checked capsule in a temporary directory; Python -B.",
+    "frozen_verifier": {
+      "files_verified": 85,
+      "raw_files_verified": 56,
+      "backend_comparison_passed": true,
+      "cache_comparison_passed": false,
+      "full_trajectories": 2,
+      "cached_repeat_b0_equals_all_b1": true,
+      "restore_byte_equality": "UNPROVEN",
+      "model_execution": false
+    },
+    "strict_backend_matches_retained_result": true,
+    "strict_cache_matches_retained_result_except_annotation": true,
+    "retained_cache_review_note": "Strict frozen comparator on retained raw reports; this does not override failed cache-on cell integrity or the matrix gate.",
+    "validation_note": "Initial whole-object cache-result assertion detected this retained review_note; final replay compares all comparator fields without altering any retained evidence bytes.",
+    "cache_errors": [
+      {
+        "id": "long-repeat-b0",
+        "differences": [
+          "token_ids"
+        ]
+      }
+    ],
+    "recomputed_byte_identical_files": [
+      "trajectory-analysis.json",
+      "token-emissions.csv"
+    ],
+    "emitted_output_tokens": 1536,
+    "prompt_token_count_per_row": 5472,
+    "full_128_token_trajectory_cluster_sizes": [
+      5,
+      7
+    ],
+    "first_cluster_difference": {
+      "index": 3,
+      "A": 976,
+      "B": 2167,
+      "differing_positions": 123
+    },
+    "completed_decode_calls_by_width": [
+      {
+        "cohort": "gpt-oss-20b-retained-b2-r1-contiguous-cache-off/long-first",
+        "counts": {
+          "1": 20,
+          "2": 118
+        }
+      },
+      {
+        "cohort": "gpt-oss-20b-retained-b2-r1-contiguous-cache-off/long-repeat",
+        "counts": {
+          "1": 20,
+          "2": 118
+        }
+      },
+      {
+        "cohort": "gpt-oss-20b-retained-b2-r1-paged-cache-off/long-first",
+        "counts": {
+          "1": 20,
+          "2": 118
+        }
+      },
+      {
+        "cohort": "gpt-oss-20b-retained-b2-r1-paged-cache-off/long-repeat",
+        "counts": {
+          "1": 20,
+          "2": 118
+        }
+      },
+      {
+        "cohort": "gpt-oss-20b-retained-b2-r1-paged-cache-on/long-first",
+        "counts": {
+          "1": 20,
+          "2": 118
+        }
+      },
+      {
+        "cohort": "gpt-oss-20b-retained-b2-r1-paged-cache-on/long-repeat",
+        "counts": {
+          "1": 1,
+          "2": 127
+        }
+      }
+    ]
+  },
+  "documentation_validation": {
+    "targeted_command": "scripts/docs-check.sh docs/reports/2026-09-06-gptoss-b2-cache-divergence.md docs/reports/README.md",
+    "targeted_result": "PASS: 2 files",
+    "git_diff_check": "PASS",
+    "full_tree_command": "scripts/docs-check.sh --all",
+    "full_tree_result": "FAIL: 3 unrelated concurrent-draft problems in 226 files",
+    "unrelated_draft": "docs/reports/2026-09-06-gemma-state-fork-runtime.md",
+    "unrelated_problems": [
+      "broken link: ../design/gemma-same-state-fork-diagnostic.md",
+      "broken link: ../design/gemma-same-state-fork-accounting.md",
+      "orphan: no inbound index link"
+    ],
+    "unrelated_files_modified_by_this_task": false
+  },
+  "acceptance": {
+    "strict_backend_scope": "Four same-ID rows: retained contiguous/cache-off versus paged/cache-off, one repetition.",
+    "strict_cache_gate": "FAILED_UNCHANGED",
+    "cross_row_equality": "Observation consistent with batching/scheduling dependence; not a substitute oracle or restoration proof.",
+    "actual_cohort_width_two_observed": true,
+    "selecting_forward_width_at_token_index_3": "UNKNOWN",
+    "restore_byte_equality": "UNPROVEN",
+    "first_divergent_kernel": "UNOBSERVED",
+    "accepted_performance_claim": false,
+    "accepted_quality_claim": false,
+    "new_model_runs": 0,
+    "remote_staging_or_publication": false
+  }
+}

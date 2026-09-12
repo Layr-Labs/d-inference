@@ -1,0 +1,115 @@
+{
+  "schema": 1,
+  "scope": "Frozen, local-only curation of previously collected signing evidence",
+  "source_collections": [
+    "darkbloom-signing-validation-execution1",
+    "darkbloom-signing-validation-execution2"
+  ],
+  "sources": {
+    "execution2/final-receipt.json": {
+      "sha256": "c3dde552baf5f2825231bd80342e443bb8efa834a16313acded32218613d16c2",
+      "bytes": 3664
+    },
+    "execution1/final-receipt.json": {
+      "sha256": "adcb234b96b9df29f91c41ce18861a71d2bb108f33194d262e6ea8a02edb4a20",
+      "bytes": 3823
+    },
+    "execution2/local-static-signature-verification.json": {
+      "sha256": "e884da7beb4e17382afe560b9f30ebea9cd652daab73ffe860ec572ac8a4e583",
+      "bytes": 19349
+    },
+    "execution2/static-unsigned-verification.json": {
+      "sha256": "d0fc1c5726c1cbcc5790a429b9efba3b3acf4e5072d3ce85e8c2868c5d2abc0c",
+      "bytes": 1008
+    },
+    "execution2/static-signed-verification.json": {
+      "sha256": "5ed3797221b4bfe92466913bf3691d426ed7af06faf1da2deb9b16a5cae95d90",
+      "bytes": 1622
+    },
+    "execution2/flat-export-signature-metadata.json": {
+      "sha256": "184ce1c343566bf6a77feba05c07590a6307f2ce186c47e9605a7695268b49ac",
+      "bytes": 1339
+    },
+    "execution2/artifacts/provider-signing-validation-diagnostics/signing-identity.json": {
+      "sha256": "d375ae22a50397ac8a7d286510c7a7022c805731218e94b8ebffdddbf139b507",
+      "bytes": 679
+    },
+    "execution2/artifacts/provider-signing-validation-diagnostics/notary-result.json": {
+      "sha256": "f8bbace7c2504c3cdd327c4e9a93bdd0b229b03921b21af687cdc19ba28aab68",
+      "bytes": 98
+    },
+    "execution2/artifacts/provider-signing-validation-diagnostics/signing-keychain-cleanup.json": {
+      "sha256": "042b9b54b77e649d9645c197050737b972e222e0bcd91fdde12df2fd5aec364b",
+      "bytes": 127
+    },
+    "execution2/local-app-verify.stderr": {
+      "sha256": "fdead2006a0a94575f89a486af9b8edf2ed89574ec8c8b03e9b1a6b376af7095",
+      "bytes": 1180
+    },
+    "execution2/local-cli-verify.stderr": {
+      "sha256": "46dd0a528edf087e1f871180e5e2dcdbd7d3abb4380afd1766a796702faae472",
+      "bytes": 1255
+    },
+    "execution2/local-enclave-verify.stderr": {
+      "sha256": "5feb4e242d6323eeee190ff6d8f99b6b1abceb6840607eca1b3c07675f259a99",
+      "bytes": 460
+    },
+    "execution2/local-fan-helper-verify.stderr": {
+      "sha256": "62e272ccb1863eeeb4a61c7be24382c3d6c4bc292765b5f0b1732599a2a5e1d1",
+      "bytes": 475
+    },
+    "execution2/local-metallib-verify.stderr": {
+      "sha256": "f99b1c03c086cde25cb47679387faac447acc95e7af4cdf9109d9dd2507f8c9f",
+      "bytes": 445
+    },
+    "execution2/local-stapler-validate.stdout": {
+      "sha256": "61e967583783195166720b072798c261ddf62588a51418996fa05c660dcc201c",
+      "bytes": 132
+    },
+    "execution2/local-gatekeeper-assess.stderr": {
+      "sha256": "2b7f498ac8f064d43de24562a9344a9124691777068b0e92f41c5fe72f7e8909",
+      "bytes": 132
+    },
+    "execution2/local-flat-bin-mlx.metallib-display.stderr": {
+      "sha256": "1ad595d2db0e8ee5407f2cf44e6762c28e37329f0e22d0375dc559cbf4899f18",
+      "bytes": 129
+    },
+    "execution2/local-unsigned-cli-display.stderr": {
+      "sha256": "4b0a7a37c8df4e96664a8c6dfaffe30d726567be5b4daf12da66adb320ef5699",
+      "bytes": 895
+    },
+    "execution2/terminal-full-logs.stdout": {
+      "sha256": "3439174427d6adb3b3c97df1cadd60d7b7d677c469dae9bddb7c573987069d3a",
+      "bytes": 367280
+    },
+    "execution1/terminal-failure-logs.stdout": {
+      "sha256": "fa18b7eb421b30e129b47896632969539a19706e70a4160131a7dc4a75929343",
+      "bytes": 58961
+    }
+  },
+  "transformations": {
+    "run-summary.json": "Explicit allowlist projection of execution2/final-receipt.json; no host or actor metadata",
+    "prior-failure.json": "Explicit allowlist projection of execution1/final-receipt.json",
+    "signing-identity.json": "Public identity fields only; private-key-check descriptive field omitted",
+    "notary-result.json": "JSON content preserved; submission ID is not a device ID",
+    "keychain-cleanup.json": "JSON content preserved; no keychain paths or material",
+    "artifact-verification.json": "Selected provenance, byte hashes, static outcomes and flat-export metadata; paths redacted",
+    "verification-excerpts.txt": "Selected local static outputs, path substitution, unsigned-display field allowlist",
+    "ci-excerpts.txt": "Five successful CI lines and one original failure line only; runner path substitution",
+    "git-inclusion.json": "Local Git tracked-or-stage-ready audit for report, index and complete evidence set"
+  },
+  "excluded_payloads": [
+    "apps",
+    "binaries",
+    "artifact archives",
+    "private keys",
+    "public certificate files",
+    "provisioning profiles",
+    "device identifiers",
+    "credentials",
+    "full CI logs"
+  ],
+  "retained_identifiers": "Reviewed source/workflow/submodule hashes, CI run/job/artifact IDs, public signing identity/team/fingerprint and Apple notarization submission ID only",
+  "host_contact_during_banking": false,
+  "model_execution_during_banking": false
+}

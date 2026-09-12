@@ -734,7 +734,11 @@ func TestPreludeDefersRemoteMediaResolution(t *testing.T) {
 	if !ok {
 		t.Fatalf("prelude unexpectedly failed: %s", w.Body.String())
 	}
-	if !bytes.Contains(prelude.rawBody, []byte("http://")) {
+	rawBody, err := prelude.body.current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(rawBody, []byte("http://")) {
 		t.Errorf("prelude inlined the remote URL; media resolution must be deferred to post-billing")
 	}
 	if n := atomic.LoadInt32(&hits); n != 0 {

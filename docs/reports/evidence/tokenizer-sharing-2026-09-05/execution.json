@@ -1,0 +1,52 @@
+{
+  "scope": "One ordered pair in CPU-quiet window; OS file cache uncontrolled; cold means in-process contract/tokenizer load, not cold disk",
+  "proof_sha256": "b42a8b93c49deec7d045c59dde887d61d4200e132e27f8bacdd95900ddf48ef5",
+  "runs": [
+    {
+      "name": "baseline",
+      "command": [
+        "/tmp/darkbloom-release-090/tokenizer-sharing-loadproof",
+        "--binary",
+        "/tmp/darkbloom-release-090/renderer-v3-loadproof/promptsidecar-release",
+        "--artifact-root",
+        "/private/tmp/darkbloom-release-090/prompt-artifacts",
+        "--vectors",
+        "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/fixtures/prompt-contract/v1/production_vectors.json",
+        "--duration",
+        "15s",
+        "--qps",
+        "25",
+        "--max-rss-mib",
+        "1024",
+        "--max-rss-growth-mib",
+        "128"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 20.535812209,
+      "binary_sha256": "80ba1b36cdeb86a44ef67e5c3cd1017f9f79580df910bc9a9bf654e9690522c9"
+    },
+    {
+      "name": "candidate",
+      "command": [
+        "/tmp/darkbloom-release-090/tokenizer-sharing-loadproof",
+        "--binary",
+        "/tmp/darkbloom-release-090/tokenizer-sharing/promptsidecar-candidate",
+        "--artifact-root",
+        "/private/tmp/darkbloom-release-090/prompt-artifacts",
+        "--vectors",
+        "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/fixtures/prompt-contract/v1/production_vectors.json",
+        "--duration",
+        "15s",
+        "--qps",
+        "25",
+        "--max-rss-mib",
+        "1024",
+        "--max-rss-growth-mib",
+        "128"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 18.995957250000004,
+      "binary_sha256": "ffcb816830c117a65f092e3651e89ad5f8943f188f2d86185b5ad8f063bf4371"
+    }
+  ]
+}

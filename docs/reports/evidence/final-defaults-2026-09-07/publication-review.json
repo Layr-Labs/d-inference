@@ -1,0 +1,129 @@
+{
+  "reviewer": "sustained_finish",
+  "reviewed_utc": "2026-09-07T02:49:00.197843+00:00",
+  "status": "DEFAULTS139_PUBLICATION_REVIEW_PASS",
+  "capsule_sha256": "d770114edaabb71417e28f60bd5bed82ff4aaa9acf36af8620d342338dc87a58",
+  "report_sha256": "38ed8ea6a88e58e6bcc9a3848dbaf242d906fc68702b36051edb7770a9ec1b2c",
+  "manifest_sha256": "cda2d308b2f3e9245d9c5686bbbd4888f3a1454c5456355ab48d92b0fe7ac0d1",
+  "evidence_sha256": "a1954c6e795d88c8d8466c92790fa07459039e7d6316294008a90114dde4d4c9",
+  "verified_capsule_members": 65,
+  "verified_original_files": 425,
+  "models": [
+    {
+      "model": "qwen36",
+      "requests": [
+        {
+          "case": "cold",
+          "completion_tokens": 64,
+          "prompt_tokens": 5503,
+          "mtp_active": true,
+          "ssd_tokens_saved": 0,
+          "content": "",
+          "reasoning": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Input Text:** A highly repetitive paragraph about a committee reviewing regional water infrastructure. It mentions: reservoir levels recovered after spring rain, agricultural demand rose, engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection."
+        },
+        {
+          "case": "repeat",
+          "completion_tokens": 64,
+          "prompt_tokens": 5503,
+          "mtp_active": true,
+          "ssd_tokens_saved": 4096,
+          "content": "",
+          "reasoning": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Input Text:** A highly repetitive paragraph about a committee reviewing regional water infrastructure. It mentions: reservoir levels recovered after spring rain, agricultural demand rose, engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection."
+        }
+      ]
+    },
+    {
+      "model": "qwen35",
+      "requests": [
+        {
+          "case": "cold",
+          "completion_tokens": 64,
+          "prompt_tokens": 5503,
+          "mtp_active": true,
+          "ssd_tokens_saved": 0,
+          "content": "",
+          "reasoning": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Input: A text that is heavily repetitive (the same paragraph is repeated many times).\n    *   Task: Summarize the proposed work in three sentences.\n    *   Constraint: The summary must be exactly three sentences."
+        },
+        {
+          "case": "repeat",
+          "completion_tokens": 64,
+          "prompt_tokens": 5503,
+          "mtp_active": true,
+          "ssd_tokens_saved": 4096,
+          "content": "",
+          "reasoning": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Input: A text that is heavily repetitive (the same paragraph is repeated many times).\n    *   Task: Summarize the proposed work in three sentences.\n    *   Constraint: The summary must be exactly three sentences."
+        }
+      ]
+    },
+    {
+      "model": "qwen38",
+      "requests": [
+        {
+          "case": "cold",
+          "completion_tokens": 64,
+          "prompt_tokens": 5545,
+          "mtp_active": true,
+          "ssd_tokens_saved": 0,
+          "content": "",
+          "reasoning": "We need to respond to user: \"The committee reviewed regional water infrastructure... [repeated many times] ... The committee reviewed regional water infrastructure. Reservoir levels recovered after spring rain while agricultural demand rose. Engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection. The council requested costs, schedules, and"
+        },
+        {
+          "case": "repeat",
+          "completion_tokens": 64,
+          "prompt_tokens": 5545,
+          "mtp_active": true,
+          "ssd_tokens_saved": 4096,
+          "content": "",
+          "reasoning": "We need to respond to user: \"The committee reviewed regional water infrastructure... [repeated many times] ... The committee reviewed regional water infrastructure. Reservoir levels recovered after spring rain while agricultural demand rose. Engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection. The council requested costs, schedules, and"
+        }
+      ]
+    },
+    {
+      "model": "gpt-oss-20b",
+      "requests": [
+        {
+          "case": "cold",
+          "completion_tokens": 64,
+          "prompt_tokens": 5454,
+          "mtp_active": false,
+          "ssd_tokens_saved": 0,
+          "content": "",
+          "reasoning": "The user pasted a repetitive paragraph many times. They want a summary of the proposed work in three sentences. The content: committee reviewed regional water infrastructure; reservoir levels recovered after spring rain while agricultural demand rose; engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection; council requested costs, schedules"
+        },
+        {
+          "case": "repeat",
+          "completion_tokens": 64,
+          "prompt_tokens": 5454,
+          "mtp_active": false,
+          "ssd_tokens_saved": 0,
+          "content": "",
+          "reasoning": "The user pasted a repetitive paragraph many times. They want a summary of the proposed work in three sentences. The content: committee reviewed regional water infrastructure; reservoir levels recovered after spring rain while agricultural demand rose; engineers proposed staged pumping station upgrades, canal maintenance, and acoustic leak detection; council requested costs, schedules"
+        }
+      ]
+    },
+    {
+      "model": "gemma-4-26b-qat-4bit",
+      "requests": [
+        {
+          "case": "cold",
+          "completion_tokens": 64,
+          "prompt_tokens": 5399,
+          "mtp_active": false,
+          "ssd_tokens_saved": 0,
+          "content": "Engineers have proposed a series of infrastructure improvements, including staged upgrades to pumping stations and regular maintenance of canals. Additionally, the plan incorporates the use of acoustic leak detection to improve system monitoring. The council has requested detailed cost estimates, project schedules, and an assessment of potential risks to downstream users during the construction phase.",
+          "reasoning": ""
+        },
+        {
+          "case": "repeat",
+          "completion_tokens": 64,
+          "prompt_tokens": 5399,
+          "mtp_active": false,
+          "ssd_tokens_saved": 0,
+          "content": "Engineers have proposed a series of infrastructure improvements, including staged upgrades to pumping stations and regular maintenance of canals. Additionally, the plan incorporates the use of acoustic leak detection to improve system monitoring. The council has requested detailed cost estimates, project schedules, and an assessment of potential risks to downstream users during the construction phase.",
+          "reasoning": ""
+        }
+      ]
+    }
+  ],
+  "scope": "Final automatic paged/MTP and ephemeral SSD repeat behavior verified;64-token cap means no general answer-quality or production-key restart/two-provider routing claim. QAT coherent proposed wording does not erase older caveat."
+}

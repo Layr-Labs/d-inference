@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -30,6 +31,13 @@ func sanitizeProviderInferenceError(msg *protocol.InferenceErrorMessage) (safe p
 	safe.Type = protocol.TypeInferenceError
 	safe.RequestID = msg.RequestID
 	safe.AttemptUsage = msg.AttemptUsage
+	// The provider profile is carried through as an opaque byte copy, exactly
+	// like AttemptUsage: it is NOT read here. It is length-checked on the read
+	// loop and decoded/validated on the profile sink worker
+	// (api/profiler_provider.go), after the terminal has been processed.
+	if msg.Profile != nil {
+		safe.Profile = append(json.RawMessage(nil), msg.Profile...)
+	}
 	safe.FailureCode = msg.FailureCode
 	legacyFrame := safe.FailureCode == ""
 	if !safe.FailureCode.Valid() {
@@ -118,7 +126,8 @@ func legacyInferenceFailureCode(status int, reason, terminalCause string) protoc
 		errorReasonRequestExceedsNodeBudget,
 		errorReasonRequestExceedsBatchBudget,
 		errorReasonCapacityBusy,
-		errorReasonDeadlineUnreachable:
+		errorReasonDeadlineUnreachable,
+		errorReasonDraining:
 		return protocol.FailureCodeCapacity
 	case errorReasonCancelled:
 		return protocol.FailureCodeCancelled
@@ -271,7 +280,8 @@ func safeInferenceErrorReason(code protocol.InferenceFailureCode, supplied strin
 			errorReasonRequestExceedsNodeBudget,
 			errorReasonRequestExceedsBatchBudget,
 			errorReasonCapacityBusy,
-			errorReasonDeadlineUnreachable:
+			errorReasonDeadlineUnreachable,
+			errorReasonDraining:
 			return reason
 		default:
 			return errorReasonCapacityTimeout
@@ -297,7 +307,7 @@ func safeInferenceErrorReason(code protocol.InferenceFailureCode, supplied strin
 // coordinator-synthetic or directly-constructed messages that did not traverse
 // the provider read-loop sanitizer.
 func clientSafeInferenceErrorMessage(msg protocol.InferenceErrorMessage) string {
-	if msg.CoordinatorCause == protocol.CoordinatorCauseProviderDisconnected {
+	if msg.CoordinatorCause.IsProviderDisconnect() {
 		return "provider disconnected"
 	}
 	if msg.FailureCode.Valid() {
@@ -311,14 +321,21 @@ func clientSafeInferenceErrorMessage(msg protocol.InferenceErrorMessage) string 
 // delivery. It preserves the one non-wire coordinator cause and otherwise
 // applies the same provider ingress boundary.
 func normalizeInferenceErrorForInternalUse(msg protocol.InferenceErrorMessage) protocol.InferenceErrorMessage {
-	if msg.CoordinatorCause == protocol.CoordinatorCauseProviderDisconnected {
+	if msg.CoordinatorCause.IsProviderDisconnect() {
+		// The abrupt flush carries no reason and stays provider_error; the
+		// graceful restart flush keeps its coordinator-internal
+		// provider_restart marker (health-neutral through the reason funnel).
+		reason := errorReasonProviderError
+		if msg.CoordinatorCause == protocol.CoordinatorCauseProviderRestart {
+			reason = errorReasonProviderRestart
+		}
 		return protocol.InferenceErrorMessage{
 			Type:             protocol.TypeInferenceError,
 			RequestID:        msg.RequestID,
 			Error:            "provider disconnected",
 			StatusCode:       http.StatusBadGateway,
-			ErrorReason:      errorReasonProviderError,
-			CoordinatorCause: protocol.CoordinatorCauseProviderDisconnected,
+			ErrorReason:      reason,
+			CoordinatorCause: msg.CoordinatorCause,
 			AttemptUsage:     msg.AttemptUsage,
 		}
 	}

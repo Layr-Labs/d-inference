@@ -36,7 +36,19 @@ const (
 	// on the normal bounded-failover path, NEVER in the terminal client-error
 	// stop set (see isTerminalClientErrorCode).
 	errorReasonToolNoncompliance = "tool_noncompliance"
-	errorReasonUnknown           = "unknown"
+	// errorReasonDraining (R2): the provider's typed refusal because it is
+	// draining ahead of a restart/update. Transient capacity for failover
+	// (another provider serves) that consumes NO transient-capacity retry,
+	// derates NO gray-box state, and marks the provider draining
+	// (registry.MarkDraining) so the next scan skips it.
+	errorReasonDraining = protocol.InferenceErrorReasonDraining
+	// errorReasonProviderRestart (R1): coordinator-internal marker stamped by
+	// the registry on the pending-request flush of a GRACEFUL peer close
+	// (restart/stop/update). Health-neutral through
+	// isProviderHealthNeutralErrorReason; never accepted from the wire
+	// (safeInferenceErrorReason does not emit it).
+	errorReasonProviderRestart = protocol.InferenceErrorReasonProviderRestart
+	errorReasonUnknown         = "unknown"
 )
 
 // errorClassClientError is the route-outcome error_class for a DETERMINISTIC
@@ -100,7 +112,25 @@ func isDeadlineUnreachableErrorReason(reason string) bool {
 // supplied remaining SLA, not provider sickness or capacity dishonesty.
 func isProviderHealthNeutralErrorReason(reason string) bool {
 	return isNonProviderFaultErrorReason(reason) ||
-		isDeadlineUnreachableErrorReason(reason)
+		isDeadlineUnreachableErrorReason(reason) ||
+		isProviderRestartErrorReason(reason)
+}
+
+// isProviderRestartErrorReason reports whether reason is the coordinator-
+// internal provider_restart marker the registry stamps on the flushed
+// terminals of a GRACEFUL peer close (registry.DisconnectWithReason). The
+// requests fail over like any disconnect, but the terminal is health-neutral:
+// no breaker/cooldown/ejection strike, no clear. An abrupt drop's flush
+// carries no reason and keeps striking (the zombie discriminator).
+func isProviderRestartErrorReason(reason string) bool {
+	return normalizeInferenceErrorReason(reason) == errorReasonProviderRestart
+}
+
+// isDrainingErrorReason reports whether reason is the provider's typed
+// draining refusal (R2): transient capacity that consumes no capacity retry
+// and derates nothing; the provider is marked draining instead.
+func isDrainingErrorReason(reason string) bool {
+	return normalizeInferenceErrorReason(reason) == errorReasonDraining
 }
 
 // Final-status values persisted on inference_routes (store.InferenceRouteOutcome
@@ -132,6 +162,8 @@ var validInferenceErrorReasons = map[string]struct{}{
 	errorReasonProviderError:             {},
 	errorReasonClientError:               {},
 	errorReasonToolNoncompliance:         {},
+	errorReasonDraining:                  {},
+	errorReasonProviderRestart:           {},
 	errorReasonUnknown:                   {},
 }
 
@@ -150,19 +182,12 @@ func (s *Server) updateInferenceRouteOutcomeWithModel(requestID string, attempt 
 		return
 	}
 	s.emitInferenceErrorMetric(model, outcome)
-	s.submitTelemetry("updateInferenceRoute", func() {
-		if err := s.store.UpdateInferenceRouteOutcome(requestID, attempt, outcome); err != nil && s.logger != nil {
-			s.logger.Error("inference_routes outcome update failed",
-				"request_id", requestID,
-				"attempt", attempt,
-				"model", model,
-				"final_status", outcome.FinalStatus,
-				"error_class", outcome.ErrorClass,
-				"error_reason", outcome.ErrorReason,
-				"error", err,
-			)
-		}
-	})
+	s.emitAttemptOutcomeMetric(model, outcome)
+	s.emitCommittedRequestOutcomeORView(model, outcome)
+	s.emitTimingDecompositionMetric(model, outcome.FinalStatus, outcome)
+	// Off the request path: the batching sink pipelines this update with its
+	// neighbours after the group's route inserts (route_telemetry_submit.go).
+	s.submitRouteOutcome(requestID, attempt, model, outcome)
 }
 
 func (s *Server) emitInferenceErrorMetric(model string, outcome *store.InferenceRouteOutcome) {
@@ -184,6 +209,18 @@ func (s *Server) updateInferenceRouteOutcomeForPending(pr *registry.PendingReque
 	if terminal {
 		if !pr.MarkRouteOutcomeFinalized() {
 			return
+		}
+		if ap := pr.Profile; ap != nil {
+			ap.SetOutcome(outcome.FinalStatus, profileErrorReason(outcome), "", "", "")
+			// Consumer-side synthetic terminals ARE the terminal half; a success
+			// outcome is written at commit time and must wait for the provider's
+			// terminal so the record carries settlement stamps and its profile.
+			// A terminal already claimed by a provider frame is completed by
+			// that frame once its provider outcome is written, so the record is
+			// never built with an empty provider_outcome in between.
+			if outcome.FinalStatus != finalStatusSuccess {
+				ap.CompleteTerminalUnlessClaimed()
+			}
 		}
 		// Consumer-side synthetic terminals (notably registry.Disconnect's
 		// ErrorCh delivery, local timeout, and grace expiry) do not pass through a
@@ -234,6 +271,22 @@ func committedRouteOutcome(pr *registry.PendingRequest) *store.InferenceRouteOut
 	return out
 }
 
+// profileErrorReason is the reason vocabulary request_profiles.error_reason
+// carries: the routes row's specific closed error_class when one was recorded
+// (queue_timeout, first_chunk_timeout, speculative_loser, …), falling back to
+// the normalized error_reason. Every profile writer (this funnel, the
+// provider terminal path, closeUndispatchedAttempt via dispatchErrorClass and
+// the queue exits) therefore speaks the error_class vocabulary.
+func profileErrorReason(outcome *store.InferenceRouteOutcome) string {
+	if outcome == nil {
+		return ""
+	}
+	if outcome.ErrorClass != "" {
+		return outcome.ErrorClass
+	}
+	return outcome.ErrorReason
+}
+
 func pendingRouteOutcome(pr *registry.PendingRequest, status, class string, code int) *store.InferenceRouteOutcome {
 	out := pendingRouteOutcomeWithReason(pr, status, class, code, "", "")
 	return out
@@ -256,12 +309,8 @@ func providerFailedPendingRouteOutcomeWithReason(pr *registry.PendingRequest, st
 	return out
 }
 
-func dispatchFailedPendingRouteOutcome(pr *registry.PendingRequest, class string, code int) *store.InferenceRouteOutcome {
-	return pendingRouteOutcome(pr, finalStatusError, class, code)
-}
-
 func providerDisconnectedError(msg protocol.InferenceErrorMessage) bool {
-	return msg.CoordinatorCause == protocol.CoordinatorCauseProviderDisconnected
+	return msg.CoordinatorCause.IsProviderDisconnect()
 }
 
 // applyAttemptUsage copies a typed error terminal's provider-reported partial
@@ -444,8 +493,8 @@ func applyPendingRouteTelemetry(out *store.InferenceRouteOutcome, pr *registry.P
 	if out == nil || pr == nil {
 		return
 	}
-	out.UsedBackup = pr.UsedBackup
-	out.BackupWon = pr.BackupWon
+	out.BackupWon = pr.BackupWon.Load()
+	out.UsedBackup = pr.UsedBackup.Load()
 	if pr.Timing == nil {
 		return
 	}

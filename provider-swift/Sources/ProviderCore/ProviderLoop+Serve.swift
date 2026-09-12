@@ -30,7 +30,7 @@ extension ProviderLoop {
 
         // Maintain the entire encrypted SSD-cache root even when no model is
         // loaded. This is metadata/file-only work: no weights or KV arrays are
-        // constructed. It closes TTL and 20 GiB budget gaps for unloaded dirs.
+        // constructed. It closes TTL and shared disk-budget gaps for unloaded dirs.
         SSDPrefixCacheFactory.startWholeRootMaintenance()
         defer { SSDPrefixCacheFactory.stopWholeRootMaintenance() }
 
@@ -73,6 +73,7 @@ extension ProviderLoop {
         // can perform the first normal cold target load. This never downloads
         // assistant bytes and fails open on timeout.
         await prewarmSpecDecCatalog()
+        startMTPUpgradeMonitor()
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
         // models. It starts after the bounded metadata prewarm, but still before
@@ -156,7 +157,8 @@ extension ProviderLoop {
             runtimeCapabilities: loopConfig.runtimeCapabilities,
             privateOnly: loopConfig.config.coordinator.privateOnly,
             apnsDeviceToken: apnsDeviceToken,
-            apnsEnvironment: apnsDeviceToken != nil ? "production" : nil
+            apnsEnvironment: apnsDeviceToken != nil ? "production" : nil,
+            idleUnloadMins: loopConfig.config.backend.idleTimeoutMins
         )
 
         // 4. Create coordinator client and start connection
@@ -229,6 +231,11 @@ extension ProviderLoop {
                 switch event {
                 case .connected:
                     logger.info(.coordinatorConnected)
+                    // The post-retirement reconnect's admission barrier
+                    // (see `fireRetirementReconnect`) lifts with the new
+                    // session: the register it carried excluded every
+                    // retired id, so routed work is safe to admit again.
+                    setRetirementReconnectBarrier(false)
 
                 case .disconnected:
                     logger.warning(.coordinatorDisconnected)
@@ -239,8 +246,10 @@ extension ProviderLoop {
                 case .inferenceRequest(
                     let requestId, let ciphertext, let senderPublicKey,
                     let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
+                    let cacheReceiptBoundaryMode,
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
-                    let receivedAt
+                    let receivedAt,
+                    let profile
                 ):
                     await handleInferenceRequest(
                         requestId: requestId,
@@ -249,9 +258,11 @@ extension ProviderLoop {
                         cacheReceiptNonce: cacheReceiptNonce,
                         authenticatedCacheScope: cacheScope,
                         prefixCacheProtocol: prefixCacheProtocol,
+                        cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
                         toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
                         firstContentDeadline: firstContentDeadline,
                         receivedAt: receivedAt,
+                        profile: profile,
                         send: send
                     )
 
@@ -311,6 +322,9 @@ extension ProviderLoop {
         // `slot_state` rejections for the brief window the socket stays up.
         state.refusingNewWork = true
         idleMonitorTask?.cancel()
+        // A pending post-retirement reconnect must not re-register a
+        // session shutdown is closing (its shutdown check has a hop).
+        pendingRetirementReconnect?.cancel()
         idleMonitorTask = nil
         capacityRefreshTask?.cancel()
         trailingHeartbeatTask?.cancel()
@@ -323,7 +337,11 @@ extension ProviderLoop {
         for task in desiredPrefetchRetryTasks.values { task.cancel() }
         desiredPrefetchRetryTasks.removeAll()
         desiredPrefetchRetryAttempts.removeAll()
+        let mtpUpgradeTask = mtpUpgradeMonitorTask
+        mtpUpgradeMonitorTask = nil
+        mtpUpgradeTask?.cancel()
         await specDecFunnel.shutdown()
+        await mtpUpgradeTask?.value
         // Cancel background prefetch downloads (no GPU slot, but they hold a
         // network connection and disk staging we want to release promptly).
         if let prefetchCoordinator {

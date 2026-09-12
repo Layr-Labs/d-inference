@@ -1,0 +1,48 @@
+{
+  "backend_gate": "passed",
+  "cache_gate": "passed",
+  "capsule_members": 143,
+  "excluded_cache_payloads": 7,
+  "files": {
+    "backend-comparison.json": {
+      "bytes": 1616,
+      "sha256": "5f354311d053f6631d4d25232951c9f8bc6c6bb2e326bcbf875b4996a451c659"
+    },
+    "cache-comparison.json": {
+      "bytes": 1593,
+      "sha256": "402126d944718764e31c0c4e44cd71da0110b90eab9c91397c0bc3fed658a90e"
+    },
+    "capsule-receipt.json": {
+      "bytes": 26874,
+      "sha256": "b7fd0e1721901f8d3a996e65cfc244ad87492963e713a3603f1dc4448bde2fb0"
+    },
+    "review-capsule.tar.gz": {
+      "bytes": 5535512,
+      "sha256": "194cbcb211f5fec4a3ec3b9f456e7211d95e189bc40bf35a8f5492a28f7c97a1"
+    },
+    "review-summary.json": {
+      "bytes": 2992,
+      "sha256": "22136890247e2622762cb26f0632e7a08ed9bfa08a53968bafd1fb75bcb5c938"
+    }
+  },
+  "forward_shape_errors": {
+    "contiguous-cache-off": [],
+    "paged-cache-off": [],
+    "paged-cache-on": []
+  },
+  "full_archive": {
+    "bytes": 2637398462,
+    "path": "/Users/gaj/autoresearch/radix-prefix-cache/101-qwen-first-pilot2/attempt-1/evidence.tar.gz",
+    "sha256": "134060b093c9b2c0ea8e6b1d13883d1f37cfa233f3dd6f12b9afc83554d5ab36",
+    "verified_on_host": true
+  },
+  "model_aggregate": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+  "native": "f2d79145e040bbc28c6e0e355a19bc8923a70434",
+  "prior_failed_archive_sha256": "e927b49bc1397dc2939a596796f271d66b60fedc0db4d213fe9f87d01115ef30",
+  "prior_failure_preserved": true,
+  "resident_bank_enabled": false,
+  "same_id_measured_outputs_equal": true,
+  "schema": "darkbloom.qwen38-b2-coordinated-read-evidence.v1",
+  "scope": "One Qwen3.8 retained B2 triad; not B4, repeated/sustained performance, HTTP, persistence or release approval",
+  "source_parent": "35fea6d0e3b05ff65d60d9675ab480159913ac62"
+}

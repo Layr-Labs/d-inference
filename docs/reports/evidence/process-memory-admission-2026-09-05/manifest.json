@@ -1,0 +1,731 @@
+{
+  "schema": 1,
+  "scope": "Optional native paged process owner, typed atomic provider model-load claims, coherent capacity readers and actual allocator integration. Production factory binding and preallocation allocator footprint sizing remain open.",
+  "parent_base": "51e210e143cc17cccc63df2eafcbacd65a50389c",
+  "native_commit": "f93134e537c594f6b5c69fb08115062c205cf655",
+  "native_unique_functions": 135,
+  "native_actual_cases": 169,
+  "provider_unique_functions": 195,
+  "provider_actual_cases": 196,
+  "archive": {
+    "path": "payloads.tar.gz",
+    "bytes": 1392071,
+    "sha256": "9ee5fdf9704d878dcafe35a5def0bc15f358806718a252d013102b5d394fbcbe"
+  },
+  "entries": [
+    {
+      "path": "native/manifest.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/manifest.json",
+      "bytes": 6294,
+      "sha256": "d9a0bceae57c83d03865b2dc214791acb08396678fa767f1ea5e0e6769a40043"
+    },
+    {
+      "path": "native/CBv2CheckpointAdmissionTransferTests.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/CBv2CheckpointAdmissionTransferTests.log",
+      "bytes": 1412,
+      "sha256": "0f4c798339218dcb6b8d28400ce0adc8c96e55f46a78c03bda3be72aa34c4c14"
+    },
+    {
+      "path": "native/CBv2CompleteCheckpointTests.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/CBv2CompleteCheckpointTests.log",
+      "bytes": 2126,
+      "sha256": "b4efe115eefd7be21aa82c54548a1b145002e919c9c66881367aa33af8961fbe"
+    },
+    {
+      "path": "native/CBv2KVResizeTests.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/CBv2KVResizeTests.log",
+      "bytes": 1468,
+      "sha256": "b045c2900620151df642b8b4e5416be32b28311907464e092bd90dfbbe7a2a4c"
+    },
+    {
+      "path": "native/CBv2PagedAdmissionTests.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/CBv2PagedAdmissionTests.log",
+      "bytes": 3015,
+      "sha256": "56b043f46aa2fbd302889e5fd793e73709c1bd7a3b6418d603f99d9190c217ce"
+    },
+    {
+      "path": "native/CBv2PagedBackendTests.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/CBv2PagedBackendTests.log",
+      "bytes": 7740,
+      "sha256": "1c930e2ab3659d7d500006ebb418b9bccb224422e7e3ca46ee24cb351d52a569"
+    },
+    {
+      "path": "native/CBv2PagedCheckpointAdoptionTests.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/CBv2PagedCheckpointAdoptionTests.log",
+      "bytes": 2835,
+      "sha256": "66988805e0de711de4b97ba6016ac79cd1ce40179f3a17b209ab49af1b1aa7a6"
+    },
+    {
+      "path": "native/CBv2PagedCheckpointStorageTests.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/CBv2PagedCheckpointStorageTests.log",
+      "bytes": 2553,
+      "sha256": "da084a0edcf8cea182e557186beca5f79b045bfec58066cd6ceff967f3c1a5ce"
+    },
+    {
+      "path": "native/CBv2PagedGrantTests.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/CBv2PagedGrantTests.log",
+      "bytes": 1396,
+      "sha256": "e45edf0b09f74fad000586d6c95afb31daf458f98ff1673edbe0a7b01d94e0f3"
+    },
+    {
+      "path": "native/CBv2PagedPrefixBlockCacheTests.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/CBv2PagedPrefixBlockCacheTests.log",
+      "bytes": 1786,
+      "sha256": "220eb4a2b80a893e9862814fec0f729ddedaa91a7b2c80dd4915c8e1f9ace228"
+    },
+    {
+      "path": "native/CBv2PagedSegmentTests.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/CBv2PagedSegmentTests.log",
+      "bytes": 4428,
+      "sha256": "8037e890deb85534222e854c096863804068864bda342408bbdff3aca41ccb0e"
+    },
+    {
+      "path": "native/CBv2PagedSpeculativeRowTests.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/CBv2PagedSpeculativeRowTests.log",
+      "bytes": 1952,
+      "sha256": "34759589a2c3c049d112274dcd64a30e8604c0756bec815882c580c31ab05b74"
+    },
+    {
+      "path": "native/CBv2PagedStorageTelemetryTests.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/CBv2PagedStorageTelemetryTests.log",
+      "bytes": 1678,
+      "sha256": "5a2120b2e28075a3f91c327bdf1484460dd0f80ba12d449d9a82f3dbcd95c096"
+    },
+    {
+      "path": "native/CBv2ProcessMemoryOwnershipTests.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/CBv2ProcessMemoryOwnershipTests.log",
+      "bytes": 2254,
+      "sha256": "388fc1b984155108ff9e2d8724a4672dd7c5d7e17526a3c8ac5007d5441c17f2"
+    },
+    {
+      "path": "native/CBv2RecurrentStateTests.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/CBv2RecurrentStateTests.log",
+      "bytes": 4645,
+      "sha256": "201570ea612bc488f9e3e536e7b5c6c581516bf9bc8a0fc5cdc07b297ac8621d"
+    },
+    {
+      "path": "native/CBv2SchedulerAdmissionTests.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/CBv2SchedulerAdmissionTests.log",
+      "bytes": 6681,
+      "sha256": "e9e7588d78d7a7e1fb1a72bea8508d5411b88d7256514defa21aee1ff777d6f1"
+    },
+    {
+      "path": "native/actual-build-graph.yaml.gz",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/actual-build-graph.yaml.gz",
+      "bytes": 318087,
+      "sha256": "73e210396cbed77c16de3a44f449e5a7ef283a404cf481d00a61e7a4c8fd143d"
+    },
+    {
+      "path": "native/actual-compiler-source-proof.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/actual-compiler-source-proof.json",
+      "bytes": 38746,
+      "sha256": "be0ada4e91b4a53097e04c0a48db51cfcd592d70cd249d597db703b729e77988"
+    },
+    {
+      "path": "native/actual-package-state.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/actual-package-state.json",
+      "bytes": 17102,
+      "sha256": "3b8a6a002bc3feb940f64cae4ae9617025cdc700913c2beac82817e1876e478f"
+    },
+    {
+      "path": "native/build.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/build.log",
+      "bytes": 557643,
+      "sha256": "4cc93acee4d1b3610fb65ac6f47fbb1870d51784b1f2c6fa7f80c16c66cb7d0c"
+    },
+    {
+      "path": "native/candidate.patch",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/candidate.patch",
+      "bytes": 36288,
+      "sha256": "1310a0c44cea0027e5c69d9b60ffb9145ff8fde19d4740d9ef9911730fd552d4"
+    },
+    {
+      "path": "native/dependency-pins.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/dependency-pins.json",
+      "bytes": 170,
+      "sha256": "1cc525bf810980b07bcb385a1eb4e86ef9ccdac9f16b46cebb638c7bcb244de8"
+    },
+    {
+      "path": "native/dependency-source-manifest.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/dependency-source-manifest.json",
+      "bytes": 161404,
+      "sha256": "ba49bc1b2b1b13f5db84b8de6439fc48aeaed8736a882dc52f59b18a513fa6b7"
+    },
+    {
+      "path": "native/environment.txt",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/environment.txt",
+      "bytes": 333,
+      "sha256": "476087c5f0b442dda0ef531db23ce16cbe816f9ae14b996ecb927f62f43a4b67"
+    },
+    {
+      "path": "native/execution.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/execution.json",
+      "bytes": 7002,
+      "sha256": "3a61e162c30019a80cc4d06bb36b033b198dc5358234664daeeb551b01e7fc58"
+    },
+    {
+      "path": "native/filters.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/filters.json",
+      "bytes": 489,
+      "sha256": "6de043bb90e2d895114ba8533de4f1a7dcffe58e255dfa24dfb093c62f94561e"
+    },
+    {
+      "path": "native/identifiers.log",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/identifiers.log",
+      "bytes": 128921,
+      "sha256": "4961691c6b9376aa2cdeef3df24243b1d102841aca92c3c1ad149907abdaad74"
+    },
+    {
+      "path": "native/manifest-overlay.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/manifest-overlay.json",
+      "bytes": 566,
+      "sha256": "97eb0df7f9f59307758f86354f7ecc9a453e133242efc4de4faa779cf06e14c7"
+    },
+    {
+      "path": "native/metallib-placement.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/metallib-placement.json",
+      "bytes": 567,
+      "sha256": "fecfb5fb72019ad5650cb5584abbd5c979f525ae44be1ef0615edfb21a3b2c6e"
+    },
+    {
+      "path": "native/owned-manifest.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/owned-manifest.json",
+      "bytes": 2691,
+      "sha256": "1e2b3da2ba5eabb87bdd4264ff674be6aecd3880a8830f5764fba15b04d8dfd9"
+    },
+    {
+      "path": "native/package-evidence.py",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/package-evidence.py",
+      "bytes": 4911,
+      "sha256": "b17736dadba22934c29a8bfef3e429c612ab13889dae338371a0acee8bae3bf5"
+    },
+    {
+      "path": "native/primary-Package.swift",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/primary-Package.swift",
+      "bytes": 11422,
+      "sha256": "45a9552a8021285dcaabad222bebc2226b4577b48763721a388e2d9719562945"
+    },
+    {
+      "path": "native/primary-baseline.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/primary-baseline.json",
+      "bytes": 57371,
+      "sha256": "852d12a3ad3e6c1f2a8e3da021c574e7b5f591fed2b39323d149a024ed8ee97f"
+    },
+    {
+      "path": "native/run-nested-suite.sh",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/run-nested-suite.sh",
+      "bytes": 3578,
+      "sha256": "14ecf2a47a07c07b2bdc535ac1a6fdd64c674763963a2fa9b86cb07d8feeda48"
+    },
+    {
+      "path": "native/run.py",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/run.py",
+      "bytes": 4371,
+      "sha256": "62ad30d0e40c96bcb57407ba249be8b1f2c4771df4ff36bf0dbcf019a03b3c26"
+    },
+    {
+      "path": "native/selected-identifiers.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/selected-identifiers.json",
+      "bytes": 27579,
+      "sha256": "f95a90e2d23c727fef23da7dba0f8066f4ad461e16d114aa0e268d3b18570031"
+    },
+    {
+      "path": "native/source-manifest.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/source-manifest.json",
+      "bytes": 57854,
+      "sha256": "43b678632827709e990b261d74c08ca46b331f7cb01d430b220936ec3ae78826"
+    },
+    {
+      "path": "native/source-verified-after.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/source-verified-after.json",
+      "bytes": 160,
+      "sha256": "715c6a036c03ed87b6011ff2f0b4a38f562a86955bb19927d726733bc75ee72e"
+    },
+    {
+      "path": "native/source-verified-before.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/source-verified-before.json",
+      "bytes": 160,
+      "sha256": "715c6a036c03ed87b6011ff2f0b4a38f562a86955bb19927d726733bc75ee72e"
+    },
+    {
+      "path": "native/test-binary.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/test-binary.json",
+      "bytes": 270,
+      "sha256": "10b2808108611dfffd4ff79ac29c07118971e9d7ce50fe43c3e3c5f941e19298"
+    },
+    {
+      "path": "native/validation-Package.resolved",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/validation-Package.resolved",
+      "bytes": 8825,
+      "sha256": "4bf9d78d1ce65d7458d881a7f27854da04c728fff7f6fe429a9255e9245ebaef"
+    },
+    {
+      "path": "native/validation-Package.swift",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/validation-Package.swift",
+      "bytes": 11441,
+      "sha256": "aa7a28c02e9565db0c7bb29f9263e8e23520981ce4a7a679632eabfbfb480b23"
+    },
+    {
+      "path": "native/verdict.json",
+      "source": "/tmp/darkbloom-native-process-memory-validation1/verdict.json",
+      "bytes": 4721,
+      "sha256": "f9fb6d68969c63aa8416816c28e285fcd9a2cc5aa453490db1ee158e7ff918ba"
+    },
+    {
+      "path": "provider/manifest.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/manifest.json",
+      "bytes": 5058,
+      "sha256": "c04bac680c3e8706daaf39779b5bf5bc7fa187d13205bd7a81787c52da87c2e2"
+    },
+    {
+      "path": "provider/ProcessMemoryNativeIntegrationTests.swift",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/ProcessMemoryNativeIntegrationTests.swift",
+      "bytes": 8403,
+      "sha256": "a8024fb7cfa2d9dd7d17e871acd5c43a8b16e217cbb58f0cd89efb0c0e595052"
+    },
+    {
+      "path": "provider/actual-build-graph.yaml.gz",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/actual-build-graph.yaml.gz",
+      "bytes": 399478,
+      "sha256": "96c7e0967657771e21e3e88f6b4bf00e7be2234ab92b57cb16bf9cdeb1a667bb"
+    },
+    {
+      "path": "provider/actual-compiler-source-proof.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/actual-compiler-source-proof.json",
+      "bytes": 119553,
+      "sha256": "82269fb1f1fccb83305b75ae60c0196983a3cb2a3a8756967ae9c8239573530d"
+    },
+    {
+      "path": "provider/actual-package-state.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/actual-package-state.json",
+      "bytes": 20785,
+      "sha256": "a5fa03e56ad25ac97452ca6bdeffa0b81c30bef9ccd9cf94ad5b634bb228a6b2"
+    },
+    {
+      "path": "provider/budget.log",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/budget.log",
+      "bytes": 6574,
+      "sha256": "4c1d67753e6a18094a7626cda0c50afd149dc9f678eaba70393308638c365649"
+    },
+    {
+      "path": "provider/build.log",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/build.log",
+      "bytes": 1028755,
+      "sha256": "d4b80fc1ccb2c483a4f2aec3ffcae60e8e938e673361da5fc40147ae0c7f92aa"
+    },
+    {
+      "path": "provider/counts.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/counts.json",
+      "bytes": 799,
+      "sha256": "40160fafa454df58976e8310c0aeee190d47d014e5e8952bd425b6be4017bccd"
+    },
+    {
+      "path": "provider/dependency-pins.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/dependency-pins.json",
+      "bytes": 170,
+      "sha256": "1cc525bf810980b07bcb385a1eb4e86ef9ccdac9f16b46cebb638c7bcb244de8"
+    },
+    {
+      "path": "provider/dependency-source-manifest.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/dependency-source-manifest.json",
+      "bytes": 161404,
+      "sha256": "ba49bc1b2b1b13f5db84b8de6439fc48aeaed8736a882dc52f59b18a513fa6b7"
+    },
+    {
+      "path": "provider/environment.txt",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/environment.txt",
+      "bytes": 333,
+      "sha256": "476087c5f0b442dda0ef531db23ce16cbe816f9ae14b996ecb927f62f43a4b67"
+    },
+    {
+      "path": "provider/execution.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/execution.json",
+      "bytes": 6466,
+      "sha256": "419143bbd2d891894145c4b3d484d65ee36bf4f7cf41b36252f8cc953676c9e4"
+    },
+    {
+      "path": "provider/filters.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/filters.json",
+      "bytes": 4219,
+      "sha256": "c2ce0d9608730e833bfcbf516a9f21d543b25038ed6ec60e536fb2a083d3aab8"
+    },
+    {
+      "path": "provider/identifiers.log",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/identifiers.log",
+      "bytes": 191656,
+      "sha256": "d6cad51717057f676da148c8e7f1e001df37d372f29fee2d44e38241ad9f7327"
+    },
+    {
+      "path": "provider/integration.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/integration.json",
+      "bytes": 799,
+      "sha256": "91fff1adb88556ed88ca182df75e3307a6974af2eafba8666b48a6b4ff157e3d"
+    },
+    {
+      "path": "provider/libs-mlx-swift-lm-Package.swift",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/libs-mlx-swift-lm-Package.swift",
+      "bytes": 11422,
+      "sha256": "45a9552a8021285dcaabad222bebc2226b4577b48763721a388e2d9719562945"
+    },
+    {
+      "path": "provider/load-lifecycle.log",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/load-lifecycle.log",
+      "bytes": 13099,
+      "sha256": "eef33a1f7da79900e709da48ce1e9a1abebd86668a582b9e72108f49f6a55da7"
+    },
+    {
+      "path": "provider/new-test-review-manifest.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/new-test-review-manifest.json",
+      "bytes": 773,
+      "sha256": "57dbfd7af040924a2c1792b62858a570ef8fec5fd7d7bc104b27a808c2f35ee8"
+    },
+    {
+      "path": "provider/owned-manifest.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/owned-manifest.json",
+      "bytes": 4920,
+      "sha256": "2a3aaf83cbd06056542c24fa61ab88e653ee3524fa761c563a458063cc7dee73"
+    },
+    {
+      "path": "provider/owned-production-baseline.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/owned-production-baseline.json",
+      "bytes": 4718,
+      "sha256": "9830bda7c83ee791fd871ef4db7b7f6338f83f0bb30ae2535c9d01fd9f508f2e"
+    },
+    {
+      "path": "provider/policy-loadgate.log",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/policy-loadgate.log",
+      "bytes": 6995,
+      "sha256": "fe9293bd2948a99f9be37e0b1cbf12e74c18287a5f8a377806467cfef5393b19"
+    },
+    {
+      "path": "provider/process.log",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/process.log",
+      "bytes": 5591,
+      "sha256": "2aed440be3b9a85d0d3e4f8c7beb2bfd60566104c03d0015315ed5d966ccc33e"
+    },
+    {
+      "path": "provider/provider-swift-Package.resolved",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/provider-swift-Package.resolved",
+      "bytes": 10156,
+      "sha256": "b2b12d24d48bbedc4583d8831e0b81fe68b96d641804e0ebc56715cd2d88a7ea"
+    },
+    {
+      "path": "provider/provider-swift-Package.swift",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/provider-swift-Package.swift",
+      "bytes": 14564,
+      "sha256": "0b1432205ee2f9db231b67bcf4160953de78a7efee069ff03f5cf2fd2e8dacf5"
+    },
+    {
+      "path": "provider/real-native-observations.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/real-native-observations.json",
+      "bytes": 2105,
+      "sha256": "97b9e83067112c5c5bb150816e43316d5a8bddc7fc59992a9aebf46ba8e8ea66"
+    },
+    {
+      "path": "provider/real-native.log",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/real-native.log",
+      "bytes": 2456,
+      "sha256": "70bc924bad8af50645f20dca7a5c7632180305595bd98b8c7a2574638637eefe"
+    },
+    {
+      "path": "provider/run.py",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/run.py",
+      "bytes": 4385,
+      "sha256": "ae64c50f74283c18821a80ccc9e46967bc671c2a1511010a7156725068ec107d"
+    },
+    {
+      "path": "provider/selected-identifiers.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/selected-identifiers.json",
+      "bytes": 15490,
+      "sha256": "157895c94a8b21b9b0976a08ebb88a1762e785eddf437a5ee79b6dfb2f286b18"
+    },
+    {
+      "path": "provider/source-manifest-before-new-test.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/source-manifest-before-new-test.json",
+      "bytes": 164667,
+      "sha256": "52ed33440212fe0e31300376745d28c7a974f6a9feca8e0b7cf0637fdc49d5a5"
+    },
+    {
+      "path": "provider/source-manifest.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/source-manifest.json",
+      "bytes": 164840,
+      "sha256": "440eb7e4ca9cf839879055b743c58ed7cb3d1ddc9e022f5809145c99eecbaf8c"
+    },
+    {
+      "path": "provider/source-verified-after.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/source-verified-after.json",
+      "bytes": 110,
+      "sha256": "4f03b0675d788f0908b8cda967efdf3f7d90912bd0392bc360593c9dd38b68c0"
+    },
+    {
+      "path": "provider/source-verified-before.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/source-verified-before.json",
+      "bytes": 110,
+      "sha256": "4f03b0675d788f0908b8cda967efdf3f7d90912bd0392bc360593c9dd38b68c0"
+    },
+    {
+      "path": "provider/specdec.log",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/specdec.log",
+      "bytes": 6465,
+      "sha256": "d19c8a7ddd25cddde6f61a7cd803f4904164c9b76f1c9a4e4d89c88fd7737434"
+    },
+    {
+      "path": "provider/test-binary.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/test-binary.json",
+      "bytes": 309,
+      "sha256": "46f39fc2574f68a35c3cf46b89bffcb6d992dbe94e0b43be1f6267aa97269d2c"
+    },
+    {
+      "path": "provider/verdict.json",
+      "source": "/tmp/darkbloom-process-memory-combined-validation1/verdict.json",
+      "bytes": 3103,
+      "sha256": "3f7aa7cc09eafcbf7425c14d0ae493d32353dd260642e904cacb83e9d47bcdc1"
+    },
+    {
+      "path": "native-source/manifest.json",
+      "source": "/tmp/darkbloom-native-process-memory/freeze1/manifest.json",
+      "bytes": 2691,
+      "sha256": "1e2b3da2ba5eabb87bdd4264ff674be6aecd3880a8830f5764fba15b04d8dfd9"
+    },
+    {
+      "path": "native-source/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionV2.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionV2.swift",
+      "bytes": 57535,
+      "sha256": "92367ee294e42edcbd592d1bec9a3d057f6efbe49872e7a1bed524d04fbd880d"
+    },
+    {
+      "path": "native-source/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift",
+      "bytes": 58663,
+      "sha256": "7fc0d99b9e3333133a138b9d89bde302e069710bf25969d05879695bd66bee84"
+    },
+    {
+      "path": "native-source/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVGroup.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVGroup.swift",
+      "bytes": 20006,
+      "sha256": "4ebc64ebb59e93048ac91751c5a1ead915465f9ed4ae30fe4c0ffb594efaa3d3"
+    },
+    {
+      "path": "native-source/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool+CheckpointImport.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool+CheckpointImport.swift",
+      "bytes": 6681,
+      "sha256": "1457aae1ee58256e698879fdfdc0d094c0931a3452ecf26eaf169b21cbfedd53"
+    },
+    {
+      "path": "native-source/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool+Segments.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool+Segments.swift",
+      "bytes": 10987,
+      "sha256": "6b8c072c0425cf8bcd3d574f323135e21ed01049a77676c12d50ff38eb6962e0"
+    },
+    {
+      "path": "native-source/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool.swift",
+      "bytes": 49885,
+      "sha256": "9324dee8a16eb5ed1b40fefea56ff9ce2cc87f681b3bb04d06b187bd03feb04f"
+    },
+    {
+      "path": "native-source/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSegments.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSegments.swift",
+      "bytes": 8977,
+      "sha256": "8f50b5fda0fad669d18d070845340a5f95a798f0466a19a3f8da045c36f432ff"
+    },
+    {
+      "path": "native-source/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/PagedCheckpointStorage.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/PagedCheckpointStorage.swift",
+      "bytes": 8610,
+      "sha256": "202c016094ea714e93ab823351f80e2a58e9f52b27ab971abf7eee4d65e10ef2"
+    },
+    {
+      "path": "native-source/Libraries/MLXLMCommon/ContinuousBatchingV2/ProcessMemoryOwnership.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ProcessMemoryOwnership.swift",
+      "bytes": 1056,
+      "sha256": "7e9c23ef5f79df1fb129ddb4ccd4896fd27443ada036c3015fb58b8c48decf28"
+    },
+    {
+      "path": "native-source/Tests/MLXLMTests/CBv2ProcessMemoryOwnershipTests.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/libs/mlx-swift-lm/Tests/MLXLMTests/CBv2ProcessMemoryOwnershipTests.swift",
+      "bytes": 10961,
+      "sha256": "ad8e41ac9bb7bce40cdf9cddde47a00f8c9097a7c50ab2c548c786b1a70b7a1e"
+    },
+    {
+      "path": "provider-source/manifest.json",
+      "source": "/tmp/darkbloom-process-memory-facade/freeze2/manifest.json",
+      "bytes": 6273,
+      "sha256": "2c62096fd573042c9fa26afcb18dbc724e7042d48e995cbc696f3061ed458065"
+    },
+    {
+      "path": "provider-source/provider-swift/Sources/ProviderCore/Inference/EngineProcessMemoryOwner.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Sources/ProviderCore/Inference/EngineProcessMemoryOwner.swift",
+      "bytes": 2232,
+      "sha256": "a5942cbc8f07731996e6e975e0463d8be657e62258c638488f532034a10c1229"
+    },
+    {
+      "path": "provider-source/provider-swift/Sources/ProviderCore/Inference/GlobalKVCacheBudget+Headroom.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Sources/ProviderCore/Inference/GlobalKVCacheBudget+Headroom.swift",
+      "bytes": 1860,
+      "sha256": "fb775897914a3dd2f231245efbbaa0ad3ecb81e4f0cbb464345077370b96da70"
+    },
+    {
+      "path": "provider-source/provider-swift/Sources/ProviderCore/Inference/GlobalKVCacheBudget+PendingLoads.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Sources/ProviderCore/Inference/GlobalKVCacheBudget+PendingLoads.swift",
+      "bytes": 4752,
+      "sha256": "25d265c33c0c59a5919299f34dc04ddc84aa4f506c2d139ba4f609ec55a30820"
+    },
+    {
+      "path": "provider-source/provider-swift/Sources/ProviderCore/Inference/GlobalKVCacheBudget.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Sources/ProviderCore/Inference/GlobalKVCacheBudget.swift",
+      "bytes": 20165,
+      "sha256": "7c40c2fecb9de2df4c66550d6d325aea8709b06b3b4ffc7648a7acf9e251e2d0"
+    },
+    {
+      "path": "provider-source/provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift",
+      "bytes": 9128,
+      "sha256": "c0c921a3f63b2353d6b4085478cd7ef62e38be966600f186606d10cc33b92b1e"
+    },
+    {
+      "path": "provider-source/provider-swift/Sources/ProviderCore/Inference/ProcessMemoryLedger.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Sources/ProviderCore/Inference/ProcessMemoryLedger.swift",
+      "bytes": 12698,
+      "sha256": "86df3deb02d208db619f271dcf0ef1759268453b3849d36483e347bfa725ef01"
+    },
+    {
+      "path": "provider-source/provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift",
+      "bytes": 16571,
+      "sha256": "587148d938d26f85ab44b659688d6e7465315a167983e76ad21c333cc44a1318"
+    },
+    {
+      "path": "provider-source/provider-swift/Sources/ProviderCore/ProviderLoop+EngineV2.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Sources/ProviderCore/ProviderLoop+EngineV2.swift",
+      "bytes": 31998,
+      "sha256": "2c5cdf2f58eea2691d833ed115724e986c71253ae3ea377410f91e0064c939f9"
+    },
+    {
+      "path": "provider-source/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift",
+      "bytes": 67176,
+      "sha256": "eef8807029dc9ed4230ee24c2888cf142d89b01d51943e3ddb9cc61443bf90fa"
+    },
+    {
+      "path": "provider-source/provider-swift/Sources/ProviderCore/ProviderLoop+Testing.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Sources/ProviderCore/ProviderLoop+Testing.swift",
+      "bytes": 18252,
+      "sha256": "ff93bb0ced76b7785843d885cda7b0d3fce481b6d33d7490091b32cbe98c59f7"
+    },
+    {
+      "path": "provider-source/provider-swift/Sources/ProviderCore/ProviderLoop.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Sources/ProviderCore/ProviderLoop.swift",
+      "bytes": 46761,
+      "sha256": "9ed36e18865eb1f93ba9c885a6a7fa46fd7328364cffe0b2e5bc6cc83c486579"
+    },
+    {
+      "path": "provider-source/provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift",
+      "bytes": 83455,
+      "sha256": "288800a0028a38f0102a0c2c6ca4fb2c003dfe3f935c53e79a9fe28c34f47e37"
+    },
+    {
+      "path": "provider-source/provider-swift/Tests/ProviderCoreTests/GlobalKVCacheBudgetAuditTests.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Tests/ProviderCoreTests/GlobalKVCacheBudgetAuditTests.swift",
+      "bytes": 6268,
+      "sha256": "c75a61ec582f4a4e67087ed2595ba055964c2a2effefcd83a0098548510bdf22"
+    },
+    {
+      "path": "provider-source/provider-swift/Tests/ProviderCoreTests/GlobalKVCacheBudgetProcessTests.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Tests/ProviderCoreTests/GlobalKVCacheBudgetProcessTests.swift",
+      "bytes": 9451,
+      "sha256": "08ffe700ade686fd013f843cb13e540f5bf58edb2b4e3b870cfae2fe6c82ccdc"
+    },
+    {
+      "path": "provider-source/provider-swift/Tests/ProviderCoreTests/GlobalKVCacheBudgetTests.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Tests/ProviderCoreTests/GlobalKVCacheBudgetTests.swift",
+      "bytes": 13332,
+      "sha256": "951db119e4e62febe111194e6014e88e237270c3f5ec77fe1c19926f46da9b8e"
+    },
+    {
+      "path": "provider-source/provider-swift/Tests/ProviderCoreTests/MTPResliceFallbackTests.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Tests/ProviderCoreTests/MTPResliceFallbackTests.swift",
+      "bytes": 32351,
+      "sha256": "d4f8bf98697292cd230e8ce74585d1c3606c9fabbb0fcaba40560fdf80531851"
+    },
+    {
+      "path": "provider-source/provider-swift/Tests/ProviderCoreTests/ModelLoadAdmissionTests.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Tests/ProviderCoreTests/ModelLoadAdmissionTests.swift",
+      "bytes": 12345,
+      "sha256": "4737ca3589e43e8bb3d34fa35afc9e70284debb03fedebaec5e7a06d98eec428"
+    },
+    {
+      "path": "provider-source/provider-swift/Tests/ProviderCoreTests/ProcessMemoryLedgerTests.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Tests/ProviderCoreTests/ProcessMemoryLedgerTests.swift",
+      "bytes": 19881,
+      "sha256": "c5d28cdce7d948861991fa7e4ba67a2d6ec58a238e393d2053251cc16887a621"
+    },
+    {
+      "path": "provider-source/provider-swift/Tests/ProviderCoreTests/ProcessMemoryLoadConstraintTests.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Tests/ProviderCoreTests/ProcessMemoryLoadConstraintTests.swift",
+      "bytes": 2322,
+      "sha256": "f2ac7b1feb918a19bbefd210d2796b013963a2d88b7a55b4cfe769262fe2ad19"
+    },
+    {
+      "path": "provider-source/provider-swift/Tests/ProviderCoreTests/ProcessMemoryPreparationTests.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Tests/ProviderCoreTests/ProcessMemoryPreparationTests.swift",
+      "bytes": 3143,
+      "sha256": "dbf16d66967ced6293afdfd3dba714c2e81caef77b9c6f188487167918489c19"
+    },
+    {
+      "path": "provider-source/provider-swift/Tests/ProviderCoreTests/SpecDecCapacityTests.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Tests/ProviderCoreTests/SpecDecCapacityTests.swift",
+      "bytes": 17977,
+      "sha256": "5a391d89104e8f420d4097238363f51b7c6700beb71e892de633b0bb0583f878"
+    },
+    {
+      "path": "native-source/final-commit.json",
+      "source": "/tmp/darkbloom-native-process-memory/final-commit.json",
+      "bytes": 304,
+      "sha256": "460a5a2ba4647c62689aa0c8d8b314853a51eee7c627287213748ada893d20dd"
+    },
+    {
+      "path": "provider-source/contract-and-validation.md",
+      "source": "/tmp/darkbloom-process-memory-facade/freeze2/contract-and-validation.md",
+      "bytes": 9856,
+      "sha256": "7742db53dcdaa8d0a5a5d3644df76b14d2b62763687e2575a833d3a8a3eb97b3"
+    },
+    {
+      "path": "provider-source/real-integration-review-manifest.json",
+      "source": "/tmp/darkbloom-process-memory-native-integration-review/review-manifest.json",
+      "bytes": 773,
+      "sha256": "57dbfd7af040924a2c1792b62858a570ef8fec5fd7d7bc104b27a808c2f35ee8"
+    },
+    {
+      "path": "provider-source/ProcessMemoryNativeIntegrationTests.swift",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/provider-swift/Tests/ProviderCoreTests/ProcessMemoryNativeIntegrationTests.swift",
+      "bytes": 8403,
+      "sha256": "a8024fb7cfa2d9dd7d17e871acd5c43a8b16e217cbb58f0cd89efb0c0e595052"
+    },
+    {
+      "path": "integration.json",
+      "source": "/tmp/darkbloom-process-memory-combined/integration.json",
+      "bytes": 799,
+      "sha256": "91fff1adb88556ed88ca182df75e3307a6974af2eafba8666b48a6b4ff157e3d"
+    },
+    {
+      "path": "test-harness/Makefile",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/Makefile",
+      "bytes": 5505,
+      "sha256": "680d3906f7969fb0a8e2db20b0836a182f78423047b367d13fc2096170242d54"
+    },
+    {
+      "path": "test-harness/.github/workflows/ci.yml",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/.github/workflows/ci.yml",
+      "bytes": 17392,
+      "sha256": "85ad216ee65b01cc8207cbf6182461b15ce5a2521435b8e4f8f97e82b36782bd"
+    },
+    {
+      "path": "test-harness/scripts/run-provider-tests.sh",
+      "source": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/scripts/run-provider-tests.sh",
+      "bytes": 520,
+      "sha256": "426456caa725ad346bd1cbe4da3139e7daa434c264fe2cef826946237daa3292"
+    }
+  ]
+}

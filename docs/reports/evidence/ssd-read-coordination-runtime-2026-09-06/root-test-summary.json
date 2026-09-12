@@ -1,0 +1,157 @@
+{
+  "suites": {
+    "BenchmarkSweepExitTests": {
+      "functions": 10,
+      "expanded_cases": 10,
+      "log_sha256": "d5879b493084907899213371e477d3d0ed16fb3da39f08d4776f9e3fbf934b99"
+    },
+    "DoctorClearBackendGuardTests": {
+      "functions": 3,
+      "expanded_cases": 3,
+      "log_sha256": "145db3d3714bb677fee77e74131af26a6deeab8f83a3f2e4cb6773a0761b62a2"
+    },
+    "EngineV2FP32PagedRateTests": {
+      "functions": 4,
+      "expanded_cases": 4,
+      "log_sha256": "1e57f125e2dac57a6a1818273a6f6bbd83e20fb29ecef6f3ef10e727c01a280c"
+    },
+    "EngineV2KVBackendFallbackHeartbeatTests": {
+      "functions": 4,
+      "expanded_cases": 4,
+      "log_sha256": "351b6bd5f4023a72e9173a04e6ed481d44b62f0da21b9a55b43209e2b3f5d540"
+    },
+    "EngineV2KVBackendGateTests": {
+      "functions": 39,
+      "expanded_cases": 62,
+      "log_sha256": "558e18caf0c4b332483cbd6573e8c5ab0f4794757e6fd3f9a751ec0e1b0db09a"
+    },
+    "EngineV2KVBackendPolicyTests": {
+      "functions": 8,
+      "expanded_cases": 28,
+      "log_sha256": "e2a0959209bfdfb8f7b081cfec9d591285acebaf5ae191d7d60b4d2f7274ced4"
+    },
+    "EngineV2PagedPoolDTypeEnvTests": {
+      "functions": 11,
+      "expanded_cases": 11,
+      "log_sha256": "1d89b0f9615151a495e6b1b6ccd340f04d7d750c93a6a8f46be4873691c1ef12"
+    },
+    "EngineV2PrefixCacheUsageTests": {
+      "functions": 6,
+      "expanded_cases": 6,
+      "log_sha256": "d2f293c3fa838971250b047a61744fb110add66702c3098c03e830438d4a91ed"
+    },
+    "EngineV2RequestRoutingTests": {
+      "functions": 21,
+      "expanded_cases": 21,
+      "log_sha256": "09682bbae503c21f2de3a3eea932bda08e3c9df759b89bedc21727abbad53d14"
+    },
+    "EngineV2ResliceTests": {
+      "functions": 8,
+      "expanded_cases": 8,
+      "log_sha256": "268fbdfd36a1fc081558e6da9ddcd5506b53cf990dee332cb3a0aa9cb2ea888c"
+    },
+    "EngineV2ResliceUnwindTests": {
+      "functions": 2,
+      "expanded_cases": 2,
+      "log_sha256": "7badc9bf47740c2abfaadfdcc3ece404ef0f6baa659c7e7f64e5412bc30e8ec4"
+    },
+    "EngineV2ReslicingWiringTests": {
+      "functions": 8,
+      "expanded_cases": 8,
+      "log_sha256": "4a8dfbc77b5fd7d2b331d4e53fae61e000b96f6a383c5b2febcf77a1db8ab190"
+    },
+    "EngineV2RuntimeGuardTests": {
+      "functions": 7,
+      "expanded_cases": 7,
+      "log_sha256": "74dfb3ebe10dd06e98c8886cf30cc0cc1c7040fb70b74fb22f2aad3e75fd07fc"
+    },
+    "EngineV2SlotBuildTests": {
+      "functions": 8,
+      "expanded_cases": 8,
+      "log_sha256": "603513a7256899f6866bf09629d1d54f28a71ed91087b10fcc226f10ff565e90"
+    },
+    "KVBackendGuardDiagnosticsTests": {
+      "functions": 9,
+      "expanded_cases": 9,
+      "log_sha256": "6c1c08da3b6a7f4d8fddef4a6d22c9c69426f17f300863e60ed2fb3d29074534"
+    },
+    "KVBackendPostureTests": {
+      "functions": 16,
+      "expanded_cases": 18,
+      "log_sha256": "1ee925195e33ac308a97892fcbe877a964882969d09c2cbc10d6245442c40712"
+    },
+    "MTPBenchmarkTests": {
+      "functions": 32,
+      "expanded_cases": 32,
+      "log_sha256": "a7fe15a1b888aa72b20f0e468f4b93150555e81c88248e811ca74779c2ae3f67"
+    },
+    "PrefillDeadlineProductionConfigTests": {
+      "functions": 5,
+      "expanded_cases": 5,
+      "log_sha256": "62649b477b9817a7d913a1e5609c0ac518872788ef8e16fe42698652cfc3e838"
+    },
+    "PrefixCachePolicyTests": {
+      "functions": 12,
+      "expanded_cases": 12,
+      "log_sha256": "7d4e956ca371a3c752d3a0cece88737bbd58e68bbffb03242183cbd9c7da77ca"
+    },
+    "SSDBlockStreamingTests": {
+      "functions": 10,
+      "expanded_cases": 10,
+      "log_sha256": "494c9dc49a2d03e81538fb4cd5cd4221a689ce81e3cfeab382ab3c9541b9d4ab"
+    },
+    "SSDCheckpointFileCoordinatorPathTests": {
+      "functions": 4,
+      "expanded_cases": 6,
+      "log_sha256": "df7a89ea93a9ebc1c6b1c7ae3f672256167bc7946020ab9f85b7a05b8f6e4788"
+    },
+    "SSDCheckpointFileCoordinatorTests": {
+      "functions": 4,
+      "expanded_cases": 4,
+      "log_sha256": "028079e271cb9003661ae85f26b5880aee20307c07f870918eda52edd3cc0c77"
+    },
+    "SSDCheckpointLookupTests": {
+      "functions": 2,
+      "expanded_cases": 2,
+      "log_sha256": "100042f3be03ac3769141bdf78befcbf5d23003677c60e8f0327d77648b43974"
+    },
+    "SSDCheckpointRecencyCoordinationTests": {
+      "functions": 3,
+      "expanded_cases": 4,
+      "log_sha256": "3c0fa5930be6d6a46bcc2ff7c2d28a797a3c64dc20fc4e19c7ffc83fab4d4861"
+    },
+    "SSDCheckpointStageReservationTests": {
+      "functions": 2,
+      "expanded_cases": 3,
+      "log_sha256": "dd4ceb6dd34d55e5a36ed1e42827064f33ce25853164471cdf67c01cf8d2b05a"
+    },
+    "SSDHybridCheckpointCoordinationTests": {
+      "functions": 5,
+      "expanded_cases": 10,
+      "log_sha256": "47e9ef6362a9d55e87e3875427234998cd9f8197654dce982b8d9cb74230089b"
+    },
+    "SSDHybridCheckpointRecencyTests": {
+      "functions": 1,
+      "expanded_cases": 1,
+      "log_sha256": "5545957b7261f104d579b5478fd859045b1fe06a083692691a9c75540dac1fa0"
+    },
+    "SSDHybridCheckpointStoreTests": {
+      "functions": 12,
+      "expanded_cases": 12,
+      "log_sha256": "6b048bc51948cfcf6ae9f6ce6d537c3187b609cc043bcd04e7b8f059549e4e22"
+    },
+    "SSDSharedProcessCheckpointTests": {
+      "functions": 6,
+      "expanded_cases": 6,
+      "log_sha256": "ee5567632c4a9cf637333f2dae8c2b0396f5c9ecbc6952b727d374685af781ba"
+    },
+    "SegmentedProductionGrantTests": {
+      "functions": 8,
+      "expanded_cases": 8,
+      "log_sha256": "0cc84aafe00016f50e1206bc710c5ca6c35ae33117a1fe4ec9485511a7f3a003"
+    }
+  },
+  "total_functions": 270,
+  "expanded_cases": 324,
+  "no_skips_or_failures": true
+}

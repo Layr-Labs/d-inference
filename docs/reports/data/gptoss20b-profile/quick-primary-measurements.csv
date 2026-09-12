@@ -1,0 +1,8 @@
+contextTokens,batch,aggregateDecodeTPS,ttftSeconds,repetitions,source
+512,1,105.05702702257807,0.47488808300000007,5,baseline-short-summary.json
+8192,1,85.50668143740376,8.321896853999998,2,long-context-summary.json
+32768,1,63.22689376937707,47.62617089549999,2,long-context-summary.json
+512,2,157.8175721107515,1.087269875,5,baseline-short-summary.json
+8192,2,101.86566774970728,16.341653771,2,long-context-summary.json
+512,4,156.22606485382332,2.8023769789999995,5,baseline-short-summary.json
+8192,4,120.28092140753358,27.5963770625,2,long-context-summary.json

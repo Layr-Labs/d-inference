@@ -1,0 +1,596 @@
+{
+  "arms": {
+    "A": {
+      "label": "A query-256-8192",
+      "peakMemoryBytes": {
+        "coefficientOfVariation": 2.140528357969664e-09,
+        "maximum": 14313133197,
+        "median": 14313133181.0,
+        "medianAbsoluteDeviation": 16.0,
+        "minimum": 14313133133
+      },
+      "promptTokensPerSecond": {
+        "coefficientOfVariation": 0.038374031360923995,
+        "maximum": 1171.7721561454232,
+        "median": 1099.7023493484232,
+        "medianAbsoluteDeviation": 16.951209849240286,
+        "minimum": 1073.908258679946
+      },
+      "runs": 4,
+      "ttftMedianMs": {
+        "coefficientOfVariation": 0.03740465119060823,
+        "maximum": 7628.212125,
+        "median": 7449.6934375,
+        "medianAbsoluteDeviation": 116.72339600000032,
+        "minimum": 6991.120208
+      },
+      "withinArmTokenExact": null
+    },
+    "B": {
+      "label": "B query-256-8192",
+      "peakMemoryBytes": {
+        "coefficientOfVariation": 2.686206863206428e-09,
+        "maximum": 14313125869,
+        "median": 14313125837.0,
+        "medianAbsoluteDeviation": 32.0,
+        "minimum": 14313125800
+      },
+      "promptTokensPerSecond": {
+        "coefficientOfVariation": 0.03246565443083822,
+        "maximum": 1139.3400978870052,
+        "median": 1094.3212857565422,
+        "medianAbsoluteDeviation": 25.876191419703673,
+        "minimum": 1064.0925522408959
+      },
+      "runs": 4,
+      "ttftMedianMs": {
+        "coefficientOfVariation": 0.03231289850272288,
+        "maximum": 7698.578458,
+        "median": 7488.8155835,
+        "medianAbsoluteDeviation": 178.52829150000025,
+        "minimum": 7190.127
+      },
+      "withinArmTokenExact": null
+    }
+  },
+  "comparisonKind": "implementation",
+  "complete": true,
+  "cycleComparisons": [
+    {
+      "changePercent": 1.3338815944311966,
+      "cycle": 1,
+      "distributionsByArm": {
+        "A": {
+          "peakMemoryBytes": {
+            "coefficientOfVariation": 0.0,
+            "maximum": 14313133197,
+            "median": 14313133197.0,
+            "medianAbsoluteDeviation": 0.0,
+            "minimum": 14313133197
+          },
+          "promptTokensPerSecond": {
+            "coefficientOfVariation": 0.011549950426095471,
+            "maximum": 1091.59402031842,
+            "median": 1082.751139499183,
+            "medianAbsoluteDeviation": 8.842880819237052,
+            "minimum": 1073.908258679946
+          },
+          "ttftMedianMs": {
+            "coefficientOfVariation": 0.011549950426095428,
+            "maximum": 7628.212125,
+            "median": 7566.4168334999995,
+            "medianAbsoluteDeviation": 61.795291500000076,
+            "minimum": 7504.621542
+          }
+        },
+        "B": {
+          "peakMemoryBytes": {
+            "coefficientOfVariation": 3.1617715453149652e-09,
+            "maximum": 14313125869,
+            "median": 14313125837.0,
+            "medianAbsoluteDeviation": 32.0,
+            "minimum": 14313125805
+          },
+          "promptTokensPerSecond": {
+            "coefficientOfVariation": 0.005761104707680518,
+            "maximum": 1072.7976364327815,
+            "median": 1068.4450943368388,
+            "medianAbsoluteDeviation": 4.352542095942795,
+            "minimum": 1064.0925522408959
+          },
+          "ttftMedianMs": {
+            "coefficientOfVariation": 0.005761104707680535,
+            "maximum": 7698.578458,
+            "median": 7667.3438750000005,
+            "medianAbsoluteDeviation": 31.23458299999993,
+            "minimum": 7636.109292
+          }
+        }
+      },
+      "meanTTFTMsA": 7566.4168334999995,
+      "meanTTFTMsB": 7667.3438750000005,
+      "metrics": {
+        "peakMemoryBytes": {
+          "changePercent": -5.142130586888172e-05,
+          "direction": "lower_is_better",
+          "improvementPercent": 5.142130586888172e-05,
+          "meanA": 14313133197,
+          "meanB": 14313125837,
+          "ratioBOverA": 0.9999994857869413
+        },
+        "promptTokensPerSecond": {
+          "changePercent": -1.3212680772574648,
+          "direction": "higher_is_better",
+          "improvementPercent": -1.3212680772574648,
+          "meanA": 1082.751139499183,
+          "meanB": 1068.4450943368388,
+          "ratioBOverA": 0.9867873192274254
+        },
+        "ttftMedianMs": {
+          "changePercent": 1.3338815944311966,
+          "direction": "lower_is_better",
+          "improvementPercent": -1.3338815944311966,
+          "meanA": 7566.4168334999995,
+          "meanB": 7667.3438750000005,
+          "ratioBOverA": 1.013338815944312
+        }
+      },
+      "ratioBOverA": 1.013338815944312
+    },
+    {
+      "changePercent": 1.0132385217758832,
+      "cycle": 2,
+      "distributionsByArm": {
+        "A": {
+          "peakMemoryBytes": {
+            "coefficientOfVariation": 1.580884965046972e-09,
+            "maximum": 14313133165,
+            "median": 14313133149.0,
+            "medianAbsoluteDeviation": 16.0,
+            "minimum": 14313133133
+          },
+          "promptTokensPerSecond": {
+            "coefficientOfVariation": 0.03968058890319108,
+            "maximum": 1171.7721561454232,
+            "median": 1139.7914172619248,
+            "medianAbsoluteDeviation": 31.98073888349836,
+            "minimum": 1107.8106783784265
+          },
+          "ttftMedianMs": {
+            "coefficientOfVariation": 0.03968058890319111,
+            "maximum": 7394.765332999999,
+            "median": 7192.9427705,
+            "medianAbsoluteDeviation": 201.82256249999955,
+            "minimum": 6991.120208
+          }
+        },
+        "B": {
+          "peakMemoryBytes": {
+            "coefficientOfVariation": 3.408784947888092e-09,
+            "maximum": 14313125869,
+            "median": 14313125834.5,
+            "medianAbsoluteDeviation": 34.5,
+            "minimum": 14313125800
+          },
+          "promptTokensPerSecond": {
+            "coefficientOfVariation": 0.01473368145215226,
+            "maximum": 1139.3400978870052,
+            "median": 1127.5925164836542,
+            "medianAbsoluteDeviation": 11.747581403350978,
+            "minimum": 1115.8449350803032
+          },
+          "ttftMedianMs": {
+            "coefficientOfVariation": 0.014733681452152352,
+            "maximum": 7341.521874999999,
+            "median": 7265.8244374999995,
+            "medianAbsoluteDeviation": 75.69743749999952,
+            "minimum": 7190.127
+          }
+        }
+      },
+      "meanTTFTMsA": 7192.9427705,
+      "meanTTFTMsB": 7265.8244374999995,
+      "metrics": {
+        "peakMemoryBytes": {
+          "changePercent": -5.1103416165432236e-05,
+          "direction": "lower_is_better",
+          "improvementPercent": 5.1103416165432236e-05,
+          "meanA": 14313133149,
+          "meanB": 14313125834.5,
+          "ratioBOverA": 0.9999994889658383
+        },
+        "promptTokensPerSecond": {
+          "changePercent": -1.070274840950769,
+          "direction": "higher_is_better",
+          "improvementPercent": -1.070274840950769,
+          "meanA": 1139.7914172619248,
+          "meanB": 1127.5925164836542,
+          "ratioBOverA": 0.9892972515904923
+        },
+        "ttftMedianMs": {
+          "changePercent": 1.0132385217758832,
+          "direction": "lower_is_better",
+          "improvementPercent": -1.0132385217758832,
+          "meanA": 7192.9427705,
+          "meanB": 7265.8244374999995,
+          "ratioBOverA": 1.0101323852177588
+        }
+      },
+      "ratioBOverA": 1.0101323852177588
+    }
+  ],
+  "cycleMetricRatioDistributions": {
+    "peakMemoryBytes": {
+      "coefficientOfVariation": 2.247820802071101e-09,
+      "maximum": 0.9999994889658383,
+      "median": 0.9999994873763898,
+      "medianAbsoluteDeviation": 1.5894485172474049e-09,
+      "minimum": 0.9999994857869413
+    },
+    "promptTokensPerSecond": {
+      "coefficientOfVariation": 0.0017962694719180175,
+      "maximum": 0.9892972515904923,
+      "median": 0.9880422854089588,
+      "medianAbsoluteDeviation": 0.001254966181533479,
+      "minimum": 0.9867873192274254
+    },
+    "ttftMedianMs": {
+      "coefficientOfVariation": 0.0022409895518636833,
+      "maximum": 1.013338815944312,
+      "median": 1.0117356005810354,
+      "medianAbsoluteDeviation": 0.0016032153632765667,
+      "minimum": 1.0101323852177588
+    }
+  },
+  "cycleRatioDistribution": {
+    "coefficientOfVariation": 0.0022409895518636833,
+    "maximum": 1.013338815944312,
+    "median": 1.0117356005810354,
+    "medianAbsoluteDeviation": 0.0016032153632765667,
+    "minimum": 1.0101323852177588
+  },
+  "failures": [],
+  "interpretation": "Every cycle executes A-B-B-A with one measured single-request prefill per fresh process after full-context warmup. Primary cycle ratios compare mean B TTFT with mean A TTFT; below 1 is faster. These are descriptive timing controls, not confidence intervals or numerical-parity evidence.",
+  "latency": "Prefill reports do not contain token IDs; token parity is unavailable and must be established separately. A valid prefill timing comparison is not a correctness verdict.",
+  "metricDirections": {
+    "peakMemoryBytes": "lower_is_better",
+    "promptTokensPerSecond": "higher_is_better",
+    "ttftMedianMs": "lower_is_better"
+  },
+  "outputHashesByArmRowRun": {
+    "A": {},
+    "B": {}
+  },
+  "phase": "prefill",
+  "power": "AC Power and powermode 2 required before and after every run; Foundation thermal states are observations, not a throttle-free guarantee.",
+  "primaryMetric": "ttftMedianMs",
+  "provenanceID": "770d1aed51e2aa06acbb4a276235bb49cb422345781f76c76e43663036d2389d",
+  "runs": [
+    {
+      "arm": "A",
+      "batch": 1,
+      "context": 8192,
+      "cycle": 1,
+      "iterations": 1,
+      "name": "cycle-01-1-A",
+      "peakMemoryBytes": 14313133197,
+      "phase": "prefill",
+      "position": 1,
+      "promptTokensPerSecond": 1073.908258679946,
+      "run": "cycle-01-1-A",
+      "soloPrefillStripeTokens": 2048,
+      "thermalAfter": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "thermalBefore": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "ttftDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 7628.212125,
+        "median": 7628.212125,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 7628.212125
+      },
+      "ttftMedianMs": 7628.212125
+    },
+    {
+      "arm": "B",
+      "batch": 1,
+      "context": 8192,
+      "cycle": 1,
+      "iterations": 1,
+      "name": "cycle-01-2-B",
+      "peakMemoryBytes": 14313125805,
+      "phase": "prefill",
+      "position": 2,
+      "promptTokensPerSecond": 1064.0925522408959,
+      "run": "cycle-01-2-B",
+      "soloPrefillStripeTokens": 2048,
+      "thermalAfter": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "thermalBefore": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "ttftDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 7698.578458,
+        "median": 7698.578458,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 7698.578458
+      },
+      "ttftMedianMs": 7698.578458
+    },
+    {
+      "arm": "B",
+      "batch": 1,
+      "context": 8192,
+      "cycle": 1,
+      "iterations": 1,
+      "name": "cycle-01-3-B",
+      "peakMemoryBytes": 14313125869,
+      "phase": "prefill",
+      "position": 3,
+      "promptTokensPerSecond": 1072.7976364327815,
+      "run": "cycle-01-3-B",
+      "soloPrefillStripeTokens": 2048,
+      "thermalAfter": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "thermalBefore": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "ttftDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 7636.109292,
+        "median": 7636.109292,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 7636.109292
+      },
+      "ttftMedianMs": 7636.109292
+    },
+    {
+      "arm": "A",
+      "batch": 1,
+      "context": 8192,
+      "cycle": 1,
+      "iterations": 1,
+      "name": "cycle-01-4-A",
+      "peakMemoryBytes": 14313133197,
+      "phase": "prefill",
+      "position": 4,
+      "promptTokensPerSecond": 1091.59402031842,
+      "run": "cycle-01-4-A",
+      "soloPrefillStripeTokens": 2048,
+      "thermalAfter": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "thermalBefore": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "ttftDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 7504.621542,
+        "median": 7504.621542,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 7504.621542
+      },
+      "ttftMedianMs": 7504.621542
+    },
+    {
+      "arm": "A",
+      "batch": 1,
+      "context": 8192,
+      "cycle": 2,
+      "iterations": 1,
+      "name": "cycle-02-1-A",
+      "peakMemoryBytes": 14313133165,
+      "phase": "prefill",
+      "position": 1,
+      "promptTokensPerSecond": 1107.8106783784265,
+      "run": "cycle-02-1-A",
+      "soloPrefillStripeTokens": 2048,
+      "thermalAfter": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "thermalBefore": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "ttftDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 7394.765332999999,
+        "median": 7394.765332999999,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 7394.765332999999
+      },
+      "ttftMedianMs": 7394.765332999999
+    },
+    {
+      "arm": "B",
+      "batch": 1,
+      "context": 8192,
+      "cycle": 2,
+      "iterations": 1,
+      "name": "cycle-02-2-B",
+      "peakMemoryBytes": 14313125869,
+      "phase": "prefill",
+      "position": 2,
+      "promptTokensPerSecond": 1115.8449350803032,
+      "run": "cycle-02-2-B",
+      "soloPrefillStripeTokens": 2048,
+      "thermalAfter": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "thermalBefore": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "ttftDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 7341.521874999999,
+        "median": 7341.521874999999,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 7341.521874999999
+      },
+      "ttftMedianMs": 7341.521874999999
+    },
+    {
+      "arm": "B",
+      "batch": 1,
+      "context": 8192,
+      "cycle": 2,
+      "iterations": 1,
+      "name": "cycle-02-3-B",
+      "peakMemoryBytes": 14313125800,
+      "phase": "prefill",
+      "position": 3,
+      "promptTokensPerSecond": 1139.3400978870052,
+      "run": "cycle-02-3-B",
+      "soloPrefillStripeTokens": 2048,
+      "thermalAfter": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "thermalBefore": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "ttftDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 7190.127,
+        "median": 7190.127,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 7190.127
+      },
+      "ttftMedianMs": 7190.127
+    },
+    {
+      "arm": "A",
+      "batch": 1,
+      "context": 8192,
+      "cycle": 2,
+      "iterations": 1,
+      "name": "cycle-02-4-A",
+      "peakMemoryBytes": 14313133133,
+      "phase": "prefill",
+      "position": 4,
+      "promptTokensPerSecond": 1171.7721561454232,
+      "run": "cycle-02-4-A",
+      "soloPrefillStripeTokens": 2048,
+      "thermalAfter": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "thermalBefore": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "ttftDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 6991.120208,
+        "median": 6991.120208,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 6991.120208
+      },
+      "ttftMedianMs": 6991.120208
+    }
+  ],
+  "schemaVersion": 1,
+  "sharedRowParity": {},
+  "timing": "TTFT comes directly from scheduler-prefill samples; prompt throughput is context tokens divided by TTFT. No decode or terminal-latency metric is inferred.",
+  "tokenParityPassed": null,
+  "tokenParityStatus": "not_available_prefill_report",
+  "validForPerformanceComparison": true
+}

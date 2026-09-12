@@ -1,0 +1,138 @@
+{
+  "binary": {
+    "bytes": 84291352,
+    "name": "darkbloom",
+    "sha256": "32b0cb755120baeaee1a7fb2c4b886b9903c3a777cf523ec217b4b4f18075c86"
+  },
+  "buildCommand": "swift build -c release --product darkbloom -j 8 --skip-update --force-resolved-versions",
+  "buildLog": {
+    "bytes": 50020,
+    "name": "build-pinned.log",
+    "sha256": "5b7caa1dea3058b2bf8814eb52e9e415e9c17d2b3de9fdcf17338f59bf9e99d5"
+  },
+  "configuration": "No detailed tracer or model/kernel optimization; benchmark metrics only",
+  "createdAt": "2026-09-05T08:19:54.814776+00:00",
+  "metallib": {
+    "bytes": 182380912,
+    "name": "mlx.metallib",
+    "sha256": "3c7e45e75cf1090304c900a95cd1b2ad6abf7b6db4166354f530d1643a72fb6b"
+  },
+  "publishedScope": "Receipt metadata only. Referenced executable, Metal library, build log, and source patches remain local and are not distributed in this evidence package.",
+  "source": {
+    "branch": {
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "research/gptoss20b-profile"
+    },
+    "head": {
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "4d9811f7c240b37f2915a6475f8476d7db01340e"
+    },
+    "note": "Source observed at run start; this alone does not attest how a supplied binary was built.",
+    "submoduleEdits": [
+      {
+        "path": "libs/mlx",
+        "trackedDiffSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "untrackedSource": []
+      },
+      {
+        "path": "libs/mlx-swift",
+        "trackedDiffSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "untrackedSource": []
+      },
+      {
+        "path": "libs/mlx-swift/Source/Cmlx/mlx",
+        "trackedDiffSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "untrackedSource": []
+      },
+      {
+        "path": "libs/mlx-swift/Source/Cmlx/mlx-c",
+        "trackedDiffSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "untrackedSource": []
+      },
+      {
+        "path": "libs/mlx-swift-lm",
+        "trackedDiffSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "untrackedSource": []
+      }
+    ],
+    "submodules": {
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "0a725e3000edabc4911cde345270ca950bfa152f libs/mlx (darkbloom-metal-resource-count-201-g0a725e30)\n 6b0505cc790f512ae49d740b21e13f80802946bd libs/mlx-swift (0.31.4-26-g6b0505c)\n 734241bbff26467bb33eff8adc65b82d17b33578 libs/mlx-swift/Source/Cmlx/mlx (v0.32.0-206-g734241bbf)\n 9ff12fab2634d6d76276823164dc8ceeea68dca9 libs/mlx-swift/Source/Cmlx/mlx-c (darkbloom-metal-resource-count-8-g9ff12fa)\n c4089870a24b082a9d70f31dc853380e9cff92ca libs/mlx-swift-lm (3.31.3-226-gc408987)"
+    },
+    "trackedDiffSHA256": "14f5c007b4f7e94bea42a8e8ab65415fc7cbf6f6e7f5da0383f17c63408e2d98",
+    "untrackedSource": [
+      {
+        "path": "provider-swift/Sources/ProviderBenchmark/ArrivalInvarianceBenchmarkReport.swift",
+        "sha256": "0df629f9648c450b55fd5ca490be49ca223fc813fb56629f12750ed84afe3f79"
+      },
+      {
+        "path": "provider-swift/Sources/ProviderBenchmark/ThroughputSweepDecodeTiming.swift",
+        "sha256": "0a34760b5782648afdda0c861d3e9d03cb788687389e742174db7d75cf73aae7"
+      },
+      {
+        "path": "provider-swift/Tests/DarkbloomCLITests/BenchmarkArrivalPromptTests.swift",
+        "sha256": "0576066997a07616a30f10072edf376adbc93ac2900e7897829f5bff58f63f66"
+      },
+      {
+        "path": "provider-swift/Tests/ProviderCoreTests/ThroughputSweepDecodeTimingTests.swift",
+        "sha256": "0064c322c6f098f7dbcc53b42fa3e1fb08fdf0317a83386ffaf835a325e5e5fb"
+      },
+      {
+        "path": "scripts/gptoss_profile/__init__.py",
+        "sha256": "92d8ad6255fe1c8f38c46f05631f9b849912f75599349ea709f81b6f5e7e20dc"
+      },
+      {
+        "path": "scripts/gptoss_profile/config.py",
+        "sha256": "58b685dec4a0525376c1e4bc1e4c4a3e1e9eba127c7338a78c3b6db49f62673c"
+      },
+      {
+        "path": "scripts/gptoss_profile/process.py",
+        "sha256": "4acecf1a551455a230c44daaf84fbd7bd28bf0cbb9e901df5a774480484b0cc9"
+      },
+      {
+        "path": "scripts/gptoss_profile/provenance.py",
+        "sha256": "67dbc0a4a6d4857be97741bc959453a5cbc9f31d9ae9868f98d822909cd75793"
+      },
+      {
+        "path": "scripts/gptoss_profile/runner.py",
+        "sha256": "eb1493ae083f50a761e0c150a339f1f03664379b60d8844aa2e6e15d6ee02789"
+      },
+      {
+        "path": "scripts/gptoss_profile/summary.py",
+        "sha256": "d11552f7714d0f973bf90de0756820b522c3f8cffcfb5e473392962f5adcbd35"
+      },
+      {
+        "path": "scripts/gptoss_profile/tests/__init__.py",
+        "sha256": "43f1756a9acd493d84c671cefda6d2ca9b675ebec914947325f814551195aa11"
+      },
+      {
+        "path": "scripts/gptoss_profile/tests/test_integrity.py",
+        "sha256": "c82ad36aaa1a879337ebc8365d9b30ab327472dd94a39609ee9e2d3052daa114"
+      },
+      {
+        "path": "scripts/gptoss_profile/tests/test_trace_reduce.py",
+        "sha256": "d5af0ec541110177eddedd8c6b0b722ace204370d2c32db57b4b78bf9fd807b2"
+      },
+      {
+        "path": "scripts/gptoss_profile/trace_reduce.py",
+        "sha256": "b9c7d59f2e9764eed1115689214c25228e18dc72362d8ce2579504f8e074d731"
+      },
+      {
+        "path": "scripts/gptoss_profile/trace_schema.py",
+        "sha256": "0389b568abfb7c43f9fcbec361999652a622326a41a02823f1fcac0844bb40d2"
+      },
+      {
+        "path": "scripts/gptoss_profile/validation.py",
+        "sha256": "a7d4cdeb823efa7c7cbdc4832d86d79bf096050f0e96ad5cdbb6dd3c920e2d75"
+      },
+      {
+        "path": "scripts/profile-gptoss.py",
+        "sha256": "28cd80bda468074ebdb7c506ef19302f36f3ed9c5d6ebc87e9e277ff9e196a6d"
+      }
+    ]
+  },
+  "toolchain": "Apple Swift version 6.3 (swiftlang-6.3.0.123.5 clang-2100.0.123.102)\nTarget: arm64-apple-macosx26.0\n"
+}

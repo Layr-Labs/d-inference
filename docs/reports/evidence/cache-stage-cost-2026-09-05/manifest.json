@@ -1,0 +1,306 @@
+{
+  "schema": 1,
+  "scope": "Signed coordinator cache service cost; no model, network latency or rollout measurement.",
+  "integration": {
+    "parent_base": "1a9c78d8432adf4ee080881637ab3740b4ad648b",
+    "source_manifest_sha256": "e2b9817404fd662a372c578f4eb8648afa9e97048e7b651d59ecbdccd59c017f",
+    "exact_go_paths": {
+      "coordinator/registry/cache_checkpoint_stage_cost_test.go": "91c7bb3bc500d9f6700b79dc9910e99fc2ed41c0aff378525589ccbad041a3c4",
+      "coordinator/registry/cache_service_cost.go": "f2e4a39ddc6b8e62c63c684f9a393ab1103626aabdccbb93bca2e69160aeeb73",
+      "coordinator/registry/cache_service_cost_benchmark_test.go": "7143a0eadb68fcf8d1ec1346226389ce31b40916d8a550a644aa25c4a387fca9",
+      "coordinator/registry/cache_service_cost_test.go": "3d4fbb6efa54add4263243aea15708b7d0f4bc6d1afa60c119823e116c895640",
+      "coordinator/registry/cache_service_penalty_test.go": "00d4342ed24ca83f093da21dc2099783ee6db39848068f0e970fa54869be5406",
+      "coordinator/registry/candidate_selection.go": "afd82e30565ce41c4c8b27838276c2c39b87930d1e00efc9e208b4f6d3486d6b",
+      "coordinator/registry/scheduler.go": "154a5d51daa576427dded3360f18f3bcf5dc7829e793441b32692acc271adcee"
+    },
+    "source_review": "Signed stage adjustment, positive benefit caps, finite guards, cost-sum preservation and penalty-only ranking reviewed. No production correction after frozen tests.",
+    "documentation_merge": "Apply canonical bodies unchanged, restamp to current parent, insert the changelog entry alongside earlier banked milestones.",
+    "combined_root_race": {
+      "function_pass": 101,
+      "subtest_pass": 173
+    }
+  },
+  "tests": {
+    "focused-tests-final": {
+      "counts": {
+        "test_pass": 63,
+        "subtest_pass": 159
+      },
+      "packages": [
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/registry",
+          "Action": "pass",
+          "Elapsed": 0.491
+        }
+      ],
+      "failed_tests": [],
+      "skipped_tests": []
+    },
+    "focused-race": {
+      "counts": {
+        "test_pass": 95,
+        "subtest_pass": 173
+      },
+      "packages": [
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/registry",
+          "Action": "pass",
+          "Elapsed": 3.458
+        }
+      ],
+      "failed_tests": [],
+      "skipped_tests": []
+    },
+    "registry-api-protocol": {
+      "counts": {
+        "test_pass": 2563,
+        "subtest_pass": 1517,
+        "test_skip": 2
+      },
+      "packages": [
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/protocol",
+          "Action": "pass",
+          "Elapsed": 0.258
+        },
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/registry",
+          "Action": "pass",
+          "Elapsed": 15.856
+        },
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/api",
+          "Action": "pass",
+          "Elapsed": 160.251
+        }
+      ],
+      "failed_tests": [],
+      "skipped_tests": [
+        "TestPerfE2E_ChatCompletions",
+        "TestVerifyProviderViaMDM_TimeoutTransient"
+      ]
+    },
+    "exact-final-fixtures-on-baseline": {
+      "counts": {
+        "subtest_fail": 7,
+        "subtest_pass": 14,
+        "test_fail": 4,
+        "test_pass": 2
+      },
+      "packages": [
+        {
+          "Package": "github.com/eigeninference/d-inference/coordinator/registry",
+          "Action": "fail",
+          "Elapsed": 0.353
+        }
+      ],
+      "failed_tests": [
+        "TestCheckpointSSDStageCostCompetesWithColdCapacityAndLoad/expensive_stage_loses",
+        "TestCheckpointSSDStageCostCompetesWithColdCapacityAndLoad/only_expensive_holder_still_serves",
+        "TestCheckpointSSDStageCostCompetesWithColdCapacityAndLoad/reservation_reprices_changed_rate",
+        "TestCheckpointSSDStageCostCompetesWithColdCapacityAndLoad",
+        "TestCacheServiceCostPenaltyLogIsSigned",
+        "TestCacheServiceCostIncludesNetStagePenalty/fresh_ssd",
+        "TestCacheServiceCostIncludesNetStagePenalty/aged_ssd",
+        "TestCacheServiceCostIncludesNetStagePenalty/long_prompt",
+        "TestCacheServiceCostIncludesNetStagePenalty/resident_restore",
+        "TestCacheServiceCostIncludesNetStagePenalty",
+        "TestCacheServiceCostPenaltyPreservesNearTieRanking"
+      ],
+      "skipped_tests": []
+    }
+  },
+  "benchmark_method": "Same Apple M3 Max host, Go 1.25.0, five 200 ms samples per arm; local microbenchmarks, not latency trials. Shared workstation; baseline hint samples overlapped the tail of API test run. No statistically established speedup is claimed.",
+  "archive": {
+    "path": "payloads.tar.gz",
+    "bytes": 450553,
+    "sha256": "2b7ad75cedde142395c8f01f3851f79513048ef4ac1f29f3d260d951d5190838"
+  },
+  "entries": [
+    {
+      "path": "bank/integration.json",
+      "bytes": 1467,
+      "sha256": "420c89b8b3f4aa637eadd5f4c77c9133781fa5fad4256b2b5874b494876376f6"
+    },
+    {
+      "path": "bank/package.py",
+      "bytes": 8611,
+      "sha256": "f6ac2e0e77f13874d064509502ff6feb9872e49e073ff0d87d61f74a0131c735"
+    },
+    {
+      "path": "freeze/REVIEW.md",
+      "bytes": 6589,
+      "sha256": "6a0196d3622bdd585f3e2a7520a701a80a2f0e23da0b7c65c084e7db0e1f10fa"
+    },
+    {
+      "path": "freeze/apply-checks.json",
+      "bytes": 972,
+      "sha256": "bf213fe2a6f8f7b5ef752cb3799762a558798c599c6c30f02d4736fa05a3cd65"
+    },
+    {
+      "path": "freeze/evidence/baseline-benchmarks.txt",
+      "bytes": 5736,
+      "sha256": "4bab1f4736a1ff9815b9768710ad4fe1fa0fb255bdba0362a6d77e002b0e7ed1"
+    },
+    {
+      "path": "freeze/evidence/baseline-holder-benchmarks.txt",
+      "bytes": 2405,
+      "sha256": "4f27a82fd96a742950ce95ea7aaa1610ca366ad6d0b2ac7e2b984120303b9d6e"
+    },
+    {
+      "path": "freeze/evidence/baseline-regressions-final.jsonl",
+      "bytes": 37367,
+      "sha256": "b15414baf26bf84d4ff429312130c0dbc28cc0f748f378ffc3c616d81ab2ed08"
+    },
+    {
+      "path": "freeze/evidence/baseline-regressions.jsonl",
+      "bytes": 37851,
+      "sha256": "dcdca5df501fb48c09ee9ac84a058d9f81bc4a6cc521cc285810d8bbeb94cbd5"
+    },
+    {
+      "path": "freeze/evidence/benchmark-summary.json",
+      "bytes": 17496,
+      "sha256": "4c040057c9fc0e69923b314003662985006851443ade4e1ff8dacfba21c00d58"
+    },
+    {
+      "path": "freeze/evidence/benchmark-summary.md",
+      "bytes": 1158,
+      "sha256": "1934495e6def575c7c4536b927f08a5e2eec12fbf598cb8c56980d31e8bbc861"
+    },
+    {
+      "path": "freeze/evidence/candidate-benchmarks.txt",
+      "bytes": 5741,
+      "sha256": "4493ccf8574dfeb77400882dcf29d12b2be6f59e85c0c50b5f3d48086e9c5382"
+    },
+    {
+      "path": "freeze/evidence/candidate-holder-benchmarks.txt",
+      "bytes": 2405,
+      "sha256": "c401d1e82f1716500d4dde7572fc1eba07591812bff81e90e0f8b74e05c57d74"
+    },
+    {
+      "path": "freeze/evidence/docs-check-final.txt",
+      "bytes": 51,
+      "sha256": "bbb78d61fe8cfc6fd00fcd0d4f59c50349dd7435ac7f2726839f84c7a83c3b15"
+    },
+    {
+      "path": "freeze/evidence/docs-check.txt",
+      "bytes": 51,
+      "sha256": "bbb78d61fe8cfc6fd00fcd0d4f59c50349dd7435ac7f2726839f84c7a83c3b15"
+    },
+    {
+      "path": "freeze/evidence/exact-final-fixtures-on-baseline.jsonl",
+      "bytes": 45727,
+      "sha256": "3fbd87a535a6198e7ffa4c0c7e95e8eadcb27fcef22c38c3c0c98265d11259ac"
+    },
+    {
+      "path": "freeze/evidence/focused-race.jsonl",
+      "bytes": 263085,
+      "sha256": "8743069760749e82d04542dee08e64fffc53ff57c443a42e7f87446698af857a"
+    },
+    {
+      "path": "freeze/evidence/focused-tests-final.jsonl",
+      "bytes": 220736,
+      "sha256": "35525720471a50715fe6d74b240f8bad80e54f273ad3b8f5241a25ecb4db8fd7"
+    },
+    {
+      "path": "freeze/evidence/focused-tests.jsonl",
+      "bytes": 227613,
+      "sha256": "e2903edfe2df05c8e772ea79f2e5b3cd535fedc4e1cd57ad27b7f305422a0e32"
+    },
+    {
+      "path": "freeze/evidence/initial-fixture-compile.jsonl",
+      "bytes": 1429,
+      "sha256": "5d33ed882bf16f8bc265afcb05e1d74907ca0b0b41a201eed28acafb829d6ce0"
+    },
+    {
+      "path": "freeze/evidence/registry-api-protocol.jsonl",
+      "bytes": 3989951,
+      "sha256": "7978bda1dd630c54219c368691ca1778729eb4510a805aa5e82b0ff87db0c7d0"
+    },
+    {
+      "path": "freeze/evidence/test-summary.json",
+      "bytes": 2553,
+      "sha256": "c935304e927d53b3619162c8f7e358b9cfa4357423e9de994a7e4458f5aa9d1b"
+    },
+    {
+      "path": "freeze/files/CHANGELOG.md",
+      "bytes": 57112,
+      "sha256": "735ad1634e2376d93d5dd9a9948bc06e421fad9555997b29fd44b8b040a22e89"
+    },
+    {
+      "path": "freeze/files/coordinator/registry/cache_checkpoint_stage_cost_test.go",
+      "bytes": 5424,
+      "sha256": "91c7bb3bc500d9f6700b79dc9910e99fc2ed41c0aff378525589ccbad041a3c4"
+    },
+    {
+      "path": "freeze/files/coordinator/registry/cache_service_cost.go",
+      "bytes": 3405,
+      "sha256": "f2e4a39ddc6b8e62c63c684f9a393ab1103626aabdccbb93bca2e69160aeeb73"
+    },
+    {
+      "path": "freeze/files/coordinator/registry/cache_service_cost_benchmark_test.go",
+      "bytes": 719,
+      "sha256": "7143a0eadb68fcf8d1ec1346226389ce31b40916d8a550a644aa25c4a387fca9"
+    },
+    {
+      "path": "freeze/files/coordinator/registry/cache_service_cost_test.go",
+      "bytes": 8382,
+      "sha256": "3d4fbb6efa54add4263243aea15708b7d0f4bc6d1afa60c119823e116c895640"
+    },
+    {
+      "path": "freeze/files/coordinator/registry/cache_service_penalty_test.go",
+      "bytes": 5690,
+      "sha256": "00d4342ed24ca83f093da21dc2099783ee6db39848068f0e970fa54869be5406"
+    },
+    {
+      "path": "freeze/files/coordinator/registry/candidate_selection.go",
+      "bytes": 3354,
+      "sha256": "afd82e30565ce41c4c8b27838276c2c39b87930d1e00efc9e208b4f6d3486d6b"
+    },
+    {
+      "path": "freeze/files/coordinator/registry/scheduler.go",
+      "bytes": 146157,
+      "sha256": "154a5d51daa576427dded3360f18f3bcf5dc7829e793441b32692acc271adcee"
+    },
+    {
+      "path": "freeze/files/docs/architecture/cache-aware-routing.md",
+      "bytes": 37409,
+      "sha256": "aeffcbc7e00d07d628440ed90a8551f7c65aa47717f8c0d9b54e0f95bdc1556b"
+    },
+    {
+      "path": "freeze/files/docs/architecture/routing.md",
+      "bytes": 49842,
+      "sha256": "98982df745e635fdefc132a2714f718f07bbbc8ed5edbc62c7398ebfb79df9e1"
+    },
+    {
+      "path": "freeze/manifest.json",
+      "bytes": 27745,
+      "sha256": "e2b9817404fd662a372c578f4eb8648afa9e97048e7b651d59ecbdccd59c017f"
+    },
+    {
+      "path": "freeze/source.patch",
+      "bytes": 38349,
+      "sha256": "a3db0dab09a004d899dcaf7d38a969c8b5c49778b7f7275833c8398f0c9c0b2b"
+    },
+    {
+      "path": "root-validation/command.json",
+      "bytes": 5214,
+      "sha256": "32ecabdbb91f2917f77a322c9cb5f42d0a529d5d68684d217bae2f84307ba961"
+    },
+    {
+      "path": "root-validation/focused-race.jsonl",
+      "bytes": 281380,
+      "sha256": "c09d709d2a512450f30926b600ee9d77984ba58555a76d98d3e439119a6e3de0"
+    },
+    {
+      "path": "root-validation/focused-race.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "root-validation/results.json",
+      "bytes": 50,
+      "sha256": "e923d3f67d3375f62672a8fd024e06a384ed6f6dbb8b7ad4e2c31aa39d5b755b"
+    }
+  ]
+}

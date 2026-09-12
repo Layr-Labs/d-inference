@@ -1,0 +1,44 @@
+{
+  "source_head": "e928d395fa4f97e736552a6de89b37876b2bc56b",
+  "compile_define": "RADIX_CANDIDATE_BUILD=0",
+  "harness_files": [
+    {
+      "path": "scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkMetrics.swift",
+      "sha256": "dd9f82efc37c2ac758fdb10f2714cf2f83a4145cdf65f684d180f836578d6f97"
+    },
+    {
+      "path": "scripts/benchmarks/radix-engine/Sources/radix-engine/RadixBenchmark.swift",
+      "sha256": "0c012fbce4bb5a43ddbc9d35957d7a4ad4c3041a0d2f3578b03e51fab9732944"
+    },
+    {
+      "path": "scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkOptions.swift",
+      "sha256": "d1a4166ae0830ba12145d820a21ad79857624a134aa070758bd03250a76ba22c"
+    },
+    {
+      "path": "scripts/benchmarks/radix-engine/Package.swift",
+      "sha256": "a3cf7146baa86d8cc7ffb6a62134a79d1f9d226b4e797e60b2f6cc8e136b37e8"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "run_radix_http.py",
+      "sha256": "9608cef72cea2f08cab343fe70d8948338cffab451c8636a9ccc0dc7e83eeefe"
+    },
+    {
+      "path": "mlx.metallib",
+      "sha256": "4ffbbac48a99b495916c3fa0921ce813eb554de1a09aff408d9b5a5a8053e6b0"
+    },
+    {
+      "path": "run_radix_engine.py",
+      "sha256": "b22f875505c8f72f2e1bdcd7ada835c2f6cee392608c70c913f08616d82dd594"
+    },
+    {
+      "path": "radix-engine",
+      "sha256": "740ce1b31783509f7e545712aa5002e5c6918aaf0160393ad7cec169a17add21"
+    },
+    {
+      "path": "radix_prefix_cache.py",
+      "sha256": "17924ee6129a15cd1a142145f31d6e7e6b0eab64903e4a995780cd32e0737eaa"
+    }
+  ]
+}

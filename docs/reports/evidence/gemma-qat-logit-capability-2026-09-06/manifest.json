@@ -1,0 +1,809 @@
+{
+  "archive": {
+    "bytes": 354597,
+    "path": "payloads.tar.gz",
+    "sha256": "b4aef1a133bd3c5b76c2bf125a6ab2bb38c4d1b88bedf60b68fbe0482534a252"
+  },
+  "excluded": "No runtime executable, metallib, model weight or key. The nested failed-stage archive contains only the reviewed source/input plan.",
+  "files": [
+    {
+      "bytes": 1723,
+      "path": "analysis.json",
+      "sha256": "5d0135ade18a3c6b66cb7ffb0bad0d00880849e5f2e96de13fd1f262bf9954db"
+    },
+    {
+      "bytes": 3505,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution1/plan-manifest.json",
+      "path": "execution-preparation1/plan-manifest.json",
+      "sha256": "1af100278043a8187343e08a0d515d09fbbd7139f87d461e6aed9ef75ae3d985"
+    },
+    {
+      "bytes": 1633,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution1/preflight.py",
+      "path": "execution-preparation1/preflight.py",
+      "sha256": "8ba55ca6f113442ee6740ed8ff2a505c80ff4130e2a8d0da412a8165c5fe6516"
+    },
+    {
+      "bytes": 1189,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution1/preparation-manifest.json",
+      "path": "execution-preparation1/preparation-manifest.json",
+      "sha256": "95ff26d1f1c4505e1f4c06492cf5a006b474412ebe221c537f643fe3b32fa0ed"
+    },
+    {
+      "bytes": 1182,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution1/preparation-summary.json",
+      "path": "execution-preparation1/preparation-summary.json",
+      "sha256": "15b992e57d426a28035629718f6445e25b020f9db8a65b22e6a7fc59f0835213"
+    },
+    {
+      "bytes": 8301,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution1/run_cell.py",
+      "path": "execution-preparation1/run_cell.py",
+      "sha256": "cb6e990ad1ea25c8d150689094b5368478559d268e6494aee675bd22af24b618"
+    },
+    {
+      "bytes": 18771,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution1/runtime-binding.json",
+      "path": "execution-preparation1/runtime-binding.json",
+      "sha256": "1c714fa86469c935c911cb7b02a318da9ee0490319457d692cad0f8bae39875f"
+    },
+    {
+      "bytes": 696,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution1/runtime-root-review.json",
+      "path": "execution-preparation1/runtime-root-review.json",
+      "sha256": "5ea81fb4e50c438da1328c263f4b1fbf5b427dd75b8bb8f8ed8e9af8ab35f24f"
+    },
+    {
+      "bytes": 8460,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution1/strict_results.py",
+      "path": "execution-preparation1/strict_results.py",
+      "sha256": "3b696b7c15a9efd628bb4a478c62370a23538aeea473d11c4b70eb7adaaac264"
+    },
+    {
+      "bytes": 6265,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution1/test_strict_results.py",
+      "path": "execution-preparation1/test_strict_results.py",
+      "sha256": "bc51056fb215d9c0cf04b44f28f2f21e88dcac1152183b65814a6782b0f3f5c9"
+    },
+    {
+      "bytes": 3505,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/plan-manifest.json",
+      "path": "execution-preparation2/plan-manifest.json",
+      "sha256": "1af100278043a8187343e08a0d515d09fbbd7139f87d461e6aed9ef75ae3d985"
+    },
+    {
+      "bytes": 1633,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/preflight.py",
+      "path": "execution-preparation2/preflight.py",
+      "sha256": "8ba55ca6f113442ee6740ed8ff2a505c80ff4130e2a8d0da412a8165c5fe6516"
+    },
+    {
+      "bytes": 1195,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/preparation-manifest.json",
+      "path": "execution-preparation2/preparation-manifest.json",
+      "sha256": "345bf5379c13319af0dd33547e0bad45e05c020019e7df9ca640a6af0c6c235d"
+    },
+    {
+      "bytes": 1626,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/preparation-summary.json",
+      "path": "execution-preparation2/preparation-summary.json",
+      "sha256": "55586339a62ea19ce8397d4bde4bb1280852b85dd95d74bd3c4ea83323e6bfbf"
+    },
+    {
+      "bytes": 8384,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/run_cell.py",
+      "path": "execution-preparation2/run_cell.py",
+      "sha256": "648d517ff563a14501640da14878aab492df2ed2348ab0dce2d3eb53519c1a07"
+    },
+    {
+      "bytes": 18771,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/runtime-binding.json",
+      "path": "execution-preparation2/runtime-binding.json",
+      "sha256": "1c714fa86469c935c911cb7b02a318da9ee0490319457d692cad0f8bae39875f"
+    },
+    {
+      "bytes": 696,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/runtime-root-review.json",
+      "path": "execution-preparation2/runtime-root-review.json",
+      "sha256": "5ea81fb4e50c438da1328c263f4b1fbf5b427dd75b8bb8f8ed8e9af8ab35f24f"
+    },
+    {
+      "bytes": 8460,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/strict_results.py",
+      "path": "execution-preparation2/strict_results.py",
+      "sha256": "3b696b7c15a9efd628bb4a478c62370a23538aeea473d11c4b70eb7adaaac264"
+    },
+    {
+      "bytes": 6265,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/test_strict_results.py",
+      "path": "execution-preparation2/test_strict_results.py",
+      "sha256": "bc51056fb215d9c0cf04b44f28f2f21e88dcac1152183b65814a6782b0f3f5c9"
+    },
+    {
+      "bytes": 5825,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-attempt1-freeze.py",
+      "path": "freeze.py",
+      "sha256": "c3b2a354803444cc16c98a4593e2a095b803f67c9f34d99b163d20f37a129750"
+    },
+    {
+      "bytes": 1537,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/assistant-files.json",
+      "path": "plan/assistant-files.json",
+      "sha256": "c137fad64fec8e0a5ca47d6d26f58f7504c383ec626fbdd95262a9f83705f9c2"
+    },
+    {
+      "bytes": 661,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/assistant-inventory.json",
+      "path": "plan/assistant-inventory.json",
+      "sha256": "bd583d92234810790768450eb497f6b2f0a02bf774812cfe21166a9fa1cfecdc"
+    },
+    {
+      "bytes": 721455,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/historical/contiguous-report.json",
+      "path": "plan/historical/contiguous-report.json",
+      "sha256": "d953c651c51916d897e8242008e95e8158d4694b830d4e9adca6e57087360575"
+    },
+    {
+      "bytes": 715344,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/historical/paged-report.json",
+      "path": "plan/historical/paged-report.json",
+      "sha256": "790863b00fc0a557dbe2ed7dcf66672d69edfdb9e14223752b3b8950ab7e64f6"
+    },
+    {
+      "bytes": 72541,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/inputs/gemma-qat4.json",
+      "path": "plan/inputs/gemma-qat4.json",
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080"
+    },
+    {
+      "bytes": 3505,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/manifest.json",
+      "path": "plan/manifest.json",
+      "sha256": "1af100278043a8187343e08a0d515d09fbbd7139f87d461e6aed9ef75ae3d985"
+    },
+    {
+      "bytes": 1822,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/model-manifest.json",
+      "path": "plan/model-manifest.json",
+      "sha256": "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd"
+    },
+    {
+      "bytes": 20798,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/plan.json",
+      "path": "plan/plan.json",
+      "sha256": "2cc9267f8fbb8e00e60157e7d8490fb5a88505e25770014f463893e355dc2026"
+    },
+    {
+      "bytes": 9095,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/prepare.py",
+      "path": "plan/prepare.py",
+      "sha256": "c41f87fa8252f427bf9aed87beb003810386bf5b953b97c599cd7b80d349baa5"
+    },
+    {
+      "bytes": 696,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/provenance/c153-root-release-review.json",
+      "path": "plan/provenance/c153-root-release-review.json",
+      "sha256": "5ea81fb4e50c438da1328c263f4b1fbf5b427dd75b8bb8f8ed8e9af8ab35f24f"
+    },
+    {
+      "bytes": 10447,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/provenance/c153-runtime-binding.json",
+      "path": "plan/provenance/c153-runtime-binding.json",
+      "sha256": "03bba023c5a22459469ee33bff351732a7adb4c3ab2d104d90d586a7f25f6377"
+    },
+    {
+      "bytes": 3782,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/provenance/original-backend-difference.json",
+      "path": "plan/provenance/original-backend-difference.json",
+      "sha256": "6b1112c5f6f712a1671c43959cf3ec292306d43b1cf436ae06fe989034d0f7c0"
+    },
+    {
+      "bytes": 4457,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/provenance/pilot-binding.json",
+      "path": "plan/provenance/pilot-binding.json",
+      "sha256": "073dbc2123892971a4581c66a7abeeb5276fd749b639fa0756e0d4d253d23f28"
+    },
+    {
+      "bytes": 5635,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/provenance/pilot-manifest.json",
+      "path": "plan/provenance/pilot-manifest.json",
+      "sha256": "2ec461f4927b9865cf7c2c98ed07bb60d624294b9df777f75fe8e6c534e5cf42"
+    },
+    {
+      "bytes": 429,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/provenance/pilot-root-results-review.json",
+      "path": "plan/provenance/pilot-root-results-review.json",
+      "sha256": "2b62745e04332d3bbde9563a881eb4a8341db2ef87ae641d9799e0e79fc54162"
+    },
+    {
+      "bytes": 13154,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/runner/compare_radix_engine.py",
+      "path": "plan/runner/compare_radix_engine.py",
+      "sha256": "b33922deda8f21128873a8b71b639a0626005d449e3cc603cb35e2d660a253cc"
+    },
+    {
+      "bytes": 15658,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/runner/radix_engine_evidence.py",
+      "path": "plan/runner/radix_engine_evidence.py",
+      "sha256": "e0f57723d4be3f1a00068b9870f70a6bc9a0174b76fdea285d33f0f4eb658e4e"
+    },
+    {
+      "bytes": 13898,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/runner/run_radix_engine.py",
+      "path": "plan/runner/run_radix_engine.py",
+      "sha256": "b556fbb63f9045f567b473b2e5114375f60b03a2404ab2cb068ae649a70c4fa7"
+    },
+    {
+      "bytes": 6998,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/runner/run_radix_http.py",
+      "path": "plan/runner/run_radix_http.py",
+      "sha256": "9608cef72cea2f08cab343fe70d8948338cffab451c8636a9ccc0dc7e83eeefe"
+    },
+    {
+      "bytes": 9944,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/runner/test_run_radix_engine.py",
+      "path": "plan/runner/test_run_radix_engine.py",
+      "sha256": "c61d9c4ef809d8649b8362eadb38b0fec6de860d36ef54c4a397435fb98426bc"
+    },
+    {
+      "bytes": 8409,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-plan1/source-correspondence.json",
+      "path": "plan/source-correspondence.json",
+      "sha256": "249d18b8211d8b10a8d1d6a3abf42a92d01569acee4024466de175249c6e1412"
+    },
+    {
+      "bytes": 195,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-stopped-postflight1.json",
+      "path": "postflight.json",
+      "sha256": "3f2e7ff312baa9d8cd7c81e85780157819302fc37a69df0c82531f29259d01fc"
+    },
+    {
+      "bytes": 355,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-helper-validation1/command.json",
+      "path": "remote-helper-tests/command.json",
+      "sha256": "ed544457e6facb731a54cb693661322c9602e0a5a7b3dff077a57b16ee0c8bbb"
+    },
+    {
+      "bytes": 317,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-helper-validation1/manifest.json",
+      "path": "remote-helper-tests/manifest.json",
+      "sha256": "30fb1311228057acb784907e741b4b5c66434ca16b3098403ae85288bf3b57de"
+    },
+    {
+      "bytes": 1388,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-helper-validation1/tests.log",
+      "path": "remote-helper-tests/tests.log",
+      "sha256": "df9f4ff578ba0fc910da821a064b2951e936b32c933c0296c1d56a172a62baa2"
+    },
+    {
+      "bytes": 3528,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/command.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/command.json",
+      "sha256": "f107b838cb012287298bebc37f3bbf2bd8cafbf1807937d40f2cd4b153bff471"
+    },
+    {
+      "bytes": 751,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/engine.log",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/engine.log",
+      "sha256": "c2770732b7a1afd77638fcf51b214cc539b5e79685f15f686b55bfb4d77c2aa4"
+    },
+    {
+      "bytes": 170,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/execution.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/execution.json",
+      "sha256": "2417696b899dd8c705f320bd1c5f79ce9a8a36fc5611e5431b3ef485a5c8a3a9"
+    },
+    {
+      "bytes": 3493,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/expected-native-command.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/expected-native-command.json",
+      "sha256": "46d3b872fd4f370fb4798cc590a02a32e1d37b54313c3f6c6924079187e93bab"
+    },
+    {
+      "bytes": 72541,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/input.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/input.json",
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080"
+    },
+    {
+      "bytes": 2368,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/manifest.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/manifest.json",
+      "sha256": "74a3e4df346e7a7baa0675ae18b037c755cce1a134ed2eb2ea399243a4bfae07"
+    },
+    {
+      "bytes": 2734,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/metadata.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/metadata.json",
+      "sha256": "568bba21ff46e5b0a0d1aab21eea5f695231fade8bba6e6834e90a51b2007420"
+    },
+    {
+      "bytes": 194,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/ownership-before.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/ownership-before.json",
+      "sha256": "182e61456c0a1974e407a9d2efb5a233fd701e737009459e40456de7a42dd515"
+    },
+    {
+      "bytes": 195,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/ownership-before.log",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/ownership-before.log",
+      "sha256": "3116e4d8ecbc7086f0fc8ed977f8db9669dcb16519c5e751c140d6d0649cbc2a"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/remote-inventory.stderr",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/remote-inventory.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 821,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/remote-inventory.stdout",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/remote-inventory.stdout",
+      "sha256": "9329c675509149752823465e4c4154617459103bb572ffb1c2406556d6efa545"
+    },
+    {
+      "bytes": 721384,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/report.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/report.json",
+      "sha256": "8bae42c82211db8b5b250e375b21908ec77e8d0b486f0a456d3eb163debc7f56"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/runtime-precheck.stderr",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/runtime-precheck.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 1938,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/runtime-precheck.stdout",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/runtime-precheck.stdout",
+      "sha256": "17d32d432d9d839a82710c24556668b1ad72fa1498c7eab885ac569a414cc165"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/ssh-run.log",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/ssh-run.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 377,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/summary.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/summary.json",
+      "sha256": "56860dc9231db1176eebd25b09ac62dfa70beee027060920374dfefdf7afffdb"
+    },
+    {
+      "bytes": 101408,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/telemetry.jsonl",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-off/telemetry.jsonl",
+      "sha256": "a9062cc831aafabc46513a92f4c5d89899dcf097d9c853f81d5ec64a4d0bed19"
+    },
+    {
+      "bytes": 3821,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/command.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/command.json",
+      "sha256": "3605e6cbabed179708b8b0000cad8be19fa8b2860a8c416f31a2a30514f758ff"
+    },
+    {
+      "bytes": 769,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/engine.log",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/engine.log",
+      "sha256": "3babd6168dc8dc205dc7245e99db8a29cfd13815039d6936abc592c2fa113bbe"
+    },
+    {
+      "bytes": 170,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/execution.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/execution.json",
+      "sha256": "4a8b83a4a2eba68a4fe0314dcc9cae8aeaf15a01d12a44f4a96e203658412773"
+    },
+    {
+      "bytes": 3787,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/expected-native-command.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/expected-native-command.json",
+      "sha256": "20a6476fb4ab38dbd6e7a1e76777821ff8a149350fa858de7e3237fb8a70a5b7"
+    },
+    {
+      "bytes": 72541,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/input.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/input.json",
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080"
+    },
+    {
+      "bytes": 2368,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/manifest.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/manifest.json",
+      "sha256": "12f3d14ee4c3d89af50032ca6f716767b923eba75d9e357848ddda3e2ca5ec9d"
+    },
+    {
+      "bytes": 2881,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/metadata.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/metadata.json",
+      "sha256": "572d14c983417b409a7965416916c23aa1521f15bb19a35de2a1f1a791ede2b3"
+    },
+    {
+      "bytes": 194,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/ownership-before.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/ownership-before.json",
+      "sha256": "19bf34020465611ce522266457b26ceb7f8d51aef4dc4e358b1c4e5b02da9352"
+    },
+    {
+      "bytes": 195,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/ownership-before.log",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/ownership-before.log",
+      "sha256": "fda33db24b2c94f849f09860b63453e5689f284b830f765af614405952a0194e"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/remote-inventory.stderr",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/remote-inventory.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 818,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/remote-inventory.stdout",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/remote-inventory.stdout",
+      "sha256": "7971208c71f9b0de42c37d685d916f05e314856bfc4be9c3e9d2aa4faae62998"
+    },
+    {
+      "bytes": 17980,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/report.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/report.json",
+      "sha256": "3041b735f0f0fd15332a92cc118ccf7d8b06fbd598a24714fbea012f404eae34"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/runtime-precheck.stderr",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/runtime-precheck.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 1937,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/runtime-precheck.stdout",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/runtime-precheck.stdout",
+      "sha256": "354a2a29b88bfa2c1d06db2cf95ba73bb4e8a01f56e8b5a881ace35cc8854728"
+    },
+    {
+      "bytes": 398,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/ssh-run.log",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/ssh-run.log",
+      "sha256": "5a2fe7b23618bf6852783090b59455da826cf5caea8231514d9c70a7b9c9d242"
+    },
+    {
+      "bytes": 620,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/summary.json",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/summary.json",
+      "sha256": "f8f91f174579fc1771966abf7a457510b77c5a67da9f2924b86d81c755f34ef8"
+    },
+    {
+      "bytes": 58326,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-execution2/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/telemetry.jsonl",
+      "path": "results/gemma-qat4-contiguous-cache-off-mtp-on-trace-on/telemetry.jsonl",
+      "sha256": "03fc70085fcca3529f861e98fc4b2a2c8ee529a1dde21eb0a475e7b92742d53c"
+    },
+    {
+      "bytes": 18771,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-binding1.json",
+      "path": "runtime-binding.json",
+      "sha256": "1c714fa86469c935c911cb7b02a318da9ee0490319457d692cad0f8bae39875f"
+    },
+    {
+      "bytes": 18771,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-transfer1/binding.json",
+      "path": "runtime-transfer/binding.json",
+      "sha256": "1c714fa86469c935c911cb7b02a318da9ee0490319457d692cad0f8bae39875f"
+    },
+    {
+      "bytes": 1994,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-transfer1/manifest.json",
+      "path": "runtime-transfer/manifest.json",
+      "sha256": "d1ae59980e472ce03199a9ab9861ff674671f96745100eb4cec1cccd442382e8"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-transfer1/preflight-and-resources.stderr",
+      "path": "runtime-transfer/preflight-and-resources.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 215,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-transfer1/preflight-and-resources.stdout",
+      "path": "runtime-transfer/preflight-and-resources.stdout",
+      "sha256": "5cc37ac0ee6995770a7d0cc337add7d13c0883091444d2b818b5bff54783cf94"
+    },
+    {
+      "bytes": 467,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-transfer1/receipt.json",
+      "path": "runtime-transfer/receipt.json",
+      "sha256": "b76aa6f375e9d327fb7b9a2f0302a3dd116d155efb9eecf6247d4e46dcc1aa1e"
+    },
+    {
+      "bytes": 696,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-transfer1/root-review.json",
+      "path": "runtime-transfer/root-review.json",
+      "sha256": "5ea81fb4e50c438da1328c263f4b1fbf5b427dd75b8bb8f8ed8e9af8ab35f24f"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-transfer1/scp-binding.stderr",
+      "path": "runtime-transfer/scp-binding.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-transfer1/scp-binding.stdout",
+      "path": "runtime-transfer/scp-binding.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-transfer1/scp-probe.stderr",
+      "path": "runtime-transfer/scp-probe.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-transfer1/scp-probe.stdout",
+      "path": "runtime-transfer/scp-probe.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-transfer1/scp-review.stderr",
+      "path": "runtime-transfer/scp-review.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-transfer1/scp-review.stdout",
+      "path": "runtime-transfer/scp-review.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 7438,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-transfer1/transfer.py",
+      "path": "runtime-transfer/transfer.py",
+      "sha256": "65b773c8fa2b20b9c852a6d0c34008b3ec5a30c74ad486f21b4bd205c4eb32cb"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-transfer1/verify.stderr",
+      "path": "runtime-transfer/verify.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 96,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-runtime-transfer1/verify.stdout",
+      "path": "runtime-transfer/verify.stdout",
+      "sha256": "2d73e410f04270e521803d00998ccfe4e89d988d4d37934dd5a42e7b53f7c5eb"
+    },
+    {
+      "bytes": 7933,
+      "path": "source-native-e972/Libraries/MLXLLM/Models/Qwen35MTPTopTwo.swift",
+      "sha256": "382ee06a3467228912adde25ce402984e51f100da652d9b661f59009bce682dc"
+    },
+    {
+      "bytes": 11407,
+      "path": "source-native-e972/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2LogitDiagnostic.swift",
+      "sha256": "16ba94359fd351171516760a4b6bef4a61a76ab75a27517b68d6565b9bca495c"
+    },
+    {
+      "bytes": 221778,
+      "path": "source-native-e972/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift",
+      "sha256": "41bee6e6c126bc43402c208368b3cc991b3ba365be4fb7efe6c240eb6bad7e4b"
+    },
+    {
+      "bytes": 36273,
+      "path": "source-native-e972/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift",
+      "sha256": "fe54253eebb0b22b81ba4c29758f7ab8ec01851538fa479acc3a0fcffd2e664b"
+    },
+    {
+      "bytes": 18531,
+      "path": "source-native-e972/Libraries/MLXLMCommon/ContinuousBatchingV2/SteppableAdapterV2.swift",
+      "sha256": "21791a71c714478e304f6ca133646850a51c7c28e7a378b55a1f528f1a68afbe"
+    },
+    {
+      "bytes": 1988,
+      "path": "source-native-e972/top-two-provider-grep.txt",
+      "sha256": "bc1c45a8a4f7171faec49fc940cb5e55d6f9c032932da77f4cb67d95401ece74"
+    },
+    {
+      "bytes": 1776,
+      "path": "source-parent384/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkLogitDiagnostic.swift",
+      "sha256": "0d9b92e880829cee93252861443d75e54f9b037a3a61a502d5a90a6b9a3c7585"
+    },
+    {
+      "bytes": 901,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-staging-resume1/manifest.json",
+      "path": "staging-resume/manifest.json",
+      "sha256": "b8731d59d2484ef255469a93a11548ad1e782d550fdde4243bb71e19bd67f873"
+    },
+    {
+      "bytes": 199,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-staging-resume1/ownership-before.json",
+      "path": "staging-resume/ownership-before.json",
+      "sha256": "d281ccb996cda976ac8b17301b525fa2ed7cce9c6f32ab47583bb25c53f6ab26"
+    },
+    {
+      "bytes": 200,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-staging-resume1/ownership-before.log",
+      "path": "staging-resume/ownership-before.log",
+      "sha256": "262f2544ca3112038776e63770f1b6a7bccfe6e18e7c3ec5f716daf9ad292e6c"
+    },
+    {
+      "bytes": 520,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-staging-resume1/receipt.json",
+      "path": "staging-resume/receipt.json",
+      "sha256": "ba86f7da4acd9ff8353b2323347e37aa5647cfd79f6ae2d0c8e52125a6cba495"
+    },
+    {
+      "bytes": 4762,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-staging-resume1/rendered-remote.py",
+      "path": "staging-resume/rendered-remote.py",
+      "sha256": "dc3bc83c814aa6d4a6ca4c40ca1862850ca5ccc0ce0c4edac9d6dc446b41d62f"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-staging-resume1/verify.stderr",
+      "path": "staging-resume/verify.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 154,
+      "original_path": "/tmp/darkbloom-qat-actual-logits-staging-resume1/verify.stdout",
+      "path": "staging-resume/verify.stdout",
+      "sha256": "64b77567db85dbb21810233f43e5a9a1b291e70bba03dea422684156bc5e2e3f"
+    },
+    {
+      "bytes": 8384,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/after/execution.py",
+      "path": "template-fix/after/execution.py",
+      "sha256": "648d517ff563a14501640da14878aab492df2ed2348ab0dce2d3eb53519c1a07"
+    },
+    {
+      "bytes": 5922,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/after/stage.py",
+      "path": "template-fix/after/stage.py",
+      "sha256": "2fb45ae78a9dfbfc09538fe576e3a4c7316046a001d7407e593b017cfe485a60"
+    },
+    {
+      "bytes": 7438,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/after/transfer.py",
+      "path": "template-fix/after/transfer.py",
+      "sha256": "65b773c8fa2b20b9c852a6d0c34008b3ec5a30c74ad486f21b4bd205c4eb32cb"
+    },
+    {
+      "bytes": 5807,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/before/stage.py",
+      "path": "template-fix/before/stage.py",
+      "sha256": "916957844313dbf6f3f27f4fd33e3592acc9221e830b04adf0da489c55b838af"
+    },
+    {
+      "bytes": 7323,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/before/transfer.py",
+      "path": "template-fix/before/transfer.py",
+      "sha256": "6a824159ae5467c9c66047e0614618e61bbea11da48bc738e2ac464ca27a672c"
+    },
+    {
+      "bytes": 778,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/cpu-tests.stderr",
+      "path": "template-fix/cpu-tests.stderr",
+      "sha256": "953d3fee2d8d4bc0d7d3a9e39d6b0c1543a521c996cdab266f7ee0fa0e067d9d"
+    },
+    {
+      "bytes": 825,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/cpu-tests.stdout",
+      "path": "template-fix/cpu-tests.stdout",
+      "sha256": "557325028fc130208fadec23ebe9c6f017814025d6495eb0b3f4a9a5bb1d850e"
+    },
+    {
+      "bytes": 2264,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/execution.patch",
+      "path": "template-fix/execution.patch",
+      "sha256": "a097110018a944361f2b02e144434211cc641299d115f7c29a0a212ce3830f5b"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/failed-stage/create.stderr",
+      "path": "template-fix/failed-stage/create.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 105,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/failed-stage/create.stdout",
+      "path": "template-fix/failed-stage/create.stdout",
+      "sha256": "0fa533d40955a10d948932ed2ed2c1cadb4ea51e058847a7a2d60b6efa65205b"
+    },
+    {
+      "bytes": 3305,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/failed-stage/file-inventory.json",
+      "path": "template-fix/failed-stage/file-inventory.json",
+      "sha256": "128ae949071a248eeed5fdb24ee8ed8e36febd560400dd24559910823d108e0a"
+    },
+    {
+      "bytes": 86268,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/failed-stage/plan-package.tar.gz",
+      "path": "template-fix/failed-stage/plan-package.tar.gz",
+      "sha256": "5797cdd70e0ea3fe695d83006482d8b03e4d5a7b7d2bc5683e91767ba58b7801"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/failed-stage/preflight.stderr",
+      "path": "template-fix/failed-stage/preflight.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 239,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/failed-stage/preflight.stdout",
+      "path": "template-fix/failed-stage/preflight.stdout",
+      "sha256": "35435f08b2ef1ef7cd40110db09f0016509b99caf41c315428bdc718eef008a2"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/failed-stage/scp.stderr",
+      "path": "template-fix/failed-stage/scp.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/failed-stage/scp.stdout",
+      "path": "template-fix/failed-stage/scp.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 430,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/failed-stage/verify.stderr",
+      "path": "template-fix/failed-stage/verify.stderr",
+      "sha256": "dfb8c49f5094958fbadda36be125485ba2f57ba2f06605acb8b574e2841f4872"
+    },
+    {
+      "bytes": 0,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/failed-stage/verify.stdout",
+      "path": "template-fix/failed-stage/verify.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 479,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/original-state.json",
+      "path": "template-fix/original-state.json",
+      "sha256": "4ce4e37e00b318de483fbff1a7985c27b03e238af89caaf69147d84596f99c7f"
+    },
+    {
+      "bytes": 3894,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/resume_staging.py",
+      "path": "template-fix/resume_staging.py",
+      "sha256": "874fd9f6d99c5580716d616805e0b39e6706d2f5ff3d12478f8bee7ad88523dc"
+    },
+    {
+      "bytes": 1472,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/review.json",
+      "path": "template-fix/review.json",
+      "sha256": "c8ce085322f64c3194466548f8e5b0821b9cb9d72cb67396e68384c34b833c73"
+    },
+    {
+      "bytes": 3456,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/source-manifest.json",
+      "path": "template-fix/source-manifest.json",
+      "sha256": "6fd5ed83b25e9debddb1466431a20641f5eafd599b5c61f6a8f8b9dd92ab8d70"
+    },
+    {
+      "bytes": 2850,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/stage.patch",
+      "path": "template-fix/stage.patch",
+      "sha256": "0496794deea5ce8a81fff2028532e13cd6e523894a18295083b97eb0248ad9af"
+    },
+    {
+      "bytes": 3505,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/test_rendered_scripts.py",
+      "path": "template-fix/test_rendered_scripts.py",
+      "sha256": "9479cde97bd4b71cf6b179895d659cf9598cef6dffa452d488321c3464ab728a"
+    },
+    {
+      "bytes": 3122,
+      "original_path": "/tmp/darkbloom-qat-template-fix1/transfer.patch",
+      "path": "template-fix/transfer.patch",
+      "sha256": "7a3bff419351b814bc6293bd3a131fbecd075277fbe91dcd2e435598dd34f4a4"
+    }
+  ],
+  "payload_count": 134,
+  "scope": "Normal-MTP QAT c153 same-build four-cell attempt stopped at contiguous trace installation. No actual selected logits, no numerical or performance acceptance.",
+  "status": "ONE_CONTROL_PASS_ONE_DIAGNOSTIC_CAPABILITY_FAILURE_TWO_UNRUN"
+}

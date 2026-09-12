@@ -84,6 +84,10 @@ extension ProviderLoop {
     /// Test seam: number of scheduled (not yet fired) desired-prefetch retries.
     func pendingDesiredPrefetchRetriesForTesting() -> Int { desiredPrefetchRetryTasks.count }
 
+    /// Desired builds deferred for a capacity reason (reserve-raise preflight
+    /// refusal or a load in flight), awaiting a capacity-change re-offer.
+    func reserveDeferredPrefetchesForTesting() -> Set<String> { reserveDeferredPrefetches }
+
     /// Test seam: install a fake prefetcher and (re)build the prefetch
     /// coordinator against a given coordinator client. Used by unit tests to
     /// exercise the handler without the real download path.
@@ -419,8 +423,13 @@ extension ProviderLoop {
     /// Test seam: the current aggregate backend capacity snapshot.
     func backendCapacityForTesting() -> BackendCapacity? { state.backendCapacity }
 
-    func reservePendingLoadForTesting(requestID: String, bytes: UInt64) async {
-        await kvBudget.reservePendingLoad(requestID: requestID, bytes: bytes)
+    func reservePendingLoadForTesting(requestID: String, bytes: UInt64) async -> Bool {
+        guard requestID.hasPrefix("pending-load:"),
+            let lease = await kvBudget.claimPendingLoad(
+                requestID: requestID, weightBytes: bytes, minimumKVBytes: 0)
+        else { return false }
+        pendingLoadLeases[String(requestID.dropFirst("pending-load:".count))] = lease
+        return true
     }
 
     func outstandingKVReservationBytesForTesting() async -> UInt64 {
@@ -451,5 +460,12 @@ extension ProviderLoop {
         modelId: String, at instant: ContinuousClock.Instant
     ) {
         engineV2LastRecoveryAt[modelId] = instant
+    }
+}
+
+extension ProviderLoop {
+    /// Test seam: mark a model as mid-retirement (failed self-test drain).
+    func markRetiringForTesting(_ modelId: String) {
+        retiringModels.insert(modelId)
     }
 }

@@ -1,0 +1,6 @@
+{
+  "baseline_commit": "8b8935fb4",
+  "compared_arrays": 56,
+  "changed": [],
+  "scope": "Same original4model corpus with v3 renderer; compares raw token arrays independent of changed contract IDs."
+}

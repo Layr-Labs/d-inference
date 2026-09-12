@@ -15,6 +15,7 @@ import {
   ArrowDownToLine,
 } from "lucide-react";
 import {
+  PayoutCoverageNotice,
   PayoutModal,
   StripePayoutsCard,
   StripeWithdrawModal,
@@ -152,7 +153,7 @@ export default function EarningsContent() {
       <div>
         <h2 className="text-lg font-semibold text-text-primary">Provider Earnings</h2>
         <p className="text-sm text-text-tertiary mt-0.5">
-          Across all linked provider nodes
+          Earnings stay available after you remove your Macs.
         </p>
       </div>
 
@@ -187,8 +188,12 @@ export default function EarningsContent() {
         </div>
       </div>
 
+      {/* Payout coverage caveat — set expectations before bank linking */}
+      <PayoutCoverageNotice />
+
       {/* Withdraw Earnings (Stripe Connect) */}
       <StripePayoutsCard
+              confirmationPending={payouts.withdrawConfirmationPending}
         status={payouts.status}
         withdrawals={payouts.withdrawals}
         balanceMicroUsd={withdrawableBalanceMicro}
@@ -273,6 +278,8 @@ export default function EarningsContent() {
       {/* Stripe Withdraw Modal */}
       <PayoutModal open={payouts.withdrawOpen} onClose={() => !payouts.withdrawLoading && payouts.setWithdrawOpen(false)}>
         <StripeWithdrawModal
+          quote={payouts.withdrawQuote}
+          confirmationPending={payouts.withdrawConfirmationPending}
           status={payouts.status}
           balanceMicroUsd={withdrawableBalanceMicro}
           amount={payouts.withdrawAmount}

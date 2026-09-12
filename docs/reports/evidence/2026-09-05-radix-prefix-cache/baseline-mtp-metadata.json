@@ -1,0 +1,28 @@
+{
+  "started_unix": 1788586897.754946,
+  "binary": "/Users/gaj/autoresearch/radix-prefix-cache/artifacts/baseline-e928d395f/darkbloom",
+  "environment": {
+    "DARKBLOOM_NO_UPDATE_CHECK": "1",
+    "DARKBLOOM_PID_FILE": "/Users/gaj/autoresearch/radix-prefix-cache/runs/baseline-e928-mtp-cache-on/provider.pid",
+    "DARKBLOOM_LOCAL_DIR": "/Users/gaj/autoresearch/radix-prefix-cache/runs/baseline-e928-mtp-cache-on/local",
+    "DARKBLOOM_PREFIX_CACHE": "1",
+    "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1",
+    "DARKBLOOM_PREFIX_CACHE_TEST_ROOT": "/Users/gaj/autoresearch/radix-prefix-cache/runs/baseline-e928-mtp-cache-on/prefix-cache",
+    "DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS": "1"
+  },
+  "entry_gpu_temp_c": 31.795387268066406,
+  "arguments": {
+    "binary": "/Users/gaj/autoresearch/radix-prefix-cache/artifacts/baseline-e928d395f/darkbloom",
+    "output": "/Users/gaj/autoresearch/radix-prefix-cache/runs/baseline-e928-mtp-cache-on",
+    "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+    "port": 18120,
+    "mtp": "on",
+    "cache": "on",
+    "repeats": 3,
+    "lengths": "512,2048,8192",
+    "replay": "/Users/gaj/autoresearch/radix-prefix-cache/inputs/mtp-control-input.json"
+  },
+  "client_exit_code": 1,
+  "ended_unix": 1788586954.216204,
+  "ranked_job_at_end": false
+}

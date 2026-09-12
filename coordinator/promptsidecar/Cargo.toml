@@ -16,12 +16,16 @@ libc = "0.2.186"
 minijinja = { version = "2.21.0", features = ["fuel", "json", "preserve_order", "unicode"] }
 minijinja-contrib = { version = "2.21.0", features = ["pycompat"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = { version = "1.0.150", features = ["preserve_order"] }
+serde_json = { version = "1.0.150", features = ["preserve_order", "float_roundtrip"] }
 sha2 = "0.11.0"
 subtle = "2.6.1"
 thiserror = "2.0.18"
 tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"] }
 tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "io-util"] }
+
+# Renderer-v3 eligibility must detect Swift canonical-equivalent object keys.
+# Tokenizers' older alignment helper uses Unicode9 and is not sufficient here.
+unicode-normalization = "=0.1.25"
 
 [dev-dependencies]
 proptest = "1.11.0"

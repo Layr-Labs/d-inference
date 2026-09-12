@@ -1,0 +1,162 @@
+{
+  "base_head": "7190d3bbf0f5ef197963081781daf0c0f6169132",
+  "captured_at": "2026-09-05T09:54:46.805879+00:00",
+  "scope": "Final scalar provider-aligned service scoring; shared working tree has disjoint date/native/harness edits.",
+  "files": [
+    {
+      "path": "coordinator/api/reputation_latency_test.go",
+      "sha256": "ad2744d110f8dffc458b8d368ff206b6d0c84ea37251f2f8b59061532a9d1e6c",
+      "size": 5640
+    },
+    {
+      "path": "coordinator/registry/cache_activation_test.go",
+      "sha256": "38e663a6278df6096b4ce99079c88044293a544e93606d7c2e890789894b827e",
+      "size": 7919
+    },
+    {
+      "path": "coordinator/registry/cache_artifact_allowlist_test.go",
+      "sha256": "812b4c2deea3cbed0ce53b798c07e2aaa538d9f8eaf70c3ec6e34c6f78eb39bc",
+      "size": 9002
+    },
+    {
+      "path": "coordinator/registry/cache_holder_index_test.go",
+      "sha256": "075f3c690e538576692e35a8ac0f263c4ab3e0e146ad63a123c24d5a1dcbed41",
+      "size": 8855
+    },
+    {
+      "path": "coordinator/registry/cache_memory_test.go",
+      "sha256": "421769b7363c32a093fc6402bff163c7b6dcee4a2b633d464fe04fdcdb200493",
+      "size": 12987
+    },
+    {
+      "path": "coordinator/registry/cache_routing.go",
+      "sha256": "1c3bb66811cf5e077936313986ad7685b6a9c6f408c130c0861659bb638addf2",
+      "size": 12703
+    },
+    {
+      "path": "coordinator/registry/cache_routing_exact_test.go",
+      "sha256": "7e267a57432a665edaf19220b5fe62039d5daa44507d8231c7a09dbf6c25dcce",
+      "size": 30665
+    },
+    {
+      "path": "coordinator/registry/cache_routing_hints.go",
+      "sha256": "8f077495c790ec563db9accc02d89b0e7b38257bb7c15a1c8fe0669d7d6abc87",
+      "size": 6254
+    },
+    {
+      "path": "coordinator/registry/cache_score_config.go",
+      "sha256": "e2bdaec3311adf542f1a4a6a61d0f835ead47c297f1cec173b0fdc819895b4cc",
+      "size": 685
+    },
+    {
+      "path": "coordinator/registry/cache_score_config_test.go",
+      "sha256": "16eeb5456f3d3c4171e98f2130dac33693f1eaf1b373a7c279b64a6d18375f6c",
+      "size": 2204
+    },
+    {
+      "path": "coordinator/registry/cache_service_cost.go",
+      "sha256": "1158697f59e890f86dd99979fa31f8e96827ca02fbd3c270fbd29eb0f9ad082f",
+      "size": 2940
+    },
+    {
+      "path": "coordinator/registry/cache_service_cost_test.go",
+      "sha256": "3558b751003eb36b610eddfcbd2ee4e4c2e1b5e7eb969e07f9c75c89a03edc3b",
+      "size": 8452
+    },
+    {
+      "path": "coordinator/registry/candidate_selection.go",
+      "sha256": "3b772f010a38368f48c1f62c7606b15fc760f4a0d8324678bb68a0b7ab55d9e1",
+      "size": 3254
+    },
+    {
+      "path": "coordinator/registry/candidate_selection_test.go",
+      "sha256": "ae8a1bb3bbcb9030f79c9fd998b2d35fc6fe843fb7592d849aabe4c2cd58b5ae",
+      "size": 4188
+    },
+    {
+      "path": "coordinator/registry/config.go",
+      "sha256": "6752fb57ecdd1384337fc12f941c8df642a030518ea4ef654c5b679e7233116c",
+      "size": 12987
+    },
+    {
+      "path": "coordinator/registry/config_test.go",
+      "sha256": "8153a3650b453f924b3c72a8f61339d625ab3d3d2b01cb921958a20fd3c9b33e",
+      "size": 7406
+    },
+    {
+      "path": "coordinator/registry/gate_reason.go",
+      "sha256": "947e8364637ba19472c25752c21ed8d1a580522413c1b690f7c7120614ca8552",
+      "size": 10080
+    },
+    {
+      "path": "coordinator/registry/pending_request.go",
+      "sha256": "259dcd301072e4347ff19531ad4438db13e24994b12763ce8f1a166e41cd2852",
+      "size": 29800
+    },
+    {
+      "path": "coordinator/registry/registry.go",
+      "sha256": "7f71448e0f0a96c408b0e5f141128a3e607f84a130ba0468dcafc70fbe73c8df",
+      "size": 15709
+    },
+    {
+      "path": "coordinator/registry/routing_context_test.go",
+      "sha256": "85ea1e7ae2fc69adb2dd961bc7a2f74e5cbfbaf551919431d5c70700583e40e9",
+      "size": 29577
+    },
+    {
+      "path": "coordinator/registry/scheduler.go",
+      "sha256": "c438dfc1e0abdbf49c356267ba7bee9a9f5de844fc5645aafa475490bc5b32db",
+      "size": 146053
+    },
+    {
+      "path": "deploy/gcp/prod/refresh-env.sh",
+      "sha256": "7c5bd309035da97751f8c0720d1f60862bc62f8c631d7c6a5819590a4a9bc7d8",
+      "size": 7190
+    },
+    {
+      "path": "deploy/gcp/prod/release-env-defaults",
+      "sha256": "7c1be550d1ad81afef9557c2475c329ec95938e20216fbe95c05aa1217603ba9",
+      "size": 2603
+    },
+    {
+      "path": "docs/architecture/cache-aware-routing.md",
+      "sha256": "d8958cd587e2a4d9d05ffc5ede644e4c9ee5fee1a5ec5d3f4893ff3ebc60bc05",
+      "size": 35764
+    },
+    {
+      "path": "docs/architecture/routing.md",
+      "sha256": "b6a3d952452b22896be49fed6a5cdf101ed304e060528ed5077fcf4f040542f9",
+      "size": 49786
+    },
+    {
+      "path": "docs/architecture/system-profiler.md",
+      "sha256": "ca027f68e8e4f1fc00c7ab15b41e8cec011ac46fc6d24aaf184d7b2ce0b2d2b3",
+      "size": 42488
+    },
+    {
+      "path": "docs/glossary.md",
+      "sha256": "2d6438e871b7fccd2618a491a6f6536beb2152e2a9cba6a0cddc7df70f37e9b5",
+      "size": 15273
+    },
+    {
+      "path": "docs/operations/cache-routing-rollout.md",
+      "sha256": "5c2e7acf2030bf117dafd5aff9aae6586f5c586c71b59e7c526674bae12cd5ab",
+      "size": 13683
+    },
+    {
+      "path": "docs/operations/coordinator-deploy.md",
+      "sha256": "164433444ab081178c04617cc7f1e53dac680e3f408ba9ea932c8e580dee74ee",
+      "size": 23867
+    },
+    {
+      "path": "docs/reference/configuration.md",
+      "sha256": "e991bfa533c8e9d4c4887ec246476c898067652844ebab03e10fba7100460fd7",
+      "size": 69737
+    },
+    {
+      "path": "scripts/test-prod-env-refresh.sh",
+      "sha256": "5abfd7fa385670e9be959fb6dc2df33e8b6f131aba5a90470b81e68a48028c4a",
+      "size": 8127
+    }
+  ]
+}

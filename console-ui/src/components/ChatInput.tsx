@@ -1,11 +1,17 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
-import { Send, Square, ChevronDown, LogIn, Cpu, ImagePlus, X } from "lucide-react";
+import { useState, useRef, useCallback, useEffect, useId } from "react";
+import { ArrowUp, Square, LogIn, Cpu, ImagePlus, LockKeyhole, X } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { trackEvent } from "@/lib/google-analytics";
 import { modelSupportsImages, MAX_IMAGES_PER_MESSAGE } from "@/lib/image-upload";
 import { useImageUpload } from "@/hooks/useImageUpload";
+import { ChatModelSelector } from "@/components/chat/ChatModelSelector";
+
+export interface SuggestedDraft {
+  text: string;
+  revision: number;
+}
 
 interface ChatInputProps {
   onSend: (content: string, images: string[]) => void;
@@ -13,270 +19,179 @@ interface ChatInputProps {
   isStreaming: boolean;
   authenticated?: boolean;
   onLogin?: () => void;
-  // Privy auth readiness. While false the SDK is still lazy-loading and
-  // `onLogin` is a no-op, so the sign-in CTA is disabled (Codex review).
   ready?: boolean;
+  submitReady?: boolean;
+  suggestedDraft?: SuggestedDraft;
+  spacious?: boolean;
 }
 
-export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, onLogin, ready = true }: ChatInputProps) {
+export function ChatInput({
+  onSend, onStop, isStreaming, authenticated = true, onLogin, ready = true,
+  submitReady = true, suggestedDraft, spacious = false,
+}: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  // Narrow selectors: these fields don't change mid-stream, so the composer no
-  // longer re-renders on every streamed token (perf F3).
+  const helpId = useId();
+  // Keep the composer independent of token updates in the conversation.
   const selectedModel = useStore((s) => s.selectedModel);
   const models = useStore((s) => s.models);
-  const setSelectedModel = useStore((s) => s.setSelectedModel);
   const useMyMachine = useStore((s) => s.useMyMachine);
   const setUseMyMachine = useStore((s) => s.setUseMyMachine);
-  const [modelOpen, setModelOpen] = useState(false);
-
-  const selectedModelObj = models.find((m) => m.id === selectedModel);
+  const selectedModelObj = models.find((model) => model.id === selectedModel);
   const supportsImages = modelSupportsImages(selectedModelObj);
+  const canSubmit = authenticated && submitReady && !!selectedModel;
   const {
-    images,
-    imgError,
-    atLimit: atImageLimit,
-    fileInputRef,
-    removeImage,
-    clearImages,
-    handlePaste,
-    handleFileInputChange,
+    images, imgError, atLimit: atImageLimit, fileInputRef,
+    removeImage, clearImages, handlePaste, handleFileInputChange,
   } = useImageUpload(supportsImages);
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
-    if ((!trimmed && images.length === 0) || isStreaming) return;
+    if ((!trimmed && images.length === 0) || isStreaming || !canSubmit) return;
     onSend(trimmed, images);
     setInput("");
     clearImages();
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [input, images, isStreaming, onSend, clearImages]);
+  }, [input, images, isStreaming, canSubmit, onSend, clearImages]);
 
   const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
+    (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // Enter used to confirm an IME candidate must never submit a prompt.
+      if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+        event.preventDefault();
         handleSend();
       }
     },
-    [handleSend]
+    [handleSend],
   );
 
   useEffect(() => {
-    const ta = textareaRef.current;
-    if (ta) {
-      ta.style.height = "auto";
-      ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
-    }
-  }, [input]);
+    if (!suggestedDraft) return;
+    setInput(suggestedDraft.text);
+    textareaRef.current?.focus();
+  }, [suggestedDraft]);
 
   useEffect(() => {
-    if (!modelOpen) return;
-    const handler = () => setModelOpen(false);
-    document.addEventListener("click", handler);
-    return () => document.removeEventListener("click", handler);
-  }, [modelOpen]);
-
-  const chatModels = models;
-  const displayModel = selectedModelObj?.display_name
-    || selectedModel?.split("/").pop()
-    || "Select model";
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = Math.min(textarea.scrollHeight, 200) + "px";
+  }, [input]);
 
   if (!authenticated) {
     return (
-      <div className="bg-bg-primary/80 backdrop-blur-sm">
-        <div className="max-w-4xl mx-auto px-3 sm:px-6 py-3 sm:py-4">
-          <button
-            onClick={() => {
-              trackEvent("login_cta_clicked", {
-                source: "chat_input",
-              });
-              onLogin?.();
-            }}
-            disabled={!ready}
-            className="w-full flex items-center justify-center gap-2 bg-bg-tertiary rounded-2xl border border-border-dim
-                       py-4 text-text-tertiary hover:text-text-secondary hover:border-border-subtle cursor-pointer transition-all
-                       disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <LogIn size={16} />
-            <span className="text-sm font-medium">{ready ? "Sign in to start chatting" : "Loading..."}</span>
-          </button>
+      <div className="mx-auto max-w-3xl">
+        <div className="rounded-2xl border border-border-dim bg-bg-white p-5 shadow-sm sm:p-6">
+          <p className="text-[15px] text-text-secondary">Start your first conversation.</p>
+          <div className="mt-7 flex flex-wrap items-center justify-between gap-4">
+            <span className="inline-flex items-center gap-2 text-xs text-text-secondary"><LockKeyhole size={14} /> End-to-end encrypted</span>
+            <button
+              type="button"
+              onClick={() => {
+                trackEvent("login_cta_clicked", { source: "chat_input" });
+                onLogin?.();
+              }}
+              disabled={!ready}
+              className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-accent-brand px-5 text-sm font-medium text-white transition-colors hover:bg-accent-brand-hover disabled:cursor-not-allowed disabled:opacity-50 dark:text-bg-primary"
+            >
+              <LogIn size={15} />
+              {ready ? "Sign in to chat" : "Loading…"}
+            </button>
+          </div>
         </div>
+        <p className="mt-5 text-center text-xs text-text-tertiary">Use your email to get started.</p>
       </div>
     );
   }
 
   return (
-    <div className="bg-bg-primary/80 backdrop-blur-sm">
-      <div className="max-w-4xl mx-auto px-3 sm:px-6 py-3 sm:py-4">
-        <div className="relative flex flex-col gap-2 bg-bg-white rounded-2xl border border-border-dim
-                        shadow-md focus-within:shadow-lg transition-all">
-          {/* Staged image thumbnails */}
-          {images.length > 0 && (
-            <div className="flex flex-wrap gap-2 px-4 pt-3">
-              {images.map((src, i) => (
-                <div key={i} className="relative">
-                  <img
-                    src={src}
-                    alt={`Attachment ${i + 1}`}
-                    className="h-16 w-16 rounded-lg border border-border-dim object-cover"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removeImage(i)}
-                    aria-label={`Remove image ${i + 1}`}
-                    className="absolute -top-1.5 -right-1.5 flex items-center justify-center w-5 h-5 rounded-full bg-ink text-white border border-bg-white hover:opacity-90 transition-opacity"
-                  >
-                    <X size={11} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Textarea */}
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            placeholder="Send a message..."
-            rows={1}
-            className="w-full bg-transparent px-4 pt-4 pb-1 text-text-primary placeholder:text-text-tertiary text-[15px] resize-none outline-none"
-          />
-
-          {imgError && (
-            <p className="px-4 text-xs text-accent-red" role="alert">{imgError}</p>
-          )}
-
-          {/* Bottom bar */}
-          <div className="flex items-center justify-between px-3 pb-3">
-            {/* Left: model selector */}
-            <div className="flex items-center gap-1">
-              <div className="relative">
+    <div className="mx-auto w-full max-w-3xl">
+      <div className="relative rounded-2xl border border-border-dim bg-bg-white shadow-sm transition-[border-color,box-shadow] focus-within:border-accent-brand/40 focus-within:shadow-md">
+        {images.length > 0 && (
+          <div className="flex flex-wrap gap-3 px-5 pt-4">
+            {images.map((src, index) => (
+              <div key={index} className="relative">
+                <img src={src} alt={`Attachment ${index + 1}`} className="h-16 w-16 rounded-lg border border-border-dim object-cover" />
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setModelOpen(!modelOpen);
-                  }}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-text-tertiary hover:text-text-secondary hover:bg-bg-hover border-2 border-transparent hover:border-border-subtle transition-all"
-                >
-                  <span className="w-1.5 h-1.5 rounded-full bg-teal shrink-0" />
-                  <span className="font-mono truncate max-w-[120px] sm:max-w-none">{displayModel}</span>
-                  <ChevronDown size={12} />
-                </button>
-
-                {modelOpen && chatModels.length > 0 && (
-                  <div className="absolute bottom-full left-0 mb-1 w-[calc(100vw-3rem)] sm:w-80 bg-bg-white border border-border-dim rounded-xl shadow-lg overflow-hidden z-50">
-                    {chatModels.map((m) => {
-                      const name = m.display_name || m.id.split("/").pop() || m.id;
-                      return (
-                        <button
-                          key={m.id}
-                          onClick={() => {
-                            setSelectedModel(m.id);
-                            setModelOpen(false);
-                            trackEvent("chat_model_selected", {
-                              model: m.id,
-                              quantization: m.quantization || "unknown",
-                            });
-                          }}
-                          className={`w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-bg-hover transition-colors ${
-                            selectedModel === m.id
-                              ? "text-coral bg-coral/10 font-semibold"
-                              : "text-text-secondary"
-                          }`}
-                        >
-                          <span className="flex-1 font-mono text-xs truncate">
-                            {name}
-                          </span>
-                          {m.quantization && (
-                            <span className="text-xs text-text-tertiary px-1.5 py-0.5 bg-bg-tertiary rounded border border-border-dim">
-                              {m.quantization}
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+                  type="button"
+                  onClick={() => removeImage(index)}
+                  aria-label={`Remove image ${index + 1}`}
+                  className="absolute -top-2 -right-2 flex h-6 w-6 items-center justify-center rounded-full border border-border-dim bg-bg-white text-text-primary shadow-sm hover:bg-bg-secondary"
+                ><X size={12} /></button>
               </div>
-
-              {/* My Machine (prefer self-route, paid fallback) toggle */}
-              <button
-                type="button"
-                onClick={() => {
-                  const next = !useMyMachine;
-                  setUseMyMachine(next);
-                  trackEvent("self_route_toggled", { enabled: next });
-                }}
-                title={
-                  useMyMachine
-                    ? "Prefer your own machine (free when it serves). If it's offline or busy, this falls back to the paid network so you're never stuck."
-                    : "Prefer a Darkbloom node you run (free when it serves); falls back to the paid network if it can't"
-                }
-                aria-pressed={useMyMachine}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border-2 transition-all ${
-                  useMyMachine
-                    ? "text-teal bg-teal/10 border-teal/40 font-semibold"
-                    : "text-text-tertiary border-transparent hover:text-text-secondary hover:bg-bg-hover hover:border-border-subtle"
-                }`}
-              >
-                <Cpu size={12} />
-                <span className="hidden sm:inline">My Machine</span>
-                {useMyMachine && <span className="text-[10px] opacity-80">· Free, else paid</span>}
-              </button>
-
-              {/* Image attach — only for vision models (e.g. Gemma 4) */}
-              {supportsImages && (
-                <>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp,image/gif"
-                    multiple
-                    onChange={handleFileInputChange}
-                    className="hidden"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={isStreaming || atImageLimit}
-                    title={atImageLimit ? `Up to ${MAX_IMAGES_PER_MESSAGE} images` : "Attach image"}
-                    aria-label="Attach image"
-                    className="flex items-center px-2.5 py-1.5 rounded-lg text-xs text-text-tertiary hover:text-text-secondary hover:bg-bg-hover border-2 border-transparent hover:border-border-subtle transition-all disabled:opacity-30 disabled:hover:bg-transparent"
-                  >
-                    <ImagePlus size={14} />
-                  </button>
-                </>
-              )}
-            </div>
-
-            {/* Right: Send / Stop */}
-            <div className="flex items-center gap-1.5">
-              {isStreaming ? (
-                <button
-                  onClick={onStop}
-                  className="flex items-center justify-center w-9 h-9 rounded-xl bg-accent-red/20 hover:bg-accent-red/30 text-accent-red border-2 border-accent-red transition-colors"
-                >
-                  <Square size={16} />
-                </button>
-              ) : (
-                <button
-                  onClick={handleSend}
-                  disabled={(!input.trim() && images.length === 0) || isStreaming}
-                  className="flex items-center justify-center w-9 h-9 rounded-xl bg-coral border-2 border-ink text-white
-                             disabled:opacity-30 disabled:border-border-subtle
-                             hover:opacity-90
-                             transition-all"
-                >
-                  <Send size={16} />
-                </button>
-              )}
-            </div>
+            ))}
           </div>
+        )}
+
+        <textarea
+          ref={textareaRef}
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
+          aria-label="Message"
+          aria-describedby={helpId}
+          placeholder={supportsImages ? "Ask anything, or add an image…" : "Ask anything…"}
+          rows={spacious ? 3 : 2}
+          className={`chat-composer-input block max-h-[200px] w-full resize-none bg-transparent px-5 pt-5 pb-2 text-[15px] leading-relaxed text-text-primary outline-none placeholder:text-text-tertiary ${spacious ? "min-h-28" : "min-h-20"}`}
+        />
+
+        {imgError && <p className="px-5 pb-2 text-xs text-accent-red" role="alert">{imgError}</p>}
+
+        <div className="flex items-end justify-between gap-1 px-2.5 pb-2.5 sm:items-center">
+          <div className="flex min-w-0 flex-wrap items-center gap-0.5">
+            <ChatModelSelector />
+
+            <button
+              type="button"
+              onClick={() => {
+                const next = !useMyMachine;
+                setUseMyMachine(next);
+                trackEvent("self_route_toggled", { enabled: next });
+              }}
+              title="Prefer your own machine. Free when it serves; uses the paid network when it is offline or busy."
+              aria-label="Prefer my machine; paid network fallback"
+              aria-pressed={useMyMachine}
+              className={`flex min-h-9 items-center gap-1.5 rounded-lg px-2.5 text-xs transition-colors ${useMyMachine ? "bg-accent-brand-dim font-medium text-accent-brand" : "text-text-secondary hover:bg-bg-secondary hover:text-text-primary"}`}
+            >
+              <Cpu size={14} />
+              <span className="hidden sm:inline">My machine</span>
+            </button>
+
+            {supportsImages && (
+              <>
+                <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={handleFileInputChange} className="hidden" aria-label="Choose images to attach" />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isStreaming || atImageLimit}
+                  title={atImageLimit ? `Up to ${MAX_IMAGES_PER_MESSAGE} images` : "Attach image"}
+                  aria-label="Attach image"
+                  className="flex h-9 w-9 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-bg-secondary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                ><ImagePlus size={16} /></button>
+              </>
+            )}
+          </div>
+
+          {isStreaming ? (
+            <button type="button" onClick={onStop} aria-label="Stop generating" title="Stop generating" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-ink text-bg-primary transition-opacity hover:opacity-80">
+              <Square size={14} fill="currentColor" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSend}
+              aria-label="Send message"
+              title={canSubmit ? "Send message" : "Waiting for your account and model to be ready"}
+              disabled={(!input.trim() && images.length === 0) || !canSubmit}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent-brand text-white transition-colors hover:bg-accent-brand-hover disabled:cursor-not-allowed disabled:bg-bg-secondary disabled:text-text-tertiary dark:text-bg-primary"
+            ><ArrowUp size={19} /></button>
+          )}
         </div>
+      </div>
+      <div id={helpId} className="mt-3 flex min-h-4 flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1 text-[11px] text-text-tertiary">
+        <span>{useMyMachine ? "Your machine preferred. Paid network fallback." : "Conversations are saved in this browser."}</span>
+        <span className="hidden sm:inline">Enter to send <span className="px-1">·</span> Shift + Enter for a new line</span>
       </div>
     </div>
   );

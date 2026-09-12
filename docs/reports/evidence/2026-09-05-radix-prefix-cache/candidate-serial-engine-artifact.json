@@ -1,0 +1,2643 @@
+{
+  "label": "hybrid-candidate-semantic-build-1",
+  "head": "788ce9f067f90128af1b71424023574b9d5d21c5",
+  "submodules": " 0a725e3000edabc4911cde345270ca950bfa152f libs/mlx (darkbloom-metal-resource-count-201-g0a725e30)\n 6b0505cc790f512ae49d740b21e13f80802946bd libs/mlx-swift (heads/main)\n 734241bbff26467bb33eff8adc65b82d17b33578 libs/mlx-swift/Source/Cmlx/mlx (heads/main)\n 9ff12fab2634d6d76276823164dc8ceeea68dca9 libs/mlx-swift/Source/Cmlx/mlx-c (darkbloom-metal-resource-count-8-g9ff12fa)\n 713d2cf4bfb244ac1c8eef7e6a5e8c6fc99091f0 libs/mlx-swift-lm (remotes/origin/feat/cbv2-request-timing-1-g713d2cf)\n",
+  "source_files": [
+    {
+      "path": "provider-swift/Sources/DarkbloomFanCore/FanController.swift",
+      "sha256": "2dc9241322ca4c6c4069ad438585c3e988c86efcfb9b2598aa6a474358409263"
+    },
+    {
+      "path": "provider-swift/Sources/DarkbloomFanCore/FanHardware.swift",
+      "sha256": "ed3374579d9ba376038e4c55437f23af95c9fba4704fb2df97cc92b52ba85743"
+    },
+    {
+      "path": "provider-swift/Sources/DarkbloomFanCore/FanPolicy.swift",
+      "sha256": "e75941a0ca2c4217c530262c2f64d967e971283c8958905fed50ff215fa5b2ca"
+    },
+    {
+      "path": "provider-swift/Sources/DarkbloomFanCore/SMCBackend.swift",
+      "sha256": "a3248b1ef5edf229622a4bdfbbb7c01b7126b97ce65390f30738dc9ba13a9cdf"
+    },
+    {
+      "path": "provider-swift/Sources/DarkbloomFanCore/SMCTypes.swift",
+      "sha256": "85c28e071bc2663cc4a246e4e1ee278e6d3c4c1afc54704d335b2e3dd98fb33c"
+    },
+    {
+      "path": "provider-swift/Sources/DarkbloomFanHelper/FanDaemon.swift",
+      "sha256": "ded8ef83ce448771eb64d3d629dce2b748bbe42f3e641035af6e413d9df45504"
+    },
+    {
+      "path": "provider-swift/Sources/DarkbloomFanHelper/FanPowerMonitor.swift",
+      "sha256": "d9cb07e3e556ce7eabbbe87a703ab2302687d1fac56b801215522b03eaf167df"
+    },
+    {
+      "path": "provider-swift/Sources/DarkbloomFanHelper/FanXPCService.swift",
+      "sha256": "bb1a7cc08d0eaa6461fd5c82fd8e33e027679b6f47f080ae24cbe4310b5213bf"
+    },
+    {
+      "path": "provider-swift/Sources/DarkbloomFanHelper/main.swift",
+      "sha256": "2d0b477ad7e189c6bf700481e79b498f73d347754b7025f87ca2e0c90217a201"
+    },
+    {
+      "path": "provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift",
+      "sha256": "6982721afe4b578d89660aeac85a5cd52f3119970c82bc54eeb2823d2a945ec4"
+    },
+    {
+      "path": "provider-swift/Sources/DarkbloomFanService/FanDurableFile.swift",
+      "sha256": "2c5a8d3ccbbd4960f0aceec5c1f01d144cb9c6fa00a2d1d82bd6cc07a750f5e3"
+    },
+    {
+      "path": "provider-swift/Sources/DarkbloomFanService/FanLaunchDaemon.swift",
+      "sha256": "2a136d2fc071f07fa6a4df0d31bf0ef482076b8cfb2f30af626e6523668b1571"
+    },
+    {
+      "path": "provider-swift/Sources/DarkbloomFanService/FanOwnershipRecovery.swift",
+      "sha256": "a86c22811b64c797dae1e1833664b93682cb442f8aa896607745c4f1e5e7bc0e"
+    },
+    {
+      "path": "provider-swift/Sources/DarkbloomFanService/FanPeerAuthentication.swift",
+      "sha256": "ab812cc98469403ca14d49be9cb27a5954c3b910a9304a186c5145304ccc3e9f"
+    },
+    {
+      "path": "provider-swift/Sources/DarkbloomFanService/FanServiceConfiguration.swift",
+      "sha256": "8d70703f69c23f8c75fa12521e3f0b7f07b597276c62e892dda13f2b5ab04871"
+    },
+    {
+      "path": "provider-swift/Sources/DarkbloomFanService/FanUserIdentity.swift",
+      "sha256": "e2996b06d0af862c415ab0785760bc0a2a8ded97ff54b0d577a4f40a260762ac"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/ArrivalInvarianceBenchmark.swift",
+      "sha256": "b13fb8a1d7d1d8616c4a800faf17ab07d8b6e0ed8dc3ca5164a3179668b7e79c"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/BackendParityHarness.swift",
+      "sha256": "ba892c3573211df875704ca106567d2eae843f4c3d4379ea4568b30050d96b29"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/BackendParityReport.swift",
+      "sha256": "0534faefec28df467dd15f9f6446394404a06705625d90d68a132e90f4eac0e5"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/BenchmarkGemmaOptimizations.swift",
+      "sha256": "eabaef3527dbfc01df64dcae2f83a3551e49a82b7acb93fe999bfde66f27d635"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/BenchmarkKVBackend.swift",
+      "sha256": "bb147c720aa1524373c2b46525789f8dfcc78761a261a7797721e10386ff90ec"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/DecodeBandwidthModel.swift",
+      "sha256": "c157c91e29420183b285783c620954df356f3220743fd4c268942a491d90ddcb"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/MTPBenchmarkDigest.swift",
+      "sha256": "e35a3f16305a8453b50aa714253978a0f44fdb6f8a5c0b2fa7e4c394d832cebd"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/MTPBenchmarkMetrics+Engine.swift",
+      "sha256": "370ae700f1675f1a58bae4856f0727ce8c534ed43e1ca645a05bea4f7115c970"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/MTPBenchmarkModelFacts.swift",
+      "sha256": "d532109aa4d12b3271920f6ea15393d3a54b51c4c667237ea7c19c3c1e642b92"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/MTPBenchmarkReport.swift",
+      "sha256": "2f5bff59fb353a9455a2ef6aee07e748edbf7e8af49a2a7042f0103142567c46"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/MTPBenchmarkRunner.swift",
+      "sha256": "33778ed49c0c4e63f7a57b48ca030c7e92c0be6f141085ca0de55f1986cf0e67"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/MTPBenchmarkSizing.swift",
+      "sha256": "046af5ebecc808cc38e7df2173e6f4396cdc1c8e3a95cfd9d0f10332239b042e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/MTPBenchmarkTiming.swift",
+      "sha256": "acbee987a31ee3c22868153e8ffc87e4656ed288338822c98933c1f8d9f5f43c"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/MTPProductionSession.swift",
+      "sha256": "e34696f319d06a39931b2eaed35d1677a888e634bb33f7095bce1ee749bad2ae"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/ModelBenchmark.swift",
+      "sha256": "f1ffa25382293b892459d34105d4865ff62a716c9241785137c867ceb141a7b9"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/SchedulerPrefillBenchmark.swift",
+      "sha256": "6f0e061f3559f05fee3a319145e0131b22a171700b2e2ab7f304b4b6ae5f0e2f"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionCLI.swift",
+      "sha256": "08284660b43a5c108a220f1baf8f938813ecea0fef19f30c8bf86bdf8ba4023d"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionEvaluator.swift",
+      "sha256": "c19bbffbffe8445c5981231c4687d3beb69f8e76eec16052d7b143d368c63e69"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionLive.swift",
+      "sha256": "32eca77c427f1b0db44073ae9fd4a04bbde7e304ff835edbefb21ab73c9cc6ba"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionLiveRunner.swift",
+      "sha256": "e3a388466ded644de46377e576b06753c5855ed01c5a6ccb32ab4964ecf3bd60"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionMetadata.swift",
+      "sha256": "d8d07f714fbd3bacd78d8aae8d44f304266c704c6ca70f55d61df787c7a81916"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionReport.swift",
+      "sha256": "e0d5760d8e95b4cb39b1fbf7da3afe699f83801d1ec20532dfaa4d511f384f21"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionScenarios.swift",
+      "sha256": "3032f13a4664855c4f73cf571a54a7c2c1ecdb0dc26803fe07949e23d870db4c"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/SchedulerPrefillDecisionSimulator.swift",
+      "sha256": "47b584c2223e7051000bb1a9e8502a3e692f6afbfa636654a48e4f0e49994bb2"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift",
+      "sha256": "4b69c619b4060b4014a3a4fed1b55c461069211823730f02f6c7b5661f824efa"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderBenchmark/ThroughputSweepReport.swift",
+      "sha256": "4bea07d2c1d22d1864e8cfd7394338ba7d38590ae027930f07629ca88a29482e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Apns/APNsBridge.swift",
+      "sha256": "42f8ba890c02cda037ec8377b74db021b83afb6f2af014d2cc94f0a0e1a326e3"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift",
+      "sha256": "8b1eb9d4121a381399662016a556db54883bba72778cc5d5d917216fccff02ef"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Auth/Enrollment.swift",
+      "sha256": "b7a255990e5a7c6dfb893d26f85733bc1dcac8b825dee00a111836727198ccba"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift",
+      "sha256": "eafadbd311f264f7faec95a4fe8a19d315b4a7a61a6adc24d31e26d4f826d94a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift",
+      "sha256": "866f9caa77c90c7cd82f602afeebebdda6d989606489643a4511ee7f20ca3f68"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Config/ConcurrencyDefaultMigration.swift",
+      "sha256": "ba22f8fd54645f5994c7d7e8d1fd894a8b4ef46c987242a7fb970bd1065ea043"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift",
+      "sha256": "6efe2c0a0ba9ea6693a61a14f08792f83e27d0f4ce8ed7f9b1c355d86b44d05a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Config/GemmaOptimizationSettings.swift",
+      "sha256": "6ccb7f7af0e06cf35155be8d95fb907205e1d185ed5306294db273e167034fb9"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift",
+      "sha256": "9dfc4f321081db1ac93bc6e792d0f96911686ea96a12c225ca4429a340d94607"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Config/RetiredKnobWarnings.swift",
+      "sha256": "4bd27031e6c14cd7a696f3a8165858c28dbad1fb41a2c7c83dbf2dbca5d4ac24"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/AdvertisedModelStore.swift",
+      "sha256": "7c7711837ce2519af819a82531ea28fda952ac3457280d69938551a13936ba08"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CapacityQuoteEngine.swift",
+      "sha256": "3f21af3e1176c1d1de3eebd6f54b66b0cd9b9b2787a87c28de9732506e525295"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/ChunkBatcher.swift",
+      "sha256": "a8c3f6f829d757ec7cad4cdb92b8ca76e39953a5fac7345e3140c24d8ce7efdc"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/ChunkFrameWriter.swift",
+      "sha256": "d58eb6d0cce40745ed5e32d7743c6f8d5bad6ccdad426d491a1792ebbb93e2e6"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/ChunkSender.swift",
+      "sha256": "a5c15105e5c10c3bbb0c8354a495c4ac76e4638ca47ce2b00143bd92fdcf68c6"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift",
+      "sha256": "33b5d29a869b6877023e365fdd496f51f3971849bb411ab7a930345ea117ba43"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Inbound.swift",
+      "sha256": "181129b88da0ed4d47cab0926a5c79a8633c1ec439cb87ad5c54e5eebba3122a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Outbound.swift",
+      "sha256": "7a47535a728b285c4a236fc23ab04892ef4c79633770d1eb18b79c4c1cd6eeb0"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift",
+      "sha256": "f4585a305ea6fd0168007e8a1c8672580704a4972a8701a77448c077e8824e08"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift",
+      "sha256": "fb67f9c6bcb7b9cba0b880494f3051bddff5c62918d04ba3a24cceacea61480d"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift",
+      "sha256": "4ec365d6997e73a44c1f539cec502a86931f2c257131f5329d33756177c89085"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientState.swift",
+      "sha256": "4f84a277519cecb227a0d881295ba75730e4dd1ac844891a989eb160aa9133f4"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientTypes.swift",
+      "sha256": "466a2b1abf019575a0f594068f1246177cdf3dbe29fc37ff32cc5a4b7b878305"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/ExponentialBackoff.swift",
+      "sha256": "8179603e57ba60d4839f77fb5ec1f4121a91af05e67e4be251a6d82b3c7c00cc"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/OutboundRouter.swift",
+      "sha256": "6719da1a7bf10493c962afaf01d12fff738c709cf3506a496628fef62633e21b"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Coordinator/ReachabilityMonitor.swift",
+      "sha256": "90a37c9b1ba01b0a18b02816ed95ad561bfe7ba27b394d38f8c27cee1c79a62a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift",
+      "sha256": "21e0ce45e3f91d18adcfe68bbd897d3074d5b4eed4e2e593d6a0e14d1a0da280"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Diagnostics/AttestationReadiness.swift",
+      "sha256": "701312cafc377c02df619ab7efa4b4f9c56645312da1014e82b8a311f0e02b93"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Diagnostics/DiagnosticTypes.swift",
+      "sha256": "abb197fbc2f21cba88607703db1cea118537602243596ba36dc15ad214f01b3f"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Diagnostics/MDMTrustDiagnosis.swift",
+      "sha256": "ad5d3dcc5579abb53295576844d81476014eff3c86c4ef5c2106afd3075d76a8"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Diagnostics/MemoryPressureMonitor.swift",
+      "sha256": "eccdffe6dd4c2445e15a404f4dd6d312c68472401b01700b433285daf03b3f7e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Diagnostics/ModelFitDiagnostic.swift",
+      "sha256": "24aac6273ddce3b6564ee0e2e4185e6cd2062c6bff1130f306d32a226d292756"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Diagnostics/OOMDetector+CrashReports.swift",
+      "sha256": "8e310dd387d2104caea9231fdc3fe6ef018d5037c349709e89565ffaba1d59e3"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Diagnostics/OOMDetector.swift",
+      "sha256": "4f46eda189bc91325d13234ea707b7e92e0fe7a0c841a8cb6883230166b422de"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Diagnostics/OSStatusCatalog.swift",
+      "sha256": "f9fc360c4035babf45184b8323b71beca4c022850d078a405fba5f67f3a118b1"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Diagnostics/TrustReasonCatalog.swift",
+      "sha256": "426ae58312e946de948584ca5724ee3d1abea90dd4c383ce7b49fe3b25676581"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Diagnostics/VersionDiagnostic.swift",
+      "sha256": "b13f31ba6124000359b2fd1c1771f95d12885feaef93c41dc9da34131e3564ad"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Diagnostics/WarmModelsFormat.swift",
+      "sha256": "7d97c22648dbf82160aa25760a7d8014e0968c30fd1115aabc2bf9ea259009e9"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift",
+      "sha256": "a5d80d3e1022da998316595754194375e45a57038216f2572cee03b5a2611abe"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Hardware/SystemMetrics.swift",
+      "sha256": "dc4c3bb1c9c7d390efee31d029a542585406c6c829089177079e77e64b0f67af"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/InboundChatNormalization.swift",
+      "sha256": "19278117ffecaabc4a9c15b5705e88d90f424a059f1b91fa8ba8cd66071367c4"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/BackendLivenessProbe.swift",
+      "sha256": "02b63d266abdc3761316b595eddff4311ead35054da81a36ddc1a3dba24b9403"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/CapacityRejectionEnrichment.swift",
+      "sha256": "f4c3318b6882004bd8ae580f180623ee5dce0de7dc05205d0bfc3685f7554227"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ChatRequest.swift",
+      "sha256": "66b91a33dc59af82a2367eabdd6245f4a2b03e8e12980fe86dab6e6a3d8452bd"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ChatTemplateControls+Decoding.swift",
+      "sha256": "aad6c214757daf801b8d9c0ca84d7e8405012c69a46836f40cf58e05dc954179"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ChatTemplateFixes.swift",
+      "sha256": "e7a304fa27e299b7b57bdfe817e1d57731721f6020bc57e6ff4902724454cd6b"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Accounting.swift",
+      "sha256": "11b4f4371a599315dfc66a55c4d1805f329d5999883237f331d5e8f4a6d3ef67"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Capacity.swift",
+      "sha256": "94b482caf509a9b863245d879396eeb74bff88fa9f8d4d70a6ba705f8f37f61c"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "sha256": "697d94797eb17e8e33220bc033196e1f0fa7cb5c29575dc14ab738466ad575f6"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Liveness.swift",
+      "sha256": "d610f11f2285f14b5c0dd57763aafd908294e26202051ec17be20520803deaab"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+MTP.swift",
+      "sha256": "b9e543abc2565935ab4da10f7af13dfe74582a67166e8042b548dbc34f3c47fd"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift",
+      "sha256": "74c67a0d5392a3847203401ef90acb42dfeace66751e161e933cdae4149f7a67"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Profile.swift",
+      "sha256": "7f5b2b95ca2addb64d66c14c11e06b250e57d0b4f8e5116ef878a8df8ab5446c"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+StopSequence.swift",
+      "sha256": "af212b2cfcc4f1bdd937b29d81b617e42867872a09dda4f0e29924056db49c78"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Translation.swift",
+      "sha256": "c90d0b51d28d2a589b066f1f16c237d1e3f8b5b7e07c420c84b71ceac1a16369"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "sha256": "971ce595e7e79dd944e1510b7db001888d3acd417db5259b6d7ecf50b58fe1e0"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Config.swift",
+      "sha256": "dc233c37049252bb2230076fbb69df4698308adf80a881eb6f3ea959fbb905b5"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Benchmark.swift",
+      "sha256": "56c7b307c5f2ee5d98453676c50fbe887291767fcd0b80dfe4238e32c2059afa"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift",
+      "sha256": "27c560b3a21e8f61a30594ba56e46011db02e97ed528f1617d6314940a926c22"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift",
+      "sha256": "6418859cedf9f18cd2767f36eba609953f8aa5f7eaba013b676958fddad61ea5"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2KVSizing.swift",
+      "sha256": "fbc79b65eae5e29fcb5cf86162fa824c769368d42b3b78fa8f7e4b5ce65b1e37"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Logprobs.swift",
+      "sha256": "5dcd45ef0baaaa5645bd98f3b7d10c1824330233dd02d226d811ed0f54854a78"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2MTPAssistant.swift",
+      "sha256": "db323a201b846fa02079e5bf9262e1536ad110859beb2d8de71c216b78026c8c"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Reslice.swift",
+      "sha256": "d7a753bd732263a8cd63ef5caaf097fc9227ca7b009a4dca25a129797cba9aa4"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Runtime.swift",
+      "sha256": "e3457c04a904c958cfe23e5bbc38b13413417461ced454df4f720af371694bf2"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2SamplingOverrides.swift",
+      "sha256": "99be983ea759c7ed6a903c863f1fb13e6e42cb72744ab1880c85b3c426a2aa85"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+MTP.swift",
+      "sha256": "b92860d4fc5c628e6cc2d1332b2fca6c0b9b975005ada13d7a969daaabadadfe"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift",
+      "sha256": "46cf17443004d4202e1beee4c8ff4bada938710e0d97e92c7c865a33106a8f30"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2SupportedModels.swift",
+      "sha256": "654bbc4df2016b0a3897b6e14e8787fb7d22ff5ac9b7b00cf97db8d23e4940c7"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2VLMTextExtraction.swift",
+      "sha256": "604a19784ae36365732a626c325d1f62c3501eed1c29f9578b303c0d56e62a30"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2VisionPrefill.swift",
+      "sha256": "03daeb390d8bba3d938da57faa7e7e87f084e487dd674987419dc3c2fa024f30"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2VisionTowerRun.swift",
+      "sha256": "b0e788a3a27f38a9e971a226254fa7b7e7c4e4b848eca9e5bf6cdb196980d0fb"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ForbiddenSubstringTokenConstraint.swift",
+      "sha256": "30b75273d5bd3ae9fe19a2d30ab40ac97508de383982eb50da1c2bffff85f9b7"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/GPTOSSHarmonyTemplateFixes.swift",
+      "sha256": "3975e116b476d8f25773e48cc6f5e2124bccabb44ae57e3121afd23d408c1ceb"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/GPUEnforcement.swift",
+      "sha256": "0905d0d53f197f52e8768f6d4c7baef4398b3cdaffe78646330bfaee8b293b92"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Gemma4TemplateFixes.swift",
+      "sha256": "651a92ef6b6dfe38633b11adc9335c8fa7091e24b0bf2ccd914b8da49dee97f6"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Gemma4ToolCallArguments.swift",
+      "sha256": "e66d4e93fe0dbe09f1366f549b5f5357705cca8aeb2e57a48d56e936eff67884"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Gemma4ToolConstraintContract.swift",
+      "sha256": "5bbfc919b57afa13d812317973f5fbe07b9e6bc3cb9e79a2d94575943f41b649"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Gemma4ToolSchemaEnforcement.swift",
+      "sha256": "05e73421c1616e46f09bf3ab2758912cac9541982c9cd45d39cca79a1d0df894"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Gemma4TurnStructure.swift",
+      "sha256": "11a4bae5d2ac19c8aaa0c9d6dfc8dca9286d4a0d3b3c499e8d5be1cc0915d65a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/GemmaNoToolTokenConstraint.swift",
+      "sha256": "5c80c164660c8d49e27fa3b67b97027689fe0ed9263a841356eb83186795fd20"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/GemmaTokenVocabulary.swift",
+      "sha256": "899b233c0ff175f6a2c3445f2cd2a58c33716c4d4ce53e2c30194011a3013776"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/GemmaToolCallTokenConstraint.swift",
+      "sha256": "a4de179aa00cd0928e756e7aa473029192317c39f41c8a7f7eb98bed6149ee19"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/GemmaToolConstraintGrammar.swift",
+      "sha256": "3c2484f4e211ad33ecae53c80a958abaf7bcc310173edc60f6ccc8f22f10005e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/GlobalKVCacheBudget.swift",
+      "sha256": "1781f645bf6a692de4f9dc82c5a09ba85550b0f30cd743042abba32fe23819ea"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/IdleTimeoutPolicy.swift",
+      "sha256": "db3120ed9433f2de826138ab8446f646b4c44b549846eaba6d917f5d620e7854"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/InferenceCancellation.swift",
+      "sha256": "5603587ae2caf7dc736b6019b95d16f2e078b7d1828198a3347f7579f6dee7ae"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/InferenceErrorClassifier.swift",
+      "sha256": "1a91adefb296cb4bba0b341deaf265079ea3233e2e8403e8f48a7867737367d8"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/InferenceFailure.swift",
+      "sha256": "c2c33d47679fc53f4f62e3471b8ebb8a4e5ff0585ed1cabe678047a3df0e75b3"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/InferenceTypes.swift",
+      "sha256": "f7cf47b8ca974c813d05c13d460bf5be7ca1406801e9b33ffcdb8e8d83250039"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/JinjaSanitization.swift",
+      "sha256": "28dd111cb200277ac6bf92928bb324c77a2c71d54e4ff9b9f8673b9e3a4d9f54"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/KVEstimation.swift",
+      "sha256": "219791de941b38d9b1d3ca73dc99d4ba7b2d2dc6b680cc3eef9eba38468c0985"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/KVHeadroomProbe.swift",
+      "sha256": "996b073d795ac95a0cc07aba94a32dfd5601f86cad251700599575790bc31e20"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/KVPoolReclaimer.swift",
+      "sha256": "32b9a25cab6e1ef5edf8c356988cd813fd0710d76de557e1d8d858e227c19a4d"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/LeadingSystemMessageNormalizer.swift",
+      "sha256": "8dcedc0200d29605d13fd57486852273363922029e32c68ef7e9b7c0b2667471"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/LocalReservationCounter.swift",
+      "sha256": "efa5cb525c8863d78204841fa849b218a9f51e8bfe795eb0d3080247dad4f2bc"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/LocalTokenizerLoader.swift",
+      "sha256": "6a347bc7ac21fc62c7bd90f22f60ae0bf8a679bf6ad04a8b9103663490b54beb"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/MLXMemoryGuard.swift",
+      "sha256": "fba965cf658d5f5a550cae84180df3deadd314475989da0e9059a34a35bde9f3"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/MTPAutomaticVerificationPolicy.swift",
+      "sha256": "964fa708a6a8d01f8026065b7bd78ed78b020f52926271ad9a9aed0149d13f92"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/MediaIngest.swift",
+      "sha256": "b67fddc9ee5020280ec912f05b3987abc9079751169f823f090ea35838de7899"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ModelContainerLoading.swift",
+      "sha256": "7b1fbdd9c76592c92eb3fea0346e80ca1e02792f7d34d69acb27b9d92d6bcffe"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ModelEOSPolicy.swift",
+      "sha256": "065f468b00382a9d40cc2f560b980fecc7ef74e99e8e5849edbcfeb63e36b29b"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift",
+      "sha256": "0ea67a8608ddea3c4b181e7c8c1a5a28b88ddd8e953cfc9b0cde22bbd143fc03"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/MultiModelBatchSchedulerEngine+Registry.swift",
+      "sha256": "2b4988625aa6e306caf7944598845583e3509caca88facfa5f33840eccc3909b"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/MultiModelBatchSchedulerEngine+Translation.swift",
+      "sha256": "8355e4d4d79d483099bb1043e8653d1f41940d6d6487e5f38feba9250668cecc"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/MultiModelBatchSchedulerEngine.swift",
+      "sha256": "d9546057e0785ad7055fef9121bec6783f393b1961119eb0b4319c374c7a85b0"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/MultiModelBatchSchedulerEngineError.swift",
+      "sha256": "e97dc04a760b515ac0a9858edb543b7577eb0f5423124283754b2100db4bb40b"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/PackagedRuntimeSmoke.swift",
+      "sha256": "97d039e9dc90da1a0b1c1301a4f6773a073cdb58d5784c7de43db293a977d46b"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/PagedKVPhysicalCapacityPolicy.swift",
+      "sha256": "4349f4ee70c35ec8fe80e8f213358bad723c580248938f466d9c01b7a02ef74c"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/PagedKernelPreflight.swift",
+      "sha256": "5d73d966e8399051f2773ed082055dda5ae88a862d452c86c4cee3cfe4b1beaa"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/PrefillDeadlineMode.swift",
+      "sha256": "52d90ec9be1996fc125f6206fd0d1edc60b25bc19847148f474715e471d59df2"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/PrefixCacheEligibilityStatus.swift",
+      "sha256": "f43e5a789de066cec9924d12f8bd978864312be57dc0e46efead4a6220dc96c3"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/PrefixCacheEvidenceSequencer.swift",
+      "sha256": "0e2a1941c4ca3a62358315dadf97de1412d032b79ec66ebbc092b0f2dab15fff"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+Hybrid.swift",
+      "sha256": "67af11f389009491f02807f31ce1af1bb9ceaab19a06ae27ab1358898fcf6854"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy+LoadHash.swift",
+      "sha256": "51c4fbe5bd7e6b2a0a7df2624fae59816d0c89637b3f266ca6685191a6181188"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift",
+      "sha256": "fce564c61c20328782dd591c5280eb257e4da84d90eb0095bf5ba970abbd3094"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/PrefixCacheReceipts.swift",
+      "sha256": "1e6aff3a140936b7207cf5089b77c998cf579a11014a5c87d268427ef884a7c1"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ProviderEngineBundle.swift",
+      "sha256": "4eac283839b10ae32158565cfb86ffbb5592149a5255179cd4e284dedb97cea5"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ProviderPromptContractPipeline.swift",
+      "sha256": "122628c948cd8a6a0e4119ad1acec7a006f23798235f3376641b62317353baa5"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/Qwen35TemplateFixes.swift",
+      "sha256": "bf9f63fbc8f5687b424bb981e24739b01b8272ee5eeaeed6b7cfe3ac65f75636"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ReasoningPromptProbe.swift",
+      "sha256": "00a213bd9def3b901323e61babe34149de918afe04f7804a8be6fdd39557052d"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ResidentPrefixCacheEvidence.swift",
+      "sha256": "ac2a1e3f9d4b77db49c1ac933e98bf2ed83346a8b90be2f56b576d70c5add250"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/SlotSizingSnapshot.swift",
+      "sha256": "3e7b5c034229c2d346a405dcf850facfb4d4b1b051ce813a230afdf8c66623cf"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/SystemMemory.swift",
+      "sha256": "a3b08bd28bad60447f219f3525cc8c8afc11060e13e6cc7be3bc75f0fc9fbcf8"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/TTFTQuantileTracker.swift",
+      "sha256": "4b6086c81624b2d4458241f46442e6bf631a2379d0ffa4ef705a62a53b2f7f74"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ToolChoiceEnforcementPolicy.swift",
+      "sha256": "881c84adc243636e2c0b7c193b0cd38c91ec2e44d0f1394a37fa5be71c7e936f"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ToolChoicePromptPolicy.swift",
+      "sha256": "31d0d2ad7bf64865cb81ba2dee1c9146f2ff14c4eafcd91dc2c4264a98d73453"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ToolConstraintFactory.swift",
+      "sha256": "4b5155a61f6bdb7d5893daee95868dc4e513cf6e5c5bb759a9f07c7b4d37563b"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ToolConstraintSchema.swift",
+      "sha256": "104fbea2264f47040325753de89d97572f30e70cc55f6862804a8058048c2868"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ToolConstraintValidation.swift",
+      "sha256": "70ea99d465790347ddfb8ce98d1fe11aa72a4accf1c6c8a54060e8545accda87"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/ToolSchemaNormalization.swift",
+      "sha256": "d2f3fa5ea3e8d9e6e8c878046ec133dfa656e6400b06dc5fbf9bb931e9122a44"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/UnifiedMemoryCap.swift",
+      "sha256": "1a6d2f85ed2a864bf2428c2c5f9e3f155d4256e3fd83362b7df59403350fbb71"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/UsageAccounting.swift",
+      "sha256": "890c77a26e81aa2cca0fbd39f8f84a5b2c9c8d4f015d8d6dd3145712b7fde38e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/VisionMemoryGate.swift",
+      "sha256": "614d60e29edcd7ebe6dcc87fb429e2ad5007560d2e0cac89224cf850b004589c"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/VisionTowerBudget.swift",
+      "sha256": "4b03e467821f8fc292edd5f97afb55248a922196a77d81e6f04eccf7668f2941"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/WedgeMonitor.swift",
+      "sha256": "a7769e8523afbe1e7cde6c04e1d9018484694872e7de1518f15668d2a1d0a680"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/InferenceFoundation/LocalMLXModelFoundation.swift",
+      "sha256": "f5d9ac557a87562bf232ebc67d8ecfc4913220bbbad662f6addfc068dbebc995"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCache/EncryptedKVStore.swift",
+      "sha256": "9469b542231e369746022bab4600098f9a30a2818a17d8187c0eefabc789c21f"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCache/KVCacheKEK.swift",
+      "sha256": "78367de8fd5f09d9497ba1d12774408eca5caa3e85cd629e199704393b4da266"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCache/KeyWrappingService.swift",
+      "sha256": "e1cd0ccc5504532a51a4da8b494534d5ad28b8ac61015e0ebbbbff456f172d50"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCache/LegacyKVCacheSweeper.swift",
+      "sha256": "adb37b91ee3e6f6fb73e25fccfca58735703bce249d4522ea8f6279c3068918b"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCache/SecureEnclaveKeyWrappingService.swift",
+      "sha256": "f322f1cf545a256720d3a65a6a1c25fb5ebc5047e4b0f3d966514802dc0e49fb"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCache/WrappedKEKStorage.swift",
+      "sha256": "7d755f4ecce5fd50d9a86ee74d87745c353abec88c3f407aad7068ac833beb37"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/BoundedSingleConsumerPipeline.swift",
+      "sha256": "b7075102c44720133ce98bf3a95ab228969ba692949b3cffc436493b5c079577"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/EngineV2Bridge+SSDPrefixCache.swift",
+      "sha256": "66673641f5f5545500891e3981720f3ee6f162c27ade221901848215a0e2415d"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/PrefixCacheDonationTelemetry.swift",
+      "sha256": "7826c060871b4c113809a02f88bf384b235e13b2209bdc5756582b3773f607b7"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockIndex.swift",
+      "sha256": "9351f0ed819bb1dd8959669a38474d0755ab71500192ebcb404fdee5f2292230"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockPathGuard.swift",
+      "sha256": "f9eaa3df78a7ef855f88dbb61be18eed3f532fcb9433158aa83d7041eab62388"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore.swift",
+      "sha256": "41343d1c7fc5b17b6d7f963d498857ec707f93bfa691d149269caa72e21aaa76"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCacheEpochStore.swift",
+      "sha256": "27fb21ddd3387be108c1f11b1a8ae3bfdd618f4c9866980ff37991413b6da186"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDLookupKeys.swift",
+      "sha256": "a2cb2fe0cbb790b70739f10ee7294e39b7b5376d8f989d99fa9f3592dff9f06e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDNoFollowIO.swift",
+      "sha256": "4c17b1e7e3f2f0ee305816977a9a6df9d30e22f403f659b03535ea79bcf2ce38"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache+StagePlan.swift",
+      "sha256": "ede9da084e16187e92ed6c0faf0511617b3f23eb8f89d6ee643c14c110e55ec2"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift",
+      "sha256": "7018dfcf818ef9f8e217b848d13362b9bf56acc607a48c2e0bedffa0664c41db"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift",
+      "sha256": "11fe6582901650f7068e7f3c980e9bf7d9da2d2576d7fdadf6b7430502e58c81"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift",
+      "sha256": "0280c2cda5d7223f3ea158e91b77b5a393878fb580b36694dd4a01098964ff19"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWholeRootMaintainer.swift",
+      "sha256": "929537d11aac2bdc4955682a55e1eac1cc9d2bc5a5ed2202e3c8f1eb6b4f3623"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWindowSidecar.swift",
+      "sha256": "66a0ee67973b53d86d949b46d23f2265d464f52581a00051b685da7aac80afa7"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift",
+      "sha256": "38d4e23df2c8ad3baa388645e12144f7cf4f9ce2f306a27027b283f484a20450"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Models/ModelCatalog.swift",
+      "sha256": "c3360098ffcbd3e9e76cc882c3140f5925f5a103302d28fb6946c28237b15c05"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Models/ModelCatalogClient.swift",
+      "sha256": "e821319682972529c8f8d2c3e0f61ddba3025aba826fce42700fe9ca9173afd3"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Models/ModelDownloadProgress.swift",
+      "sha256": "5de3ca7eb7690f2455721a2e7b4d5941c604025e9229ef9d46bc9de521df3ec4"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Models/ModelDownloader+Download.swift",
+      "sha256": "c7592cbdee98c878d030215d450d42afdcdd70e3b137678ae7775ef9a818dc9a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Models/ModelDownloader+HTTP.swift",
+      "sha256": "e3169b42533d2666f774a8883a63808dbfb0c993f421cd58383d8aece9e43199"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Models/ModelDownloader+Prefetch.swift",
+      "sha256": "b06230e79d62fef6503f140ee22b40d4cab983bd4be91b86beb80652119eb66d"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Models/ModelDownloader.swift",
+      "sha256": "fc99192a1e7b024f3cf38cabf2ed40ac7b879787de066514cd68a8ddac46db8e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Models/ModelPrefetcher.swift",
+      "sha256": "96cab6654864dd5ae13d5dcf716181146d9c9c0f9356b43c06e20682032b6228"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Models/ModelRequirementDisplay.swift",
+      "sha256": "c72bdc01722930b49817c771ab0c0a8550807fd8feaef4728f0363039075124e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift",
+      "sha256": "059338b6c90723d67e76a8a33bdb48aa4c6b969cc59f475aed1d490a939887d6"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift",
+      "sha256": "2d0fedc8617a5ad8c08348193180fb218be55a545057fa7e64f109e6b870f62c"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Models/StreamingFileDownloadDelegate.swift",
+      "sha256": "d4ad2337333b1e305baad2f0cdff2d2ed91af7da952932f3e7814d5846d286c5"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Process/BoundedProcess.swift",
+      "sha256": "1d9d1a850f846a02fc338571f8573036095018bdb7318de5b0fa1036def981da"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Protocol/CapacityQuotes.swift",
+      "sha256": "01f83a0877148d53968844c15510e69fa1d1fa379a454b6535ab191ddcaa7c27"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Protocol/Enums.swift",
+      "sha256": "134aa46223597b098f6f927315e86e50bf11bec843ac79814d181798012c4d3a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift",
+      "sha256": "a4a9497d4d943205a8efc1f01e19b9b68596a731fe9aa2702f236f544f124322"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Protocol/Messages.swift",
+      "sha256": "2de006ff331fe59a5a8954ffe35c508ce1e3aa15631a78bb6938825a2c5cf604"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Protocol/ProtocolCodec.swift",
+      "sha256": "c64a13714ed554e3cfd0d67670feba44887d15fb54142ec340b3c60710d99dbb"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Protocol/Types.swift",
+      "sha256": "a3b1a127d78cd256f10bd02b217c6138168dfe5f48b5a8454994e62357c096db"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderCore.swift",
+      "sha256": "307b76091d6fd9ea7fee519ce09b1ba54afa071dcbda0e7f1814d86e98fb747b"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLogger.swift",
+      "sha256": "f7700b5baeb0e3aaa305654e6de769c34eb4a7fd90692555277e1008e63586aa"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+AttestationChallenge.swift",
+      "sha256": "8b59d8ce628d1720336252d14c4e4c0bb4b9b2d60c87f31783be1b5d60003dc2"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift",
+      "sha256": "0c6c8bfd07bd9beb68fdfe476e7df22d64b3b306709244c9dbffc974c4e2a2bd"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+Cancellation.swift",
+      "sha256": "bf438267e045df647376a7b502cd9a11f9f62ea5136a5ed68f0d948d4c7c5768"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift",
+      "sha256": "1199e20c9149582223bcfc50d7c513cf1df249545cc8278255039169cfe2ba3e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+DrainState.swift",
+      "sha256": "54a76c719c97afbe7f6b364fb952ff1273b11998c7bf5e8a01db0902b6065900"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+EngineV2.swift",
+      "sha256": "f520128b4b08e7bf4cbd4b0c1cb1a14e4f9099985575c0a80a0e9f006cfaf3d1"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+EngineV2Liveness.swift",
+      "sha256": "667d9acfcde1f52ae7cc190431b587b70459d8731e758e3c834a05112d441799"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+ErrorMapping.swift",
+      "sha256": "0dd13af3c2575d4153e027dbaeae1b87cf12428f57ed6e381cc392267fa77b96"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift",
+      "sha256": "8ee56a92c5f6bd3f5d37e3c57602589f6b96580a50d4861c0b23b77b473bf43a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+InboundDecode.swift",
+      "sha256": "f278f1f4c15d1b9d249234a1a33789174d14712cf184a810af6cdf27d72027c2"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift",
+      "sha256": "099f6de53b8f1273e92cf356d5e4f7125e220caf776867780dba142c4182a388"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+LocalEndpoint.swift",
+      "sha256": "88bb5dbdcef1d32b36d967b81f3cdf5eaf346d570deabe6d6447ea23c71eac2e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+MTP.swift",
+      "sha256": "01c7a800a74b7ca1410bd81785ff9e91ef4500065c33c2d60586d94faeb9795a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+MemoryProtection.swift",
+      "sha256": "d5b2e98b558fe0453812f12934230c57a4b03e81148e4e46dd29b3c299923d32"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift",
+      "sha256": "224f6966380ce9fe730e42d83e862cceea51563c3edc56c1d40bb288c898faba"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+Prefetch.swift",
+      "sha256": "1a9b6be513e0e399201859f8ffe3fc8f782194e8215e9be6b2efe9253cc870b1"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+Preload.swift",
+      "sha256": "46f5362c49d72dee36b2d9b2bcb0d4ca1fcb323c0ff0a2fb8601c36ec743d2bc"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+SSEParser.swift",
+      "sha256": "b5f3ccdf93212ae078806709ad600d720c1cbd75b1bfff0fd12ad79d991ffcad"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift",
+      "sha256": "5167130e93d25611e48e84e79da35f7852c6c87888187dec47d0ce67c5c60fe5"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+StartupPreload.swift",
+      "sha256": "2582dd8f13fb89fdfc23af3e5b1f62b50a62fc7328fa773a684fd8e652309f26"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+Testing.swift",
+      "sha256": "a57107c5bd695c946ee56df40aaa66ffd3cbe05df76054842153a9059039331e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop+Trust.swift",
+      "sha256": "623831bae4612841851387c424f0894350bbb45c73082c942f02a1d3be80dcc7"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoop.swift",
+      "sha256": "23549555d7f99c6027470cce1b71ee0ddd79137fbe3d8d862e50d22ef4f5a6ce"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/ProviderLoopConfig.swift",
+      "sha256": "2647fbf540ca79290a4692e4c3bfa3becb257bf38d9c5df37ca6221e3dcd7a4c"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Scheduling/DurationFormatting.swift",
+      "sha256": "c55f2fa218db2c811020dfa9c078edfd2994f6fc773ccd3a14cc54aa13bb4786"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Scheduling/Schedule.swift",
+      "sha256": "0ea578495a0207d374790a0ba5c8c32b0c1955e24e6c4f0a8b7c8eac01648d7c"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Security/AntiDebug.swift",
+      "sha256": "104f32b229ad78b9904398ec8c19671d5d6cb59c67b92c5929f75d064542e952"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift",
+      "sha256": "db167f78e430b62281fc4961fb66c7922c601052f454ab8bf5f32f6868456ca5"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Security/AttestationSigner.swift",
+      "sha256": "ac0072cd44edffa656999bf3e82fccbc15db6928d0c4a9dcc5ad47b1f9516cfd"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift",
+      "sha256": "74af04da18ddf008a4886488cfc3f0c01ef2145f836240d64adbee732aaf6e3b"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Security/BootSecurity.swift",
+      "sha256": "9e0391c7903f6fba7f19501470be165b35a6e42d7ff2926948ba73404b3028a3"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Security/EnvironmentScrubber.swift",
+      "sha256": "87b73e6b82520d2cd48d18deb348bfd373913943b87678e4e417c346bd7db679"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Security/MDMEnrollment.swift",
+      "sha256": "efb874633fbcb8654c0e42462fd2ee83910d3cbe02bfdeb9a9522109964d65ce"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey+ECIES.swift",
+      "sha256": "73b50e29c66e32943ec38c4fc153de9b949d0ef06e3cdd9419f8b19feda8359a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift",
+      "sha256": "3214d7d75c06c9b638ffec22a52095a443199a8d47efd4701ba18ca8965e6f08"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Security/SecureEnclaveIdentity.swift",
+      "sha256": "e72e79bc385000e80c119ad02364d132f3196889fa6dbf71df0b239d94cd667d"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Security/SecurityFoundation.swift",
+      "sha256": "a5dc4a125e7172182358928890a62bbb9b41c750cac6d0752c19330361e95e50"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift",
+      "sha256": "bd15e19652e32e5f7ce83a683aa8f4170035e4222389502076858fcde8424c2d"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Security/SignedReleaseIdentity.swift",
+      "sha256": "803072c313ad3da613f4e27fa7780f0464b4c6b58747faf3f5501408dfe443c5"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/LocalAuthResponder.swift",
+      "sha256": "8b23747f1f9308c5510196b17340746fcebeb2dfa5b45aa68bba2ac18777ec12"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/LocalChatRequest.swift",
+      "sha256": "1909d9f8d7d62f6ddcddccd15e227fff8da2ae5296ba4d95bcf5aef95796f3f5"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift",
+      "sha256": "99c277a81c5e3e28d63e6913eaa7ca969ee4213545527f1932ac79beafab36ee"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift",
+      "sha256": "5794512ab56254554c950ad990b20452da44d0aaec4ed3a076a2a0ff29e9e505"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift",
+      "sha256": "7f83f25cef9efbd0fc9f7ff4ec309011973d4d6ee6202d9c2f7a508356219de9"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift",
+      "sha256": "cf475808a2cb623abaaafb58f762092ae1751460673826d4f9c62cd5b2fd2d86"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/ModelPrefetchCoordinator.swift",
+      "sha256": "bb1414b5d50d474a590bc52711aa73db44d35bc1d3350a25aebbbbe10142f4b4"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift",
+      "sha256": "6afbeaa06625c6f24b317599a6890db5a94695e0e4db9627957a818cb653ba0a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/StandaloneServer+MTP.swift",
+      "sha256": "bf5066abd3b2cc29f14968b7a83003817583c2b6af2097080a5be1c34d966c53"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift",
+      "sha256": "fe9eda960c0e0781ce3653c397f02293cefc148e445648d5fdab1274a76c4db8"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift",
+      "sha256": "b830176a8c45b0508c747e98ff878c9c110b1a831cc35d48377e26eb3524391c"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift",
+      "sha256": "b0a445d4dfb38ddcd7ed9e366edeae75ee0de8618d9b32d15523e42a726eed83"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift",
+      "sha256": "310228cfd6e38086b3b16ee7357e3f9d3ec766731b8c7f488643dc718f8e27e0"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Service/LaunchctlControl.swift",
+      "sha256": "54d7b6f9a2668d8d1ca1ca84cf6c3b1ca7deb87d2bddd6f842e0972218b49a4f"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Service/LoadedModelsStore.swift",
+      "sha256": "77d7f6721ad87c50f6616e6bd3b6dafeaa1f3c29ccabc6f31eaa6a18bb12415a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Service/ProcessIdentity.swift",
+      "sha256": "9e522f04885599ad83d2744dd372671fb2940a091c8204f1a70286a8cea7413b"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift",
+      "sha256": "541a16203f050b8e7c24901cf84f657de46e4451872614425e1c227798297e77"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Service/ProviderLaunchSnapshot.swift",
+      "sha256": "7f1c66f884f96626455b09c472044846fcb13821321b5c2fd26c0e8bdef160fd"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift",
+      "sha256": "694466ef4f318b0382c9a65727ad57f9c0c702424234059f519ae8ef2b7d1efa"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Service/WatchdogDecision.swift",
+      "sha256": "2795af18b8cdb8fb93d8e6174b0af409b3ccf0e5e3a5e794fd2273deae431a3e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Service/WatchdogProbe.swift",
+      "sha256": "a816715455e51188205d9023c0bb1219cb53105b6de87b816100da8f38ef8b52"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Service/WatchdogRecoveryService.swift",
+      "sha256": "b0d9a52699beff2d43b7245a6373a9da69d986e727c379a3ba00edab23849044"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Service/WatchdogScheduler.swift",
+      "sha256": "49af34e452b3a656ae7101e62bf792bc060e9f3902a5a69984057bceb4891219"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Service/WatchdogState.swift",
+      "sha256": "7f459b41485360fb2b7d0227bbaa7c2fd08e0c5ce7c9291acbbc1cf21bcbf174"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift",
+      "sha256": "16d0c7ca65dd4f7e6524854777197f4c7f5e6f53fc4f680a2acb0af4e790e5bd"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/SpecDec/SpecDecMetadata.swift",
+      "sha256": "86dfd338aa04ef9a17b5abdde763c508102dcfa128a929fe6f48393dcc59ea65"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/SpecDec/SpecDecResolver.swift",
+      "sha256": "d292bfc014ee03abe384197037789bcca32d2f90573db56c1b1964413c43373c"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/SpecDec/SpecDecStore.swift",
+      "sha256": "fd31dc483f7727c85d3d9ccad3bf3cf9bf58ec10d2c1e1c0449d6364012a9c50"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/SpecDec/SpecDecTypes.swift",
+      "sha256": "f8c4ef8dbf2ac5a1c73bd1c89488fefa7c98e46a16425d2c0e9b926d57fea3ce"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Startup/StartupPreloader.swift",
+      "sha256": "708fad8d164c3fa7167778032163ad207c9e5c072b4ec9a675ca801a37606d7a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/System/InferencePowerAssertion.swift",
+      "sha256": "116c0f904f4860a1c00247caba035bedf424d8adfb479a206f3be7739d8f16c6"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/System/NetworkPowerAssertion.swift",
+      "sha256": "95aae6b06d3a80a91980557be6688b60d221eb06a2a3f7f8296af33d6b124e0a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/TaskSleep.swift",
+      "sha256": "81353e849174a7c1b7286749bc91b451a636d94afa595bd3f2b0148149573702"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Telemetry/EngineHealthEvent.swift",
+      "sha256": "ef82ff9f9db0d921bc208084c00268a8c9351be8f0515fc3135bb124d0469d59"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift",
+      "sha256": "93909d5fb923a76c11962493a985b12072b837b75a2a8b0e039b65d38de3e43a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Telemetry/RequestProfileBuilder.swift",
+      "sha256": "78688edae56c364ea7bc6ef3940b2c7b340850c992c1868c1b83fd2c3aeafda4"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift",
+      "sha256": "5fbd7d0299ff17cc58a7d680b3f528995637bfbd5c11eb70279804add622948e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift",
+      "sha256": "cbb0c8bc1bec4d21d2f8c5eb3dbe9210c45bc2574c877e0072710bed67163273"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift",
+      "sha256": "c55c2cedd69bed0067f70638ee9da8d419427a6972046c8c74dba577b8bbcc4b"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Update/AutoUpdateController.swift",
+      "sha256": "c963ffdc7a6889760a957343ef8538bca3c18c8e389bb14e0f5222018d9c7bee"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Update/DarkbloomCodeSignature.swift",
+      "sha256": "b64b996395490ad2e99f55071341c5a550df874da4d66e5bf49c49f75115af60"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Update/FanHelperCapabilityVerifier.swift",
+      "sha256": "2b9add9dce70f3bb9bb3cdfa0e30a01896ac131df0521d338200c0a3a601d8ec"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Update/SelfUpdater.swift",
+      "sha256": "089ff95839b0f33d57dd47fe3f80a02a3cb1ef3d2bcfd0f89b05e8851f54b463"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Update/SemanticVersion.swift",
+      "sha256": "a986c487f96f5611666bfd9cc8b4e04853fc3f2370d56d00067602507dffc30e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Update/UpdateAtomicFilesystem.swift",
+      "sha256": "00da3479d9f738f0690e5e9b0c4fcf62d798459da967160c2901fe01775816ec"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Update/UpdateBanner.swift",
+      "sha256": "4a2af2436f2dd21ab3571389e01bd0249c359f7d999caf1beeacada72d8566ac"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Update/UpdateInstallLayout.swift",
+      "sha256": "8ff3fde46839cbc4613db1f0cdd6aa9c6246b1b470b3445aba5fb39a956c56df"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Update/UpdateJitter.swift",
+      "sha256": "9e962d23d44b95bc509cc953937ebec78df056becf3045546f7e0b5c7ca68ca9"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Update/UpdateProcessLock.swift",
+      "sha256": "1d122d8a386011a5e3fabec28b7be11dcdf19466ca42ee869c803a8b575986a6"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift",
+      "sha256": "aac4decddf198e0ab8098d0b9e02e76df85263aac24b0a3fc57b7fb6c88f579a"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Update/UpdateRecoveryStore.swift",
+      "sha256": "0254e759b97c1ecac77a63df20234ff7001de0abb2b4c14115a384e96e5ce75d"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Update/UpdateSession.swift",
+      "sha256": "de100d4806888b5258f0f21d90c3c9d8ff12b9f1f0a16f276acd937f397cb04f"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Util/Hex.swift",
+      "sha256": "69ea6d2c2c81a9a2fd12630f46b7eebf9f595cf2a21514bc45203aa9d9a927f1"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCore/Util/WebSocketURLScheme.swift",
+      "sha256": "8977a33e4711eba479de9b14298d78607e200ec8b7e576b07c762708da10a6a0"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCoreFoundation/HarmonySanitization.swift",
+      "sha256": "fa4e6c25942e83b04669f82c8ea790fc370acf0ee1b6e9d14f1d1ccd42004570"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCoreFoundation/JinjaSanitization.swift",
+      "sha256": "1bcf2d7ed85beb1171b45378979a5d99b63deaa33aa39e55079ecf41938d5b5d"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCoreFoundation/Manifest.swift",
+      "sha256": "9d3e231f70986e083f0e412de84e31d55c3b5d80fac793d8030274b9851646b3"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCoreFoundation/ManifestBuilder.swift",
+      "sha256": "937b4cd22c6feb581f2342c685478434b512a23e002af2401333d6a1ac3e8d6e"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift",
+      "sha256": "210ea7bbfc3a4b268a0e8fca2cba305bce91eb7a1c65697fbaede399a4cd38b1"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift",
+      "sha256": "f7d7ae3e47d39d4a4142703484ae33aa8ed7d5a229bd524a8e890fd5edf1fa74"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCoreFoundation/SwiftJinjaCompatibility.swift",
+      "sha256": "9fa58a3144102ef561f5e5b6d3207d9280af1f24dc4dc6d00f3222f2ee799fc0"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCoreFoundation/TemplateRenderCheck.swift",
+      "sha256": "11ed0eb1cfd22b2501427fc1cc9f1be6822203fe70ed788fcd1d3d88469e3ed6"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderCoreFoundation/WeightHasher.swift",
+      "sha256": "3930d535f5c89d74718416005e790f67696dddcb8f87e49b7260d62332a9fa44"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderMetallibControl/ProviderMetallibControl.cpp",
+      "sha256": "3f769fd06fdace639b9f6c90b6bced22b4a8f5fedbba9f7ed5c56cbbe477ee07"
+    },
+    {
+      "path": "provider-swift/Sources/ProviderMetallibControl/include/ProviderMetallibControl.h",
+      "sha256": "7befc4f920ce5709e48e7a5d3d758f75782333dd4ae1ce88fa49d9e1d490295d"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/AutoUpdateCommand.swift",
+      "sha256": "5d2fbfd6b00dd6b7861053d44e663a23450415655dee6872f2e970831b5edc2a"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/BenchmarkCommand+Parity.swift",
+      "sha256": "3c92772e09f2dc9eaddda839b3bafb3b10bf7b49b800f68ca89948c032dd7076"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/BenchmarkCommand+SchedulerPrefillDecision.swift",
+      "sha256": "2401bc30fd3d349f08f8b214e0dc0a470771d426efb8dc43231c5d780f178738"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/BenchmarkCommand+Sweep.swift",
+      "sha256": "f9c5954f64ef94ccab49934ee0708a28d66cf4570db484d0f23acc992fae65ec"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/BenchmarkCommand.swift",
+      "sha256": "b73e20112c7b26b0f12a98ef361bd7110790704178992d11e6f5ea138285f04b"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/BetaCommand.swift",
+      "sha256": "9e0e0b94a0394783fd09ad627a8a375ee434889b36450e86f3b15f64dd337f83"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/Darkbloom.swift",
+      "sha256": "4daaff106d8f688302f89878f54f8ee266c838f5f62e8cbc3d5f08c3419024f8"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/Diagnostics/CompetingInferenceDiagnostics.swift",
+      "sha256": "adcc6e5509a274847ce4e3fd26b5dfd13f2d0dd7d40193e362348f60d4dfbe0c"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/Diagnostics/DiagnosticReportRenderer.swift",
+      "sha256": "b300b5611e4b5f71b8490b74621a4c48a78ab3a782e2e42b08b2cec280fa3b82"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/Diagnostics/DoctorAttestationIdentity.swift",
+      "sha256": "dc6d2f8a21ac513706950777346af0bb04e5f5b39c9d3f54c3662d12075de8ce"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift",
+      "sha256": "daaee5dbb321b391b1b0d0396543bfcff15f340dc85ec7f5681ebee3d89b346d"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/Diagnostics/KVBackendGuardDiagnostics.swift",
+      "sha256": "f96fc29dd27eece56a406d5773c6537a72fd6043800150921751d68975aadefe"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift",
+      "sha256": "127effa717681ae6a54e43fd4275949e3c55d9da9906dd1ff32b6320a7b692fb"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/Diagnostics/SEKeySelfTest.swift",
+      "sha256": "e239f6454a2b6ed478962397e35e2892dc6d157f3271c7af3fe90162d20aaf42"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/DoctorCommand.swift",
+      "sha256": "8fc87033af1625516bf39c1b9a9da19c245eaa257ca1a6d7e2ae9ad6d05e2ef1"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/EnrollCommand.swift",
+      "sha256": "bdd89ebd0ce07a952d9f0bb4845efe702d7dd9a9fd881cfabbe8947174d161f6"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/Fan/FanCommand.swift",
+      "sha256": "4f671384d096fffeed5b32f0de3b8bf9db40708f49c532ecbae6d2905bf8ea5c"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/Fan/FanHelperClient.swift",
+      "sha256": "52262337a38a04853e4d4fb8db5349e58c28ff81e4ebdc4e090a88b90e8d4f0e"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/Fan/FanProcessRunner.swift",
+      "sha256": "b4ae32135ff460fff62ccd8e33d85da2a16a3ac48c0b84c54e82b7740bd20db2"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/Fan/FanServiceManager+Install.swift",
+      "sha256": "853093ff4bb645499a88f86d5efe7fcb0ece774a688f0d0fcf255ac54dff169f"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/Fan/FanServiceManager.swift",
+      "sha256": "e1e215345aa84b46ce5ccd5573bdccc6e33692698655d9b643f516514e73ffed"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/FanActivityLease.swift",
+      "sha256": "d535d639b1179f1bf3140aba99ef6ba9d6bc45510aaee841c68892c15acd5754"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/IdleCommand.swift",
+      "sha256": "b81eda3a1e2b65e1884dd407473e8858e51099f7f3996d362569c5f12bef2b1f"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/LocalCommand.swift",
+      "sha256": "b249f8571d8dc1148602f39a0017695d6845f34cda3199dd8e688407694a7db2"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/LoginCommand.swift",
+      "sha256": "78280d10cf413f0288941072911b13863548b6c595ffc5e12b5e4382ac52f5e8"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/LogoutCommand.swift",
+      "sha256": "5bd9f126655c881df117906ff2b6595154070947630bc4079d7ba9ccb43221ea"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/LogsCommand.swift",
+      "sha256": "ac7191e6ae4a9ecbc4cacc7ffde1320c5ee1b18e0d6249a175de5adcef1c7d82"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/ModelsCommand.swift",
+      "sha256": "98516465e8909b0dbe39d33d8cdf9a15cca9127018aea67cf3ff2a2780aca7f1"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/ProviderAppKitHost.swift",
+      "sha256": "389ce1eac6e6a40253f64ad248f6135f96e194eba7e0679c19619e6eeeba7423"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/ReportCommand.swift",
+      "sha256": "1e5c23f9fc07852a30d41d90d9bd3fe98d969cdbdd0deb211dca24945ebb9ce2"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/RestartCommand.swift",
+      "sha256": "52d5faa50405501d6b0c3852f102df855407f6f56f1a04b4a2ec5f0ecd3cc1e1"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/RuntimeSmokeCommand.swift",
+      "sha256": "88d854e9d5756cc63145cc35e06a1425877e3d6cbe03757cf45a4df3bbbcb097"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift",
+      "sha256": "ed1fbd8563d3b1e9521cfd8884d2fc4861341b8fcafdb7339cd919655b580ba8"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/StartCommand+BootSecurity.swift",
+      "sha256": "524befc716c3f3f218293a4b026727a09e21927f31ed3378eb932a49b5115b59"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/StartCommand+Daemon.swift",
+      "sha256": "214fedc5d578200cce9c93048700dfc571207c659e68a904517a9a8f86e9c451"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/StartCommand+Modes.swift",
+      "sha256": "161f4ca436d2e8d26416a6d2ee67b7ffa7159abfb6639f57f07ab69b9cae71aa"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/StartCommand+Picker.swift",
+      "sha256": "ce0526c7b87020b9ac25d416e8b358e22f1f33e5f26abbd7b6c373a9fab8d8f3"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/StartCommand+Preflight.swift",
+      "sha256": "640d81f031ee0023dbdde5dd95c987daf8f23cf9856db4e139ce6b76316a47e2"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/StartCommand+TUIPicker.swift",
+      "sha256": "168180b47031854e2ec775c8a8711b6da74afe40a4f0de99d64f0424267977e3"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/StartCommand.swift",
+      "sha256": "9e6fdcded0d3c436f29bebee6f1bf9640b03c11c249039c458ea2703c5cc7b98"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/StatusCommand.swift",
+      "sha256": "84d07a7b2514e2865f7e97a9574591cc1d245180e1f4dfce81a87ee40b5cbee7"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/StopCommand.swift",
+      "sha256": "edbe1d787a81e25210665d9ed73d09bca6e5c0b68f3681be5075e7ec22303b34"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/UnenrollCommand.swift",
+      "sha256": "273e30dd003ad4f1c86694dcb5051a77ce70f6a9ee9bcc0e233dcfbde5b7c487"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/UpdateCommand.swift",
+      "sha256": "5809cb2cf50ac46af3ad6563e11bf98bc3d67aef574008f898beb6e5d0b898c3"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/VerifyCommand.swift",
+      "sha256": "aefba057c8952ec89966c2dcbba52303e0c53a914712b42b714835f4dc323141"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/WatchdogCommand.swift",
+      "sha256": "db0257a1ca322fa27fcd5ac6032a651f5d9d3cf2a76d5d1ef0276b9fa982c6db"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/WatchdogSignalTrap.swift",
+      "sha256": "c1e24eb7ac6bf095f2e7eaab2fc2abe813cf11bdc5c933587456cadb520c5055"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom/main.swift",
+      "sha256": "d7d9b2540eb674607104ef568c6da02555ea5917ba3039645ae96a6831fe13c6"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom-enclave-cli/EnclaveCLI.swift",
+      "sha256": "8332f26a74a159a409fe35bf516dfc65a5812ad2e04c577835ff96485e911b8e"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom-publish/DarkbloomPublish.swift",
+      "sha256": "9ca9c9e23eb2d6639ede9b6a2a41d8099556d424d870cbf6e621419d5b0ead76"
+    },
+    {
+      "path": "provider-swift/Sources/darkbloom-publish/HashCommand.swift",
+      "sha256": "d9d3ebccefc69b7e87d21c3c3d46570ac9d69850dd847d53ea043c0642e7cbe6"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/BenchmarkHelpers/BenchmarkHelpers.swift",
+      "sha256": "2615519193722810316885b110958ec9cc1b8bdc593aeb531ba959d103133cc0"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/IntegrationTestHelpers/IntegrationTestHelpers.swift",
+      "sha256": "0a38e08c06019642766238a6dae029bd3ce6d6863a26cd35e789037171e1ab2f"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/IntegrationTestHelpers/README.md",
+      "sha256": "0544ee5628e36d23e71af1d0d567f6dd555cfc60944b8483c1bb162c765f7836"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXEmbedders/EmbedderModelContainer.swift",
+      "sha256": "33a80db772a0f349ac265237a04d46839ba7b2eba74e2d1892c8057df48caf9b"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXEmbedders/EmbeddingModel.swift",
+      "sha256": "5d89aa87c5309d4ba0e5826367122ed35f4022d1e1d44646c2ef5d5d3ffc6391"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXEmbedders/Extensions/MLXArray+Helper.swift",
+      "sha256": "9bb600aad5034dc2da274bb7405ac2fd1561a46918c5139b9bcc7824c8cce72e"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXEmbedders/ModelFactory.swift",
+      "sha256": "a581c89933479df77ec19e4f99a18616ff01f29c01c32759a109801ed84b0090"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXEmbedders/Models/Bert.swift",
+      "sha256": "d4ef96f3af69ccfe6332d4acc40de3b8ab855b26ca0352b8020a1924d1088a88"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXEmbedders/Models/Gemma3.swift",
+      "sha256": "fdc0beefdd9ac670806ddc8d3e733be0acac19f0e32133f96e148e0112aacf0f"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXEmbedders/Models/NomicBert.swift",
+      "sha256": "2bdc6fac5870cbd4c21ace5e9293bf65938698ecf25ff82f2e293b8a5c7da59a"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXEmbedders/Models/Qwen3.swift",
+      "sha256": "915028c46c316614c3bfbf91501b5c88c206fb7b2c90a92111c766d5169b5c3f"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXEmbedders/Pooling.swift",
+      "sha256": "bc24f07f02c2673224c33e4b5529ee2bb78672151d42dadbbf0efa8c3e867b70"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXEmbedders/README.md",
+      "sha256": "9c9cb20d414c99bbdf9fdeff8e4d7f170439512bb8b08763ef79d4208b869203"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXHuggingFace/Documentation.docc/Documentation.md",
+      "sha256": "94167a46a23d74441c1251cf71706b8b586e2e5cd306ef7295d352faf6d3700e"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXHuggingFace/Macros.swift",
+      "sha256": "2a7387bc51b61a600235f23ba2740abd92fa4ae94d7ca3fd2373306688ae90bb"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXHuggingFaceMacros/HuggingFaceIntegrationMacros.swift",
+      "sha256": "1667c190415bbc9c06fc22cd92ea5be18cdab5a72900d1fcc9cc67d0a6788eca"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Documentation.docc/Documentation.md",
+      "sha256": "673c8f62a37dd343eba66f68d18c105642d71c9ca9ab31d9f9b6cd9d94076d33"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Documentation.docc/adding-model.md",
+      "sha256": "a02bcbf08a8d05b018d4d974652b115fe5bcfd7702bd5cba3c4873579fb14852"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Documentation.docc/evaluation.md",
+      "sha256": "f9f1fb2ca9376d9f1817b3816b1586a8fb7795a0c975d17df665f641030bbf42"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Documentation.docc/using-model.md",
+      "sha256": "154f6b23a116ca3a1bc824bdcb24caad890c04eea35ae1b2b606eb44c1a8419a"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/LLMModel.swift",
+      "sha256": "5a2468512d36d0a6ac09c0870f9e237a575a61ebe8e716deed17ba03b29668d5"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/LLMModelFactory.swift",
+      "sha256": "43106e1707ef8584cb4455eccddff52d4303bac2c09cc98864a33063a106c0f7"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Lora+Data.swift",
+      "sha256": "365678f7266f7ae572b5f7d5d81a1bbf0c509e8b7fc58c4f7a1b885295b1553c"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/LoraTrain.swift",
+      "sha256": "cc0768f8b724ae6b40df92ca5ffd54a76210bf2545e4a11e7ce994d5c0e58267"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/AfMoE.swift",
+      "sha256": "f5349b576b8ba84c668a7d17548c86c041472c2ec4eb753a7e0b4901a500e729"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Apertus.swift",
+      "sha256": "2a98626bb8647935104ae5b1377534a69716c23c2fb77a3e3eb70defc134dfa2"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/BaichuanM1.swift",
+      "sha256": "49d3f40b32235486d59025d7d196baa1b03064d98d0fd7dab64d4356c22cdf39"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/BailingMoe.swift",
+      "sha256": "9136b6acb542978a0546c89128d57f43a68415053165c2d6f805f60a660569c3"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Bitnet.swift",
+      "sha256": "cf5e1e10a907910b11c3733ab5f13e9e56637a2463840a1e259f5c7eeded4ba2"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Cohere.swift",
+      "sha256": "080df73745f5c380e5d199bd6ab476c45abe2c6066ea874b1cb97074f6ed2665"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/DeepseekV3.swift",
+      "sha256": "18650939f0a3b74d6367b6c59f127ecccc9120f88413277ae8017b3b1a40e265"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/DeepseekV4.swift",
+      "sha256": "dfad89f5bbc7ded279b2322c7ff450cd9e566a0e101c94b4018ff0e94294027d"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/DeepseekV4MTP.swift",
+      "sha256": "1d82123b196b83b87b4d889333515065fccba9d2761263265c676ad7467b9572"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Ernie4_5.swift",
+      "sha256": "88cc05488dddb04b29d6669318efa4c20e3e78a2a1272c648b3e7181bca9c1e6"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Exaone4.swift",
+      "sha256": "1b2cf19bc2ec4c86fa2a25adf3f59240ed9050c1bdf84515d3ddd3f3a2e45775"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/FalconH1.swift",
+      "sha256": "e531692d78b8d8c7aaa3d78ddbf9fe4e8c6966e8d4f358894f917b11987a7fb5"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/GLM4.swift",
+      "sha256": "14a54d90be1de1d643edf831b92d5c3845915f543941f8367c03da01a5328e25"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/GLM4MOE.swift",
+      "sha256": "8fa8023e92b6782ff6b05c8ae87036ff24c4a2cf1dfa23a6b81e61edd1c6ed81"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/GLM4MOELite.swift",
+      "sha256": "d165345a0002a7ffce99ec02bb770508ce5e0bdfeb35f44c96624d41e6baec7b"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/GPTOSS.swift",
+      "sha256": "2173d395eef96a1d7944fbc2b588bae080c9989ad8590ad62bbe7123c7547c59"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/GatedDelta.swift",
+      "sha256": "4d46bb3298a108cef95cd2841b10611fea4440a3202e605760817e5dca7110a9"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma.swift",
+      "sha256": "0e92ff90ed54e8cf621617ff527cb64e9735c245f1bde74fca8e3c4eb06d722b"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma2.swift",
+      "sha256": "0e80f106ea8f9fe14a3ee317048c60c28f4cbef5220fa9703fbf006025c8def6"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma3Text.swift",
+      "sha256": "a951822267c420b5c0dfec524a51e03398291ccffc17b2d80ec9b74fb290bec9"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma3nText.swift",
+      "sha256": "fad8e2074d92a2d4f84bf6498d4608ff3355f7c3dd9eb128c5285ed9e84aa7cc"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4.swift",
+      "sha256": "fd656d6a60a0c6b57b14e50f6ff9c9563addf06ec92c31e0c68f5a1fc377cc8d"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4CBv2MTPDrafter.swift",
+      "sha256": "cf90444cabc7cb59b9d6492703af4d98e11d26f9386229d62c3e4e04e8861226"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4MTP.swift",
+      "sha256": "78441c077979578d367351109992000e9591fd626b23e62059693f2726699ff5"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4MTPConfigurationValidation.swift",
+      "sha256": "7d169e82bdd2024b5352ad369dc75d9882bacd9979e6acccfd94ace62e9b4cd2"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4MTPTarget.swift",
+      "sha256": "84fbcac9c6d3ee8eceb2274fce56a52eb2a2503f5a5ba8b79c78f518dbc093e5"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Gemma4Text.swift",
+      "sha256": "4253285c34ae4627c17a68a10719ab02004cd802b5f7d5bccaba6231a9bd03e4"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Granite.swift",
+      "sha256": "71753f7d3781c669e88f9090f89dbb6113beefb6d190cb123989b41e0d11a270"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/GraniteMoeHybrid.swift",
+      "sha256": "031055474579e5f6e6f4e32989bbbba2acedffbd1da68b0088a0f0640c044d1e"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Internlm2.swift",
+      "sha256": "a8b44a802e93ca86e156e66509e727cb336e73adc927c1e41afa36137abe6557"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Jamba.swift",
+      "sha256": "cd146f46d495d050b2f0b067f620672b185544c11fd1088abfe3573b8398627b"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/LFM2.swift",
+      "sha256": "8df1885fd641fa59fec39590dc9c2ed7504a728e34ee1445827997fc643926e3"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/LFM2MoE.swift",
+      "sha256": "15630aecf06daa7e404113709320f6c28ff68085d3de6f554d792e475388efd0"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Laguna.swift",
+      "sha256": "821475dd267573603489ded08349a198d95c81f5a23f877a061419b61856c9dc"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Lille130m.swift",
+      "sha256": "22eaa42ef5ae4667cb41659737b091617c65b21ec0fa2344f0c62912c39a8841"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Llama.swift",
+      "sha256": "b67bcbf1c79d6e00babd07d273085e58bfb022e991c574e70d87e3cd0b2be21f"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMo.swift",
+      "sha256": "9f33829256117916b96a6dc1a622568077b63bbbc0f1d186c1a18cb9806b1a07"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiMoV2Flash.swift",
+      "sha256": "76d7ac04baccf235fe2569fedcda4915150810a831632ba58fbdc93b7db70436"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiniCPM.swift",
+      "sha256": "f82d11663d43f357de65ff008e65972ebf6673b9f4ebb15ad63b3f8028c893d8"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/MiniMax.swift",
+      "sha256": "44baa1d7983137a2116fe0c7570f7adc6caba2246e7e4ff732f6732ec63c40c5"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Mistral3Text.swift",
+      "sha256": "31b223b4690124b77552dc2778dfcd62268070eed1b330d412c3286bf1887efa"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/NanoChat.swift",
+      "sha256": "cab824abfa6f5a4766cde1b9c9ceae7cff34e7756f5021166617bc42a67137b8"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH.swift",
+      "sha256": "516ad7b4f6ca6b121b2c059129dec91769ed8a478993e510a9abe02618b96684"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Olmo2.swift",
+      "sha256": "57f865ae257835267de4b3dd4e0ad78019c0e253a3ccccf41ea9837ace1bfd11"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Olmo3.swift",
+      "sha256": "81db9267bb3c41300ba4bfe687bcd5414af168ef8d4f0efedcb3adf52e5f7897"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/OlmoE.swift",
+      "sha256": "91dfe596354c1190aa2ef74de2bb50d85044d4c81b60ddc45d64d30c478c7a4a"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/OpenELM.swift",
+      "sha256": "6cd80cfc08702de83359cc77bbe4542e612f3815701a20de4012ec0fc05c1dea"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Phi.swift",
+      "sha256": "e833227aa827897ca3d7b2f60b10f0fcc5a374934e4beeaf816fdc97f2a395a4"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Phi3.swift",
+      "sha256": "df5d990854a53c49abb18c92824d7991d1d6b2255cc25ddcf34fe71ddfa03bae"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/PhiMoE.swift",
+      "sha256": "c6e5ae23cf2285b33753a93d89442855ad460f73fa43b542971ddb62920f6458"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen2.swift",
+      "sha256": "2d788734c1932fcdb15d3d3db6e442ab0792bf6585422eb74aa22aebb5a92a9c"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen3.swift",
+      "sha256": "cc03bdd2d1640bd2fe698a47a6db9cd9f01879fadb5ccec6b9cea2ece85d16cd"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift",
+      "sha256": "a074074264d48d18914355b3e987d70faae1e2a81146e3945946fe6544c140f2"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35A3BOptimization.swift",
+      "sha256": "0672789bb12449feae6c9c6ee08c19d6415ff20253215d67e63c7da6765451cd"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35A3BTargetVerify.swift",
+      "sha256": "311d41994a428670097828f25a3bbb9942bf38273e3bcd7718bd386a88c0b505"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTP.swift",
+      "sha256": "14de74d060271fa433ce8939c6a456a23b3a70d632dbf47f59ad35d23f6341c4"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MTPTopTwo.swift",
+      "sha256": "382ee06a3467228912adde25ce402984e51f100da652d9b661f59009bce682dc"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35MoE.swift",
+      "sha256": "28de3714f5f99382ed387e21ac43cc8d03dc4ad2c8fce63a03e4d01297f369fc"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen3MoE.swift",
+      "sha256": "c435c258360e052c7be175f88cd912c0639074c9ecf0ab22692f65799e6b8129"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Qwen3Next.swift",
+      "sha256": "399065b9e2e1703c795afe336290734996ae1a076bfed9d16dc3cbdac80d37b3"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/SSM.swift",
+      "sha256": "1720c328297c7e1eb8a18ef7edf1e2cfb80d04593b86052530c7ca1662b5953d"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/SmolLM3.swift",
+      "sha256": "800b18194022ff861b02e10119c67a821b66f19a55efc6efdceca25545caf4ba"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/Models/Starcoder2.swift",
+      "sha256": "71ca276e56c6597bbc2a15e3d8212491200d1725d0dbcc8edea05a6407fa9553"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLLM/README.md",
+      "sha256": "9d9249cab3acb9bc7c19d37a97cf37b47cc75ea260699e91080715afddf43472"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Adapters/LoRA/DoRA+Layers.swift",
+      "sha256": "8a345d3227c39279191924b5fbe1d49507609ec3010f9f2fe2561f6809987c6f"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Adapters/LoRA/LoRA+Layers.swift",
+      "sha256": "ebc62e3d60666c77195d1d8122fe9f77dc65ae6685f1d75c447c0c6a95711303"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Adapters/LoRA/LoRAContainer.swift",
+      "sha256": "b625a74b9f70f242240ee2b751aa285f68c78f056d294d15beffeeed4cff3cd1"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Adapters/LoRA/LoRAModel.swift",
+      "sha256": "da18d221bf85578f526c2f6f57674175f3dd4002a1d39908b1da022ae5df038e"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Adapters/ModelAdapter.swift",
+      "sha256": "fb6e8655ddef12c9083d676916231939a3f1f073084fffff3e282589e5c53ccd"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Adapters/ModelAdapterFactory.swift",
+      "sha256": "18edbecb38ea77954ab8b4ce44b7678206ee147dc2cf963874f4cd3a18528e3c"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Adapters/ModelAdapterTypeRegistry.swift",
+      "sha256": "94047b5eb4cce31808db26083d410d6352e4ec9f62d715ab58e1f1426672644c"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/AttentionUtils.swift",
+      "sha256": "7d95855712ff3c1bf51c26593060c0266fccc9c3303f5998071f013d4d2e6eb4"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/BaseConfiguration.swift",
+      "sha256": "66fa6dd5b6e2c4f78678d710c2da06334b6305a6ce1f36283899735003a17b9e"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Chat.swift",
+      "sha256": "893a9bf25f22c5696a63a2a3a8511f0adcb00c95868f9faee284164655729621"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ChatSession.swift",
+      "sha256": "0bdf81db1b584cf669a3172c45ab9ab5729be2798803148cddebf33c697cc2ea"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/CompilableKVCache.swift",
+      "sha256": "de7bddf8c7980d003c034ed467bec81720e5e37e94aab1dc020f16e8e6f76e81"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/CompilableRotatingKVCache.swift",
+      "sha256": "2d9506696ee3801ed03ff5c13271f079996880c9278a5abecfc804a22a735a80"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AdmissionV2.swift",
+      "sha256": "7ded33347e4646d749d6a9d1b41db6a70d3efce904096c387745737ad333ce02"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AttentionV1.swift",
+      "sha256": "4faee0e68627e85815386c2f43d5e38b1e80d3451fefdbf1a17bec714d94ec24"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/BlockHasher.swift",
+      "sha256": "aa4ecfe2e221d914ab3dbe93c3a16188025c36eff37b418ebaebeebfa55bd534"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift",
+      "sha256": "748148209bb145e4d2581b4e645a76dbfbef2438ca21da7d625f8870637ea491"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2DeadlineLeases.swift",
+      "sha256": "349b897af6e475599234b6c51018a687f268aa58e0791dd1abc7ce179a310be5"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2RequestTiming+Stamps.swift",
+      "sha256": "c33eccf8830240e258028fa6c255266125ec3a2ffd320af208fde9c6413872d6"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2SlidingWindowDonation.swift",
+      "sha256": "b02c667945aab607b280234b1d9bca6e39c0886e787ab3b24920ab6dd2680631"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/DefaultSamplerV2.swift",
+      "sha256": "be19faa538657739258ec4fe95b79ccf0522df1482be7dee18406d92beb59755"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/DetokenizerBridgeV2.swift",
+      "sha256": "6ec8cc94e0171b5fb28bfb12e6b016e5b950d34f7d3e0500a5862a235f41f07d"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/DetokenizerV2.swift",
+      "sha256": "df9c1e1a0ea329e5761135437420f8564f2942efaa7418ab4077baa2ce4baa16"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift",
+      "sha256": "477042796dc2e18ada210d2abdeb53452ed1c8415bbcd9a9403fda793e0d589c"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift",
+      "sha256": "917004f184cd7f284d218406e30ead59d68132cd37b313e14e99db1313d89f00"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/FirstTokenDeadlineAdmissionV2.swift",
+      "sha256": "d3a25cee8e51f5f234640c63aa7345968d1a81ca9ac23f2428290a8c0b24727a"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/LastQueryPrefillV2.swift",
+      "sha256": "1cb9d4e3a6cade0a2e42e622704e5d5dc2e83e1a300253ad0d5e8ec207a36d83"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/LayerCacheBankV2.swift",
+      "sha256": "c9d66264e6ee9d2cd94980f3b231fb8e5bf7102eef2cd5fb89e31e5a23953a6c"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/LayerCacheV2.swift",
+      "sha256": "cd3c996344f2c3170dd00a4e9963ebda7fb5b929ba21b089c21c0cf881b9c0a4"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/LayerKindDerivation.swift",
+      "sha256": "ee95297b26e33109fc5f221b3a7feee99d6a781e0fdac4ad3e33be668d71a2d2"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/LogitsPipelineV2.swift",
+      "sha256": "9ee0a1f51a4d2ecba6bb158ad3b028f7dfe798115a7f45543cd86d480aa303a7"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPCaptureFence.swift",
+      "sha256": "d44addbc8b78eb38027c9313e7eccf61d9242669886b487196bededaa8be7966"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPDepthController.swift",
+      "sha256": "93ffb6422130f9dfd5cc19b666784be381c0663ce581c3036f765fbf0447f9c9"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift",
+      "sha256": "9aefeac44d98303a11b26c58b9b22ade2b43759c01625ac07f6ca085e16ebafd"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTP.swift",
+      "sha256": "740d3ef002e75c0695ae8fea078b6ba169d3fa1987edb5a784137898fd88572f"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPExecution.swift",
+      "sha256": "e75588f34d10990ed47fadce2ed7bf2731e41c2df7fc6afa157ff3ba9684cd67"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift",
+      "sha256": "90c47532c9d291ce7b35f177bd66ec5f52d348599ee08aadaf9b679bd3a8c19d"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPMeasurement.swift",
+      "sha256": "d07c7d95aa21b53d70f093510f515c7f63b4aafee643ce8c1d70da65ee5b8e25"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift",
+      "sha256": "9060457b12638752e9d9ab8e6533a5aefbe4ad087b7d0b4f9e4204a72761b8a3"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPTargetVerification.swift",
+      "sha256": "851b9fc8b2de94a7933267bda5e72266046d119c9634a0cfdb1c8fa6cfad0050"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift",
+      "sha256": "12d55d0e92ae934db458f97b830b7c8071f17c1968084155670e323c1bb2bc97"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MultimodalV2.swift",
+      "sha256": "57ee19a4665f586806df1de217d4caac2faa4d9129b2515e5e76a5e562477c75"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/OutputStreamV2.swift",
+      "sha256": "fc06c88fa6c73fb24e7f7964d6a51cd4f3cc157eb3af09b51b8efa72cdda0259"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedAttentionKernel.swift",
+      "sha256": "e93cb5e7e07605cc5b83b62f2171d4ce89baad061f4ba3f44a2e25bcdbd10f6e"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedAttentionKernelSmoke.swift",
+      "sha256": "3e9a314c2fd98a94ce68f7d9adcde324cdc1f8c46dd8b944c5133db3f2d8078a"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedAttentionReference.swift",
+      "sha256": "b070113547df72d85c98ef4f8761ba791a4fd4487682c695ecf890766c132ff6"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedAttentionResources.swift",
+      "sha256": "e842bb645a88bc4f82cdf75f9b3613a03086543a5893073ca95319c7bbdd6928"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedBackendBenchmark.swift",
+      "sha256": "3b3f30ef4d07831b050a7f28eb9d6bc3a0d2d072eede35c1a9207414796d2944"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedDecodeProfiler.swift",
+      "sha256": "3036e2d00bd638920956b8a2ceff5d3e68a6a304309f8690e8a76584bc8df426"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVBackend.swift",
+      "sha256": "0ddc0019c98f0a2348bc7bd6d5acf7c2c49f64db455aa82e8f33dd33a401d4a9"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool.swift",
+      "sha256": "07374512d5b584f24eace00de2afb31bd3b84bd2d569125fd7d305870c8a3fb1"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVResidency.swift",
+      "sha256": "5dae6d8adb35c01e74d5afa1008ce26bc787e0fe1a52e19ba8300f6dcf1e84a5"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVSlabCommitment.swift",
+      "sha256": "910785d305c649e0095cbf5b18d48fa268a5dc9c654e3171998fbeccf82631aa"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift",
+      "sha256": "a5d074b86660dd738e99dd470df2f7b5405ac92d7d6932de4c6262be82e18a13"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedSeamContract.swift",
+      "sha256": "bcbc677f50cff515097a7386be07c4d64da3d7457423aa2a7f6020afcd7cce37"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedSequenceKV.swift",
+      "sha256": "2af89f468d8bdedf8d52f0cf99ed508ccf6d732d84c216511a14e56e375f5186"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PrefixBlocks/EngineLoopV2+PagedPrefix.swift",
+      "sha256": "2a68421193803b038bc9c3cd126c3fcf59960603e1850b142667d5434dbd2297"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PrefixBlocks/PagedBlockFreeQueue.swift",
+      "sha256": "a7bcb3adb94acac97e4a37059baae139b9cd481c7d6bf216c254c7e46b281095"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PrefixBlocks/PagedKVBackend+PrefixSharing.swift",
+      "sha256": "7a9d4f5f4fd927c4a5721e383462c537526959fa5aa96e4aa0c5d2ed4d87dbaa"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PrefixBlocks/PagedKVPageHandle.swift",
+      "sha256": "59516fee7c0575f34a380eb21aef485411c985d7ee4f9c879af333dfd2056283"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PrefixBlocks/PagedPrefixBlockIndex.swift",
+      "sha256": "d8c93809d678c4eb1582b5da646795d40c7c64e36651f814168b706f10e56f23"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PrefixBlocks/PagedPrefixCacheContract.swift",
+      "sha256": "1092712961b228cee0b134dad0f0ab6618245c42acd313734ad8d56e95900c12"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PrefixBlocks/PagedResidentPrefixPlanValidation.swift",
+      "sha256": "d68728b5f0b200a3754546d436a2cc16d0b391528c9567b2ae675e7c78733235"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/pagedattention.metal",
+      "sha256": "1a5b813ef89a36aa802951a1c5bccab789dd0746f2159846e649974572be368b"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefillOutputV2.swift",
+      "sha256": "6da6a6c94f146a90a3311d098f81099a3e580cbef3601dea141d06aef22315e7"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineLoopV2+HybridPrefix.swift",
+      "sha256": "172d7b4d5db5e2ed9bb9e3419e46540f3cee4a7ac5358d5e1adc9fd8a6135c82"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineV2+HybridPrefix.swift",
+      "sha256": "32d0c72852d3857912f6a6745e21e7eebb7da57f1929351e4af2a91174d9ea1b"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/HybridPrefixCache.swift",
+      "sha256": "a440e55fc4d762903e263ea5b44bab4f67c86514f2b38d28fa0eb7a3cd5dd2aa"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/HybridPrefixCacheContract.swift",
+      "sha256": "07267c8418eae56188f380117a5436255f7aa846fcd6dba4d6f0db9c5954f034"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/TokenRadixIndex.swift",
+      "sha256": "348252ff9c1791610c06907b92fd95b05e37d1dda828f21c74d6c2739a7c45ff"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefixCacheV2.swift",
+      "sha256": "29fe8d85197a666ac40bab89244d4540872e0145164a6afaa7cfc1c06f193c96"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefixReusePlan.swift",
+      "sha256": "6d9fe3b471106a021217c249f5c55214468ea080ffa6f09490ca7867ade891aa"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/RecurrentStateV2.swift",
+      "sha256": "84aba8085c00dc214830734bc2429cdc0f59c1588e572981b97561bc298ec4fb"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SamplerV2.swift",
+      "sha256": "115d1b23ee9a51eba7481cf0101b4a95469e07b2d022777bfb64d59814769339"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SchedulerV2.swift",
+      "sha256": "f00f3a9e68a51c1b1a23c4846f055cad541342a2564dc126700608e5d77f73a9"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVBackend.swift",
+      "sha256": "32b04b4aead4a605c500a03fd2a657b0e2fa9bee6e31c1f412fde119109287db"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/FrozenReplayFullSequenceKV.swift",
+      "sha256": "f0b1d339d96c600670bd56051265022909d73eeede77cdc4316ec3c51b6f9615"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/FullSequenceKV.swift",
+      "sha256": "a31ab84848ebc0a9fc864387f52c79535f93ddea41eed13caf6e72851eff109d"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/WindowedSequenceKV.swift",
+      "sha256": "c989033a05d2d50fbbb7a230496b5c6bcc4b833519548e7bf1f1c4e3e683244e"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/StepProfilerV2.swift",
+      "sha256": "912df77ad193429a43f4413d2df2424189cfe27d4d5e225f60b117b4c6135347"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SteppableAdapterV2.swift",
+      "sha256": "4684873c7bcc36c481286843eaa85a11337fe6adf9a2ac84d7ce6fc76ea49078"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/StopHoldback.swift",
+      "sha256": "7f602801112e68f3fa684d455e29d3e9547b8c5342d2b042e0c4f3dc040fd0a5"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/TokenConstraintSamplerV2.swift",
+      "sha256": "9c0ca3831d812f3b5e4a391957c709d121cedec33650b54f39486838956f9813"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/ToolConstraintV2.swift",
+      "sha256": "f97417f42a2959433858b4db41206e32d8c6f7fb06097b20df00ba05d807d231"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Documentation.docc/Documentation.md",
+      "sha256": "500ab14d320d404e097954804b5393d7b6b53313ef9fb213b9487a67c66606f2"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Documentation.docc/continuous-batching.md",
+      "sha256": "dc80212d5acfc829ae30ced939139f7dffaa7e843b3e32b8b520f787e817b82b"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Documentation.docc/developing.md",
+      "sha256": "0c23f858032d9f8f8cded26a69d8b86121db62c169becd9b99d63e48d6cf0fe5"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Documentation.docc/porting.md",
+      "sha256": "638dd5b9a3696cd9da49e1a2b61d0953d23d1dbd6c2990336394b3f391ed0659"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Documentation.docc/upgrade.md",
+      "sha256": "e0a994b7639c772c4a8ff577913663416ecc2f7cd3fb677d6d2bdb747d13611e"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Documentation.docc/using.md",
+      "sha256": "68aae4248afcb65bc4f033e59722fddc9a5c833fe2af9c6b7dfcdd4f7a320cd5"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Documentation.docc/wired-memory.md",
+      "sha256": "4d7b3e1fd1fe150096d2191441b3f3030aa9c22158c7ddbe69bbbd443ae66328"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Downloader.swift",
+      "sha256": "d93e7791376dbef3d7c5a3f36a9d46849d3d5fe5b610841aaabb947f6928c624"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/DynamicSlice.swift",
+      "sha256": "37b438238b8b20311d33d4fc87ea0ff1c075e2cbf33a1301f6e937548c831ee1"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Evaluate.swift",
+      "sha256": "d22d8d243c61604a825aa91066e0e6954c21ac38684cb01b5dec25870366a449"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Extensions/Encodable+toolResult.swift",
+      "sha256": "8e67b4126d710265a26e7a4a2d56f0b317263b33b6bee1da1b94b6c0e09b9de2"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Extensions/JSONDecoder+JSON5.swift",
+      "sha256": "c6542c348d2150e79c6648167f08e96d4be97872306012f87960d7a3b95181ba"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/GenerationConfigFile.swift",
+      "sha256": "03baf36589ca3a007f82a6a2aa70a8cbe02d276e303c4b82fe35ec1ea39015bc"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/InterpolationUtils.swift",
+      "sha256": "50a767476d2cafa9e961865fb29b6ae47cf5d325fe42e0e4c5d64c9d340081f8"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/JSONDecodingTypes.swift",
+      "sha256": "a1cb06c8c0ba600ea96c4d9e9599dbda0e760abd092208742de275fb8c9a5bf0"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/KVCache.swift",
+      "sha256": "b081f536841b39662911d11222294b7a540fde98a931982492383e625ed41a5c"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/LanguageModel.swift",
+      "sha256": "bf59f121334bc467f965f8b58777861ae3204e157a896ef187b35e8a702c4b52"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Load.swift",
+      "sha256": "d2cf9be8ea8f8ba2500fa41b66ec57c8e0a440a964b2bd83d1f27bb2ab7b0e1a"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/MLXHardwareInfo.swift",
+      "sha256": "c5a526fc59ab2d02a62eb2ff72371304f6ba7a1e60d5360451ca731768b51016"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/MemoryBackedVideoAsset.swift",
+      "sha256": "c97c66cb376add9ab6b277510e90820b96b8144bdfc11f9292d6392f4b337f52"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ModelConfiguration.swift",
+      "sha256": "043867d764468136ef205b31793b079455979705ab817d0b0d1082038e2e02ec"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ModelContainer.swift",
+      "sha256": "747c2b82a18f6542e4d0a26c4864cf2fe6b9a47728c81e9125e01fc232b78f17"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/ModelFactory.swift",
+      "sha256": "c21dfcb63ec2e44005296956db1c06dfa16eb75d840069f1417cea3349436bfc"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Models/Gemma.swift",
+      "sha256": "ae8ba8e4a72419847ee9336ed8812dac681510cbaeb2725b93f7f46a8035e445"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Module+Extensions.swift",
+      "sha256": "aef002ae9c66f6d39fe5e8c430eb24c1736856997b6fc1a11ee4cc3d974149f7"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/README.md",
+      "sha256": "9562d344ae6203e4b9ac63cb8ec842c172f32415a4a1d1ead68be10aa142ee83"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Registries/AbstractModelRegistry.swift",
+      "sha256": "6f14a03b2f8fde9bf412a953571623cafd2b559b0054486bf051a17f82524584"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Registries/ModelTypeRegistry.swift",
+      "sha256": "31cff8567143f5efc839f1c38b7ed50a917f814c2c4eb76e9f679863f82de7b6"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Registries/ProcessorTypeRegistry.swift",
+      "sha256": "ed03d29b0ded66107facd6e8d5cab36bb83e4d66c7ff3f2630c4c841bc0b81f1"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/RoPEApplication.swift",
+      "sha256": "9653d0561c1520e5f76cd8404ad283363bc34d7787cdf22008f45a8603ad0b8a"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/RoPEUtils.swift",
+      "sha256": "3bad10c43cf74530b537d892aafa042e2bc6dfe5b94e34f7b462aef3942a7277"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/SequenceStateMachine.swift",
+      "sha256": "bb2256b709b40329bce71e7838190d6cfb892e7d18a313557ce604a12dad0c2e"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/SuScaledRoPE.swift",
+      "sha256": "e674ed5c9ba57868b011f2cb3dfa707c46defa19b8aa8ba841b92cbc95ea7963"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/SwitchLayers.swift",
+      "sha256": "e4c82c009b0974d5c7eb07009c38c8bafe3564feeb15aef597c21a9dd9f189f0"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tokenizer.swift",
+      "sha256": "dc12dc005fb02927887079f9d094638fa608304085c6581ad1efeb37e3d82401"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/TokenizerLoader.swift",
+      "sha256": "686186af18a363f2af441445af486d2073d9ec3b4775d94ee419805c22a5021a"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/GLM4ToolCallParser.swift",
+      "sha256": "5f64045b596508b321ad235b01bfd2d9aa82807d29e86f1c6f62809ca81f512a"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/GemmaFunctionParser.swift",
+      "sha256": "ee5fbef17789103d935376a5fdcffb86fdebab79311697eeb57b3289352f01a8"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/HarmonyToolCallParser.swift",
+      "sha256": "de5642b2430efce3a39747d8879de4a7396ba469fa995f6d6864c78b3b62f962"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/JSONToolCallParser.swift",
+      "sha256": "21722cc6e4613150ef93274d499759eee388d01695517ba702c02bda55a163e8"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/KimiK2ToolCallParser.swift",
+      "sha256": "fd03e6a0a487706587185fdc8947e5d07c907145b5924e1121074584ed597802"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/Llama3ToolCallParser.swift",
+      "sha256": "58d1f3c9de2141b05f1e10ec8fc7490806f7a04b8a442f30ef9981766860b1ad"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/MiniMaxM2ToolCallParser.swift",
+      "sha256": "e8e7d92ac5f6cd045fff79d6ea2cfafcae2a888ee02929ea71ef6b24e74af4e9"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/MistralToolCallParser.swift",
+      "sha256": "f296befdbd3bae202454f3597fc54876bc978ed057b6560a2b04f5c83d651c07"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/ParserUtilities.swift",
+      "sha256": "d0e199137d14db2b4d9a1d0270563bd3888bd670d2f2173abe2dfe15f8c26d51"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/PythonicToolCallParser.swift",
+      "sha256": "655d3a47ef4c587c7740821662dc0cf942ec5691331a1511530f4c2bbc38c2d6"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/Qwen35ToolCallParser.swift",
+      "sha256": "600831d893eb6cea22d0456772c624e2072daba36a96df764d64d829b44aa0e6"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/XMLFunctionParser.swift",
+      "sha256": "5b5b0e03d4e23c4fb85356008bc9997af5efcbbf8c4d005b189e354642eab7dc"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Tool.swift",
+      "sha256": "461d774bc3b60e090dc758bb651ca70779330c397a0aa115cde131b729547209"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCall.swift",
+      "sha256": "cf3000980028fa7044b24c3418952f6c2719b5b738fcf8d90c51e967aac58e80"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCallFormat.swift",
+      "sha256": "6ff0ef6e327246288270c84c01b734fe2099a1003a9ba1317ff1ce2dbc40a984"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolCallProcessor.swift",
+      "sha256": "611f93be8d07d05f7a022b8df407b2fb5ee5fee7eb930f98728681599d58a4fe"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/ToolParameter.swift",
+      "sha256": "11485173719a25b271b655071b5668c52872ef0447eab963dfe31befb9992846"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Value.swift",
+      "sha256": "425be31fa79829c10335efe4497f12d77c07540c9a322811fc65f49c9856ac24"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/UserInput.swift",
+      "sha256": "e37fcee2e1ed6e01dc6371c9524ff7946af6325141f71a527d6ec5d73e3832c3"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/Utilities/SerialAccessContainer.swift",
+      "sha256": "673509b92704520f87f4cd0668bb98e020ced17f19515de2b704be71bf51cabe"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/WiredMemoryPolicies.swift",
+      "sha256": "ff9a27ce1c843ce2dd144161a3338a32aa1e46547907be26ca974bae984cb80e"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMCommon/WiredMemoryUtils.swift",
+      "sha256": "b96a8d9217ef3cbbce673da6cb5f4d1d099907df9579d30fe8cc2b0230aa6e8f"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/CLI/MLXServerRunner.swift",
+      "sha256": "7e02da2cf02805b0a5c04f39eab11c70e3a0aa6b4f04c25edf1ef2920b44b6a2"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/CLI/ServerConfiguration.swift",
+      "sha256": "eacc6f998df4fc40d09ba259f54871a20889fea8a2d9b5efbe3ad5d659692882"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/HTTP/MLXServerApplication.swift",
+      "sha256": "dd3d4c78af13cbdb27502847994507ed3a62e1e09a05a6e715153ba4542d52a7"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/MLXLMServer.swift",
+      "sha256": "93dfb48155886d526c32b679cf0ee204b746c0df5d851649ed798a4b436dea7d"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/ReasoningParser.swift",
+      "sha256": "d9d771dde804a863f35d3e17cbd9027e92047adb74595d29cba2fbaa5864bbd2"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/ReasoningParserHelpers.swift",
+      "sha256": "f0842efa88872ad53a0a3bb2157a29b7a3441d01993fc21f3628a980d531b340"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/ServerToolParser.swift",
+      "sha256": "1ab083e426dc87e5a5ef67bd912780ca6c89968deb6e3752aa084f8bd4c95201"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingGemma4ReasoningParser.swift",
+      "sha256": "73baa5d11aca162a8a8ca8ec392d80017e937149660c1bebf6c07e1d6ff44264"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingHarmonyReasoningParser.swift",
+      "sha256": "00c83ea84a4ed337a62a5847db57701367ab91d3a02474e9187fd0cc44ac6e4f"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingReasoningParser.swift",
+      "sha256": "cc24d7e661623603522116847860291f534107a82af1251daf3932c0e3a4dce4"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Parsing/StreamingThinkReasoningParser.swift",
+      "sha256": "ea99d41a9eb728c386939c6f7945f87372243295051ff750e28981d2a0210517"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Protocol/OpenAIChatCompletionResponse.swift",
+      "sha256": "33249e2a185f87494f3a1aa32cc38d8f8a0ecf560f8245ca0f31de85e35d6b17"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Protocol/OpenAICompletionsProtocol.swift",
+      "sha256": "70d9dd5e34dda3b31b28ea4e7e4a19aa55d1d363ff269813a4bc9ca2808ea7f2"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Protocol/OpenAIEmbeddingsProtocol.swift",
+      "sha256": "aee5b6931403326e1114422371df18a5b687e60efb8634a45092f2d0d2fcd822"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Protocol/OpenAIProtocol.swift",
+      "sha256": "50fe11e1e521d9f5c04583bc1aafc5a7d2ed10bfbb03140a5d6bcfeaed646605"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Protocol/OpenAIResponseFormat.swift",
+      "sha256": "25fa6c7cf45cd060d161451d5b0f95111dce6527371a899ccabff235e224e76d"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Protocol/OpenAIResponsesProtocol.swift",
+      "sha256": "2b8e86edb0cc22524c7e19686537ba9a5702d6193dd7b341e9a7e3dfe3f2e237"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Protocol/ServerSentEventEncoder.swift",
+      "sha256": "56eab2c034f809722fd04278697026c1e024246284665aef57375e14deb43285"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Protocol/TokenUtilityProtocol.swift",
+      "sha256": "de71cab25f1bc32664fb9a5b3b051c05061669d6268a1b43f12004d9ea8ceded"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Routing/MLXServerRoute.swift",
+      "sha256": "2ad1aac723673bb4d523627260d0e51c512abf4fa1e1ede67ff8495c65b39448"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/InMemoryResponseStore.swift",
+      "sha256": "cbcb3735ef9bb16824a1950b11b15da29d4c97a75611642b664653d7ab72c6d9"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXEmbeddingServerEngine.swift",
+      "sha256": "78d49a4b8827debc913a11351ff1ad8bdeaef25a476cef06fd585b3c4bbaba5a"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXModelContainerEngine.swift",
+      "sha256": "a32245e135be3b7a68246667d0950e19073878e674e5c2b0e046d59ee56c09ec"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXModelContainerEngineError.swift",
+      "sha256": "93ce94a94d2ab840387f4503c0027e7eeb25a38457ccb46d489c6f6d6274fecd"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXOpenAIService.swift",
+      "sha256": "38add870d39b216962b20a6b594db77bddd7302808a39a24948a70814283c31a"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/MLXServerEngine.swift",
+      "sha256": "628e0073c816b6416ef81076cb6855897fe7ba2c8d3726dc202caff75465dbbd"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAIResponseFormatSupport.swift",
+      "sha256": "6951916793c9de74383d66bd135acd47e90ad468b0b330ae66f179919ae39f89"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/OpenAITemplateTranslation.swift",
+      "sha256": "ae98f4c692a5b496e2b40b2ada7cbf7e2b7ffb6849e873e210577b823395f7ff"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/ServerMetrics.swift",
+      "sha256": "8a226b8be31f295ae8373ce333f1de8f698fe706dea9d9a43bc59708033262d1"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXLMServer/Runtime/ToolStreamHandler.swift",
+      "sha256": "578f83bf744403d819e4522e285b26528051b3e1d81dc4ae80f699fe2afc73aa"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/MediaProcessing.swift",
+      "sha256": "d53a0dd153595304f0e3bcd6b8754ec0eaada5d53397a3f1ae81fda3f1791ab7"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/FastVLM.swift",
+      "sha256": "f5e2fcecf2a02d8f7e0cfd9969256c73ed986348b4e2063cab01c60f99fb6e6c"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/Gemma3.swift",
+      "sha256": "754e46948ff81fbf6e1e83ceb93eff5d564da061142059249a4427c568804f03"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/Gemma4.swift",
+      "sha256": "2fb69bd0b20806c1b22e8aeabf5255355bf55291e703e68815f477045a5d50c3"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/GlmOcr.swift",
+      "sha256": "da6ab3a44c662e4301095090c015e31be3013b4868784f691f9c19d4c7ebde82"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/Idefics3.swift",
+      "sha256": "5586aed61f98c3792539abb8034ac58dcdf8c906644e2556585c3cccccd86268"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/LFM2VL.swift",
+      "sha256": "0e3368012eaacfe6c30cc830bfb082b094aee055eb6b270fb5a8e0870290b23c"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/Mistral3.swift",
+      "sha256": "818b593c9f045099a7c61562ec662d52a37d406e29beab5245256b67bbf18bce"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/Paligemma.swift",
+      "sha256": "13b2accfbbd605745717d7bf9c77082031e9b1b4973973c0b0ace4c943d21fe9"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/Pixtral.swift",
+      "sha256": "fe8870b255f68195738615531bcc9f9d81139b70ce96b13197619b06e9454dc9"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/Qwen25VL.swift",
+      "sha256": "32ba8cbfd27be4983438e7ec405f3ee10bb08736f3b49a0b6e5887b20f97ba42"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/Qwen2VL.swift",
+      "sha256": "4bf316a97b6af9ec237f72d44ca9fbe8dcc92746e4cf3c6fb80492e4c7394cf3"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/Qwen35.swift",
+      "sha256": "da8b47a2bd99af2bc5aa3fc36101bcd4c714a922296afdcc608f05bcbf9de433"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/Qwen35MoE.swift",
+      "sha256": "b10539e03d63346f2e38d0ae889813a3a964ba7e92f84647bd0c3b2a758242cb"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/Qwen3VL.swift",
+      "sha256": "69840496bd5054ad21dcdace79240078de2c6c2ca02bca0cb59f2aa4e6a7f74d"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/QwenVL.swift",
+      "sha256": "531403bf2e7b14f58a029e17eb7a8497a293f90a6f20117dc75a98b4ea979adf"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/Models/SmolVLM2.swift",
+      "sha256": "daf47f4d432f0e0fa56786394cea280b76ac187972b8fb9b7b4fef8ba8979984"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/README.md",
+      "sha256": "5edc740077fa3990ca7a470b960e532b1e83eff28e1ad900d93ac77d71d1e26f"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/VLMModel.swift",
+      "sha256": "6ae0179415baef2ec13bf5a97aececc4cae39db6a0c7f3ef2f0f37e432392a46"
+    },
+    {
+      "path": "libs/mlx-swift-lm/Libraries/MLXVLM/VLMModelFactory.swift",
+      "sha256": "f2535c3947e072f3c5a2d7b6100471389b12c9374c493613691cdafb54eca0f2"
+    }
+  ],
+  "during_dependency_compile_fixes": [
+    "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+    "provider-swift/Sources/ProviderCore/Protocol/Messages.swift"
+  ],
+  "candidate_define": true,
+  "binary_sha256": "12eb88396333d48754839830b048e4abb53cb5e92679483771a999a923fd791a",
+  "metallib_sha256": "4ffbbac48a99b495916c3fa0921ce813eb554de1a09aff408d9b5a5a8053e6b0",
+  "harness_sha256": "b71f6fce7d43b5b291c09aaea10e02199ee2a15217acf8e195861189483a7a40"
+}

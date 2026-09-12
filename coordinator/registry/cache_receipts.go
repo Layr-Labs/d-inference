@@ -31,39 +31,36 @@ func (r *Registry) PrepareCacheAttempt(pr *PendingRequest, provider *Provider) e
 	if r == nil || pr == nil || provider == nil {
 		return nil
 	}
-	r.ForgetCacheAttempt(pr)
 	provider.mu.Lock()
 	protocolVersion := provider.PrefixCacheProtocol
 	provider.mu.Unlock()
+	if protocolVersion >= 2 && pr.CachePlan.present() {
+		return r.PreparePrefixCacheV2Attempt(pr, provider, pr.CachePlan)
+	}
+	ticket, open := pr.beginCachePreparation()
+	if !open {
+		return nil
+	}
 	if protocolVersion < 1 {
 		bust, err := newCacheReceiptNonce()
 		if err != nil {
 			return err
 		}
-		pr.LegacyCacheBustKey = legacyCacheBustPrefix + bust
+		pr.cacheAttemptMu.Lock()
+		if pr.cachePreparationTicket == ticket && !pr.cachePreparationClosed {
+			pr.LegacyCacheBustKey = legacyCacheBustPrefix + bust
+		}
+		pr.cacheAttemptMu.Unlock()
 		return nil
 	}
-	if protocolVersion < 2 || !pr.CachePlan.present() {
-		return nil
-	}
-	return r.PreparePrefixCacheV2Attempt(pr, provider, pr.CachePlan)
+	return nil
 }
 
 func (r *Registry) ForgetCacheAttempt(pr *PendingRequest) {
 	if r == nil || pr == nil {
 		return
 	}
-	r.mu.RLock()
-	tracker := r.cacheRouting
-	r.mu.RUnlock()
-	if tracker != nil {
-		tracker.forgetAttempt(pr.CacheReceiptNonce)
-	}
-	pr.CacheReceiptNonce = ""
-	pr.CacheScope = ""
-	pr.PrefixCacheProtocol = 0
-	pr.LegacyCacheBustKey = ""
-	pr.setCacheRoutingParticipates(false)
+	pr.beginCachePreparation()
 }
 
 // V1 frames remain decodable during rollback, but never mutate exact routing
@@ -101,12 +98,7 @@ func (r *Registry) MarkCacheAttemptTerminal(pr *PendingRequest) {
 	if r == nil || pr == nil {
 		return
 	}
-	r.mu.RLock()
-	tracker := r.cacheRouting
-	r.mu.RUnlock()
-	if tracker != nil {
-		tracker.markAttemptTerminal(pr.CacheReceiptNonce, time.Now())
-	}
+	pr.markCacheAttemptTerminal(time.Now())
 }
 
 func validCacheOutcome(outcome string) bool {
@@ -118,10 +110,11 @@ func validCacheOutcome(outcome string) bool {
 	}
 }
 
-func (t *cacheRoutingTracker) disconnect(
-	providerID string,
-	reason cacheHolderRemovalReason,
-) {
+func (t *cacheRoutingTracker) disconnect(providerID string, reason cacheHolderRemovalReason) {
+	t.invalidateProviderEvidence(providerID, reason, false)
+}
+
+func (t *cacheRoutingTracker) invalidateProviderEvidence(providerID string, reason cacheHolderRemovalReason, preserveFences bool) {
 	if t == nil || providerID == "" {
 		return
 	}
@@ -143,39 +136,47 @@ func (t *cacheRoutingTracker) disconnect(
 		}
 	}
 	for key := range t.rejectedV2 {
-		if key.ProviderID == providerID {
+		if !preserveFences && key.ProviderID == providerID {
 			delete(t.rejectedV2, key)
 		}
 	}
 }
 
-func (t *cacheRoutingTracker) invalidateProviderModel(
-	providerID, modelID string,
-	reason cacheHolderRemovalReason,
-) {
-	if t == nil || providerID == "" || modelID == "" {
+func (t *cacheRoutingTracker) invalidateProviderModel(providerID, modelID string, reason cacheHolderRemovalReason) {
+	t.invalidateProviderModels(providerID, map[string]cacheHolderRemovalReason{modelID: reason})
+}
+
+// Scan each index once even when a heartbeat changes several models. Keep
+// exact-capability proof fences: an unrelated update cannot reset quarantine.
+func (t *cacheRoutingTracker) invalidateProviderModels(providerID string, models map[string]cacheHolderRemovalReason) {
+	if t == nil || providerID == "" || len(models) == 0 {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for key, holders := range t.holders {
-		if holder, exists := holders[providerID]; exists && holder.ModelID == modelID {
-			t.removeHolderLocked(key, providerID, reason)
+		if holder, ok := holders[providerID]; ok {
+			if reason, changed := models[holder.ModelID]; changed {
+				t.removeHolderLocked(key, providerID, reason)
+			}
 		}
 	}
 	for nonce, attempt := range t.attempts {
-		if attempt.ProviderID == providerID && attempt.Model == modelID {
+		if _, changed := models[attempt.Model]; attempt.ProviderID == providerID && changed {
 			t.removeAttemptLocked(nonce)
 		}
 	}
 	for key := range t.v2Sequences {
-		if key.ProviderID == providerID && key.ModelID == modelID {
+		if _, changed := models[key.ModelID]; key.ProviderID == providerID && changed {
 			delete(t.v2Sequences, key)
 		}
 	}
 }
 
 func (t *cacheRoutingTracker) storeAttemptLocked(nonce string, attempt cacheAttempt) {
+	if t.generation.revoked.Load() {
+		return
+	}
 	t.attempts[nonce] = attempt
 	if entry := t.attemptOrderByNonce[nonce]; entry != nil {
 		entry.createdAt = attempt.CreatedAt
@@ -196,7 +197,7 @@ func (t *cacheRoutingTracker) removeAttemptLocked(nonce string) {
 }
 
 func (t *cacheRoutingTracker) upsertHolderLocked(key string, holder cacheHolder) {
-	if key == "" || holder.ProviderID == "" {
+	if key == "" || holder.ProviderID == "" || t.generation.revoked.Load() {
 		return
 	}
 	holders := t.holders[key]
@@ -241,6 +242,9 @@ func (t *cacheRoutingTracker) activeHolderLocked(
 }
 
 func (t *cacheRoutingTracker) activeAttemptLocked(nonce string, now time.Time) (cacheAttempt, bool) {
+	if t.generation.revoked.Load() {
+		return cacheAttempt{}, false
+	}
 	attempt, exists := t.attempts[nonce]
 	if !exists {
 		return cacheAttempt{}, false

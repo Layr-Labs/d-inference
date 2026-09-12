@@ -236,22 +236,23 @@ func TestRegisterModelHandlerPromotesActiveRecord(t *testing.T) {
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	payload := map[string]any{
-		"model_id":           "mlx-community/test",
-		"version":            "v1",
-		"display_name":       "Test Model",
-		"family":             "qwen",
-		"architecture":       "dense",
-		"quantization":       "4bit",
-		"max_context_length": 32768,
-		"max_output_length":  8192,
-		"min_ram_gb":         16,
-		"capabilities":       []string{"chat"},
-		"description":        "test",
-		"runtime_parameters": map[string]any{"default_temperature": 0, "chat_template_required": true},
-		"metadata":           map[string]any{"tier": "test"},
-		"promote":            true,
-		"input_price":        50000,
-		"output_price":       200000,
+		"hugging_face_artifact": &store.HuggingFaceArtifact{RepoID: "EigenLabs/test", Revision: "0123456789abcdef0123456789abcdef01234567", PathPrefix: "mlx"},
+		"model_id":              "mlx-community/test",
+		"version":               "v1",
+		"display_name":          "Test Model",
+		"family":                "qwen",
+		"architecture":          "dense",
+		"quantization":          "4bit",
+		"max_context_length":    32768,
+		"max_output_length":     8192,
+		"min_ram_gb":            16,
+		"capabilities":          []string{"chat"},
+		"description":           "test",
+		"runtime_parameters":    map[string]any{"default_temperature": 0, "chat_template_required": true},
+		"metadata":              map[string]any{"tier": "test"},
+		"promote":               true,
+		"input_price":           50000,
+		"output_price":          200000,
 	}
 	body, _ := json.Marshal(payload)
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/register", bytes.NewReader(body))
@@ -290,6 +291,10 @@ func TestRegisterModelHandlerPromotesActiveRecord(t *testing.T) {
 	}
 	if len(catalog.Models) != 1 || catalog.Models[0]["id"] != "mlx-community/test" || catalog.Models[0]["version"] != "v1" {
 		t.Fatalf("unexpected catalog response: %#v", catalog.Models)
+	}
+	artifact, ok := catalog.Models[0]["hugging_face_artifact"].(map[string]any)
+	if !ok || artifact["repo_id"] != "EigenLabs/test" || artifact["revision"] != "0123456789abcdef0123456789abcdef01234567" || artifact["path_prefix"] != "mlx" {
+		t.Fatalf("artifact did not round-trip registration to catalog: %#v", artifact)
 	}
 }
 

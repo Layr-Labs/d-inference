@@ -1,0 +1,680 @@
+{
+  "status": "QAT_COMBINED_SUSTAINED_EXPOSURE_ACCEPTED_STRICT_FAILURES_RETAINED",
+  "root_review": {
+    "reviewer": "/root",
+    "reviewed_unix": 1788750247.5996292,
+    "status": "QAT_COMBINED_SUSTAINED_EXPOSURE_ACCEPTED_WITH_ORIGINAL_TEST_FAILURES_RETAINED",
+    "original145_files_verified": 203,
+    "cells": [
+      {
+        "cell": "qat145-original142-contiguous-off",
+        "report_sha256": "16c4e96d6059be0912d32ec9ca16f794a31846810dfa7df38fc992d426a35f2a",
+        "rows": [
+          {
+            "id": "long-first",
+            "prompt_tokens": 21621,
+            "completion_tokens": 64,
+            "finish": "stop",
+            "decode_seconds": 0.709479041,
+            "text_sha256": "83994c329d8ddd8c7fdfe68a9e9a8a1f7e868b0e93246a23444d033d98629866",
+            "direct_complete_b1_trace": true
+          },
+          {
+            "id": "long-repeat",
+            "prompt_tokens": 21621,
+            "completion_tokens": 64,
+            "finish": "stop",
+            "decode_seconds": 0.709900041,
+            "text_sha256": "83994c329d8ddd8c7fdfe68a9e9a8a1f7e868b0e93246a23444d033d98629866",
+            "direct_complete_b1_trace": true
+          }
+        ],
+        "errors": []
+      },
+      {
+        "cell": "qat145-nonrepetitive-contiguous-off",
+        "report_sha256": "c1a5b8f18ab67dde9405a9ae5ddbdaa12c9e7865662fcafc15e49442a0755515",
+        "rows": [
+          {
+            "id": "long-first",
+            "prompt_tokens": 19711,
+            "completion_tokens": 2048,
+            "finish": "length",
+            "decode_seconds": 22.823107417,
+            "text_sha256": "fc0ea78d07f0fcd1027caeeb092f292d84b721abcf855571c11b3fdf6f77622c",
+            "direct_complete_b1_trace": true
+          },
+          {
+            "id": "long-repeat",
+            "prompt_tokens": 19711,
+            "completion_tokens": 2048,
+            "finish": "length",
+            "decode_seconds": 22.803066209,
+            "text_sha256": "fc0ea78d07f0fcd1027caeeb092f292d84b721abcf855571c11b3fdf6f77622c",
+            "direct_complete_b1_trace": true
+          }
+        ],
+        "errors": []
+      },
+      {
+        "cell": "qat145-nonrepetitive-paged-off",
+        "report_sha256": "c8f138e854eabd4e64cfb9a8fd79b29ed57633936211c0a7cc950bb4334062e2",
+        "rows": [
+          {
+            "id": "long-first",
+            "prompt_tokens": 19711,
+            "completion_tokens": 1878,
+            "finish": "stop",
+            "decode_seconds": 18.047322416,
+            "text_sha256": "05e89b2969428cae8600ccf39779af64abb53f3a306f80c1801ce59c2e74dd38",
+            "direct_complete_b1_trace": true
+          },
+          {
+            "id": "long-repeat",
+            "prompt_tokens": 19711,
+            "completion_tokens": 1878,
+            "finish": "stop",
+            "decode_seconds": 18.089451833,
+            "text_sha256": "05e89b2969428cae8600ccf39779af64abb53f3a306f80c1801ce59c2e74dd38",
+            "direct_complete_b1_trace": true
+          }
+        ],
+        "errors": []
+      }
+    ],
+    "same_complete_canonical_prompt_in_new_backend_pair": true,
+    "all_three_distinct_response_texts_read_in_full": true,
+    "original142_control": {
+      "report_sha256": "4aa1520fdfed5485ac7016ddffe7f17e3927fe132d4f60c830ea6e991ed3c9d8",
+      "selection": "tenant_checks[0]",
+      "prompt_tokens": 21621,
+      "completion_tokens": 2048,
+      "finish": "length",
+      "decode_seconds": 20.192673375,
+      "direct_per_control_width_trace": false,
+      "width_evidence": "Maximum concurrent requests1 and2047 decode-row increment support sequential B1; direct complete B1 traces come separately from145 main rows.",
+      "same_runtime_and_model": true
+    },
+    "semantic_assessment": "Original checklist refusal also occurs with contiguous attention. Both new backends generate coherent sustained literary commentary with some chronology/detail errors. Paged responses end naturally with a complete paragraph; contiguous responses reach the permitted partial-draft cap. No broad factual-accuracy or full5000-word completion claim.",
+    "release_assessment": "The combined observations establish long-context sustained paged execution, actual B1 geometry and cleanup:142 includes real2048-token/>20s paged generation,145 directly traces repeated1878-token/>18s paged generation and matched2048-token contiguous controls. Earlier EOS alone is not a cache or attention correctness defect. No additional GPU rerun is indicated for sustained exposure.",
+    "retained_failures": "Neither142 nor145 aggregate is relabeled PASS.145 exact2048/length main-row requirement fails; the narrower experiment result remains published as failed. This is an explicit combined-evidence release assessment, not a tolerance or output-equality change.",
+    "remaining_release_checks": "Two-provider146 routing and production-key restart remain separate.",
+    "strict_worker_verdict": {
+      "accepted": false,
+      "completed_cells": [
+        "qat145-original142-contiguous-off",
+        "qat145-nonrepetitive-contiguous-off",
+        "qat145-nonrepetitive-paged-off"
+      ],
+      "error": "strict completed-cell gate failed; dependent arms stopped",
+      "matrix_expanded": false
+    },
+    "cells_step_verdict_scope": "Cell errors above come from original native structural verdicts; the controller imposes its separate exact2048 exposure requirement and fails the aggregate, preserved in strict_worker_verdict."
+  },
+  "independent_review": {
+    "schema": 1,
+    "reviewer": "gpt_finish",
+    "status": "COMBINED_EXPOSURE_EVIDENCE_REVIEWED_STRICT_142_145_FAILURES_PRESERVED",
+    "manifest": {
+      "path": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/evidence-manifest.json",
+      "sha256": "46eab16af95c2327c0fce4e8af62715c0cdec67c263e71eda2f1ea5c616d4484",
+      "bytes": 182834
+    },
+    "verified_original_files": 203,
+    "provisional_six_result_files_match_final": true,
+    "all_three_before_after_audits_equal": true,
+    "final_verdict": {
+      "path": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/steps/3/verdict.json",
+      "sha256": "b7786894e6c78bd5430d5f5dd8a797431fa7e7ed17867cc065e9e0e93fa27221",
+      "bytes": 1212853
+    },
+    "strict_145_accepted": false,
+    "strict_145_errors": [
+      {
+        "id": "long-first",
+        "long_decode_exposure_not_met": true
+      },
+      {
+        "id": "long-repeat",
+        "long_decode_exposure_not_met": true
+      }
+    ],
+    "strict_verdict_width_label": "actual_target_forward_widths_unverified remains preserved: cell-level failure prevents aggregate acceptance even though complete B1 target traces exist in original main rows.",
+    "clean_release": {
+      "path": "/private/tmp/darkbloom-release090-qat145-execution1/m5-release.json",
+      "sha256": "079a1bf37ac67f8c21884e814e2bb9beb1016d632f11ef16a7b72d9acd4b5b4d",
+      "bytes": 6701
+    },
+    "release_observation": {
+      "hardware_model": "Mac17,6",
+      "memory_bytes": 137438953472,
+      "gpu_temperature_c": 37.131324768066406,
+      "load1": 1.6494140625,
+      "free_bytes": 175492857856,
+      "unexpected_processes": [],
+      "owned_processes": []
+    },
+    "cells": [
+      {
+        "cell": "qat145-nonrepetitive-contiguous-off",
+        "report": {
+          "path": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/results/qat145-nonrepetitive-contiguous-off/report.json",
+          "sha256": "c1a5b8f18ab67dde9405a9ae5ddbdaa12c9e7865662fcafc15e49442a0755515",
+          "bytes": 4112941
+        },
+        "input": {
+          "path": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/results/qat145-nonrepetitive-contiguous-off/input.json",
+          "sha256": "285f848ef6332bb8650b32a7f182fd689fdb8e3005c07168fe3a22718dc16816",
+          "bytes": 168594
+        },
+        "backend": "contiguous",
+        "cache_requested": false,
+        "mtp": "off; no drafter supplied",
+        "main_rows": [
+          {
+            "id": "long-first",
+            "scope": "tenant-A",
+            "prompt_tokens": 19711,
+            "completion_tokens": 2048,
+            "finish": "length",
+            "decode_tokens_after_first_delta": 2047,
+            "decode_tps": 89.68980264603555,
+            "prefill_chunks": 10,
+            "prefill_chunk_tokens_max": 2048,
+            "elapsed_s": 27.225960875,
+            "ttft_s": 4.400546375,
+            "decode_seconds": 22.823107417,
+            "text_sha256": "fc0ea78d07f0fcd1027caeeb092f292d84b721abcf855571c11b3fdf6f77622c",
+            "target_forward_trace": {
+              "complete": true,
+              "pending_steps_after": 0,
+              "pending_steps_before": 0,
+              "reasons": [],
+              "schema": 1,
+              "scope": 1,
+              "entries": [
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "decode",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 1
+                  },
+                  "completed_calls": 2048,
+                  "submitted_calls": 2048
+                },
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "prefill",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 1279
+                  },
+                  "completed_calls": 1,
+                  "submitted_calls": 1
+                },
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "prefill",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 2048
+                  },
+                  "completed_calls": 9,
+                  "submitted_calls": 9
+                }
+              ]
+            }
+          },
+          {
+            "id": "long-repeat",
+            "scope": "tenant-A",
+            "prompt_tokens": 19711,
+            "completion_tokens": 2048,
+            "finish": "length",
+            "decode_tokens_after_first_delta": 2047,
+            "decode_tps": 89.76862941318313,
+            "prefill_chunks": 10,
+            "prefill_chunk_tokens_max": 2048,
+            "elapsed_s": 27.242072958,
+            "ttft_s": 4.436729666,
+            "decode_seconds": 22.803066209,
+            "text_sha256": "fc0ea78d07f0fcd1027caeeb092f292d84b721abcf855571c11b3fdf6f77622c",
+            "target_forward_trace": {
+              "complete": true,
+              "pending_steps_after": 0,
+              "pending_steps_before": 0,
+              "reasons": [],
+              "schema": 1,
+              "scope": 1,
+              "entries": [
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "decode",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 1
+                  },
+                  "completed_calls": 2048,
+                  "submitted_calls": 2048
+                },
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "prefill",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 1279
+                  },
+                  "completed_calls": 1,
+                  "submitted_calls": 1
+                },
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "prefill",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 2048
+                  },
+                  "completed_calls": 9,
+                  "submitted_calls": 9
+                }
+              ]
+            }
+          }
+        ],
+        "main_repeat_text_equal": true,
+        "controls_observed": 7,
+        "cancellation_observed": true,
+        "row_and_shutdown_reservations_drained": true
+      },
+      {
+        "cell": "qat145-nonrepetitive-paged-off",
+        "report": {
+          "path": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/results/qat145-nonrepetitive-paged-off/report.json",
+          "sha256": "c8f138e854eabd4e64cfb9a8fd79b29ed57633936211c0a7cc950bb4334062e2",
+          "bytes": 3966311
+        },
+        "input": {
+          "path": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/results/qat145-nonrepetitive-paged-off/input.json",
+          "sha256": "285f848ef6332bb8650b32a7f182fd689fdb8e3005c07168fe3a22718dc16816",
+          "bytes": 168594
+        },
+        "backend": "paged",
+        "cache_requested": false,
+        "mtp": "off; no drafter supplied",
+        "main_rows": [
+          {
+            "id": "long-first",
+            "scope": "tenant-A",
+            "prompt_tokens": 19711,
+            "completion_tokens": 1878,
+            "finish": "stop",
+            "decode_tokens_after_first_delta": 1877,
+            "decode_tps": 104.00434794337859,
+            "prefill_chunks": 10,
+            "prefill_chunk_tokens_max": 2048,
+            "elapsed_s": 22.61282,
+            "ttft_s": 4.562717834,
+            "decode_seconds": 18.047322416,
+            "text_sha256": "05e89b2969428cae8600ccf39779af64abb53f3a306f80c1801ce59c2e74dd38",
+            "target_forward_trace": {
+              "complete": true,
+              "pending_steps_after": 0,
+              "pending_steps_before": 0,
+              "reasons": [],
+              "schema": 1,
+              "scope": 1,
+              "entries": [
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "decode",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 1
+                  },
+                  "completed_calls": 1878,
+                  "submitted_calls": 1878
+                },
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "prefill",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 1279
+                  },
+                  "completed_calls": 1,
+                  "submitted_calls": 1
+                },
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "prefill",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 2048
+                  },
+                  "completed_calls": 9,
+                  "submitted_calls": 9
+                }
+              ]
+            }
+          },
+          {
+            "id": "long-repeat",
+            "scope": "tenant-A",
+            "prompt_tokens": 19711,
+            "completion_tokens": 1878,
+            "finish": "stop",
+            "decode_tokens_after_first_delta": 1877,
+            "decode_tps": 103.7621270853465,
+            "prefill_chunks": 10,
+            "prefill_chunk_tokens_max": 2048,
+            "elapsed_s": 22.708508917,
+            "ttft_s": 4.616265875,
+            "decode_seconds": 18.089451833,
+            "text_sha256": "05e89b2969428cae8600ccf39779af64abb53f3a306f80c1801ce59c2e74dd38",
+            "target_forward_trace": {
+              "complete": true,
+              "pending_steps_after": 0,
+              "pending_steps_before": 0,
+              "reasons": [],
+              "schema": 1,
+              "scope": 1,
+              "entries": [
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "decode",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 1
+                  },
+                  "completed_calls": 1878,
+                  "submitted_calls": 1878
+                },
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "prefill",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 1279
+                  },
+                  "completed_calls": 1,
+                  "submitted_calls": 1
+                },
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "prefill",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 2048
+                  },
+                  "completed_calls": 9,
+                  "submitted_calls": 9
+                }
+              ]
+            }
+          }
+        ],
+        "main_repeat_text_equal": true,
+        "controls_observed": 7,
+        "cancellation_observed": true,
+        "row_and_shutdown_reservations_drained": true
+      },
+      {
+        "cell": "qat145-original142-contiguous-off",
+        "report": {
+          "path": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/results/qat145-original142-contiguous-off/report.json",
+          "sha256": "16c4e96d6059be0912d32ec9ca16f794a31846810dfa7df38fc992d426a35f2a",
+          "bytes": 2581146
+        },
+        "input": {
+          "path": "/private/tmp/darkbloom-release090-qat145-execution1/evidence/results/qat145-original142-contiguous-off/input.json",
+          "sha256": "8101980daeaa0df96b04ad3278e05ab539e2081c62552ed77eaae17fcb536838",
+          "bytes": 284593
+        },
+        "backend": "contiguous",
+        "cache_requested": false,
+        "mtp": "off; no drafter supplied",
+        "main_rows": [
+          {
+            "id": "long-first",
+            "scope": "tenant-A",
+            "prompt_tokens": 21621,
+            "completion_tokens": 64,
+            "finish": "stop",
+            "decode_tokens_after_first_delta": 63,
+            "decode_tps": 88.79754913013701,
+            "prefill_chunks": 11,
+            "prefill_chunk_tokens_max": 2048,
+            "elapsed_s": 5.616826167,
+            "ttft_s": 4.905011584,
+            "decode_seconds": 0.709479041,
+            "text_sha256": "83994c329d8ddd8c7fdfe68a9e9a8a1f7e868b0e93246a23444d033d98629866",
+            "target_forward_trace": {
+              "complete": true,
+              "pending_steps_after": 0,
+              "pending_steps_before": 0,
+              "reasons": [],
+              "schema": 1,
+              "scope": 1,
+              "entries": [
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "decode",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 1
+                  },
+                  "completed_calls": 64,
+                  "submitted_calls": 64
+                },
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "prefill",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 1141
+                  },
+                  "completed_calls": 1,
+                  "submitted_calls": 1
+                },
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "prefill",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 2048
+                  },
+                  "completed_calls": 10,
+                  "submitted_calls": 10
+                }
+              ]
+            }
+          },
+          {
+            "id": "long-repeat",
+            "scope": "tenant-A",
+            "prompt_tokens": 21621,
+            "completion_tokens": 64,
+            "finish": "stop",
+            "decode_tokens_after_first_delta": 63,
+            "decode_tps": 88.74488852156581,
+            "prefill_chunks": 11,
+            "prefill_chunk_tokens_max": 2048,
+            "elapsed_s": 5.535740125,
+            "ttft_s": 4.82350425,
+            "decode_seconds": 0.709900041,
+            "text_sha256": "83994c329d8ddd8c7fdfe68a9e9a8a1f7e868b0e93246a23444d033d98629866",
+            "target_forward_trace": {
+              "complete": true,
+              "pending_steps_after": 0,
+              "pending_steps_before": 0,
+              "reasons": [],
+              "schema": 1,
+              "scope": 1,
+              "entries": [
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "decode",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 1
+                  },
+                  "completed_calls": 64,
+                  "submitted_calls": 64
+                },
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "prefill",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 1141
+                  },
+                  "completed_calls": 1,
+                  "submitted_calls": 1
+                },
+                {
+                  "axes": {
+                    "kind": "target",
+                    "live_batch_rows": 1,
+                    "phase": "prefill",
+                    "physical_batch_rows": 1,
+                    "sequence_width": 2048
+                  },
+                  "completed_calls": 10,
+                  "submitted_calls": 10
+                }
+              ]
+            }
+          }
+        ],
+        "main_repeat_text_equal": true,
+        "controls_observed": 7,
+        "cancellation_observed": true,
+        "row_and_shutdown_reservations_drained": true
+      }
+    ],
+    "new_input_bytes_equal": true,
+    "new_pair_comparisons": [
+      {
+        "id": "long-first",
+        "full_prompt_arrays_equal": true,
+        "generated_token_arrays_equal": false,
+        "output_text_equal": false,
+        "direct_main_target_B1_complete": true
+      },
+      {
+        "id": "long-repeat",
+        "full_prompt_arrays_equal": true,
+        "generated_token_arrays_equal": false,
+        "output_text_equal": false,
+        "direct_main_target_B1_complete": true
+      }
+    ],
+    "paged_semantic_review": {
+      "all_two_rows_read_in_full": true,
+      "distinct_texts": 1,
+      "verdict": "Coherent sustained reading-companion prose with natural stop, no refusal or repetitive analysis collapse; not a factually perfect draft or a completed 5000-word answer.",
+      "limitations": [
+        "Conflates the later shrinking/growth sequence: attributes ceiling growth to magical liquid and describes feet/Christmas boots worries while shrinking, although those worries occur during growth.",
+        "Skips several intermediate scenes while moving from the Caucus-race to the Cheshire Cat; analysis is selective despite the request to follow the excerpt carefully.",
+        "Both backend drafts contain bounded ordinary content inaccuracies. Different wording and finish lengths do not by themselves establish a Paged Attention defect; this run does not prove semantic identity or universal quality."
+      ]
+    },
+    "retained142_tenant_exposure": {
+      "report": {
+        "path": "/private/tmp/darkbloom-release090-sustained-final-execution2/evidence/results/gemma-4-26b-qat-4bit-sustained-b1-r1-paged-cache-off/report.json",
+        "sha256": "4aa1520fdfed5485ac7016ddffe7f17e3927fe132d4f60c830ea6e991ed3c9d8",
+        "bytes": 2869795
+      },
+      "json_pointer": "/tenant_checks/0",
+      "backend": "paged",
+      "cache_requested": false,
+      "mtp": "off; no drafter supplied",
+      "max_concurrent_requests": 1,
+      "row": {
+        "id": "long-first",
+        "scope": "probe-13675407-7763-42AB-B0B9-55E2E5878BB5-A",
+        "prompt_tokens": 21621,
+        "completion_tokens": 2048,
+        "finish": "length",
+        "decode_tokens_after_first_delta": 2047,
+        "decode_tps": 101.37340222292384,
+        "prefill_chunks": 11,
+        "prefill_chunk_tokens_max": 2048,
+        "elapsed_s": 25.3824465,
+        "ttft_s": 5.187035,
+        "decode_seconds": 20.192673375,
+        "text_sha256": "dc48112a996e75f15bb57840fe75f28a9830534c79715346d5545614595712b6",
+        "target_forward_trace": {}
+      },
+      "complete_prompt_array_equals_main_row": true,
+      "actual_decode_rows_counter_delta": 2047,
+      "direct_tenant_forward_trace_present": false,
+      "width_scope": "Sequential B1 supported by max_concurrent_requests=1, awaited single-generation tenant loop, and 2047 decode rows for2047 post-first-token decode steps. No direct per-tenant physical width trace exists. Actual B1 traces in main rows are separate evidence.",
+      "semantic": "Full text read: sustained coherent checklist through completed item59 and partial item60. It does not fulfill exactly160 entries, and some engineering details are generic or questionable (for example a pressure test on canal sections).",
+      "cleanup": "After-row active/waiting requests, active tokens, KV/page reservations and memory charges drain. The loaded engine owner remains until shutdown; final shutdown owner_count=0.",
+      "old_strict142_failure_preserved": true
+    },
+    "assessment": {
+      "observed": "Retained142 supplies an actual2048-token paged sequence with20.19seconds decode and full21621-token context. Final145 independently supplies repeated paged1878-token sequences over18seconds with direct live/physical B1 traces, full19711-token context, observed cancellation/recovery and clean retirement. Contiguous145 sustains2048 tokens over22seconds on the same new prompts.",
+      "boundary": "Combined evidence supports sustained long-context paged exposure and actual B1 execution in separate complementary observations. It is not a pass of either frozen142 or145 exact2048-main-row plan. No waiver or full release acceptance is assumed by this review. Root must record any release-level disposition explicitly while retaining original failures.",
+      "no_new_gpu_work_performed": true
+    }
+  },
+  "capsule": {
+    "files": 56,
+    "bytes": 5990901,
+    "sha256": "017c4505827a69e924e90cfda345a55bda4dced80d2f97501d391c7a9393cd8f",
+    "manifest_sha256": "ffb5872acec61e9e0c46886ab211a52b5bf36d26fa31a324bff7ac30e31b94db",
+    "publication_projection_claims_original_modes": false
+  },
+  "originals": {
+    "145_files_verified": 203,
+    "145_original_manifest_sha256": "46eab16af95c2327c0fce4e8af62715c0cdec67c263e71eda2f1ea5c616d4484",
+    "145_full_archive": {
+      "bytes": 7364642,
+      "not_downloaded_or_rehashed_by_projection": true,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/145-qat-sustained-followup1/run/evidence.tar.gz",
+      "sha256_from_original_verified_collection": "708d4fb27b63df86cb40d50b77fb973d53905983155665319f49fa9921cb84f0"
+    },
+    "142_original_manifest_sha256": "052dceccb50775c26f455952fdf744c541e3606ab257d4a0deab8247a51825dd",
+    "142_full_archive": {
+      "bytes": 10431668702,
+      "not_downloaded_or_rehashed_by_projection": true,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/142-sustained-final2/run/evidence.tar.gz",
+      "sha256_from_original_verified_collection": "714eb173010fd5e9220306d5a9b27379880cec180235edbf87feefb7aef16d3c"
+    }
+  },
+  "strict_experiment_verdicts": {
+    "142_accepted": false,
+    "145_accepted": false,
+    "145_worker_verdict": {
+      "accepted": false,
+      "completed_cells": [
+        "qat145-original142-contiguous-off",
+        "qat145-nonrepetitive-contiguous-off",
+        "qat145-nonrepetitive-paged-off"
+      ],
+      "error": "strict completed-cell gate failed; dependent arms stopped",
+      "matrix_expanded": false
+    }
+  },
+  "scope": "Separate explicit release sustained-intent review; no failed benchmark relabeling, no exact-token quality requirement, no perfectliteraryaccuracy/full5000words claim; native133/QATartifact unchanged, MTPoff/SSDoff. No furtherQATGPU run indicated."
+}

@@ -1,0 +1,95 @@
+{
+  "scope": "Initial MTP-off prototype only; full57engine/HTTP plus same-binary cache-off control",
+  "evidence": [
+    {
+      "path": "candidate-serial-cache-off-metadata.json",
+      "sha256": "6a1592714e19918897e3cfa29049b9a5d01f75fbd0f0709a2e7697e82af01df4",
+      "bytes": 673
+    },
+    {
+      "path": "candidate-serial-cache-off-report.json.gz",
+      "sha256": "d725a7fa5472833038f28e6ee286fd9f672a0e6fedd74148db8c8b342ffd92ec",
+      "bytes": 19818
+    },
+    {
+      "path": "candidate-serial-cache-off-telemetry.jsonl.gz",
+      "sha256": "223847d22b7d5eab11e9addd7a66941bd8bbed1cf147006b27396ada0c19cc86",
+      "bytes": 36473
+    },
+    {
+      "path": "candidate-serial-cache-off-verdict.json",
+      "sha256": "5ae0e7b6c7560ac9e319c0253a895683fad102989d3b564c8db78d3f5373d256",
+      "bytes": 1147
+    },
+    {
+      "path": "candidate-serial-engine-artifact.json",
+      "sha256": "cb99c92fc0c0be585c3584a41cc0eac5cb0ea6a83425b6d5ac5ca105e5af84a9",
+      "bytes": 121193
+    },
+    {
+      "path": "candidate-serial-engine-metadata.json",
+      "sha256": "6b964fe05a6cff0dfa77b33dc6b6f514f5e5be9976b78393b5b16507ae71fd4d",
+      "bytes": 662
+    },
+    {
+      "path": "candidate-serial-full-report.json.gz",
+      "sha256": "df7eaab8f5cc8596d306112676dc0dc916212a845725eea34e5fa94af8d6b7bb",
+      "bytes": 100907
+    },
+    {
+      "path": "candidate-serial-full-telemetry.jsonl.gz",
+      "sha256": "134af350dc385b671724a353b774e3e87bb5900ee00ea833244ea14f422e62e0",
+      "bytes": 143407
+    },
+    {
+      "path": "candidate-serial-full-verdict.json",
+      "sha256": "69ba64fc1b72a2ba76b499269522665d37b56e2d19e5412efe214a8570ff52bd",
+      "bytes": 18480
+    },
+    {
+      "path": "candidate-serial-http-cancellation.json",
+      "sha256": "7b5baac39937476cd3e4f20519ffbb76f7774716f09ca7977b4a7d846cd1c738",
+      "bytes": 4807
+    },
+    {
+      "path": "candidate-serial-http-metadata.json",
+      "sha256": "9d9a5b8f2c3cd248e2a2073731d9264bd2af0d0b7cc8b437842358c28662994d",
+      "bytes": 1321
+    },
+    {
+      "path": "candidate-serial-http-metrics-after.txt",
+      "sha256": "20e56816c0b7d58d585b6722232214bc0e01ef2b1f9e9c7e1ab7591107891d7e",
+      "bytes": 1134
+    },
+    {
+      "path": "candidate-serial-http-report.json.gz",
+      "sha256": "53034951eb1879e3700793445f74264a1e74bf4d8e5784eb0a459190c405269f",
+      "bytes": 110009
+    },
+    {
+      "path": "candidate-serial-http-telemetry.jsonl.gz",
+      "sha256": "798ff884377c56734b5e1779ae02706ac1425515f3f1611b8310c633ea4ba93b",
+      "bytes": 125135
+    },
+    {
+      "path": "candidate-serial-mlx-source.patch.gz",
+      "sha256": "b47a0b4abb78016e50eae2e6f626f27ac0315a05ba99f899d33331bb840a973a",
+      "bytes": 15390
+    },
+    {
+      "path": "candidate-serial-patches.json",
+      "sha256": "36df2a24b809c77434e6d1e66dd8ab3202e67f58bb489ea2d0ca6096074a8a06",
+      "bytes": 2957
+    },
+    {
+      "path": "candidate-serial-provider-artifact.json",
+      "sha256": "602fd50f915f496b15a45eac4d1a63bba92913cb56bac52877fff5318ac195a1",
+      "bytes": 373
+    },
+    {
+      "path": "candidate-serial-provider-source.patch.gz",
+      "sha256": "a0c41bced7bed0c510f6ae0fd4857731fadca0c3fe1a8d88364bbaafc0c7b46b",
+      "bytes": 10878
+    }
+  ]
+}

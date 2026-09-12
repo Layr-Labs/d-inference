@@ -1,0 +1,79 @@
+{
+  "passed": true,
+  "errors": [],
+  "rows": [
+    {
+      "id": "p8192-r0-first",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 6.515297625,
+      "candidate_ttft_s": 6.575800708,
+      "saved_tokens": 0,
+      "cache_outcome": "miss",
+      "baseline_terminal_tail_s": 5.966700000037406e-05,
+      "candidate_terminal_tail_s": 0.00020108300000032386
+    },
+    {
+      "id": "p8192-r0-repeat",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 6.563890292,
+      "candidate_ttft_s": 1.735792334,
+      "saved_tokens": 4096,
+      "cache_outcome": "hit",
+      "baseline_terminal_tail_s": 5.629200000001333e-05,
+      "candidate_terminal_tail_s": 5.154200000001552e-05
+    },
+    {
+      "id": "p8192-r0-branch",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 6.698432625,
+      "candidate_ttft_s": 1.807497625,
+      "saved_tokens": 4096,
+      "cache_outcome": "hit",
+      "baseline_terminal_tail_s": 6.641600000101278e-05,
+      "candidate_terminal_tail_s": 4.912499999987219e-05
+    },
+    {
+      "id": "p8192-r0-branch-repeat",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 6.768374584,
+      "candidate_ttft_s": 1.825450166,
+      "saved_tokens": 4096,
+      "cache_outcome": "hit",
+      "baseline_terminal_tail_s": 5.837500000005491e-05,
+      "candidate_terminal_tail_s": 4.9291999999923064e-05
+    },
+    {
+      "id": "p8192-r0-turn2",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 6.88592,
+      "candidate_ttft_s": 1.918472166,
+      "saved_tokens": 4096,
+      "cache_outcome": "hit",
+      "baseline_terminal_tail_s": 1.679200000026526e-05,
+      "candidate_terminal_tail_s": 0.00011141599999975327
+    },
+    {
+      "id": "p8192-r0-turn2-repeat",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 6.89392175,
+      "candidate_ttft_s": 1.905799542,
+      "saved_tokens": 4096,
+      "cache_outcome": "hit",
+      "baseline_terminal_tail_s": 2.250000000003638e-05,
+      "candidate_terminal_tail_s": 9.862500000012986e-05
+    },
+    {
+      "id": "decode-0",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 0.096175583,
+      "candidate_ttft_s": 0.093186,
+      "saved_tokens": 0,
+      "cache_outcome": "miss",
+      "baseline_terminal_tail_s": 4.574999999995555e-05,
+      "candidate_terminal_tail_s": 5.362500000050119e-05
+    }
+  ],
+  "generated_token_ids_compared": true,
+  "baseline_decode_tps": 53.969988238142676,
+  "candidate_decode_tps": 53.507041199389555
+}

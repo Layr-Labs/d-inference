@@ -1,3 +1,9 @@
+# Qwen prefill retained optimizations — PR body (2026-08-21)
+
+> Last updated: 2026-08-21 · commit `eba775987`
+
+Archived PR description for the rebase of the retained Qwen prefill optimisations; the measurements behind it are in [`2026-08-21-qwen-prefill-retained-optimizations.md`](2026-08-21-qwen-prefill-retained-optimizations.md).
+
 ## Summary
 
 Rebases the retained Qwen prefill improvements onto current master after PRs

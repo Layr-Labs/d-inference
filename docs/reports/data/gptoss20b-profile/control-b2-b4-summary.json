@@ -1,0 +1,1647 @@
+{
+  "arms": {
+    "A": {
+      "aggregateDecodeTPS": {
+        "coefficientOfVariation": 0.2975981459329021,
+        "maximum": 161.21450149036372,
+        "median": 99.55074736239848,
+        "medianAbsoluteDeviation": 19.47476459499311,
+        "minimum": 76.9923667616025
+      },
+      "batchEndToEndMs": {
+        "coefficientOfVariation": 0.2802463862817041,
+        "maximum": 8747.086375,
+        "median": 6594.9718745,
+        "medianAbsoluteDeviation": 1379.3530210000004,
+        "minimum": 4016.451583
+      },
+      "endToEndMedianMs": {
+        "coefficientOfVariation": 0.28024818433369353,
+        "maximum": 8746.8199585,
+        "median": 6594.87994775,
+        "medianAbsoluteDeviation": 1379.334448,
+        "minimum": 4016.3539375
+      },
+      "endToEndTPS": {
+        "coefficientOfVariation": 0.30618897295299824,
+        "maximum": 127.97365768718642,
+        "median": 78.94921572939333,
+        "medianAbsoluteDeviation": 16.077792626561244,
+        "minimum": 58.76242419064942
+      },
+      "fairShareDecodeTPS": {
+        "coefficientOfVariation": 0.2975981459329021,
+        "maximum": 80.60725074518186,
+        "median": 49.77537368119924,
+        "medianAbsoluteDeviation": 9.737382297496556,
+        "minimum": 38.49618338080125
+      },
+      "label": "original B2",
+      "peakMemoryBytes": {
+        "coefficientOfVariation": 0.01219187909466551,
+        "maximum": 13857225733,
+        "median": 13857225733.0,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 13445444725
+      },
+      "rowEndToEndMs": {
+        "coefficientOfVariation": 0.2672061608702391,
+        "maximum": 8747.078375000001,
+        "median": 6594.9642915,
+        "medianAbsoluteDeviation": 1379.355188,
+        "minimum": 4016.2634999999996
+      },
+      "rowTTFTMs": {
+        "coefficientOfVariation": 0.36313385940747267,
+        "maximum": 2106.307209,
+        "median": 1095.4010205,
+        "medianAbsoluteDeviation": 262.7136454999999,
+        "minimum": 822.133625
+      },
+      "runs": 6,
+      "ttftMedianMs": {
+        "coefficientOfVariation": 0.3448655295425594,
+        "maximum": 2106.3046045,
+        "median": 1196.3394372500002,
+        "medianAbsoluteDeviation": 252.1777914999999,
+        "minimum": 843.2419165
+      },
+      "withinArmTokenExact": true
+    },
+    "B": {
+      "aggregateDecodeTPS": {
+        "coefficientOfVariation": 0.34061196698792007,
+        "maximum": 196.73199761662482,
+        "median": 132.09868344484192,
+        "medianAbsoluteDeviation": 40.25174091035383,
+        "minimum": 88.01970839721491
+      },
+      "batchEndToEndMs": {
+        "coefficientOfVariation": 0.3726887309768348,
+        "maximum": 17222.444374999995,
+        "median": 10518.3654165,
+        "medianAbsoluteDeviation": 3457.350520500001,
+        "minimum": 6915.528792
+      },
+      "endToEndMedianMs": {
+        "coefficientOfVariation": 0.37269179403991876,
+        "maximum": 17222.404979,
+        "median": 10518.20663525,
+        "medianAbsoluteDeviation": 3457.2609582500004,
+        "minimum": 6915.4944375000005
+      },
+      "endToEndTPS": {
+        "coefficientOfVariation": 0.36175778780731654,
+        "maximum": 148.6509608909745,
+        "median": 98.41999892214588,
+        "medianAbsoluteDeviation": 34.35712083509274,
+        "minimum": 59.68955263355294
+      },
+      "fairShareDecodeTPS": {
+        "coefficientOfVariation": 0.34061196698792007,
+        "maximum": 49.182999404156206,
+        "median": 33.02467086121048,
+        "medianAbsoluteDeviation": 10.062935227588458,
+        "minimum": 22.00492709930373
+      },
+      "label": "original B4",
+      "peakMemoryBytes": {
+        "coefficientOfVariation": 0.0009386300671980134,
+        "maximum": 14893305233,
+        "median": 14893305233.0,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 14859076181
+      },
+      "rowEndToEndMs": {
+        "coefficientOfVariation": 0.34753705837449356,
+        "maximum": 17222.433708999997,
+        "median": 10518.115687499998,
+        "medianAbsoluteDeviation": 3457.219999999998,
+        "minimum": 6915.317625000001
+      },
+      "rowTTFTMs": {
+        "coefficientOfVariation": 0.44016588063847695,
+        "maximum": 5609.119167,
+        "median": 2727.3176670000003,
+        "medianAbsoluteDeviation": 871.2628130000003,
+        "minimum": 1719.5845000000002
+      },
+      "runs": 6,
+      "ttftMedianMs": {
+        "coefficientOfVariation": 0.47202537639560127,
+        "maximum": 5609.116229000001,
+        "median": 2727.31808325,
+        "medianAbsoluteDeviation": 871.2616977500002,
+        "minimum": 1719.5873545
+      },
+      "withinArmTokenExact": true
+    }
+  },
+  "comparisonKind": "batch-scaling",
+  "complete": true,
+  "cycleComparisons": [
+    {
+      "changePercent": 46.11717672138751,
+      "cycle": 1,
+      "distributionsByArm": {
+        "A": {
+          "aggregateDecodeTPS": {
+            "coefficientOfVariation": 0.282090321513744,
+            "maximum": 161.21450149036372,
+            "median": 134.40500645231046,
+            "medianAbsoluteDeviation": 26.80949503805325,
+            "minimum": 107.59551141425722
+          },
+          "batchEndToEndMs": {
+            "coefficientOfVariation": 0.26265525391321637,
+            "maximum": 5848.650791,
+            "median": 4932.551187,
+            "medianAbsoluteDeviation": 916.099604,
+            "minimum": 4016.451583
+          },
+          "endToEndMedianMs": {
+            "coefficientOfVariation": 0.26265078905594147,
+            "maximum": 5848.470354,
+            "median": 4932.4121457500005,
+            "medianAbsoluteDeviation": 916.05820825,
+            "minimum": 4016.3539375
+          },
+          "endToEndTPS": {
+            "coefficientOfVariation": 0.26265525391321637,
+            "maximum": 127.97365768718642,
+            "median": 107.92858723947415,
+            "medianAbsoluteDeviation": 20.045070447712263,
+            "minimum": 87.88351679176189
+          },
+          "fairShareDecodeTPS": {
+            "coefficientOfVariation": 0.282090321513744,
+            "maximum": 80.60725074518186,
+            "median": 67.20250322615523,
+            "medianAbsoluteDeviation": 13.404747519026625,
+            "minimum": 53.79775570712861
+          },
+          "peakMemoryBytes": {
+            "coefficientOfVariation": 0.0,
+            "maximum": 13857225733,
+            "median": 13857225733.0,
+            "medianAbsoluteDeviation": 0.0,
+            "minimum": 13857225733
+          },
+          "rowEndToEndMs": {
+            "coefficientOfVariation": 0.21445347365707337,
+            "maximum": 5848.642458,
+            "median": 4932.3713124999995,
+            "medianAbsoluteDeviation": 916.0173750000001,
+            "minimum": 4016.2634999999996
+          },
+          "rowTTFTMs": {
+            "coefficientOfVariation": 0.15019179017066994,
+            "maximum": 1095.4046660000001,
+            "median": 969.3200415,
+            "medianAbsoluteDeviation": 126.078125,
+            "minimum": 843.241125
+          },
+          "ttftMedianMs": {
+            "coefficientOfVariation": 0.18394662469639075,
+            "maximum": 1095.4010205,
+            "median": 969.3214685,
+            "medianAbsoluteDeviation": 126.07955199999998,
+            "minimum": 843.2419165
+          }
+        },
+        "B": {
+          "aggregateDecodeTPS": {
+            "coefficientOfVariation": 0.0024713913940665484,
+            "maximum": 196.73199761662482,
+            "median": 196.38880080031475,
+            "medianAbsoluteDeviation": 0.34319681631005494,
+            "minimum": 196.0456039840047
+          },
+          "batchEndToEndMs": {
+            "coefficientOfVariation": 0.0291386471270832,
+            "maximum": 7206.500999999999,
+            "median": 7061.014896,
+            "medianAbsoluteDeviation": 145.4861039999996,
+            "minimum": 6915.528792
+          },
+          "endToEndMedianMs": {
+            "coefficientOfVariation": 0.029131949879590727,
+            "maximum": 7206.3969165,
+            "median": 7060.945677,
+            "medianAbsoluteDeviation": 145.4512394999997,
+            "minimum": 6915.4944375000005
+          },
+          "endToEndTPS": {
+            "coefficientOfVariation": 0.029138647127083233,
+            "maximum": 148.6509608909745,
+            "median": 145.6499692646798,
+            "medianAbsoluteDeviation": 3.0009916262946774,
+            "minimum": 142.64897763838513
+          },
+          "fairShareDecodeTPS": {
+            "coefficientOfVariation": 0.0024713913940665484,
+            "maximum": 49.182999404156206,
+            "median": 49.09720020007869,
+            "medianAbsoluteDeviation": 0.08579920407751374,
+            "minimum": 49.01140099600118
+          },
+          "peakMemoryBytes": {
+            "coefficientOfVariation": 0.0,
+            "maximum": 14893305233,
+            "median": 14893305233.0,
+            "medianAbsoluteDeviation": 0.0,
+            "minimum": 14893305233
+          },
+          "rowEndToEndMs": {
+            "coefficientOfVariation": 0.022024129249803417,
+            "maximum": 7206.491417,
+            "median": 7060.8956875,
+            "medianAbsoluteDeviation": 145.40470799999957,
+            "minimum": 6915.317625000001
+          },
+          "rowTTFTMs": {
+            "coefficientOfVariation": 0.07860287458465504,
+            "maximum": 1992.5315409999998,
+            "median": 1856.054854,
+            "medianAbsoluteDeviation": 136.4690415,
+            "minimum": 1719.5845000000002
+          },
+          "ttftMedianMs": {
+            "coefficientOfVariation": 0.10398194580286067,
+            "maximum": 1992.5254165000001,
+            "median": 1856.0563855,
+            "medianAbsoluteDeviation": 136.4690310000001,
+            "minimum": 1719.5873545
+          }
+        }
+      },
+      "meanAggregateA": 134.40500645231046,
+      "meanAggregateB": 196.38880080031475,
+      "metrics": {
+        "aggregateDecodeTPS": {
+          "changePercent": 46.11717672138751,
+          "direction": "higher_is_better",
+          "improvementPercent": 46.11717672138751,
+          "meanA": 134.40500645231046,
+          "meanB": 196.38880080031475,
+          "ratioBOverA": 1.461171767213875
+        },
+        "batchEndToEndMs": {
+          "changePercent": 43.15137599807739,
+          "direction": "lower_is_better",
+          "improvementPercent": -43.15137599807739,
+          "meanA": 4932.551187,
+          "meanB": 7061.014896,
+          "ratioBOverA": 1.431513759980774
+        },
+        "endToEndMedianMs": {
+          "changePercent": 43.15400798540414,
+          "direction": "lower_is_better",
+          "improvementPercent": -43.15400798540414,
+          "meanA": 4932.4121457500005,
+          "meanB": 7060.945677,
+          "ratioBOverA": 1.4315400798540414
+        },
+        "peakMemoryBytes": {
+          "changePercent": 7.476817654291734,
+          "direction": "lower_is_better",
+          "improvementPercent": -7.476817654291734,
+          "meanA": 13857225733,
+          "meanB": 14893305233,
+          "ratioBOverA": 1.0747681765429173
+        },
+        "ttftMedianMs": {
+          "changePercent": 91.47996261469369,
+          "direction": "lower_is_better",
+          "improvementPercent": -91.47996261469369,
+          "meanA": 969.3214685,
+          "meanB": 1856.0563855,
+          "ratioBOverA": 1.9147996261469369
+        }
+      },
+      "ratioBOverA": 1.461171767213875
+    },
+    {
+      "changePercent": 23.147354056947144,
+      "cycle": 2,
+      "distributionsByArm": {
+        "A": {
+          "aggregateDecodeTPS": {
+            "coefficientOfVariation": 0.3178515511571951,
+            "maximum": 131.3779923207188,
+            "median": 107.26879554696352,
+            "medianAbsoluteDeviation": 24.109196773755272,
+            "minimum": 83.15959877320824
+          },
+          "batchEndToEndMs": {
+            "coefficientOfVariation": 0.30990389980644023,
+            "maximum": 7673.884167,
+            "median": 6294.531145999999,
+            "medianAbsoluteDeviation": 1379.3530210000004,
+            "minimum": 4915.178124999999
+          },
+          "endToEndMedianMs": {
+            "coefficientOfVariation": 0.30990904716582257,
+            "maximum": 7673.676292,
+            "median": 6294.3418440000005,
+            "medianAbsoluteDeviation": 1379.334448,
+            "minimum": 4915.007396
+          },
+          "endToEndTPS": {
+            "coefficientOfVariation": 0.3099038998064403,
+            "maximum": 104.57403311299122,
+            "median": 85.77722756400298,
+            "medianAbsoluteDeviation": 18.79680554898823,
+            "minimum": 66.98042201501475
+          },
+          "fairShareDecodeTPS": {
+            "coefficientOfVariation": 0.3178515511571951,
+            "maximum": 65.6889961603594,
+            "median": 53.63439777348176,
+            "medianAbsoluteDeviation": 12.054598386877636,
+            "minimum": 41.57979938660412
+          },
+          "peakMemoryBytes": {
+            "coefficientOfVariation": 1.6328966172651919e-09,
+            "maximum": 13857225733,
+            "median": 13857225717.0,
+            "medianAbsoluteDeviation": 16.0,
+            "minimum": 13857225701
+          },
+          "rowEndToEndMs": {
+            "coefficientOfVariation": 0.2530396795939024,
+            "maximum": 7673.877084,
+            "median": 6294.321104000001,
+            "medianAbsoluteDeviation": 1379.3137080000006,
+            "minimum": 4914.848084
+          },
+          "rowTTFTMs": {
+            "coefficientOfVariation": 0.2287088360942422,
+            "maximum": 1525.3693329999999,
+            "median": 1273.1898334999998,
+            "medianAbsoluteDeviation": 252.1774999999999,
+            "minimum": 1021.0115000000001
+          },
+          "ttftMedianMs": {
+            "coefficientOfVariation": 0.2801099740453881,
+            "maximum": 1525.3679164999999,
+            "median": 1273.190125,
+            "medianAbsoluteDeviation": 252.1777914999999,
+            "minimum": 1021.0123335000001
+          }
+        },
+        "B": {
+          "aggregateDecodeTPS": {
+            "coefficientOfVariation": 0.11643833453844402,
+            "maximum": 142.97494082511207,
+            "median": 132.09868344484192,
+            "medianAbsoluteDeviation": 10.876257380270154,
+            "minimum": 121.22242606457176
+          },
+          "batchEndToEndMs": {
+            "coefficientOfVariation": 0.11808452273991146,
+            "maximum": 11396.63175,
+            "median": 10518.3654165,
+            "medianAbsoluteDeviation": 878.2663335000007,
+            "minimum": 9640.099083
+          },
+          "endToEndMedianMs": {
+            "coefficientOfVariation": 0.11807010225673505,
+            "maximum": 11396.3524585,
+            "median": 10518.20663525,
+            "medianAbsoluteDeviation": 878.1458232499999,
+            "minimum": 9640.060812
+          },
+          "endToEndTPS": {
+            "coefficientOfVariation": 0.11808452273991143,
+            "maximum": 106.63790809088721,
+            "median": 98.41999892214588,
+            "medianAbsoluteDeviation": 8.217909168741329,
+            "minimum": 90.20208975340455
+          },
+          "fairShareDecodeTPS": {
+            "coefficientOfVariation": 0.11643833453844402,
+            "maximum": 35.74373520627802,
+            "median": 33.02467086121048,
+            "medianAbsoluteDeviation": 2.7190643450675385,
+            "minimum": 30.30560651614294
+          },
+          "peakMemoryBytes": {
+            "coefficientOfVariation": 0.0016270021848669863,
+            "maximum": 14893305233,
+            "median": 14876190707.0,
+            "medianAbsoluteDeviation": 17114526.0,
+            "minimum": 14859076181
+          },
+          "rowEndToEndMs": {
+            "coefficientOfVariation": 0.08925581546219283,
+            "maximum": 11396.616125,
+            "median": 10518.115687499998,
+            "medianAbsoluteDeviation": 878.0548754999982,
+            "minimum": 9639.847292
+          },
+          "rowTTFTMs": {
+            "coefficientOfVariation": 0.09271596086760754,
+            "maximum": 2963.855375,
+            "median": 2727.3176670000003,
+            "medianAbsoluteDeviation": 236.5347499999998,
+            "minimum": 2490.77925
+          },
+          "ttftMedianMs": {
+            "coefficientOfVariation": 0.122651649915919,
+            "maximum": 2963.852417,
+            "median": 2727.31808325,
+            "medianAbsoluteDeviation": 236.5343337500001,
+            "minimum": 2490.7837495
+          }
+        }
+      },
+      "meanAggregateA": 107.26879554696352,
+      "meanAggregateB": 132.09868344484192,
+      "metrics": {
+        "aggregateDecodeTPS": {
+          "changePercent": 23.147354056947144,
+          "direction": "higher_is_better",
+          "improvementPercent": 23.147354056947144,
+          "meanA": 107.26879554696352,
+          "meanB": 132.09868344484192,
+          "ratioBOverA": 1.2314735405694714
+        },
+        "batchEndToEndMs": {
+          "changePercent": 67.10323886766581,
+          "direction": "lower_is_better",
+          "improvementPercent": -67.10323886766581,
+          "meanA": 6294.531145999999,
+          "meanB": 10518.3654165,
+          "ratioBOverA": 1.671032388676658
+        },
+        "endToEndMedianMs": {
+          "changePercent": 67.10574188588667,
+          "direction": "lower_is_better",
+          "improvementPercent": -67.10574188588667,
+          "meanA": 6294.3418440000005,
+          "meanB": 10518.20663525,
+          "ratioBOverA": 1.6710574188588667
+        },
+        "peakMemoryBytes": {
+          "changePercent": 7.353311628242709,
+          "direction": "lower_is_better",
+          "improvementPercent": -7.353311628242709,
+          "meanA": 13857225717,
+          "meanB": 14876190707,
+          "ratioBOverA": 1.073533116282427
+        },
+        "ttftMedianMs": {
+          "changePercent": 114.21137579511154,
+          "direction": "lower_is_better",
+          "improvementPercent": -114.21137579511154,
+          "meanA": 1273.190125,
+          "meanB": 2727.31808325,
+          "ratioBOverA": 2.1421137579511154
+        }
+      },
+      "ratioBOverA": 1.2314735405694714
+    },
+    {
+      "changePercent": 9.018209964861956,
+      "cycle": 3,
+      "distributionsByArm": {
+        "A": {
+          "aggregateDecodeTPS": {
+            "coefficientOfVariation": 0.12181337890728175,
+            "maximum": 91.50598331053976,
+            "median": 84.24917503607114,
+            "medianAbsoluteDeviation": 7.256808274468632,
+            "minimum": 76.9923667616025
+          },
+          "batchEndToEndMs": {
+            "coefficientOfVariation": 0.12357317508907202,
+            "maximum": 8747.086375,
+            "median": 8044.1896665,
+            "medianAbsoluteDeviation": 702.8967085000004,
+            "minimum": 7341.292958
+          },
+          "endToEndMedianMs": {
+            "coefficientOfVariation": 0.12355212885947299,
+            "maximum": 8746.8199585,
+            "median": 8044.05475,
+            "medianAbsoluteDeviation": 702.7652085,
+            "minimum": 7341.2895415
+          },
+          "endToEndTPS": {
+            "coefficientOfVariation": 0.123573175089072,
+            "maximum": 70.01491466702478,
+            "median": 64.3886694288371,
+            "medianAbsoluteDeviation": 5.626245238187682,
+            "minimum": 58.76242419064942
+          },
+          "fairShareDecodeTPS": {
+            "coefficientOfVariation": 0.12181337890728175,
+            "maximum": 45.75299165526988,
+            "median": 42.12458751803557,
+            "medianAbsoluteDeviation": 3.628404137234316,
+            "minimum": 38.49618338080125
+          },
+          "peakMemoryBytes": {
+            "coefficientOfVariation": 0.02132927938814973,
+            "maximum": 13857225733,
+            "median": 13651335229.0,
+            "medianAbsoluteDeviation": 205890504.0,
+            "minimum": 13445444725
+          },
+          "rowEndToEndMs": {
+            "coefficientOfVariation": 0.10087989419077771,
+            "maximum": 8747.078375000001,
+            "median": 8043.92725,
+            "medianAbsoluteDeviation": 702.6377084999999,
+            "minimum": 7341.286125
+          },
+          "rowTTFTMs": {
+            "coefficientOfVariation": 0.35679614189011327,
+            "maximum": 2106.307209,
+            "median": 1939.3620415,
+            "medianAbsoluteDeviation": 166.94256300000006,
+            "minimum": 822.133625
+          },
+          "ttftMedianMs": {
+            "coefficientOfVariation": 0.3361565693883523,
+            "maximum": 2106.3046045,
+            "median": 1701.79122925,
+            "medianAbsoluteDeviation": 404.51337524999997,
+            "minimum": 1297.2778540000002
+          }
+        },
+        "B": {
+          "aggregateDecodeTPS": {
+            "coefficientOfVariation": 0.05892984865856199,
+            "maximum": 95.67417667176127,
+            "median": 91.8469425344881,
+            "medianAbsoluteDeviation": 3.82723413727318,
+            "minimum": 88.01970839721491
+          },
+          "batchEndToEndMs": {
+            "coefficientOfVariation": 0.09654290212511325,
+            "maximum": 17222.444374999995,
+            "median": 16121.866749999997,
+            "medianAbsoluteDeviation": 1100.577624999998,
+            "minimum": 15021.289125
+          },
+          "endToEndMedianMs": {
+            "coefficientOfVariation": 0.09654639637299053,
+            "maximum": 17222.404979,
+            "median": 16121.79258325,
+            "medianAbsoluteDeviation": 1100.6123957499995,
+            "minimum": 15021.1801875
+          },
+          "endToEndTPS": {
+            "coefficientOfVariation": 0.09654290212511327,
+            "maximum": 68.43620354055332,
+            "median": 64.06287808705314,
+            "medianAbsoluteDeviation": 4.37332545350019,
+            "minimum": 59.68955263355294
+          },
+          "fairShareDecodeTPS": {
+            "coefficientOfVariation": 0.05892984865856199,
+            "maximum": 23.91854416794032,
+            "median": 22.961735633622023,
+            "medianAbsoluteDeviation": 0.956808534318295,
+            "minimum": 22.00492709930373
+          },
+          "peakMemoryBytes": {
+            "coefficientOfVariation": 1.5193012342311633e-09,
+            "maximum": 14893305233,
+            "median": 14893305217.0,
+            "medianAbsoluteDeviation": 16.0,
+            "minimum": 14893305201
+          },
+          "rowEndToEndMs": {
+            "coefficientOfVariation": 0.07298043232197123,
+            "maximum": 17222.433708999997,
+            "median": 16121.6955415,
+            "medianAbsoluteDeviation": 1100.6311249999999,
+            "minimum": 15021.048832999999
+          },
+          "rowTTFTMs": {
+            "coefficientOfVariation": 0.13665114455259045,
+            "maximum": 5609.119167,
+            "median": 4973.3885625,
+            "medianAbsoluteDeviation": 635.7258540000003,
+            "minimum": 4337.659541
+          },
+          "ttftMedianMs": {
+            "coefficientOfVariation": 0.1807724758750832,
+            "maximum": 5609.116229000001,
+            "median": 4973.390395750001,
+            "medianAbsoluteDeviation": 635.7258332500005,
+            "minimum": 4337.6645625
+          }
+        }
+      },
+      "meanAggregateA": 84.24917503607114,
+      "meanAggregateB": 91.8469425344881,
+      "metrics": {
+        "aggregateDecodeTPS": {
+          "changePercent": 9.018209964861956,
+          "direction": "higher_is_better",
+          "improvementPercent": 9.018209964861956,
+          "meanA": 84.24917503607114,
+          "meanB": 91.8469425344881,
+          "ratioBOverA": 1.0901820996486196
+        },
+        "batchEndToEndMs": {
+          "changePercent": 100.41629323012428,
+          "direction": "lower_is_better",
+          "improvementPercent": -100.41629323012428,
+          "meanA": 8044.1896665,
+          "meanB": 16121.866749999997,
+          "ratioBOverA": 2.004162932301243
+        },
+        "endToEndMedianMs": {
+          "changePercent": 100.41873264537391,
+          "direction": "lower_is_better",
+          "improvementPercent": -100.41873264537391,
+          "meanA": 8044.05475,
+          "meanB": 16121.79258325,
+          "ratioBOverA": 2.004187326453739
+        },
+        "peakMemoryBytes": {
+          "changePercent": 9.097791294155911,
+          "direction": "lower_is_better",
+          "improvementPercent": -9.097791294155911,
+          "meanA": 13651335229,
+          "meanB": 14893305217,
+          "ratioBOverA": 1.090977912941559
+        },
+        "ttftMedianMs": {
+          "changePercent": 192.24444868844657,
+          "direction": "lower_is_better",
+          "improvementPercent": -192.24444868844657,
+          "meanA": 1701.79122925,
+          "meanB": 4973.390395750001,
+          "ratioBOverA": 2.9224444868844657
+        }
+      },
+      "ratioBOverA": 1.0901820996486196
+    }
+  ],
+  "cycleMetricRatioDistributions": {
+    "aggregateDecodeTPS": {
+      "coefficientOfVariation": 0.1484938595547422,
+      "maximum": 1.461171767213875,
+      "median": 1.2314735405694714,
+      "medianAbsoluteDeviation": 0.14129144092085189,
+      "minimum": 1.0901820996486196
+    },
+    "batchEndToEndMs": {
+      "coefficientOfVariation": 0.16895244802954076,
+      "maximum": 2.004162932301243,
+      "median": 1.671032388676658,
+      "medianAbsoluteDeviation": 0.23951862869588414,
+      "minimum": 1.431513759980774
+    },
+    "endToEndMedianMs": {
+      "coefficientOfVariation": 0.16894938939685172,
+      "maximum": 2.004187326453739,
+      "median": 1.6710574188588667,
+      "medianAbsoluteDeviation": 0.2395173390048253,
+      "minimum": 1.4315400798540414
+    },
+    "peakMemoryBytes": {
+      "coefficientOfVariation": 0.009015740103544749,
+      "maximum": 1.090977912941559,
+      "median": 1.0747681765429173,
+      "medianAbsoluteDeviation": 0.0012350602604902505,
+      "minimum": 1.073533116282427
+    },
+    "ttftMedianMs": {
+      "coefficientOfVariation": 0.22717412676466198,
+      "maximum": 2.9224444868844657,
+      "median": 2.1421137579511154,
+      "medianAbsoluteDeviation": 0.22731413180417848,
+      "minimum": 1.9147996261469369
+    }
+  },
+  "cycleRatioDistribution": {
+    "coefficientOfVariation": 0.1484938595547422,
+    "maximum": 1.461171767213875,
+    "median": 1.2314735405694714,
+    "medianAbsoluteDeviation": 0.14129144092085189,
+    "minimum": 1.0901820996486196
+  },
+  "failures": [],
+  "interpretation": "Every cycle executes A-B-B-A with one measured repetition per fresh process after its own shape warmup. Cycle ratios compare mean aggregate throughput of the two B runs with the two A runs. These are descriptive controls, not confidence intervals or evidence that thermal/background conditions were identical.",
+  "latency": "Row TTFT is first tokenArrivalMs minus submittedAtMs; row end-to-end latency is finishedAtMs minus submittedAtMs. Batch end-to-end runs from earliest submission to latest finish. Arm/cycle row distributions pool raw row latencies; cycle ratios average the two run medians for TTFT/row latency. TTFT, latency, and memory are lower-is-better only at comparable workload; decode throughput is higher-is-better.",
+  "metricDirections": {
+    "aggregateDecodeTPS": "higher_is_better",
+    "batchEndToEndMs": "lower_is_better",
+    "endToEndMedianMs": "lower_is_better",
+    "peakMemoryBytes": "lower_is_better",
+    "ttftMedianMs": "lower_is_better"
+  },
+  "outputHashesByArmRowRun": {
+    "A": {
+      "0": {
+        "cycle-01-1-A": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b",
+        "cycle-01-4-A": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b",
+        "cycle-02-1-A": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b",
+        "cycle-02-4-A": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b",
+        "cycle-03-1-A": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b",
+        "cycle-03-4-A": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+      },
+      "1": {
+        "cycle-01-1-A": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0",
+        "cycle-01-4-A": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0",
+        "cycle-02-1-A": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0",
+        "cycle-02-4-A": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0",
+        "cycle-03-1-A": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0",
+        "cycle-03-4-A": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+      }
+    },
+    "B": {
+      "0": {
+        "cycle-01-2-B": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b",
+        "cycle-01-3-B": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b",
+        "cycle-02-2-B": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b",
+        "cycle-02-3-B": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b",
+        "cycle-03-2-B": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b",
+        "cycle-03-3-B": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+      },
+      "1": {
+        "cycle-01-2-B": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0",
+        "cycle-01-3-B": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0",
+        "cycle-02-2-B": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0",
+        "cycle-02-3-B": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0",
+        "cycle-03-2-B": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0",
+        "cycle-03-3-B": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+      },
+      "2": {
+        "cycle-01-2-B": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36",
+        "cycle-01-3-B": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36",
+        "cycle-02-2-B": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36",
+        "cycle-02-3-B": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36",
+        "cycle-03-2-B": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36",
+        "cycle-03-3-B": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36"
+      },
+      "3": {
+        "cycle-01-2-B": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e",
+        "cycle-01-3-B": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e",
+        "cycle-02-2-B": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e",
+        "cycle-02-3-B": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e",
+        "cycle-03-2-B": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e",
+        "cycle-03-3-B": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e"
+      }
+    }
+  },
+  "power": "AC Power and powermode 2 required before and after every run; Foundation thermal states are observations, not a throttle-free guarantee.",
+  "provenanceID": "089daea7079043ff0e4967d20c6cdd55512ee780ff879468f1eb553fcc69ed4b",
+  "runs": [
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 161.21450149036372,
+        "median": 161.21450149036372,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 161.21450149036372
+      },
+      "aggregateDecodeTPS": 161.21450149036372,
+      "arm": "A",
+      "batch": 2,
+      "batchEndToEndMs": 4016.451583,
+      "commonWindowInterTokenP50Ms": 12.359854499999983,
+      "commonWindowInterTokenP95Ms": 12.69568124999996,
+      "commonWindowMinimumRowTokens": 255,
+      "context": 512,
+      "cycle": 1,
+      "endToEndMedianMs": 4016.3539375,
+      "endToEndTPS": 127.97365768718642,
+      "fairShareDecodeTPS": 80.60725074518186,
+      "interTokenP50Ms": 12.359854499999983,
+      "interTokenP95Ms": 12.701062799999931,
+      "iterations": 1,
+      "legacyWholeRowAggregateTPS": 161.35115202595358,
+      "name": "cycle-01-1-A",
+      "peakMemoryBytes": 13857225733,
+      "perRequestDecodeTPS": 80.60725074518186,
+      "perRowCommonWindowTPS": [
+        80.76499487579865,
+        80.44950661456507
+      ],
+      "perRowWholeDecodeTPS": [
+        80.76485154875911,
+        80.76018255053116
+      ],
+      "phase": "decode",
+      "position": 1,
+      "rowEndToEndMs": [
+        4016.2634999999996,
+        4016.444375
+      ],
+      "rowTTFTMs": [
+        843.242708,
+        843.241125
+      ],
+      "run": "cycle-01-1-A",
+      "thermalAfter": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "thermalBefore": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "ttftMedianMs": 843.2419165
+    },
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 196.73199761662482,
+        "median": 196.73199761662482,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 196.73199761662482
+      },
+      "aggregateDecodeTPS": 196.73199761662482,
+      "arm": "B",
+      "batch": 4,
+      "batchEndToEndMs": 6915.528792,
+      "commonWindowInterTokenP50Ms": 20.590540999999575,
+      "commonWindowInterTokenP95Ms": 21.253800000001046,
+      "commonWindowMinimumRowTokens": 255,
+      "context": 512,
+      "cycle": 1,
+      "endToEndMedianMs": 6915.4944375000005,
+      "endToEndTPS": 148.6509608909745,
+      "fairShareDecodeTPS": 49.182999404156206,
+      "interTokenP50Ms": 20.592812500000036,
+      "interTokenP95Ms": 21.265782949999856,
+      "iterations": 1,
+      "legacyWholeRowAggregateTPS": 197.07726619670441,
+      "name": "cycle-01-2-B",
+      "peakMemoryBytes": 14893305233,
+      "perRequestDecodeTPS": 49.182999404156206,
+      "perRowCommonWindowTPS": [
+        49.327513604168416,
+        49.13482800415213,
+        49.13482800415213,
+        49.13482800415213
+      ],
+      "perRowWholeDecodeTPS": [
+        49.32743440161751,
+        49.3257275833403,
+        49.32548206738709,
+        49.325179122335975
+      ],
+      "phase": "decode",
+      "position": 2,
+      "rowEndToEndMs": [
+        6915.317625000001,
+        6915.493417000001,
+        6915.495458,
+        6915.5175
+      ],
+      "rowTTFTMs": [
+        1719.588834,
+        1719.590917,
+        1719.5845000000002,
+        1719.585875
+      ],
+      "run": "cycle-01-2-B",
+      "thermalAfter": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "thermalBefore": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "ttftMedianMs": 1719.5873545
+    },
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 196.0456039840047,
+        "median": 196.0456039840047,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 196.0456039840047
+      },
+      "aggregateDecodeTPS": 196.0456039840047,
+      "arm": "B",
+      "batch": 4,
+      "batchEndToEndMs": 7206.500999999999,
+      "commonWindowInterTokenP50Ms": 20.318041500000163,
+      "commonWindowInterTokenP95Ms": 21.17114374999992,
+      "commonWindowMinimumRowTokens": 255,
+      "context": 512,
+      "cycle": 1,
+      "endToEndMedianMs": 7206.3969165,
+      "endToEndTPS": 142.64897763838513,
+      "fairShareDecodeTPS": 49.01140099600118,
+      "interTokenP50Ms": 20.321145499999602,
+      "interTokenP95Ms": 21.183873300000503,
+      "iterations": 1,
+      "legacyWholeRowAggregateTPS": 196.39565857254732,
+      "name": "cycle-01-3-B",
+      "peakMemoryBytes": 14893305233,
+      "perRequestDecodeTPS": 49.01140099600118,
+      "perRowCommonWindowTPS": [
+        49.15541098913341,
+        48.9633976649571,
+        48.9633976649571,
+        48.9633976649571
+      ],
+      "perRowWholeDecodeTPS": [
+        49.155245032656076,
+        49.15307113743464,
+        49.15298030074754,
+        49.1548808629658
+      ],
+      "phase": "decode",
+      "position": 3,
+      "rowEndToEndMs": [
+        7206.273875,
+        7206.491417,
+        7206.490999999999,
+        7206.302833
+      ],
+      "rowTTFTMs": [
+        1992.523958,
+        1992.526875,
+        1992.5315409999998,
+        1992.518791
+      ],
+      "run": "cycle-01-3-B",
+      "thermalAfter": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "thermalBefore": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "ttftMedianMs": 1992.5254165000001
+    },
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 107.59551141425722,
+        "median": 107.59551141425722,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 107.59551141425722
+      },
+      "aggregateDecodeTPS": 107.59551141425722,
+      "arm": "A",
+      "batch": 2,
+      "batchEndToEndMs": 5848.650791,
+      "commonWindowInterTokenP50Ms": 16.266520999999557,
+      "commonWindowInterTokenP95Ms": 31.795172949999454,
+      "commonWindowMinimumRowTokens": 255,
+      "context": 512,
+      "cycle": 1,
+      "endToEndMedianMs": 5848.470354,
+      "endToEndTPS": 87.88351679176189,
+      "fairShareDecodeTPS": 53.79775570712861,
+      "interTokenP50Ms": 16.266520999999557,
+      "interTokenP95Ms": 31.782452049999527,
+      "iterations": 1,
+      "legacyWholeRowAggregateTPS": 107.71588484489682,
+      "name": "cycle-01-4-A",
+      "peakMemoryBytes": 13857225733,
+      "perRequestDecodeTPS": 53.79775570712861,
+      "perRowCommonWindowTPS": [
+        53.90303507250459,
+        53.692476341752624
+      ],
+      "perRowWholeDecodeTPS": [
+        53.903023246062844,
+        53.89870738399824
+      ],
+      "phase": "decode",
+      "position": 4,
+      "rowEndToEndMs": [
+        5848.29825,
+        5848.642458
+      ],
+      "rowTTFTMs": [
+        1095.4046660000001,
+        1095.397375
+      ],
+      "run": "cycle-01-4-A",
+      "thermalAfter": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "thermalBefore": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "ttftMedianMs": 1095.4010205
+    },
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 131.3779923207188,
+        "median": 131.3779923207188,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 131.3779923207188
+      },
+      "aggregateDecodeTPS": 131.3779923207188,
+      "arm": "A",
+      "batch": 2,
+      "batchEndToEndMs": 4915.178124999999,
+      "commonWindowInterTokenP50Ms": 13.981895999999779,
+      "commonWindowInterTokenP95Ms": 19.79953560000003,
+      "commonWindowMinimumRowTokens": 255,
+      "context": 512,
+      "cycle": 2,
+      "endToEndMedianMs": 4915.007396,
+      "endToEndTPS": 104.57403311299122,
+      "fairShareDecodeTPS": 65.6889961603594,
+      "interTokenP50Ms": 13.981895999999779,
+      "interTokenP95Ms": 19.79200640000008,
+      "iterations": 1,
+      "legacyWholeRowAggregateTPS": 131.4790943484141,
+      "name": "cycle-02-1-A",
+      "peakMemoryBytes": 13857225701,
+      "perRequestDecodeTPS": 65.6889961603594,
+      "perRowCommonWindowTPS": [
+        65.81754605499806,
+        65.56044626572071
+      ],
+      "perRowWholeDecodeTPS": [
+        65.81738106905871,
+        65.81176498413062
+      ],
+      "phase": "decode",
+      "position": 1,
+      "rowEndToEndMs": [
+        4914.848084,
+        4915.166708
+      ],
+      "rowTTFTMs": [
+        1021.013167,
+        1021.0115000000001
+      ],
+      "run": "cycle-02-1-A",
+      "thermalAfter": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "thermalBefore": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "ttftMedianMs": 1021.0123335000001
+    },
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 142.97494082511207,
+        "median": 142.97494082511207,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 142.97494082511207
+      },
+      "aggregateDecodeTPS": 142.97494082511207,
+      "arm": "B",
+      "batch": 4,
+      "batchEndToEndMs": 9640.099083,
+      "commonWindowInterTokenP50Ms": 27.952374999999847,
+      "commonWindowInterTokenP95Ms": 30.78370000000018,
+      "commonWindowMinimumRowTokens": 255,
+      "context": 512,
+      "cycle": 2,
+      "endToEndMedianMs": 9640.060812,
+      "endToEndTPS": 106.63790809088721,
+      "fairShareDecodeTPS": 35.74373520627802,
+      "interTokenP50Ms": 27.955313000000388,
+      "interTokenP95Ms": 30.783537549999892,
+      "iterations": 1,
+      "legacyWholeRowAggregateTPS": 143.2307874617933,
+      "name": "cycle-02-2-B",
+      "peakMemoryBytes": 14859076181,
+      "perRequestDecodeTPS": 35.74373520627802,
+      "perRowCommonWindowTPS": [
+        35.84876087289784,
+        35.70872665073808,
+        35.70872665073808,
+        35.70872665073808
+      ],
+      "perRowWholeDecodeTPS": [
+        35.848665908800285,
+        35.84742600507981,
+        35.84737141112875,
+        35.84721037098512
+      ],
+      "phase": "decode",
+      "position": 2,
+      "rowEndToEndMs": [
+        9639.847292,
+        9640.060333,
+        9640.061291,
+        9640.087790999998
+      ],
+      "rowTTFTMs": [
+        2490.77925,
+        2490.781958,
+        2490.7855409999997,
+        2490.786875
+      ],
+      "run": "cycle-02-2-B",
+      "thermalAfter": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "thermalBefore": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "ttftMedianMs": 2490.7837495
+    },
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 121.22242606457176,
+        "median": 121.22242606457176,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 121.22242606457176
+      },
+      "aggregateDecodeTPS": 121.22242606457176,
+      "arm": "B",
+      "batch": 4,
+      "batchEndToEndMs": 11396.63175,
+      "commonWindowInterTokenP50Ms": 33.332979499999965,
+      "commonWindowInterTokenP95Ms": 36.255198249999786,
+      "commonWindowMinimumRowTokens": 255,
+      "context": 512,
+      "cycle": 2,
+      "endToEndMedianMs": 11396.3524585,
+      "endToEndTPS": 90.20208975340455,
+      "fairShareDecodeTPS": 30.30560651614294,
+      "interTokenP50Ms": 33.332979499999965,
+      "interTokenP95Ms": 36.26825439999984,
+      "iterations": 1,
+      "legacyWholeRowAggregateTPS": 121.43106991179852,
+      "name": "cycle-02-3-B",
+      "peakMemoryBytes": 14893305233,
+      "perRequestDecodeTPS": 30.30560651614294,
+      "perRowCommonWindowTPS": [
+        30.394653352135528,
+        30.275924237478748,
+        30.275924237478748,
+        30.275924237478748
+      ],
+      "perRowWholeDecodeTPS": [
+        30.39462192373599,
+        30.393014777402797,
+        30.394464042932714,
+        30.39278745360745
+      ],
+      "phase": "decode",
+      "position": 3,
+      "rowEndToEndMs": [
+        11396.143584,
+        11396.557667,
+        11396.14725,
+        11396.616125
+      ],
+      "rowTTFTMs": [
+        2963.855375,
+        2963.852584,
+        2963.85225,
+        2963.8484590000003
+      ],
+      "run": "cycle-02-3-B",
+      "thermalAfter": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "thermalBefore": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "ttftMedianMs": 2963.852417
+    },
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 83.15959877320824,
+        "median": 83.15959877320824,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 83.15959877320824
+      },
+      "aggregateDecodeTPS": 83.15959877320824,
+      "arm": "A",
+      "batch": 2,
+      "batchEndToEndMs": 7673.884167,
+      "commonWindowInterTokenP50Ms": 23.15322900000001,
+      "commonWindowInterTokenP95Ms": 34.41407065000043,
+      "commonWindowMinimumRowTokens": 255,
+      "context": 512,
+      "cycle": 2,
+      "endToEndMedianMs": 7673.676292,
+      "endToEndTPS": 66.98042201501475,
+      "fairShareDecodeTPS": 41.57979938660412,
+      "interTokenP50Ms": 23.15322900000001,
+      "interTokenP95Ms": 34.53692065000009,
+      "iterations": 1,
+      "legacyWholeRowAggregateTPS": 83.27219950346272,
+      "name": "cycle-02-4-A",
+      "peakMemoryBytes": 13857225733,
+      "perRequestDecodeTPS": 41.57979938660412,
+      "perRowCommonWindowTPS": [
+        41.661168857028,
+        41.49842991618024
+      ],
+      "perRowWholeDecodeTPS": [
+        41.661140042496335,
+        41.65780771076986
+      ],
+      "phase": "decode",
+      "position": 4,
+      "rowEndToEndMs": [
+        7673.4755000000005,
+        7673.877084
+      ],
+      "rowTTFTMs": [
+        1525.3693329999999,
+        1525.3664999999999
+      ],
+      "run": "cycle-02-4-A",
+      "thermalAfter": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "thermalBefore": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "ttftMedianMs": 1525.3679164999999
+    },
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 76.9923667616025,
+        "median": 76.9923667616025,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 76.9923667616025
+      },
+      "aggregateDecodeTPS": 76.9923667616025,
+      "arm": "A",
+      "batch": 2,
+      "batchEndToEndMs": 8747.086375,
+      "commonWindowInterTokenP50Ms": 25.065687499999967,
+      "commonWindowInterTokenP95Ms": 33.06160259999932,
+      "commonWindowMinimumRowTokens": 255,
+      "context": 512,
+      "cycle": 3,
+      "endToEndMedianMs": 8746.8199585,
+      "endToEndTPS": 58.76242419064942,
+      "fairShareDecodeTPS": 38.49618338080125,
+      "interTokenP50Ms": 25.07347900000036,
+      "interTokenP95Ms": 33.026023399999296,
+      "iterations": 1,
+      "legacyWholeRowAggregateTPS": 77.0994189666566,
+      "name": "cycle-03-1-A",
+      "peakMemoryBytes": 13857225733,
+      "perRequestDecodeTPS": 38.49618338080125,
+      "perRowCommonWindowTPS": [
+        38.571518377632565,
+        38.42084838396994
+      ],
+      "perRowWholeDecodeTPS": [
+        38.57150215754631,
+        38.56881643075429
+      ],
+      "phase": "decode",
+      "position": 1,
+      "rowEndToEndMs": [
+        8746.561542,
+        8747.078375000001
+      ],
+      "rowTTFTMs": [
+        2106.307209,
+        2106.302
+      ],
+      "run": "cycle-03-1-A",
+      "thermalAfter": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "thermalBefore": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "ttftMedianMs": 2106.3046045
+    },
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 88.01970839721491,
+        "median": 88.01970839721491,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 88.01970839721491
+      },
+      "aggregateDecodeTPS": 88.01970839721491,
+      "arm": "B",
+      "batch": 4,
+      "batchEndToEndMs": 17222.444374999995,
+      "commonWindowInterTokenP50Ms": 45.430083500000364,
+      "commonWindowInterTokenP95Ms": 55.54966425000025,
+      "commonWindowMinimumRowTokens": 255,
+      "context": 512,
+      "cycle": 3,
+      "endToEndMedianMs": 17222.404979,
+      "endToEndTPS": 59.68955263355294,
+      "fairShareDecodeTPS": 22.00492709930373,
+      "interTokenP50Ms": 45.430083500000364,
+      "interTokenP95Ms": 55.52001435000051,
+      "iterations": 1,
+      "legacyWholeRowAggregateTPS": 88.17462720600929,
+      "name": "cycle-03-2-B",
+      "peakMemoryBytes": 14893305233,
+      "perRequestDecodeTPS": 22.00492709930373,
+      "perRowCommonWindowTPS": [
+        22.0695840839246,
+        21.98337477109677,
+        21.98337477109677,
+        21.98337477109677
+      ],
+      "perRowWholeDecodeTPS": [
+        22.069557527414414,
+        22.069033611625095,
+        22.068909473626274,
+        22.068930479009254
+      ],
+      "phase": "decode",
+      "position": 2,
+      "rowEndToEndMs": [
+        17222.110166,
+        17222.381790999996,
+        17222.433708999997,
+        17222.428167
+      ],
+      "rowTTFTMs": [
+        5609.115875,
+        5609.116583000001,
+        5609.119167,
+        5609.110000000001
+      ],
+      "run": "cycle-03-2-B",
+      "thermalAfter": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "thermalBefore": {
+        "name": "nominal",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "0"
+        },
+        "value": 0
+      },
+      "ttftMedianMs": 5609.116229000001
+    },
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 95.67417667176127,
+        "median": 95.67417667176127,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 95.67417667176127
+      },
+      "aggregateDecodeTPS": 95.67417667176127,
+      "arm": "B",
+      "batch": 4,
+      "batchEndToEndMs": 15021.289125,
+      "commonWindowInterTokenP50Ms": 40.84877050000068,
+      "commonWindowInterTokenP95Ms": 49.17205009999975,
+      "commonWindowMinimumRowTokens": 255,
+      "context": 512,
+      "cycle": 3,
+      "endToEndMedianMs": 15021.1801875,
+      "endToEndTPS": 68.43620354055332,
+      "fairShareDecodeTPS": 23.91854416794032,
+      "interTokenP50Ms": 40.84877050000068,
+      "interTokenP95Ms": 49.169956249999494,
+      "iterations": 1,
+      "legacyWholeRowAggregateTPS": 95.84769127926644,
+      "name": "cycle-03-3-B",
+      "peakMemoryBytes": 14893305201,
+      "perRequestDecodeTPS": 23.91854416794032,
+      "perRowCommonWindowTPS": [
+        23.98882392553466,
+        23.89511758207554,
+        23.89511758207554,
+        23.89511758207554
+      ],
+      "perRowWholeDecodeTPS": [
+        23.988799385181164,
+        23.988234615756614,
+        23.98822384433005,
+        23.988725204698188
+      ],
+      "phase": "decode",
+      "position": 3,
+      "rowEndToEndMs": [
+        15021.048832999999,
+        15021.280917,
+        15021.280375,
+        15021.08
+      ],
+      "rowTTFTMs": [
+        4337.664958,
+        4337.664167,
+        4337.667124999999,
+        4337.659541
+      ],
+      "run": "cycle-03-3-B",
+      "thermalAfter": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "thermalBefore": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "ttftMedianMs": 4337.6645625
+    },
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 91.50598331053976,
+        "median": 91.50598331053976,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 91.50598331053976
+      },
+      "aggregateDecodeTPS": 91.50598331053976,
+      "arm": "A",
+      "batch": 2,
+      "batchEndToEndMs": 7341.292958,
+      "commonWindowInterTokenP50Ms": 21.80997950000028,
+      "commonWindowInterTokenP95Ms": 25.35217949999974,
+      "commonWindowMinimumRowTokens": 254,
+      "context": 512,
+      "cycle": 3,
+      "endToEndMedianMs": 7341.2895415,
+      "endToEndTPS": 70.01491466702478,
+      "fairShareDecodeTPS": 45.75299165526988,
+      "interTokenP50Ms": 21.80997950000028,
+      "interTokenP95Ms": 25.357354200000053,
+      "iterations": 1,
+      "legacyWholeRowAggregateTPS": 78.53773375475805,
+      "name": "cycle-03-4-A",
+      "peakMemoryBytes": 13445444725,
+      "perRequestDecodeTPS": 45.75299165526988,
+      "perRowCommonWindowTPS": [
+        45.84287965459261,
+        45.66310365594715
+      ],
+      "perRowWholeDecodeTPS": [
+        39.30738091658133,
+        45.972049006415425
+      ],
+      "phase": "decode",
+      "position": 4,
+      "rowEndToEndMs": [
+        7341.292958,
+        7341.286125
+      ],
+      "rowTTFTMs": [
+        822.133625,
+        1772.4220830000002
+      ],
+      "run": "cycle-03-4-A",
+      "thermalAfter": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "thermalBefore": {
+        "name": "fair",
+        "probe": {
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1"
+        },
+        "value": 1
+      },
+      "ttftMedianMs": 1297.2778540000002
+    }
+  ],
+  "schemaVersion": 1,
+  "sharedRowParity": {
+    "0": true,
+    "1": true
+  },
+  "timing": "Headlines use the host-observed common full-row decode window. Fair share is aggregate divided by batch. Stored-element totalParams/derived bandwidth interpretations are deliberately ignored.",
+  "tokenParityPassed": true,
+  "validForPerformanceComparison": true
+}

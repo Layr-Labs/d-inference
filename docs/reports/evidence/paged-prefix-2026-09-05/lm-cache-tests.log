@@ -1,0 +1,81 @@
+Test Suite 'Selected tests' started at 2026-09-04 22:35:59.504.
+Test Suite 'PinnedPagedCacheTestsPackageTests.xctest' started at 2026-09-04 22:35:59.505.
+Test Suite 'PinnedPagedCacheTestsPackageTests.xctest' passed at 2026-09-04 22:35:59.505.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-04 22:35:59.505.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "CBv2 paged pool guards" started.
+◇ Suite "CBv2 resident paged prefix cache" started.
+◇ Suite "CBv2 resident prefix cache leak resistance" started.
+◇ Test failedAdoptionLeavesReservationsReferencesAndTablesUntouched() started.
+◇ Test sameHashTailReplayReplacesTheOverlappingRealization() started.
+◇ Test poisonPageSurvivesFreeListChurn() started.
+◇ Test armedGuardSurvivesOverflowingChunk() started.
+◇ Test lookupStopsAtTheFirstDivergenceAndCacheSaltIsolatesChains() started.
+◇ Test finalizedPublicationDoesNotExposeTheOptimisticSuccessorFrontier() started.
+◇ Test windowedRowNeverExceedsItsCharge() started.
+◇ Test partitionSizingBenchmark() started.
+◇ Test partitionSizerIsStableForAShape() started.
+◇ Test allocationReuseInvalidatesTheOldGenerationAndEveryBlockAlias() started.
+◇ Test blockSizeIsAWholeNumberOfPages() started.
+◇ Test prefixSharingBlockSizeArmsTheChunkCoverageGuard() started.
+◇ Test deferredFreesAreHeldUntilDrained() started.
+◇ Test fullAttentionChargeIsThePageSpan() started.
+◇ Test partitionSizerFillsTheGpuAtShortContextB1(length:) started.
+◇ Test physicalPagesAreSharedAndZeroRefPagesCanBeResurrected() started.
+◇ Test partitionSizerKeepsTheMaximumWhenAlreadySaturated() started.
+◇ Test repeatedPublishHitReleaseAndReuseCyclesConserveThePool() started.
+◇ Test capacityReportsUsableBytesOnly() started.
+◇ Test poisonPageIsExcludedFromTheReservationCeiling() started.
+◇ Test pagedPerSequenceKVDoesNotExceedContiguous(tokens:) started.
+◇ Test partitionSizerAlwaysReturnsAPageMultiple() started.
+◇ Test negativeReservationCannotCorruptTheAdmissionLedger() started.
+◇ Test chargeEqualsPeakResidency(pageSize:) started.
+◇ Test case passing 1 argument length → 256 to partitionSizerFillsTheGpuAtShortContextB1(length:) started.
+◇ Test case passing 1 argument length → 512 to partitionSizerFillsTheGpuAtShortContextB1(length:) started.
+◇ Test case passing 1 argument tokens → 1024 to pagedPerSequenceKVDoesNotExceedContiguous(tokens:) started.
+◇ Test case passing 1 argument tokens → 10240 to pagedPerSequenceKVDoesNotExceedContiguous(tokens:) started.
+◇ Test case passing 1 argument tokens → 102400 to pagedPerSequenceKVDoesNotExceedContiguous(tokens:) started.
+✔ Test partitionSizerIsStableForAShape() passed after 0.018 seconds.
+◇ Test case passing 1 argument length → 1024 to partitionSizerFillsTheGpuAtShortContextB1(length:) started.
+◇ Test case passing 1 argument length → 2048 to partitionSizerFillsTheGpuAtShortContextB1(length:) started.
+◇ Test case passing 1 argument length → 4096 to partitionSizerFillsTheGpuAtShortContextB1(length:) started.
+✔ Test partitionSizingBenchmark() passed after 1.073 seconds.
+◇ Test case passing 1 argument pageSize → 8 to chargeEqualsPeakResidency(pageSize:) started.
+◇ Test case passing 1 argument pageSize → 16 to chargeEqualsPeakResidency(pageSize:) started.
+◇ Test case passing 1 argument pageSize → 32 to chargeEqualsPeakResidency(pageSize:) started.
+✔ Test armedGuardSurvivesOverflowingChunk() passed after 1.081 seconds.
+✔ Test fullAttentionChargeIsThePageSpan() passed after 1.080 seconds.
+✔ Test blockSizeIsAWholeNumberOfPages() passed after 1.081 seconds.
+✔ Test partitionSizerKeepsTheMaximumWhenAlreadySaturated() passed after 1.081 seconds.
+✔ Test partitionSizerFillsTheGpuAtShortContextB1(length:) with 5 test cases passed after 1.081 seconds.
+✔ Test pagedPerSequenceKVDoesNotExceedContiguous(tokens:) with 3 test cases passed after 1.080 seconds.
+✔ Test capacityReportsUsableBytesOnly() passed after 1.081 seconds.
+✔ Test finalizedPublicationDoesNotExposeTheOptimisticSuccessorFrontier() passed after 1.081 seconds.
+✔ Test deferredFreesAreHeldUntilDrained() passed after 1.081 seconds.
+✔ Test lookupStopsAtTheFirstDivergenceAndCacheSaltIsolatesChains() passed after 1.081 seconds.
+✔ Test sameHashTailReplayReplacesTheOverlappingRealization() passed after 1.081 seconds.
+✔ Test partitionSizerAlwaysReturnsAPageMultiple() passed after 1.081 seconds.
+✔ Test poisonPageIsExcludedFromTheReservationCeiling() passed after 1.088 seconds.
+✔ Test chargeEqualsPeakResidency(pageSize:) with 3 test cases passed after 1.094 seconds.
+✔ Test repeatedPublishHitReleaseAndReuseCyclesConserveThePool() passed after 1.103 seconds.
+◇ Test duplicatePhysicalRealizationsReplaceIndependently() started.
+✔ Test physicalPagesAreSharedAndZeroRefPagesCanBeResurrected() passed after 1.106 seconds.
+✔ Test allocationReuseInvalidatesTheOldGenerationAndEveryBlockAlias() passed after 1.110 seconds.
+✔ Test failedAdoptionLeavesReservationsReferencesAndTablesUntouched() passed after 1.112 seconds.
+✔ Suite "CBv2 resident paged prefix cache" passed after 1.112 seconds.
+✔ Test negativeReservationCannotCorruptTheAdmissionLedger() passed after 1.125 seconds.
+✔ Test poisonPageSurvivesFreeListChurn() passed after 1.125 seconds.
+✔ Test windowedRowNeverExceedsItsCharge() passed after 1.126 seconds.
+✔ Test duplicatePhysicalRealizationsReplaceIndependently() passed after 0.188 seconds.
+◇ Test transactionalRetainRejectsMixedGenerationsWithoutPartialIncrement() started.
+✔ Test prefixSharingBlockSizeArmsTheChunkCoverageGuard() passed after 1.293 seconds.
+✔ Suite "CBv2 paged pool guards" passed after 1.293 seconds.
+✔ Test transactionalRetainRejectsMixedGenerationsWithoutPartialIncrement() passed after 0.169 seconds.
+◇ Test conflictingIdentityIsQuarantinedUntilGenerationReuse() started.
+✔ Test conflictingIdentityIsQuarantinedUntilGenerationReuse() passed after 0.167 seconds.
+✔ Suite "CBv2 resident prefix cache leak resistance" passed after 1.629 seconds.
+✔ Test run with 27 tests in 3 suites passed after 1.629 seconds.

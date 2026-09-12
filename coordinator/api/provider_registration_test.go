@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
@@ -91,7 +92,7 @@ func TestProviderRegistrationBindsProtectedRuntimeClaims(t *testing.T) {
 	)
 	metallibHash := strings.Repeat("a", 64)
 	srv.SetRuntimeManifest(&RuntimeManifest{
-		TemplateHashes: map[string]string{"mlx_metallib": metallibHash},
+		TemplateHashes: map[string]map[string]bool{"mlx_metallib": {metallibHash: true}},
 	})
 	publicKey := testPublicKeyB64()
 	regMsg := &protocol.RegisterMessage{
@@ -127,7 +128,7 @@ func TestProviderRegistrationBindsProtectedRuntimeClaims(t *testing.T) {
 		TemplateHashes: map[string]string{"mlx_metallib": metallibHash},
 	}
 	provider := reg.Register("signed-runtime", nil, regMsg)
-	srv.verifyProviderAttestation(provider.ID, provider, regMsg)
+	srv.verifyProviderAttestation(context.Background(), provider.ID, provider, regMsg)
 	runtimeOK, mismatches := srv.verifyRuntimeHashesForBackend(
 		regMsg.Backend, "", "", regMsg.TemplateHashes)
 	if !runtimeOK {
@@ -182,102 +183,109 @@ func TestProviderRegistrationBindsProtectedRuntimeClaims(t *testing.T) {
 
 func TestProviderRegistrationAttestationFreshnessVersionGate(t *testing.T) {
 	cases := []struct {
-		name      string
-		version   string
-		timestamp time.Time
-		accepted  bool
+		name            string
+		version         string
+		timestampOffset time.Duration
+		accepted        bool
 	}{
 		{
-			name:      "missing version retains legacy reconnect semantics",
-			timestamp: time.Now().Add(-10 * time.Minute),
-			accepted:  true,
+			name:            "missing version retains legacy reconnect semantics",
+			timestampOffset: -10 * time.Minute,
+			accepted:        true,
 		},
 		{
-			name:      "last legacy release accepts reconnect replay",
-			version:   "0.8.14",
-			timestamp: time.Now().Add(-10 * time.Minute),
-			accepted:  true,
+			name:            "last legacy release accepts reconnect replay",
+			version:         "0.8.14",
+			timestampOffset: -10 * time.Minute,
+			accepted:        true,
 		},
 		{
-			name:      "capability release rejects stale replay",
-			version:   minProviderVersionForReconnectAttestation,
-			timestamp: time.Now().Add(-10 * time.Minute),
+			name:            "capability release rejects stale replay",
+			version:         minProviderVersionForReconnectAttestation,
+			timestampOffset: -10 * time.Minute,
 		},
 		{
-			name:      "newer release rejects stale replay",
-			version:   "0.8.16",
-			timestamp: time.Now().Add(-10 * time.Minute),
+			name:            "newer release rejects stale replay",
+			version:         "0.8.16",
+			timestampOffset: -10 * time.Minute,
 		},
 		{
-			name:      "capability release accepts future skew just under boundary",
-			version:   minProviderVersionForReconnectAttestation,
-			timestamp: time.Now().Add(RegistrationAttestationMaxFutureSkew - time.Second),
-			accepted:  true,
+			name:            "capability release accepts future skew just under boundary",
+			version:         minProviderVersionForReconnectAttestation,
+			timestampOffset: RegistrationAttestationMaxFutureSkew - time.Second,
+			accepted:        true,
 		},
 		{
-			name:      "capability release accepts future skew at boundary",
-			version:   minProviderVersionForReconnectAttestation,
-			timestamp: time.Now().Add(RegistrationAttestationMaxFutureSkew),
-			accepted:  true,
+			name:            "capability release accepts future skew at boundary",
+			version:         minProviderVersionForReconnectAttestation,
+			timestampOffset: RegistrationAttestationMaxFutureSkew,
+			accepted:        true,
 		},
 		{
-			name:      "capability release rejects future skew over boundary",
-			version:   minProviderVersionForReconnectAttestation,
-			timestamp: time.Now().Add(RegistrationAttestationMaxFutureSkew + time.Second),
+			name:            "capability release rejects future skew just over boundary",
+			version:         minProviderVersionForReconnectAttestation,
+			timestampOffset: RegistrationAttestationMaxFutureSkew + time.Second,
 		},
 		{
-			name:      "capability release accepts fresh reconnect",
-			version:   minProviderVersionForReconnectAttestation,
-			timestamp: time.Now(),
-			accepted:  true,
+			name:     "capability release accepts fresh reconnect",
+			version:  minProviderVersionForReconnectAttestation,
+			accepted: true,
 		},
 	}
 
 	for index, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-			reg := registry.New(logger)
-			srv := NewServer(
-				reg,
-				store.NewMemory(store.Config{AdminKey: "test-key"}),
-				ServerConfig{},
-				logger,
-			)
-			publicKey := testPublicKeyB64()
-			regMsg := &protocol.RegisterMessage{
-				Type:      protocol.TypeRegister,
-				Version:   tc.version,
-				PublicKey: publicKey,
-				Attestation: buildTestAttestationJSONWithFields(
-					t, publicKey, "", "", tc.timestamp, nil),
-			}
-			provider := reg.Register(fmt.Sprintf("reconnect-%d", index), nil, regMsg)
-			srv.verifyProviderAttestation(provider.ID, provider, regMsg)
+			synctest.Test(t, func(t *testing.T) {
+				logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+				reg := registry.New(logger)
+				srv := NewServer(
+					reg,
+					store.NewMemory(store.Config{AdminKey: "test-key"}),
+					ServerConfig{},
+					logger,
+				)
+				defer srv.Close()
+				publicKey := testPublicKeyB64()
+				// The bubble freezes time at a whole-second instant while this
+				// synchronous verification runs, so the signed fixture keeps exact
+				// below/at/one-second-over boundary coverage without aging between
+				// construction and CheckTimestamp. Production clocks are untouched.
+				timestamp := time.Now().Add(tc.timestampOffset)
+				regMsg := &protocol.RegisterMessage{
+					Type:      protocol.TypeRegister,
+					Version:   tc.version,
+					PublicKey: publicKey,
+					Attestation: buildTestAttestationJSONWithFields(
+						t, publicKey, "", "", timestamp, nil),
+				}
+				provider := reg.Register(fmt.Sprintf("reconnect-%d", index), nil, regMsg)
+				srv.verifyProviderAttestation(context.Background(), provider.ID, provider, regMsg)
 
-			provider.Mu().Lock()
-			defer provider.Mu().Unlock()
-			if tc.accepted {
-				if provider.Status == registry.StatusUntrusted ||
+				provider.Mu().Lock()
+				defer provider.Mu().Unlock()
+				if tc.accepted {
+					if provider.Status == registry.StatusUntrusted ||
+						provider.AttestationResult == nil ||
+						!provider.AttestationResult.Valid {
+						t.Fatalf("freshness-compatible registration rejected: status=%s result=%+v",
+							provider.Status, provider.AttestationResult)
+					}
+					if provider.LastChallengeVerified.IsZero() {
+						t.Fatal("accepted registration did not initialize periodic challenge freshness")
+					}
+					return
+				}
+				if provider.Status != registry.StatusUntrusted ||
 					provider.AttestationResult == nil ||
-					!provider.AttestationResult.Valid {
-					t.Fatalf("freshness-compatible registration rejected: status=%s result=%+v",
+					provider.AttestationResult.Error != "attestation timestamp outside freshness window" {
+					t.Fatalf("replayed attestation state = status=%s result=%+v",
 						provider.Status, provider.AttestationResult)
 				}
-				if provider.LastChallengeVerified.IsZero() {
-					t.Fatal("accepted registration did not initialize periodic challenge freshness")
+				if len(provider.RuntimeCapabilities) != 0 {
+					t.Fatalf("replayed attestation retained capabilities: %v",
+						provider.RuntimeCapabilities)
 				}
-				return
-			}
-			if provider.Status != registry.StatusUntrusted ||
-				provider.AttestationResult == nil ||
-				provider.AttestationResult.Error != "attestation timestamp outside freshness window" {
-				t.Fatalf("replayed attestation state = status=%s result=%+v",
-					provider.Status, provider.AttestationResult)
-			}
-			if len(provider.RuntimeCapabilities) != 0 {
-				t.Fatalf("replayed attestation retained capabilities: %v",
-					provider.RuntimeCapabilities)
-			}
+			})
 		})
 	}
 }
@@ -327,7 +335,7 @@ func TestLegacyRegistrationReplayCannotPromoteProtectedRuntimeCapabilities(t *te
 		TemplateHashes: map[string]string{"mlx_metallib": metallibHash},
 	}
 	provider := reg.Register("legacy-reconnect", nil, regMsg)
-	srv.verifyProviderAttestation(provider.ID, provider, regMsg)
+	srv.verifyProviderAttestation(context.Background(), provider.ID, provider, regMsg)
 	provider.Mu().Lock()
 	provider.RuntimeVerified = true
 	provider.RuntimeManifestChecked = true
@@ -371,7 +379,7 @@ func TestProviderRegistrationRequiresBinaryHashWhenPolicyConfigured(t *testing.T
 	}
 	p := reg.Register("provider-1", nil, regMsg)
 
-	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 
 	if p.AttestationResult == nil {
 		t.Fatal("expected attestation result")
@@ -413,7 +421,7 @@ func TestProviderRegistrationAcceptsKnownBinaryHash(t *testing.T) {
 	}
 	p := reg.Register("provider-1", nil, regMsg)
 
-	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 
 	if p.AttestationResult == nil {
 		t.Fatal("expected attestation result")
@@ -452,7 +460,7 @@ func TestProviderRegistrationRejectsInvalidConfiguredBinaryHash(t *testing.T) {
 	}
 	p := reg.Register("provider-1", nil, regMsg)
 
-	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 
 	policyConfigured, knownHashes := srv.binaryHashPolicySnapshot()
 	if !policyConfigured {
@@ -768,7 +776,7 @@ func TestProviderRegistrationWithoutAttestationRejectedWhenBinaryHashPolicyConfi
 	}
 	p := reg.Register("provider-1", nil, regMsg)
 
-	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 
 	if p.AttestationResult == nil {
 		t.Fatal("expected attestation result")

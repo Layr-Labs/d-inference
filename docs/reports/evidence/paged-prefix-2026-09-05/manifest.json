@@ -1,0 +1,29 @@
+{
+  "provider_commit": "788ce9f067f90128af1b71424023574b9d5d21c5",
+  "mlx_swift_lm_commit": "713d2cf4bfb244ac1c8eef7e6a5e8c6fc99091f0",
+  "native_mlx_commit": "734241bbff26467bb33eff8adc65b82d17b33578",
+  "metallib_sha256": "4ffbbac48a99b495916c3fa0921ce813eb554de1a09aff408d9b5a5a8053e6b0",
+  "logs": [
+    {
+      "file": "provider-tests.log",
+      "sha256": "58e6fab176ed2a7f5f07fc7dc59f8e6b1baf642dbef806e6a081a83ddfb0629f",
+      "original_log": "radix-paged-provider-tests.log",
+      "original_sha256": "7ff9a1cb9699a693bdd5eb4cc970ee00cf97701e3817139f161ef0e55a368b8f",
+      "extraction": "Complete test result segment; compiler/build diagnostics omitted."
+    },
+    {
+      "file": "lm-cache-tests.log",
+      "sha256": "f6f89ef9a32681ab3b08e919193d61b28017d3aac0a236a65c98ded44eae7dd9",
+      "original_log": "radix-paged-lm-tests-run.log",
+      "original_sha256": "8ea4af5db515f802d52f112d753d7b1dd21d7aa5216699743972cc417b8e2c78",
+      "extraction": "Complete test result segment; compiler/build diagnostics omitted."
+    },
+    {
+      "file": "lm-deadline-tests.log",
+      "sha256": "473f23fb97c44ff22a956749d41b398d83271187867f988517f3eeeb8223543a",
+      "original_log": "radix-paged-deadline-tests.log",
+      "original_sha256": "3fe841a52cc5892be96267d50733ea1c36100f2cb1c26680dc4ce951e63f0363",
+      "extraction": "Complete test result segment; compiler/build diagnostics omitted."
+    }
+  ]
+}

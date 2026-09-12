@@ -1,0 +1,3 @@
+export function StatsSkeleton() {
+  return <div role="status" aria-label="Loading network stats" className="py-8"><span className="sr-only">Loading the network snapshot.</span><div className="grid grid-cols-2 gap-8 pb-8 md:grid-cols-4">{[0,1,2,3].map((item)=><div key={item} className="space-y-3"><div className="h-3 w-24 rounded bg-bg-elevated motion-safe:animate-pulse"/><div className="h-10 w-32 rounded bg-bg-secondary motion-safe:animate-pulse"/><div className="h-3 w-36 rounded bg-bg-secondary"/></div>)}</div><div className="h-[360px] rounded-2xl bg-bg-secondary motion-safe:animate-pulse"/></div>;
+}

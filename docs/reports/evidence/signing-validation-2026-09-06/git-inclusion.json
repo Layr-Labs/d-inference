@@ -1,0 +1,89 @@
+{
+  "schema": 1,
+  "primary_head_at_banking": "c6b74ab4aa74a95c3f04419f806f5287790d207e",
+  "checked_at_utc": "2026-09-06T16:13:30.892958+00:00",
+  "files": {
+    "docs/reports/2026-09-06-isolated-signing-validation.md": {
+      "state": "stage-ready",
+      "ignored": false
+    },
+    "docs/reports/README.md": {
+      "state": "tracked",
+      "ignored": false
+    },
+    "docs/reports/evidence/signing-validation-2026-09-06/artifact-verification.json": {
+      "state": "stage-ready",
+      "ignored": false
+    },
+    "docs/reports/evidence/signing-validation-2026-09-06/ci-excerpts.txt": {
+      "state": "stage-ready",
+      "ignored": false
+    },
+    "docs/reports/evidence/signing-validation-2026-09-06/git-inclusion.json": {
+      "state": "stage-ready",
+      "ignored": false
+    },
+    "docs/reports/evidence/signing-validation-2026-09-06/keychain-cleanup.json": {
+      "state": "stage-ready",
+      "ignored": false
+    },
+    "docs/reports/evidence/signing-validation-2026-09-06/manifest.json": {
+      "state": "stage-ready",
+      "ignored": false
+    },
+    "docs/reports/evidence/signing-validation-2026-09-06/manifest.sha256": {
+      "state": "stage-ready",
+      "ignored": false
+    },
+    "docs/reports/evidence/signing-validation-2026-09-06/notary-result.json": {
+      "state": "stage-ready",
+      "ignored": false
+    },
+    "docs/reports/evidence/signing-validation-2026-09-06/prior-failure.json": {
+      "state": "stage-ready",
+      "ignored": false
+    },
+    "docs/reports/evidence/signing-validation-2026-09-06/provenance.json": {
+      "state": "stage-ready",
+      "ignored": false
+    },
+    "docs/reports/evidence/signing-validation-2026-09-06/run-summary.json": {
+      "state": "stage-ready",
+      "ignored": false
+    },
+    "docs/reports/evidence/signing-validation-2026-09-06/signing-identity.json": {
+      "state": "stage-ready",
+      "ignored": false
+    },
+    "docs/reports/evidence/signing-validation-2026-09-06/verification-excerpts.txt": {
+      "state": "stage-ready",
+      "ignored": false
+    }
+  },
+  "report_sha256": "54ded36093363908e4f2b0725a109a91330ec0d4aa3830d6afcec731abe4ffec",
+  "git_add_dry_run_returncode": 0,
+  "git_add_dry_run_paths": [
+    "docs/reports/2026-09-06-isolated-signing-validation.md",
+    "docs/reports/README.md",
+    "docs/reports/evidence/signing-validation-2026-09-06/artifact-verification.json",
+    "docs/reports/evidence/signing-validation-2026-09-06/ci-excerpts.txt",
+    "docs/reports/evidence/signing-validation-2026-09-06/git-inclusion.json",
+    "docs/reports/evidence/signing-validation-2026-09-06/keychain-cleanup.json",
+    "docs/reports/evidence/signing-validation-2026-09-06/manifest.json",
+    "docs/reports/evidence/signing-validation-2026-09-06/manifest.sha256",
+    "docs/reports/evidence/signing-validation-2026-09-06/notary-result.json",
+    "docs/reports/evidence/signing-validation-2026-09-06/prior-failure.json",
+    "docs/reports/evidence/signing-validation-2026-09-06/provenance.json",
+    "docs/reports/evidence/signing-validation-2026-09-06/run-summary.json",
+    "docs/reports/evidence/signing-validation-2026-09-06/signing-identity.json",
+    "docs/reports/evidence/signing-validation-2026-09-06/verification-excerpts.txt"
+  ],
+  "git_index_unchanged_by_audit": true,
+  "staged_by_banking_task": false,
+  "ignored_log_extensions": {
+    ".log": ".gitignore:64:*.log\tdocs/reports/evidence/signing-validation-2026-09-06/example.log",
+    ".out": ".gitignore:65:*.out\tdocs/reports/evidence/signing-validation-2026-09-06/example.out"
+  },
+  "force_add_required_for_retained_files": false,
+  "log_handling": "Selected verification logs use .txt. A future retained .log/.out would require explicit reviewed git add -f."
+}

@@ -1,0 +1,104 @@
+{
+  "source_manifest_sha256": "e7b769e2713e48c53fb62fbe74e449bb409c8fc1b7e5f036b14e808a7c3da3f5",
+  "runtime_manifest_sha256": "4816dd430cead8b26aaafa6a31d87c49697e3f43f025224bd96a3f7896d7685c",
+  "diagnostic_manifest_sha256": "10f37e2839cfa6691f943f584c8538703fd4581397416eee943cf9665722511c",
+  "model_aggregate_sha256": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+  "input_sha256": "4fb1ebf2b8a4b9b29be3388da3613398c8c7b6f768ca8bac11636a8928dd570e",
+  "cells": {
+    "contiguous": {
+      "report_sha256": "9dce11a7b404b03eeb0cee57d0eef3a704395df95f8cc13165f3c540ea955f04",
+      "terminal_sha256": "21dd8c46a3bb60d82f715e7592cfea6cc17cd9df7163483a5a91089425354888",
+      "complete_repeat_count": 7,
+      "prompt_tokens": 5523,
+      "completion_tokens": 78,
+      "finish": "stop",
+      "actual_cache_status": {
+        "reason": "config_disabled",
+        "state": "disabled"
+      },
+      "all_saved_tokens_zero": true,
+      "all_internal_completed_trajectories_exact": true,
+      "native_exit_zero_clean": true,
+      "diagnostic": {
+        "outputIndex": 53,
+        "phase": "rectangular_verify",
+        "verificationWidth": 5,
+        "column": 1,
+        "cacheOffset": 5574,
+        "draftDepth": 4,
+        "argMaxID": 7244,
+        "candidateIDs": [
+          7244,
+          2919
+        ],
+        "valueBits": [
+          1104805888,
+          1104805888,
+          1104674816,
+          1104805888,
+          1104674816
+        ],
+        "nanCount": 0,
+        "infiniteCount": 0
+      },
+      "decoded_values": [
+        27.25,
+        27.25,
+        27.0,
+        27.25,
+        27.0
+      ]
+    },
+    "paged": {
+      "report_sha256": "98c920163baf13f00d3d5d1665ce28ed89558afc264f39e360a5b7bba43ba011",
+      "terminal_sha256": "923d3cbd587537d2044e000ccc670d9cfb28499350ae5cb1f1960760cd8052af",
+      "complete_repeat_count": 7,
+      "prompt_tokens": 5523,
+      "completion_tokens": 83,
+      "finish": "stop",
+      "actual_cache_status": {
+        "reason": "config_disabled",
+        "state": "disabled"
+      },
+      "all_saved_tokens_zero": true,
+      "all_internal_completed_trajectories_exact": true,
+      "native_exit_zero_clean": true,
+      "diagnostic": {
+        "outputIndex": 53,
+        "phase": "rectangular_verify",
+        "verificationWidth": 3,
+        "column": 2,
+        "cacheOffset": 5573,
+        "draftDepth": 2,
+        "argMaxID": 2919,
+        "candidateIDs": [
+          7244,
+          2919
+        ],
+        "valueBits": [
+          1104805888,
+          1104805888,
+          1104740352,
+          1104740352,
+          1104805888
+        ],
+        "nanCount": 0,
+        "infiniteCount": 0
+      },
+      "decoded_values": [
+        27.25,
+        27.25,
+        27.125,
+        27.125,
+        27.25
+      ]
+    }
+  },
+  "first_difference_zero_based": 53,
+  "strict_backend_token_equality": false,
+  "attention_cause_isolated": false,
+  "release_acceptance": false,
+  "offline_validation_sha256": "b4104121a16355161e997184d64f34383c6aa01a9e774d4a6455686eb69e95d7",
+  "original_failed_verdict_preserved": true,
+  "offline_correction": "Native paged class name in validator corrected from CBv2PagedKVBackend to PagedKVBackend; unchanged model evidence, no GPU rerun."
+}

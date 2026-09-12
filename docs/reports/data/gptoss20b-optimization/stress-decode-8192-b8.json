@@ -1,0 +1,63 @@
+{
+  "arrivalDefinition": "Mixed arrivals have unequal prompt lengths. Their aggregate is separate from the common-window steady decode headline.",
+  "cells": [
+    {
+      "aggregateDecodeDistribution": {
+        "coefficientOfVariation": null,
+        "maximum": 96.21498601843507,
+        "median": 96.21498601843507,
+        "medianAbsoluteDeviation": 0.0,
+        "minimum": 96.21498601843507
+      },
+      "aggregateDecodeTPS": 96.21498601843507,
+      "batch": 8,
+      "batchScalingEfficiency": null,
+      "commonWindowInterTokenP50Ms": 83.49131200000556,
+      "commonWindowInterTokenP95Ms": 89.88676665000021,
+      "commonWindowMinimumRowTokens": 405,
+      "context": 8192,
+      "endToEndTPS": 27.140117746994935,
+      "fairShareDecodeTPS": 12.026873252304384,
+      "interTokenP50Ms": 83.525853500003,
+      "interTokenP95Ms": 885.1163229999984,
+      "iterations": 1,
+      "legacyWholeRowAggregateTPS": 30.235881034947095,
+      "name": "decode-8192-b8",
+      "peakMemoryBytes": 16861474273,
+      "perRequestDecodeTPS": 12.026873252304384,
+      "perRowCommonWindowTPS": [
+        12.05284922045191,
+        12.02316239971188,
+        12.02316239971188,
+        12.02316239971188,
+        12.02316239971188,
+        12.02316239971188,
+        12.02316239971188,
+        12.02316239971188
+      ],
+      "perRowWholeDecodeTPS": [
+        3.780037442055221,
+        4.303206601426538,
+        4.890600226072483,
+        5.636652115705194,
+        6.618627421386102,
+        7.959419340870322,
+        9.944999660119437,
+        13.394956148883647
+      ],
+      "phase": "decode",
+      "rawSHA256": "5ef48b1e4b91dfbe63ae3f4d5d477eacbf1951d1ce76ee442f90f71375042834",
+      "scalingVsB1": null,
+      "ttftMedianMs": 65752.4026045
+    }
+  ],
+  "failures": [],
+  "mode": "measurement",
+  "perRequestDefinition": "fairShareDecodeTPS and the compatibility alias perRequestDecodeTPS equal aggregate/B. Actual row rates are in perRowCommonWindowTPS and perRowWholeDecodeTPS. interTokenP* includes all post-first-token intervals, potentially prefill interference; commonWindowInterTokenP* includes only intervals fully inside the shared window.",
+  "prefillDefinition": "Prompt tokens divided by production request TTFT, including first token and scheduler overhead; not an isolated GPU prefill timer.",
+  "provenanceID": "6c04af86c74b81e28c71726d2da22514ba45f0ad82e50584e1a9c6c4b0558878",
+  "schemaVersion": 1,
+  "tailCaveat": "Inter-token percentiles pool correlated token intervals; five repetitions do not establish request-tail latency.",
+  "timingDefinition": "Decode headline counts events in the host-observed common window from the latest first token to the earliest last token. It establishes simultaneous row progress, not scheduler batch occupancy. TTFT includes generated reasoning tokens; it is not time to visible answer content.",
+  "warmupDefinition": "Full-context prefill and per-batch decode warmups run inside each fresh cell process before measured repetitions. Exact shape and start/completion markers are retained in cells/*/stderr.raw; warmup timings do not enter summaries."
+}

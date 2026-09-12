@@ -28,6 +28,15 @@ describe("model availability under load", () => {
     });
   });
 
+  it("preserves capacity when per-node eligibility is unknown", () => {
+    expect(calculateModelAvailability(163, undefined, 141)).toEqual({
+      connected: 163,
+      eligible: null,
+      accepting: 141,
+      acceptingPct: 87,
+    });
+  });
+
   it("presents token budget as free KV headroom", () => {
     expect(calculateKVHeadroom(990, 1_000)).toBe(99);
     expect(calculateKVHeadroom(-50, 1_000)).toBe(0);

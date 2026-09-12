@@ -1,0 +1,33 @@
+{
+  "arrivalDefinition": "Mixed arrivals have unequal prompt lengths. Their aggregate is separate from the common-window steady decode headline.",
+  "cells": [
+    {
+      "batch": 1,
+      "context": 512,
+      "iterations": 2,
+      "name": "prefill-512",
+      "peakMemoryBytes": 19270689141,
+      "phase": "prefill",
+      "promptTokensPerSecond": 493.6566166680135,
+      "rawSHA256": "296783f5a71f3ddc5e3ebfd25f18f873447740ba78f1c2e8f48d5555ecab7546",
+      "soloPrefillStripeTokens": 2048,
+      "ttftDistribution": {
+        "coefficientOfVariation": 0.021171844321213745,
+        "maximum": 1052.9212089999999,
+        "median": 1037.3906874999998,
+        "medianAbsoluteDeviation": 15.530521499999963,
+        "minimum": 1021.8601659999999
+      },
+      "ttftMedianMs": 1037.3906874999998
+    }
+  ],
+  "failures": [],
+  "mode": "measurement",
+  "perRequestDefinition": "fairShareDecodeTPS and the compatibility alias perRequestDecodeTPS equal aggregate/B. Actual row rates are in perRowCommonWindowTPS and perRowWholeDecodeTPS. interTokenP* includes all post-first-token intervals, potentially prefill interference; commonWindowInterTokenP* includes only intervals fully inside the shared window.",
+  "prefillDefinition": "Prompt tokens divided by production request TTFT, including first token and scheduler overhead; not an isolated GPU prefill timer.",
+  "provenanceID": "2551307572831674f2871f0b364e67117d773b939edb6a37575a36e09cea3565",
+  "schemaVersion": 1,
+  "tailCaveat": "Inter-token percentiles pool correlated token intervals; five repetitions do not establish request-tail latency.",
+  "timingDefinition": "Decode headline counts events in the host-observed common window from the latest first token to the earliest last token. It establishes simultaneous row progress, not scheduler batch occupancy. TTFT includes generated reasoning tokens; it is not time to visible answer content.",
+  "warmupDefinition": "Full-context prefill and per-batch decode warmups run inside each fresh cell process before measured repetitions. Exact shape and start/completion markers are retained in cells/*/stderr.raw; warmup timings do not enter summaries."
+}

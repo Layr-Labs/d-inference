@@ -1,0 +1,464 @@
+{
+  "archive_sha256": "e13e265da31504c9d44039380bed21c4a7305a587e6030a572cafd6d8da12fbd",
+  "archive_bytes": 4234366,
+  "members": [
+    {
+      "path": "off/evidence-manifest.json",
+      "sha256": "b62ff4412db7505a095e5eb03faa39aadac029cdcb45e8d573b3fb53138d6978",
+      "bytes": 98021,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/evidence-manifest.json"
+    },
+    {
+      "path": "off/worker-verdict.json",
+      "sha256": "680af21ca7cc4402be9bedd4eeb9551312b9d2230ab15b258f6d07f71a101fe0",
+      "bytes": 260,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/worker-verdict.json"
+    },
+    {
+      "path": "off/supervisor-terminal.json",
+      "sha256": "21caeda5c0feb6ee90caab9eea396b098e16a87e9c530e9059731cefafe968d7",
+      "bytes": 411,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/supervisor-terminal.json"
+    },
+    {
+      "path": "off/foreground-retirement.json",
+      "sha256": "b37b2b68d64945b0464a4c4f38fa8ba39ae2cc3ac1bb661e5ad9b5e05549e990",
+      "bytes": 654,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/foreground-retirement.json"
+    },
+    {
+      "path": "off/steps/1/audit-before.json",
+      "sha256": "2cc9b6d54ad6bb6d8064851c080a5fc8f90bc5b1072a127e32bd0f3b0d671d6c",
+      "bytes": 180,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/steps/1/audit-before.json"
+    },
+    {
+      "path": "off/steps/1/audit-after.json",
+      "sha256": "cc94511e41d99f5f1986f9a61d1ced0eaf6e125657c1c289b0dafaae852f9522",
+      "bytes": 222,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/steps/1/audit-after.json"
+    },
+    {
+      "path": "off/steps/1/cell-results.json",
+      "sha256": "6d3f6ac6b33b65b060decad00c6ac54415eb3ae9b4fa3f1779b7121cbdf38720",
+      "bytes": 2659,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/steps/1/cell-results.json"
+    },
+    {
+      "path": "off/steps/1/children.jsonl",
+      "sha256": "d234e622b588c558cf92b3b655180dd3be3132d2b3cbf4bb207f10a1e49518c9",
+      "bytes": 797,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/steps/1/children.jsonl"
+    },
+    {
+      "path": "off/steps/1/command.json",
+      "sha256": "5f434072cc406ddf46ce73d10b11054e1d20d3c7487c5cd2644259c316dcd07a",
+      "bytes": 689,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/steps/1/command.json"
+    },
+    {
+      "path": "off/steps/1/entry.json",
+      "sha256": "f043350c311fe1ccc906c9ecad6fe36ad868b8f005aef9e0d5770673a57b302a",
+      "bytes": 359,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/steps/1/entry.json"
+    },
+    {
+      "path": "off/steps/1/http-evidence/connected.log",
+      "sha256": "3d3dc8ef437dd2d34634b67814919b12769cd71ad89bcb604578c069215fa350",
+      "bytes": 20523,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/steps/1/http-evidence/connected.log"
+    },
+    {
+      "path": "off/steps/1/http-evidence/evidence/report.json",
+      "sha256": "00210f1dfa50680c545b853a0e1fa4a6b0896394a9dcd61fe1f112f407151aff",
+      "bytes": 2858585,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/steps/1/http-evidence/evidence/report.json"
+    },
+    {
+      "path": "off/steps/1/http-evidence/launch.json",
+      "sha256": "03bb12fa067644b02d61a55b4af954842a481530e8f32d860aac32e81632a35a",
+      "bytes": 3299,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/steps/1/http-evidence/launch.json"
+    },
+    {
+      "path": "off/steps/1/retirement.json",
+      "sha256": "b37b2b68d64945b0464a4c4f38fa8ba39ae2cc3ac1bb661e5ad9b5e05549e990",
+      "bytes": 654,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/steps/1/retirement.json"
+    },
+    {
+      "path": "off/steps/1/runner.log",
+      "sha256": "b4f9c525d7c0c45f76b02353f7a2fb9b46f51fc41049181ce3084e9720054918",
+      "bytes": 116,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/steps/1/runner.log"
+    },
+    {
+      "path": "off/steps/1/wrapper.json",
+      "sha256": "d3b173e2e6c350f3431307912aefc324f8400d91324c479f2fe2eb99358d6998",
+      "bytes": 860,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-evidence/steps/1/wrapper.json"
+    },
+    {
+      "path": "off/clean-postflight.json",
+      "sha256": "144caaef30a865cfb81e555d42e0851fa266b692680a7278a46ebdaa22b3193d",
+      "bytes": 2669,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-clean-postflight.json"
+    },
+    {
+      "path": "off/root-ack.json",
+      "sha256": "e0dc7cbfc089f976c89f630754edb0bb9c02de94e25ac2dc351103fcea527f37",
+      "bytes": 1028,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-off-root-ack.json"
+    },
+    {
+      "path": "off/relay/terminal.json",
+      "sha256": "2eaadfcf0360bec67f16a069bc19ffc947fb7d319f9c8b39fcc994851fc1fdee",
+      "bytes": 246,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/relay-qwen38-paged-off-b1/terminal.json"
+    },
+    {
+      "path": "off/relay/command.json",
+      "sha256": "07c04e625acd3be55505bb9a2b72a9e196b0491287c395a347b42243371c7790",
+      "bytes": 833,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/relay-qwen38-paged-off-b1/command.json"
+    },
+    {
+      "path": "ssd/evidence-manifest.json",
+      "sha256": "c5581398993a5fc0478e3ddabf34e12e0dc3812eba0a06a8a3fdad7517eefdc6",
+      "bytes": 99106,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/evidence-manifest.json"
+    },
+    {
+      "path": "ssd/worker-verdict.json",
+      "sha256": "5137b24cf03e10e4ce3ad10953d27f86186b7a08ca22a83d53c07fd26439ba64",
+      "bytes": 260,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/worker-verdict.json"
+    },
+    {
+      "path": "ssd/supervisor-terminal.json",
+      "sha256": "d1c631b37193fce8a68ff03470919f8ea33a46dddc4615a7f8556cbc4c164a9d",
+      "bytes": 406,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/supervisor-terminal.json"
+    },
+    {
+      "path": "ssd/foreground-retirement.json",
+      "sha256": "6072c4428f9d8c317dbf3de19d569ab572a12d0fef10b03c8f2a16181db7bd79",
+      "bytes": 654,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/foreground-retirement.json"
+    },
+    {
+      "path": "ssd/steps/1/audit-before.json",
+      "sha256": "e469935138e318bd4caaf42613e65566102c4b4fc983ed4ebbb51253e56d494b",
+      "bytes": 180,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/steps/1/audit-before.json"
+    },
+    {
+      "path": "ssd/steps/1/audit-after.json",
+      "sha256": "73c8bbc74ccd60bce26128a386d661621da3427ff9c61c68dc1977a60a10f1de",
+      "bytes": 222,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/steps/1/audit-after.json"
+    },
+    {
+      "path": "ssd/steps/1/cell-results.json",
+      "sha256": "650462d6f949ca4a587243d2c72e1565f51281f4260657d4a2c1832ef4109d93",
+      "bytes": 2659,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/steps/1/cell-results.json"
+    },
+    {
+      "path": "ssd/steps/1/children.jsonl",
+      "sha256": "f1b5ae9026945c63ecd146189f188b5709bc51737d2b5476483697b43898f9f4",
+      "bytes": 796,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/steps/1/children.jsonl"
+    },
+    {
+      "path": "ssd/steps/1/command.json",
+      "sha256": "2ae1a20bf667b6868ee242c33eb5a4b31b0bbf6996b46d405d91ee1f2a061054",
+      "bytes": 689,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/steps/1/command.json"
+    },
+    {
+      "path": "ssd/steps/1/entry.json",
+      "sha256": "eab33de44c6f62205305323ead7d17badfe2dfabf26dc00acfec17d61baccafc",
+      "bytes": 357,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/steps/1/entry.json"
+    },
+    {
+      "path": "ssd/steps/1/http-evidence/connected.log",
+      "sha256": "5cef8397b4b03f5220d59f7d82f92c861679ee71efd015c1068330f354a0b9a9",
+      "bytes": 21913,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/steps/1/http-evidence/connected.log"
+    },
+    {
+      "path": "ssd/steps/1/http-evidence/evidence/report.json",
+      "sha256": "373895bc79d1cb7fbf9fb1175f809836a250ea2e466bcc4ac0ee455cf29ed201",
+      "bytes": 2943181,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/steps/1/http-evidence/evidence/report.json"
+    },
+    {
+      "path": "ssd/steps/1/http-evidence/launch.json",
+      "sha256": "5db0b366c4d5fa32e6c70c23bbe9fa7e5cdf02f9ccab265d65f28d2300d68c69",
+      "bytes": 3298,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/steps/1/http-evidence/launch.json"
+    },
+    {
+      "path": "ssd/steps/1/retirement.json",
+      "sha256": "6072c4428f9d8c317dbf3de19d569ab572a12d0fef10b03c8f2a16181db7bd79",
+      "bytes": 654,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/steps/1/retirement.json"
+    },
+    {
+      "path": "ssd/steps/1/runner.log",
+      "sha256": "dd4a26cbcc4395ccf7138b9fe5ab9142cb9dbb49e082291867b4c8e894da7892",
+      "bytes": 116,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/steps/1/runner.log"
+    },
+    {
+      "path": "ssd/steps/1/wrapper.json",
+      "sha256": "e9a8c81346c051bb6fbeff33ec9c451c9840e2619a582657361554b45406639c",
+      "bytes": 860,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-evidence/steps/1/wrapper.json"
+    },
+    {
+      "path": "ssd/clean-postflight.json",
+      "sha256": "d6f2d90b03b8036e4cb54d84368f83c076a348dfb7de64a7d799f49378c6d419",
+      "bytes": 2666,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-clean-postflight.json"
+    },
+    {
+      "path": "ssd/root-ack.json",
+      "sha256": "68da53224aec8f2e87e8be48d6ed35d0cd6de7aec7ed268c08808760fd9a6939",
+      "bytes": 1125,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/qwen38-ssd-root-ack.json"
+    },
+    {
+      "path": "ssd/relay/terminal.json",
+      "sha256": "2eaadfcf0360bec67f16a069bc19ffc947fb7d319f9c8b39fcc994851fc1fdee",
+      "bytes": 246,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/relay-qwen38-paged-ssd-b1/terminal.json"
+    },
+    {
+      "path": "ssd/relay/command.json",
+      "sha256": "87681bdd1cc26a0670a62186681d9ce8cb4429d4d15cbf769eb0ec2aba3bdb64",
+      "bytes": 833,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/relay-qwen38-paged-ssd-b1/command.json"
+    },
+    {
+      "path": "execution/root-execution-grant.json",
+      "sha256": "b5b853a63cce995ea0766da16a9a17b08eadb008f04fb1f2d09ce9402e2384e8",
+      "bytes": 3269,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/root-execution-grant.json"
+    },
+    {
+      "path": "execution/root-package-review.json",
+      "sha256": "cfbd8a6fdc3945e3fed4c8959b3f4c60e297d3532f1edb6348a42f136162eb32",
+      "bytes": 1555,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/root-package-review.json"
+    },
+    {
+      "path": "execution/root-final-review.json",
+      "sha256": "bc42bfcddb5f9c9902776a7f26dc8791ff00560a24c9bb2e38b8f09d838ba0ca",
+      "bytes": 11586,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/root-final-review.json"
+    },
+    {
+      "path": "execution/m5-release.json",
+      "sha256": "ab6430784116eccc144ea1947806df4965eaefdbc501598179f4d394109ff995",
+      "bytes": 920,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/m5-release.json"
+    },
+    {
+      "path": "execution/ssd-after-off-binding.json",
+      "sha256": "8abc68c2c3213d5ad3d9d39bc2fee4853f54f61417f328e0507fbff3da8223d7",
+      "bytes": 2225,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/ssd-after-off-binding.json"
+    },
+    {
+      "path": "execution/off-collector-refusal.json",
+      "sha256": "8e7e4b4c54eb754d3d9bf38db9c8ef10f2791a3b0ff111e37bf47ff00f643d0b",
+      "bytes": 834,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/off-collector-refusal.json"
+    },
+    {
+      "path": "execution/off-summary-refusal.json",
+      "sha256": "54e1ca6f50063fad3882a1dc8a56557ff9eb18b79b93e46dfeed7b085fca78a3",
+      "bytes": 251,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/off-summary-refusal.json"
+    },
+    {
+      "path": "execution/off-collection-fresh-observation1.json",
+      "sha256": "2abd6dbeeed2e404a111066d27292cc682897220d4808c913222c72a777bb15d",
+      "bytes": 287,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/off-collection-fresh-observation1.json"
+    },
+    {
+      "path": "execution/ssd-collection-fresh-observation1.json",
+      "sha256": "e0dfff4626084b110c778f899b162da030a7a75b1b0dd35c00d4772d3e553a3d",
+      "bytes": 288,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/ssd-collection-fresh-observation1.json"
+    },
+    {
+      "path": "execution/recipe.json",
+      "sha256": "7befe93eb333b17118bfb9400d527ee166ffa91e96a4d3b10d43bacc089c90a5",
+      "bytes": 619,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/recipe.json"
+    },
+    {
+      "path": "execution/package.json",
+      "sha256": "dc2ee14229d1a8f41a06407ad36e0224b74d6dacea896b7a684f41f2d65427c6",
+      "bytes": 490,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/package.json"
+    },
+    {
+      "path": "execution/bound-adapter-manifest.json",
+      "sha256": "14246554d5dd2cc2f7a202bab3a948819121da9a72697acb55a3f8076ec2dfe5",
+      "bytes": 3412,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-execution1/bound-adapter-manifest.json"
+    },
+    {
+      "path": "plan/bound-manifest.json",
+      "sha256": "f1541290ce0df5c258671fc68b9d2396a931b4a6b1186942df1651c3349a8347",
+      "bytes": 16420,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-plan1/bound-manifest.json"
+    },
+    {
+      "path": "plan/bundle-plan.json",
+      "sha256": "446e948b6498e54bf375ce60dc746059f414af2ead78e101cfa56bf92feb74a3",
+      "bytes": 2923,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-plan1/bundle-plan.json"
+    },
+    {
+      "path": "plan/owner/manifest.json",
+      "sha256": "066336ede9cc5e6a520b6db783393e314b95729a8c70331e8f22a620a49cf57c",
+      "bytes": 1689,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-plan1/owner/manifest.json"
+    },
+    {
+      "path": "plan/manifests/qwen38.json",
+      "sha256": "ec9001f5eabca1837c6688397c071c7d9da3a22a40c2130316d150882576a65d",
+      "bytes": 2434,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-plan1/manifests/qwen38.json"
+    },
+    {
+      "path": "plan/source-inputs/root-runtime-review.json",
+      "sha256": "0294038647e97e98398c516bb6df6c52914c49c1897726a9fffd00064c2e86ee",
+      "bytes": 4581,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-plan1/source-inputs/root-runtime-review.json"
+    },
+    {
+      "path": "plan/source-inputs/root-source-review.json",
+      "sha256": "98db068f38e794ac7d33d3c7d44b1f5d7eb1e466bb1dc8d7868c2463c9a560e0",
+      "bytes": 5622,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-plan1/source-inputs/root-source-review.json"
+    },
+    {
+      "path": "plan/source-inputs/artifact-manifest.json",
+      "sha256": "21a19a7143c5202850dfbf95040a5e6c7a25687b234e691cba7d10e07138f9aa",
+      "bytes": 7123,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-plan1/source-inputs/artifact-manifest.json"
+    },
+    {
+      "path": "plan/source-inputs/payload--transfer-manifest.json",
+      "sha256": "c18d4eb425850d5f4413aae450e05d9dbbaf20a2a128f8c4a09787ad0f8f0f37",
+      "bytes": 1723,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-plan1/source-inputs/payload--transfer-manifest.json"
+    },
+    {
+      "path": "plan/source-inputs/logging-go-build.json",
+      "sha256": "c8ea6d5c7a1a786d7068a3add7380cd297358ba10936d7ebb32e08bdee5e0dfb",
+      "bytes": 191349,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-plan1/source-inputs/logging-go-build.json"
+    },
+    {
+      "path": "plan/provenance/logging-go/source-delta.json",
+      "sha256": "ec62c67a66ca24c1bdd02cd41537359d29ead5f4c65f3f7888748849c2d771e3",
+      "bytes": 181,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-plan1/provenance/logging-go/source-delta.json"
+    },
+    {
+      "path": "plan/provenance/logging-go/peer-review.json",
+      "sha256": "d6eddcf70eef12317b24353b8c576a862353299d1c247767516ee5ac2d0c9079",
+      "bytes": 411,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-plan1/provenance/logging-go/peer-review.json"
+    },
+    {
+      "path": "plan/assets/cube-hero.png",
+      "sha256": "f9f9fbf8c0a05fbac1081db94dff3688cdcb3ee3425e2c18e51cbe90f3c5cb33",
+      "bytes": 1485871,
+      "original_path": "/private/tmp/darkbloom-release090-routing-logging-plan1/assets/cube-hero.png"
+    },
+    {
+      "path": "collector/146-resume-off-collection.py",
+      "sha256": "88f71cab378ca98df9207edac39996fccafa4e839538a725ffda56ceca5bfc70",
+      "bytes": 3468,
+      "original_path": "/private/tmp/darkbloom-release090-http-finish1/146-resume-off-collection.py"
+    },
+    {
+      "path": "collector/146-collect-ssd-summary-fixed.py",
+      "sha256": "79f447e11605158b05cd2132e89ebd6295ac2801fd3fc02bd35b227e10ed764e",
+      "bytes": 3603,
+      "original_path": "/private/tmp/darkbloom-release090-http-finish1/146-collect-ssd-summary-fixed.py"
+    },
+    {
+      "path": "collector/146-collect-ssd-summary-fixed.json",
+      "sha256": "3e5d0024c2b903bf203af9f56b0ac3d8660aa7442fdac19024611c1711bb2b40",
+      "bytes": 499,
+      "original_path": "/private/tmp/darkbloom-release090-http-finish1/146-collect-ssd-summary-fixed.json"
+    },
+    {
+      "path": "collector/146-cpu-review.json",
+      "sha256": "58ae71bc36f39c9e6b495ef21a3cb87e0c32f135e96c36c0285c8e62e8fc2407",
+      "bytes": 715,
+      "original_path": "/private/tmp/darkbloom-release090-http-finish1/146-cpu-review.json"
+    },
+    {
+      "path": "prior143/failure-review.json",
+      "sha256": "d959a14816d4873029ea53cb21ee09308d8a12346f7b6363ba4ffbb205fa02ca",
+      "bytes": 516,
+      "original_path": "/private/tmp/darkbloom-release090-routing-canonical-execution1/failure-review.json"
+    },
+    {
+      "path": "prior143/m5-release.json",
+      "sha256": "3800a62eb76643ace6e84e39a9d50abfdcc03ff05218f2abedd8f0d24510982b",
+      "bytes": 874,
+      "original_path": "/private/tmp/darkbloom-release090-routing-canonical-execution1/m5-release.json"
+    },
+    {
+      "path": "prior143/qwen38-off-evidence/evidence-manifest.json",
+      "sha256": "f0b5b1b27a2d7d3e14ce1d5c93bd99e8b31a117a3760ce8a1ac202af9f0bf473",
+      "bytes": 78987,
+      "original_path": "/private/tmp/darkbloom-release090-routing-canonical-execution1/qwen38-off-evidence/evidence-manifest.json"
+    },
+    {
+      "path": "prior143/qwen38-off-evidence/worker-verdict.json",
+      "sha256": "7d69afd180bbd6f1541422ab8d04226d01b53b1bd65c32cfeec71487b33bce4b",
+      "bytes": 306,
+      "original_path": "/private/tmp/darkbloom-release090-routing-canonical-execution1/qwen38-off-evidence/worker-verdict.json"
+    },
+    {
+      "path": "prior143/qwen38-off-evidence/steps/1/http-evidence/connected.log",
+      "sha256": "3efc31b260fd7d3941389ae031932120c405be8425ce9ad7a780444dff550979",
+      "bytes": 554,
+      "original_path": "/private/tmp/darkbloom-release090-routing-canonical-execution1/qwen38-off-evidence/steps/1/http-evidence/connected.log"
+    },
+    {
+      "path": "prior143/qwen38-off-evidence/steps/1/http-evidence/evidence/report.json",
+      "sha256": "ad9b00010ad35c78263e55dcd6fe8f433109d3cb94fea0f57320566bb59ca0f2",
+      "bytes": 105852,
+      "original_path": "/private/tmp/darkbloom-release090-routing-canonical-execution1/qwen38-off-evidence/steps/1/http-evidence/evidence/report.json"
+    },
+    {
+      "path": "separate-coordinator-ci/routing-invalidation-ci-evidence.json",
+      "sha256": "b8cc11635fb10411f6691e1768a8efc7c69be82bff7052fe311384ea3cf50f4c",
+      "bytes": 879,
+      "original_path": "/private/tmp/darkbloom-release090-final-readiness-status1/routing-invalidation-ci-evidence.json"
+    },
+    {
+      "path": "execution/peer-originals-review.json",
+      "sha256": "a03758d9cd1adf46ca31ec916bc2244eac3f8075b2761c1d95e9325084b6b4bd",
+      "bytes": 51906,
+      "original_path": "/private/tmp/darkbloom-release090-routing146-independent-review1/originals-review.json"
+    }
+  ],
+  "original_modes_not_claimed": true,
+  "full_original_archives_retained": true
+}

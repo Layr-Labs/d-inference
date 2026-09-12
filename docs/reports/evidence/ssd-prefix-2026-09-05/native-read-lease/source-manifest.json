@@ -1,0 +1,18 @@
+{
+  "base_lm": "6192f858dd862734d21b3cd6908ec89210af84fc",
+  "files": {
+    "libs/mlx-swift-lm/Tests/MLXLMTests/CBv2CompleteCheckpointEngineTests.swift": {
+      "base_sha256": "b6c331465b30be503d232b8f4c70d2b4dffa77c841cfca345f729116e906eceb",
+      "sha256": "f391b8e57436961a4a5ad40182bb05c4585bb005780cb82386e641e964d643d4"
+    },
+    "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/CompleteCheckpointTransfer.swift": {
+      "base_sha256": "b153c46b0fc30bba86ba3044ae4ce0dc385461f52546b4dcca2f94309db77b2f",
+      "sha256": "fd8011ad67e525a1812f11ced037f0808ea9117a79ec054de61a30bff1076064"
+    },
+    "libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Prefix/EngineV2+CompleteCheckpoint.swift": {
+      "base_sha256": "c0c6a6cf4be62a4a2f8284b1915d2bdc2901a807af93d900a51f3db12e463b9d",
+      "sha256": "ac3ebe6c0b8ee6c88c43a032761936b98f32754ca8114c48a083fe37c516aa12"
+    }
+  },
+  "patch_sha256": "c85a6ea41293c4b37d6028e3d7f834e9385b6f17440963b46123aae07d676ea5"
+}

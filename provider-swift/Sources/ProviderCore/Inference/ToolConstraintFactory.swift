@@ -31,8 +31,8 @@ enum ToolConstraintFactory {
         } else {
             let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(
                 mode: prepared.mode, modelContext: modelContext)
-            if strategy == .qwenPostValidation {
-                // Qwen's XML parser withholds call bytes until finish; the
+            if strategy == .structuredPostValidation {
+                // The structured parser withholds call bytes until finish; the
                 // shared validator below the stream rejects missing, wrong,
                 // undeclared, or schema-invalid calls before exposing them.
                 return nil

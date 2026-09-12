@@ -1,0 +1,227 @@
+{
+  "observed_utc": "2026-09-09T03:35:56.915245+00:00",
+  "pull_requests": {
+    "d-inference": {
+      "headRefOid": "4ae34f033472f2b2b3d69cce0f9f0b0c85f31f39",
+      "isDraft": true,
+      "mergeStateStatus": "BLOCKED",
+      "reviews": [],
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:06:11Z",
+          "conclusion": "FAILURE",
+          "detailsUrl": "https://github.com/Layr-Labs/d-inference/actions/runs/34305774612/job/102322036668",
+          "name": "Threat Model Review",
+          "startedAt": "2026-09-09T03:05:55Z",
+          "status": "COMPLETED",
+          "workflowName": "Threat Model Review"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "detailsUrl": "https://github.com/Layr-Labs/d-inference/actions/runs/34305774616/job/102322036648",
+          "name": "E2E Benchmarks",
+          "startedAt": "2026-09-09T03:05:45Z",
+          "status": "WAITING",
+          "workflowName": "E2E Benchmarks"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:06:10Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/Layr-Labs/d-inference/actions/runs/34305774743/job/102322037445",
+          "name": "Release Integrity",
+          "startedAt": "2026-09-09T03:05:55Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:07:43Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/Layr-Labs/d-inference/actions/runs/34305772334/job/102322032959",
+          "name": "Analyze (go)",
+          "startedAt": "2026-09-09T03:05:46Z",
+          "status": "COMPLETED",
+          "workflowName": "CodeQL - Code Quality"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:26:30Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/Layr-Labs/d-inference/actions/runs/34305774819/job/102322037289",
+          "name": "E2E Integration Tests",
+          "startedAt": "2026-09-09T03:06:00Z",
+          "status": "COMPLETED",
+          "workflowName": "Integration Tests"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:06:39Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/Layr-Labs/d-inference/actions/runs/34305772334/job/102322033214",
+          "name": "Analyze (javascript-typescript)",
+          "startedAt": "2026-09-09T03:05:46Z",
+          "status": "COMPLETED",
+          "workflowName": "CodeQL - Code Quality"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:06:55Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/Layr-Labs/d-inference/actions/runs/34305772334/job/102322033125",
+          "name": "Analyze (python)",
+          "startedAt": "2026-09-09T03:05:46Z",
+          "status": "COMPLETED",
+          "workflowName": "CodeQL - Code Quality"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:06:07Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/Layr-Labs/d-inference/actions/runs/34305774743/job/102322037527",
+          "name": "Docs Lint",
+          "startedAt": "2026-09-09T03:05:55Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:10:47Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/Layr-Labs/d-inference/actions/runs/34305774743/job/102322037486",
+          "name": "Coordinator Tests",
+          "startedAt": "2026-09-09T03:05:55Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:06:46Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/Layr-Labs/d-inference/actions/runs/34305774743/job/102322037467",
+          "name": "Coordinator Lint",
+          "startedAt": "2026-09-09T03:05:55Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:08:43Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/Layr-Labs/d-inference/actions/runs/34305774743/job/102322037351",
+          "name": "Prompt Sidecar Tests",
+          "startedAt": "2026-09-09T03:05:55Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:19:22Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/Layr-Labs/d-inference/actions/runs/34305774743/job/102322037577",
+          "name": "Provider Tests",
+          "startedAt": "2026-09-09T03:06:00Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:05:45Z",
+          "conclusion": "SKIPPED",
+          "detailsUrl": "https://github.com/Layr-Labs/d-inference/actions/runs/34305774743/job/102322038356",
+          "name": "Swift Build + Cache",
+          "startedAt": "2026-09-09T03:05:45Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:06:46Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/Layr-Labs/d-inference/actions/runs/34305774743/job/102322037606",
+          "name": "Console UI Lint & Build",
+          "startedAt": "2026-09-09T03:05:55Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:05:42Z",
+          "conclusion": "SKIPPED",
+          "detailsUrl": "https://backend.blacksmith.sh/track/enable-autofix?expires=1791515142&installation_model_id=21733&pr_number=872&repository=Layr-Labs%2Fd-inference&return_to=https%3A%2F%2Fgithub.com%2FLayr-Labs%2Fd-inference%2Fpull%2F872&utm_campaign=Layr-Labs%2Fd-inference&utm_source=codesmith-check&signature=f0e4cf5419e5a59727ac566ed4f37a200130850e6d884e75ffd44ce14f44ad7a",
+          "name": "[code]smith",
+          "startedAt": "2026-09-09T03:05:42Z",
+          "status": "COMPLETED",
+          "workflowName": ""
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "Vercel \u2013 d-inference",
+          "startedAt": "2026-09-09T03:06:17Z",
+          "state": "SUCCESS",
+          "targetUrl": "https://vercel.com/eigen-labs/d-inference/Cec4KBWmeYXaERMagU9zYTq9oGGi"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "Vercel \u2013 d-inference-console-ui-dev",
+          "startedAt": "2026-09-09T03:06:19Z",
+          "state": "SUCCESS",
+          "targetUrl": "https://vercel.com/eigen-labs/d-inference-console-ui-dev/5UN3VCQDWP4WgN4CbM3cnXSfMdaL"
+        },
+        {
+          "__typename": "StatusContext",
+          "context": "Vercel \u2013 d-inference-landing",
+          "startedAt": "2026-09-09T03:05:56Z",
+          "state": "SUCCESS",
+          "targetUrl": "https://vercel.com/eigen-labs/d-inference-landing/2k8VDj1WiaZF3zvZW5wRuFTCkvyK"
+        }
+      ],
+      "inline_comments": []
+    },
+    "mlx-swift-lm": {
+      "headRefOid": "b87e2ee1b2a4624aadc73210e066f2a6a8854736",
+      "isDraft": true,
+      "mergeStateStatus": "CLEAN",
+      "reviews": [],
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:06:12Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/34305760827/job/102321995167",
+          "name": "Analyze (actions)",
+          "startedAt": "2026-09-09T03:05:34Z",
+          "status": "COMPLETED",
+          "workflowName": "CodeQL"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:06:14Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/Layr-Labs/mlx-swift-lm/actions/runs/34305760827/job/102321995246",
+          "name": "Analyze (python)",
+          "startedAt": "2026-09-09T03:05:33Z",
+          "status": "COMPLETED",
+          "workflowName": "CodeQL"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-09-09T03:06:04Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/Layr-Labs/mlx-swift-lm/runs/102322091184",
+          "name": "CodeQL",
+          "startedAt": "2026-09-09T03:06:02Z",
+          "status": "COMPLETED",
+          "workflowName": ""
+        }
+      ],
+      "inline_comments": []
+    }
+  },
+  "threat_model_failure": "anthropic.AuthenticationError HTTP 401: API key is invalid",
+  "threat_model_run": 34305774612,
+  "benchmarks": "Manual cost-control environment approval pending; not a failed test"
+}

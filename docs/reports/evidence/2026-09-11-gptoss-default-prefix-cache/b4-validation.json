@@ -1,0 +1,1357 @@
+{
+  "limitations": [
+    "Small synthetic workload; no broad model quality equivalence claim.",
+    "B2/B4 replicate one prompt per cohort; branches run in successive cohorts, not mixed suffixes in one cohort.",
+    "Exact output tokens are informational; semantic answer keys and structural gates are mandatory.",
+    "Per-row SSD counter deltas can overlap within a batch; terminal hit/staged receipts remain required.",
+    "TTFT includes SSD staging and native engine dispatch, not HTTP or coordinator latency.",
+    "Fresh-cache matrix only: first cohort must miss; separate-process persistent restart needs its own assertion.",
+    "Timing distributions contain few requests and no statistical significance claim."
+  ],
+  "off": {
+    "cache_on": false,
+    "concurrency": 4,
+    "errors": [],
+    "exact_generated_tokens_informational": false,
+    "metrics": {
+      "branch-first": {
+        "decode_tps": {
+          "max": 71.59795608312398,
+          "median": 16.69363812857825,
+          "min": 11.682458083689845,
+          "n": 4,
+          "p95_nearest_rank": 71.59795608312398
+        },
+        "hits": 0,
+        "ttft_s": {
+          "max": 5.671824417,
+          "median": 3.523581167,
+          "min": 1.28961225,
+          "n": 4,
+          "p95_nearest_rank": 5.671824417
+        }
+      },
+      "branch-repeat": {
+        "decode_tps": {
+          "max": 70.5222243349897,
+          "median": 16.440929686299697,
+          "min": 11.505166618007651,
+          "n": 4,
+          "p95_nearest_rank": 70.5222243349897
+        },
+        "hits": 0,
+        "ttft_s": {
+          "max": 5.765899666,
+          "median": 3.5876515,
+          "min": 1.317045791,
+          "n": 4,
+          "p95_nearest_rank": 5.765899666
+        }
+      },
+      "compute-first": {
+        "decode_tps": {
+          "max": 73.48756020618686,
+          "median": 17.72722666225178,
+          "min": 9.111852154070665,
+          "n": 4,
+          "p95_nearest_rank": 73.48756020618686
+        },
+        "hits": 0,
+        "ttft_s": {
+          "max": 5.81977025,
+          "median": 3.6287830625,
+          "min": 1.323672125,
+          "n": 4,
+          "p95_nearest_rank": 5.81977025
+        }
+      },
+      "compute-repeat": {
+        "decode_tps": {
+          "max": 73.08677716137147,
+          "median": 17.567536335201574,
+          "min": 9.062280367976111,
+          "n": 4,
+          "p95_nearest_rank": 73.08677716137147
+        },
+        "hits": 0,
+        "ttft_s": {
+          "max": 5.845306667,
+          "median": 3.634073688,
+          "min": 1.325273959,
+          "n": 4,
+          "p95_nearest_rank": 5.845306667
+        }
+      },
+      "long-first": {
+        "decode_tps": {
+          "max": 72.22121354668457,
+          "median": 20.518925165670737,
+          "min": 11.405882773378025,
+          "n": 4,
+          "p95_nearest_rank": 72.22121354668457
+        },
+        "hits": 0,
+        "ttft_s": {
+          "max": 5.743732083,
+          "median": 3.4811690209999995,
+          "min": 1.273307125,
+          "n": 4,
+          "p95_nearest_rank": 5.743732083
+        }
+      },
+      "long-repeat": {
+        "decode_tps": {
+          "max": 72.03077606651904,
+          "median": 21.800178996443066,
+          "min": 11.794039752690365,
+          "n": 4,
+          "p95_nearest_rank": 72.03077606651904
+        },
+        "hits": 0,
+        "ttft_s": {
+          "max": 5.567625,
+          "median": 3.4612288744999997,
+          "min": 1.262752333,
+          "n": 4,
+          "p95_nearest_rank": 5.567625
+        }
+      }
+    },
+    "pass": true,
+    "prompt_tokens": {
+      "max": 4266,
+      "median": 4259.0,
+      "min": 4259,
+      "n": 24,
+      "p95_nearest_rank": 4266
+    },
+    "report": "/Users/gaj/autoresearch/gptoss-prefix-20260911/results/b4-off-1/report.json",
+    "semantic": [
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-first-b0",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-first-b1",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-first-b2",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-first-b3",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-repeat-b0",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-repeat-b1",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-repeat-b2",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-repeat-b3",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-first-b0",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-first-b1",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-first-b2",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-first-b3",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-repeat-b0",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-repeat-b1",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-repeat-b2",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-repeat-b3",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first-b0",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first-b1",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first-b2",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first-b3",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-repeat-b0",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-repeat-b1",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-repeat-b2",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-repeat-b3",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-03CB1558-F050-456F-A2FC-885990E7CB09-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-03CB1558-F050-456F-A2FC-885990E7CB09-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-03CB1558-F050-456F-A2FC-885990E7CB09-B"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-03CB1558-F050-456F-A2FC-885990E7CB09-cancel"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-03CB1558-F050-456F-A2FC-885990E7CB09-cancel"
+      }
+    ],
+    "sha256": "485611e5b81f03ae702fc96733ca00855eb5645b9d4249b3bbc707040e9ec8a8",
+    "shared_prefix_tokens": {
+      "branch-first": 4241,
+      "compute-first": 4239
+    }
+  },
+  "on": {
+    "cache_on": true,
+    "concurrency": 4,
+    "errors": [],
+    "exact_generated_tokens_informational": true,
+    "metrics": {
+      "branch-first": {
+        "decode_tps": {
+          "max": 67.02987908132027,
+          "median": 56.739168285641114,
+          "min": 49.59161953831507,
+          "n": 4,
+          "p95_nearest_rank": 67.02987908132027
+        },
+        "hits": 4,
+        "ttft_s": {
+          "max": 0.489184333,
+          "median": 0.32002458300000003,
+          "min": 0.163078583,
+          "n": 4,
+          "p95_nearest_rank": 0.489184333
+        }
+      },
+      "branch-repeat": {
+        "decode_tps": {
+          "max": 67.00116965352416,
+          "median": 56.68671787314126,
+          "min": 49.508205850926494,
+          "n": 4,
+          "p95_nearest_rank": 67.00116965352416
+        },
+        "hits": 4,
+        "ttft_s": {
+          "max": 0.488948875,
+          "median": 0.319233479,
+          "min": 0.161279292,
+          "n": 4,
+          "p95_nearest_rank": 0.488948875
+        }
+      },
+      "compute-first": {
+        "decode_tps": {
+          "max": 67.43031498385886,
+          "median": 54.384149600510426,
+          "min": 45.98777162367676,
+          "n": 4,
+          "p95_nearest_rank": 67.43031498385886
+        },
+        "hits": 4,
+        "ttft_s": {
+          "max": 0.49238825,
+          "median": 0.3205297295,
+          "min": 0.161133292,
+          "n": 4,
+          "p95_nearest_rank": 0.49238825
+        }
+      },
+      "compute-repeat": {
+        "decode_tps": {
+          "max": 67.46660160187608,
+          "median": 54.34016824855432,
+          "min": 45.93681476529748,
+          "n": 4,
+          "p95_nearest_rank": 67.46660160187608
+        },
+        "hits": 4,
+        "ttft_s": {
+          "max": 0.495369166,
+          "median": 0.322475334,
+          "min": 0.162768583,
+          "n": 4,
+          "p95_nearest_rank": 0.495369166
+        }
+      },
+      "long-first": {
+        "decode_tps": {
+          "max": 71.52807657394317,
+          "median": 21.833743842646847,
+          "min": 11.789905231581374,
+          "n": 4,
+          "p95_nearest_rank": 71.52807657394317
+        },
+        "hits": 0,
+        "ttft_s": {
+          "max": 5.581209916,
+          "median": 3.47705325,
+          "min": 1.27259075,
+          "n": 4,
+          "p95_nearest_rank": 5.581209916
+        }
+      },
+      "long-repeat": {
+        "decode_tps": {
+          "max": 67.0307691810163,
+          "median": 56.67242086755449,
+          "min": 49.53411319870121,
+          "n": 4,
+          "p95_nearest_rank": 67.0307691810163
+        },
+        "hits": 4,
+        "ttft_s": {
+          "max": 0.49089475,
+          "median": 0.32053779149999995,
+          "min": 0.163363042,
+          "n": 4,
+          "p95_nearest_rank": 0.49089475
+        }
+      }
+    },
+    "pass": true,
+    "prompt_tokens": {
+      "max": 4266,
+      "median": 4259.0,
+      "min": 4259,
+      "n": 24,
+      "p95_nearest_rank": 4266
+    },
+    "report": "/Users/gaj/autoresearch/gptoss-prefix-20260911/results/b4-on-2/report.json",
+    "semantic": [
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-first-b0",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-first-b1",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-first-b2",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-first-b3",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-repeat-b0",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-repeat-b1",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-repeat-b2",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "id": "long-repeat-b3",
+        "observed": {
+          "label": "harbor",
+          "quantity": 17,
+          "record": "R037"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-first-b0",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-first-b1",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-first-b2",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-first-b3",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-repeat-b0",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-repeat-b1",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-repeat-b2",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "id": "branch-repeat-b3",
+        "observed": {
+          "label": "quartz",
+          "quantity": 29,
+          "record": "R084"
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first-b0",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first-b1",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first-b2",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first-b3",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-repeat-b0",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-repeat-b1",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-repeat-b2",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-repeat-b3",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "tenant-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-BEDB5E29-0443-46B5-910F-A35A6505EA7F-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-BEDB5E29-0443-46B5-910F-A35A6505EA7F-A"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-BEDB5E29-0443-46B5-910F-A35A6505EA7F-B"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-BEDB5E29-0443-46B5-910F-A35A6505EA7F-cancel"
+      },
+      {
+        "expected": {
+          "record": "R037",
+          "result": 21
+        },
+        "id": "compute-first",
+        "observed": {
+          "record": "R037",
+          "result": 21
+        },
+        "pass": true,
+        "scope": "probe-BEDB5E29-0443-46B5-910F-A35A6505EA7F-cancel"
+      }
+    ],
+    "sha256": "c183a964c9c2e0fe6d7cc37c3ab2c5e87d8f5f42522c3eea1e910805f2f1feb9",
+    "shared_prefix_tokens": {
+      "branch-first": 4241,
+      "compute-first": 4239
+    }
+  },
+  "pair_errors": [],
+  "pairs": [
+    {
+      "authenticated_hit": false,
+      "decode_speed_change_pct": 3.3668806337347146,
+      "exact_tokens_equal_informational": true,
+      "id": "long-first-b0",
+      "off_decode_tps": 11.405882773378025,
+      "off_ttft_s": 1.273307125,
+      "on_decode_tps": 11.789905231581374,
+      "on_ttft_s": 1.27259075,
+      "ttft_reduction_pct": 0.056260974743238545
+    },
+    {
+      "authenticated_hit": false,
+      "decode_speed_change_pct": 74.42201172253979,
+      "exact_tokens_equal_informational": true,
+      "id": "long-first-b1",
+      "off_decode_tps": 15.655600235375193,
+      "off_ttft_s": 2.739313667,
+      "on_decode_tps": 27.306812877780086,
+      "on_ttft_s": 4.220190667,
+      "ttft_reduction_pct": -54.060147176274434
+    },
+    {
+      "authenticated_hit": false,
+      "decode_speed_change_pct": -77.34644157296265,
+      "exact_tokens_equal_informational": true,
+      "id": "long-first-b2",
+      "off_decode_tps": 72.22121354668457,
+      "off_ttft_s": 5.743732083,
+      "on_decode_tps": 16.36067480751361,
+      "on_ttft_s": 2.733915833,
+      "ttft_reduction_pct": 52.401752144886736
+    },
+    {
+      "authenticated_hit": false,
+      "decode_speed_change_pct": 181.8035292517677,
+      "exact_tokens_equal_informational": true,
+      "id": "long-first-b3",
+      "off_decode_tps": 25.382250095966278,
+      "off_ttft_s": 4.223024375,
+      "on_decode_tps": 71.52807657394317,
+      "on_ttft_s": 5.581209916,
+      "ttft_reduction_pct": -32.16144214180625
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 359.89041145455633,
+      "exact_tokens_equal_informational": true,
+      "id": "long-repeat-b0",
+      "off_decode_tps": 11.794039752690365,
+      "off_ttft_s": 1.262752333,
+      "on_decode_tps": 54.23965794576166,
+      "on_ttft_s": 0.26709025,
+      "ttft_reduction_pct": 78.84856412298547
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 81.80827469533536,
+      "exact_tokens_equal_informational": true,
+      "id": "long-repeat-b1",
+      "off_decode_tps": 27.245246830325982,
+      "off_ttft_s": 4.202281041,
+      "on_decode_tps": 49.53411319870121,
+      "on_ttft_s": 0.163363042,
+      "ttft_reduction_pct": 96.11251507440528
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 261.3866222117154,
+      "exact_tokens_equal_informational": true,
+      "id": "long-repeat-b2",
+      "off_decode_tps": 16.355111162560146,
+      "off_ttft_s": 2.720176708,
+      "on_decode_tps": 59.10518378934733,
+      "on_ttft_s": 0.373985333,
+      "ttft_reduction_pct": 86.25143241980882
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": -6.9414869012175195,
+      "exact_tokens_equal_informational": true,
+      "id": "long-repeat-b3",
+      "off_decode_tps": 72.03077606651904,
+      "off_ttft_s": 5.567625,
+      "on_decode_tps": 67.0307691810163,
+      "on_ttft_s": 0.49089475,
+      "ttft_reduction_pct": 91.18304932534069
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 324.4964474347321,
+      "exact_tokens_equal_informational": true,
+      "id": "branch-first-b0",
+      "off_decode_tps": 11.682458083689845,
+      "off_ttft_s": 1.28961225,
+      "on_decode_tps": 49.59161953831507,
+      "on_ttft_s": 0.163078583,
+      "ttft_reduction_pct": 87.35444836228874
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 386.7310340375534,
+      "exact_tokens_equal_informational": false,
+      "id": "branch-first-b1",
+      "off_decode_tps": 12.156568857066368,
+      "off_ttft_s": 2.765887084,
+      "on_decode_tps": 59.169793301486315,
+      "on_ttft_s": 0.373285458,
+      "ttft_reduction_pct": 86.50395165589487
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 155.8018545795858,
+      "exact_tokens_equal_informational": false,
+      "id": "branch-first-b2",
+      "off_decode_tps": 21.23070740009013,
+      "off_ttft_s": 4.28127525,
+      "on_decode_tps": 54.30854326979591,
+      "on_ttft_s": 0.266763708,
+      "ttft_reduction_pct": 93.76905962773591
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": -6.380177943208665,
+      "exact_tokens_equal_informational": false,
+      "id": "branch-first-b3",
+      "off_decode_tps": 71.59795608312398,
+      "off_ttft_s": 5.671824417,
+      "on_decode_tps": 67.02987908132027,
+      "on_ttft_s": 0.489184333,
+      "ttft_reduction_pct": 91.37518553053614
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 330.3128107109485,
+      "exact_tokens_equal_informational": true,
+      "id": "branch-repeat-b0",
+      "off_decode_tps": 11.505166618007651,
+      "off_ttft_s": 1.317045791,
+      "on_decode_tps": 49.508205850926494,
+      "on_ttft_s": 0.161279292,
+      "ttft_reduction_pct": 87.75446585820342
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 182.95517531453888,
+      "exact_tokens_equal_informational": false,
+      "id": "branch-repeat-b1",
+      "off_decode_tps": 20.8925033729889,
+      "off_ttft_s": 4.353339958,
+      "on_decode_tps": 59.11641954663669,
+      "on_ttft_s": 0.372536416,
+      "ttft_reduction_pct": 91.44251495187274
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 458.83877045356616,
+      "exact_tokens_equal_informational": false,
+      "id": "branch-repeat-b2",
+      "off_decode_tps": 11.989355999610495,
+      "off_ttft_s": 2.821963042,
+      "on_decode_tps": 67.00116965352416,
+      "on_ttft_s": 0.488948875,
+      "ttft_reduction_pct": 82.67344866949537
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": -23.063946562550306,
+      "exact_tokens_equal_informational": false,
+      "id": "branch-repeat-b3",
+      "off_decode_tps": 70.5222243349897,
+      "off_ttft_s": 5.765899666,
+      "on_decode_tps": 54.257016199645825,
+      "on_ttft_s": 0.265930542,
+      "ttft_reduction_pct": 95.38787427106783
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 528.9795284616014,
+      "exact_tokens_equal_informational": true,
+      "id": "compute-first-b0",
+      "off_decode_tps": 9.111852154070665,
+      "off_ttft_s": 1.323672125,
+      "on_decode_tps": 57.31168471279193,
+      "on_ttft_s": 0.374341709,
+      "ttft_reduction_pct": 71.71945363735752
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 128.1678332935642,
+      "exact_tokens_equal_informational": true,
+      "id": "compute-first-b1",
+      "off_decode_tps": 22.552089725120922,
+      "off_ttft_s": 4.402748583,
+      "on_decode_tps": 51.45661448822893,
+      "on_ttft_s": 0.26671775,
+      "ttft_reduction_pct": 93.94201724282289
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 422.61986313178556,
+      "exact_tokens_equal_informational": true,
+      "id": "compute-first-b2",
+      "off_decode_tps": 12.902363599382637,
+      "off_ttft_s": 2.854817542,
+      "on_decode_tps": 67.43031498385886,
+      "on_ttft_s": 0.49238825,
+      "ttft_reduction_pct": 82.75237409200423
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": -37.421011808465124,
+      "exact_tokens_equal_informational": true,
+      "id": "compute-first-b3",
+      "off_decode_tps": 73.48756020618686,
+      "off_ttft_s": 5.81977025,
+      "on_decode_tps": 45.98777162367676,
+      "on_ttft_s": 0.161133292,
+      "ttft_reduction_pct": 97.23127743745555
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 644.4770947529564,
+      "exact_tokens_equal_informational": true,
+      "id": "compute-repeat-b0",
+      "off_decode_tps": 9.062280367976111,
+      "off_ttft_s": 1.325273959,
+      "on_decode_tps": 67.46660160187608,
+      "on_ttft_s": 0.495369166,
+      "ttft_reduction_pct": 62.621376309711366
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 259.0261837724804,
+      "exact_tokens_equal_informational": true,
+      "id": "compute-repeat-b1",
+      "off_decode_tps": 12.794836934346893,
+      "off_ttft_s": 2.854942959,
+      "on_decode_tps": 45.93681476529748,
+      "on_ttft_s": 0.162768583,
+      "ttft_reduction_pct": 94.2987098048007
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": -29.656863607398186,
+      "exact_tokens_equal_informational": true,
+      "id": "compute-repeat-b2",
+      "off_decode_tps": 73.08677716137147,
+      "off_ttft_s": 5.845306667,
+      "on_decode_tps": 51.411531343580485,
+      "on_ttft_s": 0.268635584,
+      "ttft_reduction_pct": 95.40425166199411
+    },
+    {
+      "authenticated_hit": true,
+      "decode_speed_change_pct": 156.34825804948233,
+      "exact_tokens_equal_informational": true,
+      "id": "compute-repeat-b3",
+      "off_decode_tps": 22.34023573605625,
+      "off_ttft_s": 4.413204417,
+      "on_decode_tps": 57.26880515352815,
+      "on_ttft_s": 0.376315084,
+      "ttft_reduction_pct": 91.47297409223997
+    }
+  ],
+  "pass": true,
+  "schema": 1,
+  "ttft_reduction_pct_hit_rows": {
+    "max": 97.23127743745555,
+    "median": 91.27911742793842,
+    "min": 62.621376309711366,
+    "n": 20,
+    "p95_nearest_rank": 96.11251507440528
+  }
+}

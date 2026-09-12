@@ -1,0 +1,150 @@
+{
+  "files": {
+    "collection/attempt3-owner-attribution.json": {
+      "bytes": 402,
+      "sha256": "29d369c793390dffd797fc33f17664cc3a8ec8ad7959fcf1a28b87a9eb70e38f"
+    },
+    "collection/collection-receipt.json": {
+      "bytes": 3565,
+      "sha256": "c088100debb57e2a5cc162b28e79c79f327c008d5a749dd1394e141fe6abae08"
+    },
+    "collection/extraction-mode-mismatch.json": {
+      "bytes": 1441,
+      "sha256": "d4c63bb8dfb2743b02da3beed7e16770fa3984d4fd34c7134afbd96082d17ba1"
+    },
+    "collection/m5-release.json": {
+      "bytes": 3973,
+      "sha256": "13bd8d02eb6cef73728a6b8058b210f41488e414a765074fe353b1d031fca040"
+    },
+    "original/artifact-manifest.json": {
+      "bytes": 7123,
+      "sha256": "21a19a7143c5202850dfbf95040a5e6c7a25687b234e691cba7d10e07138f9aa"
+    },
+    "original/build-status.json": {
+      "bytes": 133,
+      "sha256": "1abf41fc16baa6da95adf1e95dc5cb9977681a17fdfcde35781df30cb593d367"
+    },
+    "original/darkbloom-product-source-closure.json": {
+      "bytes": 1019122,
+      "sha256": "bc3bfb0f5457800b8446551323be98e4ae033c8c75b782403db8ec73c5f9a557"
+    },
+    "original/darkbloom-verified-dependency-checkouts.json": {
+      "bytes": 3768,
+      "sha256": "4d1e65a16c741333acdb5fd5924e3333b4a95a2b3a78c25b79a0f45261f93a92"
+    },
+    "original/darkbloom-verified-graph.yaml.gz": {
+      "bytes": 406483,
+      "sha256": "83926e391975d593aa30b3f20c5f79277650229381676e3e764210b2a3a8ae16"
+    },
+    "original/darkbloom-verified-pin-proof.json": {
+      "bytes": 180,
+      "sha256": "dad1eaeb9f9dc16b0bcac2217b8d9241f1a519e316592de49b1a81f1ba7214bc"
+    },
+    "original/executions.json": {
+      "bytes": 8980,
+      "sha256": "19c807bb0fcf40a01a8a9ff4f286ce7a006468e0838c68cccbdab5072790acb6"
+    },
+    "original/local-terminal.json": {
+      "bytes": 1670,
+      "sha256": "3860d26c6f832219fa128afc18fd25ac7f558a2f99628d82c5554a02ea1fb4de"
+    },
+    "original/locks-after-build.json": {
+      "bytes": 344,
+      "sha256": "6eef52f365e70e203b10abbc607572b1c7d7930c31462f2930fc5001d72c2947"
+    },
+    "original/locks-before.json": {
+      "bytes": 344,
+      "sha256": "cdfbe831ef2c3d0d84e4e3c0131115674091479df18a230053ca86bf0fbcfdc5"
+    },
+    "original/logs/final-benchmark-comparison-cpu.log": {
+      "bytes": 2985,
+      "sha256": "58ef66a2ac40ffaff2aea4ca6341c47d9f6b8449a6d84046d809d3e44f1779f3"
+    },
+    "original/logs/final-cli-help.log": {
+      "bytes": 2064,
+      "sha256": "f477d318409a8d21df8cfbdbca2e47c6d3412c946f747e72ee664826ce33b207"
+    },
+    "original/logs/final-cli-version.log": {
+      "bytes": 6,
+      "sha256": "9d8c94f1ad3ea96b1e2ac4914fda4cb93c76b4a3e0d8cc6dd8976d6c0b227d15"
+    },
+    "original/logs/final-product-closure-cpu-tests.log": {
+      "bytes": 917,
+      "sha256": "5de58e3d3140b655083c8b2381fc0c99beffa5830eddf0866c9afb55a0f29569"
+    },
+    "original/native-options-cpu/receipt.json": {
+      "bytes": 980,
+      "sha256": "986ed285e4780c1a049cd89ec05ba99a15b42d92f52cd3850391445e905525fe"
+    },
+    "original/radix-engine-product-source-closure.json": {
+      "bytes": 967363,
+      "sha256": "39430b442e777673089519860f479c9ae60afdd98c8cf95b0d1c4d7be34a6f43"
+    },
+    "original/radix-engine-verified-dependency-checkouts.json": {
+      "bytes": 3768,
+      "sha256": "4d1e65a16c741333acdb5fd5924e3333b4a95a2b3a78c25b79a0f45261f93a92"
+    },
+    "original/radix-engine-verified-graph.yaml.gz": {
+      "bytes": 404482,
+      "sha256": "7e97903c371fce412c6a016d9d5491c20821da713eba08704341487516f9abc4"
+    },
+    "original/radix-engine-verified-pin-proof.json": {
+      "bytes": 180,
+      "sha256": "dad1eaeb9f9dc16b0bcac2217b8d9241f1a519e316592de49b1a81f1ba7214bc"
+    },
+    "original/resource-equivalence.json": {
+      "bytes": 1056,
+      "sha256": "2044d37cf56ebf0f29019c2447cf120e1a262c4ca64ab9a974128c814108d860"
+    },
+    "original/source-after-darkbloom.json": {
+      "bytes": 3698,
+      "sha256": "2a63128f7e3598fd365cc74cc85e1b31127ffc0c2300449134bffafb7bf7185c"
+    },
+    "original/source-after-radix-engine.json": {
+      "bytes": 3698,
+      "sha256": "2a63128f7e3598fd365cc74cc85e1b31127ffc0c2300449134bffafb7bf7185c"
+    },
+    "original/source-before-build.json": {
+      "bytes": 3698,
+      "sha256": "2a63128f7e3598fd365cc74cc85e1b31127ffc0c2300449134bffafb7bf7185c"
+    },
+    "original/source-manifest.json": {
+      "bytes": 1502833,
+      "sha256": "da88c7aabccd399e20544a73dc182775493a0d4b5db5568b34a8169ffae54bbf"
+    },
+    "preserved-failures/attempt1-terminal.json": {
+      "bytes": 1310,
+      "sha256": "e159c4a27d2ef73f2b2a968e222e51a8fd74df3d6eb68aa89dda6e758d0d8f07"
+    },
+    "preserved-failures/attempt2-terminal.json": {
+      "bytes": 1453,
+      "sha256": "85cf6faa571b1ead26aea73b76b834205490ec68142005d375f31777ff6993d5"
+    },
+    "publication/merge-proof.json": {
+      "bytes": 335,
+      "sha256": "3d4f2456989406b23ab66acaf8c7045f54af73cdf36d6160feeb892ad25bd317"
+    },
+    "reviews/actual-attempt3-review2.json": {
+      "bytes": 12666,
+      "sha256": "98509a152c6447970d85a3c6d37cbcacdafc70f11db78a25b47fb391b8520f09"
+    },
+    "reviews/helper-manifest.json": {
+      "bytes": 2674,
+      "sha256": "b49bb21fe19ff3eebfff235e0866d194a30fd2e4c1a4f00f34874bbcfeb77cd8"
+    },
+    "reviews/root-runtime-review.json": {
+      "bytes": 4581,
+      "sha256": "0294038647e97e98398c516bb6df6c52914c49c1897726a9fffd00064c2e86ee"
+    },
+    "reviews/root-source-review.json": {
+      "bytes": 5622,
+      "sha256": "98db068f38e794ac7d33d3c7d44b1f5d7eb1e466bb1dc8d7868c2463c9a560e0"
+    },
+    "reviews/source-aliases.json": {
+      "bytes": 7368,
+      "sha256": "41f404902bced99ca0aecc0ab52dbbe5cd28040e0d731f2d24fd49e24c7a71ce"
+    }
+  },
+  "original_collection_archive_sha256": "6ace0805dab9b2a978bbeb1b5ad91b4ca31f55a1f2b914005fd3b84bf172a2f7",
+  "scope": "Shareable original build evidence; executables and model data excluded. Full93-file original collection retained separately."
+}

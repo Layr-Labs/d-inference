@@ -1,0 +1,115 @@
+{
+  "base_commit": "92a2fc2354fc0856cc84d86253be51e9b4a54ba2",
+  "changed_paths": [
+    "coordinator/registry/cache_checkpoint_turn_cost_test.go"
+  ],
+  "reviewed_source": [
+    {
+      "path": "coordinator/registry/cache_checkpoint_turn_cost_test.go",
+      "bytes": 3705,
+      "sha256": "8c45b29ae811bf9bb3c9821c78d25bd04bb1338ed45a9d4ed048f748e58c16ca"
+    },
+    {
+      "path": "coordinator/registry/cache_checkpoint_test.go",
+      "bytes": 11039,
+      "sha256": "d4c39b08390604fbc182015170163a0fc5dd26ab58d2489184c5bef86def079c"
+    },
+    {
+      "path": "coordinator/registry/cache_memory_test.go",
+      "bytes": 12987,
+      "sha256": "421769b7363c32a093fc6402bff163c7b6dcee4a2b633d464fe04fdcdb200493"
+    },
+    {
+      "path": "coordinator/registry/cache_holder_index_test.go",
+      "bytes": 8855,
+      "sha256": "075f3c690e538576692e35a8ac0f263c4ab3e0e146ad63a123c24d5a1dcbed41"
+    },
+    {
+      "path": "coordinator/registry/cache_service_cost_test.go",
+      "bytes": 8452,
+      "sha256": "3558b751003eb36b610eddfcbd2ee4e4c2e1b5e7eb969e07f9c75c89a03edc3b"
+    },
+    {
+      "path": "coordinator/registry/cache_routing_exact_test.go",
+      "bytes": 30665,
+      "sha256": "7e267a57432a665edaf19220b5fe62039d5daa44507d8231c7a09dbf6c25dcce"
+    },
+    {
+      "path": "coordinator/registry/cache_receipts_v2.go",
+      "bytes": 14636,
+      "sha256": "acf02a952e84c41b91a2c0f3e4909f67739f68ee1bcf0ad7dbfddfa00ae34408"
+    },
+    {
+      "path": "coordinator/registry/cache_receipts.go",
+      "bytes": 8601,
+      "sha256": "997b58db9ffe6e2b6d9868571fdb9c4d2a26fc6991dbab0058a694dd81ea3bc2"
+    },
+    {
+      "path": "coordinator/registry/cache_routing_hints.go",
+      "bytes": 6254,
+      "sha256": "8f077495c790ec563db9accc02d89b0e7b38257bb7c15a1c8fe0669d7d6abc87"
+    },
+    {
+      "path": "coordinator/registry/cache_service_cost.go",
+      "bytes": 2940,
+      "sha256": "1158697f59e890f86dd99979fa31f8e96827ca02fbd3c270fbd29eb0f9ad082f"
+    },
+    {
+      "path": "coordinator/registry/cache_route_keys.go",
+      "bytes": 8829,
+      "sha256": "eeea7787fb7964e06269775775c5be7ad27f98aaac60aa019ae12e0927fecf14"
+    },
+    {
+      "path": "coordinator/registry/candidate_selection.go",
+      "bytes": 3254,
+      "sha256": "3b772f010a38368f48c1f62c7606b15fc760f4a0d8324678bb68a0b7ab55d9e1"
+    },
+    {
+      "path": "coordinator/registry/scheduler.go",
+      "bytes": 146053,
+      "sha256": "c438dfc1e0abdbf49c356267ba7bee9a9f5de844fc5645aafa475490bc5b32db"
+    }
+  ],
+  "commands": {
+    "normal": "GOTOOLCHAIN=go1.25.0 go test -json ./coordinator/registry -run 'Test(Checkpoint|CacheHolderIndex|CacheService|CacheEvidenceAge|ExactRoutingHintRevalidates|ExactRoutingExpiry|ExactV2CoordinatorRestart|MemoryRoutingOriginal)' -count=1",
+    "race": "GOTOOLCHAIN=go1.25.0 go test -race -json ./coordinator/registry -run 'Test(Checkpoint|CacheHolderIndex|CacheService|CacheEvidenceAge|ExactRoutingHintRevalidates|ExactRoutingExpiry|ExactV2CoordinatorRestart|MemoryRoutingOriginal)' -count=1"
+  },
+  "results": {
+    "normal": {
+      "top_level_passed": 21,
+      "subtests_passed": 39,
+      "failed": 0,
+      "skipped": 0,
+      "result": "pass",
+      "elapsed_seconds": 0.229,
+      "jsonl": {
+        "path": "normal.jsonl",
+        "bytes": 60832,
+        "sha256": "9a79cdd92327ccf8c74cfeab84cd212c221e0772ddf5ecb089d462b5b38e56c6"
+      },
+      "stderr": {
+        "path": "normal.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "race": {
+      "top_level_passed": 21,
+      "subtests_passed": 39,
+      "failed": 0,
+      "skipped": 0,
+      "result": "pass",
+      "elapsed_seconds": 1.347,
+      "jsonl": {
+        "path": "race.jsonl",
+        "bytes": 60827,
+        "sha256": "417e181e1f1e338ad3dc56e62de4b440d7e6fa008eb3904e3285a238f6f73dd3"
+      },
+      "stderr": {
+        "path": "race.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  }
+}

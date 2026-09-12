@@ -26,10 +26,13 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -43,6 +46,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
@@ -67,6 +71,14 @@ func main() {
 	}
 	logger := slog.New(slogHandler)
 	slog.SetDefault(logger)
+
+	if len(os.Args) > 1 {
+		if err := runMaintenanceCommand(os.Args[1:]); err != nil {
+			logger.Error("coordinator maintenance command failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Read all configuration from environment variables.
 	cfg := config.ReadAppConfig()
@@ -126,6 +138,17 @@ func main() {
 			}
 		})
 	}
+
+	// Read-through cache for the per-request user and model-registry lookups
+	// (one Postgres round trip each, 4-5 per inference request). Wraps both
+	// backends so dev/test and prod behave identically. Invalidation is
+	// in-process -- correct because this single process serves every admin and
+	// publish mutation; the TTLs only bound staleness from out-of-band DB edits.
+	cacheCfg := store.DefaultCacheConfig()
+	st = store.NewCached(st, cacheCfg)
+	logger.Info("store read-through cache enabled",
+		"user_ttl", cacheCfg.UserTTL, "model_ttl", cacheCfg.ModelTTL, "negative_ttl", cacheCfg.NegativeTTL,
+		"max_users", cacheCfg.MaxUsers, "max_models", cacheCfg.MaxModels)
 
 	// Reconcile provider sessions left open by a previous coordinator process
 	// (durable uptime history). Best-effort + time-bounded — neither an error nor
@@ -203,6 +226,8 @@ func main() {
 	cacheRoutingCfg := reg.CacheRoutingConfigSnapshot()
 	logger.Info("provider-confirmed cache routing configured",
 		"mode", cacheRoutingCfg.Mode,
+		"artifact_allowlist_configured", cacheRoutingCfg.AllowedArtifacts != nil,
+		"artifact_allowlist_count", len(cacheRoutingCfg.AllowedArtifacts),
 		"activation_percent", cacheRoutingCfg.ActivationPct,
 		"max_plan_qps", cacheRoutingCfg.MaxPlanQPS,
 		"ttl", cacheRoutingCfg.TTL.String(),
@@ -407,6 +432,45 @@ func main() {
 		srv.AddKnownBinaryHashes(hashes)
 		logger.Info("additional binary hashes from env var", "count", len(hashes))
 	}
+	// Release-policy routing gate mode. SHADOW (default): application evidence
+	// is derived, granted, swept, and counted (release_evidence.outcome metrics
+	// + /v1/stats application_evidence_providers) but NEVER blocks routing —
+	// identical routing behavior to the pre-release-policy coordinator. ENFORCE:
+	// the routing chokepoint requires generation-current evidence. Enforcement
+	// must only be enabled after a shadow deployment shows evidence coverage
+	// near the connected fleet size (2026-08-31: enforcing an unproven evidence
+	// predicate zeroed network capacity twice).
+	switch mode := os.Getenv("EIGENINFERENCE_RELEASE_POLICY_MODE"); mode {
+	case "enforce":
+		// A restarted coordinator boots with an EMPTY provider registry: zero
+		// evidence exists until reconnected providers complete their first
+		// challenge. Enforcing from the first request would 429 the whole
+		// fleet for minutes — so enforcement always waits out a boot grace
+		// (default 20m ≈ four challenge cycles) during which routing behaves
+		// exactly like shadow while evidence coverage rebuilds.
+		// The override is RAISE-ONLY, mirroring DARKBLOOM_ACTIVATION_RESERVE_GB:
+		// a shorter grace recreates the empty-registry 429 interval the grace
+		// exists to prevent, so values below the default clamp up to it.
+		const minEnforceGrace = 20 * time.Minute
+		grace := minEnforceGrace
+		if v := os.Getenv("EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d >= minEnforceGrace {
+				grace = d
+			} else if err == nil {
+				logger.Warn("EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE below the 20m minimum; clamping up", "value", v)
+			} else {
+				logger.Warn("invalid EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE; keeping default 20m", "value", v)
+			}
+		}
+		reg.SetReleasePolicyEnforcement(true)
+		reg.SetReleasePolicyEnforceAfter(time.Now().Add(grace))
+		logger.Warn("release-policy routing gate ENFORCED via EIGENINFERENCE_RELEASE_POLICY_MODE — providers without current application evidence will not route after the boot grace",
+			"boot_grace", grace.String())
+	case "", "shadow":
+		logger.Info("release-policy routing gate in SHADOW mode (default): evidence tracked and counted, never blocks routing; set EIGENINFERENCE_RELEASE_POLICY_MODE=enforce after coverage is proven")
+	default:
+		logger.Warn("invalid EIGENINFERENCE_RELEASE_POLICY_MODE; staying in SHADOW mode", "value", mode)
+	}
 	// v0.6.0: self-reported binaryHash is demoted to drift telemetry by default
 	// (APNs code-identity attestation is the real signal). Set this to re-enable
 	// the legacy derouting-on-mismatch behavior (rollback only).
@@ -552,6 +616,22 @@ func main() {
 	srv.SetMinDecodeTPS(minDecodeTPS)
 	logger.Info("per-request decode floor (quality bar)", "min_decode_tps", minDecodeTPS)
 
+	// Routing-scan concurrency limit (2026-09-01 congestion collapse: a fresh
+	// full fleet scan per dispatch attempt × retry-amplified inbound saturated
+	// every coordinator CPU). Default runtime.NumCPU() (min 2); override via
+	// EIGENINFERENCE_ROUTING_CONCURRENCY. Requests that cannot get a scan slot
+	// within their remaining first-content budget shed as capacity-shaped 429s.
+	routingConcurrency := api.DefaultRoutingConcurrency()
+	if v := os.Getenv("EIGENINFERENCE_ROUTING_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 2 {
+			routingConcurrency = n
+			srv.SetRoutingConcurrency(n)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_ROUTING_CONCURRENCY (need an integer >= 2); using default", "value", v, "default", routingConcurrency)
+		}
+	}
+	logger.Info("routing-scan concurrency limit", "max_concurrent_scans", routingConcurrency)
+
 	// Smart early-429 admission gate. ON by default: a request whose
 	// (prompt+max_tokens) cannot fit the model context window or any provider's
 	// structural token budget is rejected with an uptime-neutral 429 at preflight
@@ -600,21 +680,47 @@ func main() {
 	// routing (but not disconnected) and receive feedback about mismatches.
 	// Python/runtime hashes are deprecated — only template hashes (e.g. mlx_metallib) are checked.
 	if templateHashes := os.Getenv("EIGENINFERENCE_KNOWN_TEMPLATE_HASHES"); templateHashes != "" {
-		manifest := &api.RuntimeManifest{
-			PythonHashes:   make(map[string]bool),
-			RuntimeHashes:  make(map[string]bool),
-			TemplateHashes: make(map[string]string),
-		}
+		// The manifest is a set per template name: repeating a name
+		// (mlx_metallib=<a>,mlx_metallib=<b>) accepts every listed hash.
+		manifest := api.NewRuntimeManifest()
 		for _, pair := range strings.Split(templateHashes, ",") {
 			parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
 			if len(parts) == 2 {
-				manifest.TemplateHashes[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				manifest.AddTemplateHash(parts[0], parts[1])
 			}
 		}
 		srv.SetRuntimeManifest(manifest)
 		logger.Info("runtime manifest configured from env",
 			"template_hashes", len(manifest.TemplateHashes),
 		)
+	}
+
+	// Exact-model first-content deadline base overrides
+	// ("<model>=<upstream_ms>,...", 0/"off" removes an entry so the model
+	// falls back to the global base). The built-in table (Qwen3-VL 5s/4s) can
+	// only tighten the global base — during the 2026-09-01 incident that
+	// hardcoding killed ~47% of vision traffic with no operator recourse.
+	if v := os.Getenv("EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES"); v != "" {
+		if replaced, removed := modelpolicy.SetFirstContentBasesFromEnv(v); replaced+removed > 0 {
+			logger.Info("exact-model first-content deadline bases overridden via EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES",
+				"replaced", replaced, "removed", removed, "value", v)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES; using built-in table", "value", v)
+		}
+	}
+
+	// Optional pprof listener on a DEDICATED private mux/port — never the
+	// public mux. The 2026-09-01 collapse was diagnosed blind because the
+	// binary shipped without pprof (GET /debug/pprof/ = 404). Unset = nothing
+	// listens.
+	if addr := os.Getenv("EIGENINFERENCE_PPROF_ADDR"); addr != "" {
+		if ln, err := startPprofListener(addr); err != nil {
+			logger.Error("pprof listener failed to start", "addr", addr, "error", err)
+		} else {
+			enableContentionProfiling()
+			logger.Warn("pprof debug listener ENABLED via EIGENINFERENCE_PPROF_ADDR — profiling data is sensitive; keep this address private (bind loopback / firewall it)",
+				"addr", ln.Addr().String())
+		}
 	}
 
 	billingCfg := cfg.BillingConfig
@@ -774,9 +880,14 @@ func main() {
 
 	// Push gauge values to DogStatsD periodically.
 	go srv.StartDDGaugeLoop(ctx)
+	srv.StartProfilerLoops(ctx)
 
 	// Reclaim expired read-cache entries periodically (bounds memory growth).
 	go srv.StartReadCacheJanitor(ctx)
+
+	// Background goroutines own the /v1/stats and /v1/network/totals cache
+	// entries; handlers only read them.
+	srv.StartCacheRefreshers(ctx)
 
 	// Flag any model decoding far below its active-param/hardware class (W8 —
 	// auto-detects the gemma-dense decode bug). Spawns its own panic-safe loop.
@@ -791,6 +902,7 @@ func main() {
 	// manual payout schedule and alerts on withdrawals stuck in "transferred".
 	// No-op when Stripe Connect isn't configured. Spawns its own panic-safe loop.
 	srv.StartStripePayoutReconciler(ctx)
+	srv.StartGlobalPayoutReconciler(ctx)
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{
@@ -1008,4 +1120,44 @@ func loadAPNsAttestor(logger *slog.Logger) *apns.APNsPushAttestor {
 		return nil
 	}
 	return attestor
+}
+
+// enableContentionProfiling turns on the runtime's mutex and block profiles,
+// which are off by default, so /debug/pprof/mutex and /debug/pprof/block on
+// the pprof listener stop coming back empty. Sampling one in every hundred
+// mutex contention events and an average of one blocking event per 1 ms
+// spent blocked bounds the sampling overhead. Called only together with the env-gated listener.
+func enableContentionProfiling() {
+	runtime.SetMutexProfileFraction(100)
+	runtime.SetBlockProfileRate(1_000_000)
+}
+
+// startPprofListener starts net/http/pprof on a DEDICATED mux bound to addr
+// (EIGENINFERENCE_PPROF_ADDR, e.g. "127.0.0.1:6060") and serves it on its own
+// listener — the public mux never gains /debug/pprof/ routes. An empty addr
+// never reaches here (the caller gates on the env var), so nothing listens by
+// default. The 2026-09-01 congestion collapse had to be diagnosed without any
+// profiler (GET /debug/pprof/ = 404 on the running binary); this closes that
+// gap without exposing profiles publicly.
+func startPprofListener(addr string) (net.Listener, error) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	server := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		// The listener lives for the whole process; Serve only returns on a
+		// listener error, which is not worth crashing the coordinator over.
+		_ = server.Serve(ln)
+	}()
+	return ln, nil
 }

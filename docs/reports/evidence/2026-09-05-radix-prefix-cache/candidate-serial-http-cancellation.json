@@ -1,0 +1,94 @@
+{
+  "cancel": {
+    "events": [
+      {
+        "elapsed_s": 0.0011592080000184524,
+        "data": "{\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"created\":1788588008,\"id\":\"chatcmpl_1AE17CDC9C9E4256BC9E23E2\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.11541350000001671,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\"Water\"},\"index\":0}],\"created\":1788588008,\"id\":\"chatcmpl_1AE17CDC9C9E4256BC9E23E2\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.14511475000000473,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\" infrastructure\"},\"index\":0}],\"created\":1788588008,\"id\":\"chatcmpl_1AE17CDC9C9E4256BC9E23E2\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.17471716600002196,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\" is\"},\"index\":0}],\"created\":1788588008,\"id\":\"chatcmpl_1AE17CDC9C9E4256BC9E23E2\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      }
+    ],
+    "text": "Water infrastructure is",
+    "reasoning": "",
+    "usage": null,
+    "finish_reasons": [],
+    "done": false,
+    "cancelled": true,
+    "ttft_s": 0.11541350000001671,
+    "last_content_s": 0.17471716600002196,
+    "elapsed_s": 0.1747321660000125,
+    "content_chunks": 3,
+    "client_decode_tps_estimate": null
+  },
+  "recovery": {
+    "events": [
+      {
+        "elapsed_s": 0.001354624999976295,
+        "data": "{\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"created\":1788588008,\"id\":\"chatcmpl_8AC1A649A0FE4C19A3994030\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.23581170799999995,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\"Two\"},\"index\":0}],\"created\":1788588008,\"id\":\"chatcmpl_8AC1A649A0FE4C19A3994030\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.2654013329999998,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\" plus\"},\"index\":0}],\"created\":1788588008,\"id\":\"chatcmpl_8AC1A649A0FE4C19A3994030\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.2948224999999809,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\" two\"},\"index\":0}],\"created\":1788588008,\"id\":\"chatcmpl_8AC1A649A0FE4C19A3994030\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.3244624579999993,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\" equals\"},\"index\":0}],\"created\":1788588008,\"id\":\"chatcmpl_8AC1A649A0FE4C19A3994030\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.3541379579999955,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\" **\"},\"index\":0}],\"created\":1788588008,\"id\":\"chatcmpl_8AC1A649A0FE4C19A3994030\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.38370633299999213,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\"4\"},\"index\":0}],\"created\":1788588008,\"id\":\"chatcmpl_8AC1A649A0FE4C19A3994030\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.41345541699999444,
+        "data": "{\"choices\":[{\"delta\":{\"content\":\"**.\"},\"index\":0}],\"created\":1788588008,\"id\":\"chatcmpl_8AC1A649A0FE4C19A3994030\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+      },
+      {
+        "elapsed_s": 0.44821104199999695,
+        "data": "{\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"created\":1788588008,\"id\":\"chatcmpl_8AC1A649A0FE4C19A3994030\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":8,\"prompt_tokens\":18,\"total_tokens\":26}}"
+      },
+      {
+        "elapsed_s": 0.4482286669999951,
+        "data": "[DONE]"
+      }
+    ],
+    "text": "Two plus two equals **4**.",
+    "reasoning": "",
+    "usage": {
+      "completion_tokens": 8,
+      "prompt_tokens": 18,
+      "total_tokens": 26
+    },
+    "finish_reasons": [
+      "stop"
+    ],
+    "done": true,
+    "cancelled": false,
+    "ttft_s": 0.23581170799999995,
+    "last_content_s": 0.41345541699999444,
+    "elapsed_s": 0.44822924999999714,
+    "content_chunks": 7,
+    "client_decode_tps_estimate": 39.40471654980035
+  }
+}

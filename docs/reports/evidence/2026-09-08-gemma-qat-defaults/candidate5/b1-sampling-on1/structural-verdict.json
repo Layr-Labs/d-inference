@@ -1,0 +1,6 @@
+{
+  "passed": true,
+  "errors": [],
+  "generation_comparison_policy": "record",
+  "scope": "Cache, lifecycle, sampling, model/artifact and execution structure; answer quality reviewed separately"
+}

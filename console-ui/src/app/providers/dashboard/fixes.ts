@@ -107,7 +107,7 @@ const FIX_TABLE: Record<string, FixAction> = {
   backend_idle_shutdown: {
     kind: "guidance",
     label: "No action needed",
-    note: "Model was unloaded after idle; the next request pays a ~10–30s cold start.",
+    note: "Your idle-memory policy freed the model; the next request reloads it (~10–30 s). To keep models resident for instant responses, run `darkbloom idle keep-loaded` on the machine.",
   },
   low_success_rate: {
     kind: "link",

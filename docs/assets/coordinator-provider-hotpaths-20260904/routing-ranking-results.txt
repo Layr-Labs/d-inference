@@ -1,0 +1,25 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/eigeninference/d-inference/coordinator/registry
+cpu: Apple M3 Max
+BenchmarkRoutingSelectorComparison/cache=false/before-14  	  162636	      3809 ns/op	    6144 B/op	       2 allocs/op
+BenchmarkRoutingSelectorComparison/cache=false/before-14  	  158990	      3743 ns/op	    6144 B/op	       2 allocs/op
+BenchmarkRoutingSelectorComparison/cache=false/before-14  	  157586	      3717 ns/op	    6144 B/op	       2 allocs/op
+BenchmarkRoutingSelectorComparison/cache=false/before-14  	  162325	      3690 ns/op	    6144 B/op	       2 allocs/op
+BenchmarkRoutingSelectorComparison/cache=false/before-14  	  162985	      3691 ns/op	    6144 B/op	       2 allocs/op
+BenchmarkRoutingSelectorComparison/cache=false/after-14   	  555741	      1113 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRoutingSelectorComparison/cache=false/after-14   	  571786	      1114 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRoutingSelectorComparison/cache=false/after-14   	  539601	      1117 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRoutingSelectorComparison/cache=false/after-14   	  567984	      1119 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRoutingSelectorComparison/cache=false/after-14   	  557318	      1111 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRoutingSelectorComparison/cache=true/before-14   	  160875	      3715 ns/op	    6144 B/op	       2 allocs/op
+BenchmarkRoutingSelectorComparison/cache=true/before-14   	  161550	      3720 ns/op	    6144 B/op	       2 allocs/op
+BenchmarkRoutingSelectorComparison/cache=true/before-14   	  159782	      3746 ns/op	    6144 B/op	       2 allocs/op
+BenchmarkRoutingSelectorComparison/cache=true/before-14   	  161547	      3728 ns/op	    6144 B/op	       2 allocs/op
+BenchmarkRoutingSelectorComparison/cache=true/before-14   	  160772	      3721 ns/op	    6144 B/op	       2 allocs/op
+BenchmarkRoutingSelectorComparison/cache=true/after-14    	  537292	      1113 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRoutingSelectorComparison/cache=true/after-14    	  557289	      1117 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRoutingSelectorComparison/cache=true/after-14    	  557491	      1113 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRoutingSelectorComparison/cache=true/after-14    	  560250	      1114 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRoutingSelectorComparison/cache=true/after-14    	  560618	      1127 ns/op	       0 B/op	       0 allocs/op
+PASS

@@ -616,12 +616,12 @@ struct SSDPrefixCacheModeTests {
 
     @Test("SSD defaults on and the single local kill switch disables it")
     func gateMatrix() {
-        #expect(PrefixCachePolicy.isEnabled(environment: [:]))
-        #expect(PrefixCachePolicy.isEnabled(
+        #expect(PrefixCachePolicy.isGloballyEnabled(environment: [:]))
+        #expect(PrefixCachePolicy.isGloballyEnabled(
             environment: ["DARKBLOOM_PREFIX_CACHE": "1"]))
-        #expect(!PrefixCachePolicy.isEnabled(
+        #expect(!PrefixCachePolicy.isGloballyEnabled(
             environment: ["DARKBLOOM_PREFIX_CACHE": "0"]))
-        #expect(!PrefixCachePolicy.isEnabled(
+        #expect(!PrefixCachePolicy.isGloballyEnabled(
             environment: ["DARKBLOOM_PREFIX_CACHE": "banana"]))
     }
 
@@ -642,6 +642,15 @@ struct SSDPrefixCacheModeTests {
             SSDPrefixCacheFactory.testRootEnvironmentKey: root.path,
         ]
         #expect(SSDPrefixCacheFactory.cacheRootDirectory(environment: raw) == root)
+        #expect(SSDPrefixCacheFactory.forceEphemeralKey(environment: raw))
+        var persistent = raw
+        persistent["DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY"] = "1"
+        #expect(!SSDPrefixCacheFactory.forceEphemeralKey(environment: persistent))
+        #expect(SSDPrefixCacheFactory.cacheRootDirectory(environment: persistent) == root)
+        persistent.removeValue(forKey: "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL")
+        #expect(SSDPrefixCacheFactory.cacheRootDirectory(environment: persistent) != root)
+        #expect(!SSDPrefixCacheFactory.forceEphemeralKey(environment: persistent))
+        #expect(!SSDPrefixCacheFactory.forceEphemeralKey(environment: ["DARKBLOOM_PREFIX_CACHE_TEST_PERSISTENT_KEY": "1"]))
         #expect(
             SSDPrefixCacheFactory.cacheDirectory(
                 modelId: "isolated-model",
@@ -661,28 +670,40 @@ struct SSDPrefixCacheModeTests {
             == PrefixCacheReadyResult.maxStageMs)
     }
 
-    @Test("box-wide disk budget: env override wins; default = min(20 GiB, free/2)")
+    @Test("box-wide disk budget: env override wins; default follows half of free space")
     func diskBudgetResolver() {
         let gib = 1_073_741_824
         #expect(
             PrefixCachePolicy.ssdDiskBudgetBytes(
                 environment: ["DARKBLOOM_PREFIX_CACHE_DISK_GB": "5"], freeBytes: 100 * gib)
                 == 5 * gib)
-        // Default: 20 GiB when free space is plentiful…
+        #expect(
+            PrefixCachePolicy.ssdDiskBudgetBytes(
+                environment: ["DARKBLOOM_PREFIX_CACHE_DISK_GB": "150"], freeBytes: 10 * gib)
+                == 150 * gib)
+        // Large volumes are no longer limited by a fixed 100 GiB ceiling.
+        #expect(
+            PrefixCachePolicy.ssdDiskBudgetBytes(environment: [:], freeBytes: 800 * gib)
+                == 400 * gib)
+        #expect(
+            PrefixCachePolicy.ssdDiskBudgetBytes(environment: [:], freeBytes: 200 * gib)
+                == 100 * gib)
+        // The automatic budget follows currently available space.
         #expect(
             PrefixCachePolicy.ssdDiskBudgetBytes(environment: [:], freeBytes: 100 * gib)
-                == 20 * gib)
-        // …clamped to free/2 on a tight volume…
+                == 50 * gib)
         #expect(
             PrefixCachePolicy.ssdDiskBudgetBytes(environment: [:], freeBytes: 10 * gib)
                 == 5 * gib)
-        // …and the fixed default when free space is unknown.
+        // Unknown capacity keeps a conservative bounded fallback.
         #expect(PrefixCachePolicy.ssdDiskBudgetBytes(environment: [:], freeBytes: nil) == 20 * gib)
+        #expect(PrefixCachePolicy.ssdDiskBudgetBytes(environment: [:], freeBytes: 0) == 1)
+        #expect(PrefixCachePolicy.ssdDiskBudgetBytes(environment: [:], freeBytes: Int.max) == Int.max / 2)
         // Malformed env degrades to the default (never crashes, never 0).
         #expect(
             PrefixCachePolicy.ssdDiskBudgetBytes(
                 environment: ["DARKBLOOM_PREFIX_CACHE_DISK_GB": "inf"], freeBytes: 100 * gib)
-                == 20 * gib)
+                == 50 * gib)
     }
 
     @Test("SSD knobs: TTL is capped at 15 minutes; write cap parses; stage gates parse")
@@ -710,6 +731,49 @@ struct SSDPrefixCacheModeTests {
         #expect(SSDPrefixCachePolicy.maxStageMillis(environment: [:]) == 1000)
         #expect(SSDPrefixCachePolicy.lowDiskFloorBytes(volumeCapacityBytes: 0)
             == 20 * 1_073_741_824)
+        #expect(SSDPrefixCachePolicy.lowDiskFloorBytes(volumeCapacityBytes: 1_995_165_736_960)
+            == 20 * 1_073_741_824)
+        #expect(SSDPrefixCachePolicy.lowDiskFloorBytes(volumeCapacityBytes: Int.max)
+            == 20 * 1_073_741_824)
+    }
+}
+
+@Suite("SSD prefix cache: metadata planning")
+struct SSDPrefixCacheMetadataPlanningTests {
+    @Test("RAM probe respects replay and byte caps without reading or pinning files",
+          arguments: [(0, 16), (8, 8), (16, 0)])
+    func metadataProbe(adoptionBound: Int, expectedSaved: Int) throws {
+        let dir = tempDir("metadata")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let cache = makeCache(
+            dir: dir, kek: kek, clock: ClockBox(10_000),
+            adoptionBound: adoptionBound, maxStageBytes: 250)
+        defer { cache.close() }
+        let tokens = Array(0 ... 64)
+        let hasher = CBv2BlockHasher(
+            blockSize: fixtureBlockSize, promptContractID: "test-prompt-contract", scopeID: "scope")
+        let keys = SSDLookupKeys(kek: kek)
+        for hash in hasher.chainHashes(tokens: tokens) {
+            // Metadata can outlive a file. A probe must remain advisory and
+            // leave authentication, reservations and hit accounting to stage.
+            cache.index.insert(
+                tag16: keys.tag16(chainHash: hash, cacheSalt: "scope"),
+                fileBytes: 100, lastAccess: 10_000)
+        }
+        #expect(cache.estimatedPrefillTokensSaved(
+            promptTokens: tokens, cacheScope: "scope") == expectedSaved)
+        #expect(cache.estimatedPrefillTokensSaved(
+            promptTokens: tokens, cacheScope: "different-scope") == 0)
+        #expect(cache.estimatedPrefillTokensSaved(
+            promptTokens: [0], cacheScope: "scope") == 0)
+        #expect(cache.index.count == 8)
+        #expect(cache.bytesInUse == 0)
+        #expect(cache.stats().corruptDropped == 0)
+        #expect(cache.stats().hits == 0)
+        cache.close()
+        #expect(cache.estimatedPrefillTokensSaved(
+            promptTokens: tokens, cacheScope: "scope") == 0)
     }
 }
 
@@ -1065,6 +1129,9 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(try SSDCacheEpochStore(root: dir, binding: binding).current == rotatedEpoch)
     }
 
+    // `holdDestructiveEpochForTesting` exists only under `#if DEBUG` in SSDPrefixCache.swift,
+    // so this test must be gated the same way or `swift test -c release` fails to compile.
+    #if DEBUG
     @Test("capability publication waits for destructive mutation completion")
     func destructiveMutationBracketsCapabilityPublication() async throws {
         let dir = tempDir("epoch-publication-bracket")
@@ -1124,6 +1191,7 @@ struct SSDPrefixCacheLifecycleTests {
         let current = try #require(cache.prefixCacheV2Capability())
         #expect(current.cacheEpoch != original.cacheEpoch)
     }
+    #endif
 
     @Test("reconciliation drops a symlink-replaced indexed file without following it")
     func reconciliationDropsSymlinkReplacement() throws {
@@ -1562,6 +1630,59 @@ struct SSDReadyWriteBarrierTests {
             stats: SSDPrefixCacheStatsBox(),
             onBlockSettled: onBlockSettled,
             sweepExpired: {})
+    }
+
+    @Test("a large disk with 95 GB free can donate below five percent free")
+    func largeVolumeDonation() async throws {
+        let dir = tempDir("large-volume-donation")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let writes = Counter()
+        let durable = Counter()
+        let outcome = OutcomeBox()
+        let writer = pipeline(
+            dir: dir,
+            volumeSpace: { (free: 94_941_983_360, capacity: 1_995_165_736_960) },
+            writeBlock: { _, _ in writes.increment(); return 1 })
+        #expect(writer.submit(.init(
+            blocks: [block(1)], totalBytes: 1,
+            onDurable: { durable.increment(); return true },
+            onOutcome: outcome.set)))
+        await writer.waitUntilDrained()
+        writer.close()
+        #expect(writes.count == 1)
+        #expect(durable.count == 1)
+        #expect(outcome.outcome == .donated)
+    }
+
+    @Test("pending donation must fit above the free-space reserve", arguments: [0, 1, 2])
+    func pendingDonationReserve(headroom: Int) async throws {
+        let dir = tempDir("pending-donation-reserve-\(headroom)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let writes = Counter()
+        let settled = Counter()
+        let durable = Counter()
+        let outcome = OutcomeBox()
+        let writer = pipeline(
+            dir: dir,
+            volumeSpace: {
+                (free: SSDPrefixCachePolicy.lowDiskAbsoluteFloorBytes + headroom,
+                 capacity: 2_000_000_000_000)
+            },
+            writeBlock: { _, _ in writes.increment(); return 1 },
+            onBlockSettled: { _ in settled.increment() })
+        // Each block fits in one byte; the complete two-byte donation must fit.
+        #expect(writer.submit(.init(
+            blocks: [block(1), block(2)], totalBytes: 2,
+            onDurable: { durable.increment(); return true },
+            onOutcome: outcome.set)))
+        await writer.waitUntilDrained()
+        writer.close()
+        let fits = headroom >= 2
+        #expect(writes.count == (fits ? 2 : 0))
+        #expect(settled.count == 2)
+        #expect(durable.count == (fits ? 1 : 0))
+        #expect(outcome.outcome == (fits ? .donated : .diskUnavailable))
+        #expect(outcome.count == 1)
     }
 
     @Test("low disk, generic write error, ENOSPC, and shutdown never cross durable barrier")
@@ -2053,8 +2174,8 @@ struct SSDPrefixCacheReservationTests {
         #expect(cache.bytesInUse == 0)
     }
 
-    @Test("conversion peak reserves host, per-block MLX, and concatenated arrays")
-    func conversionPeakReservationCoversThreeRepresentations() async throws {
+    @Test("streaming peak reserves native destinations and bounded crypto buffers")
+    func streamingPeakReservationCoversDestinationsAndScratch() async throws {
         let dir = tempDir("res-conversion-peak")
         defer { try? FileManager.default.removeItem(at: dir) }
         let available = BudgetAvailableBox(64 * 1_073_741_824)
@@ -2079,7 +2200,8 @@ struct SSDPrefixCacheReservationTests {
             total + (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
         }
         #expect(fileBytes > 0)
-        available.set(UInt64(fileBytes * 5 / 2))
+        let peak = try #require(SSDNativePrefixBuilder.stagingPeakBytes(runBytes: fileBytes))
+        available.set(UInt64(peak - 1))
 
         let refused = await cache.stage(
             requestID: "req-peak",
@@ -2089,7 +2211,7 @@ struct SSDPrefixCacheReservationTests {
         #expect(await budget.outstandingReservedBytes() == 0)
         #expect(cache.bytesInUse == 0)
 
-        available.set(UInt64(fileBytes * 4))
+        available.set(UInt64(peak))
         let staged = await cache.stage(
             requestID: "req-peak-success",
             promptTokens: Array(0 ..< tokenCount) + [1],
@@ -2445,7 +2567,7 @@ struct SSDWholeRootMaintenanceTests {
         #expect(FileManager.default.fileExists(atPath: fresh.path))
     }
 
-    @Test("20 GiB-style budget is global across unloaded model directories")
+    @Test("disk budget is global across unloaded model directories")
     func globalBudget() throws {
         let root = tempDir("whole-root-budget")
         defer { try? FileManager.default.removeItem(at: root) }

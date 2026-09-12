@@ -30,7 +30,7 @@ export interface ProviderStats {
   routable?: boolean;
 }
 
-export type ProviderRouteState = "serving" | "ready" | "attention";
+export type ProviderRouteState = "serving" | "ready" | "attention" | "unreported";
 export type ProviderStatusFilter = "all" | ProviderRouteState;
 export type ProviderTrustFilter = "all" | "hardware" | "basic";
 export type ProviderSortKey = "readiness" | "hardware" | "requests" | "tokens" | "chip";
@@ -40,6 +40,8 @@ export interface ProviderFleetSummary {
   ready: number;
   serving: number;
   attention: number;
+  unreported: number;
+  hardware: number;
 }
 
 // Keep the presentation aligned with registry.challengeFreshnessMaxAge so the
@@ -49,60 +51,51 @@ const FRESH_CHALLENGE_MS = 16 * 60 * 1_000;
 export function hasFreshChallenge(iso?: string, now = Date.now()): boolean {
   if (!iso) return false;
   const then = new Date(iso).getTime();
-  return Number.isFinite(then) && now - then <= FRESH_CHALLENGE_MS;
+  return Number.isFinite(then) && then <= now && now - then <= FRESH_CHALLENGE_MS;
 }
 
-export function isProviderRoutable(provider: ProviderStats, now = Date.now()): boolean {
-  if (typeof provider.routable === "boolean") return provider.routable;
+/** Published checks are useful context, but do not include every routing gate. */
+export function passesPublishedVerificationChecks(provider: ProviderStats, now = Date.now()): boolean {
   const statusOK = provider.status === "online" || provider.status === "serving";
-  const trustOK = provider.trust_level === "hardware";
-  const runtimeOK = provider.runtime_verified !== false;
-  return statusOK && trustOK && runtimeOK && hasFreshChallenge(provider.last_challenge_verified, now);
+  return statusOK && provider.trust_level === "hardware" && provider.runtime_verified === true && hasFreshChallenge(provider.last_challenge_verified, now);
 }
 
-export function providerRouteState(provider: ProviderStats, now = Date.now()): ProviderRouteState {
-  if (!isProviderRoutable(provider, now)) return "attention";
+/** Only an explicit coordinator verdict can certify routing eligibility. */
+export function isProviderRoutable(provider: ProviderStats): boolean {
+  return provider.routable === true;
+}
+
+export function providerRouteState(provider: ProviderStats): ProviderRouteState {
+  if (provider.routable === undefined) return "unreported";
+  if (!isProviderRoutable(provider)) return "attention";
   return provider.status === "serving" ? "serving" : "ready";
 }
 
 export function providerRouteReason(provider: ProviderStats, now = Date.now()): string {
-  if (isProviderRoutable(provider, now)) {
-    return provider.status === "serving"
-      ? "Actively serving traffic with all routing checks passed."
-      : "Trust, runtime, and challenge checks are current."
-  }
-  if (provider.status !== "online" && provider.status !== "serving") {
-    return "The node is not currently online for public routing."
-  }
-  if (provider.trust_level !== "hardware") {
-    return "Hardware-backed trust is not available for this node."
-  }
-  if (provider.runtime_verified === false) {
-    return "The latest runtime verification did not pass."
-  }
-  if (!provider.last_challenge_verified) {
-    return "No successful routing challenge has been published yet."
-  }
-  if (!hasFreshChallenge(provider.last_challenge_verified, now)) {
-    return "The latest routing challenge is older than sixteen minutes."
-  }
-  return "The coordinator has temporarily excluded this node from routing."
+  if (provider.routable === true) return "The coordinator reports this node as eligible for public routing.";
+  if (provider.routable === false) return "The coordinator reports this node as excluded from public routing.";
+  const unknown = "Routing eligibility is not published for this node.";
+  if (passesPublishedVerificationChecks(provider, now)) return `${unknown} The published hardware, runtime, and challenge checks are current.`;
+  if (provider.runtime_verified === false) return `${unknown} The latest published runtime verification did not pass.`;
+  if (provider.last_challenge_verified && !hasFreshChallenge(provider.last_challenge_verified, now)) return `${unknown} The last routing challenge is outside the sixteen-minute verification window.`;
+  return `${unknown} Hardware identity and challenge information are shown below.`;
 }
 
-export function summarizeProviderFleet(
-  providers: ProviderStats[],
-  now = Date.now(),
-): ProviderFleetSummary {
+export function summarizeProviderFleet(providers: ProviderStats[]): ProviderFleetSummary {
   let ready = 0;
   let serving = 0;
   let attention = 0;
+  let unreported = 0;
+  let hardware = 0;
   for (const provider of providers) {
-    const state = providerRouteState(provider, now);
-    if (state === "serving") serving++;
-    else if (state === "ready") ready++;
-    else attention++;
+    const state = providerRouteState(provider);
+    if (state === "ready") ready++;
+    if (state === "attention") attention++;
+    if (state === "unreported") unreported++;
+    if (provider.status === "serving") serving++;
+    if (provider.trust_level === "hardware") hardware++;
   }
-  return { visible: providers.length, ready, serving, attention };
+  return { visible: providers.length, ready, serving, attention, unreported, hardware };
 }
 
 function compareHardware(a: ProviderStats, b: ProviderStats): number {
@@ -117,15 +110,14 @@ export function compareProviders(
   a: ProviderStats,
   b: ProviderStats,
   sortKey: ProviderSortKey,
-  now = Date.now(),
 ): number {
   if (sortKey === "requests") return b.requests_served - a.requests_served || a.id.localeCompare(b.id);
   if (sortKey === "tokens") return b.tokens_generated - a.tokens_generated || a.id.localeCompare(b.id);
   if (sortKey === "chip") return a.chip.localeCompare(b.chip) || a.id.localeCompare(b.id);
   if (sortKey === "hardware") return compareHardware(a, b) || a.id.localeCompare(b.id);
-  const order: Record<ProviderRouteState, number> = { serving: 0, ready: 1, attention: 2 };
+  const order: Record<ProviderRouteState, number> = { serving: 0, ready: 1, unreported: 2, attention: 3 };
   return (
-    order[providerRouteState(a, now)] - order[providerRouteState(b, now)] ||
+    order[providerRouteState(a)] - order[providerRouteState(b)] ||
     compareHardware(a, b) ||
     a.id.localeCompare(b.id)
   );

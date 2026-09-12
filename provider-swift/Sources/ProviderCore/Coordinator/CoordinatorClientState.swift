@@ -22,8 +22,46 @@ public final class AtomicProviderStats: Sendable {
     // Count of completed requests whose usage chunk was missing/zero. Surfaced
     // in the daemon state file so `doctor` can flag a billing under-count.
     private let _usageGaps = ManagedAtomic<UInt64>(0)
+    // Profiler cancel-stage counters (slice 2). Bumped at the cancel sites
+    // from the request's `RequestProfileBuilder`; reported on the heartbeat
+    // as cumulative, delta-merged by the coordinator.
+    private let _cancelStagePreAcceptTotal = ManagedAtomic<UInt64>(0)
+    private let _cancelStagePreEngineTotal = ManagedAtomic<UInt64>(0)
+    private let _cancelStagePrefillTotal = ManagedAtomic<UInt64>(0)
+    private let _cancelStageDecodeTotal = ManagedAtomic<UInt64>(0)
+    private let _cancelStagePostTerminalTotal = ManagedAtomic<UInt64>(0)
+    private let _tokensAfterCancelTotal = ManagedAtomic<UInt64>(0)
+    private let _cancelAbortNsSum = ManagedAtomic<UInt64>(0)
 
     public init() {}
+
+    public var cancelStagePreAcceptTotal: UInt64 { _cancelStagePreAcceptTotal.load() }
+    public var cancelStagePreEngineTotal: UInt64 { _cancelStagePreEngineTotal.load() }
+    public var cancelStagePrefillTotal: UInt64 { _cancelStagePrefillTotal.load() }
+    public var cancelStageDecodeTotal: UInt64 { _cancelStageDecodeTotal.load() }
+    public var cancelStagePostTerminalTotal: UInt64 { _cancelStagePostTerminalTotal.load() }
+    public var tokensAfterCancelTotal: UInt64 { _tokensAfterCancelTotal.load() }
+    public var cancelAbortNsSum: UInt64 { _cancelAbortNsSum.load() }
+
+    /// Bump the cumulative counter for the lifecycle stage a cancel landed in.
+    public func incrementCancelStage(_ stage: CancelStage) {
+        switch stage {
+        case .preAccept: _cancelStagePreAcceptTotal.add(1)
+        case .preEngine: _cancelStagePreEngineTotal.add(1)
+        case .prefill: _cancelStagePrefillTotal.add(1)
+        case .decode: _cancelStageDecodeTotal.add(1)
+        case .postTerminal: _cancelStagePostTerminalTotal.add(1)
+        case .none, .other: break
+        }
+    }
+
+    public func addTokensAfterCancel(_ count: UInt64) {
+        _tokensAfterCancelTotal.add(count)
+    }
+
+    public func addCancelAbortNs(_ ns: UInt64) {
+        _cancelAbortNsSum.add(ns)
+    }
 
     public var requestsServed: UInt64 {
         get { _requestsServed.load() }
@@ -126,7 +164,14 @@ public final class AtomicProviderStats: Sendable {
             chunkEncryptionErrors: chunkEncryptionErrors,
             streamClosedWithoutTerminal: streamClosedWithoutTerminal,
             cancelDuringModelLoad: cancelDuringModelLoad,
-            usageGaps: usageGaps
+            usageGaps: usageGaps,
+            cancelStagePreAcceptTotal: cancelStagePreAcceptTotal,
+            cancelStagePreEngineTotal: cancelStagePreEngineTotal,
+            cancelStagePrefillTotal: cancelStagePrefillTotal,
+            cancelStageDecodeTotal: cancelStageDecodeTotal,
+            cancelStagePostTerminalTotal: cancelStagePostTerminalTotal,
+            tokensAfterCancelTotal: tokensAfterCancelTotal,
+            cancelAbortNsSum: cancelAbortNsSum
         )
     }
 }
@@ -140,12 +185,14 @@ public final class ProviderState: @unchecked Sendable {
     private var _warmModels: [String] = []
     private var _currentModelHash: String? = nil
     private var _backendCapacity: BackendCapacity? = nil
-    private var _prefixCacheV2Sources: [String: SSDPrefixCache] = [:]
+    private var _prefixCacheV2Sources: [String: any DurablePrefixCacheEvidenceSource] = [:]
+    private var _prefixCacheMemorySources: [String: ResidentPrefixCacheEvidence] = [:]
     private var _prefixCacheStatuses: [PrefixCacheModelStatus] = []
     private var _prefixCacheRuntimeIdentityAvailable = true
     private var _publishedCapacity: BackendCapacity? = nil
     private var _capacitySeq: UInt64 = 0
     private var _refusingNewWork = false
+    private var _modelAdmissionDrains: Set<String> = []
 
     /// Bounded per-(model, warm/cold, prompt-bucket, batch-bucket) end-to-end
     /// TTFT statistics from completed real requests, fed by the ProviderLoop's
@@ -191,6 +238,32 @@ public final class ProviderState: @unchecked Sendable {
         set { lock.withLock { _refusingNewWork = newValue } }
     }
 
+    /// Model admission mirrors are separate from whole-provider draining:
+    /// probes refuse immediately without changing the heartbeat status.
+    func setModelAdmissionDraining(_ modelID: String, _ draining: Bool) {
+        lock.withLock {
+            if draining {
+                _modelAdmissionDrains.insert(modelID)
+                // Also close periodic heartbeat routing before the actor's
+                // full capacity rebuild can suspend on an engine snapshot.
+                if var capacity = _backendCapacity {
+                    for index in capacity.slots.indices where capacity.slots[index].model == modelID {
+                        capacity.slots[index].state = "reloading"
+                    }
+                    _backendCapacity = capacity
+                }
+            } else {
+                _modelAdmissionDrains.remove(modelID)
+                // Keep a stale reloading snapshot conservative until the
+                // actor rebuilds the actual live replacement/retained slot.
+            }
+        }
+    }
+
+    func refusingNewWork(forModel modelID: String) -> Bool {
+        lock.withLock { _refusingNewWork || _modelAdmissionDrains.contains(modelID) }
+    }
+
     /// The capacity payload of the LAST heartbeat actually sent on the
     /// current connection, seq-stamped (routing v2). This is the lock-free
     /// published snapshot the capacity-quote path reads: quotes must be
@@ -214,8 +287,19 @@ public final class ProviderState: @unchecked Sendable {
     ) -> BackendCapacity? {
         guard var capacity else { return nil }
         return lock.withLock {
+            // The caller may have read this payload before a model drain
+            // began. Project the live fence under the publication lock so
+            // that old snapshot cannot advertise the target as routable.
+            for index in capacity.slots.indices
+                where _modelAdmissionDrains.contains(capacity.slots[index].model)
+            {
+                capacity.slots[index].state = "reloading"
+            }
             _capacitySeq &+= 1
             capacity.capacitySeq = _capacitySeq
+            let agedProcessMemory = capacity.telemetry?.processMemory?
+                .agedForHeartbeat(now: DispatchTime.now().uptimeNanoseconds)
+            capacity.telemetry?.processMemory = agedProcessMemory
             _publishedCapacity = capacity
             return capacity
         }
@@ -233,12 +317,14 @@ public final class ProviderState: @unchecked Sendable {
     }
 
     func setPrefixCacheSnapshot(
-        sources: [String: SSDPrefixCache],
+        sources: [String: any DurablePrefixCacheEvidenceSource],
+        memorySources: [String: ResidentPrefixCacheEvidence] = [:],
         statuses: [PrefixCacheModelStatus],
         runtimeIdentityAvailable: Bool
     ) {
         lock.withLock {
             _prefixCacheV2Sources = sources
+            _prefixCacheMemorySources = memorySources
             _prefixCacheStatuses = statuses
             _prefixCacheRuntimeIdentityAvailable = runtimeIdentityAvailable
         }
@@ -247,12 +333,14 @@ public final class ProviderState: @unchecked Sendable {
     func prefixCacheV2Advertisement() -> (
         protocolVersion: Int,
         models: [PrefixCacheV2Capability],
+        memoryModels: [PrefixCacheV2Capability],
         statuses: [PrefixCacheModelStatus],
         donationOutcomes: [PrefixCacheDonationOutcomeCount]
     ) {
         let snapshot = lock.withLock {
             (
                 sources: _prefixCacheV2Sources,
+                memorySources: _prefixCacheMemorySources,
                 statuses: _prefixCacheStatuses,
                 runtimeIdentityAvailable: _prefixCacheRuntimeIdentityAvailable
             )
@@ -285,9 +373,13 @@ public final class ProviderState: @unchecked Sendable {
             statuses.lazy.filter(\.isConcreteReady).map(\.modelId))
         models.removeAll { !readyModels.contains($0.modelId) }
         models.sort { $0.modelId < $1.modelId }
+        let memoryModels = snapshot.runtimeIdentityAvailable
+            ? snapshot.memorySources.values.compactMap { $0.capability() }.sorted { $0.modelId < $1.modelId }
+            : []
         return (
-            models.isEmpty || !snapshot.runtimeIdentityAvailable ? 1 : 2,
+            (models.isEmpty && memoryModels.isEmpty) || !snapshot.runtimeIdentityAvailable ? 1 : 2,
             models,
+            memoryModels,
             statuses,
             PrefixCacheDonationTelemetry.shared.snapshot()
         )

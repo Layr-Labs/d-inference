@@ -1,0 +1,20 @@
+{
+  "state": "PRELAUNCH_FAILURE_PRESERVED_STAGE_PARENT_RECOVERED",
+  "recorded_at_utc": "2026-09-06T10:11:47.373575+00:00",
+  "failure_root": "/tmp/darkbloom-gemma-contiguous-logit-execution2/failed-prelaunch-attempt1",
+  "first_controller_session": 43433,
+  "first_local_ssh_pid": 24560,
+  "first_native_started": false,
+  "native_model_executions_so_far": 0,
+  "recovery": {
+    "recovered_prelaunch_stage_parent": true,
+    "runs_created": true,
+    "native_started": false,
+    "old_owner_pids": [],
+    "native_processes": [],
+    "cell_roots_absent": true,
+    "source_manifest_unchanged": true,
+    "unix_time": 1788689507.3715782
+  },
+  "runtime_inputs_flags_or_validators_changed": false
+}

@@ -44,10 +44,11 @@ import (
 // Rejects are recorded once per failed dispatch attempt by
 // RecordCapacityReject.
 //
-// Keyed by the STABLE fault identity like every sibling tracker: reconnects
-// cannot reset the window, entries migrate on identity rebind
-// (migrateFaultStateLocked), Disconnect does NOT clear them, and the maps are
-// bounded by the same opportunistic >1024 sweep. Guarded by r.mu.
+// Keyed by the STABLE fault identity like every sibling tracker: the windows
+// live on the identity's gate (gate_state.go), so reconnects cannot reset
+// them, they migrate on identity rebind (mergeLocked), Disconnect does NOT
+// clear them, and the periodic gate sweep drops fully aged windows. Guarded by
+// gate.mu.
 const (
 	// envCapacityRatePenaltyMs scales the penalty (and is the kill switch: 0
 	// or negative disables the tracker entirely — no recording, no penalty).
@@ -83,28 +84,23 @@ func loadCapacityRateConfig() capacityRateConfig {
 }
 
 // recordCapacityRateRejectLocked appends one capacity-503 outcome for the pair
-// and prunes the window. Caller holds the r.mu write lock (called from
-// RecordCapacityReject).
-func (r *Registry) recordCapacityRateRejectLocked(key capacityRejectKey, now time.Time) {
-	if r.capacityRateCfg.PenaltyMs <= 0 {
+// and prunes the window. Caller holds g.mu (called from recordCapacityReject).
+func (g *gateState) recordCapacityRateRejectLocked(cfg capacityRateConfig, model string, now time.Time) {
+	if cfg.PenaltyMs <= 0 {
 		return
 	}
-	_, existed := r.capacityRateRejects[key]
-	r.capacityRateRejects[key] = appendWindowedOutcome(r.capacityRateRejects[key], now)
-	if !existed {
-		sweepCapacityRateMapLocked(r.capacityRateRejects, now)
-	}
+	g.capacityRateRejects[model] = appendWindowedOutcome(g.capacityRateRejects[model], now)
 
 	// A pair may have gone quiet long enough for its accept-only history to
 	// expire before this first/new reject. Prune it now so repeated routing reads
 	// do not keep scanning stale timestamps and the first rate uses only the same
 	// five-minute window as the reject side.
-	if accepts, ok := r.capacityRateAccepts[key]; ok {
+	if accepts, ok := g.capacityRateAccepts[model]; ok {
 		accepts = pruneWindowedOutcomes(accepts, now)
 		if len(accepts) == 0 {
-			delete(r.capacityRateAccepts, key)
+			delete(g.capacityRateAccepts, model)
 		} else {
-			r.capacityRateAccepts[key] = accepts
+			g.capacityRateAccepts[model] = accepts
 		}
 	}
 }
@@ -116,16 +112,12 @@ func (r *Registry) recordCapacityRateRejectLocked(key capacityRejectKey, now tim
 // The rate/penalty read paths still return zero while no reject is in-window, so
 // this healthy history is observationally dormant. Returns whether the accept
 // was stored so the api layer can stamp the request (MarkRateOutcomeCounted)
-// and prevent completion from double-counting it. Caller holds r.mu for write.
-func (r *Registry) recordCapacityRateAcceptLocked(key capacityRejectKey, now time.Time) (recorded bool) {
-	if r.capacityRateCfg.PenaltyMs <= 0 {
+// and prevent completion from double-counting it. Caller holds g.mu.
+func (g *gateState) recordCapacityRateAcceptLocked(cfg capacityRateConfig, model string, now time.Time) (recorded bool) {
+	if cfg.PenaltyMs <= 0 {
 		return false
 	}
-	_, existed := r.capacityRateAccepts[key]
-	r.capacityRateAccepts[key] = appendWindowedOutcome(r.capacityRateAccepts[key], now)
-	if !existed {
-		sweepCapacityRateMapLocked(r.capacityRateAccepts, now)
-	}
+	g.capacityRateAccepts[model] = appendWindowedOutcome(g.capacityRateAccepts[model], now)
 	return true
 }
 
@@ -154,24 +146,8 @@ func appendWindowedOutcome(outcomes []time.Time, now time.Time) []time.Time {
 	return append(pruneWindowedOutcomes(outcomes, now), now)
 }
 
-// sweepCapacityRateMapLocked bounds a rate map by dropping pairs whose newest
-// outcome has aged out of the window, once the map grows (mirrors the sibling
-// cooldown sweeps — churned session-keyed identities are never re-keyed).
-// Histories must remain chronological because this deliberately uses the tail
-// for an O(1) newest check while holding the registry lock.
-func sweepCapacityRateMapLocked(m map[capacityRejectKey][]time.Time, now time.Time) {
-	if len(m) <= 1024 {
-		return
-	}
-	for key, outcomes := range m {
-		if len(outcomes) == 0 || now.Sub(outcomes[len(outcomes)-1]) >= capacityRateWindow {
-			delete(m, key)
-		}
-	}
-}
-
 // countInWindow counts timestamps still inside the window without mutating the
-// chronological slice, so read paths stay safe under r.mu.RLock.
+// chronological slice, so read paths stay safe under a shared lock.
 func countInWindow(outcomes []time.Time, now time.Time) int {
 	cutoff := now.Add(-capacityRateWindow)
 	first := sort.Search(len(outcomes), func(i int) bool {
@@ -180,42 +156,74 @@ func countInWindow(outcomes []time.Time, now time.Time) int {
 	return len(outcomes) - first
 }
 
-// capacityRatePenaltyLocked returns the cost penalty (ms) and the measured
+// capacityRatePenalty returns the cost penalty (ms) and the measured
 // capacity-reject rate for the pair. Penalty is nonzero only when the window
 // holds at least capacityRateMinSample outcomes AND the rate exceeds
 // capacityRateThreshold; the rate is returned whenever computable so callers
-// can expose it for observability. READ-ONLY — callers hold r.mu in either
-// mode (buildCandidateWithReason runs under the selection locks).
-func (r *Registry) capacityRatePenaltyLocked(providerID, modelID string, now time.Time) (penaltyMs, rate float64) {
-	if r.capacityRateCfg.PenaltyMs <= 0 {
+// can expose it for observability.
+//
+// Hot-path fast exit without the lock: the gate publishes its newest rate
+// reject as an atomic, so a healthy pair — no capacity-503 inside the window
+// on ANY model — pays nothing (buildCandidateInto runs this once per
+// candidate per scan). Only a pair with an in-window reject takes the short
+// gate.mu section. nil-safe.
+func (g *gateState) capacityRatePenalty(cfg capacityRateConfig, model string, now time.Time) (penaltyMs, rate float64) {
+	if cfg.PenaltyMs <= 0 || g == nil {
 		return 0, 0
 	}
-	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
-	rejects := countInWindow(r.capacityRateRejects[key], now)
-	if rejects == 0 {
-		return 0, 0 // hot-path fast exit: healthy pairs pay nothing
+	newest := g.newestRateRejectNS.Load()
+	if newest == 0 || now.UnixNano()-newest >= int64(capacityRateWindow) {
+		return 0, 0
 	}
-	accepts := countInWindow(r.capacityRateAccepts[key], now)
+	g = g.lockResolved()
+	rejects := countInWindow(g.capacityRateRejects[model], now)
+	accepts := countInWindow(g.capacityRateAccepts[model], now)
+	g.mu.Unlock()
+	if rejects == 0 {
+		return 0, 0
+	}
 	total := rejects + accepts
 	rate = float64(rejects) / float64(total)
 	if total < capacityRateMinSample || rate <= capacityRateThreshold {
 		return 0, rate
 	}
-	return rate * r.capacityRateCfg.PenaltyMs, rate
+	return rate * cfg.PenaltyMs, rate
+}
+
+// capacityRatePenalty resolves the session's gate; the scan uses the cached
+// p.gate through capacityRatePenaltyFor.
+func (r *Registry) capacityRatePenalty(providerID, modelID string, now time.Time) (penaltyMs, rate float64) {
+	return r.lookupGateForSession(providerID).capacityRatePenalty(r.capacityRateCfg, modelID, now)
+}
+
+// capacityRatePenaltyFor is capacityRatePenalty on the connected provider's
+// cached gate, confirmed against p.gate (gateView): the candidate's cost
+// input (buildCandidateInto).
+func (r *Registry) capacityRatePenaltyFor(p *Provider, model string, now time.Time) (penaltyMs, rate float64) {
+	view := r.gateViewOf(p)
+	for {
+		penaltyMs, rate = view.g.capacityRatePenalty(r.capacityRateCfg, model, now)
+		if !view.moved() {
+			return penaltyMs, rate
+		}
+	}
 }
 
 // CapacityRejectRate exposes the pair's windowed capacity-reject rate and
 // sample count for tests and observability.
 func (r *Registry) CapacityRejectRate(providerID, modelID string) (rate float64, samples int) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	g := r.lookupGateForSession(providerID)
+	if g == nil {
+		return 0, 0
+	}
 	now := time.Now()
-	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
-	rejects := countInWindow(r.capacityRateRejects[key], now)
+	g = g.lockResolved()
+	rejects := countInWindow(g.capacityRateRejects[modelID], now)
+	accepts := countInWindow(g.capacityRateAccepts[modelID], now)
+	g.mu.Unlock()
 	if rejects == 0 {
 		return 0, 0
 	}
-	accepts := countInWindow(r.capacityRateAccepts[key], now)
 	total := rejects + accepts
 	if total == 0 {
 		return 0, 0

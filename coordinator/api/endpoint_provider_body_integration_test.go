@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -236,8 +237,12 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			before := time.Now().UTC().Format(time.DateOnly)
+			// Every endpoint must overwrite consumer-controlled template metadata.
+			requestBody := strings.TrimSuffix(test.requestBody, "}") +
+				`,"_darkbloom_prompt_date":"1999-01-01"}`
 			request, err := http.NewRequestWithContext(
-				ctx, http.MethodPost, ts.URL+test.path, strings.NewReader(test.requestBody))
+				ctx, http.MethodPost, ts.URL+test.path, strings.NewReader(requestBody))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -289,6 +294,14 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 			var fields map[string]json.RawMessage
 			if err := json.Unmarshal(result.body, &fields); err != nil {
 				t.Fatal(err)
+			}
+			var promptDate string
+			if err := json.Unmarshal(fields[promptcontract.RequestDateField], &promptDate); err != nil {
+				t.Fatalf("sealed body lost request date: %v", err)
+			}
+			after := time.Now().UTC().Format(time.DateOnly)
+			if promptDate != before && promptDate != after {
+				t.Fatalf("sealed date = %q, want coordinator date %q or %q", promptDate, before, after)
 			}
 			for _, key := range test.absent {
 				if _, exists := fields[key]; exists {

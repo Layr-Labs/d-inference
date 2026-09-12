@@ -21,6 +21,12 @@ func (s *Server) registerExactCacheGauges() {
 			return boolGauge(s.RoutingMode == mode)
 		}), MetricLabel{"mode", mode})
 	}
+	s.metrics.RegisterGauge("exact_cache_artifact_allowlist_configured", gauge(func(s ExactCacheStatus) float64 {
+		return boolGauge(s.ArtifactAllowlist.Configured)
+	}))
+	s.metrics.RegisterGauge("exact_cache_artifact_allowlist_count", gauge(func(s ExactCacheStatus) float64 {
+		return float64(s.ArtifactAllowlist.Count)
+	}))
 	s.metrics.RegisterGauge("exact_cache_sidecar_enabled", gauge(func(s ExactCacheStatus) float64 {
 		return boolGauge(s.Sidecar.Enabled)
 	}))
@@ -165,6 +171,9 @@ func (s *Server) registerExactCacheGauges() {
 	s.metrics.RegisterGauge("exact_cache_v2_ready_models", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Providers.V2ReadyModels)
 	}))
+	s.metrics.RegisterGauge("exact_cache_memory_ready_models", gauge(func(s ExactCacheStatus) float64 {
+		return float64(s.Providers.MemoryReadyModels)
+	}))
 	s.metrics.RegisterGauge("exact_cache_loaded_models", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Providers.LoadedModels)
 	}))
@@ -248,6 +257,8 @@ func (s *Server) exactCacheGaugeSnapshot() ExactCacheStatus {
 func (s *Server) emitExactCacheDDGauges() {
 	status := s.cachedExactCacheStatusSnapshot()
 	s.ddGauge("exact_cache.routing_mode", 1, []string{"mode:" + status.RoutingMode})
+	s.ddGauge("exact_cache.artifact_allowlist.configured", boolGauge(status.ArtifactAllowlist.Configured), nil)
+	s.ddGauge("exact_cache.artifact_allowlist.count", float64(status.ArtifactAllowlist.Count), nil)
 	s.ddGauge("exact_cache.activation.percent", status.Activation.Percent, nil)
 	s.ddGauge("exact_cache.activation.max_plan_qps", status.Activation.MaxPlanQPS, nil)
 	s.ddGauge("exact_cache.activation.total", float64(status.Activation.Evaluated), []string{"outcome:evaluated"})
@@ -300,6 +311,7 @@ func (s *Server) emitExactCacheDDGauges() {
 	s.ddGauge("exact_cache.provider_protocol", float64(status.Providers.V1), []string{"version:1"})
 	s.ddGauge("exact_cache.provider_protocol", float64(status.Providers.V2), []string{"version:2"})
 	s.ddGauge("exact_cache.v2_ready_models", float64(status.Providers.V2ReadyModels), nil)
+	s.ddGauge("exact_cache.memory_ready_models", float64(status.Providers.MemoryReadyModels), nil)
 	s.ddGauge("exact_cache.loaded_models", float64(status.Providers.LoadedModels), nil)
 	s.ddGauge("exact_cache.reported_loaded_models", float64(status.Providers.ReportedLoadedModels), nil)
 	s.ddGauge("exact_cache.unreported_loaded_models", float64(status.Providers.UnreportedLoadedModels), nil)

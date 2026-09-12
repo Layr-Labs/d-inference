@@ -1,0 +1,89 @@
+Building for debugging...
+[0/3] Write sources
+[1/3] Write swift-version--58304C5D6DBC2206.txt
+[3/5] Emitting module ProviderCoreTests
+[4/5] Compiling ProviderCoreTests SSDCheckpointRecencyCoordinationTests.swift
+[4/6] Write Objects.LinkFileList
+[5/6] Linking SSDCheckpointCPURegressionPackageTests
+Build complete! (1.13s)
+Test Suite 'All tests' started at 2026-09-06 09:35:29.794.
+Test Suite 'All tests' passed at 2026-09-06 09:35:29.795.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "Checkpoint coordination path stability" started.
+◇ Suite "Checkpoint authenticated recency coordination" started.
+◇ Suite "Checkpoint per-file asynchronous coordination" started.
+◇ Test "the same URL keeps its key across creation and deletion" started.
+◇ Test "reproducer: identical mtime touch changes ctime during a complete authenticated read" started.
+◇ Test "same-file waiters are FIFO and unrelated files proceed independently" started.
+◇ Test case passing 1 argument root → "/private/tmp" to "the same URL keeps its key across creation and deletion" started.
+✔ Test "same-file waiters are FIFO and unrelated files proceed independently" passed after 0.001 seconds.
+◇ Test "queued cancellation refunds a waiter without unlocking its active reader" started.
+✔ Test "queued cancellation refunds a waiter without unlocking its active reader" passed after 0.001 seconds.
+◇ Test "explicit cancellation before or during enqueue leaves no tombstones" started.
+✔ Test "explicit cancellation before or during enqueue leaves no tombstones" passed after 0.001 seconds.
+◇ Test "handoff racing cancellation resumes exactly once and prunes every file" started.
+✘ Test "the same URL keeps its key across creation and deletion" recorded an issue with 1 argument root → "/private/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:22:9: Expectation failed: (coordinator.trackedFileCount → 2) == ((shared ? 1 : 2) → 1)
+✘ Test "the same URL keeps its key across creation and deletion" recorded an issue with 1 argument root → "/private/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:23:9: Expectation failed: (coordinator.pendingCount(for: ownerURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "the same URL keeps its key across creation and deletion" recorded an issue with 1 argument root → "/private/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:24:9: Expectation failed: (coordinator.pendingCount(for: waiterURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "the same URL keeps its key across creation and deletion" recorded an issue with 1 argument root → "/private/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:22:9: Expectation failed: (coordinator.trackedFileCount → 2) == ((shared ? 1 : 2) → 1)
+✘ Test "the same URL keeps its key across creation and deletion" recorded an issue with 1 argument root → "/private/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:23:9: Expectation failed: (coordinator.pendingCount(for: ownerURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "the same URL keeps its key across creation and deletion" recorded an issue with 1 argument root → "/private/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:24:9: Expectation failed: (coordinator.pendingCount(for: waiterURL) → 0) == ((shared ? 1 : 0) → 1)
+◇ Test case passing 1 argument root → "/private/var/tmp" to "the same URL keeps its key across creation and deletion" started.
+✘ Test "the same URL keeps its key across creation and deletion" recorded an issue with 1 argument root → "/private/var/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:22:9: Expectation failed: (coordinator.trackedFileCount → 2) == ((shared ? 1 : 2) → 1)
+✘ Test "the same URL keeps its key across creation and deletion" recorded an issue with 1 argument root → "/private/var/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:23:9: Expectation failed: (coordinator.pendingCount(for: ownerURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "the same URL keeps its key across creation and deletion" recorded an issue with 1 argument root → "/private/var/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:24:9: Expectation failed: (coordinator.pendingCount(for: waiterURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "the same URL keeps its key across creation and deletion" recorded an issue with 1 argument root → "/private/var/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:22:9: Expectation failed: (coordinator.trackedFileCount → 2) == ((shared ? 1 : 2) → 1)
+✘ Test "the same URL keeps its key across creation and deletion" recorded an issue with 1 argument root → "/private/var/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:23:9: Expectation failed: (coordinator.pendingCount(for: ownerURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "the same URL keeps its key across creation and deletion" recorded an issue with 1 argument root → "/private/var/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:24:9: Expectation failed: (coordinator.pendingCount(for: waiterURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "the same URL keeps its key across creation and deletion" with 2 test cases failed after 0.002 seconds with 12 issues.
+◇ Test "supported aliases share one key with or without a published target" started.
+◇ Test case passing 1 argument root → "/tmp" to "supported aliases share one key with or without a published target" started.
+✘ Test "supported aliases share one key with or without a published target" recorded an issue with 1 argument root → "/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:22:9: Expectation failed: (coordinator.trackedFileCount → 2) == ((shared ? 1 : 2) → 1)
+✘ Test "supported aliases share one key with or without a published target" recorded an issue with 1 argument root → "/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:23:9: Expectation failed: (coordinator.pendingCount(for: ownerURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "supported aliases share one key with or without a published target" recorded an issue with 1 argument root → "/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:24:9: Expectation failed: (coordinator.pendingCount(for: waiterURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "supported aliases share one key with or without a published target" recorded an issue with 1 argument root → "/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:22:9: Expectation failed: (coordinator.trackedFileCount → 2) == ((shared ? 1 : 2) → 1)
+✘ Test "supported aliases share one key with or without a published target" recorded an issue with 1 argument root → "/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:23:9: Expectation failed: (coordinator.pendingCount(for: ownerURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "supported aliases share one key with or without a published target" recorded an issue with 1 argument root → "/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:24:9: Expectation failed: (coordinator.pendingCount(for: waiterURL) → 0) == ((shared ? 1 : 0) → 1)
+◇ Test case passing 1 argument root → "/var/tmp" to "supported aliases share one key with or without a published target" started.
+✘ Test "supported aliases share one key with or without a published target" recorded an issue with 1 argument root → "/var/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:22:9: Expectation failed: (coordinator.trackedFileCount → 2) == ((shared ? 1 : 2) → 1)
+✘ Test "supported aliases share one key with or without a published target" recorded an issue with 1 argument root → "/var/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:23:9: Expectation failed: (coordinator.pendingCount(for: ownerURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "supported aliases share one key with or without a published target" recorded an issue with 1 argument root → "/var/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:24:9: Expectation failed: (coordinator.pendingCount(for: waiterURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "supported aliases share one key with or without a published target" recorded an issue with 1 argument root → "/var/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:22:9: Expectation failed: (coordinator.trackedFileCount → 2) == ((shared ? 1 : 2) → 1)
+✘ Test "supported aliases share one key with or without a published target" recorded an issue with 1 argument root → "/var/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:23:9: Expectation failed: (coordinator.pendingCount(for: ownerURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "supported aliases share one key with or without a published target" recorded an issue with 1 argument root → "/var/tmp" at SSDCheckpointFileCoordinatorPathTests.swift:24:9: Expectation failed: (coordinator.pendingCount(for: waiterURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "supported aliases share one key with or without a published target" with 2 test cases failed after 0.001 seconds with 12 issues.
+◇ Test "lexical normalization handles dots, parents, repeated separators, and root bounds" started.
+✘ Test "lexical normalization handles dots, parents, repeated separators, and root bounds" recorded an issue at SSDCheckpointFileCoordinatorPathTests.swift:22:9: Expectation failed: (coordinator.trackedFileCount → 2) == ((shared ? 1 : 2) → 1)
+✘ Test "lexical normalization handles dots, parents, repeated separators, and root bounds" recorded an issue at SSDCheckpointFileCoordinatorPathTests.swift:23:9: Expectation failed: (coordinator.pendingCount(for: ownerURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "lexical normalization handles dots, parents, repeated separators, and root bounds" recorded an issue at SSDCheckpointFileCoordinatorPathTests.swift:24:9: Expectation failed: (coordinator.pendingCount(for: waiterURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "lexical normalization handles dots, parents, repeated separators, and root bounds" recorded an issue at SSDCheckpointFileCoordinatorPathTests.swift:22:9: Expectation failed: (coordinator.trackedFileCount → 2) == ((shared ? 1 : 2) → 1)
+✘ Test "lexical normalization handles dots, parents, repeated separators, and root bounds" recorded an issue at SSDCheckpointFileCoordinatorPathTests.swift:23:9: Expectation failed: (coordinator.pendingCount(for: ownerURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "lexical normalization handles dots, parents, repeated separators, and root bounds" recorded an issue at SSDCheckpointFileCoordinatorPathTests.swift:24:9: Expectation failed: (coordinator.pendingCount(for: waiterURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "lexical normalization handles dots, parents, repeated separators, and root bounds" recorded an issue at SSDCheckpointFileCoordinatorPathTests.swift:22:9: Expectation failed: (coordinator.trackedFileCount → 2) == ((shared ? 1 : 2) → 1)
+✘ Test "lexical normalization handles dots, parents, repeated separators, and root bounds" recorded an issue at SSDCheckpointFileCoordinatorPathTests.swift:23:9: Expectation failed: (coordinator.pendingCount(for: ownerURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "lexical normalization handles dots, parents, repeated separators, and root bounds" recorded an issue at SSDCheckpointFileCoordinatorPathTests.swift:24:9: Expectation failed: (coordinator.pendingCount(for: waiterURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "lexical normalization handles dots, parents, repeated separators, and root bounds" recorded an issue at SSDCheckpointFileCoordinatorPathTests.swift:22:9: Expectation failed: (coordinator.trackedFileCount → 2) == ((shared ? 1 : 2) → 1)
+✘ Test "lexical normalization handles dots, parents, repeated separators, and root bounds" recorded an issue at SSDCheckpointFileCoordinatorPathTests.swift:23:9: Expectation failed: (coordinator.pendingCount(for: ownerURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "lexical normalization handles dots, parents, repeated separators, and root bounds" recorded an issue at SSDCheckpointFileCoordinatorPathTests.swift:24:9: Expectation failed: (coordinator.pendingCount(for: waiterURL) → 0) == ((shared ? 1 : 0) → 1)
+✘ Test "lexical normalization handles dots, parents, repeated separators, and root bounds" failed after 0.001 seconds with 12 issues.
+◇ Test "alias matching respects component boundaries and preserves unrelated files" started.
+✔ Test "alias matching respects component boundaries and preserves unrelated files" passed after 0.001 seconds.
+✘ Suite "Checkpoint coordination path stability" failed after 0.005 seconds with 36 issues.
+✔ Test "handoff racing cancellation resumes exactly once and prunes every file" passed after 0.004 seconds.
+✔ Suite "Checkpoint per-file asynchronous coordination" passed after 0.005 seconds.
+✔ Test "reproducer: identical mtime touch changes ctime during a complete authenticated read" passed after 0.006 seconds.
+◇ Test "queued recency touch cannot invalidate an active authenticated snapshot" started.
+◇ Test case passing 1 argument publishedBeforeAccess → false to "queued recency touch cannot invalidate an active authenticated snapshot" started.
+✘ Test "queued recency touch cannot invalidate an active authenticated snapshot" recorded an issue with 1 argument publishedBeforeAccess → false at SSDCheckpointRecencyCoordinationTests.swift:120:9: Expectation failed: (coordinator.trackedFileCount → 2) == 1
+✘ Test "queued recency touch cannot invalidate an active authenticated snapshot" recorded an issue with 1 argument publishedBeforeAccess → false at SSDCheckpointRecencyCoordinationTests.swift:121:9: Expectation failed: (coordinator.pendingCount(for: coordinationURL) → 0) == 1
+✘ Test "queued recency touch cannot invalidate an active authenticated snapshot" recorded an issue with 1 argument publishedBeforeAccess → false at SSDCheckpointRecencyCoordinationTests.swift:122:9: Expectation failed: !((secondTouch → ProviderCoreTests.SSDCheckpointCoordinationTestSupport.Barrier).isEntered → true → true)
+✘ Test "queued recency touch cannot invalidate an active authenticated snapshot" recorded an issue with 1 argument publishedBeforeAccess → false at SSDCheckpointRecencyCoordinationTests.swift:88:6: Caught error: .changedDuringRead
+◇ Test case passing 1 argument publishedBeforeAccess → true to "queued recency touch cannot invalidate an active authenticated snapshot" started.
+✘ Test "queued recency touch cannot invalidate an active authenticated snapshot" with 2 test cases failed after 0.004 seconds with 4 issues.
+◇ Test "coordination still rejects external replacements and corrupt ciphertext" started.
+✔ Test "coordination still rejects external replacements and corrupt ciphertext" passed after 0.002 seconds.
+✘ Suite "Checkpoint authenticated recency coordination" failed after 0.013 seconds with 4 issues.
+✘ Test run with 11 tests in 3 suites failed after 0.013 seconds with 40 issues.

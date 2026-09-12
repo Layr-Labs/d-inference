@@ -3,7 +3,8 @@
 import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Sparkles, RotateCcw } from "lucide-react";
+import { RotateCcw } from "lucide-react";
+import { BloomMark } from "@/components/brand/BloomMark";
 import type { Message } from "@/lib/store";
 import { parseThinkFromContent } from "@/lib/chat/think-parser";
 import { TrustBadge } from "@/components/TrustBadge";
@@ -67,11 +68,10 @@ function ChatMessageImpl({
 
   return (
     <div className="message-animate py-4">
-      <div className="max-w-4xl mx-auto px-3 sm:px-6">
+      <div className="max-w-3xl mx-auto px-4 sm:px-6">
         <div className="flex gap-2 sm:gap-3">
-          {/* Avatar — hand-drawn style */}
-          <div className="shrink-0 w-7 h-7 rounded-lg bg-teal-light border-2 border-teal flex items-center justify-center mt-0.5 hidden sm:flex">
-            <Sparkles size={14} className="text-teal" />
+          <div className="mt-0.5 hidden h-7 w-7 shrink-0 items-center justify-center text-accent-brand sm:flex">
+            <BloomMark size={24} />
           </div>
 
           {/* Content */}
@@ -121,8 +121,8 @@ function ChatMessageImpl({
                 className={`mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg
                            text-xs font-semibold transition-all ${
                              message.error
-                               ? "bg-coral/10 border-2 border-coral/30 text-coral hover:bg-coral/20 hover:border-coral/50"
-                               : "bg-bg-secondary border-2 border-ink/10 text-text-secondary hover:bg-bg-tertiary hover:border-ink/20"
+                               ? "bg-accent-brand-dim text-accent-brand hover:bg-coral/20"
+                               : "text-text-secondary hover:bg-bg-secondary hover:text-text-primary"
                            }`}
               >
                 <RotateCcw size={12} />

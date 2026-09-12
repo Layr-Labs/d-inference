@@ -1,0 +1,140 @@
+{
+  "schema": 1,
+  "scope": "One normal-MTP B1 ordered cache-off/ephemeral-SSD pair; no paged/HTTP/production-key process restart validation",
+  "parent_commit": "ac1dc301c7b15b7d8f0b7bb18cf3d70e93157f75",
+  "native_commit": "b5d6c922bd7eec682eb1997c4868befe4efd02ee",
+  "files": {
+    "off/engine.log.gz": {
+      "bytes": 330,
+      "sha256": "b6d7f8fdd8ebaa439bd4c9da4baf63ef66b70fdae6aeab15f5cec6af3f765a53",
+      "uncompressed_bytes": 842,
+      "uncompressed_sha256": "eae46a1fb4b2e66adefefd406dc71a6a9f75198b329e7317a922aa504c75e505"
+    },
+    "off/metadata.json.gz": {
+      "bytes": 402,
+      "sha256": "fb117d5a4dfc7914c81ca20101c878f0ebba955bd38398a3123ed3252f657ab9",
+      "uncompressed_bytes": 805,
+      "uncompressed_sha256": "ada3adff5989ad9a1cfba622bd4452d864824d632b2570e3cc36db06bb3dd1fa"
+    },
+    "off/report.json.gz": {
+      "bytes": 19728,
+      "sha256": "9814d96dcf97f95f9ed49206e1416c5b9b25a569f1022085344b4863f85d66f1",
+      "uncompressed_bytes": 596763,
+      "uncompressed_sha256": "cd82da32bf7919cf9b6d8e97e98c65f05a8b8c5b129bd8fba5c20d8e786c43e3"
+    },
+    "off/telemetry.jsonl.gz": {
+      "bytes": 22037,
+      "sha256": "3a9ed1a13c364316f15327192635170cd5dd44d9ab3fc98367c8e3a097bac8e6",
+      "uncompressed_bytes": 137621,
+      "uncompressed_sha256": "e5f45b38859d71c8bf668931dca5a565c276216fd581e80fbbe905e5b21b9283"
+    },
+    "on/engine.log.gz": {
+      "bytes": 333,
+      "sha256": "7f8d42df7012f4eca08ebf39e06cf3342e690e2ece03be0a126e229ec4c469a5",
+      "uncompressed_bytes": 832,
+      "uncompressed_sha256": "8e94be254de7408cb6d5a5b3447486b8fe48dacbaee20201f0ab8cdef7904166"
+    },
+    "on/metadata.json.gz": {
+      "bytes": 399,
+      "sha256": "8dc16f36f38499484e21c4af819f3339787a96a1cfb0256284ff3056f89ec7d4",
+      "uncompressed_bytes": 806,
+      "uncompressed_sha256": "a31eee7758de85919d4d31943812fda810d86e0de5dda1eba733b583fd1904dd"
+    },
+    "on/report.json.gz": {
+      "bytes": 22252,
+      "sha256": "e5ba56f9d2e652458ac08b12523f8933b9a4fbf7dcc2b1326925080bdad65e3f",
+      "uncompressed_bytes": 611556,
+      "uncompressed_sha256": "409aa4a757a7398b01265cd1afa0964aa376e722510f76acf1069520458f75ba"
+    },
+    "on/telemetry.jsonl.gz": {
+      "bytes": 18286,
+      "sha256": "0d8095c76ca9591db8c5e14c95ccc60064a85480ea68e3922f306d8d90a86f5b",
+      "uncompressed_bytes": 116454,
+      "uncompressed_sha256": "2c61fa9a02d54a73998ba2e1cfe3330f7dc2f28f3267316cb8815cae80da4543"
+    },
+    "comparator-verdict.json": {
+      "bytes": 1215,
+      "sha256": "9f8c4050ce7ce04b172f9c66887f20edac1369ae985f662db4bd88cebea22ea8",
+      "uncompressed_bytes": 1215,
+      "uncompressed_sha256": "9f8c4050ce7ce04b172f9c66887f20edac1369ae985f662db4bd88cebea22ea8"
+    },
+    "artifact/artifact-manifest.json.gz": {
+      "bytes": 1532,
+      "sha256": "65267197ab86ce4dbeb2fec9cac62fa63db8400ac555b56407a0c9cdddcfdc76",
+      "uncompressed_bytes": 3334,
+      "uncompressed_sha256": "e522d59598d61c9137b527acae9a951410809c6d2a086f8e3a5c03f23e6bf6f3"
+    },
+    "artifact/source-manifest.json.gz": {
+      "bytes": 53835,
+      "sha256": "c4b1941f79a8be35a268f0aa174b70e89f10f1c53d56a8fa045140a70eeeb2b2",
+      "uncompressed_bytes": 153680,
+      "uncompressed_sha256": "f7e354636ac2ca735d3b2d47e369c06ac9308c024db54214e6225a7d11fd7e64"
+    },
+    "artifact/cli-release.log.gz": {
+      "bytes": 5335,
+      "sha256": "e0ed18c1de312c4bc99cb90d6712bb6acdd0ae836d66601cf7c3e8f6aca94c5d",
+      "uncompressed_bytes": 29456,
+      "uncompressed_sha256": "327834ebad70cec6c25cf69911ac797bb8fc5a0c71d71624ee51e8791a5cc8fb"
+    },
+    "artifact/engine-release.log.gz": {
+      "bytes": 651,
+      "sha256": "6e39c398080ce357a1a437e1e7a0481d000a9cb9dabd4978ba10fc1b94e990bb",
+      "uncompressed_bytes": 1512,
+      "uncompressed_sha256": "db344c645fe6d4e872516e336aa2040e4ca0ea4c4aea0d4a2976a21627e36c71"
+    },
+    "artifact/run_radix_engine.py.gz": {
+      "bytes": 1673,
+      "sha256": "e7b733042fecffe785030cd438fdaa528424c856f6438b6a170edeaf9fceb75a",
+      "uncompressed_bytes": 4526,
+      "uncompressed_sha256": "d7176f37228a41e6bf9d14ee729e2b3b85d73f987d06c27f3376f628b614ab14"
+    },
+    "artifact/radix_prefix_cache.py.gz": {
+      "bytes": 4193,
+      "sha256": "956ccc0a610ff3c993ae4454d8672f88f97a1206de952edee84bd8fe70dca496",
+      "uncompressed_bytes": 11960,
+      "uncompressed_sha256": "17924ee6129a15cd1a142145f31d6e7e6b0eab64903e4a995780cd32e0737eaa"
+    },
+    "inventory/qwen36-fleet-manifest.json.gz": {
+      "bytes": 1012,
+      "sha256": "8d83620ed60db47696876c2151cef89ab1618f740b7c929a0f3c0c3bcba69499",
+      "uncompressed_bytes": 2286,
+      "uncompressed_sha256": "54ba4df3022077a69974cfd4de91196622c865b45ae361e1051c1cda405bc7cc"
+    },
+    "inventory/qwen36-download-verification.json.gz": {
+      "bytes": 1125,
+      "sha256": "718b4f0e810944962c78cb621632fd5a3b7542e201703676a51bbf317cd0b6fe",
+      "uncompressed_bytes": 3627,
+      "uncompressed_sha256": "a8736919a915c8ff4531ec4fb414cd72d5f42a810637a75a2899896491e3cb0f"
+    },
+    "inventory/reference36-download-boundary.json.gz": {
+      "bytes": 427,
+      "sha256": "a5bd48f9b1bdf971304ebeaeac60a5740e6528fc66ef0ddbfe13dc1a6c7b9d03",
+      "uncompressed_bytes": 849,
+      "uncompressed_sha256": "5be7461f6c3478313d2f94670d5b8832f80c53c17723246a8ea78b014699f3f9"
+    },
+    "inventory/local-tail-transfer.json.gz": {
+      "bytes": 558,
+      "sha256": "54bec33247a59aca33067d195039cc1d81c5e1728092ddfb8d82476b0cc36c65",
+      "uncompressed_bytes": 926,
+      "uncompressed_sha256": "e2d3a3485dfa76140cfa92303c1ca0bcd7bf497806d8899461850aace121c771"
+    },
+    "input.json.gz": {
+      "bytes": 1541,
+      "sha256": "9f2da88f3239374c2b26f17f65cbb2fc91831b7e4732464daf3e8159c7986b98",
+      "uncompressed_bytes": 72863,
+      "uncompressed_sha256": "4334bf66d19d06aca7886a1c9680374003ccc721349492275d2f74cad41b7b54"
+    },
+    "comparison-tool.py.gz": {
+      "bytes": 2807,
+      "sha256": "d1b02319f14a2ab78d4502debbbe711033c962f09520e06b5f7a46d02dc6a16d",
+      "uncompressed_bytes": 9797,
+      "uncompressed_sha256": "c016042a8049e0353a0df7c3711d257f9d89e58f69abc564a8cc17c110b4ba53"
+    },
+    "verification.json": {
+      "bytes": 3067,
+      "sha256": "16fb6730404ed24117e9a47e264ae038c5c1b72446cf09a6c08432fa7d0b4b7d",
+      "uncompressed_bytes": 3067,
+      "uncompressed_sha256": "16fb6730404ed24117e9a47e264ae038c5c1b72446cf09a6c08432fa7d0b4b7d"
+    }
+  }
+}

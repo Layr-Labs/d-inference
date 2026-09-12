@@ -87,12 +87,40 @@ private func field(_ event: TelemetryEvent?, _ key: String) -> String? {
     event?.fields?[key]?.description
 }
 
+private extension EngineV2Bridge {
+    // Hold the actor until cancellation is set: the queued callback cannot
+    // enter first. This models cancellation after the sampler's loop check
+    // but before delivery through the actor hop, without timer races.
+    func cancelledPostureDelivery() -> Task<Void, Never> {
+        let bridge = self
+        let task = Task { await bridge.sampleSlotPostureFromSampler() }
+        task.cancel()
+        return task
+    }
+}
+
 // MARK: - Tests
 
 @Suite("MTP + paged-pool posture telemetry")
 struct MTPPostureTelemetryTests {
 
     // MARK: Enabled but inert
+
+    @Test("a sampler callback cancelled while queued on the actor emits nothing")
+    func cancelledQueuedSampleIsIgnored() async {
+        let telemetry = PostureTelemetrySink()
+        let bridge = makePostureBridge(
+            engine: PagedPoolStubEngine(kvBytesInUse: 0, poolBytes: 1 << 30),
+            kvBackendKind: .paged, telemetry: telemetry)
+        await bridge.configureMTPStatus(
+            .disabled(.configDisabled, configured: false), metricsInterval: .seconds(600))
+        let initial = telemetry.events.count
+        #expect(initial == 1)
+        let task = await bridge.cancelledPostureDelivery()
+        await task.value
+        #expect(telemetry.events.count == initial)
+        await bridge.shutdown()
+    }
 
     @Test("paged slot with zero MTP rounds reports inert_kv_unsupported")
     func inertPagedSlotIsNamed() async {
@@ -302,7 +330,17 @@ struct MTPPostureTelemetryTests {
     // MARK: The producer is actually wired
 
     @Test("every slot emits posture on the periodic sampler, MTP or not")
-    func periodicSamplerEmitsForEverySlot() async throws {
+    func periodicSamplerEmitsForEverySlot() async {
+        // Run the real timer on its own executor so concurrent MLX tests cannot
+        // consume the sampling deadline before its task gets scheduled.
+        await #expect(processExitsWith: .success) {
+            try await MTPPostureTelemetryTests().assertPeriodicSamplerEmitsForEverySlot()
+        }
+    }
+
+    private func assertPeriodicSamplerEmitsForEverySlot() async throws {
+        let isChildProcess = ExitTest.current != nil
+        try #require(isChildProcess)
         // The point of the ticket: these fields need a PRODUCER, and the
         // producer must be a recurring per-slot inventory rather than a
         // once-per-construction notification. Drive the real timer.
@@ -348,6 +386,20 @@ struct MTPPostureTelemetryTests {
         await bridge.shutdown()
     }
 
+    @Test("closed bridge suppresses queued posture ticks and cannot restart its sampler")
+    func closedPostureCannotReappear() async {
+        let telemetry = PostureTelemetrySink()
+        let bridge = makePostureBridge(
+            engine: PagedPoolStubEngine(kvBytesInUse: 0, poolBytes: 8 << 30),
+            kvBackendKind: .paged, telemetry: telemetry)
+        await bridge.configureMTPStatus(activatedStatus(), metricsInterval: .zero)
+        #expect(telemetry.posture == nil)
+        await bridge.shutdown()
+        await bridge.configureMTPStatus(activatedStatus())
+        await bridge.sampleSlotPosture()
+        #expect(telemetry.posture == nil)
+    }
+
     @Test("a slot torn down inside its first interval still reports exactly once")
     func slotShorterThanOneIntervalEmitsOnce() async throws {
         // The rollout-visibility case: a slot that fails post-build, crashes,
@@ -388,7 +440,16 @@ struct MTPPostureTelemetryTests {
     }
 
     @Test("shutdown stops the sampler")
-    func shutdownStopsSampler() async throws {
+    func shutdownStopsSampler() async {
+        // Keep the live-timer shutdown check isolated from other suites too.
+        await #expect(processExitsWith: .success) {
+            try await MTPPostureTelemetryTests().assertShutdownStopsSampler()
+        }
+    }
+
+    private func assertShutdownStopsSampler() async throws {
+        let isChildProcess = ExitTest.current != nil
+        try #require(isChildProcess)
         let telemetry = PostureTelemetrySink()
         let bridge = makePostureBridge(
             engine: PagedPoolStubEngine(kvBytesInUse: 0, poolBytes: 1 << 30),

@@ -1,0 +1,785 @@
+{
+  "scope": "Two initial normal-Q35 paged B1 off/SSD pairs at output caps32 and128. Exact output equality within each budget, natural stop at74 for128. Cross-budget token32 differs; no cross-budget numerical-equivalence or repeated throughput/release acceptance claim.",
+  "source_commit": "6cae0b866d21ec23d94dd7ec487c35048ca8d609",
+  "native_commit": "a932d38cee0beca41ca1a0e71c1e867913a65353",
+  "probe_sha256": "1b0df2f9ba18bf6738ae529adaf4e1ad9d7dc43f20dba54c244de71f517cbba3",
+  "archive": {
+    "path": "payloads.tar.gz",
+    "bytes": 845322,
+    "sha256": "37f0666942f31057dee6da5d8ab94479ee0fbeb6ab0023488525c7f83b88ffeb"
+  },
+  "payload_count": 154,
+  "payload_bytes": 5241482,
+  "files": {
+    "output32/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/manifest.json",
+      "bytes": 17225,
+      "sha256": "e7306a6616c5c3fc63912b7503d3d7ac163a2c3353da74088aee73e76d3cf1eb"
+    },
+    "output32/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/cache-file-summary.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/cache-file-summary.json",
+      "bytes": 36,
+      "sha256": "4e3696189ea31d79393dcfbbcb54ce8eff66dc3550ed6c9b62e12bc6bcdf9b90"
+    },
+    "output32/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/command.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/command.json",
+      "bytes": 1641,
+      "sha256": "a4e8f262ede25e1df1fb5f69bd031e2c052f43a55941ef7256b2e9a6e5529a39"
+    },
+    "output32/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/engine.log": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/engine.log",
+      "bytes": 732,
+      "sha256": "b11d95f8c6fc953fd8a9cece8575bec58a1bc82f10c1acdb7afda984d52f91fa"
+    },
+    "output32/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/execution.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/execution.json",
+      "bytes": 53,
+      "sha256": "6f975942363fc10ba4ffc96bf9186482315ea25723d44afe2ad437cf3801632e"
+    },
+    "output32/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/input.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/input.json",
+      "bytes": 72647,
+      "sha256": "7c4aa3ad84257523175883e18bba4fa7be4cf805d0716b55df4a19ea05fb743c"
+    },
+    "output32/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/integrity-verdict.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/integrity-verdict.json",
+      "bytes": 37,
+      "sha256": "76aa3b58148d89cc797ae408eba304f008308b708476e2db124fcf4e5d1c7a2e"
+    },
+    "output32/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/manifest.json",
+      "bytes": 1717,
+      "sha256": "ab31b45209e832c2a300333f7a8e7eb72e22431977f61be79263fbaa6055438c"
+    },
+    "output32/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/metadata.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/metadata.json",
+      "bytes": 2447,
+      "sha256": "8caad0b2233097a765397c44b10220cc1922a335712bf0597428194b6f753b5c"
+    },
+    "output32/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/remote-files.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/remote-files.json",
+      "bytes": 706,
+      "sha256": "64f93d7a043d724d6f5919ea0b387d2480fca6a2344a45602756112f0eeef9e7"
+    },
+    "output32/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/report.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/report.json",
+      "bytes": 699316,
+      "sha256": "38495cf29eb9b29a3cb85955cea00b0f2461e5a91b8bc53bb3a1272027ad23bb"
+    },
+    "output32/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/ssh-run.log": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/summary.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/summary.json",
+      "bytes": 1084,
+      "sha256": "8fe06ceca308b165720fa9225f4a5180d1b93234f82ac5d68fe5ba54125b98d9"
+    },
+    "output32/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output32/telemetry.jsonl",
+      "bytes": 119133,
+      "sha256": "4def8cf659f2657499cd5e1f218f481d4df9f764dd48f23370e8b82d7f36f33b"
+    },
+    "output32/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/cache-file-summary.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/cache-file-summary.json",
+      "bytes": 45,
+      "sha256": "e76acdaa39b2be3cad4f4a53c7c1b4c913fa20b798af1c94d6852200b2505a01"
+    },
+    "output32/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/command.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/command.json",
+      "bytes": 1639,
+      "sha256": "e79ca6239b0d994b67a6bf13195c760a5c74f4ac7f23e39c818ea04b2246c5e8"
+    },
+    "output32/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/engine.log": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/engine.log",
+      "bytes": 726,
+      "sha256": "7f6cd0620f03a1661efea4e7c1f0f75c392361955ef28852beb683e8f3a8775e"
+    },
+    "output32/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/execution.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/execution.json",
+      "bytes": 52,
+      "sha256": "29ea1204fbe4339db7893223fd46bd11a992602fab980f6b199787e1a1999982"
+    },
+    "output32/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/input.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/input.json",
+      "bytes": 72647,
+      "sha256": "7c4aa3ad84257523175883e18bba4fa7be4cf805d0716b55df4a19ea05fb743c"
+    },
+    "output32/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/integrity-verdict.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/integrity-verdict.json",
+      "bytes": 37,
+      "sha256": "76aa3b58148d89cc797ae408eba304f008308b708476e2db124fcf4e5d1c7a2e"
+    },
+    "output32/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/manifest.json",
+      "bytes": 1717,
+      "sha256": "957bff6ffbb2ec2f7b05365e64e74b9465cea3a4f6616a6164024f12cabf0104"
+    },
+    "output32/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/metadata.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/metadata.json",
+      "bytes": 2442,
+      "sha256": "b719186c8e670a898ae1eae82c875bcbd9df4f1c8097963ce325a69bfe1bed2e"
+    },
+    "output32/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/remote-files.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/remote-files.json",
+      "bytes": 706,
+      "sha256": "cf20698bc039e34a3e34ad673d4d8a0eea27c5425a748911823ac0cc1679b240"
+    },
+    "output32/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/report.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/report.json",
+      "bytes": 715596,
+      "sha256": "0a090dfe2c20a23684949574daa22e7b6fc771b3694611de66efc34192c245f3"
+    },
+    "output32/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/ssh-run.log": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/summary.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/summary.json",
+      "bytes": 1070,
+      "sha256": "00e413cc072f27ac86d9f68c6057c80d51ca8b1bf850487a8f2cfa7211f669f3"
+    },
+    "output32/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output32/telemetry.jsonl",
+      "bytes": 106889,
+      "sha256": "36c2008fc644f196eb26cd19d9b79f1f4d1951b739460b1237393364c86efbdc"
+    },
+    "output32/verdicts/darkbloom-build6-q35-output32-pair/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/verdicts/darkbloom-build6-q35-output32-pair/manifest.json",
+      "bytes": 6949,
+      "sha256": "c91c2ae6afad3f5ed1f99865c68699f7c73922a6715336cb31927885eff392ab"
+    },
+    "output32/verdicts/darkbloom-build6-q35-output32-pair/observations.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/verdicts/darkbloom-build6-q35-output32-pair/observations.json",
+      "bytes": 27285,
+      "sha256": "971451340712de1976167da3f0dcaa0f92adb71ed42429b15291caf86998120e"
+    },
+    "output32/verdicts/darkbloom-build6-q35-output32-pair/strict-comparator-verdict.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/verdicts/darkbloom-build6-q35-output32-pair/strict-comparator-verdict.json",
+      "bytes": 895,
+      "sha256": "912704ab70cad24f7fe691da47ed9b3c8f7a3d8f60ca765192d51ca8274e80d6"
+    },
+    "output32/verdicts/darkbloom-build6-q35-output32-hardened-comparator/command.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/verdicts/darkbloom-build6-q35-output32-hardened-comparator/command.json",
+      "bytes": 544,
+      "sha256": "94a7e0747d691a814fd5e83fd7d33daa3ca504753667d99d24b7a8eb63d89eb6"
+    },
+    "output32/verdicts/darkbloom-build6-q35-output32-hardened-comparator/compare_radix_engine.py": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/verdicts/darkbloom-build6-q35-output32-hardened-comparator/compare_radix_engine.py",
+      "bytes": 13154,
+      "sha256": "b33922deda8f21128873a8b71b639a0626005d449e3cc603cb35e2d660a253cc"
+    },
+    "output32/verdicts/darkbloom-build6-q35-output32-hardened-comparator/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/verdicts/darkbloom-build6-q35-output32-hardened-comparator/manifest.json",
+      "bytes": 1607,
+      "sha256": "df26adaa3cfdda1405cbaf16b45136a6a5efe3745c607c92bcbc9004d4f8441a"
+    },
+    "output32/verdicts/darkbloom-build6-q35-output32-hardened-comparator/radix_engine_evidence.py": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/verdicts/darkbloom-build6-q35-output32-hardened-comparator/radix_engine_evidence.py",
+      "bytes": 15658,
+      "sha256": "e0f57723d4be3f1a00068b9870f70a6bc9a0174b76fdea285d33f0f4eb658e4e"
+    },
+    "output32/verdicts/darkbloom-build6-q35-output32-hardened-comparator/stderr.txt": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/verdicts/darkbloom-build6-q35-output32-hardened-comparator/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/verdicts/darkbloom-build6-q35-output32-hardened-comparator/verdict.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/verdicts/darkbloom-build6-q35-output32-hardened-comparator/verdict.json",
+      "bytes": 895,
+      "sha256": "912704ab70cad24f7fe691da47ed9b3c8f7a3d8f60ca765192d51ca8274e80d6"
+    },
+    "output32/support/tmp/darkbloom-build6-driver-proof.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/tmp/darkbloom-build6-driver-proof.json",
+      "bytes": 596,
+      "sha256": "a2914a31c4096fb34316faad14449c75386046e9f8f89702717955b10c25d7eb"
+    },
+    "output32/support/tmp/run-final-model-cell-smoke2-build6-q35.py": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/tmp/run-final-model-cell-smoke2-build6-q35.py",
+      "bytes": 4775,
+      "sha256": "c1352d1e720714669c1541474beb74d7d5498024a07555b9edd22039db981ec0"
+    },
+    "output32/support/darkbloom-q35-useful-tail-inputs/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/darkbloom-q35-useful-tail-inputs/manifest.json",
+      "bytes": 1087,
+      "sha256": "d22329bc0cadc41134ad7aa014db2f000d8077ec0dd5ffd4ef9c2804f4ce87f3"
+    },
+    "output32/support/darkbloom-q35-useful-tail-inputs/qwen35-output32.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/darkbloom-q35-useful-tail-inputs/qwen35-output32.json",
+      "bytes": 72551,
+      "sha256": "07a425a4c6a1c75d19411d8349ea08ee3689671d8a39264dd0e523545408589f"
+    },
+    "output32/support/darkbloom-final-serving-build6/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/darkbloom-final-serving-build6/manifest.json",
+      "bytes": 5643,
+      "sha256": "802f51029f30a4e7d7fcdc3dc898aac83bb0edb55939dd88468ab81a6baf8817"
+    },
+    "output32/support/darkbloom-final-serving-build6/artifact-manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/darkbloom-final-serving-build6/artifact-manifest.json",
+      "bytes": 1540,
+      "sha256": "5b700968b7b49a40103ede50149a073570182c8c73d69893dc044b41079a85b4"
+    },
+    "output32/support/tmp/darkbloom-build6-root-review.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/tmp/darkbloom-build6-root-review.json",
+      "bytes": 764,
+      "sha256": "690dd8ef3dd80f1038f2c78c464ea4ddce5d08a57b2290f9bfdc781116147418"
+    },
+    "output32/support/tmp/darkbloom-build6-q35-32-off-preflight.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/tmp/darkbloom-build6-q35-32-off-preflight.json",
+      "bytes": 198,
+      "sha256": "ab9ef4459135e5c4effe0bcf57d251d3083992ff01cdc2187c21b4ad7ca29e95"
+    },
+    "output32/support/tmp/darkbloom-build6-q35-32-on-preflight.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/tmp/darkbloom-build6-q35-32-on-preflight.json",
+      "bytes": 197,
+      "sha256": "692c387e0b990b8ffef153aca07c98241db33a8058a5d19dbf8c546dc35e70e7"
+    },
+    "output32/support/tmp/darkbloom-build6-q35-32-off-strict.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/tmp/darkbloom-build6-q35-32-off-strict.json",
+      "bytes": 124,
+      "sha256": "d2eda6c26749becbf09b1b13ba91a555072b9ae73c941612f33d5fba9ccb9aa8"
+    },
+    "output32/support/transfer/0-create.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/0-create.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/support/transfer/0-create.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/0-create.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/support/transfer/0-resume-precondition.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/0-resume-precondition.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/support/transfer/0-resume-precondition.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/0-resume-precondition.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/support/transfer/0-scp.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/0-scp.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/support/transfer/0-scp.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/0-scp.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/support/transfer/0-verify-resume.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/0-verify-resume.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/support/transfer/0-verify-resume.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/0-verify-resume.stdout",
+      "bytes": 1360,
+      "sha256": "9059ac7bca0b21ca91f9d4091ebfced6121ddc053f3e4d2ec7432207e38a511e"
+    },
+    "output32/support/transfer/0-verify.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/0-verify.stderr",
+      "bytes": 141,
+      "sha256": "d44fc614bf353e9c4ecc4fe608f25437dcd7d7fa1cd06a8054426d179ad2a973"
+    },
+    "output32/support/transfer/0-verify.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/0-verify.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/support/transfer/1-create.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/1-create.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/support/transfer/1-create.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/1-create.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/support/transfer/1-scp.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/1-scp.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/support/transfer/1-scp.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/1-scp.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/support/transfer/1-verify-resume.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/1-verify-resume.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/support/transfer/1-verify-resume.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/1-verify-resume.stdout",
+      "bytes": 235,
+      "sha256": "8bf704b24d0b4672c2606ea0799c44c2ba51e558f93116650d128dae3afb83a9"
+    },
+    "output32/support/transfer/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output32-freeze1/support/transfer/manifest.json",
+      "bytes": 2820,
+      "sha256": "dadf6f4f300470871342ac8fb580dfe8300758056baf2550af360c5975e74812"
+    },
+    "output128/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/manifest.json",
+      "bytes": 17304,
+      "sha256": "fe8b7060f7a301da1f64f884dc3995ddfa7031056d39e3180b5ee522526f2cc2"
+    },
+    "output128/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/cache-file-summary.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/cache-file-summary.json",
+      "bytes": 36,
+      "sha256": "4e3696189ea31d79393dcfbbcb54ce8eff66dc3550ed6c9b62e12bc6bcdf9b90"
+    },
+    "output128/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/command.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/command.json",
+      "bytes": 1643,
+      "sha256": "135d120a034e7016ca7b688f4732a56d81cdb060cee2a653b5efafd59085e41f"
+    },
+    "output128/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/engine.log": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/engine.log",
+      "bytes": 731,
+      "sha256": "7dfc6d762616b1fcb7dc10195a69db5f20a1d00e7dc12af726081a53c21c96f6"
+    },
+    "output128/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/execution.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/execution.json",
+      "bytes": 54,
+      "sha256": "a94f14b6d3bb75e11150ad52d899b83a6ac4360e03d02ed2a4c11eef16b61f89"
+    },
+    "output128/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/input.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/input.json",
+      "bytes": 72651,
+      "sha256": "150115f73fea2cd51f2d2abfeca1ec95c1ed9dcd9ab725593035f90402b915ec"
+    },
+    "output128/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/integrity-verdict.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/integrity-verdict.json",
+      "bytes": 37,
+      "sha256": "76aa3b58148d89cc797ae408eba304f008308b708476e2db124fcf4e5d1c7a2e"
+    },
+    "output128/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/manifest.json",
+      "bytes": 1717,
+      "sha256": "cb40145e4037c5b69da7bc1377dfc08630b16366035306b521ef8169c6cdab55"
+    },
+    "output128/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/metadata.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/metadata.json",
+      "bytes": 2453,
+      "sha256": "1895836e7c228d0fabdbd31fd08feadc2ad5453690a94d808b2de21009b62aaa"
+    },
+    "output128/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/remote-files.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/remote-files.json",
+      "bytes": 706,
+      "sha256": "c394aa91006401d155a9454d2903dae676c7609e1000eac2a07220ff87d5152b"
+    },
+    "output128/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/report.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/report.json",
+      "bytes": 725384,
+      "sha256": "4094a2e16e0224a013265e9c951d2dfcd32e3a36d01841c36f0564d8adec860d"
+    },
+    "output128/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/ssh-run.log": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/summary.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/summary.json",
+      "bytes": 1086,
+      "sha256": "d9b2f816388f09a2ed1ded46e227c728ae498e588eb0b63bee639745ea6824bc"
+    },
+    "output128/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-off-b1-smoke2-build6-output128/telemetry.jsonl",
+      "bytes": 125370,
+      "sha256": "a4796f74ec61662fb0c591018ff3f19e7bc52c7a2051991191ff0f9d49cfc4a5"
+    },
+    "output128/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/cache-file-summary.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/cache-file-summary.json",
+      "bytes": 45,
+      "sha256": "e76acdaa39b2be3cad4f4a53c7c1b4c913fa20b798af1c94d6852200b2505a01"
+    },
+    "output128/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/command.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/command.json",
+      "bytes": 1641,
+      "sha256": "60e5f09b8564e4819b36b9c632ad4b2c4f86bf77853527d1a24f2696472c8d83"
+    },
+    "output128/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/engine.log": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/engine.log",
+      "bytes": 726,
+      "sha256": "ccc6d85eac946d71cf7eb929deb3ac4e921c3c7bbebdb53d2a9a71bae47adffa"
+    },
+    "output128/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/execution.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/execution.json",
+      "bytes": 53,
+      "sha256": "74e41633fff4274db20bd2fe4d672fbc466f6b9b51f9845fde507a4afc2e7411"
+    },
+    "output128/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/input.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/input.json",
+      "bytes": 72651,
+      "sha256": "150115f73fea2cd51f2d2abfeca1ec95c1ed9dcd9ab725593035f90402b915ec"
+    },
+    "output128/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/integrity-verdict.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/integrity-verdict.json",
+      "bytes": 37,
+      "sha256": "76aa3b58148d89cc797ae408eba304f008308b708476e2db124fcf4e5d1c7a2e"
+    },
+    "output128/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/manifest.json",
+      "bytes": 1717,
+      "sha256": "17ceadfba1092d1f906e606cebbe01b64599173bbc9032ba5e13d549e2826662"
+    },
+    "output128/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/metadata.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/metadata.json",
+      "bytes": 2445,
+      "sha256": "60cc4a20c598e99b97e628908e747daeb666cef3c602dbb5a6d023eeaa7a342c"
+    },
+    "output128/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/remote-files.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/remote-files.json",
+      "bytes": 706,
+      "sha256": "a6aef806a50965cc1d6ce254941132cb6a623bcfa2142b821d34da269bb5dc44"
+    },
+    "output128/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/report.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/report.json",
+      "bytes": 743373,
+      "sha256": "f6fe629b7921c70ee988ec04fd9137d40522b091590951fdc399b13be362143b"
+    },
+    "output128/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/ssh-run.log": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/summary.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/summary.json",
+      "bytes": 1073,
+      "sha256": "ff4c551fb0ac66c0599d5478e84e041409516d6edb0c2a370ed1b557b0850c52"
+    },
+    "output128/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/raw/qwen35-paged-cache-on-b1-smoke2-build6-output128/telemetry.jsonl",
+      "bytes": 115426,
+      "sha256": "41e829b4011cb389e3fe1989130ab936ddafc59becb7393d3872750a4784d521"
+    },
+    "output128/verdicts/darkbloom-build6-q35-output128-pair/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/verdicts/darkbloom-build6-q35-output128-pair/manifest.json",
+      "bytes": 6977,
+      "sha256": "3c53f585c4f8102d3089014fdcd68b9eb9dd5a79d8119b71761e1c0727610a90"
+    },
+    "output128/verdicts/darkbloom-build6-q35-output128-pair/observations.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/verdicts/darkbloom-build6-q35-output128-pair/observations.json",
+      "bytes": 27264,
+      "sha256": "f4c0da9527f33c32ba023a6fcfb9d9469d0f234bf6bb6176af971f31c6845c6c"
+    },
+    "output128/verdicts/darkbloom-build6-q35-output128-pair/strict-comparator-verdict.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/verdicts/darkbloom-build6-q35-output128-pair/strict-comparator-verdict.json",
+      "bytes": 897,
+      "sha256": "1788320f124b7b2d2d7804365eed2fe17e4eee7340bf66a2a366d9f3236c457d"
+    },
+    "output128/verdicts/darkbloom-build6-q35-output128-hardened-comparator/command.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/verdicts/darkbloom-build6-q35-output128-hardened-comparator/command.json",
+      "bytes": 547,
+      "sha256": "f869fc1cab95d994915959a8e713b921adb3f3b2dd330274300daf5e7babaa5a"
+    },
+    "output128/verdicts/darkbloom-build6-q35-output128-hardened-comparator/compare_radix_engine.py": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/verdicts/darkbloom-build6-q35-output128-hardened-comparator/compare_radix_engine.py",
+      "bytes": 13154,
+      "sha256": "b33922deda8f21128873a8b71b639a0626005d449e3cc603cb35e2d660a253cc"
+    },
+    "output128/verdicts/darkbloom-build6-q35-output128-hardened-comparator/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/verdicts/darkbloom-build6-q35-output128-hardened-comparator/manifest.json",
+      "bytes": 1614,
+      "sha256": "57da3f3d6750d6fc7f588adcee2edf740234247b4d381cc46fa597fa097e0c86"
+    },
+    "output128/verdicts/darkbloom-build6-q35-output128-hardened-comparator/radix_engine_evidence.py": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/verdicts/darkbloom-build6-q35-output128-hardened-comparator/radix_engine_evidence.py",
+      "bytes": 15658,
+      "sha256": "e0f57723d4be3f1a00068b9870f70a6bc9a0174b76fdea285d33f0f4eb658e4e"
+    },
+    "output128/verdicts/darkbloom-build6-q35-output128-hardened-comparator/stderr.txt": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/verdicts/darkbloom-build6-q35-output128-hardened-comparator/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/verdicts/darkbloom-build6-q35-output128-hardened-comparator/verdict.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/verdicts/darkbloom-build6-q35-output128-hardened-comparator/verdict.json",
+      "bytes": 897,
+      "sha256": "1788320f124b7b2d2d7804365eed2fe17e4eee7340bf66a2a366d9f3236c457d"
+    },
+    "output128/support/tmp/darkbloom-build6-driver-proof.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/tmp/darkbloom-build6-driver-proof.json",
+      "bytes": 596,
+      "sha256": "a2914a31c4096fb34316faad14449c75386046e9f8f89702717955b10c25d7eb"
+    },
+    "output128/support/tmp/run-final-model-cell-smoke2-build6-q35.py": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/tmp/run-final-model-cell-smoke2-build6-q35.py",
+      "bytes": 4775,
+      "sha256": "c1352d1e720714669c1541474beb74d7d5498024a07555b9edd22039db981ec0"
+    },
+    "output128/support/darkbloom-q35-useful-tail-inputs/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/darkbloom-q35-useful-tail-inputs/manifest.json",
+      "bytes": 1087,
+      "sha256": "d22329bc0cadc41134ad7aa014db2f000d8077ec0dd5ffd4ef9c2804f4ce87f3"
+    },
+    "output128/support/darkbloom-q35-useful-tail-inputs/qwen35-output128.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/darkbloom-q35-useful-tail-inputs/qwen35-output128.json",
+      "bytes": 72555,
+      "sha256": "f443004192b886b906b51ad5900e0d5f7a5e761efdb8fdc13c75d1ac3bdc0132"
+    },
+    "output128/support/darkbloom-final-serving-build6/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/darkbloom-final-serving-build6/manifest.json",
+      "bytes": 5643,
+      "sha256": "802f51029f30a4e7d7fcdc3dc898aac83bb0edb55939dd88468ab81a6baf8817"
+    },
+    "output128/support/darkbloom-final-serving-build6/artifact-manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/darkbloom-final-serving-build6/artifact-manifest.json",
+      "bytes": 1540,
+      "sha256": "5b700968b7b49a40103ede50149a073570182c8c73d69893dc044b41079a85b4"
+    },
+    "output128/support/tmp/darkbloom-build6-root-review.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/tmp/darkbloom-build6-root-review.json",
+      "bytes": 764,
+      "sha256": "690dd8ef3dd80f1038f2c78c464ea4ddce5d08a57b2290f9bfdc781116147418"
+    },
+    "output128/support/tmp/darkbloom-build6-q35-128-off-preflight.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/tmp/darkbloom-build6-q35-128-off-preflight.json",
+      "bytes": 196,
+      "sha256": "fbd266db3b4f1780f9f80f74fa6ead666b416037b0614b1f22303f007c9a1dc2"
+    },
+    "output128/support/tmp/darkbloom-build6-q35-128-on-preflight.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/tmp/darkbloom-build6-q35-128-on-preflight.json",
+      "bytes": 194,
+      "sha256": "22186b1a59f4b8cf13db256d955096b0cea53f1373a0e4d0f90006fe7fa486d9"
+    },
+    "output128/support/tmp/darkbloom-build6-q35-128-off-strict.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/tmp/darkbloom-build6-q35-128-off-strict.json",
+      "bytes": 294,
+      "sha256": "ff702c425d49d49ae3bb4d19ff40a2076c118554c2ee144e56c72c35ca8ba050"
+    },
+    "output128/support/transfer/0-create.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/0-create.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/support/transfer/0-create.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/0-create.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/support/transfer/0-resume-precondition.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/0-resume-precondition.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/support/transfer/0-resume-precondition.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/0-resume-precondition.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/support/transfer/0-scp.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/0-scp.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/support/transfer/0-scp.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/0-scp.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/support/transfer/0-verify-resume.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/0-verify-resume.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/support/transfer/0-verify-resume.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/0-verify-resume.stdout",
+      "bytes": 1360,
+      "sha256": "9059ac7bca0b21ca91f9d4091ebfced6121ddc053f3e4d2ec7432207e38a511e"
+    },
+    "output128/support/transfer/0-verify.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/0-verify.stderr",
+      "bytes": 141,
+      "sha256": "d44fc614bf353e9c4ecc4fe608f25437dcd7d7fa1cd06a8054426d179ad2a973"
+    },
+    "output128/support/transfer/0-verify.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/0-verify.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/support/transfer/1-create.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/1-create.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/support/transfer/1-create.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/1-create.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/support/transfer/1-scp.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/1-scp.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/support/transfer/1-scp.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/1-scp.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/support/transfer/1-verify-resume.stderr": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/1-verify-resume.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/support/transfer/1-verify-resume.stdout": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/1-verify-resume.stdout",
+      "bytes": 235,
+      "sha256": "8bf704b24d0b4672c2606ea0799c44c2ba51e558f93116650d128dae3afb83a9"
+    },
+    "output128/support/transfer/manifest.json": {
+      "source": "/tmp/darkbloom-build6-q35-output128-freeze1/support/transfer/manifest.json",
+      "bytes": 2820,
+      "sha256": "dadf6f4f300470871342ac8fb580dfe8300758056baf2550af360c5975e74812"
+    },
+    "build6/manifest.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/manifest.json",
+      "bytes": 5643,
+      "sha256": "802f51029f30a4e7d7fcdc3dc898aac83bb0edb55939dd88468ab81a6baf8817"
+    },
+    "build6/actual-build-graph.yaml.gz": {
+      "source": "/tmp/darkbloom-final-serving-build6/actual-build-graph.yaml.gz",
+      "bytes": 382663,
+      "sha256": "6cbc033356fb44e8144b6ce7cd430ffc6ba75d6857ec722ab908eea3e98e0c95"
+    },
+    "build6/actual-compiler-source-proof.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/actual-compiler-source-proof.json",
+      "bytes": 2553,
+      "sha256": "6acf6d9a2b67147eacf7a7a271d76bbf2a300fdc2f70926ddbda01844d187b9c"
+    },
+    "build6/actual-package-state.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/actual-package-state.json",
+      "bytes": 21160,
+      "sha256": "21f454b9d60ee7ba5934f3e5445b02eb91dc6d0059e19b6e0dddda47a6966826"
+    },
+    "build6/all-owned-graph-source-proof.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/all-owned-graph-source-proof.json",
+      "bytes": 395132,
+      "sha256": "0e3905cbfb9a100a07a4f03053aa11118d8e9e023cb4c7ceb829cb54a913c770"
+    },
+    "build6/artifact-manifest.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/artifact-manifest.json",
+      "bytes": 1540,
+      "sha256": "5b700968b7b49a40103ede50149a073570182c8c73d69893dc044b41079a85b4"
+    },
+    "build6/build.log": {
+      "source": "/tmp/darkbloom-final-serving-build6/build.log",
+      "bytes": 33831,
+      "sha256": "07b088a47d92d2927896d44d89e5ac411c166669679078dad939302a3d54cd25"
+    },
+    "build6/canonical-owned-manifest.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/canonical-owned-manifest.json",
+      "bytes": 937,
+      "sha256": "a0bd15d8fb27650ccdfc7c2afb8aedc322dfe7fdba09801e6e5d91264d57a5f1"
+    },
+    "build6/compile-source-manifest.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/compile-source-manifest.json",
+      "bytes": 2134,
+      "sha256": "03f92dab2a263ed6ee5f59dabffcc34478ed3253842db417c90e6fedcfd9368e"
+    },
+    "build6/dependency-source-manifest.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/dependency-source-manifest.json",
+      "bytes": 161754,
+      "sha256": "f1e16b19ad215312c227f0b27f0370556eddfb7afde02fb2c6940fecdb0c1419"
+    },
+    "build6/execution.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/execution.json",
+      "bytes": 354,
+      "sha256": "f8eba8c6cdd2f963b929bed7a60fc1335796f84ffe2ddc501b05ac5283f867bb"
+    },
+    "build6/freeze.py": {
+      "source": "/tmp/darkbloom-final-serving-build6/freeze.py",
+      "bytes": 3964,
+      "sha256": "4e78f6aafbf0ecd699e20d37351a595877a26a82f2580d833ad1822b7e3a6e44"
+    },
+    "build6/hardware.txt": {
+      "source": "/tmp/darkbloom-final-serving-build6/hardware.txt",
+      "bytes": 85,
+      "sha256": "6fd27675c501b5f00cfafe5efc0b98446a884b5780bd218df332c3406bd3c651"
+    },
+    "build6/integration.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/integration.json",
+      "bytes": 984,
+      "sha256": "aa84c8efea35fe79510bc342c5d3b0dafdb77577f844b82784d97571ef258a55"
+    },
+    "build6/jinja-source-manifest.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/jinja-source-manifest.json",
+      "bytes": 2907,
+      "sha256": "1a3c73a25aab033a5ce568f263db5ff9560d648206313843983afa3280760598"
+    },
+    "build6/native-source-manifest.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/native-source-manifest.json",
+      "bytes": 62816,
+      "sha256": "8ce5e094829e1ba0f7aa91cf4a8985903384d38aacf16a2d7c17d46535105ed0"
+    },
+    "build6/native-useful-tail.patch": {
+      "source": "/tmp/darkbloom-final-serving-build6/native-useful-tail.patch",
+      "bytes": 5459,
+      "sha256": "3cb4451fcaf48a09621223e902a750aee90096b1016cfb5f431c66c8ef67f143"
+    },
+    "build6/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift": {
+      "source": "/tmp/darkbloom-final-serving-build6/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift",
+      "bytes": 12352,
+      "sha256": "4e7d332666bced1c9876415418a9c8175486e032aeb1a6e88071f69b1e0ef15d"
+    },
+    "build6/owned/Tests/MLXLMTests/CBv2MTPOutputBudgetTests.swift": {
+      "source": "/tmp/darkbloom-final-serving-build6/owned/Tests/MLXLMTests/CBv2MTPOutputBudgetTests.swift",
+      "bytes": 2849,
+      "sha256": "c5cd803c4e58d681d4bd131ca9475784cbb5e677f349f7f74460ca014e687419"
+    },
+    "build6/provider-source-manifest.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/provider-source-manifest.json",
+      "bytes": 98976,
+      "sha256": "7d6179be5f808131e8331ca83ef7daed25edbe2efd0d98d9bf5fe62568dc2d32"
+    },
+    "build6/radix-engine-dylibs.txt": {
+      "source": "/tmp/darkbloom-final-serving-build6/radix-engine-dylibs.txt",
+      "bytes": 4996,
+      "sha256": "2c7437d52d2bc56357f1d91fb93331185ceb7786cec19a4cc6bdf86df090b177"
+    },
+    "build6/run.py": {
+      "source": "/tmp/darkbloom-final-serving-build6/run.py",
+      "bytes": 4785,
+      "sha256": "faf706e3e4d4a5095579de2206a36d3cbb8fc838c99128d59750b33b525bae24"
+    },
+    "build6/source-verified-after.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/source-verified-after.json",
+      "bytes": 261,
+      "sha256": "536f62ebcadbd4c68020e9dd0968eef67093321a9671b39f8d6f82089530909a"
+    },
+    "build6/source-verified-before.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/source-verified-before.json",
+      "bytes": 261,
+      "sha256": "536f62ebcadbd4c68020e9dd0968eef67093321a9671b39f8d6f82089530909a"
+    },
+    "build6/source-verified-final.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/source-verified-final.json",
+      "bytes": 261,
+      "sha256": "536f62ebcadbd4c68020e9dd0968eef67093321a9671b39f8d6f82089530909a"
+    },
+    "build6/toolchain.txt": {
+      "source": "/tmp/darkbloom-final-serving-build6/toolchain.txt",
+      "bytes": 239,
+      "sha256": "7afadba43a06434cc8631c3d4d7832142414d74c1b830fab491d2b0de03292a9"
+    },
+    "build6/verdict.json": {
+      "source": "/tmp/darkbloom-final-serving-build6/verdict.json",
+      "bytes": 1340,
+      "sha256": "48be81ac76384c3ed7a35472c804cf54f8b1bf88fc59671c94da9ebfaacefb02"
+    },
+    "root-review.json": {
+      "source": "/tmp/darkbloom-q35-useful-tail-pairs-root-review.json",
+      "bytes": 3615,
+      "sha256": "f8555902afeefd3fb8f6348f470d395bc6c39d31d09077640b4b3ffbf319684a"
+    }
+  }
+}

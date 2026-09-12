@@ -17,6 +17,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -93,9 +95,10 @@ func TestAliasCapacityFallbackForwardsUnescapedBody(t *testing.T) {
 	const angleRun = 2048 // 2 KiB of '<'; ~12 KiB escaped, ~16 KiB sealed frame
 	content := strings.Repeat("<", angleRun)
 	chatBody := fmt.Sprintf(
-		`{"model":%q,"messages":[{"role":"user","content":%q}],"stream":true,"max_tokens":64,"precision_probe":9007199254740993}`,
+		`{"model":%q,"messages":[{"role":"user","content":%q}],"stream":true,"max_tokens":64,"precision_probe":9007199254740993,"_darkbloom_prompt_date":"1999-01-01"}`,
 		alias, content)
 
+	before := time.Now().UTC().Format(time.DateOnly)
 	status, respBody, err := postChat(ctx, ts.URL, "test-key", chatBody)
 	if err != nil {
 		t.Fatalf("chat request: %v", err)
@@ -113,6 +116,14 @@ func TestAliasCapacityFallbackForwardsUnescapedBody(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("previous provider could not decrypt the forwarded body")
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(got, &fields); err != nil {
+		t.Fatal(err)
+	}
+	date, _ := fields[promptcontract.RequestDateField].(string)
+	if after := time.Now().UTC().Format(time.DateOnly); date != before && date != after {
+		t.Fatalf("fallback did not retain the coordinator-owned date: %q", date)
 	}
 
 	// The 6-byte JSON escape for '<' is the ASCII run \ u 0 0 3 c. Its presence

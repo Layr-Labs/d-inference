@@ -8,19 +8,18 @@ extension ProviderLoop {
     /// not download assistant bytes and is bounded/fail-open; every ordinary
     /// load remains a local-only catalog-cache/artifact-cache consultation.
     ///
-    /// Only `mtp_mode = "on"` prewarms: catalog metadata exists to pair
-    /// separately published assistants, and `auto` activates only embedded
-    /// heads, which resolve from the checkpoint itself without any catalog.
+    /// `auto` prewarms only for the exact Gemma QAT target; explicit `on`
+    /// also permits other supported external assistants. Embedded Qwen heads
+    /// resolve from the checkpoint itself without catalog metadata.
     func prewarmSpecDecCatalog() async {
         let backend = loopConfig.config.backend
-        guard backend.mtpMode == .on,
-            backend.mtpDrafterPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false,
+        guard backend.mtpDrafterPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false,
             SpecDecArtifactFunnel.killSwitchEnabled(
                 environment: ProcessInfo.processInfo.environment),
             let modelId = advertisedModels.values
                 .filter({
-                    SpecDecArtifactFunnel.isGemma4Target(modelType: $0.modelType)
-                        || SpecDecArtifactFunnel.isQwen35Target(modelType: $0.modelType)
+                    backend.mtpMode.requiresCatalogPrewarm(
+                        forModelType: $0.modelType, modelID: $0.id)
                 })
                 .map(\.id)
                 .sorted()
@@ -35,7 +34,7 @@ extension ProviderLoop {
         } else {
             logger.warning(
                 "mtp: catalog metadata prewarm failed or exceeded deadline; "
-                    + "startup continues target-only until a later full slot load")
+                    + "startup continues target-only while a verified assistant prepares for idle activation")
         }
     }
 
@@ -43,7 +42,8 @@ extension ProviderLoop {
         modelId: String,
         modelInfo: ModelInfo,
         modelDirectory: URL? = nil,
-        allowDownload: Bool = true
+        allowDownload: Bool = true,
+        logStatus: Bool = true
     ) async -> SpecDecPreparation {
         let inlineDeclaration = modelDirectory.map {
             SpecDecStore.inlineDeclarationProbe(directory: $0)
@@ -54,36 +54,46 @@ extension ProviderLoop {
                 modelType: modelInfo.modelType,
                 enabled: loopConfig.config.backend.mtpMode.enablesMTP(
                     forModelType: modelInfo.modelType,
-                    embeddedArtifactDeclared: inlineDeclaration.mayDeclareEmbeddedArtifact),
+                    embeddedArtifactDeclared: inlineDeclaration.mayDeclareEmbeddedArtifact,
+                    modelID: modelId),
                 localPath: loopConfig.config.backend.mtpDrafterPath,
                 modelDirectory: modelDirectory,
                 inlineDeclaration: inlineDeclaration,
                 allowDownload: allowDownload,
                 environment: ProcessInfo.processInfo.environment))
-        let reason = prepared.status.reason?.rawValue ?? "ready"
-        logger.info(
-            "mtp: model=\(modelId) configured=\(prepared.status.configured) "
-                + "artifact_ready=\(prepared.artifact != nil) reason=\(reason) "
-                + "revision=\(prepared.status.revision ?? "none") "
-                + "source_revision=\(prepared.status.sourceRevision ?? "none") "
-                + "artifact_bytes=\(prepared.status.artifactBytes)")
+        if logStatus {
+            let reason = prepared.status.reason?.rawValue ?? "ready"
+            logger.info(
+                "mtp: model=\(modelId) configured=\(prepared.status.configured) "
+                    + "artifact_ready=\(prepared.artifact != nil) reason=\(reason) "
+                    + "revision=\(prepared.status.revision ?? "none") "
+                    + "source_revision=\(prepared.status.sourceRevision ?? "none") "
+                    + "artifact_bytes=\(prepared.status.artifactBytes)")
+        }
         return prepared
     }
 
     /// Assistant memory is optional: if it does not fit after target admission,
     /// preserve target loadability and record a stable target-only fallback.
+    /// Takes the target's WEIGHT basis, not a precomputed requirement: the
+    /// memory sample below is an actor suspension, and a concurrent verified
+    /// prefetch can raise the serving-set floor across it — the target
+    /// requirement is resolved after the sample so the assistant is admitted
+    /// against the load gate as it stands, not as it stood before the hop.
     func admitSpecDecIfMemoryAllows(
         _ preparation: SpecDecPreparation,
-        targetRequiredGb: Double
+        targetWeightsGb: Double
     ) async -> SpecDecPreparation {
         guard let artifact = preparation.artifact else { return preparation }
         // Inline assistants ride the target checkpoint's own shards, already
-        // counted by the scanner in targetRequiredGb — no additional charge
+        // counted by the scanner in targetWeightsGb — no additional charge
         // (SpecDecArtifact.additionalWeightBytes).
         guard artifact.additionalWeightBytes > 0 else { return preparation }
+        let availableGb = await availableMemoryGb()
         guard Self.assistantMemoryFits(
-            availableGb: await availableMemoryGb(),
-            targetRequiredGb: targetRequiredGb,
+            availableGb: availableGb,
+            targetRequiredGb: ModelLoadAdmission.requiredToLoadGb(
+                weightsGb: targetWeightsGb, headroomGb: loadHeadroomGb),
             assistantBytes: artifact.residentBytes)
         else {
             logger.warning(

@@ -1431,7 +1431,7 @@ func TestVerifyChallengeFastSkipGrantDrainsQueue(t *testing.T) {
 		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, binHash),
 	}
 	p := reg.Register("prov-drain", nil, regMsg)
-	srv.verifyProviderAttestation("prov-drain", p, regMsg)
+	srv.verifyProviderAttestation(context.Background(), "prov-drain", p, regMsg)
 
 	// Test attestation blobs carry no serial; set one + make the provider routable.
 	p.Mu().Lock()

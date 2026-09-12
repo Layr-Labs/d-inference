@@ -1,5 +1,7 @@
 "use client";
 
+import { GlobalWithdrawModal } from "./GlobalWithdrawModal";
+import type { BankWithdrawalQuote } from "@/lib/api";
 import { Clock, Zap, Loader2 } from "lucide-react";
 import { computeStripeFeeUsd, type StripeStatus } from "@/lib/api";
 import { MethodOption } from "./MethodOption";
@@ -9,6 +11,8 @@ import { INSTANT_ETA, methodExplainer, standardEta } from "./payout-copy";
 // confirm). Shared by billing + earnings (previously byte-identical — F3).
 export function StripeWithdrawModal({
   status,
+  quote,
+  confirmationPending,
   balanceMicroUsd,
   amount,
   method,
@@ -19,6 +23,8 @@ export function StripeWithdrawModal({
   onCancel,
 }: {
   status: StripeStatus | null;
+  quote?: BankWithdrawalQuote | null;
+  confirmationPending?: boolean;
   balanceMicroUsd: number;
   amount: string;
   method: "standard" | "instant";
@@ -28,6 +34,7 @@ export function StripeWithdrawModal({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  if(status?.payout_rail === "global") return <GlobalWithdrawModal status={status} balanceMicroUsd={balanceMicroUsd} amount={amount} loading={loading} quote={quote} confirmationPending={confirmationPending} onAmountChange={onAmountChange} onConfirm={onConfirm} onCancel={onCancel} />;
   const amountNum = parseFloat(amount) || 0;
   const balanceUsd = balanceMicroUsd / 1_000_000;
   const minWithdrawUsd = (status?.min_withdraw_micro_usd ?? 1_000_000) / 1_000_000;

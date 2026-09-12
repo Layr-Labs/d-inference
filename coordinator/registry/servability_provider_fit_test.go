@@ -20,27 +20,27 @@ func TestProviderBudgetFitsWarmSlotLiveBudget(t *testing.T) {
 	}
 	// Live remaining budget = 32768 - 20000 - 4000 = 8768.
 
-	if fits, known := providerBudgetFits(snap, 8_000, 1_000); !known || fits {
+	if fits, known := providerBudgetFits(snapPtr(snap), 8_000, 1_000); !known || fits {
 		t.Fatalf("9000-token request vs 8768 live budget = (fits=%v, known=%v), want (false, true)", fits, known)
 	}
-	if fits, known := providerBudgetFits(snap, 8_000, 512); !known || !fits {
+	if fits, known := providerBudgetFits(snapPtr(snap), 8_000, 512); !known || !fits {
 		t.Fatalf("8512-token request vs 8768 live budget = (fits=%v, known=%v), want (true, true)", fits, known)
 	}
 	// Exact boundary is a fit (provider gate is `>` to reject, `<=` to admit).
-	if fits, known := providerBudgetFits(snap, 8_512, 256); !known || !fits {
+	if fits, known := providerBudgetFits(snapPtr(snap), 8_512, 256); !known || !fits {
 		t.Fatalf("exact-boundary 8768-token request = (fits=%v, known=%v), want (true, true)", fits, known)
 	}
 
 	// reqMaxTokens <= 0 normalizes to defaultRequestedMaxTokens (256), matching
 	// the pending-budget accounting: 8512+256 = 8768 fits, 8513+256 does not.
-	if fits, _ := providerBudgetFits(snap, 8_512, 0); !fits {
+	if fits, _ := providerBudgetFits(snapPtr(snap), 8_512, 0); !fits {
 		t.Fatal("reqMax=0 must default to defaultRequestedMaxTokens (8512+256=8768 fits)")
 	}
-	if fits, _ := providerBudgetFits(snap, 8_513, 0); fits {
+	if fits, _ := providerBudgetFits(snapPtr(snap), 8_513, 0); fits {
 		t.Fatal("reqMax=0 must default to defaultRequestedMaxTokens (8513+256=8769 must not fit)")
 	}
 	// Negative prompt clamps to 0.
-	if fits, known := providerBudgetFits(snap, -5, 256); !known || !fits {
+	if fits, known := providerBudgetFits(snapPtr(snap), -5, 256); !known || !fits {
 		t.Fatalf("negative prompt = (fits=%v, known=%v), want (true, true)", fits, known)
 	}
 }
@@ -73,17 +73,17 @@ func TestProviderBudgetFitsColdLoadPostLoadBudget(t *testing.T) {
 
 	// Post-load budget per the provider's own headroom math:
 	// (0.90×48 − paddedWeights − 5.5 GiB activation floor) / 400000 B/token.
-	budget := coldTokenBudgetEstimate(snap.totalMemoryGB, snap.modelSizeGB, 0, snap.binaryVersion)
+	budget := coldTokenBudgetEstimate(snap.totalMemoryGB, snap.modelSizeGB, 0, snap.binaryVersion, snap.model)
 	if budget <= 0 || budget >= 30_000 {
 		t.Fatalf("cold post-load budget = %d, want a positive value below the 30k request", budget)
 	}
 
 	// A 30k-token request loads fine but can never be served post-load.
-	if fits, known := providerBudgetFits(snap, 30_000, 256); !known || fits {
+	if fits, known := providerBudgetFits(snapPtr(snap), 30_000, 256); !known || fits {
 		t.Fatalf("30k request vs %d-token post-load budget = (fits=%v, known=%v), want (false, true)", budget, fits, known)
 	}
 	// A request within the post-load budget fits.
-	if fits, known := providerBudgetFits(snap, 10_000, 256); !known || !fits {
+	if fits, known := providerBudgetFits(snapPtr(snap), 10_000, 256); !known || !fits {
 		t.Fatalf("10k request vs %d-token post-load budget = (fits=%v, known=%v), want (true, true)", budget, fits, known)
 	}
 }
@@ -93,14 +93,14 @@ func TestProviderBudgetFitsColdLoadPostLoadBudget(t *testing.T) {
 // behavior (fail open) rather than shedding on missing data.
 func TestProviderBudgetFitsFailsOpenOnUnknown(t *testing.T) {
 	// Resident legacy slot with no reported budget.
-	if fits, known := providerBudgetFits(routingSnapshot{modelLoaded: true}, 1_000_000, 256); known || !fits {
+	if fits, known := providerBudgetFits(snapPtr(routingSnapshot{modelLoaded: true}), 1_000_000, 256); known || !fits {
 		t.Fatalf("legacy resident slot = (fits=%v, known=%v), want (true, false)", fits, known)
 	}
 	// Cold slot missing memory/size data.
-	if fits, known := providerBudgetFits(routingSnapshot{modelSizeGB: 28}, 1_000_000, 256); known || !fits {
+	if fits, known := providerBudgetFits(snapPtr(routingSnapshot{modelSizeGB: 28}), 1_000_000, 256); known || !fits {
 		t.Fatalf("cold slot missing memory = (fits=%v, known=%v), want (true, false)", fits, known)
 	}
-	if fits, known := providerBudgetFits(routingSnapshot{totalMemoryGB: 48}, 1_000_000, 256); known || !fits {
+	if fits, known := providerBudgetFits(snapPtr(routingSnapshot{totalMemoryGB: 48}), 1_000_000, 256); known || !fits {
 		t.Fatalf("cold slot missing size = (fits=%v, known=%v), want (true, false)", fits, known)
 	}
 }
@@ -116,7 +116,7 @@ func TestPredictServableColdWeightFitInsufficientBudgetSheds(t *testing.T) {
 	model := "cold-budget-model"
 	// 28 GB weights on a 48 GB node running v0.8.0: min_ram 36 ≤ 48 passes the
 	// hardware gate, and the post-load budget is
-	// coldTokenBudgetEstimate(48, 28, 0, "0.8.0") = 17200
+	// coldTokenBudgetEstimate(48, 28, 0, "0.8.0", "") = 17200
 	// (see TestColdTokenBudgetEstimate case (b2)).
 	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 28, MinRAMGB: 36}})
 	cold := makeWarmPoolColdProvider(t, reg, "cold-48gb", model, 80, 48, 0)
@@ -124,7 +124,7 @@ func TestPredictServableColdWeightFitInsufficientBudgetSheds(t *testing.T) {
 	cold.Version = "0.8.0"
 	cold.mu.Unlock()
 
-	budget := coldTokenBudgetEstimate(48, 28, 0, "0.8.0")
+	budget := coldTokenBudgetEstimate(48, 28, 0, "0.8.0", "")
 	if budget <= 0 {
 		t.Fatalf("cold budget = %d, want > 0", budget)
 	}

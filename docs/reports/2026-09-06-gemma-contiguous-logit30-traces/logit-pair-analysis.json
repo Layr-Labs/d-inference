@@ -1,0 +1,182 @@
+{
+  "schema": 1,
+  "status": "valid_bounded_logit_observations",
+  "cases": {
+    "off": {
+      "trace_output_parity_all_seven": true,
+      "verifier_counter_parity": true,
+      "record": {
+        "acceptedDrafts": 0,
+        "argMaxID": 795,
+        "backend": "CBv2ContiguousKVBackend",
+        "batchIndex": 0,
+        "batchSize": 1,
+        "cacheOffset": 5447,
+        "candidateIDs": [
+          795,
+          735
+        ],
+        "column": 0,
+        "confirmedWidth": 1,
+        "draftDepth": 0,
+        "draftPrefix": [],
+        "infiniteCount": 0,
+        "logitDType": "float32",
+        "nanCount": 0,
+        "outcome": "confirmed",
+        "outputBase": 30,
+        "outputIndex": 30,
+        "phase": "chained_decode",
+        "requestID": 2,
+        "seedToken": 4615,
+        "targetToken": 795,
+        "topTwoIDs": [
+          795,
+          735
+        ],
+        "valueBits": [
+          1103591036,
+          1103591036,
+          1103508828,
+          1103591036,
+          1103508828
+        ],
+        "verificationWidth": 1,
+        "vocabularySize": 262144
+      },
+      "argmax_logit": 24.93285369873047,
+      "top_two_logits": [
+        24.93285369873047,
+        24.77605438232422
+      ],
+      "top_two_gap": 0.15679931640625,
+      "candidate_logits": {
+        "795": 24.93285369873047,
+        "735": 24.77605438232422
+      },
+      "score_795_minus_735": 0.15679931640625,
+      "causal_input_ids": [
+        4615
+      ],
+      "effective_position": 5447,
+      "full_target_input_ids": null,
+      "pre_forward_state_equality": "UNOBSERVED",
+      "other_records": [],
+      "prefill_geometry_parity": true,
+      "full_KV_state_identity": "UNOBSERVED",
+      "trace_report_sha256": "98ef5fce6b30e4fb6e11f78ccc9cadab0293ba131b64d82931b0a5e373833453",
+      "control_report_sha256": "4ed2a534d4999ba094b0e4e5a15d8df779afe66749485102c8f0cc295c3a1cd5"
+    },
+    "automatic": {
+      "trace_output_parity_all_seven": true,
+      "verifier_counter_parity": true,
+      "record": {
+        "acceptedDrafts": 1,
+        "argMaxID": 735,
+        "backend": "CBv2ContiguousKVBackend",
+        "batchIndex": 0,
+        "batchSize": 1,
+        "cacheOffset": 5447,
+        "candidateIDs": [
+          795,
+          735
+        ],
+        "column": 0,
+        "confirmedWidth": 2,
+        "draftDepth": 1,
+        "draftPrefix": [],
+        "infiniteCount": 0,
+        "logitDType": "float32",
+        "nanCount": 0,
+        "outcome": "confirmed",
+        "outputBase": 30,
+        "outputIndex": 30,
+        "phase": "rectangular_verify",
+        "requestID": 2,
+        "seedToken": 4615,
+        "targetToken": 735,
+        "topTwoIDs": [
+          735,
+          795
+        ],
+        "valueBits": [
+          1103550214,
+          1103550214,
+          1103508828,
+          1103508828,
+          1103550214
+        ],
+        "verificationWidth": 2,
+        "vocabularySize": 262144
+      },
+      "argmax_logit": 24.854991912841797,
+      "top_two_logits": [
+        24.854991912841797,
+        24.77605438232422
+      ],
+      "top_two_gap": 0.07893753051757812,
+      "candidate_logits": {
+        "795": 24.77605438232422,
+        "735": 24.854991912841797
+      },
+      "score_795_minus_735": -0.07893753051757812,
+      "causal_input_ids": [
+        4615
+      ],
+      "effective_position": 5447,
+      "full_target_input_ids": null,
+      "pre_forward_state_equality": "UNOBSERVED",
+      "other_records": [
+        {
+          "acceptedDrafts": 0,
+          "argMaxID": 10325,
+          "backend": "CBv2ContiguousKVBackend",
+          "batchIndex": 0,
+          "batchSize": 1,
+          "cacheOffset": 5446,
+          "candidateIDs": [
+            795,
+            735
+          ],
+          "column": 1,
+          "confirmedWidth": 1,
+          "draftDepth": 1,
+          "draftPrefix": [
+            563
+          ],
+          "infiniteCount": 0,
+          "logitDType": "float32",
+          "nanCount": 0,
+          "outcome": "speculative_suffix",
+          "outputBase": 29,
+          "outputIndex": 30,
+          "phase": "rectangular_verify",
+          "requestID": 2,
+          "seedToken": 12692,
+          "targetToken": 10325,
+          "topTwoIDs": [
+            10325,
+            1646
+          ],
+          "valueBits": [
+            1103861388,
+            1103861388,
+            1102965703,
+            1081451897,
+            1069406297
+          ],
+          "verificationWidth": 2,
+          "vocabularySize": 262144
+        }
+      ],
+      "prefill_geometry_parity": true,
+      "full_KV_state_identity": "UNOBSERVED",
+      "trace_report_sha256": "016d6dd5f578545bcbb890d46af1229e59436311e2b79ded2df703d59c5da154",
+      "control_report_sha256": "9680b63cb7dc3c2a30fec572b6a47fdeea0c033ad84ed5350f51b8a87220dca9"
+    }
+  },
+  "errors": [],
+  "full_KV_state_identity": "UNOBSERVED",
+  "full_rectangular_target_input": "UNOBSERVED; seed and draftPrefix cover only the selected column prefix",
+  "retained_verifier_correctness": "FAILED: frozen automatic and ordinary controls differ at index 30; diagnostic success does not waive it."
+}

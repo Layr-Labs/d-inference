@@ -13,7 +13,7 @@ import "time"
 //
 // The cold-dispatch win W3 actually delivers is therefore in the QUEUE: the
 // proven cold-load path, `TriggerModelSwaps`, only loads a cold provider for a
-// model that has QUEUED demand (registry.go). When the preflight sheds a
+// model that has QUEUED demand (model_loading.go). When the preflight sheds a
 // capacity-rejected request with an immediate 429 instead of queueing it, that
 // demand is never recorded, so no cold provider is ever warmed. Queue-before-shed
 // (api side) fixes that; `ColdSpillProviders` is the conservative predicate the

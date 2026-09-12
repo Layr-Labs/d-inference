@@ -31,6 +31,11 @@ export async function fetchModels(): Promise<Model[]> {
       architecture: m.architecture ?? meta.architecture,
       family: m.family ?? meta.family,
       capabilities: m.capabilities ?? meta.capabilities,
+      // Top-level on the public catalog path. The keyed path proxies
+      // /v1/models, which does not carry this field yet; the metadata fallback
+      // is where it would land once the coordinator's ModelMetadata adds it.
+      required_provider_capabilities:
+        m.required_provider_capabilities ?? meta.required_provider_capabilities,
       // OpenRouter provider schema fields.
       name: m.name ?? meta.display_name,
       hugging_face_id: m.hugging_face_id ?? m.id,

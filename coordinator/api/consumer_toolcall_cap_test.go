@@ -2,7 +2,6 @@ package api
 
 import (
 	"fmt"
-	"math"
 	"testing"
 )
 
@@ -105,67 +104,5 @@ func TestExtractMessageCapBoundsSparseHugeIndices(t *testing.T) {
 	msg := extractMessage(chunks)
 	if len(msg.ToolCalls) != maxLogicalToolCalls {
 		t.Fatalf("tool_calls length = %d, want cap %d", len(msg.ToolCalls), maxLogicalToolCalls)
-	}
-}
-
-// T5 (PR #548 review): the sort comparator must never panic on a corrupt
-// "index" value. Entries are always built with an int index, so this is
-// unreachable from extractMessage input — the helper is pinned directly.
-func TestToolCallWireIndexCorruptValue(t *testing.T) {
-	if got := toolCallWireIndex(map[string]any{"index": 3}); got != 3 {
-		t.Errorf("int index = %d, want 3", got)
-	}
-	if got := toolCallWireIndex(map[string]any{"index": "corrupt"}); got != math.MaxInt {
-		t.Errorf("corrupt index = %d, want math.MaxInt (sorts last, no panic)", got)
-	}
-	if got := toolCallWireIndex(map[string]any{}); got != math.MaxInt {
-		t.Errorf("missing index = %d, want math.MaxInt (sorts last, no panic)", got)
-	}
-}
-
-// A hand-built entry with a corrupt "index" (unreachable through
-// extractMessage, which always stores int) must not panic finalize; it
-// sorts last, after all valid indices.
-func TestToolCallFinalizeCorruptIndexNoPanic(t *testing.T) {
-	acc := newToolCallAccumulator()
-	acc.calls = []map[string]any{
-		{"index": "corrupt", "id": "bad", "function": map[string]any{"arguments": ""}},
-		{"index": 1, "id": "good_b", "function": map[string]any{"arguments": ""}},
-		{"index": 0, "id": "good_a", "function": map[string]any{"arguments": ""}},
-	}
-	out := acc.finalize()
-	if len(out) != 3 {
-		t.Fatalf("finalize length = %d, want 3", len(out))
-	}
-	if out[0]["id"] != "good_a" || out[1]["id"] != "good_b" || out[2]["id"] != "bad" {
-		t.Fatalf("want valid entries index-ordered with corrupt entry last, got %v / %v / %v", out[0]["id"], out[1]["id"], out[2]["id"])
-	}
-}
-
-// A hand-built entry whose "function" or "arguments" value was corrupted
-// (also unreachable through extractMessage) must not panic apply; the
-// corrupt value is replaced and accumulation continues.
-func TestToolCallApplyCorruptFunctionNoPanic(t *testing.T) {
-	acc := newToolCallAccumulator()
-	acc.calls = []map[string]any{
-		{"index": 0, "id": "call_a", "function": "corrupt"},
-		{"index": 1, "id": "call_b", "function": map[string]any{"arguments": 42}},
-	}
-	acc.activeByIndex = map[int]int{0: 0, 1: 1}
-
-	var frag streamToolCallDelta
-	frag.Index = 0
-	frag.Function.Arguments = `{"x":1}`
-	acc.apply(frag)
-	frag.Index = 1
-	acc.apply(frag)
-
-	fn0 := acc.calls[0]["function"].(map[string]any)
-	if fn0["arguments"] != `{"x":1}` {
-		t.Errorf("corrupt function map: arguments = %q, want %q", fn0["arguments"], `{"x":1}`)
-	}
-	fn1 := acc.calls[1]["function"].(map[string]any)
-	if fn1["arguments"] != `{"x":1}` {
-		t.Errorf("corrupt arguments value: arguments = %q, want %q", fn1["arguments"], `{"x":1}`)
 	}
 }

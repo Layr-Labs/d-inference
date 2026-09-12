@@ -640,11 +640,13 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         let expectedDeadline = deadline(
             budgetMilliseconds: 10_000,
             elapsedMilliseconds: 1_000)
+        let profile = RequestProfileBuilder()
         let stream = try await bridge.submitTokenized(
             promptTokens: promptTokens,
             request: request,
             requestId: "atomic-admit",
-            firstContentDeadline: expectedDeadline)
+            firstContentDeadline: expectedDeadline,
+            profile: profile)
 
         let admission = try #require(engine.deadlineAdmissions.first)
         #expect(admission.deadline == expectedDeadline.instant)
@@ -655,6 +657,14 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         #expect(
             await bridge._testSubmissionInstant(requestId: "atomic-admit")
                 == committedAt)
+        let wire = profile.wireObject()
+        #expect(wire.deadlineDecision?.verdict == .accepted)
+        #expect(wire.deadlineDecision?.projection == .bounded)
+        #expect(wire.deadlineDecision?.prefillTps == admission.conservativePrefillTokensPerSecond)
+        #expect(wire.deadlineDecision?.decodeTps == nil)
+        #expect(wire.deadlineDecision?.projectedServiceUs == wire.projectedServiceUs)
+        #expect(wire.engineAdmittedUs != nil)
+        #expect(wire.budgetRemainingAtAdmitUs != nil)
         #expect(engine.ordinarySubmissionCount == 1)
         #expect(await bridge._testLivePumpCount() == 1)
         try await finishLatestSubmission(stream, engine: engine)
@@ -726,15 +736,19 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         let measuredDecode = await bridge.observedDecodeTpsEwma
         #expect(measuredDecode > 0)
 
+        let profile = RequestProfileBuilder()
         let deadlineStream = try await bridge.submitTokenized(
             promptTokens: promptTokens,
             request: request,
             requestId: "atomic-with-decode-rate",
-            firstContentDeadline: deadline())
+            firstContentDeadline: deadline(),
+            profile: profile)
         let admission = try #require(engine.deadlineAdmissions.last)
         #expect(
             admission.conservativeDecodeTokensPerSecond
                 == measuredDecode * EngineV2Bridge.deadlineProjectionRateHaircut)
+        #expect(profile.wireObject().deadlineDecision?.decodeTps
+            == admission.conservativeDecodeTokensPerSecond)
         try await finishLatestSubmission(deadlineStream, engine: engine)
     }
 

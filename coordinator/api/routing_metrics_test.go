@@ -147,6 +147,9 @@ func makeRoutableProvider(t *testing.T, reg *registry.Registry, id, model string
 		},
 	}
 	p := reg.Register(id, nil, msg)
+	// This helper constructs an already registered, routable fixture. Recovery
+	// failure cases use their own pending-registration fixtures.
+	p.CompleteProviderStateRestore()
 	p.Mu().Lock()
 	p.TrustLevel = registry.TrustHardware
 	p.RuntimeVerified = true

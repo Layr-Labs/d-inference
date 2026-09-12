@@ -91,12 +91,18 @@ type myProvider struct {
 	// Live snapshot (only set when the machine is currently connected)
 	SystemMetrics   *protocol.SystemMetrics   `json:"system_metrics,omitempty"`
 	BackendCapacity *protocol.BackendCapacity `json:"backend_capacity,omitempty"`
-	WarmModels      []string                  `json:"warm_models,omitempty"`
-	CurrentModel    string                    `json:"current_model,omitempty"`
-	PendingRequests int                       `json:"pending_requests"`
-	MaxConcurrency  int                       `json:"max_concurrency"`
-	PrefillTPS      float64                   `json:"prefill_tps,omitempty"`
-	DecodeTPS       float64                   `json:"decode_tps,omitempty"`
+	// IdleUnloadMins is the machine's idle-memory policy as reported in its
+	// heartbeats: 0 = always ready (models stay loaded), N = unloaded after N
+	// idle minutes and reloaded on demand. Omitted for offline machines and
+	// for providers too old to report it. Lets the dashboard render a missing
+	// slot as "sleeping, wakes on demand" instead of a warning.
+	IdleUnloadMins  *int     `json:"idle_unload_mins,omitempty"`
+	WarmModels      []string `json:"warm_models,omitempty"`
+	CurrentModel    string   `json:"current_model,omitempty"`
+	PendingRequests int      `json:"pending_requests"`
+	MaxConcurrency  int      `json:"max_concurrency"`
+	PrefillTPS      float64  `json:"prefill_tps,omitempty"`
+	DecodeTPS       float64  `json:"decode_tps,omitempty"`
 
 	// Reputation
 	Reputation myReputation `json:"reputation"`
@@ -162,26 +168,11 @@ func (s *Server) handleMySummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	recent, err := s.store.GetAccountEarnings(accountID, 5000)
+	windows, err := s.accountEarningsWindows(accountID)
 	if err != nil {
-		s.logger.Error("get account earnings failed", "error", err)
+		s.logger.Error("get account earnings windows failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch earnings"))
 		return
-	}
-	now := time.Now()
-	cutoff24h := now.Add(-24 * time.Hour)
-	cutoff7d := now.Add(-7 * 24 * time.Hour)
-	var last24Money, last7dMoney int64
-	var last24Jobs, last7dJobs int64
-	for _, e := range recent {
-		if e.CreatedAt.After(cutoff7d) {
-			last7dMoney += e.AmountMicroUSD
-			last7dJobs++
-			if e.CreatedAt.After(cutoff24h) {
-				last24Money += e.AmountMicroUSD
-				last24Jobs++
-			}
-		}
 	}
 
 	fleet, err := s.mergeFleet(r.Context(), accountID)
@@ -203,10 +194,10 @@ func (s *Server) handleMySummary(w http.ResponseWriter, r *http.Request) {
 		PayoutReady:                 user.StripeAccountStatus == "ready",
 		LifetimeMicroUSD:            summary.TotalMicroUSD,
 		LifetimeJobs:                summary.Count,
-		Last24hMicroUSD:             last24Money,
-		Last24hJobs:                 last24Jobs,
-		Last7dMicroUSD:              last7dMoney,
-		Last7dJobs:                  last7dJobs,
+		Last24hMicroUSD:             windows.Last24hMicroUSD,
+		Last24hJobs:                 windows.Last24hJobs,
+		Last7dMicroUSD:              windows.Last7dMicroUSD,
+		Last7dJobs:                  windows.Last7dJobs,
 		Counts:                      counts,
 		LatestProviderVersion:       s.latestReleasedVersion(),
 		MinProviderVersion:          s.minProviderVersion,
@@ -333,9 +324,7 @@ func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for i := range fleet {
-		s.attachStoredReputation(r.Context(), &fleet[i])
-	}
+	s.attachStoredReputations(r.Context(), fleet)
 
 	resp := myProvidersResponse{
 		Providers:             fleet,
@@ -423,14 +412,40 @@ func emittedIdentity(mp *myProvider) string {
 	return "id:" + mp.ID
 }
 
-func (s *Server) attachStoredReputation(ctx context.Context, mp *myProvider) {
-	if mp.ID == "" || mp.Reputation.TotalJobs > 0 || mp.Reputation.ChallengesPassed > 0 || mp.Reputation.ChallengesFailed > 0 {
+// attachStoredReputations fills in persisted reputation for every machine in
+// the fleet that has none from the live registry, with ONE store lookup for
+// the whole fleet instead of one per machine (the dashboard polls this every
+// 15 s per tab, and the per-machine form was ~78 reputation reads/s in
+// production).
+func (s *Server) attachStoredReputations(ctx context.Context, fleet []myProvider) {
+	ids := make([]string, 0, len(fleet))
+	for i := range fleet {
+		if needsStoredReputation(&fleet[i]) {
+			ids = append(ids, fleet[i].ID)
+		}
+	}
+	if len(ids) == 0 {
 		return
 	}
-	rep, err := s.store.GetReputation(ctx, mp.ID)
-	if err != nil || rep == nil {
+	reps, err := s.store.GetReputations(ctx, ids)
+	if err != nil {
 		return
 	}
+	for i := range fleet {
+		if !needsStoredReputation(&fleet[i]) {
+			continue
+		}
+		if rep := reps[fleet[i].ID]; rep != nil {
+			applyStoredReputation(&fleet[i], rep)
+		}
+	}
+}
+
+func needsStoredReputation(mp *myProvider) bool {
+	return mp.ID != "" && mp.Reputation.TotalJobs == 0 && mp.Reputation.ChallengesPassed == 0 && mp.Reputation.ChallengesFailed == 0
+}
+
+func applyStoredReputation(mp *myProvider, rep *store.ReputationRecord) {
 	r := registry.NewReputation()
 	r.TotalJobs = rep.TotalJobs
 	r.SuccessfulJobs = rep.SuccessfulJobs
@@ -582,6 +597,10 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		if live.BackendCapacity != nil {
 			cap := *live.BackendCapacity
 			mp.BackendCapacity = &cap
+		}
+		if live.IdleUnloadMins != nil {
+			v := *live.IdleUnloadMins
+			mp.IdleUnloadMins = &v
 		}
 		mp.WarmModels = append([]string{}, live.WarmModels...)
 		mp.CurrentModel = live.CurrentModel

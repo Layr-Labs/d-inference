@@ -1,0 +1,52 @@
+{
+  "actual_model_batch_width_verified": true,
+  "baseline_decode_tps": null,
+  "cancellation_cache_policy": "completed priming donor remains reusable",
+  "candidate_decode_tps": null,
+  "comparison_axis": "backend",
+  "errors": [],
+  "generated_token_ids_compared": true,
+  "passed": true,
+  "rows": [
+    {
+      "baseline_terminal_tail_s": 0.00014637499999992087,
+      "baseline_ttft_s": 7.071579916,
+      "cache_outcome": "disabled",
+      "candidate_terminal_tail_s": 0.00036016700000018886,
+      "candidate_ttft_s": 6.712933292,
+      "id": "long-first-b0",
+      "saved_tokens": 0,
+      "token_ids_equal": true
+    },
+    {
+      "baseline_terminal_tail_s": 0.00011379200000050105,
+      "baseline_ttft_s": 13.673643833,
+      "cache_outcome": "disabled",
+      "candidate_terminal_tail_s": 0.0003256250000003291,
+      "candidate_ttft_s": 13.411085042,
+      "id": "long-first-b1",
+      "saved_tokens": 0,
+      "token_ids_equal": true
+    },
+    {
+      "baseline_terminal_tail_s": 0.00012870800000008842,
+      "baseline_ttft_s": 7.255574792,
+      "cache_outcome": "disabled",
+      "candidate_terminal_tail_s": 0.00032591700000139667,
+      "candidate_ttft_s": 7.284435541,
+      "id": "long-repeat-b0",
+      "saved_tokens": 0,
+      "token_ids_equal": true
+    },
+    {
+      "baseline_terminal_tail_s": 6.579099999726168e-05,
+      "baseline_ttft_s": 13.994465042,
+      "cache_outcome": "disabled",
+      "candidate_terminal_tail_s": 0.00035708299999726023,
+      "candidate_ttft_s": 14.156686292,
+      "id": "long-repeat-b1",
+      "saved_tokens": 0,
+      "token_ids_equal": true
+    }
+  ]
+}

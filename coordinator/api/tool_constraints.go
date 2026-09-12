@@ -46,6 +46,12 @@ func validateToolConstraintRequest(body []byte) (toolChoiceMode, error) {
 	return policy.mode, err
 }
 
+// validateToolConstraintPolicy validates the tool policy of a JSON request
+// body. It is the bytes-in entry point for bodies that only exist as bytes —
+// the endpoint-lowered constraint view of Responses / completions / Anthropic
+// requests and the unit tests; the chat handler validates its already-parsed
+// map through validateParsedToolConstraintPolicy instead of paying a second
+// full-body parse.
 func validateToolConstraintPolicy(body []byte) (validatedToolConstraintPolicy, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
@@ -54,6 +60,16 @@ func validateToolConstraintPolicy(body []byte) (validatedToolConstraintPolicy, e
 		return validatedToolConstraintPolicy{},
 			invalidToolConstraint("invalid request body", "")
 	}
+	return validateParsedToolConstraintPolicy(root)
+}
+
+// validateParsedToolConstraintPolicy validates tool_choice /
+// parallel_tool_calls / tool_call_parser / stop / tools / messages on a decoded
+// request object. root must be the PRE-normalization view of the tools (see
+// rejectReservedSchemaMetadata: a normalization marker present here is
+// client-forged); the chat prelude keeps that view aside when it repairs
+// schemas in place.
+func validateParsedToolConstraintPolicy(root map[string]any) (validatedToolConstraintPolicy, error) {
 	mode, selected, err := parseToolChoice(root["tool_choice"])
 	if err != nil {
 		return validatedToolConstraintPolicy{}, err

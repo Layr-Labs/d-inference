@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"sort"
 	"sync"
 )
 
@@ -19,11 +18,26 @@ import (
 //     while the WHOLE box was uncontended. Feeds the quality-concurrency cap,
 //     which needs a static solo rate that cannot collapse under the very
 //     overload the cap exists to prevent.
+//
+// Every read-side aggregate (medians, the cross-class solo aggregate) is
+// maintained on write and served as an O(1), allocation-free lookup — see
+// tps_median_cache.go. The routing scan reads them once per provider.
 type TPSRegistry struct {
 	mu          sync.RWMutex
 	samples     map[tpsKey][]float64
 	soloSamples map[tpsKey][]float64
 	maxSamples  int
+
+	// medians caches the median of samples[key]; refreshed by Record.
+	medians map[tpsKey]float64
+	// soloByModel caches the solo median + count per model → chip class;
+	// refreshed by RecordSolo. soloAllChips is the per-model cross-class
+	// aggregate derived from it.
+	soloByModel  map[string]map[string]tpsSampleStat
+	soloAllChips map[string]soloAllChipsStat
+	// scratch is the write-side sort buffer (cap maxSamples), used only under
+	// the write lock so no read ever allocates or sorts.
+	scratch []float64
 }
 
 type tpsKey struct {
@@ -32,10 +46,15 @@ type tpsKey struct {
 }
 
 func NewTPSRegistry() *TPSRegistry {
+	const maxSamples = 50 // keep last 50 observations per model+chip
 	return &TPSRegistry{
-		samples:     make(map[tpsKey][]float64),
-		soloSamples: make(map[tpsKey][]float64),
-		maxSamples:  50, // keep last 50 observations per model+chip
+		samples:      make(map[tpsKey][]float64),
+		soloSamples:  make(map[tpsKey][]float64),
+		maxSamples:   maxSamples,
+		medians:      make(map[tpsKey]float64),
+		soloByModel:  make(map[string]map[string]tpsSampleStat),
+		soloAllChips: make(map[string]soloAllChipsStat),
+		scratch:      make([]float64, 0, maxSamples),
 	}
 }
 
@@ -48,30 +67,24 @@ func (r *TPSRegistry) Record(model, chipFamily string, tps float64) {
 	key := tpsKey{Model: model, ChipFamily: chipFamily}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	samples := r.samples[key]
-	if len(samples) >= r.maxSamples {
-		// Drop oldest sample (FIFO ring)
-		samples = samples[1:]
+	if r.samples == nil { // zero-value registry
+		r.samples = make(map[tpsKey][]float64)
 	}
-	r.samples[key] = append(samples, tps)
+	if r.medians == nil {
+		r.medians = make(map[tpsKey]float64)
+	}
+	samples := appendRingSample(r.samples[key], tps, r.maxSamples)
+	r.samples[key] = samples
+	r.medians[key] = r.medianOfRingLocked(samples)
 }
 
 // Median returns the median observed TPS for the given model and chip family.
-// Returns 0 if no observations exist.
+// Returns 0 if no observations exist. O(1), allocation-free (the value is
+// maintained by Record).
 func (r *TPSRegistry) Median(model, chipFamily string) float64 {
 	key := tpsKey{Model: model, ChipFamily: chipFamily}
 	r.mu.RLock()
-	samples := r.samples[key]
-	sorted := make([]float64, len(samples))
-	copy(sorted, samples)
+	median := r.medians[key]
 	r.mu.RUnlock()
-	if len(sorted) == 0 {
-		return 0
-	}
-	sort.Float64s(sorted)
-	mid := len(sorted) / 2
-	if len(sorted)%2 == 0 {
-		return (sorted[mid-1] + sorted[mid]) / 2
-	}
-	return sorted[mid]
+	return median
 }

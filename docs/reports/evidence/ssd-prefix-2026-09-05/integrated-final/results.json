@@ -1,0 +1,23 @@
+{
+  "source_manifest": "source-manifest.json",
+  "source_manifest_sha256": "1b4c74e26702a2108464bcd8b188dcac2b7914cdffa455feb91c137f67da0768",
+  "parent": "97a439359b76007a0a6594cf922640b3a3923497",
+  "mlx_lm": "72902c4a9a0faa1053c348fbb9d2dc381e3f19f7",
+  "build_seconds": 91.23,
+  "xctest_passed": 82,
+  "swift_testing_passed": 2506,
+  "swift_testing_suites": 257,
+  "swift_testing_seconds": 40.773,
+  "failures": 0,
+  "command": "swift build --package-path provider-swift --build-tests --jobs 4 --disable-automatic-resolution && swift test --package-path provider-swift --skip-build",
+  "logs": {
+    "radix-integrated-ssd-final-build.txt.gz": {
+      "sha256": "a4d4b28004214f39cc0f3fca4ac7904877bc06420f5649b43ee87bcc3b56e191",
+      "uncompressed_sha256": "4210c5038ab255b1956b3536e5f95738b81dc6471b349d0ae001da346a3abe10"
+    },
+    "radix-integrated-ssd-final-tests.txt.gz": {
+      "sha256": "59d312ec946435150721b74dc860575cfb2cddbc3a285afb58d1c1a001e3d37b",
+      "uncompressed_sha256": "8bdb9af662f2e5f129d991353be08ff328a6b5d610b4fef81d625fe29a054489"
+    }
+  }
+}

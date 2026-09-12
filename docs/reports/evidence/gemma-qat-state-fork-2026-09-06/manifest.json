@@ -1,0 +1,37 @@
+{
+  "files": {
+    "automatic_fork.json": {
+      "bytes": 809424,
+      "sha256": "2101c1f5f1eacb8daf2999e758efa3aeb0f0f57f47f37c167785ca6b084b5324"
+    },
+    "automatic_trace.json": {
+      "bytes": 18650,
+      "sha256": "f19508075a12197959b5dd6ba7b88ea31d0b9126b04b7e050d962d7252a32d20"
+    },
+    "control-schema-correction.json": {
+      "bytes": 2991,
+      "sha256": "578be98b9082b6e37e753a4bf07e4d35a706112d57ab3b44f71a0a563adc55b5"
+    },
+    "execution-identity.json": {
+      "bytes": 3631,
+      "sha256": "bee72159c25d24e62d3f7e4ecbee3c3a71190101a5058a72c363e4fd1ad98914"
+    },
+    "fork-analysis.json": {
+      "bytes": 3305,
+      "sha256": "46487a8ddf872e2f6b7065d07f300f5566b046cfa719c3cf59b539b0fdf1d756"
+    },
+    "ordinary.json": {
+      "bytes": 11178,
+      "sha256": "318e3c09e76a44d02edb6d9341b5ff360740d4a312843aad5e08e523f93572f0"
+    },
+    "serial-comparison.json": {
+      "bytes": 2569,
+      "sha256": "6ef8e82d911ed1f103dea37c228f5804ed2597974faf50d5f394606d89e6b622"
+    },
+    "serial_target.json": {
+      "bytes": 18637,
+      "sha256": "2f422de2eafd8f87cbb331b80b962868ed6756fd99f6a7aed31f9ee36b697fab"
+    }
+  },
+  "scope": "Share-safe projection: no weight tensors, checkpoint contents, binary packages, private keys, full prompt text, or raw environment files. Original raw reports remain locally hash-bound."
+}

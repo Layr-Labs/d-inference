@@ -103,11 +103,12 @@ private final class VisionScriptedEngine: CBv2Engine, @unchecked Sendable {
 }
 
 private struct VisionStubTokenizer: MLXLMCommon.Tokenizer {
+    var promptTail: String? = nil
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
         Array(repeating: 0, count: text.count)
     }
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
-        tokenIds.map { "t\($0)" }.joined()
+        promptTail ?? tokenIds.map { "t\($0)" }.joined()
     }
     func convertTokenToId(_ token: String) -> Int? { ["</s>": 2][token] }
     func convertIdToToken(_ id: Int) -> String? { nil }
@@ -226,6 +227,7 @@ private func makeRoutingEngine(
     bridge: EngineV2Bridge?,
     plumbing: EngineV2VisionPlumbing?,
     modelType: String = "gemma4",
+    tokenizer: VisionStubTokenizer = .init(),
     visionGate: VisionMemoryGate? = nil,
     templateControls: ChatTemplateControls = .init()
 ) -> MultiModelBatchSchedulerEngine {
@@ -233,7 +235,7 @@ private func makeRoutingEngine(
         registryProvider: { @Sendable in
             [
                 "test/vlm-stub": .init(
-                    tokenizer: TokenizerHandle(VisionStubTokenizer()),
+                    tokenizer: TokenizerHandle(tokenizer),
                     modelType: modelType,
                     container: container,
                     isVLM: true,
@@ -808,6 +810,57 @@ struct Qwen35CBv2FixedRequestAccountingTests {
 
 @Suite("MultiModelBatchSchedulerEngine vision-v2 routing")
 struct EngineV2VisionRoutingTests {
+
+    @Test("thinking-disabled text, image, and video stream before engine completion",
+          arguments: ["text", "image", "video"], [ReasoningParserFormat.qwen3, .deepseekR1, .none])
+    func nonThinkingContentBeforeCompletion(kind: String, parser: ReasoningParserFormat) async throws {
+        let engine = VisionScriptedEngine(script: .manual)
+        let (prepared, _) = makePreparedSubmission(mediaKind: kind == "video" ? .video : .image)
+        let router = makeRoutingEngine(
+            container: makeStubContainer(), bridge: makeBridge(engine: engine),
+            plumbing: EngineV2VisionPlumbing(
+                prepare: { _, _, _ in prepared }, emitTelemetry: { _ in }),
+            modelType: "qwen3_5",
+            tokenizer: VisionStubTokenizer(promptTail: "<|im_start|>assistant\n<think>\n\n</think>\n\n"))
+        var request = imageRequest()
+        if kind == "text" {
+            request.messages = [.init(role: .user, content: .text("Describe the scene."))]
+        } else if kind == "video" {
+            request.messages = [.init(role: .user, content: .parts([.videoURL(tinyMP4DataURI)]))]
+        }
+        request.stream = true
+        request.reasoningParser = parser
+        let service = MLXOpenAIService(engine: router)
+        let frames = try await service.streamChatCompletionFrames(request: request)
+        let producer = try #require(engine.manualContinuation)
+        defer { producer.finish() }
+        producer.yield(.delta(text: "A person walks.", tokens: [10], logprobs: nil))
+
+        // Deliberately keep the producer open: buffering until finish must
+        // fail this assertion even if the eventual collected answer is right.
+        let streamed = try await withThrowingTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for try await frame in frames {
+                    if frame.contains("A person walks.") {
+                        #expect(!frame.contains("reasoning_content"))
+                        #expect(!frame.contains("<think>"))
+                        #expect(!frame.contains("</think>"))
+                        return true
+                    }
+                }
+                return false
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(2))
+                return false
+            }
+            defer { group.cancelAll() }
+            return try await group.next() ?? false
+        }
+        #expect(streamed)
+        #expect(engine.submitted.count == 1)
+        #expect((engine.submitted.first?.multimodal != nil) == (kind != "text"))
+    }
 
     init() {
         // Some assertions evaluate MLXArrays (embedding comparisons) — see

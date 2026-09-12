@@ -1,0 +1,526 @@
+{
+  "schema": 1,
+  "scope": "Actual allocator/provider ownership proof, paged footprint wire observations, and metadata-only SSD candidate lookup.",
+  "parent_base": "055a76364b7952ee409598f7443ff6b92eec0ecb",
+  "source": {
+    "parent_base": "055a76364b7952ee409598f7443ff6b92eec0ecb",
+    "owned_count": 16,
+    "files": {
+      "console-ui/__tests__/paged-footprint-telemetry.test.ts": "92aa2fcc132c00af6be8e4573827b902b3c2ff757551b9d34e143680965b9ed2",
+      "console-ui/src/app/providers/types.ts": "b33ac1f8560b5cdf19ccb35255721f0d8d902c04e21efc2dfc98ea59f24e53d4",
+      "coordinator/api/provider_paged_storage_telemetry.go": "c32e11723407f4a3d2345b0c0131b4c6c32a80a04f6cfd06d0f4558924c24174",
+      "coordinator/api/provider_paged_storage_telemetry_test.go": "709a9c1599c713f2f0594d8b8d65150fb42d5c8f4465984654670e2d6fe889cd",
+      "coordinator/protocol/paged_footprint_telemetry_test.go": "ba682dc9a487df41804faae5df889efda22c16363ce6c4c9942abe1173692de7",
+      "coordinator/protocol/paged_storage_telemetry.go": "86576504d69c6e0f82b3107683e4ef0d6a01b04c07453b4baf1b5e35ab4e4440",
+      "coordinator/protocol/testdata/paged_footprint_wire.json": "3b3a1777e129972a504eb2267f865a410d64839bc014828eea00fd4b04742483",
+      "coordinator/registry/paged_storage_telemetry.go": "4a1206729778c84caff4adad8ce4a8af7681a2bb84529169c7b1ba508ee9583e",
+      "coordinator/registry/paged_storage_telemetry_test.go": "136e3d8dff44ff636b155710821ced251dd6b3aa6c5b574765a34a2e25f308d3",
+      "provider-swift/Sources/ProviderCore/Inference/PagedStorageTelemetryAdapter.swift": "2d73a84710831b3d9d733bb8e0596612b4d6cbadb8aabde4a76fe3514de438c6",
+      "provider-swift/Sources/ProviderCore/Protocol/PagedStorageTelemetry.swift": "ff291c84f1073356928678c4cf432211aab25de4748dcd34826598e6666b4291",
+      "provider-swift/Tests/ProviderCoreTests/PagedFootprintTelemetryTests.swift": "30119c7cd8c7293457a18f8f6d6175bec34fe1dbca89e9310bc494cb6532c573",
+      "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockIndex.swift": "30232401aad96153ac472fc256fce7c226082ee868d3df2f72776c9579ec6e9e",
+      "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Read.swift": "6e0a7706385d565120a092db2267ef65b156f872aa8efa4d9df4f487bedb0f31",
+      "provider-swift/Tests/ProviderCoreTests/SSDCheckpointLookupTests.swift": "93135b198691c56c80215fe7845c542d5d946ac9b06103624231cd67c29bbaf3",
+      "provider-swift/Tests/ProviderCoreTests/ProcessMemoryNativeIntegrationTests.swift": "eddf08e57f0bdd7eeb770564d9c744d1400c765333df23e61b66045772937b70"
+    },
+    "exact_provider_files": 8,
+    "merged_files": {
+      "console-ui/src/app/providers/types.ts": "Preserve banked process-memory CapacityTelemetry import and optional MyBackendCapacity.telemetry field from69a75; footprint delta unchanged. Focused TS checks rerun."
+    },
+    "validated_provider_manifest_sha256": "bfb58c3337fda3ffd7fc84c48cfab6b50caac48cd2b1d352424d3a0a95055967",
+    "verified_payloads": 46,
+    "verified_provider": 664,
+    "verified_native": 455,
+    "verified_dependency": 1356,
+    "verified_jinja": 27,
+    "root_review": "accepted source union; whole-file hash assertion identified expected earlier process telemetry merge, reviewed before rerun"
+  },
+  "provider_validation": {
+    "status": "pass",
+    "provider_worktree_base": "69a75de82813beaf753fbbb4891c3b3261b63600",
+    "source_equivalent_current_parent_before_overlay": "055a76364b7952ee409598f7443ff6b92eec0ecb",
+    "native_commit": "a486a55d032deae001190bf9795ece1cb3d9a609",
+    "policy_evidence": "/tmp/darkbloom-allocator-footprint-policy-validation1/manifest.json",
+    "policy_evidence_sha256": "45fa645950258545f9b1942f1db585007e8b16607afdf5dc42f48949acd541a9",
+    "build_seconds_reported": 141.46,
+    "unique_functions": 68,
+    "unique_cases": 68,
+    "by_group": {
+      "new-telemetry": {
+        "functions": 3,
+        "cases": 3,
+        "failures": 0,
+        "skips": 0
+      },
+      "process-ledger": {
+        "functions": 28,
+        "cases": 28,
+        "failures": 0,
+        "skips": 0
+      },
+      "heartbeat-wire": {
+        "functions": 8,
+        "cases": 8,
+        "failures": 0,
+        "skips": 0
+      },
+      "heartbeat-events": {
+        "functions": 10,
+        "cases": 10,
+        "failures": 0,
+        "skips": 0
+      },
+      "paged-footprint": {
+        "functions": 2,
+        "cases": 2,
+        "failures": 0,
+        "skips": 0
+      },
+      "ssd-checkpoint": {
+        "functions": 15,
+        "cases": 15,
+        "failures": 0,
+        "skips": 0
+      },
+      "real-native-isolated": {
+        "functions": 2,
+        "cases": 2,
+        "failures": 0,
+        "skips": 0
+      }
+    },
+    "source_verified": {
+      "provider_inputs": 664,
+      "native_inputs": 455,
+      "dependency_inputs": 1356,
+      "owned_inputs": 8,
+      "jinja_inputs": 27,
+      "no_drift": true,
+      "mutable_primary_excluded_during_root_bank": true
+    },
+    "real_allocator_proof": "Native Admission/PagedKVBackend and actual provider owner reserve163837 before first buffer eval, then settle C=M81920 actual allocator backing bytes. Competing4096 charge exact fits at the pre-eval and settled boundaries; +1 is refused. A24576-logical-byte alias retains32768 actual allocator bytes after coverage/charge retirement; final alias drop releases32768 and competitor can reuse the capacity. Coherent real U is never synthesized.",
+    "limits": [
+      "Pre-evaluation cap is temporarily constrained at the observation boundary, then restored to unbounded before allocation. This does not establish a continuously constrained whole-graph/factory/scratch envelope.",
+      "OS availability is deliberately non-binding; this is allocator/native/provider ownership proof, not platform pressure testing.",
+      "Real2 suite executes in its own test process; all other selected groups also run in separate processes.",
+      "No full native codec/provider29/historical union or requested fleet-size model tested here; no rollout/default/performance claim.",
+      "Lookup change behavior is tested; no SSD lookup timing claim. Go/TypeScript telemetry changes have separate root-owned evidence."
+    ]
+  },
+  "root_validation": {
+    "go": {
+      "function_pass": 6
+    },
+    "ts_tests": 14,
+    "ts_files": 3,
+    "touched_eslint": "pass"
+  },
+  "dependency_evidence": "../allocator-policy-2026-09-05/manifest.json",
+  "archive": {
+    "path": "payloads.tar.gz",
+    "bytes": 1087749,
+    "sha256": "e17546f2c0117d7945643f0b36c84a742ebe4aa948b9c3f812a6ebe5b53d2656"
+  },
+  "entries": [
+    {
+      "path": "bank/integration.json",
+      "bytes": 2948,
+      "sha256": "4997d34285deb6593688dbaaca4090eb63a03bed8fe8727485cd04587a7f3532"
+    },
+    {
+      "path": "bank/owned-source/console-ui/__tests__/paged-footprint-telemetry.test.ts",
+      "bytes": 945,
+      "sha256": "92aa2fcc132c00af6be8e4573827b902b3c2ff757551b9d34e143680965b9ed2"
+    },
+    {
+      "path": "bank/owned-source/console-ui/src/app/providers/types.ts",
+      "bytes": 8035,
+      "sha256": "b33ac1f8560b5cdf19ccb35255721f0d8d902c04e21efc2dfc98ea59f24e53d4"
+    },
+    {
+      "path": "bank/owned-source/coordinator/api/provider_paged_storage_telemetry.go",
+      "bytes": 2676,
+      "sha256": "c32e11723407f4a3d2345b0c0131b4c6c32a80a04f6cfd06d0f4558924c24174"
+    },
+    {
+      "path": "bank/owned-source/coordinator/api/provider_paged_storage_telemetry_test.go",
+      "bytes": 4625,
+      "sha256": "709a9c1599c713f2f0594d8b8d65150fb42d5c8f4465984654670e2d6fe889cd"
+    },
+    {
+      "path": "bank/owned-source/coordinator/protocol/paged_footprint_telemetry_test.go",
+      "bytes": 1528,
+      "sha256": "ba682dc9a487df41804faae5df889efda22c16363ce6c4c9942abe1173692de7"
+    },
+    {
+      "path": "bank/owned-source/coordinator/protocol/paged_storage_telemetry.go",
+      "bytes": 2087,
+      "sha256": "86576504d69c6e0f82b3107683e4ef0d6a01b04c07453b4baf1b5e35ab4e4440"
+    },
+    {
+      "path": "bank/owned-source/coordinator/protocol/testdata/paged_footprint_wire.json",
+      "bytes": 450,
+      "sha256": "3b3a1777e129972a504eb2267f865a410d64839bc014828eea00fd4b04742483"
+    },
+    {
+      "path": "bank/owned-source/coordinator/registry/paged_storage_telemetry.go",
+      "bytes": 1020,
+      "sha256": "4a1206729778c84caff4adad8ce4a8af7681a2bb84529169c7b1ba508ee9583e"
+    },
+    {
+      "path": "bank/owned-source/coordinator/registry/paged_storage_telemetry_test.go",
+      "bytes": 6683,
+      "sha256": "136e3d8dff44ff636b155710821ced251dd6b3aa6c5b574765a34a2e25f308d3"
+    },
+    {
+      "path": "bank/owned-source/provider-swift/Sources/ProviderCore/Inference/PagedStorageTelemetryAdapter.swift",
+      "bytes": 4746,
+      "sha256": "2d73a84710831b3d9d733bb8e0596612b4d6cbadb8aabde4a76fe3514de438c6"
+    },
+    {
+      "path": "bank/owned-source/provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockIndex.swift",
+      "bytes": 9552,
+      "sha256": "30232401aad96153ac472fc256fce7c226082ee868d3df2f72776c9579ec6e9e"
+    },
+    {
+      "path": "bank/owned-source/provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Read.swift",
+      "bytes": 11631,
+      "sha256": "6e0a7706385d565120a092db2267ef65b156f872aa8efa4d9df4f487bedb0f31"
+    },
+    {
+      "path": "bank/owned-source/provider-swift/Sources/ProviderCore/Protocol/PagedStorageTelemetry.swift",
+      "bytes": 2515,
+      "sha256": "ff291c84f1073356928678c4cf432211aab25de4748dcd34826598e6666b4291"
+    },
+    {
+      "path": "bank/owned-source/provider-swift/Tests/ProviderCoreTests/PagedFootprintTelemetryTests.swift",
+      "bytes": 1748,
+      "sha256": "30119c7cd8c7293457a18f8f6d6175bec34fe1dbca89e9310bc494cb6532c573"
+    },
+    {
+      "path": "bank/owned-source/provider-swift/Tests/ProviderCoreTests/ProcessMemoryNativeIntegrationTests.swift",
+      "bytes": 11347,
+      "sha256": "eddf08e57f0bdd7eeb770564d9c744d1400c765333df23e61b66045772937b70"
+    },
+    {
+      "path": "bank/owned-source/provider-swift/Tests/ProviderCoreTests/SSDCheckpointLookupTests.swift",
+      "bytes": 2189,
+      "sha256": "93135b198691c56c80215fe7845c542d5d946ac9b06103624231cd67c29bbaf3"
+    },
+    {
+      "path": "bank/package.py",
+      "bytes": 10158,
+      "sha256": "9dabb24ef5c893a9ad8cd0a87cc3e38c91642168e7b7770a95213d31c5641cf8"
+    },
+    {
+      "path": "provider/accepted-oracle-manifest.json",
+      "bytes": 1017,
+      "sha256": "433a2d4e650dcf079115ce510b730e3c289bfcb1d79c5b8821e8507b58101159"
+    },
+    {
+      "path": "provider/actual-build-graph-after.yaml.gz",
+      "bytes": 395839,
+      "sha256": "242daf8c94480ee151aabb5649a8b1099f071f3a20babc9b136338e124d71a8b"
+    },
+    {
+      "path": "provider/actual-build-graph.yaml.gz",
+      "bytes": 395820,
+      "sha256": "b3855a3bbb6d3c436dec3554b52dae8c7abbb8dd6ac0c1af90d5ae5cd9ee305f"
+    },
+    {
+      "path": "provider/actual-compiler-source-proof.json",
+      "bytes": 919,
+      "sha256": "69af31325b8458b5203f412eee30c090863001c972cb96c9c951292be5de2a3d"
+    },
+    {
+      "path": "provider/actual-package-state-after.json",
+      "bytes": 20753,
+      "sha256": "62d6612b2bd827371bb3b090eb3e5d9871d6ee3a744f3eaf685bd799b67b653f"
+    },
+    {
+      "path": "provider/actual-package-state.json",
+      "bytes": 20753,
+      "sha256": "62d6612b2bd827371bb3b090eb3e5d9871d6ee3a744f3eaf685bd799b67b653f"
+    },
+    {
+      "path": "provider/bankable-patch.json",
+      "bytes": 771,
+      "sha256": "ef289358322679ff748d2df38fc69d78343ac7a243c9d1a763c2d8bc68e953e6"
+    },
+    {
+      "path": "provider/build.log",
+      "bytes": 1076200,
+      "sha256": "ef4279f9d8a0079a8a770536199cdaefea33adbbdcb050efd2fdf626e80d81c2"
+    },
+    {
+      "path": "provider/darkbloom-paged-footprint-telemetry-manifest.json",
+      "bytes": 3849,
+      "sha256": "024d84f74935248087225a3e33b70e3901354715033a972d7bd019263adcaf3e"
+    },
+    {
+      "path": "provider/darkbloom-ssd-candidate-lookup-manifest.json",
+      "bytes": 1712,
+      "sha256": "df4498c81584fa4438f6d7bdeb8302fa9ce812295a26f126411d30906fa0ff5d"
+    },
+    {
+      "path": "provider/dependency-source-manifest.json",
+      "bytes": 161754,
+      "sha256": "f1e16b19ad215312c227f0b27f0370556eddfb7afde02fb2c6940fecdb0c1419"
+    },
+    {
+      "path": "provider/environment.txt",
+      "bytes": 333,
+      "sha256": "476087c5f0b442dda0ef531db23ce16cbe816f9ae14b996ecb927f62f43a4b67"
+    },
+    {
+      "path": "provider/execution.json",
+      "bytes": 4209,
+      "sha256": "0a752e5366df3361bad0cc25edff7265654888c0b0d6c901d21db90975e7af74"
+    },
+    {
+      "path": "provider/filters.json",
+      "bytes": 1301,
+      "sha256": "ed03ed77b07bfe7c983da817299d0e62a8266c432b39bfe819fc223c497d6dbb"
+    },
+    {
+      "path": "provider/fixture-input-manifest.json",
+      "bytes": 413,
+      "sha256": "7cd8054eed742bd9be74e13f63021b75e070f86bffdb34365443b1c34a52944f"
+    },
+    {
+      "path": "provider/heartbeat-events.log",
+      "bytes": 2161,
+      "sha256": "91f47f9df23376992f8eaebe79d180f658048d56b1b660cc82a03622454d297b"
+    },
+    {
+      "path": "provider/heartbeat-wire.log",
+      "bytes": 2144,
+      "sha256": "976e7a7bd6a6b6fafcf69712103bd188c735fb7acf86d67091553a664d1f3e7b"
+    },
+    {
+      "path": "provider/identifiers.log",
+      "bytes": 191164,
+      "sha256": "f108e8f5e3810f43ca2b6f5ef282d8eabed007ae5880ea49e9c8fd4f1c9dbd0b"
+    },
+    {
+      "path": "provider/integration.json",
+      "bytes": 596,
+      "sha256": "469892ad703c47c76fe7af324cf6fcea10434531b058814dd065711acae98857"
+    },
+    {
+      "path": "provider/jinja-source-manifest.json",
+      "bytes": 2907,
+      "sha256": "1a3c73a25aab033a5ce568f263db5ff9560d648206313843983afa3280760598"
+    },
+    {
+      "path": "provider/manifest.json",
+      "bytes": 6984,
+      "sha256": "bfb58c3337fda3ffd7fc84c48cfab6b50caac48cd2b1d352424d3a0a95055967"
+    },
+    {
+      "path": "provider/metallib-placement.json",
+      "bytes": 550,
+      "sha256": "d17c16d788a6e91b13d0db1b32b0d084c5bb89b331371103b29cbb4cd38e21a6"
+    },
+    {
+      "path": "provider/native-Package.resolved",
+      "bytes": 8825,
+      "sha256": "4bf9d78d1ce65d7458d881a7f27854da04c728fff7f6fe429a9255e9245ebaef"
+    },
+    {
+      "path": "provider/native-Package.swift.original",
+      "bytes": 11422,
+      "sha256": "45a9552a8021285dcaabad222bebc2226b4577b48763721a388e2d9719562945"
+    },
+    {
+      "path": "provider/native-Package.swift.validation",
+      "bytes": 11433,
+      "sha256": "509831c378d6ae3a5ca2f23b074b13277b0b0b75c51e220eb75648357ced9a6f"
+    },
+    {
+      "path": "provider/native-source-manifest.json",
+      "bytes": 58195,
+      "sha256": "6b77e1200adc747f25b18c631cc6d165755f2649987b7496978317266abd8a21"
+    },
+    {
+      "path": "provider/new-telemetry.log",
+      "bytes": 1129,
+      "sha256": "eeeca8c5920cc0d73df9763c965b234c35750d80ad4de5425deebf69a4404c6d"
+    },
+    {
+      "path": "provider/owned-manifest.json",
+      "bytes": 1205,
+      "sha256": "65021b98b476a7d981e253c182d49a01afa55ed0d8c3f7a7350c16a04941d08c"
+    },
+    {
+      "path": "provider/owned-source.tar.gz",
+      "bytes": 12161,
+      "sha256": "17241936cbebf979bd00f1876dc8c4039230ba720b415aec70aaf6c07127ba29"
+    },
+    {
+      "path": "provider/package-evidence.py",
+      "bytes": 6300,
+      "sha256": "6d96431d53e7dd71dde61fa41660b6f5a73d216b5174b13377bc8d85c17fdb77"
+    },
+    {
+      "path": "provider/paged-footprint.log",
+      "bytes": 1228,
+      "sha256": "8aa7800885e70888e25016da58cb0c739a5833b79aa4bc7622ddcd2fd6ea645b"
+    },
+    {
+      "path": "provider/process-ledger.log",
+      "bytes": 5591,
+      "sha256": "f3e3f507bed7bb29df7d1b31b2dc54484528a06073faf72776886fbc03b66c25"
+    },
+    {
+      "path": "provider/provider-Package.resolved",
+      "bytes": 10156,
+      "sha256": "b2b12d24d48bbedc4583d8831e0b81fe68b96d641804e0ebc56715cd2d88a7ea"
+    },
+    {
+      "path": "provider/provider-Package.swift.original",
+      "bytes": 14564,
+      "sha256": "0b1432205ee2f9db231b67bcf4160953de78a7efee069ff03f5cf2fd2e8dacf5"
+    },
+    {
+      "path": "provider/provider-Package.swift.validation",
+      "bytes": 14615,
+      "sha256": "5de0d1cb69473f6e86920a41499bb03dc3ebc0d5419ab27cad713e6c8698005e"
+    },
+    {
+      "path": "provider/provider-against-banked.patch",
+      "bytes": 15994,
+      "sha256": "b99ce102067c7ea9e6316605fc98b5e25c4e9522a1afab7c22553f8aa94027f4"
+    },
+    {
+      "path": "provider/provider-baseline-manifest.json",
+      "bytes": 96161,
+      "sha256": "ab3cc43fe0fc842ff0a560837588c2ed12cbf06157806a5928174d6c85b973cf"
+    },
+    {
+      "path": "provider/provider-source-manifest.json",
+      "bytes": 96399,
+      "sha256": "506b5f337577a221b11c89f26a24495ca2e8f240a7a03aa8a06a235f77f742c7"
+    },
+    {
+      "path": "provider/real-allocator-observations.json",
+      "bytes": 3265,
+      "sha256": "2d6b027659274f3bec39ac9c6f194f3cf2af0e90ba3a0291ce0ffe317e4bffa5"
+    },
+    {
+      "path": "provider/real-native-isolated.log",
+      "bytes": 2985,
+      "sha256": "5677481370d403c329e2770ea1492b706108c64c5fd177b1b5e3d8b319d8eef6"
+    },
+    {
+      "path": "provider/run.py",
+      "bytes": 7125,
+      "sha256": "00f91c286716a5555749b8b813f84ed02532e72c5a1e65e59c78d235b9a4ae68"
+    },
+    {
+      "path": "provider/selected-identifiers.json",
+      "bytes": 11875,
+      "sha256": "26918712a27aa8ace18126cee08579f58b2cb989b290c0910eccba71fdb13154"
+    },
+    {
+      "path": "provider/source-verified-after.json",
+      "bytes": 198,
+      "sha256": "e455a33255e8b203fec82a979f8e302f5cde521a7df7247fe972b7efcc79eab8"
+    },
+    {
+      "path": "provider/source-verified-before.json",
+      "bytes": 198,
+      "sha256": "e455a33255e8b203fec82a979f8e302f5cde521a7df7247fe972b7efcc79eab8"
+    },
+    {
+      "path": "provider/ssd-checkpoint.log",
+      "bytes": 3935,
+      "sha256": "6e8410e940a149dabac7433656ed6ede4ea973a2b5c00022b75c53f81cc38f76"
+    },
+    {
+      "path": "provider/test-binary.json",
+      "bytes": 289,
+      "sha256": "c4b82112bac075f687e525a889c0f5b62a4a7070a8a7294d203c7a4f8821a11a"
+    },
+    {
+      "path": "provider/verdict.json",
+      "bytes": 2784,
+      "sha256": "27648b1ad54bd4f180e6ece0610b02fe82d664e232cc3c4e4523d5fe1e52316e"
+    },
+    {
+      "path": "root-validation/go-command.json",
+      "bytes": 570,
+      "sha256": "29edac56d186cdbe32b52360a5dfe92b103173d5fc41e8e5c3b9ee7a440fa89c"
+    },
+    {
+      "path": "root-validation/go-focused-race.jsonl",
+      "bytes": 7677,
+      "sha256": "895d6c007e1a9228e91fdb70ebd9dc07e24d0d8d83d2ecc671c98fb32bfbebe9"
+    },
+    {
+      "path": "root-validation/go-focused-race.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "root-validation/results.json",
+      "bytes": 104,
+      "sha256": "03f8d3a66c4deaaccc656060303c8690f18da98035d2946739615cbd68be89e2"
+    },
+    {
+      "path": "root-validation/ts-commands.json",
+      "bytes": 742,
+      "sha256": "49c55e8a77954cf95e78a4a52b703f2934b2bb73dfddf42d6493fb51aa0a6658"
+    },
+    {
+      "path": "root-validation/ts-eslint.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "root-validation/ts-eslint.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "root-validation/ts-focused.log",
+      "bytes": 5894,
+      "sha256": "bf847d5da701ea3dad42c34f6c9fa65bb7b72f265ecd94b547d875cd0c0b3e04"
+    },
+    {
+      "path": "root-validation/ts-focused.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source/lookup/manifest.json",
+      "bytes": 1712,
+      "sha256": "df4498c81584fa4438f6d7bdeb8302fa9ce812295a26f126411d30906fa0ff5d"
+    },
+    {
+      "path": "source/lookup/source.patch",
+      "bytes": 5365,
+      "sha256": "d135a23f224d2f3921281025f629fa8df31ed66f7fd8b3bede566fc149be613d"
+    },
+    {
+      "path": "source/oracle/manifest.json",
+      "bytes": 1017,
+      "sha256": "433a2d4e650dcf079115ce510b730e3c289bfcb1d79c5b8821e8507b58101159"
+    },
+    {
+      "path": "source/oracle/source.patch",
+      "bytes": 6359,
+      "sha256": "4ae1fea72f59f38665aa334ac13f1dbefbd6a407089ce13d14e4a9bb0aaa37e1"
+    },
+    {
+      "path": "source/telemetry/manifest.json",
+      "bytes": 3849,
+      "sha256": "024d84f74935248087225a3e33b70e3901354715033a972d7bd019263adcaf3e"
+    },
+    {
+      "path": "source/telemetry/source.patch",
+      "bytes": 19037,
+      "sha256": "07b8a5194cd7ec3fa5707df7c35a697b75db18484e77cb815f0334757f0aa589"
+    }
+  ]
+}

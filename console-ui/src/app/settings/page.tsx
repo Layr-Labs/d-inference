@@ -1,246 +1,113 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import Link from "next/link";
+import { AlertCircle, Check, ExternalLink, Loader2, ShieldCheck } from "lucide-react";
 import { TopBar } from "@/components/TopBar";
-import { useToastStore } from "@/hooks/useToast";
-import {
-  Globe,
-  Check,
-  AlertCircle,
-  Loader2,
-  Server,
-  Lock,
-} from "lucide-react";
-import { healthCheck } from "@/lib/api";
-import {
-  clearCoordinatorKeyCache,
-  getCoordinatorKey,
-  isEncryptionEnabled,
-  setEncryptionEnabled,
-} from "@/lib/encryption";
+import { PUBLIC_COORDINATOR_URL } from "@/lib/coordinator-url";
+import { AppearanceSettings } from "./AppearanceSettings";
+import { SettingsSection } from "./SettingsSection";
+import { useConsoleSettings } from "./useConsoleSettings";
 
 export default function SettingsPage() {
-  const addToast = useToastStore((s) => s.addToast);
-  const [coordinatorUrl, setCoordinatorUrl] = useState("");
-  const [saved, setSaved] = useState(false);
-  const [healthStatus, setHealthStatus] = useState<
-    "idle" | "checking" | "ok" | "error"
-  >("idle");
-  const [healthInfo, setHealthInfo] = useState("");
-
-  const [encryptToCoord, setEncryptToCoord] = useState(false);
-  const [encStatus, setEncStatus] = useState<
-    "idle" | "checking" | "ok" | "unavailable" | "error"
-  >("idle");
-  const [encInfo, setEncInfo] = useState("");
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      setCoordinatorUrl(
-        localStorage.getItem("darkbloom_coordinator_url") ||
-          process.env.NEXT_PUBLIC_COORDINATOR_URL ||
-          "https://api.darkbloom.dev"
-      );
-      setEncryptToCoord(isEncryptionEnabled());
-    }
-  }, []);
-
-  // When the user flips the toggle, eagerly fetch the coordinator pubkey so
-  // they get an immediate signal if the feature is unavailable on this
-  // coordinator (rather than failing on first message send).
-  const handleEncryptionToggle = async (enabled: boolean) => {
-    setEncryptToCoord(enabled);
-    setEncryptionEnabled(enabled);
-    if (!enabled) {
-      setEncStatus("idle");
-      setEncInfo("");
-      clearCoordinatorKeyCache();
-      addToast("Encryption to coordinator disabled", "success");
-      return;
-    }
-    setEncStatus("checking");
-    try {
-      const k = await getCoordinatorKey(true);
-      setEncStatus("ok");
-      setEncInfo(`coordinator key kid=${k.kid}`);
-      addToast("Encryption to coordinator enabled", "success");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("not configured")) {
-        setEncStatus("unavailable");
-      } else {
-        setEncStatus("error");
-      }
-      setEncInfo(msg);
-      // Stay enabled so the user knows they intended this — but every request
-      // will surface a clear error until the coordinator publishes a key.
-    }
-  };
-
-  const handleSave = () => {
-    localStorage.setItem("darkbloom_coordinator_url", coordinatorUrl);
-    setSaved(true);
-    addToast("Settings saved", "success");
-    setTimeout(() => setSaved(false), 2000);
-  };
-
-  const handleHealthCheck = async () => {
-    setHealthStatus("checking");
-    try {
-      const result = await healthCheck();
-      setHealthStatus("ok");
-      setHealthInfo(
-        `Connected — ${result.providers ?? 0} provider${
-          (result.providers ?? 0) !== 1 ? "s" : ""
-        } online`
-      );
-    } catch (err) {
-      setHealthStatus("error");
-      setHealthInfo((err as Error).message);
-    }
-  };
+  const settings = useConsoleSettings();
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full flex-col">
       <TopBar title="Settings" />
-
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-2xl mx-auto px-3 sm:px-6 py-6 sm:py-8 space-y-8">
-          {/* Coordinator URL */}
-          <section className="rounded-xl bg-bg-white border border-border-dim p-6 shadow-md">
-            <div className="flex items-center gap-2 mb-4">
-              <Globe size={14} className="text-accent-green" />
-              <h3 className="text-sm font-medium text-text-primary">
-                Coordinator URL
-              </h3>
-            </div>
-            <p className="text-xs text-text-tertiary mb-4">
-              The base URL of the Darkbloom coordinator that routes your inference
-              requests to attested providers.
+        <div className="mx-auto max-w-5xl px-5 py-8 sm:px-10 sm:py-12">
+          <div className="mb-10">
+            <h1 className="font-logo text-4xl font-normal tracking-tight text-text-primary sm:text-5xl">Your workspace</h1>
+            <p className="mt-3 max-w-xl text-sm leading-relaxed text-text-secondary">
+              Appearance, request privacy, and connection preferences for this browser.
             </p>
-            <input
-              type="text"
-              value={coordinatorUrl}
-              onChange={(e) => setCoordinatorUrl(e.target.value)}
-              placeholder="https://coordinator.darkbloom.io"
-              className="w-full bg-bg-tertiary border border-border-subtle rounded-lg px-4 py-3 text-text-primary font-mono text-sm outline-none focus:border-accent-green/50 transition-colors"
-            />
-
-            {/* Health check */}
-            <div className="flex items-center gap-3 mt-4">
-              <button
-                onClick={handleHealthCheck}
-                disabled={healthStatus === "checking"}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-bg-tertiary border border-border-subtle text-text-secondary text-xs font-mono hover:bg-bg-hover transition-colors disabled:opacity-50"
-              >
-                {healthStatus === "checking" ? (
-                  <Loader2 size={12} className="animate-spin" />
-                ) : (
-                  <Server size={12} />
-                )}
-                Test Connection
-              </button>
-              {healthStatus === "ok" && (
-                <span className="flex items-center gap-1 text-xs text-accent-green font-mono">
-                  <Check size={12} />
-                  {healthInfo}
-                </span>
-              )}
-              {healthStatus === "error" && (
-                <span className="flex items-center gap-1 text-xs text-accent-red font-mono">
-                  <AlertCircle size={12} />
-                  {healthInfo}
-                </span>
-              )}
-            </div>
-          </section>
-
-          {/* Sender → Coordinator encryption */}
-          <section className="rounded-xl bg-bg-white border border-border-dim p-6 shadow-md">
-            <div className="flex items-center gap-2 mb-4">
-              <Lock size={14} className="text-accent-green" />
-              <h3 className="text-sm font-medium text-text-primary">
-                Encrypt requests to coordinator
-              </h3>
-            </div>
-            <p className="text-xs text-text-tertiary mb-4">
-              When enabled, your prompts are sealed to the coordinator&apos;s long-lived
-              X25519 public key (NaCl Box) before leaving this browser. The coordinator
-              decrypts inside its TEE, picks a provider, and re-seals to the
-              provider&apos;s Secure Enclave key. Anything in front of the coordinator
-              (CDN, proxies, network observers) sees only ciphertext beyond the TLS
-              tunnel. Optional and off by default — plaintext API clients keep working.
-            </p>
-            <label className="flex items-center gap-3 text-sm text-text-primary cursor-pointer">
-              <input
-                type="checkbox"
-                checked={encryptToCoord}
-                onChange={(e) => handleEncryptionToggle(e.target.checked)}
-                className="w-4 h-4 accent-coral"
-              />
-              <span>Seal each request to the coordinator&apos;s public key</span>
-            </label>
-            <div className="flex items-center gap-3 mt-4 text-xs font-mono">
-              {encStatus === "checking" && (
-                <span className="flex items-center gap-1 text-text-tertiary">
-                  <Loader2 size={12} className="animate-spin" />
-                  fetching coordinator key…
-                </span>
-              )}
-              {encStatus === "ok" && (
-                <span className="flex items-center gap-1 text-accent-green">
-                  <Check size={12} />
-                  {encInfo}
-                </span>
-              )}
-              {encStatus === "unavailable" && (
-                <span className="flex items-center gap-1 text-accent-red">
-                  <AlertCircle size={12} />
-                  This coordinator has not configured sender encryption.
-                </span>
-              )}
-              {encStatus === "error" && (
-                <span className="flex items-center gap-1 text-accent-red">
-                  <AlertCircle size={12} />
-                  {encInfo}
-                </span>
-              )}
-            </div>
-          </section>
-
-          {/* Save */}
-          <button
-            onClick={handleSave}
-            className="w-full py-3 rounded-lg bg-coral text-white font-bold text-sm border border-border-dim hover:opacity-90 transition-all flex items-center justify-center gap-2"
-          >
-            {saved ? (
-              <>
-                <Check size={14} />
-                Saved
-              </>
-            ) : (
-              "Save Settings"
-            )}
-          </button>
-
-          {/* Info */}
-          <div className="rounded-xl bg-bg-white border border-border-dim p-5 shadow-md">
-            <h4 className="text-xs font-mono text-text-tertiary uppercase tracking-wider mb-3">
-              About Darkbloom
-            </h4>
-            <div className="space-y-2 text-xs text-text-tertiary leading-relaxed">
-              <p>
-                Darkbloom is a decentralized private inference network. Your
-                requests are routed to hardware-attested Apple Silicon providers
-                with Secure Enclave verification, SIP enforcement, and Hardened
-                Runtime protection.
-              </p>
-              <p>
-                Provider trust is independently verified through MDM
-                (Mobile Device Management) cross-checking with the coordinator.
-              </p>
-            </div>
           </div>
+
+          <div className="divide-y divide-border-dim border-y border-border-dim">
+            <SettingsSection title="Appearance" description="Choose how Darkbloom looks on this device.">
+              <AppearanceSettings />
+            </SettingsSection>
+
+            <SettingsSection title="Request privacy" description="Add browser-side encryption before requests reach the coordinator.">
+              <div className="flex items-start justify-between gap-5">
+                <div>
+                  <label htmlFor="request-encryption" className="block text-sm font-medium text-text-primary">Encrypt requests to coordinator</label>
+                  <p id="encryption-description" className="mt-2 max-w-md text-sm leading-relaxed text-text-secondary">
+                    Seal prompts with the coordinator&apos;s public key before they leave this browser. This optional setting takes effect immediately.
+                  </p>
+                </div>
+                <button
+                  id="request-encryption"
+                  type="button"
+                  role="switch"
+                  aria-checked={settings.encryptToCoord}
+                  aria-describedby="encryption-description"
+                  aria-label="Encrypt requests to coordinator"
+                  disabled={settings.encStatus === "checking"}
+                  onClick={() => settings.handleEncryptionToggle(!settings.encryptToCoord)}
+                  className={`relative mt-0.5 h-7 w-12 shrink-0 rounded-full transition-colors disabled:cursor-wait ${settings.encryptToCoord ? "bg-accent-brand" : "bg-border-subtle"}`}
+                >
+                  <span className={`absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${settings.encryptToCoord ? "translate-x-5" : ""}`} />
+                </button>
+              </div>
+              <div aria-live="polite" className="mt-4 text-sm">
+                {settings.encStatus === "idle" && <p className="text-text-secondary">{settings.encryptToCoord ? "Enabled for this browser." : "Off by default. Turn on to check coordinator support."}</p>}
+                {settings.encStatus === "checking" && <p className="flex items-center gap-2 text-text-secondary"><Loader2 size={15} className="animate-spin" />Checking encryption support…</p>}
+                {settings.encStatus === "ok" && <p className="flex items-center gap-2 text-accent-green"><ShieldCheck size={16} />Encryption ready</p>}
+                {(settings.encStatus === "error" || settings.encStatus === "unavailable") && (
+                  <div className="rounded-lg bg-accent-red/5 px-4 py-3">
+                    <p className="flex items-start gap-2 text-accent-red"><AlertCircle size={16} className="mt-0.5 shrink-0" />{settings.encInfo}</p>
+                    <p className="mt-2 text-xs leading-relaxed text-text-secondary">Requests will fail while encryption is enabled and a key is unavailable. Retry the check or turn this setting off.</p>
+                    <button type="button" onClick={() => settings.handleEncryptionToggle(true)} className="mt-3 text-sm font-medium text-accent-brand hover:underline">Check again</button>
+                  </div>
+                )}
+              </div>
+              <details className="group mt-4 text-sm text-text-secondary">
+                <summary className="w-fit cursor-pointer text-xs font-medium hover:text-text-primary">How request encryption works</summary>
+                <p className="mt-3 max-w-lg text-xs leading-relaxed">The browser seals each request using X25519 and NaCl Box. The coordinator decrypts the request and re-seals it for the selected provider. Network intermediaries receive encrypted request bodies.</p>
+                {settings.encStatus === "ok" && <p className="mt-2 break-all font-mono text-xs">Key ID: {settings.encInfo}</p>}
+              </details>
+            </SettingsSection>
+
+            <SettingsSection title="API configuration" description="Set the base URL used in your integration examples.">
+              <form onSubmit={(event) => { event.preventDefault(); settings.handleSave(); }}>
+                <label htmlFor="coordinator-url" className="mb-2 block text-sm font-medium text-text-primary">API example URL</label>
+                <input
+                  id="coordinator-url"
+                  type="url"
+                  required
+                  value={settings.exampleUrl}
+                  onChange={(event) => settings.updateExampleUrl(event.target.value)}
+                  placeholder={PUBLIC_COORDINATOR_URL}
+                  aria-describedby="coordinator-url-hint"
+                  className="w-full rounded-lg border border-border-subtle bg-bg-white px-3.5 py-3 font-mono text-sm text-text-primary outline-none transition-colors focus:border-accent-brand focus:ring-2 focus:ring-accent-brand/10"
+                />
+                <p id="coordinator-url-hint" className="mt-2 text-xs leading-relaxed text-text-secondary">Used by the API console&apos;s code examples. The console&apos;s own connection is configured separately by its operator.</p>
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  <button type="submit" disabled={!settings.hasChanges} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-accent-brand px-4 text-sm font-medium text-white dark:text-bg-primary transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-40">
+                    {settings.saved ? <><Check size={15} />Saved</> : "Save URL"}
+                  </button>
+                  {settings.hasChanges && <span className="text-xs text-text-secondary">Unsaved changes</span>}
+                  <Link href="/api-console" className="ml-auto inline-flex items-center gap-1.5 text-sm font-medium text-accent-brand hover:underline">API console<ExternalLink size={13} /></Link>
+                </div>
+              </form>
+            </SettingsSection>
+
+            <SettingsSection title="Console connection" description="Check the service this console is connected to.">
+              <p className="break-all font-mono text-sm text-text-primary">{PUBLIC_COORDINATOR_URL}</p>
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <button type="button" onClick={() => settings.handleHealthCheck()} disabled={settings.healthStatus === "checking"} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-border-subtle bg-bg-white px-4 text-sm font-medium text-text-primary transition-colors hover:bg-bg-hover disabled:opacity-50">
+                  {settings.healthStatus === "checking" && <Loader2 size={15} className="animate-spin" />}
+                  {settings.healthStatus === "checking" ? "Checking…" : "Test connection"}
+                </button>
+                <div aria-live="polite" className="min-w-0 text-sm">
+                  {settings.healthStatus === "ok" && <span className="flex items-center gap-2 text-accent-green"><Check size={15} />{settings.healthInfo}</span>}
+                  {settings.healthStatus === "error" && <span className="flex items-center gap-2 text-accent-red"><AlertCircle size={15} />{settings.healthInfo}</span>}
+                </div>
+              </div>
+            </SettingsSection>
+          </div>
+          <p className="mt-6 text-xs leading-relaxed text-text-secondary">These preferences are saved on this device. They do not change settings on your other browsers.</p>
         </div>
       </div>
     </div>

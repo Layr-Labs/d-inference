@@ -1,0 +1,374 @@
+{
+  "schema": 1,
+  "scope": "Coherent CPU/Metal allocator accounting and Swift C-bridge validation; no shared provider ledger integration, CUDA execution, or real-model capacity/latency claim.",
+  "parent_base": "966eac55cf88057564730d64f3d17802486d54d3",
+  "commits": {
+    "mlx": "9b3f4d1ec6bd65314e06825658334e5788ee3167",
+    "mlx-c": "720953eff635e772d9f3d73e46942bc49fac04c3",
+    "mlx-swift": "eafd98a7c53c145ff40faa486c5f696b7104ae92"
+  },
+  "owned_sources_verified": 15,
+  "selected_inputs_verified": 1353,
+  "files": [
+    {
+      "path": "validation/CMakeLists.candidate.txt.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/CMakeLists.candidate.txt",
+      "bytes": 454,
+      "sha256": "c1cb2097464cab31c7c675ecb0e281e72a1e8c74c6360221081e2ef48641b074",
+      "uncompressed_bytes": 955,
+      "uncompressed_sha256": "b66d94ebaf51f897ca3e7b1a598c4bb9d1e6909262ff55500eab69c0b6ff8f7e"
+    },
+    {
+      "path": "validation/Package.resolved.after.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/Package.resolved.after",
+      "bytes": 269,
+      "sha256": "0bdaa881806827542a747739e5215825fd06287588fa192c0dbe0849a20f91ea",
+      "uncompressed_bytes": 579,
+      "uncompressed_sha256": "388bc1370968988ab69965cfe293ed3f162ce47664b05352adb0269198efcb8d"
+    },
+    {
+      "path": "validation/Package.resolved.before.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/Package.resolved.before",
+      "bytes": 269,
+      "sha256": "0bdaa881806827542a747739e5215825fd06287588fa192c0dbe0849a20f91ea",
+      "uncompressed_bytes": 579,
+      "uncompressed_sha256": "388bc1370968988ab69965cfe293ed3f162ce47664b05352adb0269198efcb8d"
+    },
+    {
+      "path": "validation/artifact-manifest.json.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/artifact-manifest.json",
+      "bytes": 432,
+      "sha256": "b7ee432c1954b9107c92d24b11bbcbad5d7808b37e00a34e9e5fdbfb19645543",
+      "uncompressed_bytes": 966,
+      "uncompressed_sha256": "c5874f67f58236e6d1826d801229ea3317c4e446a7aa143d75319f5884dbd45f"
+    },
+    {
+      "path": "validation/cpu-build.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/cpu-build.log",
+      "bytes": 1017,
+      "sha256": "17d8fd9f899929b9f34bf594c7b665c1a8fe05b2c4df9be6380307711c33fdf5",
+      "uncompressed_bytes": 7153,
+      "uncompressed_sha256": "7279468b071eb1e2504e783adc163400eb34b749e070002f6420bd529ec253cd"
+    },
+    {
+      "path": "validation/cpu-coherence.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/cpu-coherence.log",
+      "bytes": 160,
+      "sha256": "b630b3007350c69c1877d220eb927209a5bebd6fad3b7aac06e5dca0e95858d2",
+      "uncompressed_bytes": 291,
+      "uncompressed_sha256": "1daaf6a1af58676ef380643b81ffde3a5c1c0ecea9a2017ae314659e3d6fc822"
+    },
+    {
+      "path": "validation/cpu-configure.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/cpu-configure.log",
+      "bytes": 824,
+      "sha256": "71320fd03cffca893509192c18d11f0ca2a76ca02e821dea194d8bcc881ca0da",
+      "uncompressed_bytes": 1750,
+      "uncompressed_sha256": "0bbee6c5d5b51e1e6b5ea3dd6f097c2d8709f3bfec6b2751a004ecbcbd4c675b"
+    },
+    {
+      "path": "validation/cpu-no-stream-wait.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/cpu-no-stream-wait.log",
+      "bytes": 156,
+      "sha256": "0221d4d3cc1d6cc800c844b471600bbf5bbc309d4a533ca175e8a87a54e2ef51",
+      "uncompressed_bytes": 291,
+      "uncompressed_sha256": "32703a17c837aecfd99c75a441d5962f929939b38b8b90515a01726d992e8d06"
+    },
+    {
+      "path": "validation/environment.json.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/environment.json",
+      "bytes": 607,
+      "sha256": "c7e0852054cb52c4d37c1961e305a60d1be79349387c17c5505da6f2036f21c2",
+      "uncompressed_bytes": 1637,
+      "uncompressed_sha256": "bb1b6586297430aba9e36027b3626c8ba2e1f2163053bbee3fde124e0c5057fd"
+    },
+    {
+      "path": "validation/execution.json.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/execution.json",
+      "bytes": 677,
+      "sha256": "25c5de5dc7a420b17a02dab42e2684577605dfb61cf379c7913386094104435a",
+      "uncompressed_bytes": 3923,
+      "uncompressed_sha256": "508aac83f0603c69e5250eca1b55fa725cd1d94290a4080fb47916e99f744ed8"
+    },
+    {
+      "path": "validation/metal-build.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/metal-build.log",
+      "bytes": 1907,
+      "sha256": "f878874e1297c1c22e1e9b3c4fb7fd568d3ded793f6cfa3dcfe47f8b9164b99c",
+      "uncompressed_bytes": 15399,
+      "uncompressed_sha256": "80333f635df905d3c03e72275756a817b16991ed3fa00ffc3debab20f938439a"
+    },
+    {
+      "path": "validation/metal-coherence.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/metal-coherence.log",
+      "bytes": 160,
+      "sha256": "b630b3007350c69c1877d220eb927209a5bebd6fad3b7aac06e5dca0e95858d2",
+      "uncompressed_bytes": 291,
+      "uncompressed_sha256": "1daaf6a1af58676ef380643b81ffde3a5c1c0ecea9a2017ae314659e3d6fc822"
+    },
+    {
+      "path": "validation/metal-configure.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/metal-configure.log",
+      "bytes": 964,
+      "sha256": "f0cfff18276dfe9391734d6a83c9ddebb8c9e935752965099e1dfd75dc63fe62",
+      "uncompressed_bytes": 2245,
+      "uncompressed_sha256": "814d92311620bb1d65fd2ff1f7ce68863b687540bb236c9017ab98ffe0bf658e"
+    },
+    {
+      "path": "validation/metal-no-stream-wait.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/metal-no-stream-wait.log",
+      "bytes": 156,
+      "sha256": "0221d4d3cc1d6cc800c844b471600bbf5bbc309d4a533ca175e8a87a54e2ef51",
+      "uncompressed_bytes": 291,
+      "uncompressed_sha256": "32703a17c837aecfd99c75a441d5962f929939b38b8b90515a01726d992e8d06"
+    },
+    {
+      "path": "validation/metallib-placement.json.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/metallib-placement.json",
+      "bytes": 439,
+      "sha256": "dd63b3bf3d0f9c81890f9808660e39847036d3a3dc3496610354de655e2878ce",
+      "uncompressed_bytes": 732,
+      "uncompressed_sha256": "dacd3dee10f1a84a33da424b36252d2eb3c2229d94e7e33e3455eb5bc13efffe"
+    },
+    {
+      "path": "validation/negative-build.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/negative-build.log",
+      "bytes": 178,
+      "sha256": "13e36be2566844bdfe11cebdad516e1737f21c80dda7a4723d4eb4051691893b",
+      "uncompressed_bytes": 218,
+      "uncompressed_sha256": "f126abd5317d8809ac899fc0d6aad2a8890a3e68098df9c6dca0243d5dcc3d1d"
+    },
+    {
+      "path": "validation/negative-coherence.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/negative-coherence.log",
+      "bytes": 341,
+      "sha256": "0c85fe6a57e467a1f7f450f84481562d3c855d861e63f5d9daa3c3c58c1a6244",
+      "uncompressed_bytes": 743,
+      "uncompressed_sha256": "c19b86bcf92bf16f59ea1ef02822b26792eccfb812918ae6a054662f93153840"
+    },
+    {
+      "path": "validation/negative-configure.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/negative-configure.log",
+      "bytes": 577,
+      "sha256": "6178a2e37391f81c256732021a807a208b1a6c8dbce471736033bc4dabda498b",
+      "uncompressed_bytes": 1008,
+      "uncompressed_sha256": "7780d3875645d877297550a667f3861561d909e33b00fa81682145b9ea1664b2"
+    },
+    {
+      "path": "validation/negative-control-allocator.cpp.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/negative-control-allocator.cpp",
+      "bytes": 1434,
+      "sha256": "5de0d65f8560e55de2dba3d7305299e8c6774853be1c6f4b519a788805425f95",
+      "uncompressed_bytes": 5256,
+      "uncompressed_sha256": "6a7caf668d10674df3865e59969102b8f58e7ed9190f07f0ccb9b0501cce98d7"
+    },
+    {
+      "path": "validation/negative-control-source.json.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/negative-control-source.json",
+      "bytes": 324,
+      "sha256": "c84a16fa3e8c16c48195606d3f95854e2ab4db73c2d48c48694874e345c20056",
+      "uncompressed_bytes": 487,
+      "uncompressed_sha256": "486262dd487637ec4920372c4f1e806ea90a76d75931d631e5da5ae696b6e61f"
+    },
+    {
+      "path": "validation/negative-execution.json.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/negative-execution.json",
+      "bytes": 402,
+      "sha256": "af58e0b43dcbbb0268b63e1a17713c151696445f5ee54ac1f0afef6334cd0fff",
+      "uncompressed_bytes": 1140,
+      "uncompressed_sha256": "06a1dc3c2e59c4f1b03be32d4d52ef9d3be3209bf90fad03711718bbcbc09d77"
+    },
+    {
+      "path": "validation/original-source-manifest.json.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/original-source-manifest.json",
+      "bytes": 1304,
+      "sha256": "23bb1bd342a73febaf481b692745bb03f6487bc1c7679f6d6fb142eed8e41cac",
+      "uncompressed_bytes": 3558,
+      "uncompressed_sha256": "85bd61577f10c2486f624eb79d7cd96d244d8a5ae634dca8aa5d681db4f8b1f5"
+    },
+    {
+      "path": "validation/restore-build.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/restore-build.log",
+      "bytes": 93,
+      "sha256": "afc935604c1135f92450608f91ba6ce615a1aa194f0792329306f86a7471eec0",
+      "uncompressed_bytes": 90,
+      "uncompressed_sha256": "93c8a6cfddd6e823e0e6ae0d05574cb1a4f7e3dcc3062358a474a96c8edc1d92"
+    },
+    {
+      "path": "validation/restore-coherence.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/restore-coherence.log",
+      "bytes": 160,
+      "sha256": "b630b3007350c69c1877d220eb927209a5bebd6fad3b7aac06e5dca0e95858d2",
+      "uncompressed_bytes": 291,
+      "uncompressed_sha256": "1daaf6a1af58676ef380643b81ffde3a5c1c0ecea9a2017ae314659e3d6fc822"
+    },
+    {
+      "path": "validation/restore-configure.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/restore-configure.log",
+      "bytes": 643,
+      "sha256": "2d84b535138ae04ba829fdb16f8b3e657e5a04c01e9995e72bbb7900c75b0d97",
+      "uncompressed_bytes": 1118,
+      "uncompressed_sha256": "1031f27991a898a84aafd8b21a4c38f398936578e22ed94aeffd58541598449e"
+    },
+    {
+      "path": "validation/restore-no-stream-wait.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/restore-no-stream-wait.log",
+      "bytes": 156,
+      "sha256": "0221d4d3cc1d6cc800c844b471600bbf5bbc309d4a533ca175e8a87a54e2ef51",
+      "uncompressed_bytes": 291,
+      "uncompressed_sha256": "32703a17c837aecfd99c75a441d5962f929939b38b8b90515a01726d992e8d06"
+    },
+    {
+      "path": "validation/run-native.py.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/run-native.py",
+      "bytes": 936,
+      "sha256": "61b19ada40647f2a852afab0e4aa3fe5064cc6bd7b2fb5e034ca058a64af79a1",
+      "uncompressed_bytes": 1778,
+      "uncompressed_sha256": "7474b8df5662ea0954f8c2a3128301d0541aa86f1cd85a9c8e368a08f23ba34b"
+    },
+    {
+      "path": "validation/run-negative-control.py.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/run-negative-control.py",
+      "bytes": 1486,
+      "sha256": "b7c9659d08e0e425c94799bf4951aaf1643527759f98bb48c1596a38a92b25bd",
+      "uncompressed_bytes": 3929,
+      "uncompressed_sha256": "aeb30cd6df288ef06e6e40d97ab1221d47dfa00bcb8eb879380a6b7d9819a0fb"
+    },
+    {
+      "path": "validation/run-swift-colocated.py.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/run-swift-colocated.py",
+      "bytes": 826,
+      "sha256": "6d76e46c31085e22aba27bff517ccd55ed832ff43a134c037dd69b0f18a0ab3c",
+      "uncompressed_bytes": 1506,
+      "uncompressed_sha256": "bec908ba9a25e4895639d858c7f9750d3fb6f847f71902bfdee6bc679ceab374"
+    },
+    {
+      "path": "validation/run-swift.py.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/run-swift.py",
+      "bytes": 846,
+      "sha256": "c2b9599bc357e036131db1cf1b9c48b98ee36da51c408de03468afe135b71458",
+      "uncompressed_bytes": 1612,
+      "uncompressed_sha256": "343384374712454c6a316c54877d7cac2ef9b0fb770fc7c9d9656606eb475b07"
+    },
+    {
+      "path": "validation/selected-source-inputs.json.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/selected-source-inputs.json",
+      "bytes": 63367,
+      "sha256": "08a122c2784b4cb7a5781e091a80dde974bc780fcfe9c060c9640c71e603b601",
+      "uncompressed_bytes": 161371,
+      "uncompressed_sha256": "8c791f6e8603496758855d661e5b48a591ba8c4f2ffc024e2fa713090f6a3a65"
+    },
+    {
+      "path": "validation/swift-build.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/swift-build.log",
+      "bytes": 8403,
+      "sha256": "585136f357fd2728edb4bed0e73721df4dd31607a63827146c2fde895bd3d9fb",
+      "uncompressed_bytes": 163625,
+      "uncompressed_sha256": "5666bf990706de4cf404d36e56d49115d056167b102df80accf68649890b388e"
+    },
+    {
+      "path": "validation/swift-colocated-execution.json.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/swift-colocated-execution.json",
+      "bytes": 425,
+      "sha256": "1e91dee260e4e1cd38cdf83ddbdf4af11bc09a5f97798603a8a120aebf1b703f",
+      "uncompressed_bytes": 742,
+      "uncompressed_sha256": "6522f85a62cf34416cad869e8bddfe29cbc8dcae40a9c40e8347aafb1329e04e"
+    },
+    {
+      "path": "validation/swift-execution.json.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/swift-execution.json",
+      "bytes": 480,
+      "sha256": "0c8895dec954c242772d162cdcd3373356ee46dbeebb56a53646addfa571e8e0",
+      "uncompressed_bytes": 1208,
+      "uncompressed_sha256": "cf14b2f4ea6bc259c18dd82a4143ff266c160cfc35577ab25ae13094deb268c9"
+    },
+    {
+      "path": "validation/swift-retained-buffer-colocated.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/swift-retained-buffer-colocated.log",
+      "bytes": 363,
+      "sha256": "860d060c4d41bdf35593bc13ac235bce6b194cba3e93dc4aff9eb7191c620d94",
+      "uncompressed_bytes": 981,
+      "uncompressed_sha256": "9ee1e2f39769829d6ba3645c7447a88a69a91bcbf72e9fbdb91cad5d20954d9c"
+    },
+    {
+      "path": "validation/swift-retained-buffer.log.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/swift-retained-buffer.log",
+      "bytes": 466,
+      "sha256": "feb1bcf41b2f2d285f157d966216f979abbd221212f8a628566a7feb84a37487",
+      "uncompressed_bytes": 893,
+      "uncompressed_sha256": "192851d1813942fe7d5080b1745302d299095bd168b54b722930492db624d6a2"
+    },
+    {
+      "path": "validation/verdict.json.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/verdict.json",
+      "bytes": 1620,
+      "sha256": "2a62beb190854e0bf9a3591a5a7c06ac8ba57e2dc6799fd2e02029d7375ba187",
+      "uncompressed_bytes": 4338,
+      "uncompressed_sha256": "ab03ea05268db12c7816dcb08a6a63be93a3ecc7ce49b0be5c7435c39b2e61ae"
+    },
+    {
+      "path": "validation/project/CMakeLists.txt.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/project/CMakeLists.txt",
+      "bytes": 454,
+      "sha256": "c1cb2097464cab31c7c675ecb0e281e72a1e8c74c6360221081e2ef48641b074",
+      "uncompressed_bytes": 955,
+      "uncompressed_sha256": "b66d94ebaf51f897ca3e7b1a598c4bb9d1e6909262ff55500eab69c0b6ff8f7e"
+    },
+    {
+      "path": "validation/manifest.json.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot-validation1/manifest.json",
+      "bytes": 1997,
+      "sha256": "7e0bc0b6768dcf6387c27c4416c6941651d8c195eccc4123b8f77abac4e246f0",
+      "uncompressed_bytes": 7854,
+      "uncompressed_sha256": "a1b18b7d2852cb50ae1be34b52f68e812192273f28c42a5d10da390a37cc4919"
+    },
+    {
+      "path": "source/source-manifest.json.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot/source-manifest.json",
+      "bytes": 1304,
+      "sha256": "23bb1bd342a73febaf481b692745bb03f6487bc1c7679f6d6fb142eed8e41cac",
+      "uncompressed_bytes": 3558,
+      "uncompressed_sha256": "85bd61577f10c2486f624eb79d7cd96d244d8a5ae634dca8aa5d681db4f8b1f5"
+    },
+    {
+      "path": "source/source.tar.gz.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot/source.tar.gz",
+      "bytes": 19807,
+      "sha256": "d839ac1208851ae0095af37a4295b4f212fdcae952fe50715466753ce2ade273",
+      "uncompressed_bytes": 19779,
+      "uncompressed_sha256": "4d9e8a5ecda7eeb08b871d00fcb280b5ae09fd090f9621aa6d877eb17a95233d"
+    },
+    {
+      "path": "source/mlx.patch.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot/mlx.patch",
+      "bytes": 2006,
+      "sha256": "c15f84e7a774eed00b54321a11c0cb8e91e75f9a70f1e0284c662a6a76857229",
+      "uncompressed_bytes": 7056,
+      "uncompressed_sha256": "dc71530c479de17ac71ffe9197f80b870e67cfdb9e6123cbe2a619808ca5c55c"
+    },
+    {
+      "path": "source/mlx-c.patch.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot/mlx-c.patch",
+      "bytes": 743,
+      "sha256": "c6fc22b90a34e9709936be53da7bbbb43bfe857db3105f1a64bd1f7c62bd783d",
+      "uncompressed_bytes": 3122,
+      "uncompressed_sha256": "a5579c92fec9e53c7057a9a97442d3a92d4ae2e15e2f9b658b3b64d9a898f242"
+    },
+    {
+      "path": "source/mlx-swift.patch.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot/mlx-swift.patch",
+      "bytes": 1434,
+      "sha256": "df8e11c59383df1f6d0193762a0967c366a1db018864e9796a6766b1567f284a",
+      "uncompressed_bytes": 4945,
+      "uncompressed_sha256": "4e53192e85e6599e944ddd5e50a8935c6e7478dbe94c9344d7fbcd33e54a1496"
+    },
+    {
+      "path": "source/final-commits.json.gz",
+      "source": "/tmp/darkbloom-mlx-memory-snapshot/final-commits.json",
+      "bytes": 300,
+      "sha256": "069e5bb5eaf082293cba962b8341422e7f9989c6e66d98c5832aab5b6d86a3db",
+      "uncompressed_bytes": 443,
+      "uncompressed_sha256": "9b433366b084cdd855950711568dd6696412de76a6072efa539dadae0e225571"
+    }
+  ]
+}

@@ -65,6 +65,11 @@ extension ProviderLoop {
                         "available_bytes": .int64(Int64(clamping: SystemMemory.availableBytes() ?? 0)),
                         "mlx_active_bytes": .int64(Int64(clamping: UInt64(max(0, MLX.Memory.activeMemory)))),
                     ])
+            },
+            // Profiler: remember the last level for the heartbeat's
+            // `backend_capacity.telemetry.memory_pressure_level`.
+            onLevel: { [lastMemoryPressureLevel] level in
+                lastMemoryPressureLevel.value = level
             })
         monitor.start()
         self.memoryPressureMonitor = monitor

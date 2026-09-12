@@ -36,6 +36,7 @@ enum EngineV2KVSizing {
         newModelWeightBytes: Int,
         coResidentWeightBytes: UInt64,
         existingEngineKVCapacities: [Int],
+        activationReserveBytes: UInt64? = nil,
         configReserveBytes: UInt64 = 0,
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
     ) -> Int {
@@ -43,6 +44,7 @@ enum EngineV2KVSizing {
             UInt64(max(0, newModelWeightBytes)), coResidentWeightBytes)
         let fleetBudget = UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physicalBytes, residentWeightBytes: totalWeights,
+            activationReserveBytes: activationReserveBytes,
             configReserveBytes: configReserveBytes)
         let granted = existingEngineKVCapacities.reduce(UInt64(0)) {
             saturatingAdd($0, UInt64(max(0, $1)))
@@ -62,6 +64,7 @@ enum EngineV2KVSizing {
         grantedKVBytesCapacity: Int,
         totalResidentWeightBytes: UInt64,
         otherEngineKVCapacities: [Int],
+        activationReserveBytes: UInt64? = nil,
         configReserveBytes: UInt64 = 0,
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
     ) -> Int {
@@ -69,6 +72,7 @@ enum EngineV2KVSizing {
             newModelWeightBytes: 0,
             coResidentWeightBytes: totalResidentWeightBytes,
             existingEngineKVCapacities: otherEngineKVCapacities,
+            activationReserveBytes: activationReserveBytes,
             configReserveBytes: configReserveBytes,
             physicalBytes: physicalBytes)
         return min(max(0, grantedKVBytesCapacity), current)

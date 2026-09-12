@@ -53,6 +53,15 @@ struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
             }
         }
 
+        if let nemotron = target as? NemotronH35Model {
+            do {
+                let assistant = try NemotronH35MTPAssistant.load(from: artifact.directory, target: nemotron)
+                return ProviderMTPAssistantHandle(owner: assistant, drafter: assistant)
+            } catch {
+                throw ProviderMTPAssistantLoadError.loadFailed(String(describing: error))
+            }
+        }
+
         guard let gemmaTarget = target as? Gemma4TextModel else {
             throw ProviderMTPAssistantLoadError.targetIncompatible(
                 String(describing: type(of: target)))
@@ -79,8 +88,11 @@ func providerMTPVerificationPolicy(
     for drafter: (any CBv2MTPDrafter)?,
     automaticRectangularTokens: Int
 ) -> (mode: CBv2MTPVerificationMode, automaticRectangularTokens: Int) {
-    guard let required = drafter?.requiredVerificationMode else {
-        return (.automatic, automaticRectangularTokens)
+    if let required = drafter?.requiredVerificationMode {
+        return (required, required == .automatic ? automaticRectangularTokens : 0)
     }
-    return (required, required == .automatic ? automaticRectangularTokens : 0)
+    // Verify a bounded window in one target traversal. Drafter-required
+    // modes retain priority; the engine checks storage support and rolls
+    // back rejected suffixes. Wider evaluation can change rounding and wording.
+    return (.automatic, automaticRectangularTokens)
 }

@@ -640,10 +640,10 @@ func TestChallengeExpirationRemovesRoutability(t *testing.T) {
 // to judge when it is safe to let APNS_ENFORCE_AFTER pass.
 func TestCodeAttestationCoverage(t *testing.T) {
 	r := New(testLogger())
-	r.providers["a"] = &Provider{ID: "a", Status: StatusOnline, CodeAttested: true}
-	r.providers["b"] = &Provider{ID: "b", Status: StatusOnline, CodeAttested: false}
-	r.providers["c"] = &Provider{ID: "c", Status: StatusUntrusted, CodeAttested: true} // excluded
-	r.providers["d"] = &Provider{ID: "d", Status: StatusOffline, CodeAttested: true}   // excluded
+	insertTestProvider(r, &Provider{ID: "a", Status: StatusOnline, CodeAttested: true})
+	insertTestProvider(r, &Provider{ID: "b", Status: StatusOnline, CodeAttested: false})
+	insertTestProvider(r, &Provider{ID: "c", Status: StatusUntrusted, CodeAttested: true}) // excluded
+	insertTestProvider(r, &Provider{ID: "d", Status: StatusOffline, CodeAttested: true})   // excluded
 
 	attested, online := r.CodeAttestationCoverage()
 	if online != 2 {

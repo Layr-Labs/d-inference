@@ -47,7 +47,7 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     }
     #expect(await budget.reserveBytes(requestID: "native", bytes: 400))
     #expect(await budget.outstandingReservedBytes() == 400)
-    #expect(await budget.increaseReservation(requestID: "native", additionalBytes: 100))
+    #expect(await budget.resizeReservationBytes(requestID: "native", bytes: 500))
     #expect(await budget.outstandingReservedBytes() == 500)
     #expect(await budget.resizeReservationBytes(requestID: "native", bytes: 700))
     #expect(await budget.outstandingReservedBytes() == 700)
@@ -112,12 +112,12 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 }
 
 /// Q6 (serve-while-load): a loading model's weights are not in MLX active/cache
-/// until `loadModelContainer` finishes allocating them. `reservePendingLoad`
+/// until `loadModelContainer` finishes allocating them. `claimPendingLoad`
 /// makes that footprint visible to KV reservations on ALREADY-loaded models, so
 /// a concurrent request can't grant KV headroom that, plus the incoming weights,
 /// blows the cap. It reserves only the weights (so KV that still fits underneath
 /// is admitted) and is released once the weights are resident.
-@Test func pendingLoadReservationBlocksConcurrentKVOverCommit() async {
+@Test func pendingLoadReservationBlocksConcurrentKVOverCommit() async throws {
     // 64 GiB box, cap 0.9 → 57.6 GiB, minus 3 GiB activation = ~54.6 GiB for KV.
     let budget = GlobalKVCacheBudget(capFraction: 0.9, activationReserveBytes: 3 * gib) {
         GlobalKVCacheBudget.MemorySnapshot(total: 64 * gib, active: 0, cache: 0, systemAvailable: .max)
@@ -128,7 +128,8 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 
     // A 30 GiB model begins loading; its weights aren't in mlxUsed yet, so we
     // reserve them. Only ~24.6 GiB is now left for KV.
-    await budget.reservePendingLoad(requestID: "pending-load:B", bytes: 30 * gib)
+    let pendingLoad = try #require(await budget.claimPendingLoad(
+        requestID: "pending-load:B", weightBytes: 30 * gib, minimumKVBytes: 0))
     // Without the fix this 40 GiB reservation would be granted (54.6 free) and,
     // plus the 30 GiB load, blow the cap. It must be rejected now.
     #expect(!(await budget.reserveBytes(requestID: "kv-too-big", bytes: 40 * gib)))
@@ -138,7 +139,7 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 
     // Once the load completes (weights now in mlxUsed), releasing restores the
     // full headroom.
-    await budget.release(requestID: "pending-load:B")
+    #expect(await budget.finishPendingLoad(pendingLoad))
     #expect(await budget.reserveBytes(requestID: "kv-after", bytes: 40 * gib))
 }
 
@@ -170,202 +171,59 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(ProviderLoop.memoryReserveBytes(forGiB: UInt64.max) == UInt64.max)
 }
 
-// MARK: - Sustained-rejection reservation audit (v0.7.3 black-hole hardening)
-
-/// Thread-safe capture sink for the budget's audit telemetry closure.
-private final class AuditEventLog: @unchecked Sendable {
-    private let lock = NSLock()
-    private var events: [(severity: TelemetrySeverity, message: String, fields: [String: AnyCodableValue])] = []
-
-    func append(_ severity: TelemetrySeverity, _ message: String, _ fields: [String: AnyCodableValue]) {
-        lock.lock()
-        defer { lock.unlock() }
-        events.append((severity, message, fields))
+@Test func globalKVCacheBudgetHonorsAReplacedActivationReserve() async {
+    // The serving set changes at runtime (prefetch advertises a build, a
+    // retired slot unloads) and ProviderLoop re-pushes the resolved reserve
+    // via setActivationReserveBytes — admission must follow the CURRENT
+    // value, not the construction-time one.
+    //
+    // 8 GiB box, capFraction 1.0 → hardCap = 8 − 2 (OS floor) = 6 GiB.
+    // With the flat 5.5 GiB reserve, headroom = 0.5 GiB → a 1 GiB
+    // reservation rejects. After the reserve relaxes to the measured
+    // 3.5 GiB floor, headroom = 2.5 GiB → the same reservation admits;
+    // raising it back to 5.5 rejects again.
+    let budget = GlobalKVCacheBudget(capFraction: 1.0, activationReserveBytes: 11 * gib / 2) {
+        GlobalKVCacheBudget.MemorySnapshot(total: 8 * gib, active: 0, cache: 0, systemAvailable: .max)
     }
-
-    func operations() -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return events.compactMap { $0.fields["operation"]?.description }
-    }
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+    await budget.setActivationReserveBytes(7 * gib / 2)
+    #expect(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1))
+    await budget.release(requestID: "a")
+    await budget.setActivationReserveBytes(11 * gib / 2)
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
 }
 
-/// Build a budget with tiny audit thresholds: 6 GiB cap headroom, so a leaked
-/// 6 GiB reservation makes EVERY later commit fail — the black-hole shape.
-/// The continuity window defaults to the production 30 s so the storm-style
-/// tests (rejections ~10 ms apart) exercise the same "gaps far under the
-/// window sustain the streak" regime production sees.
-private func makeAuditBudget(
-    log: AuditEventLog,
-    staleTTL: Duration = .milliseconds(50),
-    continuityWindow: Duration = GlobalKVCacheBudget.defaultRejectionStreakContinuityWindow
-) -> GlobalKVCacheBudget {
-    GlobalKVCacheBudget(
-        capFraction: 1.0,
-        activationReserveBytes: 0,
-        memorySnapshot: {
-            GlobalKVCacheBudget.MemorySnapshot(
-                total: 8 * gib, active: 0, cache: 0, systemAvailable: .max)
-        },
-        sustainedRejectionAuditThreshold: .milliseconds(40),
-        rejectionStreakContinuityWindow: continuityWindow,
-        staleReservationTTL: staleTTL,
-        auditMinInterval: .milliseconds(10),
-        emitAuditEvent: { severity, message, fields in
-            log.append(severity, message, fields)
-        }
-    )
-}
-
-/// The incident shape, generalized: a reservation that never gets released
-/// wedges the budget into 100% rejection. After the sustained-rejection
-/// threshold, the audit must log the table, drop the stale entry, and the
-/// next commit must succeed — permanent black hole → self-healed blip.
-@Test func sustainedRejectionAuditDropsStaleReservationAndHeals() async throws {
-    let log = AuditEventLog()
-    let budget = makeAuditBudget(log: log)
-
-    // The leak: consumes the whole 6 GiB effective cap (8 GiB − 2 GiB floor).
-    await budget.reservePendingLoad(requestID: "pending-load:leaked", bytes: 6 * gib)
-
-    // Rejections must persist past BOTH the stale TTL and the audit
-    // threshold. Loop instead of one long sleep so the streak has failures
-    // on both ends of the threshold window.
-    var healed = false
-    for _ in 0 ..< 30 {
-        if await budget.reserve(requestID: "req-\(UUID().uuidString)", kvBytesPerToken: 1, tokenCount: Int(gib)) {
-            healed = true
-            break
-        }
-        try await Task.sleep(for: .milliseconds(10))
+@Test func globalKVCacheBudgetDiscardsStaleEpochReservePushes() async {
+    // Cross-actor pushes from concurrent set mutations are not FIFO: a
+    // stale relax computed before a raise can be DELIVERED after it. The
+    // owner stamps every push with a monotonic epoch (incremented under
+    // its own actor isolation = true mutation order); the budget must
+    // discard a push whose epoch is not newer than the last applied.
+    //
+    // Same 8 GiB box as above: 5.5 GiB reserve rejects a 1 GiB
+    // reservation, 3.5 GiB admits it.
+    let budget = GlobalKVCacheBudget(capFraction: 1.0, activationReserveBytes: 7 * gib / 2) {
+        GlobalKVCacheBudget.MemorySnapshot(total: 8 * gib, active: 0, cache: 0, systemAvailable: .max)
     }
-
-    #expect(healed, "budget never healed — the stale reservation was not dropped")
-    let ids = await budget.reservationIDsForTesting()
-    #expect(!ids.contains("pending-load:leaked"))
-    let operations = log.operations()
-    #expect(operations.contains("kv_budget_sustained_rejection"))
-    #expect(operations.contains("kv_budget_stale_reservation_dropped"))
-}
-
-/// Fresh (younger than the TTL) reservations are live work and must survive
-/// the audit even during a full-rejection streak — the audit only ever drops
-/// entries no plausible request/load lifetime can explain.
-@Test func sustainedRejectionAuditKeepsFreshReservations() async throws {
-    let log = AuditEventLog()
-    // TTL far above the test duration: everything stays "fresh".
-    let budget = makeAuditBudget(log: log, staleTTL: .seconds(60))
-
-    await budget.reservePendingLoad(requestID: "pending-load:live", bytes: 6 * gib)
-
-    for _ in 0 ..< 12 {
-        _ = await budget.reserve(
-            requestID: "req-\(UUID().uuidString)", kvBytesPerToken: 1, tokenCount: Int(gib))
-        try await Task.sleep(for: .milliseconds(10))
-    }
-
-    // The audit fired (CRITICAL visibility)…
-    #expect(log.operations().contains("kv_budget_sustained_rejection"))
-    // …but dropped nothing.
-    #expect(!log.operations().contains("kv_budget_stale_reservation_dropped"))
-    let ids = await budget.reservationIDsForTesting()
-    #expect(ids.contains("pending-load:live"))
-}
-
-/// Sparse traffic must never age into an audit: two rejections separated by
-/// an idle gap longer than the continuity window are NOT a sustained streak,
-/// even when their wall-clock span exceeds the audit threshold. Without
-/// continuity, the audit would fire on the second rejection and drop the
-/// >TTL-old reservation — which here models LIVE work (a multi-10-minute
-/// decode or a slow pending load legitimately outlives the 10-min TTL).
-@Test func idleGapsBetweenRejectionsNeverAgeIntoAnAudit() async throws {
-    let log = AuditEventLog()
-    // Continuity window 30 ms, audit threshold 40 ms, stale TTL 30 ms.
-    let budget = makeAuditBudget(
-        log: log, staleTTL: .milliseconds(30), continuityWindow: .milliseconds(30))
-
-    // A long-running piece of LIVE work whose reservation outlives the TTL.
-    await budget.reservePendingLoad(requestID: "pending-load:live-decode", bytes: 6 * gib)
-    try await Task.sleep(for: .milliseconds(50))  // now older than the stale TTL
-
-    // Rejection 1 arms the streak; a >window idle gap follows.
-    #expect(!(await budget.reserve(requestID: "sparse-1", kvBytesPerToken: 1, tokenCount: Int(gib))))
-    try await Task.sleep(for: .milliseconds(100))
-    // Rejection 2: wall clock since rejection 1 exceeds the 40 ms threshold,
-    // but the gap broke the streak — pre-fix this fired the audit and
-    // dropped the live reservation. Rejection 3 lands inside the window but
-    // the re-armed streak is only milliseconds old.
-    #expect(!(await budget.reserve(requestID: "sparse-2", kvBytesPerToken: 1, tokenCount: Int(gib))))
-    #expect(!(await budget.reserve(requestID: "sparse-3", kvBytesPerToken: 1, tokenCount: Int(gib))))
-
-    #expect(log.operations().isEmpty, "audit fired across an idle traffic gap")
-    let ids = await budget.reservationIDsForTesting()
-    #expect(ids.contains("pending-load:live-decode"), "live work was dropped as stale")
-}
-
-/// A release of a REAL reservation proves the table drains (work is
-/// terminating normally), so it must reset the rejection streak: a
-/// continuous rejection storm interleaved with releases never audits.
-@Test func releasesOfRealReservationsResetTheRejectionStreak() async throws {
-    let log = AuditEventLog()
-    let budget = makeAuditBudget(log: log)
-
-    // The wedge: consumes the whole 6 GiB effective cap.
-    await budget.reservePendingLoad(requestID: "pending-load:wedge", bytes: 6 * gib)
-
-    // 12 × 10 ms of continuous rejections (well past the 40 ms threshold),
-    // but unrelated in-flight work keeps completing — each release resets
-    // the streak, so the audit must never fire.
-    for i in 0 ..< 12 {
-        _ = await budget.reserve(requestID: "storm-\(i)", kvBytesPerToken: 1, tokenCount: Int(gib))
-        await budget.reservePendingLoad(requestID: "tick-\(i)", bytes: 1)
-        await budget.release(requestID: "tick-\(i)")
-        try await Task.sleep(for: .milliseconds(10))
-    }
-
-    #expect(log.operations().isEmpty, "audit fired despite reservations draining via release()")
-    #expect(await budget.reservationIDsForTesting().contains("pending-load:wedge"))
-}
-
-/// The complement: releasing an id that holds NO reservation proves nothing
-/// and must NOT reset the streak — otherwise a caller releasing a stale/
-/// unknown id on every request would mask a real black hole forever.
-@Test func releaseOfUnknownIDDoesNotResetTheStreak() async throws {
-    let log = AuditEventLog()
-    let budget = makeAuditBudget(log: log)
-
-    await budget.reservePendingLoad(requestID: "pending-load:leaked", bytes: 6 * gib)
-
-    var audited = false
-    for i in 0 ..< 30 {
-        _ = await budget.reserve(requestID: "storm-\(i)", kvBytesPerToken: 1, tokenCount: Int(gib))
-        await budget.release(requestID: "ghost-\(i)")  // never reserved — a no-op
-        if log.operations().contains("kv_budget_sustained_rejection") {
-            audited = true
-            break
-        }
-        try await Task.sleep(for: .milliseconds(10))
-    }
-
-    #expect(audited, "no-op releases suppressed the sustained-rejection audit")
-}
-
-/// A successful commit resets the rejection streak: intermittent capacity
-/// pressure (rejections interleaved with successes) must never trigger the
-/// audit — it is reserved for the every-commit-fails black hole.
-@Test func successfulCommitsResetTheRejectionStreak() async throws {
-    let log = AuditEventLog()
-    let budget = makeAuditBudget(log: log)
-
-    for i in 0 ..< 8 {
-        // Too big — rejected (5 GiB headroom left under the 6 GiB cap after
-        // the small success below on later iterations).
-        _ = await budget.reserve(requestID: "big-\(i)", kvBytesPerToken: 1, tokenCount: Int(7 * gib))
-        // Small — succeeds, resetting the streak.
-        #expect(await budget.reserve(requestID: "small-\(i)", kvBytesPerToken: 1, tokenCount: 1024))
-        await budget.release(requestID: "small-\(i)")
-        try await Task.sleep(for: .milliseconds(10))
-    }
-
-    #expect(log.operations().isEmpty, "audit fired despite interleaved successful commits")
+    // Newer epoch applies: raise to 5.5 at epoch 2 → reject.
+    await budget.setActivationReserveBytes(11 * gib / 2, epoch: 2)
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+    // Stale epoch 1 (the relax computed BEFORE the raise, delivered after)
+    // is discarded — the raise stands.
+    await budget.setActivationReserveBytes(7 * gib / 2, epoch: 1)
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+    // Equal epoch is likewise discarded (not-newer).
+    await budget.setActivationReserveBytes(7 * gib / 2, epoch: 2)
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+    // A genuinely newer relax applies.
+    await budget.setActivationReserveBytes(7 * gib / 2, epoch: 3)
+    #expect(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1))
+    await budget.release(requestID: "a")
+    // nil-epoch (test/simple callers) stays unconditional and does not
+    // disturb the recorded epoch: apply 5.5 unconditionally…
+    await budget.setActivationReserveBytes(11 * gib / 2)
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+    // …and epoch 4 still applies afterwards.
+    await budget.setActivationReserveBytes(7 * gib / 2, epoch: 4)
+    #expect(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1))
 }

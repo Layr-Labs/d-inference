@@ -133,6 +133,19 @@ extension Models {
             } else {
                 localModels = []
             }
+            // Bind the metallib and run the GPU diagnostic only when some entry
+            // is gated: `catalog` is the default `models` subcommand and the
+            // verdict is never printed otherwise. nil when hardware detection
+            // failed, so the lines say "unknown" rather than wrongly reporting
+            // every gated model ineligible.
+            let anyGated = entries.contains {
+                !ModelRuntimeRequirements.requiredCapabilities(
+                    for: $0.id, catalogRequirements: $0.requiredProviderCapabilities
+                ).isEmpty
+            }
+            let runtimeCapabilities: Set<ProviderRuntimeCapability>? = anyGated
+                ? snapshot.hardware.map { ProviderRuntimeCapabilityDetector.detectLive(hardware: $0) }
+                : nil
             let downloadedIDs = Set(localModels.map(\.id))
             let catalogIDs = Set(entries.map(\.id))
 
@@ -147,6 +160,14 @@ extension Models {
                     let mark = downloadedIDs.contains(entry.id) ? "✓" : " "
                     let mem = entry.minRamGb.map { " (≥ \($0) GB RAM)" } ?? ""
                     print("  \(mark) \(entry.displayName)  [\(entry.id)]  ~\(String(format: "%.1f", entry.sizeGb)) GB\(mem)")
+                    // Same gate `start` applies silently; here it is explained.
+                    for line in ModelRequirementLine.lines(
+                        modelID: entry.id,
+                        catalogRequirements: entry.requiredProviderCapabilities,
+                        available: runtimeCapabilities
+                    ) {
+                        print("      \(line)")
+                    }
                 }
             }
 

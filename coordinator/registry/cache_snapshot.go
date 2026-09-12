@@ -38,6 +38,7 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	replaceCapabilities bool,
 	version int,
 	capabilities []protocol.PrefixCacheV2Capability,
+	memoryCapabilities *[]protocol.PrefixCacheV2Capability,
 	statuses *[]protocol.PrefixCacheModelStatus,
 	outcomes *[]protocol.PrefixCacheDonationOutcomeCount,
 ) (bool, error) {
@@ -45,8 +46,8 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 		return false, nil
 	}
 	r.mu.RLock()
+	defer r.mu.RUnlock()
 	provider := r.providers[providerID]
-	r.mu.RUnlock()
 	if provider == nil {
 		return false, errInvalidPrefixCacheCapability
 	}
@@ -60,6 +61,7 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 
 	resultVersion := provider.PrefixCacheProtocol
 	resultCapabilities := clonePrefixCacheCapabilities(provider.PrefixCacheV2Models)
+	resultMemoryCapabilities := clonePrefixCacheCapabilities(provider.PrefixCacheMemoryModels)
 	if replaceCapabilities {
 		resultCapabilities, err = validatePrefixCacheCapabilities(
 			version, capabilities, models)
@@ -68,6 +70,16 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 			return false, err
 		}
 		resultVersion = version
+	}
+	if memoryCapabilities != nil {
+		resultMemoryCapabilities, err = validateMemoryPrefixCacheCapabilities(
+			resultVersion, *memoryCapabilities, models)
+		if err != nil {
+			provider.mu.Unlock()
+			return false, err
+		}
+	} else if resultVersion < 2 {
+		resultMemoryCapabilities = nil
 	}
 
 	resultStatuses := clonePrefixCacheStatuses(provider.PrefixCacheStatuses)
@@ -106,12 +118,15 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	}
 
 	capabilitiesChanged := provider.PrefixCacheProtocol != resultVersion ||
-		!equalPrefixCacheCapabilities(provider.PrefixCacheV2Models, resultCapabilities)
-	removalReason := prefixCacheCapabilityRemovalReason(
-		provider.PrefixCacheV2Models, resultCapabilities)
+		!equalPrefixCacheCapabilities(provider.PrefixCacheV2Models, resultCapabilities) ||
+		!equalPrefixCacheCapabilities(provider.PrefixCacheMemoryModels, resultMemoryCapabilities)
+	protocolChanged := provider.PrefixCacheProtocol != resultVersion
+	changedModels := changedPrefixCacheModels(provider.PrefixCacheV2Models, resultCapabilities,
+		provider.PrefixCacheMemoryModels, resultMemoryCapabilities)
 	if capabilitiesChanged {
 		provider.PrefixCacheProtocol = resultVersion
 		provider.PrefixCacheV2Models = resultCapabilities
+		provider.PrefixCacheMemoryModels = resultMemoryCapabilities
 		provider.prefixCacheRevision++
 	}
 	provider.PrefixCacheStatuses = resultStatuses
@@ -119,14 +134,18 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	if outcomes != nil {
 		provider.PrefixCacheDonationOutcomes = nextOutcomes
 	}
-	provider.mu.Unlock()
-
-	r.mu.RLock()
+	// Keep connection/generation ownership and the provider lock until
+	// invalidation completes. A replacement connection or newly prepared
+	// receipt must not be erased by a delayed old-heartbeat cleanup.
 	tracker := r.cacheRouting
-	r.mu.RUnlock()
 	if capabilitiesChanged && tracker != nil {
-		tracker.disconnect(providerID, removalReason)
+		if protocolChanged {
+			tracker.invalidateProviderEvidence(providerID, cacheHolderRemovalCapabilityChange, true)
+		} else {
+			tracker.invalidateProviderModels(providerID, changedModels)
+		}
 	}
+	provider.mu.Unlock()
 	if tracker != nil {
 		tracker.recordDonationOutcomes(deltas)
 	}

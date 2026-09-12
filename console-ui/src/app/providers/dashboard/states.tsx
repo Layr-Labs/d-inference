@@ -3,25 +3,7 @@
 // Page-level non-data states: signed-out gate, first-load spinner, and the
 // hard-error card. Kept presentational so the orchestrator stays thin.
 
-import { Loader2, Mail, RefreshCw } from "lucide-react";
-
-export function SignInGate({ onLogin }: { onLogin: () => void }) {
-  return (
-    <div className="rounded-xl bg-bg-secondary shadow-sm p-6">
-      <h2 className="text-xl font-bold text-text-primary mb-2">Provider Dashboard</h2>
-      <p className="text-sm text-text-secondary mb-5 max-w-2xl">
-        Sign in to view your linked provider machines, live health, routing status, and earnings.
-      </p>
-      <button
-        onClick={onLogin}
-        className="focus-ring inline-flex items-center gap-2 px-6 py-2.5 rounded-lg bg-coral text-white font-medium text-sm hover:opacity-90 transition-opacity"
-      >
-        <Mail size={14} />
-        Sign In
-      </button>
-    </div>
-  );
-}
+import { Loader2, RefreshCw } from "lucide-react";
 
 export function LoadingState() {
   return (

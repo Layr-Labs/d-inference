@@ -1,0 +1,211 @@
+{
+  "checks": {
+    "identical_four_harness_files": true,
+    "baseline-mtp-build2/mlx.metallib actual digest": true,
+    "baseline-mtp-build2/radix-engine actual digest": true,
+    "candidate-mtp-build3/mlx.metallib actual digest": true,
+    "candidate-mtp-build3/radix-engine actual digest": true,
+    "candidate-mtp-provider.patch.gz matches compiled manifest": true,
+    "candidate-mtp-mlx.patch.gz matches compiled manifest": true,
+    "paged-short-policy-verdict.json passed": true,
+    " explicit same paged model flags": true,
+    " four paired rows": true,
+    "short/p2048-r0-first prompt/generated/count/finish equality": true,
+    "short/p2048-r0-first first-chunk TTFT": true,
+    "short/p2048-r0-first verdict agrees with raw": true,
+    "short/p2048-r0-repeat prompt/generated/count/finish equality": true,
+    "short/p2048-r0-repeat first-chunk TTFT": true,
+    "short/p2048-r0-repeat verdict agrees with raw": true,
+    "short/p2048-r0-branch prompt/generated/count/finish equality": true,
+    "short/p2048-r0-branch first-chunk TTFT": true,
+    "short/p2048-r0-branch verdict agrees with raw": true,
+    "short/p2048-r0-branch-repeat prompt/generated/count/finish equality": true,
+    "short/p2048-r0-branch-repeat first-chunk TTFT": true,
+    "short/p2048-r0-branch-repeat verdict agrees with raw": true,
+    " tenant raw parity": true,
+    " tenant isolation": true,
+    " cancellation finish and recovery parity": true,
+    "baseline-engine-paged-gpt-oss run metadata": true,
+    "candidate-engine-paged-gpt-oss run metadata": true,
+    "paged-long-verdict.json passed": true,
+    "-long explicit same paged model flags": true,
+    "-long four paired rows": true,
+    "long/p8192-r0-first prompt/generated/count/finish equality": true,
+    "long/p8192-r0-first first-chunk TTFT": true,
+    "long/p8192-r0-first verdict agrees with raw": true,
+    "long/p8192-r0-repeat prompt/generated/count/finish equality": true,
+    "long/p8192-r0-repeat first-chunk TTFT": true,
+    "long/p8192-r0-repeat verdict agrees with raw": true,
+    "long/p8192-r0-branch prompt/generated/count/finish equality": true,
+    "long/p8192-r0-branch first-chunk TTFT": true,
+    "long/p8192-r0-branch verdict agrees with raw": true,
+    "long/p8192-r0-branch-repeat prompt/generated/count/finish equality": true,
+    "long/p8192-r0-branch-repeat first-chunk TTFT": true,
+    "long/p8192-r0-branch-repeat verdict agrees with raw": true,
+    "-long tenant raw parity": true,
+    "-long tenant isolation": true,
+    "-long cancellation finish and recovery parity": true,
+    "baseline-engine-paged-gpt-oss-long run metadata": true,
+    "candidate-engine-paged-gpt-oss-long run metadata": true,
+    "model chat_template.jinja": true,
+    "model config.json": true,
+    "model generation_config.json": true,
+    "model model-00001-of-00003.safetensors": true,
+    "model model-00002-of-00003.safetensors": true,
+    "model model-00003-of-00003.safetensors": true,
+    "model model.safetensors.index.json": true,
+    "model special_tokens_map.json": true,
+    "model tokenizer.json": true,
+    "model tokenizer_config.json": true
+  },
+  "inputs": {
+    "baseline-mtp-build2/mlx.metallib": {
+      "sha256": "4ffbbac48a99b495916c3fa0921ce813eb554de1a09aff408d9b5a5a8053e6b0",
+      "local_copy_checked": true
+    },
+    "baseline-mtp-build2/radix-engine": {
+      "sha256": "740ce1b31783509f7e545712aa5002e5c6918aaf0160393ad7cec169a17add21",
+      "local_copy_checked": true
+    },
+    "candidate-mtp-build3/mlx.metallib": {
+      "sha256": "4ffbbac48a99b495916c3fa0921ce813eb554de1a09aff408d9b5a5a8053e6b0",
+      "local_copy_checked": true
+    },
+    "candidate-mtp-build3/radix-engine": {
+      "sha256": "13712390cec5e5af9d6ebad8c87e1ef358d28f17545366442a81d7a22e399d93",
+      "local_copy_checked": true
+    },
+    "model_manifest": {
+      "sha256": "ea67de147063b7c8374b1bc52255b4fc74c4fb09ba18e31f1c0789888c7a8e22",
+      "files_checked": 10,
+      "weight_bytes": 12076207568,
+      "local_snapshot": true
+    },
+    "retained_evidence_sha256": {
+      "baseline-engine-paged-gpt-oss-report.json.gz": "0c3b39b2d7590f280bdf4d0ae0c12e3cc435f59beca1e682d1c49f11bc0949fa",
+      "candidate-engine-paged-gpt-oss-report.json.gz": "c9e5e2083970c4ff34e321dc1ac53987d6d6f887ab3a9b2d1cae60b756ced182",
+      "baseline-engine-paged-gpt-oss-long-report.json.gz": "d55a28cc0504a2653fc27c085f1ce5ab61f694f20d5ede49a6395b0dd3eec8e5",
+      "candidate-engine-paged-gpt-oss-long-report.json.gz": "fd9b4385c84514ff55afabc7d8015818592e3c4e0e0aa5324accada3a4d2c189",
+      "baseline-engine-paged-gpt-oss-telemetry.jsonl.gz": "d93efe30063a04db5fbd62f1ad83e772e2b6d02ddeed65375abd500bdb97164b",
+      "candidate-engine-paged-gpt-oss-telemetry.jsonl.gz": "a0b1620459d260c2e73881e98c38b4a87fe96ff9c49992eaf24e7037ca867e08",
+      "baseline-engine-paged-gpt-oss-long-telemetry.jsonl.gz": "e5f2c2aba7e6d4539d5443ecebfdeb1dd2ac1577ff13a8361cf93627ff972854",
+      "candidate-engine-paged-gpt-oss-long-telemetry.jsonl.gz": "174b27f3be045a0494c6ad00d68d92339fbb67fc0707a85bf74e5a952037f6f7",
+      "paged-short-policy-verdict.json": "d3fd643a2e234872d7cdc07e9c32a2756bdd19529436a89016e9b5c314c7e2fe",
+      "paged-long-verdict.json": "d3a7e997e267eee18e4917ce3ea387b14cc612d3e2a1846e15c343dc4a171e77",
+      "baseline-mtp-build2-artifact.json": "e92ed8dc53c2757849087e1a09865e5b1687f748b233aacf65ae8c81e224c4f1",
+      "candidate-mtp-artifact.json.gz": "df335d144b2637973fe5feb7b7751892edf20a6d826f17ba9eff2b9e05673f12",
+      "gpt-oss-model-manifest.json": "ea67de147063b7c8374b1bc52255b4fc74c4fb09ba18e31f1c0789888c7a8e22",
+      "baseline-engine-paged-gpt-oss-metadata.json": "e57675dfc151b85a9f190656b299435b4d1401f9c59d59e0707430b6a457109d",
+      "candidate-engine-paged-gpt-oss-metadata.json": "938d1d2b707545d843113ef5976de33e12c424afcfe4b24b3b022944904c3303",
+      "baseline-engine-paged-gpt-oss-long-metadata.json": "683b7f9b1c854dfe61691307dd239bced1902faaa41f249f1e90af4a1d288232",
+      "candidate-engine-paged-gpt-oss-long-metadata.json": "9f082a1ded28c095c90d7666a63f6a0ad492bca19cdd14cac01b7be544f34f31"
+    }
+  },
+  "measurements": {
+    "short/p2048-r0-first": {
+      "baseline_ttft_s": 1.504816458,
+      "candidate_ttft_s": 0.847678209,
+      "reduction_percent": 43.66899667441038,
+      "matched": 0,
+      "replayed": 0,
+      "saved": 0
+    },
+    "short/p2048-r0-repeat": {
+      "baseline_ttft_s": 0.419654791,
+      "candidate_ttft_s": 0.42215575,
+      "reduction_percent": -0.5959562606304116,
+      "matched": 1424,
+      "replayed": 0,
+      "saved": 0
+    },
+    "short/p2048-r0-branch": {
+      "baseline_ttft_s": 0.422560875,
+      "candidate_ttft_s": 0.424192625,
+      "reduction_percent": -0.3861573790995173,
+      "matched": 1424,
+      "replayed": 0,
+      "saved": 0
+    },
+    "short/p2048-r0-branch-repeat": {
+      "baseline_ttft_s": 0.419548,
+      "candidate_ttft_s": 0.419493667,
+      "reduction_percent": 0.012950365631575408,
+      "matched": 1424,
+      "replayed": 0,
+      "saved": 0
+    },
+    "baseline-engine-paged-gpt-oss sensors": {
+      "samples": 71,
+      "gpu_active_samples": 44,
+      "median_active_gpu_clock_mhz": 1620.0,
+      "gpu_active_temp_min_c": 37.76060104370117,
+      "gpu_active_temp_max_c": 59.06473159790039,
+      "max_sampled_system_ram_bytes": 41501556736,
+      "swap_usage_min_bytes": 1310720,
+      "swap_usage_max_bytes": 1310720
+    },
+    "candidate-engine-paged-gpt-oss sensors": {
+      "samples": 60,
+      "gpu_active_samples": 44,
+      "median_active_gpu_clock_mhz": 1620.0,
+      "gpu_active_temp_min_c": 33.79743194580078,
+      "gpu_active_temp_max_c": 58.25093078613281,
+      "max_sampled_system_ram_bytes": 41669820416,
+      "swap_usage_min_bytes": 1310720,
+      "swap_usage_max_bytes": 1310720
+    },
+    "long/p8192-r0-first": {
+      "baseline_ttft_s": 2.07515125,
+      "candidate_ttft_s": 1.817950292,
+      "reduction_percent": 12.3943234499172,
+      "matched": 0,
+      "replayed": 0,
+      "saved": 0
+    },
+    "long/p8192-r0-repeat": {
+      "baseline_ttft_s": 1.578716708,
+      "candidate_ttft_s": 0.854751458,
+      "reduction_percent": 45.85783163827769,
+      "matched": 5456,
+      "replayed": 1536,
+      "saved": 3920
+    },
+    "long/p8192-r0-branch": {
+      "baseline_ttft_s": 1.582734417,
+      "candidate_ttft_s": 0.658183875,
+      "reduction_percent": 58.41476195055155,
+      "matched": 5456,
+      "replayed": 1536,
+      "saved": 3920
+    },
+    "long/p8192-r0-branch-repeat": {
+      "baseline_ttft_s": 1.581932334,
+      "candidate_ttft_s": 0.532338958,
+      "reduction_percent": 66.3488161561277,
+      "matched": 5456,
+      "replayed": 1536,
+      "saved": 3920
+    },
+    "baseline-engine-paged-gpt-oss-long sensors": {
+      "samples": 105,
+      "gpu_active_samples": 99,
+      "median_active_gpu_clock_mhz": 1620,
+      "gpu_active_temp_min_c": 34.49702453613281,
+      "gpu_active_temp_max_c": 72.19493865966797,
+      "max_sampled_system_ram_bytes": 44525289472,
+      "swap_usage_min_bytes": 1310720,
+      "swap_usage_max_bytes": 1310720
+    },
+    "candidate-engine-paged-gpt-oss-long sensors": {
+      "samples": 71,
+      "gpu_active_samples": 64,
+      "median_active_gpu_clock_mhz": 1620.0,
+      "gpu_active_temp_min_c": 31.7925968170166,
+      "gpu_active_temp_max_c": 63.79129409790039,
+      "max_sampled_system_ram_bytes": 45341671424,
+      "swap_usage_min_bytes": 1310720,
+      "swap_usage_max_bytes": 1310720
+    }
+  },
+  "passed": true
+}

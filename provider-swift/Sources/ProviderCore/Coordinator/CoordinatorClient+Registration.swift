@@ -34,6 +34,8 @@ extension CoordinatorClient {
             prefixCacheProtocol: prefixCache.protocolVersion,
             prefixCacheV2Models: prefixCache.protocolVersion == 2
                 ? prefixCache.models : nil,
+            prefixCacheMemoryModels: prefixCache.protocolVersion == 2
+                ? prefixCache.memoryModels : nil,
             prefixCacheStatuses: prefixCache.statuses,
             prefixCacheDonationOutcomes: prefixCache.donationOutcomes
         )
@@ -98,8 +100,14 @@ extension CoordinatorClient {
             ? (config.apnsEnvironment ?? "production")
             : config.apnsEnvironment
 
+        // A drain (update / shutdown) outranks serving/idle: the box may still
+        // be decoding in-flight work, but it refuses new work, and the
+        // coordinator must stop selecting it now rather than after enough
+        // 503 bounces trip a cooldown.
+        let status: ProviderStatus = state.refusingNewWork
+            ? .draining : (isActive ? .serving : .idle)
         let message = CoordinatorClientCodec.heartbeatMessage(
-            status: isActive ? .serving : .idle,
+            status: status,
             activeModel: activeModel,
             warmModels: warmModels,
             stats: stats.snapshot(),
@@ -110,8 +118,11 @@ extension CoordinatorClient {
             prefixCacheProtocol: prefixCache.protocolVersion,
             prefixCacheV2Models: prefixCache.protocolVersion == 2
                 ? prefixCache.models : nil,
+            prefixCacheMemoryModels: prefixCache.protocolVersion == 2
+                ? prefixCache.memoryModels : nil,
             prefixCacheStatuses: prefixCache.statuses,
-            prefixCacheDonationOutcomes: prefixCache.donationOutcomes
+            prefixCacheDonationOutcomes: prefixCache.donationOutcomes,
+            idleUnloadMins: config.idleUnloadMins
         )
 
         do {
@@ -122,9 +133,12 @@ extension CoordinatorClient {
             return json
         } catch {
             recordEncodeFailure("heartbeat", error)
-            // Last resort: a valid idle heartbeat keeps the connection alive
+            // Last resort: a minimal valid heartbeat keeps the connection alive
             // rather than shipping malformed bytes the coordinator would drop.
-            return "{\"type\":\"heartbeat\",\"status\":\"idle\",\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"nominal\"}}"
+            // It carries the status computed above — a draining box must not
+            // announce itself idle just because its capacity payload failed to
+            // encode, or the coordinator keeps routing to it.
+            return "{\"type\":\"heartbeat\",\"status\":\"\(status.rawValue)\",\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"nominal\"}}"
         }
     }
 

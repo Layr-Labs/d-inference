@@ -1,0 +1,132 @@
+{
+  "scope": "Q35 B1 original three-cell native comparison, current104",
+  "passed": true,
+  "actual_forward_width_verified": true,
+  "release_gates_satisfied": false,
+  "original_manifest_sha256": "ef9e7a52d78b64c5ae5810b4c51d7c4c8b81e97bf7351e9de178725212f44939",
+  "verified_original_files": 332,
+  "excluded_prefix_cache_files": 9,
+  "source_runtime_model_audit_pairs_exact": 3,
+  "comparisons": [
+    {
+      "id": "qwen35-retained-b1-r1-backend",
+      "axis": "backend",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "id": "qwen35-retained-b1-r1-cache",
+      "axis": "cache",
+      "passed": true,
+      "errors": []
+    }
+  ],
+  "ssd_hits": [
+    {
+      "id": "long-repeat",
+      "kind": "repeat",
+      "cache_outcome": "hit",
+      "matched_tokens": 4096,
+      "saved_tokens": 4096,
+      "ssd_stage_disposition": "staged",
+      "completion_tokens": 79,
+      "finish": "stop"
+    },
+    {
+      "id": "long-first",
+      "kind": "first",
+      "cache_outcome": "hit",
+      "matched_tokens": 4096,
+      "saved_tokens": 4096,
+      "ssd_stage_disposition": "staged",
+      "completion_tokens": 79,
+      "finish": "stop"
+    },
+    {
+      "id": "long-first",
+      "kind": "first",
+      "cache_outcome": "hit",
+      "matched_tokens": 4096,
+      "saved_tokens": 4096,
+      "ssd_stage_disposition": "staged",
+      "completion_tokens": 5,
+      "finish": "cancelled"
+    },
+    {
+      "id": "long-first",
+      "kind": "first",
+      "cache_outcome": "hit",
+      "matched_tokens": 4096,
+      "saved_tokens": 4096,
+      "ssd_stage_disposition": "staged",
+      "completion_tokens": 79,
+      "finish": "stop"
+    }
+  ],
+  "selected_original_files": {
+    "results/qwen35-retained-b1-r1-contiguous-cache-off/report.json": {
+      "sha256": "9ab3574b195c40db09522e0c97ffd17edcc12455b8d0fc8e3cc53a565595b9ca",
+      "bytes": 763101
+    },
+    "results/qwen35-retained-b1-r1-contiguous-cache-off/input.json": {
+      "sha256": "2ca21cec11016ab40c1235acf15fc55ddaea0b037ae8f91e62528b99fd119845",
+      "bytes": 72651
+    },
+    "results/qwen35-retained-b1-r1-contiguous-cache-off/metadata.json": {
+      "sha256": "fbc31d0c916e0361d477124dc7535f04541e1598392d5ee2c886cef9d4dcfa78",
+      "bytes": 3510
+    },
+    "results/qwen35-retained-b1-r1-paged-cache-off/report.json": {
+      "sha256": "7e6dd33c54fc8132d7e0a349380bb79ea29530254742bf86d0302a360e3bc35a",
+      "bytes": 768775
+    },
+    "results/qwen35-retained-b1-r1-paged-cache-off/input.json": {
+      "sha256": "2ca21cec11016ab40c1235acf15fc55ddaea0b037ae8f91e62528b99fd119845",
+      "bytes": 72651
+    },
+    "results/qwen35-retained-b1-r1-paged-cache-off/metadata.json": {
+      "sha256": "e3779340a0d70030bdcb546e9140c09c43097cbb15aa665a15bd7861f42cf5f6",
+      "bytes": 3480
+    },
+    "results/qwen35-retained-b1-r1-paged-cache-on/report.json": {
+      "sha256": "581f1f7752b3223b1670677d4ce5229785a005975e5b6bb7a8357fffb24cffb5",
+      "bytes": 784529
+    },
+    "results/qwen35-retained-b1-r1-paged-cache-on/input.json": {
+      "sha256": "2ca21cec11016ab40c1235acf15fc55ddaea0b037ae8f91e62528b99fd119845",
+      "bytes": 72651
+    },
+    "results/qwen35-retained-b1-r1-paged-cache-on/metadata.json": {
+      "sha256": "4d5a9c7578525b9c16962407bf71144f81c97584b763da2f697c3273c25d4566",
+      "bytes": 3473
+    },
+    "steps/3/verdict.json": {
+      "sha256": "1ff2d478f042ba867478be12c1ce983c4d3b252a5d7d7d3f085b4ee6629ba0ae",
+      "bytes": 124937
+    },
+    "worker-verdict.json": {
+      "sha256": "e0cb0029211b4d77586ffaeab86a3d77657d3c770275e10e6240b47b4390bb64",
+      "bytes": 132819
+    },
+    "terminal.json": {
+      "sha256": "f5dd6793a2778749dc0b19d95d14af49c29bd77df1d65258875a2a28a280cc88",
+      "bytes": 518
+    },
+    "supervisor-terminal.json": {
+      "sha256": "1083f892c335cd7f275b99e4e9054ebd6a8fcb470853503ba49b6dfe49c350e6",
+      "bytes": 411
+    },
+    "foreground-retirement.json": {
+      "sha256": "1bfb948258fa764396c1822a8d47450a257d94781c50ec1eb800f64677f7edf7",
+      "bytes": 4465
+    },
+    "detached-retirement.json": {
+      "sha256": "1bfb948258fa764396c1822a8d47450a257d94781c50ec1eb800f64677f7edf7",
+      "bytes": 4465
+    }
+  },
+  "full_archive_sha256": "829c0bee8aaf887dbacd0bcb7a17586f64587298484958d6e4632b3de68edb80",
+  "lane_release_sha256": "c8893907d98f98c267cbcd9ac5291162573b92466ca1cd0289d94c44ac0e76ce",
+  "cleanup_complete": true,
+  "scope_limits": "No sustained, B2/B4, representative quality, restart or routing claim; explicit native switches, HTTPdefaults separate."
+}

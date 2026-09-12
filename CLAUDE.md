@@ -1,6 +1,6 @@
 # Darkbloom - Decentralized Private Inference
 
-Darkbloom is a decentralized private inference network for Apple Silicon Macs. Consumers use OpenAI-compatible APIs, the coordinator handles routing, auth, billing, attestation, and capacity management, and providers run local inference workloads on macOS hardware using MLX-Swift. All inference is end-to-end encrypted -- the coordinator never sees plaintext prompts.
+Darkbloom is a decentralized private inference network for Apple Silicon Macs. Consumers use OpenAI-compatible APIs, the coordinator handles routing, auth, billing, attestation, and capacity management, and providers run local inference workloads on macOS hardware using MLX-Swift. Request bodies are encrypted hop by hop (NaCl Box on each leg): the coordinator decrypts inside its confidential-VM memory for routing and billing, does not log or retain prompt content, and re-seals each request to the provider's attested key; the provider is the plaintext endpoint. Exact model: `docs/architecture/security/encryption.md`. Docs map: `docs/README.md`; docs rules: `docs/AGENTS.md`.
 
 ## Project Structure
 
@@ -68,7 +68,8 @@ scripts/
 ├── smoke-dev.sh      Dev-coordinator smoke test
 └── entitlements.plist Hardened Runtime entitlements (network, keychain)
 
-docs/                 Architecture docs, deploy runbook, MDM notes, threat model
+docs/                 How-tos, runbooks, reference, architecture, design records, dated reports
+                      (map: docs/README.md · rules + freshness stamps: docs/AGENTS.md · lint: make docs-check)
 .github/workflows/    CI (ci.yml), integration tests (integration.yml), Swift release (release-swift.yml),
                       model registration (register-model.yml), threat model review (threat-model-review.yml)
 ```
@@ -207,7 +208,7 @@ CI (`.github/workflows/release-swift.yml`) builds, signs, notarizes, and uploads
 - **Continuous batching**: All concurrent requests merged into one batched forward pass per step via MLX-Swift BatchedEngine. Near-linear throughput scaling (B=4/B=1 = 3.8x on Qwen, 2.9x on Gemma MoE). Temperature=0 uses vectorized greedy fast path.
 - **Request cancellation**: In-flight inference requests are tracked by request_id with cancellation state. On coordinator disconnect, in-flight requests are cancelled so generation stops promptly.
 - **Idle GPU timeout**: Loaded model state is released after 1 hour of no requests to free GPU memory. Lazy-reloaded when the next request arrives. Coordinator can also push `load_model` messages to pre-warm providers.
-- **E2E encryption**: Consumer requests encrypted with provider's X25519 public key (NaCl box). Coordinator never sees plaintext prompts. Decryption only inside the hardened provider process.
+- **Hop-by-hop encryption**: consumer → coordinator is TLS plus optional NaCl Box sealing (`application/eigeninference-sealed+json`); coordinator → provider is a mandatory per-request NaCl Box to the provider's attested X25519 key; provider → coordinator response chunks are encrypted back. The coordinator decrypts consumer bodies in confidential-VM memory for routing and billing and does not log or retain them; the sealed request is decrypted only inside the hardened provider process. Do not write "the coordinator never sees plaintext" — see `docs/architecture/security/encryption.md`.
 - **Attestation chain**: Secure Enclave P-256 key (persistent, keychain access group bound) → signs attestation blob → coordinator verifies signature (self_signed) → MDM SecurityInfo cross-check (hardware trust) → Apple Enterprise Attestation Root CA signs device cert chain via MDA (mda_verified). `GET /v1/providers/attestation` exposes only privacy-redacted trust status; hardware serials, UDIDs, and raw Apple certificates stay private to providers and the coordinator.
 - **Protocol symmetry**: `provider-swift/Sources/ProviderCore/Protocol/` and `coordinator/protocol/messages.go` define the same WebSocket message types. Changes to one must be mirrored in the other.
 - **Model registry**: Coordinator registry data is DB-backed and points to R2 manifests. The Swift provider downloads the files listed in the manifest from `https://models.darkbloom.ai` and verifies per-file plus aggregate SHA-256. Do not reintroduce hardcoded model catalog lists.
@@ -241,7 +242,7 @@ Always think from first principles. When fixing a bug or designing a feature:
 ## Common Pitfalls
 
 - Protocol changes require updating both `provider-swift/Sources/ProviderCore/Protocol/` (Swift) AND `coordinator/protocol/messages.go` (Go). They must stay in sync.
-- Telemetry wire types are mirrored in three places: `coordinator/protocol/telemetry.go`, `provider-swift/Sources/ProviderCore/Telemetry/`, and `console-ui/src/lib/telemetry-types.ts`. The field allowlist (`coordinator/api/telemetry_handlers.go`) is the privacy backstop — never add prompt/completion fields. See `docs/architecture/operations/telemetry.md`.
+- Telemetry wire types are mirrored in three places: `coordinator/protocol/telemetry.go`, `provider-swift/Sources/ProviderCore/Telemetry/`, and `console-ui/src/lib/telemetry-types.ts`. The field allowlist (`coordinator/api/telemetry_handlers.go`) is the privacy backstop — never add prompt/completion fields. See `docs/architecture/telemetry.md`.
 - Attestation minimum-requirement checks (Secure Enclave, SIP, Secure Boot) run sequentially and each overwrites `result.Error` — last failure wins. `AuthenticatedRootEnabled` (ARV) is informational only: logged, not enforced.
 - Store selection (`cmd/coordinator/main.go`): the coordinator uses the **Postgres** store whenever `EIGENINFERENCE_DATABASE_URL` is set (prod does), and refuses to start without it unless `EIGENINFERENCE_ALLOW_MEMORY_STORE=true`. The in-memory store is the dev/test fallback only (state lost on restart). The live provider *registry* (WebSocket connections/attestation) is always in-process and rebuilt on reconnect regardless of store.
 - `hypervisor_active` is retired: current providers no longer send it, but `AttestationResponseMessage.HypervisorActive` and the canonical-status support must keep decoding so signed payloads from older (< v0.6.31) providers still verify.
@@ -286,7 +287,8 @@ Each reviewer should:
 2. Verify correctness: does the implementation actually solve what was asked?
 3. Check for regressions: broken imports, missing protocol symmetry, untested edge cases
 4. Confirm builds/tests pass for affected components (run `go test`, `swift test`, `npm run build`, etc. as appropriate)
-5. Report a pass/fail verdict with specific issues if any
+5. Confirm the docs moved with the code: the table in `docs/AGENTS.md` ("When you change code, change these docs") names the page for each kind of change; changed pages are restamped (`make docs-stamp FILES=...`) and `make docs-check` passes
+6. Report a pass/fail verdict with specific issues if any
 
 Only proceed to the next objective after both reviewers pass. If either flags issues, fix them before moving on.
 

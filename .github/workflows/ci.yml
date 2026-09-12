@@ -14,8 +14,19 @@ jobs:
       - name: Check source, fallback, and installer parity
         run: |
           ./scripts/check-release-version.sh
+          python3 scripts/test-provider-release-resolution.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
+      - name: Test startup observer against local stubs
+        run: python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
+
+  docs:
+    name: Docs Lint
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Check freshness stamps, links, cited paths, orphans
+        run: ./scripts/docs-check.sh
 
   test-coordinator:
     name: Coordinator Tests
@@ -49,7 +60,10 @@ jobs:
           go test -race $(go list ./... | grep -v /e2e)
       - name: Check formatting
         run: |
-          UNFORMATTED=$(gofmt -l .)
+          set -o pipefail
+          # Dated report evidence preserves the exact captured source bytes.
+          # Check tracked Go source outside that immutable archive.
+          UNFORMATTED=$(git ls-files -z -- '*.go' ':!:docs/reports/evidence/**' | xargs -0 gofmt -l --)
           if [ -n "$UNFORMATTED" ]; then
             echo "Unformatted files:"
             echo "$UNFORMATTED"
@@ -123,10 +137,15 @@ jobs:
           key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
             spm-v3-${{ runner.os }}-
-      - name: Discard metallibs restored by the generic SwiftPM cache
+      - name: Discard cached runtime resources before rebuilding
         run: |
           for root in provider-swift/.build libs/mlx-swift-lm/.build; do
-            [ ! -d "$root" ] || find "$root" -type f -name mlx.metallib -delete
+            [ -d "$root" ] || continue
+            find "$root" -type f -name mlx.metallib -delete
+            # The inactive package may also contain a divergent debug bundle
+            # from an older cache. Each subsequent build recreates its resources.
+            find "$root" -mindepth 3 -maxdepth 3 -type d \
+              -path "$root/*-apple-macosx/*/*.bundle" -prune -exec rm -rf {} +
           done
       - name: Install pinned Rust toolchain for production prompt parity
         run: |
@@ -166,9 +185,9 @@ jobs:
           )
       - name: Run Swift tests
         working-directory: provider-swift
-        # NOTE: do NOT pass --build-tests-relinking flags; the bundle is already
-        # built above, so `swift test` reuses it (and our colocated metallib).
-        run: swift test
+        # Reuse the built bundle and matched metallib. The exact allocator
+        # suite runs in its own process even if the general suite fails.
+        run: ../scripts/run-provider-tests.sh
       - name: Verify production prompt parity
         run: ./scripts/verify-prompt-parity.sh
       # FLAKE-ORDERING GUARD (audit fix, v0.8.0): every nested step below runs
@@ -284,6 +303,27 @@ jobs:
         # green under.
         timeout-minutes: 10
         run: ../../scripts/run-nested-suite.sh CBv2KVSharingParityTests
+      - name: Run Nemotron production SDK gates
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 20
+        run: |
+          # Each filter has its own nonzero/no-skip tripwire. Continue after a
+          # failure so one broken suite cannot hide another unexecuted gate.
+          onboarding_failed=0
+          for suite in SSMDecodeBoundsTests NemotronHTests \
+                       NemotronH35BackendParityTests NemotronH35StorageParityTests \
+                       NemotronH35MTPTests NemotronH35MTPPrimingTests \
+                       MutableInputKernelTests MutableInputExportTests \
+                       CBv2QwenMTPIntegrationTests CBv2MTPDepthControllerTests \
+                       PagedMTPBatchedColumnsTests CBv2CompleteCheckpointEngineTests \
+                       NemotronH35ProductionDefaultsTests \
+                       OpenAIServiceTests ToolCallParserIntegrationTests; do
+            if ! ../../scripts/run-nested-suite.sh "$suite"; then
+              onboarding_failed=1
+            fi
+          done
+          exit "$onboarding_failed"
       - name: Run atomic installer artifact tests
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh

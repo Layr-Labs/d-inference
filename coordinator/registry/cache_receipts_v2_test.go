@@ -237,7 +237,7 @@ func TestPrefixCacheV2CapabilityEpochChangeClearsEvidence(t *testing.T) {
 			"model": oldCapability,
 		},
 	}
-	registry.providers[provider.ID] = provider
+	insertTestProvider(registry, provider)
 	prompt := protocol.PrefixCacheAnchor{
 		ChainHash:  strings.Repeat("c", 64),
 		TokenCount: int(promptcontract.BlockSize),

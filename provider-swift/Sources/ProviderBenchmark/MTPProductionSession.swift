@@ -202,17 +202,21 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
         }
         let engine = try EngineV2Factory.makeProductionEngine(
             model: servingModel,
+            modelID: targetID,
             tokenizer: tokenizer,
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: batchSize,
+            kvBudget: BenchmarkMemoryBudget.shared,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
-            environment: [
-                "DARKBLOOM_PREFIX_CACHE": "0",
-            ])
+            environment: Self.engineEnvironment(ambient: ProcessInfo.processInfo.environment))
         return MTPBenchmarkSession(engine: engine) {
             MTPBenchmarkEngineMetrics.snapshot(engine: engine)
         }
+    }
+
+    static func engineEnvironment(ambient: [String: String]) -> [String: String] {
+        ambient.merging(["DARKBLOOM_PREFIX_CACHE": "0"]) { _, benchmark in benchmark }
     }
 
     private static func hasVisionConfig(directory: URL) -> Bool {

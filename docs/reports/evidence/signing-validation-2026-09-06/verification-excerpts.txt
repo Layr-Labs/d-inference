@@ -1,0 +1,55 @@
+Selected static verification output; local paths replaced with <VERIFIED_APP>, <FLAT_BIN>, or <UNSIGNED_APP>.
+These checks inspect signatures and policy; they do not execute app code.
+
+--- local-app-verify.stderr ---
+--prepared:<VERIFIED_APP>/Contents/Helpers/darkbloom-fan-helper
+--validated:<VERIFIED_APP>/Contents/Helpers/darkbloom-fan-helper
+--prepared:<VERIFIED_APP>/Contents/MacOS/darkbloom-enclave
+--validated:<VERIFIED_APP>/Contents/MacOS/darkbloom-enclave
+--prepared:<VERIFIED_APP>/Contents/MacOS/mlx.metallib
+--validated:<VERIFIED_APP>/Contents/MacOS/mlx.metallib
+<VERIFIED_APP>: valid on disk
+<VERIFIED_APP>: satisfies its Designated Requirement
+<VERIFIED_APP>: explicit requirement satisfied
+
+--- local-cli-verify.stderr ---
+--prepared:<VERIFIED_APP>/Contents/MacOS/darkbloom-enclave
+--validated:<VERIFIED_APP>/Contents/MacOS/darkbloom-enclave
+--prepared:<VERIFIED_APP>/Contents/MacOS/mlx.metallib
+--validated:<VERIFIED_APP>/Contents/MacOS/mlx.metallib
+--prepared:<VERIFIED_APP>/Contents/Helpers/darkbloom-fan-helper
+--validated:<VERIFIED_APP>/Contents/Helpers/darkbloom-fan-helper
+<VERIFIED_APP>/Contents/MacOS/darkbloom: valid on disk
+<VERIFIED_APP>/Contents/MacOS/darkbloom: satisfies its Designated Requirement
+<VERIFIED_APP>/Contents/MacOS/darkbloom: explicit requirement satisfied
+
+--- local-enclave-verify.stderr ---
+<VERIFIED_APP>/Contents/MacOS/darkbloom-enclave: valid on disk
+<VERIFIED_APP>/Contents/MacOS/darkbloom-enclave: satisfies its Designated Requirement
+<VERIFIED_APP>/Contents/MacOS/darkbloom-enclave: explicit requirement satisfied
+
+--- local-fan-helper-verify.stderr ---
+<VERIFIED_APP>/Contents/Helpers/darkbloom-fan-helper: valid on disk
+<VERIFIED_APP>/Contents/Helpers/darkbloom-fan-helper: satisfies its Designated Requirement
+<VERIFIED_APP>/Contents/Helpers/darkbloom-fan-helper: explicit requirement satisfied
+
+--- local-metallib-verify.stderr ---
+<VERIFIED_APP>/Contents/MacOS/mlx.metallib: valid on disk
+<VERIFIED_APP>/Contents/MacOS/mlx.metallib: satisfies its Designated Requirement
+<VERIFIED_APP>/Contents/MacOS/mlx.metallib: explicit requirement satisfied
+
+--- local-stapler-validate.stdout ---
+Processing: <VERIFIED_APP>
+The validate action worked!
+
+--- local-gatekeeper-assess.stderr ---
+<VERIFIED_APP>: accepted
+source=Notarized Developer ID
+
+--- local-flat-bin-mlx.metallib-display.stderr ---
+<FLAT_BIN>/mlx.metallib: code object is not signed at all
+
+--- unsigned CLI display: selected signature fields ---
+CodeDirectory v=20400 size=676546 flags=0x20002(adhoc,linker-signed) hashes=21139+0 location=embedded
+Signature=adhoc
+TeamIdentifier=not set

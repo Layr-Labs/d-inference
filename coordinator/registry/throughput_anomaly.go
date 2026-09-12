@@ -20,7 +20,7 @@ import "strings"
 // 4B-active control, gpt-oss-20b, decodes ~69 tok/s on the same class, which is
 // consistent with a healthy sparse read.
 //
-// See docs/architecture/routing-v2.md (§5 W8) and
+// See docs/design/routing-v2.md (§5 W8) and
 // provider-swift/docs/gemma-decode-bandwidth-analysis.md for the derivation.
 //
 // This file is intentionally pure (no metrics, no IO, no registry locks) so the

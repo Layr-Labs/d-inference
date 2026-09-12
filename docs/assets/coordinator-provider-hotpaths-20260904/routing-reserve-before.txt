@@ -1,0 +1,9 @@
+Captured from the initial unchanged-worktree benchmark tool output.
+Command: go test ./coordinator/registry -run '^$' -bench '^BenchmarkReserveProviderEx_350x2$' -benchmem -benchtime=1s -count=5
+Toolchain: go1.27.1 darwin/arm64; CPU: Apple M3 Max
+BenchmarkReserveProviderEx_350x2-14 8551 140787 ns/op 232165 B/op 15 allocs/op
+BenchmarkReserveProviderEx_350x2-14 8296 142597 ns/op 232165 B/op 15 allocs/op
+BenchmarkReserveProviderEx_350x2-14 8725 139698 ns/op 232165 B/op 15 allocs/op
+BenchmarkReserveProviderEx_350x2-14 8656 138917 ns/op 232165 B/op 15 allocs/op
+BenchmarkReserveProviderEx_350x2-14 8682 140032 ns/op 232164 B/op 15 allocs/op
+PASS

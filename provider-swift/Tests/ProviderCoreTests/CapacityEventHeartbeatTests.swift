@@ -244,3 +244,50 @@ private func capacity(_ slots: [BackendSlotCapacity]) -> BackendCapacity {
     #expect(state.publishedCapacity == nil)
     #expect(state.stampAndPublishHeartbeatCapacity(payload)?.capacitySeq == 1)
 }
+
+@Test func heartbeatPublicationProjectsDrainOntoPreviouslyCapturedCapacity() throws {
+    let state = ProviderState()
+    let target = "org/model-a"
+    let peer = "org/model-b"
+    state.backendCapacity = capacity([
+        slot(model: target, state: "idle", numRunning: 0, used: 400, queued: 200),
+        slot(model: peer, state: "running", numRunning: 2, used: 3000),
+    ])
+    // Reproduce the two-lock heartbeat interleaving without timing or tasks:
+    // capture the old payload, begin the drain, then publish that old payload.
+    let capturedBeforeDrain = try #require(state.backendCapacity)
+    state.setModelAdmissionDraining(target, true)
+    let stamped = try #require(state.stampAndPublishHeartbeatCapacity(capturedBeforeDrain))
+    let wire = try JSONDecoder().decode(BackendCapacity.self, from: JSONEncoder().encode(stamped))
+    let published = try #require(state.publishedCapacity)
+    for payload in [wire, published] {
+        #expect(payload.capacitySeq == 1)
+        let draining = try #require(payload.slots.first { $0.model == target })
+        #expect(draining.state == "reloading")
+        #expect(draining.numRunning == 0)
+        #expect(draining.activeTokenBudgetUsed == 400)
+        #expect(draining.activeTokenBudgetMax == 9000)
+        #expect(draining.queuedTokenBudget == 200)
+        let unaffected = try #require(payload.slots.first { $0.model == peer })
+        #expect(unaffected.state == "running")
+        #expect(unaffected.numRunning == 2)
+        #expect(unaffected.activeTokenBudgetUsed == 3000)
+        #expect(payload.gpuMemoryActiveGb == capturedBeforeDrain.gpuMemoryActiveGb)
+    }
+    #expect(capturedBeforeDrain.slots.first?.state == "idle")
+    #expect(state.refusingNewWork(forModel: target))
+    #expect(!state.refusingNewWork(forModel: peer))
+
+    state.setModelAdmissionDraining(target, false)
+    // Clearing the fence alone keeps the projected snapshot conservative.
+    #expect(state.backendCapacity?.slots.first?.state == "reloading")
+    state.backendCapacity = capacity([
+        slot(model: target, state: "idle", numRunning: 0, used: 0),
+        slot(model: peer, state: "running", numRunning: 2, used: 3000),
+    ])
+    let reopened = try #require(state.stampAndPublishHeartbeatCapacity(state.backendCapacity))
+    #expect(reopened.capacitySeq == 2)
+    #expect(reopened.slots.first?.state == "idle")
+    #expect(state.publishedCapacity?.slots.first?.state == "idle")
+    #expect(!state.refusingNewWork(forModel: target))
+}

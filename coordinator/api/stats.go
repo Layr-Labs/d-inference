@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -80,16 +82,49 @@ type flowEndpoint struct {
 	Longitude   float64 `json:"longitude,omitempty"`
 }
 
+// statsCacheKey is the readCache entry for GET /v1/stats. One background
+// goroutine (StartCacheRefreshers, cache_refresher.go) owns it; handlers only
+// read it.
+const statsCacheKey = "stats:v1"
+
 // handleStats returns aggregate platform statistics for the frontend dashboard.
 //
-// Cached for 60s — the underlying SQL aggregation runs in <5ms but this
-// endpoint is hit by every dashboard refresh and the homepage live ticker.
+// The response is served from the stats:v1 read-cache entry, which the
+// refresher recomputes every statsRefreshInterval. A handler only computes on
+// a cold start (no entry at all), and concurrent cold misses share one
+// computation.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	const cacheKey = "stats:v1"
-	if cached, ok := s.readCache.Get(cacheKey); ok {
+	if cached, ok := s.readCache.Get(statsCacheKey); ok {
 		writeCachedJSON(w, cached)
 		return
 	}
+	body, ok := s.getCachedEntry(&s.statsRefresh, statsCacheKey, s.computeStats)
+	if !ok {
+		// Nothing cached and the computation could not produce a body (or a
+		// coalesced computation failed for this waiter).
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable", "stats are temporarily unavailable"))
+		return
+	}
+	writeCachedJSON(w, body)
+}
+
+// runStatsRefresher owns the stats:v1 entry with an injectable interval.
+func (s *Server) runStatsRefresher(ctx context.Context, interval time.Duration) {
+	s.runCacheRefreshLoop(ctx, interval, func() { s.refreshStats() })
+}
+
+// refreshStats recomputes stats, retaining an unexpired success on failure.
+func (s *Server) refreshStats() ([]byte, bool) {
+	return s.refreshCachedEntry(&s.statsRefresh, statsCacheKey, s.computeStats)
+}
+
+// computeStats returns core stats with the latest independently refreshed
+// geography. Core query failures prevent publication; geography failures are
+// represented explicitly and never block the core snapshot.
+func (s *Server) computeStats() ([]byte, error) {
+	// Preserve the start of the source observation through successful cache hits
+	// and bounded stale-on-error reads; downstream caches must not renew its age.
+	snapshotAt := time.Now()
 	var (
 		totalRequests    int64
 		totalTokensGen   int64
@@ -188,7 +223,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read historical totals via SQL aggregation (no per-row wire transfer).
-	totals := s.store.UsageTotals()
+	totals, totalsErr := s.store.UsageTotals()
 	if totals.Requests > totalRequests {
 		totalRequests = totals.Requests
 	}
@@ -207,11 +242,11 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	// Build time series via SQL bucket aggregation (last 30 minutes), plus exact
 	// 24-hour totals for the headline deltas. Geography and route analytics use
 	// the full 24-hour window advertised by the public UI.
-	now := time.Now()
+	now := snapshotAt
 	timeSeriesCutoff := now.Add(-30 * time.Minute)
 	analyticsCutoff := now.Add(-24 * time.Hour)
-	buckets := s.store.UsageTimeSeries(timeSeriesCutoff, now, time.Minute)
-	last24h := s.store.UsageTotalsSince(analyticsCutoff)
+	buckets, seriesErr := s.store.UsageTimeSeries(timeSeriesCutoff, now, time.Minute)
+	last24h, last24hErr := s.store.UsageTotalsSince(analyticsCutoff)
 
 	timeSeries := make([]map[string]any, 0, len(buckets))
 	for _, b := range buckets {
@@ -227,43 +262,57 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	// --- Provider location aggregation ---
 	providerLocations, providerRegions, unknownLocationProviders, suppressedCityProviders := s.aggregateProviderLocations()
 
-	// --- Request location aggregation ---
-	requestLocations, requestRegions, unknownRequestLocReqs, suppressedReqCityReqs := s.aggregateRequestLocations(analyticsCutoff)
-
-	// --- Request flow aggregation ---
-	requestFlows := s.aggregateRequestFlows(analyticsCutoff)
+	// Geography queries run independently of the core stats refresher. Never
+	// wait for them here, including on a cold cache or during a geo outage.
+	geography := s.cachedStatsGeography()
+	if err := errors.Join(totalsErr, seriesErr, last24hErr); err != nil {
+		return nil, err
+	}
 
 	// --- APNs code-identity coverage (for watching the grace→enforce rollout) ---
 	codeAttestedProviders, _ := s.registry.CodeAttestationCoverage()
 	codeAttestationEnforced := s.registry.CodeAttestationEnforced()
 
+	// --- Release-policy application-evidence coverage (the shadow→enforce
+	// acceptance instrument: enforcement is safe only once holding ≈ connected
+	// fleet-wide AND with_evidence ≈ routable for EVERY model, so one model
+	// family's uncovered providers cannot hide inside a healthy average) ---
+	evidenceProviders, evidenceConnected := s.registry.CountProvidersWithCurrentApplicationEvidence()
+	evidenceModels := s.registry.ApplicationEvidenceModelCoverage()
+	releasePolicyEnforced := s.registry.ReleasePolicyEnforced()
+
 	// --- Network utilization (demand/capacity across warm-serving + token-budget axes) ---
 	util := s.registry.NetworkUtilizationSnapshot()
 
 	resp := map[string]any{
-		"total_requests":             totalRequests,
-		"total_prompt_tokens":        totalPromptTokens,
-		"total_completion_tokens":    totalCompletionTokens,
-		"total_tokens":               totalTokens,
-		"last_24h_requests":          last24h.Requests,
-		"last_24h_prompt_tokens":     last24h.PromptTokens,
-		"last_24h_completion_tokens": last24h.CompletionTokens,
-		"last_24h_total_tokens":      last24h.PromptTokens + last24h.CompletionTokens,
-		"location_window_hours":      24,
-		"avg_tokens_per_request":     avgTokens,
-		"active_providers":           len(providers),
-		"active_power_watts":         activePowerWatts,
-		"code_attested_providers":    codeAttestedProviders,
-		"code_attestation_enforced":  codeAttestationEnforced,
-		"total_gpu_cores":            totalGPUCores,
-		"total_cpu_cores":            totalCPUCores,
-		"total_memory_gb":            totalMemoryGB,
-		"total_bandwidth_gbs":        totalBandwidthGB,
-		"network_capacity_tps":       util.CapacityTPS,
-		"network_utilization":        util.Public(),
-		"providers":                  providers,
-		"models":                     models,
-		"time_series":                timeSeries,
+		"snapshot_at":                    snapshotAt.UTC().Format(time.RFC3339Nano),
+		"total_requests":                 totalRequests,
+		"total_prompt_tokens":            totalPromptTokens,
+		"total_completion_tokens":        totalCompletionTokens,
+		"total_tokens":                   totalTokens,
+		"last_24h_requests":              last24h.Requests,
+		"last_24h_prompt_tokens":         last24h.PromptTokens,
+		"last_24h_completion_tokens":     last24h.CompletionTokens,
+		"last_24h_total_tokens":          last24h.PromptTokens + last24h.CompletionTokens,
+		"location_window_hours":          24,
+		"avg_tokens_per_request":         avgTokens,
+		"active_providers":               len(providers),
+		"active_power_watts":             activePowerWatts,
+		"code_attested_providers":        codeAttestedProviders,
+		"code_attestation_enforced":      codeAttestationEnforced,
+		"application_evidence_providers": evidenceProviders,
+		"application_evidence_connected": evidenceConnected,
+		"release_policy_enforced":        releasePolicyEnforced,
+		"application_evidence_models":    evidenceModels,
+		"total_gpu_cores":                totalGPUCores,
+		"total_cpu_cores":                totalCPUCores,
+		"total_memory_gb":                totalMemoryGB,
+		"total_bandwidth_gbs":            totalBandwidthGB,
+		"network_capacity_tps":           util.CapacityTPS,
+		"network_utilization":            util.Public(),
+		"providers":                      providers,
+		"models":                         models,
+		"time_series":                    timeSeries,
 
 		// Location analytics (privacy-floored).
 		"provider_locations":                 providerLocations,
@@ -271,22 +320,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"unknown_location_providers":         unknownLocationProviders,
 		"suppressed_city_location_providers": suppressedCityProviders,
 		"location_privacy_min_providers":     minProvidersPerCityBucket,
-
-		"request_locations":                     requestLocations,
-		"request_regions":                       requestRegions,
-		"unknown_request_location_requests":     unknownRequestLocReqs,
-		"suppressed_request_city_requests":      suppressedReqCityReqs,
-		"request_location_privacy_min_requests": minRequestsPerCityBucket,
-
-		"request_flows": requestFlows,
 	}
-	body, err := json.Marshal(resp)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode stats"))
-		return
-	}
-	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, body)
+	geography.addTo(resp)
+	return json.Marshal(resp)
 }
 
 // aggregateProviderLocations builds privacy-floored city and region
@@ -429,14 +465,19 @@ func (s *Server) aggregateProviderLocations() (
 }
 
 // aggregateRequestLocations builds privacy-floored city and region
-// buckets from usage records with request-origin locations.
+// buckets from usage records with request-origin locations. A failed query
+// makes request locations unavailable without affecting the core snapshot.
 func (s *Server) aggregateRequestLocations(since time.Time) (
 	cityBuckets []publicRequestLocationBucket,
 	regionBuckets []publicRequestLocationBucket,
 	unknownRequests int64,
 	suppressedCityRequests int64,
+	err error,
 ) {
-	locBuckets := s.store.UsageLocationBuckets(since)
+	locBuckets, err := s.store.UsageLocationBuckets(since)
+	if err != nil {
+		return nil, nil, 0, 0, err
+	}
 
 	// Count requests without any location by subtracting located requests
 	// from total requests in the window.
@@ -445,8 +486,12 @@ func (s *Server) aggregateRequestLocations(since time.Time) (
 		locatedRequests += b.Requests
 	}
 	// Total usage records in the window (SQL COUNT, no row transfer).
-	totalInWindow := s.store.UsageCountSince(since)
-	unknownRequests = totalInWindow - locatedRequests
+	var totalInWindow int64
+	totalInWindow, err = s.store.UsageCountSince(since)
+	if err != nil {
+		return nil, nil, 0, 0, err
+	}
+	unknownRequests = max(0, totalInWindow-locatedRequests)
 
 	type cityKey struct {
 		City, Region, RegionCode, Country, CountryCode string
@@ -562,7 +607,7 @@ func (s *Server) aggregateRequestLocations(since time.Time) (
 // consumer and provider regions. Uses a SQL JOIN via UsageFlowBuckets to
 // avoid loading all usage rows + all provider rows into Go memory (the
 // previous approach held two pool connections for up to 10s each).
-func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucket {
+func (s *Server) aggregateRequestFlows(since time.Time) ([]publicRequestFlowBucket, error) {
 	// Build live provider location map from the registry so recently-
 	// connected providers (not yet persisted) are included.
 	providerLocs := make(map[string]*store.ProviderLocation)
@@ -573,7 +618,10 @@ func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucke
 		}
 	})
 
-	buckets := s.store.UsageFlowBuckets(since, providerLocs)
+	buckets, err := s.store.UsageFlowBuckets(since, providerLocs)
+	if err != nil {
+		return nil, err
+	}
 
 	out := make([]publicRequestFlowBucket, 0, len(buckets))
 	for _, b := range buckets {
@@ -609,7 +657,7 @@ func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucke
 	if len(out) > 24 {
 		out = out[:24]
 	}
-	return out
+	return out, nil
 }
 
 // locationKey builds a stable, lowercase key from country/region/city parts.

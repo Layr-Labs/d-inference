@@ -1,0 +1,14 @@
+{
+  "started_unix": 1788588119.088278,
+  "arguments": {
+    "binary": "/Users/gaj/autoresearch/radix-prefix-cache/artifacts/candidate-serial-build1/radix-engine",
+    "model_directory": "/Users/gaj/.cache/huggingface/hub/models--EigenLabs--Qwen3.8-27B-4bit-mtp/snapshots/06d517d395dfc5588090f7f534112bee331f7b4a",
+    "input": "/Users/gaj/autoresearch/radix-prefix-cache/artifacts/candidate-serial-build1/smoke-input.json",
+    "output": "/Users/gaj/autoresearch/radix-prefix-cache/runs/candidate-serial-cache-off-control2",
+    "cache": "off"
+  },
+  "entry_gpu_temp_c": 32.31696319580078,
+  "exit_code": 0,
+  "ended_unix": 1788588183.666393,
+  "ranked_job_at_end": false
+}

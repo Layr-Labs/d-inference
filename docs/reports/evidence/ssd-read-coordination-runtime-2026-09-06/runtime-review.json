@@ -1,0 +1,72 @@
+{
+  "artifact_audit": {
+    "bytes": 88516,
+    "mode": 420,
+    "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/audit-results.json",
+    "sha256": "b6ef1d69385c3fdddc8092bc61450a78c4798bcfc2e2f51c52acd328fc1b0533"
+  },
+  "artifact_manifest_sha256": "0e25054af04be640d2701cbb5ef5dfb20b8766d48e9bfda7e2f9fe79d9cfc62a",
+  "binary_sha256": "f39e5f21db20f9fcc459222ecca9068f08fa90642c151f2e31bd5764b6885d05",
+  "fresh_provider_cli_expanded_cases": 324,
+  "fresh_provider_cli_test_functions": 270,
+  "insufficient_gates": [
+    "Qwen model numerical parity and known Qwen3.5/3.6 backend differences",
+    "Real Qwen B2/B4 target execution and full planned workload matrix",
+    "Developer ID signing, notarization, persistence/restart and two-host tests",
+    "Pilot driver/ownership review and explicit execution authorization; this record alone grants neither"
+  ],
+  "limitations": [
+    "No new build, native suite, provider suite, collected executable, or model was run by this audit.",
+    "Remote completion and process retirement are verified from collected raw logs and owner receipts, not a fresh host observation.",
+    "Native/compiler evidence is inherited, source-bound evidence; the 270 provider/CLI functions and 324 cases are not native-only suites.",
+    "Ad-hoc executable signatures are not Developer ID, notarization, release authorization, or persistent-key restart evidence.",
+    "Real Qwen numerical parity, B2/B4 target batching, performance, persistence, two-host behavior, and release gates remain unproven by these inputs."
+  ],
+  "native_compiler_evidence_inherited": true,
+  "pilot_execution_authorized": false,
+  "real_model_validation_complete": false,
+  "release_approved": false,
+  "resources": {
+    "darkbloom": "e18c11b3429c06156fd2d85e4ddb9334053f635087438733a5852ba31bb743b7",
+    "mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": "4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149",
+    "mlx.metallib": "22497b094bbae98a07db9b088bddfe825ea1150d61fd77ac35592a29528abbaa",
+    "swift-crypto_Crypto.bundle/PrivacyInfo.xcprivacy": "42fb8a30dd8d7ba0900e1bf17fe64ed8c12cfdb8a9c791ab6b4e1eceb0f299c0",
+    "swift-nio_NIOPosix.bundle/PrivacyInfo.xcprivacy": "982f20d820bc4460acc9d4116c3e6c8ec837f717dc82edbb7308f7400515c909",
+    "swift-transformers_Hub.bundle/gpt2_tokenizer_config.json": "551e26ec611d8d0c8edc3ef72e518a38418cb71f40de1347dd486a595e1557d7",
+    "swift-transformers_Hub.bundle/t5_tokenizer_config.json": "e0aff0b1de9071e30d9a60a199303b6abe916a64a19932bd1c46992279b41a1f"
+  },
+  "review_id": "independent-qwen-coordination-artifact-review1-35fea6d0e",
+  "reviewed_at_utc": "2026-09-06T16:53:54.726821+00:00",
+  "runtime_source_manifest_sha256": "519caa245117962dccc2b9816fedee6ba831b04f031ff86ab40028790993c35b",
+  "source": {
+    "c": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+    "core": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+    "native": "f2d79145e040bbc28c6e0e355a19bc8923a70434",
+    "parent": "35fea6d0e3b05ff65d60d9675ab480159913ac62",
+    "swift": "9561227d55a07db29f70a78aadc5d6b5aaeb10bf",
+    "unused_top_level_mlx": "0a725e3000edabc4911cde345270ca950bfa152f"
+  },
+  "source_review_sha256": "469d7d0a97316f29fb6c4ae41a47754cdcb48fd33d8f0eb3817e05624b6233cd",
+  "status": "QWEN_ONLY_RUNTIME_REVIEWED",
+  "test_evidence": {
+    "compiler": {
+      "bytes": 3466,
+      "mode": 420,
+      "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/compiler-test-evidence.json",
+      "sha256": "e6371fdffdcb284a83acc6b8655e5f41e19f19dd18713ff69cf8b7b350a23376"
+    },
+    "native": {
+      "bytes": 5184,
+      "mode": 420,
+      "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/native-test-evidence.json",
+      "sha256": "55f14c971440d32e54f2b507e9248904d3a6c89682e542cbf24cc4835ad21d9e"
+    },
+    "provider_cli": {
+      "bytes": 17766,
+      "mode": 420,
+      "path": "/private/tmp/darkbloom-qwen-coordination-artifact-review1/provider-cli-test-evidence.json",
+      "sha256": "98a775b6307ab30bfc2433ad8d265396ae07152cd310e7127dd331d0136df961"
+    }
+  },
+  "tests_passed": true
+}

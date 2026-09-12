@@ -74,6 +74,11 @@ struct SSDLookupKeys: Sendable {
         tag(chainHash: chainHash, cacheSalt: cacheSalt, domain: Self.nameDomainTag)
     }
 
+    func checkpointTag(chainHash: Data, cacheSalt: String) -> Data {
+        tag(chainHash: chainHash, cacheSalt: cacheSalt,
+            domain: Data("dbkv3-complete-checkpoint-v1".utf8))
+    }
+
     private func tag(chainHash: Data, cacheSalt: String, domain: Data) -> Data {
         var message = Data()
         message.append(domain)

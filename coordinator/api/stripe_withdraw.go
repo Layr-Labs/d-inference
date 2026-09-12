@@ -41,6 +41,9 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Stripe Payouts not configured"))
 		return
 	}
+	if s.maybeGlobalWithdraw(w, r, user) {
+		return
+	}
 	if user.StripeAccountID == "" || user.StripeAccountStatus != stripeStatusReady {
 		writeJSON(w, http.StatusForbidden, errorResponse("not_onboarded",
 			"link your bank or debit card via Stripe before withdrawing"))

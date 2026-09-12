@@ -1,0 +1,485 @@
+{
+  "schema": 1,
+  "scope": "50 native mechanical/telemetry cases and82 provider functions; no complete paged SSD adoption or default/real-model performance claim.",
+  "parent_base": "c8ec9469fc58442feeca262517df4c5e53e637a2",
+  "native_commit": "326d9a27a9227e1636a7a584687193d425f0b4b0",
+  "native_source_count": 444,
+  "provider_source_count": 1117,
+  "owned_source_count": 17,
+  "native_actual_cases": 50,
+  "provider_functions": 82,
+  "files": [
+    {
+      "path": "native1/build.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native1/build.log",
+      "bytes": 19376,
+      "sha256": "f14612a413cbac5a228186f925eeccc1016bc3c296806cf80101a753142b0edb",
+      "uncompressed_bytes": 501172,
+      "uncompressed_sha256": "4cc8b82ca3d1819b6c87d58ad005a4260cb96ec5d6465b1bb389f2ec34ae89f4"
+    },
+    {
+      "path": "native1/commands.txt.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native1/commands.txt",
+      "bytes": 138,
+      "sha256": "271877133bdcfd12f3332cbb4968b00241fb345acbf78a4dff819ad6cf56cfca",
+      "uncompressed_bytes": 215,
+      "uncompressed_sha256": "b5805e3b4266b0c8e906b8710f9558b527e03cb05d397f29678320418a823b51"
+    },
+    {
+      "path": "native1/owned-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native1/owned-manifest.json",
+      "bytes": 1186,
+      "sha256": "ffa1df16c7288c76426bfb7cd619f00d4d3e5161aca793bffce60e7c84e3382c",
+      "uncompressed_bytes": 3015,
+      "uncompressed_sha256": "c47c9931cd4da1717a03096b59436c449e22e642824941598305d87364d3e963"
+    },
+    {
+      "path": "native1/package-edit.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native1/package-edit.log",
+      "bytes": 206,
+      "sha256": "5d069f5f014d8fdc00e0dc55455f718d4960347ee7b4079bcb3d077a54de0dd8",
+      "uncompressed_bytes": 322,
+      "uncompressed_sha256": "c08927768f01af57e523be7499cf5ba0d628b4d5be4fbf3af33c2df7d27b0bf7"
+    },
+    {
+      "path": "native1/source-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native1/source-manifest.json",
+      "bytes": 22334,
+      "sha256": "d1b7a73bed6819764b7a5743ad704a102ffb8cb6e477093b28a04889610f3d0b",
+      "uncompressed_bytes": 56703,
+      "uncompressed_sha256": "ca6b32c47333145839e0575e3bde66ddb1da3cf2c925f7a2acececab13d2b729"
+    },
+    {
+      "path": "native2/CBv2PagedCheckpointStorageTests.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native2/CBv2PagedCheckpointStorageTests.log",
+      "bytes": 642,
+      "sha256": "571103a5b153167f76576cb3d55b182b929ed7b5b9a4bfb87e276f4ebcc4530d",
+      "uncompressed_bytes": 2574,
+      "uncompressed_sha256": "f98e136a951f55035c49f2646a287e6524570dfd2c5761467c92438e165b3565"
+    },
+    {
+      "path": "native2/CBv2PagedStorageTelemetryTests.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native2/CBv2PagedStorageTelemetryTests.log",
+      "bytes": 748,
+      "sha256": "b4df354acb433fa2bcf47d6cba73dbf5eefba2c65910ee2dc2132a6a2454e719",
+      "uncompressed_bytes": 2103,
+      "uncompressed_sha256": "f7c1aac77fe697f06439ccb3c8abeb9bd32d4c3a9cce0c528ce1f5abc8a21074"
+    },
+    {
+      "path": "native2/CBv2PagedStorageTelemetryTests.swift.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native2/CBv2PagedStorageTelemetryTests.swift",
+      "bytes": 1769,
+      "sha256": "c53da26209929573d6b1116e931b315ac5c1f4a26c188151d5ba88cbe5f8bdbe",
+      "uncompressed_bytes": 7687,
+      "uncompressed_sha256": "9662253cfcfb5f50d4aa2a0e59411509f85a69ebe347491e14b4696ce6435fec"
+    },
+    {
+      "path": "native2/build.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native2/build.log",
+      "bytes": 3516,
+      "sha256": "6e47b16c0dc58f66f4477eaf7d508d0b0799f9b5a006e117a7a30fc641bbcae5",
+      "uncompressed_bytes": 51968,
+      "uncompressed_sha256": "d7089a1160c1364ac6aa66a70954b8405edeca6d85e2ed650a7c57f2edf2cbe0"
+    },
+    {
+      "path": "native2/execution.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native2/execution.json",
+      "bytes": 455,
+      "sha256": "80339b207c87c563c481f448b1d2a1383ac4539b6a2e9bb6d715de2582488fac",
+      "uncompressed_bytes": 1482,
+      "uncompressed_sha256": "66479c6effbd026c9d7bab4e3c8c6e75885c879d7a08d1005e3976d29aec5b91"
+    },
+    {
+      "path": "native2/owned-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native2/owned-manifest.json",
+      "bytes": 1319,
+      "sha256": "a75ae763beae97737d2ca6203d3c32e561c7fb12da77bfa221b3078eb7791bb8",
+      "uncompressed_bytes": 3384,
+      "uncompressed_sha256": "e3639db6d53a4997a479fe1a4bfba479dd808706db16f671290752aae9787c03"
+    },
+    {
+      "path": "native2/provenance-correction.patch.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native2/provenance-correction.patch",
+      "bytes": 507,
+      "sha256": "b32e843d061ce479bc720bcf12ef7f06c10c6ddf8b7c0a3029c7c45cfd87272a",
+      "uncompressed_bytes": 1017,
+      "uncompressed_sha256": "69f3046dfa72c1a1d2e1306e772f9a7afe1def90c3b56091a1d4cd2f34980cad"
+    },
+    {
+      "path": "native2/run.py.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native2/run.py",
+      "bytes": 730,
+      "sha256": "9ea82e1b69e9f96d1929ddc6768debf964458f5bc08695b8a1095e2b0248e00d",
+      "uncompressed_bytes": 1383,
+      "uncompressed_sha256": "de896f6f77a4da4ce77e942e5c3afc6b9a61d74c89d0729bc5da051e1b289116"
+    },
+    {
+      "path": "native2/source-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native2/source-manifest.json",
+      "bytes": 22370,
+      "sha256": "f28a159cf899d4361b48ca8a31d7a4dc56afadfa2cf30384e53f93feb8a3fb30",
+      "uncompressed_bytes": 56764,
+      "uncompressed_sha256": "d07d3df6dda22d022330610e169617dae7f4d4fa90c4976626eda6fb228126d8"
+    },
+    {
+      "path": "native3/CBv2KVResizeTests.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native3/CBv2KVResizeTests.log",
+      "bytes": 468,
+      "sha256": "2c33bac595dcefffc535ec0282a26fd4ce6947c6b0289b0213383f9bb1483d56",
+      "uncompressed_bytes": 1468,
+      "uncompressed_sha256": "6b6630714c178f731ad4dd860bf38bc0f113fd78f38db769842fc5bcfeade041"
+    },
+    {
+      "path": "native3/CBv2PagedAdmissionTests.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native3/CBv2PagedAdmissionTests.log",
+      "bytes": 878,
+      "sha256": "5ad829d31cda1a415750698e17682bee690cf477d5566c929865e5c97423bdb6",
+      "uncompressed_bytes": 3015,
+      "uncompressed_sha256": "d6ab8f3bfd811f144697f9a07c1a5bfbd6dfb4a6c5490dbe0d71cd4b5fb5025c"
+    },
+    {
+      "path": "native3/CBv2PagedCheckpointStorageTests.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native3/CBv2PagedCheckpointStorageTests.log",
+      "bytes": 642,
+      "sha256": "0eae21476cfd049a1d8285bc6cc3d7dfbf002d6c550e6f6a7fb34048844180c0",
+      "uncompressed_bytes": 2574,
+      "uncompressed_sha256": "99ec87881bffbd154166e53fb648815d633903d55dbba627faf185f13cd1d9b2"
+    },
+    {
+      "path": "native3/CBv2PagedGrantTests.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native3/CBv2PagedGrantTests.log",
+      "bytes": 518,
+      "sha256": "ee8bf1947f197923231b7c05441b66e014609dd14e254ce7eb688249ac8aeda4",
+      "uncompressed_bytes": 1396,
+      "uncompressed_sha256": "35bf94becbb1230aeddf7c73e00ca7bc4ee70945867e019cb45084ddf8ed305b"
+    },
+    {
+      "path": "native3/CBv2PagedSegmentTests.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native3/CBv2PagedSegmentTests.log",
+      "bytes": 782,
+      "sha256": "9827d81f9fa2847406b79ce93c24d67ae8e9e7b89a2606579cc8cac8767e03fc",
+      "uncompressed_bytes": 4428,
+      "uncompressed_sha256": "9f273988ae9b0a907f0753406257d9b23cb22f1cc22eee1ab97c107df38be53e"
+    },
+    {
+      "path": "native3/CBv2PagedStorageTelemetryTests.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native3/CBv2PagedStorageTelemetryTests.log",
+      "bytes": 582,
+      "sha256": "6e6dc4d61d840a3c7be86f8ba87602dc747a6a25e614d5749e48e1e25c62001c",
+      "uncompressed_bytes": 1699,
+      "uncompressed_sha256": "12da96aa51196044c5317ca8c181a69940a89c29c74de7e111041c5d36672f13"
+    },
+    {
+      "path": "native3/CBv2PagedStorageTelemetryTests.swift.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native3/CBv2PagedStorageTelemetryTests.swift",
+      "bytes": 1830,
+      "sha256": "d5db91309d5948fe7312c60a65565fa683232802a27e63264b5380faddb03966",
+      "uncompressed_bytes": 7806,
+      "uncompressed_sha256": "629603d9a8efbf2c04153c0001477ad2b2bb4fe47d28adbbe01e0f5fa7bfcaed"
+    },
+    {
+      "path": "native3/build.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native3/build.log",
+      "bytes": 2847,
+      "sha256": "092d1e651a4a619ca4cb495bd7293585e97559fb14a2b3771bfc8a490950ff0d",
+      "uncompressed_bytes": 50012,
+      "uncompressed_sha256": "822677d24260910ecaf10dc9bac2cad890b7a63f63eb7ebf34bc6c9d230670fa"
+    },
+    {
+      "path": "native3/execution.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native3/execution.json",
+      "bytes": 562,
+      "sha256": "17d30eaddb4d00d2a638c4b79c122f1c4b486b98e3b040b475e29dbc443435ac",
+      "uncompressed_bytes": 3144,
+      "uncompressed_sha256": "3c3a2a18d9167f3f32dd8b1151cc7bd7504ec5fc842db20037159e46bb83e606"
+    },
+    {
+      "path": "native3/final-commit.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native3/final-commit.json",
+      "bytes": 869,
+      "sha256": "d414afa2b61efd3ed02dc8ab7d6aad1947e85b87c986a43a15f3732bae93fde4",
+      "uncompressed_bytes": 2456,
+      "uncompressed_sha256": "0e0452a0c380bcebdbb7bef5b0fb1e65e1c153c9b77e79a83c3975c105f2c2d4"
+    },
+    {
+      "path": "native3/owned-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native3/owned-manifest.json",
+      "bytes": 1338,
+      "sha256": "a17c7e4d6ebbad791c966a17bb4ed8e7f49860b7b97e5fbe50c1d519796083b0",
+      "uncompressed_bytes": 3404,
+      "uncompressed_sha256": "d59c728436c8079a91c412f361284fa472572b3f3488d58aabe56e6d74c3f0fa"
+    },
+    {
+      "path": "native3/run.py.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native3/run.py",
+      "bytes": 730,
+      "sha256": "824d51454d8b771f39edd43701513c97d108536416288734f75958b5e1426b80",
+      "uncompressed_bytes": 1383,
+      "uncompressed_sha256": "05517bc41394b86724ddf330a9883661e6d8f3c2820a6b38318411643a045665"
+    },
+    {
+      "path": "native3/source-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-native3/source-manifest.json",
+      "bytes": 22495,
+      "sha256": "23ec803bcf4e4c69f5b3e54ab9b8a2846d62c585261260a5e3adc4f7ec7572d2",
+      "uncompressed_bytes": 56948,
+      "uncompressed_sha256": "588e2caba70e6cd467e7d18201dc95dfc6ba7d0f20f2998c2d33cbefeb19f8e2"
+    },
+    {
+      "path": "provider1/build.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider1/build.log",
+      "bytes": 31982,
+      "sha256": "c334469673a36643c76d37d5334299b65612d4febd71f4f0384728e659c64f92",
+      "uncompressed_bytes": 1474816,
+      "uncompressed_sha256": "be85f53ea86d822e627f4cc2ce7d11e91b3d33d558b0502f3044b293b807f2f1"
+    },
+    {
+      "path": "provider1/commands.txt.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider1/commands.txt",
+      "bytes": 96,
+      "sha256": "aee3b6a7cc5c1ab9730bca2fceb65e3dc47d597859a7f03d3c5cd3774e50713a",
+      "uncompressed_bytes": 96,
+      "uncompressed_sha256": "448ee784e632302ca3f3a7df7737571c18aac6bb961e9b184960a45ecf5c9234"
+    },
+    {
+      "path": "provider1/native-owned-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider1/native-owned-manifest.json",
+      "bytes": 1111,
+      "sha256": "9e4b3cec334c6c213788a2e37baa18556a99b59c7dfd8d4dc73fe48f53190fca",
+      "uncompressed_bytes": 2851,
+      "uncompressed_sha256": "b847cd086eb065dee146ea14d92507bb328742ef25635e61d3dca6461b6a7859"
+    },
+    {
+      "path": "provider1/resource-isolation.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider1/resource-isolation.json",
+      "bytes": 278,
+      "sha256": "9742d235d3902977a2a4e28d3f43ad2177e85a7125b5dbe1ab44a9506d3f257c",
+      "uncompressed_bytes": 364,
+      "uncompressed_sha256": "74fd19b4fdfd41cea05604f6b2230e24f499e6de8a1403f1d86743cb5979a2a6"
+    },
+    {
+      "path": "provider1/source-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider1/source-manifest.json",
+      "bytes": 56667,
+      "sha256": "9a1a37b8f6d477d1ea5243845972be485df061e9b18864a5181ead9fca53c151",
+      "uncompressed_bytes": 162055,
+      "uncompressed_sha256": "51ad06de401d7427b7cb0f6f6a249068bb7303184f4b62c3c3d6661c4e2684ff"
+    },
+    {
+      "path": "provider2/build.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider2/build.log",
+      "bytes": 898,
+      "sha256": "d5a5c6a0647d3c2ffbf45dcf6448a3de447c3c7c8101dbd1804a825ae36ab3d7",
+      "uncompressed_bytes": 5123,
+      "uncompressed_sha256": "45adeca035e3c49d28a0e4b98613657cfb7baf7d8d47a1d357196a1fd208cb6a"
+    },
+    {
+      "path": "provider2/commands.txt.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider2/commands.txt",
+      "bytes": 96,
+      "sha256": "aee3b6a7cc5c1ab9730bca2fceb65e3dc47d597859a7f03d3c5cd3774e50713a",
+      "uncompressed_bytes": 96,
+      "uncompressed_sha256": "448ee784e632302ca3f3a7df7737571c18aac6bb961e9b184960a45ecf5c9234"
+    },
+    {
+      "path": "provider2/focused.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider2/focused.log",
+      "bytes": 3548,
+      "sha256": "02919d93a159a5ebe0075623123fb4eaed5fc25a16f3d04dec67fc5fff535653",
+      "uncompressed_bytes": 16691,
+      "uncompressed_sha256": "ead1157f3186cfa9652f4a74991a03c7c0e32693d02f6d2ef01c49d14f3f14d6"
+    },
+    {
+      "path": "provider2/source-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider2/source-manifest.json",
+      "bytes": 56667,
+      "sha256": "e19eba41fc7f9b7d231556d0a86e5f0cc72a6f91d2423e1d9181d2fa0c581f17",
+      "uncompressed_bytes": 162055,
+      "uncompressed_sha256": "6f630b689691d2672b05ae548d5a82015676fe7da0873e16f1a76bcfd1241661"
+    },
+    {
+      "path": "provider2/test-overlay.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider2/test-overlay.json",
+      "bytes": 256,
+      "sha256": "9a837c3874fc6ce1fa6aa2663b49ae5d7052eb2427fe8092ef727da65339cce9",
+      "uncompressed_bytes": 339,
+      "uncompressed_sha256": "2d0e14a9ad35bd0a4b913957ac41681f6dbebf10d17737e1468b5e6ac351bceb"
+    },
+    {
+      "path": "provider3/build.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider3/build.log",
+      "bytes": 742,
+      "sha256": "8a8513138164c3018627a44381a67573dceeefb8d75cd12d9063e6b6be734a3c",
+      "uncompressed_bytes": 1699,
+      "uncompressed_sha256": "8ab7a0b1dd55d84d076574693838661aec3961220f9ffc1f067c537c0cea4bda"
+    },
+    {
+      "path": "provider3/commands.txt.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider3/commands.txt",
+      "bytes": 96,
+      "sha256": "aee3b6a7cc5c1ab9730bca2fceb65e3dc47d597859a7f03d3c5cd3774e50713a",
+      "uncompressed_bytes": 96,
+      "uncompressed_sha256": "448ee784e632302ca3f3a7df7737571c18aac6bb961e9b184960a45ecf5c9234"
+    },
+    {
+      "path": "provider3/focused.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider3/focused.log",
+      "bytes": 3444,
+      "sha256": "1be4404c02bd8760c6a7c24ccafd3af8d36697660e4582f610d3d3c66215d242",
+      "uncompressed_bytes": 16379,
+      "uncompressed_sha256": "5417005c9e851e54762a91d48e927b64aad81cc68bf8c66b9902ac91d386220b"
+    },
+    {
+      "path": "provider3/source-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider3/source-manifest.json",
+      "bytes": 56668,
+      "sha256": "036eeec13eb5f78189c1c8a5d877db6cf5d6051a8dc107db0a1e25e70dbc4df9",
+      "uncompressed_bytes": 162055,
+      "uncompressed_sha256": "7b0f70527cf94312af8f77a12497648ada2004cd0f2cec0f63fb4feaa396d55c"
+    },
+    {
+      "path": "provider3/test-overlay.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider3/test-overlay.json",
+      "bytes": 292,
+      "sha256": "4d40ca415c21e17c8d41ae2069c07a6ffd5799854d7cbf6ba69cec5c9ebaa99d",
+      "uncompressed_bytes": 387,
+      "uncompressed_sha256": "b711a4622188f069692d978dfff390c548657e12b22c03b929a79ddbaf351420"
+    },
+    {
+      "path": "provider4/build.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider4/build.log",
+      "bytes": 10377,
+      "sha256": "53b2b1606f11149184b8f48223e855c226950d6eb7f7f5bc62b1703c29c204e7",
+      "uncompressed_bytes": 200762,
+      "uncompressed_sha256": "55cd46f0a3aff39d273501524fc7d59802b965e5f51567987fc722375f30a30c"
+    },
+    {
+      "path": "provider4/execution.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider4/execution.json",
+      "bytes": 1381,
+      "sha256": "4e5be6e02e0085a3186c17617076c7614ffc7ee2191f2c4cbfab50f34f9a15b6",
+      "uncompressed_bytes": 3568,
+      "uncompressed_sha256": "d4e07ed7d0517fd49ffdda8123aea858f1a4984cec0eb7344c187f2af44ddc56"
+    },
+    {
+      "path": "provider4/filters-complete.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider4/filters-complete.json",
+      "bytes": 1184,
+      "sha256": "f4b9094ec853b4aa3e7ef89b301f6fe2f44e7761c0882041d8d50d422de09fc8",
+      "uncompressed_bytes": 3278,
+      "uncompressed_sha256": "066e3cf8ec04d87fb7749cff1baf511612477dc70fe86209eab203328a55e66d"
+    },
+    {
+      "path": "provider4/filters.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider4/filters.json",
+      "bytes": 1060,
+      "sha256": "b70f4e9a14ac5905c1430437f9e7edf060e9e62723c1e5c2df77440425ecb0d9",
+      "uncompressed_bytes": 2923,
+      "uncompressed_sha256": "48f049b1fedadc2638492a2c477eba1ea658d2b319e60761ef0764b49452950c"
+    },
+    {
+      "path": "provider4/focused-complete-execution.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider4/focused-complete-execution.json",
+      "bytes": 1450,
+      "sha256": "5391c4e495478af86cb5476a56ea3c4ac6aee82aea96c88c73b5a4dcf5f24d8d",
+      "uncompressed_bytes": 3461,
+      "uncompressed_sha256": "00e490dd3ccbb53e172756cb716c0ec15023988c6fc39c5ce2aa6489eb22fbe5"
+    },
+    {
+      "path": "provider4/focused-complete.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider4/focused-complete.log",
+      "bytes": 2986,
+      "sha256": "cb0b912ca7b94866b38163478ec4d5c70bab457891aaaff9fa9309d77d7908eb",
+      "uncompressed_bytes": 15108,
+      "uncompressed_sha256": "359df2724fdab5ea650ed7fa81629f56fc08352eadef2cce2e66ecb24ee97846"
+    },
+    {
+      "path": "provider4/focused-direct-execution.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider4/focused-direct-execution.json",
+      "bytes": 1327,
+      "sha256": "083c017aba9f165010c60e9a505abce98989b7cee43d5a490eb480c615d3faf2",
+      "uncompressed_bytes": 3136,
+      "uncompressed_sha256": "88221fd075a872aa3417dd1eba0a3779a4ef4cde71e4af4e54a6697b20e6ab50"
+    },
+    {
+      "path": "provider4/focused-direct.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider4/focused-direct.log",
+      "bytes": 3286,
+      "sha256": "8825e4297b551c6b2f4dac400eb31a532249e0809c6ee2c113b652ee116438c2",
+      "uncompressed_bytes": 15375,
+      "uncompressed_sha256": "d5bc20b9f1e010c3e39c05b49e17933fae0d730bdda89498c30990b19a447abe"
+    },
+    {
+      "path": "provider4/focused.log.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider4/focused.log",
+      "bytes": 1150,
+      "sha256": "a0ab6552868bff3e08a2b462d358aaf010bb3aeb2acf3aa787e75fe044144e02",
+      "uncompressed_bytes": 2783,
+      "uncompressed_sha256": "d1152b83d773b26fd273fbf6cc4d23db37104c3406796d4f156f4de88f1f9a71"
+    },
+    {
+      "path": "provider4/run-focused-complete.py.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider4/run-focused-complete.py",
+      "bytes": 823,
+      "sha256": "df62b4e9c60d6cef932119ff43a3c8fa7f5ab7ff9fe0bf9bdd9ad01feba705cd",
+      "uncompressed_bytes": 1434,
+      "uncompressed_sha256": "79fd074ca84abd0f6adec70bbf63fa5c8c3b394fa48d085c146cb0354fc2d691"
+    },
+    {
+      "path": "provider4/run-focused.py.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider4/run-focused.py",
+      "bytes": 818,
+      "sha256": "139986e1a3f2446fe2f74edc8f0d221614542d72294e6b8ddab454c6f04c75ef",
+      "uncompressed_bytes": 1419,
+      "uncompressed_sha256": "982bf311a589ae0baae3d58d2f0359985828b234c31230c766f51dbd46bce10d"
+    },
+    {
+      "path": "provider4/run.py.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider4/run.py",
+      "bytes": 677,
+      "sha256": "fe9cf51a4bdbbe2786f39fb56a4e48c5a0623acfc5fc66aa252a1e8ea86200fb",
+      "uncompressed_bytes": 1255,
+      "uncompressed_sha256": "2436845962713935f8a2484f70c8556ca93297e5ca391c2dc7ac8216c36654f5"
+    },
+    {
+      "path": "provider4/source-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-provider4/source-manifest.json",
+      "bytes": 56713,
+      "sha256": "6dac792444943d4d1dc7bc92ed71401468f7c2e3d37850bd3005eafc97b980df",
+      "uncompressed_bytes": 162136,
+      "uncompressed_sha256": "5fe913bbf72f21d61acb25f813e9649e79ddeb25190dc167c4fe33daadaf9f34"
+    },
+    {
+      "path": "handoff/verdict.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-handoff/verdict.json",
+      "bytes": 852,
+      "sha256": "c001f3d6312c75f21b7268edf754923074249db0fbbdd2e5f2e93bdd738d0bb6",
+      "uncompressed_bytes": 1691,
+      "uncompressed_sha256": "e3fdab1afaf011812c6ca16f070eb19911c6fd4f4c2e25223e89d69cd5542ad7"
+    },
+    {
+      "path": "handoff/owned-source-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-handoff/owned-source-manifest.json",
+      "bytes": 1223,
+      "sha256": "abc8f228d2d16d9f8d775d5d460e3c4a92790b7906e491f7a9a34fd4e549d36c",
+      "uncompressed_bytes": 4155,
+      "uncompressed_sha256": "54f0fe4950d670f06d158f46b3c690785f838471d3a9e856f424685923276ae7"
+    },
+    {
+      "path": "handoff/raw-evidence-manifest.json.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-handoff/raw-evidence-manifest.json",
+      "bytes": 2903,
+      "sha256": "88d6dd4593cefdf44f9a896815632e81507a1054bf2b71927a4b0befd2cc1954",
+      "uncompressed_bytes": 10900,
+      "uncompressed_sha256": "88edabf1aa6e108bf5b5ad5be698261897123ef21e806290930aa7f6b5a21825"
+    },
+    {
+      "path": "handoff/source.tar.gz.gz",
+      "source": "/tmp/darkbloom-090-paged-telemetry-handoff/source.tar.gz",
+      "bytes": 88064,
+      "sha256": "b7372da84109dc617f209e3009b8a1ed35be00ee247f7c7d21e7e1846edbd06b",
+      "uncompressed_bytes": 88016,
+      "uncompressed_sha256": "5d3abba7de1afb40fc692a6231c68a15b39132dc6990de8b92d3048d0c2a84f6"
+    }
+  ]
+}

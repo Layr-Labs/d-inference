@@ -112,6 +112,7 @@ func TestProviderCapabilityRequirementsApplyToAliasAndSelfRoute(t *testing.T) {
 	provider.mu.Lock()
 	provider.AccountID = "account"
 	provider.Models = append(provider.Models, protocol.ModelInfo{ID: previous, ModelType: "chat"})
+	provider.syncModelIndexLocked()
 	provider.mu.Unlock()
 	reg.SetModelAliases(map[string]AliasTarget{"public": {
 		Desired: Qwen38NAXModelID, Previous: previous,
@@ -190,6 +191,7 @@ func TestProviderCapabilityEligibilityHotCatalogAndCommandDefenses(t *testing.T)
 	}})
 	old.mu.Lock()
 	old.Models = append(old.Models, protocol.ModelInfo{ID: ordinary, ModelType: "chat"})
+	old.syncModelIndexLocked()
 	old.mu.Unlock()
 	if entries := reg.DesiredModelsForProvider(old.ID); len(entries) != 0 {
 		t.Fatalf("ineligible provider received desired protected build: %+v", entries)

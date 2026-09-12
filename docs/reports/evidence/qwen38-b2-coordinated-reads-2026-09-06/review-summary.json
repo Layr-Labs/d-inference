@@ -1,0 +1,96 @@
+{
+  "backend_passed": true,
+  "cache_arm_rows": [
+    {
+      "cache_outcome": "miss",
+      "completion_tokens": 74,
+      "id": "long-first-b0",
+      "matched_tokens": 0,
+      "prefill_chunk_tokens_max": 512,
+      "prefill_chunks": 11,
+      "same_id_output_tokens_equal": true,
+      "saved_tokens": 0,
+      "ssd_stage_disposition": "miss_absent",
+      "ssd_stage_ms": 0.152667,
+      "ttft_s": 13.449320875
+    },
+    {
+      "cache_outcome": "miss",
+      "completion_tokens": 74,
+      "id": "long-first-b1",
+      "matched_tokens": 0,
+      "prefill_chunk_tokens_max": 4096,
+      "prefill_chunks": 2,
+      "same_id_output_tokens_equal": true,
+      "saved_tokens": 0,
+      "ssd_stage_disposition": "miss_absent",
+      "ssd_stage_ms": 0.1435,
+      "ttft_s": 6.778108584
+    },
+    {
+      "cache_outcome": "hit",
+      "completion_tokens": 74,
+      "id": "long-repeat-b0",
+      "matched_tokens": 5120,
+      "prefill_chunk_tokens_max": 403,
+      "prefill_chunks": 1,
+      "same_id_output_tokens_equal": true,
+      "saved_tokens": 5120,
+      "ssd_stage_disposition": "staged",
+      "ssd_stage_ms": 155.160667,
+      "ttft_s": 0.713489042
+    },
+    {
+      "cache_outcome": "hit",
+      "completion_tokens": 74,
+      "id": "long-repeat-b1",
+      "matched_tokens": 5120,
+      "prefill_chunk_tokens_max": 403,
+      "prefill_chunks": 1,
+      "same_id_output_tokens_equal": true,
+      "saved_tokens": 5120,
+      "ssd_stage_disposition": "staged",
+      "ssd_stage_ms": 309.630542,
+      "ttft_s": 1.310516917
+    }
+  ],
+  "cache_errors": [],
+  "cache_passed": true,
+  "excluded_cache_payloads": 7,
+  "forward_shape_errors": {
+    "contiguous-cache-off": [],
+    "paged-cache-off": [],
+    "paged-cache-on": []
+  },
+  "full_archive_sha256": "134060b093c9b2c0ea8e6b1d13883d1f37cfa233f3dd6f12b9afc83554d5ab36",
+  "included_files": 143,
+  "interpretation": "Both unchanged strict comparisons pass on the coordinated-read runtime. This is one retained B2 triad, not repeated performance, B4, HTTP/default, persistence, or release acceptance.",
+  "model_aggregate": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+  "report_errors": {
+    "contiguous-cache-off": [],
+    "paged-cache-off": [],
+    "paged-cache-on": []
+  },
+  "safe_capsule_sha256": "194cbcb211f5fec4a3ec3b9f456e7211d95e189bc40bf35a8f5492a28f7c97a1",
+  "source_parent": "35fea6d0e3b05ff65d60d9675ab480159913ac62",
+  "terminal": {
+    "accepted": true,
+    "auto_http_validated": false,
+    "external_caller_control": {
+      "alive": false,
+      "last_ping_monotonic": 403.978970666,
+      "last_ping_unix": 1788714115.2007139,
+      "lease_seconds": 30,
+      "reason": "supervision finished",
+      "received_pings": 200,
+      "requires_external_pings": true
+    },
+    "failure": null,
+    "gpu_ready": false,
+    "matrix_expanded": false,
+    "missing_post_audits": [],
+    "no_automatic_rerun": true,
+    "production_default_validated": false,
+    "supervisor_exit_code": 0
+  }
+}

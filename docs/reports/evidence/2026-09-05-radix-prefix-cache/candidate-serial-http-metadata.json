@@ -1,0 +1,28 @@
+{
+  "started_unix": 1788587794.539516,
+  "binary": "/Users/gaj/autoresearch/radix-prefix-cache/artifacts/candidate-serial-build1/darkbloom",
+  "environment": {
+    "DARKBLOOM_NO_UPDATE_CHECK": "1",
+    "DARKBLOOM_PID_FILE": "/Users/gaj/autoresearch/radix-prefix-cache/runs/candidate-serial-http-full1/provider.pid",
+    "DARKBLOOM_LOCAL_DIR": "/Users/gaj/autoresearch/radix-prefix-cache/runs/candidate-serial-http-full1/local",
+    "DARKBLOOM_PREFIX_CACHE": "1",
+    "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1",
+    "DARKBLOOM_PREFIX_CACHE_TEST_ROOT": "/Users/gaj/autoresearch/radix-prefix-cache/runs/candidate-serial-http-full1/prefix-cache",
+    "DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS": "1"
+  },
+  "entry_gpu_temp_c": 27.899553298950195,
+  "arguments": {
+    "binary": "/Users/gaj/autoresearch/radix-prefix-cache/artifacts/candidate-serial-build1/darkbloom",
+    "output": "/Users/gaj/autoresearch/radix-prefix-cache/runs/candidate-serial-http-full1",
+    "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+    "port": 18120,
+    "mtp": "off",
+    "cache": "on",
+    "repeats": 3,
+    "lengths": "512,2048,8192",
+    "replay": "/Users/gaj/autoresearch/radix-prefix-cache/runs/baseline-e928-serial-cache-on/http/report.json"
+  },
+  "client_exit_code": 0,
+  "ended_unix": 1788588009.8572009,
+  "ranked_job_at_end": false
+}

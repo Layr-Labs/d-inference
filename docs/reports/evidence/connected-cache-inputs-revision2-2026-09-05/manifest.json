@@ -1,0 +1,371 @@
+{
+  "scope": "Reviewed connected revision2 preparation only; ten cells unrun at package freeze. Root approval postdates frozen package; root-review.json preserves approval without rewriting original bundle metadata.",
+  "parent_base": "9e49059a1806e265fd9ceab420c1b82216a5d785",
+  "go_source_commit": "089d9ade3398b7660b9c0745ea17a8f584d11f9f",
+  "provider_cli_sha256": "a81fd9f9ff01fb84f3c236ceaba5fed4fca730b261be1f332b87c38e69cd3cfd",
+  "provider_native_commit": "aafe2069bcdeadef9250530eb511c598649c0355",
+  "contains_new_mtp_tail_runtime": false,
+  "runtime_package_archive_sha256": "8906188e5631c392242c6b60ddfe1a72090140ab74ffeedb0c01021cd0d0dee0",
+  "runtime_package_archive_bytes": 27309162,
+  "package_manifest_sha256": "2af7b2ac59d0200e466b9ef4c2c39fef085156fe8c24152b27b571e18e02acc2",
+  "previous_package_archive_sha256": "af94f9460f034b457b216dedb7678d174979a6c10b52325133c9743a72bf9363",
+  "previous_package_manifest_sha256": "c6e1bf7b11885477661ddd63b5b7715fbac0d993c369d0d9505c9a14faf5c711",
+  "excluded_source_count": 988,
+  "excluded_runtime_binary": {
+    "path": "connected-e2e.test",
+    "sha256": "6e30a1e53cc26ac1bb7953216b6d0af835b8b08a29f1920b2df07999c0e2bc8f",
+    "bytes": 46357378
+  },
+  "selection": "Every regular frozen bundle2 payload except compiled Go executable and go-source tree; includes package manifest. Four external freeze/review/verification files accompany unchanged copied bundle bytes.",
+  "archive": {
+    "path": "payloads.tar.gz",
+    "sha256": "aa276400310f7338cb58adb6a6173bf64fd7d59c34d65ea9b743f78dfba0f801",
+    "bytes": 1802054
+  },
+  "payloads": {
+    "bundle2/README.md": {
+      "sha256": "5a7d917ec611c794f4e69d68e0d8fc14b82c7402ff913097040f0d493590fc2a",
+      "bytes": 9182
+    },
+    "bundle2/assets/cube-hero.png": {
+      "sha256": "f9f9fbf8c0a05fbac1081db94dff3688cdcb3ee3425e2c18e51cbe90f3c5cb33",
+      "bytes": 1485871
+    },
+    "bundle2/assistant-provenance/gemma-assistant-post-pair.json": {
+      "sha256": "615b82af10543ab70925623eadafa757920fe9b677f5276f95030d30dd0d64ff",
+      "bytes": 756
+    },
+    "bundle2/assistant-provenance/gemma-off-assistant1-preflight.json": {
+      "sha256": "3614d2cb0329c1f687a22cf70a540daba932a06763fb70f06b9260edd2d18f5f",
+      "bytes": 198
+    },
+    "bundle2/assistant-provenance/gemma-on-assistant1-preflight.json": {
+      "sha256": "0933b92920dd264ceda2b8f3e831d2bf04496247a269472ea33f8b1be140ed3e",
+      "bytes": 194
+    },
+    "bundle2/assistant-provenance/gemma-two-file-fixture-proof.json": {
+      "sha256": "c137fad64fec8e0a5ca47d6d26f58f7504c383ec626fbdd95262a9f83705f9c2",
+      "bytes": 1537
+    },
+    "bundle2/assistant-provenance/original-failure-audit.md": {
+      "sha256": "380a1f9614fa892f18de0d7dafab7455d1d4516e98531ca0fb23e9eac133cc04",
+      "bytes": 5427
+    },
+    "bundle2/assistant-provenance/original-failure-manifest.json": {
+      "sha256": "495d610775c75073faea5400dcb6cbab3c4a4dee111f00d3a3aa423ab7b6902a",
+      "bytes": 5166
+    },
+    "bundle2/bundle-plan.json": {
+      "sha256": "d0fce2d332c63921195bf90c96724f70d575a03a4643d4134dfbcd0e129236eb",
+      "bytes": 6755
+    },
+    "bundle2/compare_connected_cache_http.py": {
+      "sha256": "6c5566cfda56c51987c504e39639dfef813e1e79b7ab311b4cbfc0b484696511",
+      "bytes": 4723
+    },
+    "bundle2/go-build-evidence/artifact.json": {
+      "sha256": "c9484b84ad92bf703e5d7dab623ebd43afeb6c4139d406e220e4c2455437c294",
+      "bytes": 348
+    },
+    "bundle2/go-build-evidence/bank-proof.json": {
+      "sha256": "f0390800ceb820a30f3a5ea6ebe22fdf1a85d8c78621a31c74ad4c32265b84fe",
+      "bytes": 505
+    },
+    "bundle2/go-build-evidence/binary-build-info.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "bundle2/go-build-evidence/binary-build-info.stdout": {
+      "sha256": "8f985e07646bba27532dd9e68c6bd2b94febaf311780dcf854a538a17e6cae52",
+      "bytes": 8680
+    },
+    "bundle2/go-build-evidence/binary-helper-tests.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "bundle2/go-build-evidence/binary-helper-tests.stdout": {
+      "sha256": "72fc99fe02213bc5ec96b8b4a2287588c4bd461adea2b197cf02b864cc732d8d",
+      "bytes": 4617
+    },
+    "bundle2/go-build-evidence/commands.json": {
+      "sha256": "3e6d85b31278244db2f2cfd48304f41dfaf15cf3c56050540bc6833a51ccf9d6",
+      "bytes": 1612
+    },
+    "bundle2/go-build-evidence/go-build.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "bundle2/go-build-evidence/go-build.stdout": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "bundle2/go-build-evidence/go-environment.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "bundle2/go-build-evidence/go-environment.stdout": {
+      "sha256": "20d4026f4dff79f55604d2e9e941329e345237ef003d3ad3782c7ac1fab1645f",
+      "bytes": 333
+    },
+    "bundle2/go-build-evidence/go-source-graph.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "bundle2/go-build-evidence/go-source-graph.stdout": {
+      "sha256": "5b20eae3f0700b429bd58f97b9fc18b6a6215147b360a958d4a941d277b2a770",
+      "bytes": 3051754
+    },
+    "bundle2/go-build-evidence/manifest.json": {
+      "sha256": "81fd1e946167ae04d9964dbbe4a4530e103d8a240f3c8704f4729867f953cb05",
+      "bytes": 2458
+    },
+    "bundle2/go-build-evidence/source-manifest-after.json": {
+      "sha256": "4a48dc601c76eddfd91cee7d4688e5e742d94156872a1de872be4e491770dd1d",
+      "bytes": 115428
+    },
+    "bundle2/go-build-evidence/source-manifest-before.json": {
+      "sha256": "324d3395ba36ed3ac33a08f694db45bedd523e3ee5af75fb7de619b803689734",
+      "bytes": 115641
+    },
+    "bundle2/go-source-diff.json": {
+      "sha256": "18a6949c65048b435cafada6ad77f2e7f7e58e00e05d944d11bc2040ff6bf54a",
+      "bytes": 995
+    },
+    "bundle2/go-source-manifest.json": {
+      "sha256": "234e758fba80e92391f7aef63c1e4837d8cf725b3f9e61bf16be8c4e20d725b4",
+      "bytes": 115728
+    },
+    "bundle2/inputs-diff.json": {
+      "sha256": "3e2b680fb69f004a1774f0ecdf797761d7a472dbcaa475cecb23e05c52007fa2",
+      "bytes": 5588
+    },
+    "bundle2/inputs/gemma-4-26b-paged-off-b1.json": {
+      "sha256": "135f0d31c83a807ef247456e37c51293d9b1ca82f48bf6f60fff3f7f97cb7d52",
+      "bytes": 43947
+    },
+    "bundle2/inputs/gemma-4-26b-paged-ssd-b1.json": {
+      "sha256": "f522701144b6e7424e0b9938fb26d37731afa172a23a8d3f90170187db584425",
+      "bytes": 43947
+    },
+    "bundle2/inputs/gpt-oss-20b-paged-off-b1.json": {
+      "sha256": "499b4801c00d1dc4268eca2b1635ed3bd1169dd2c011f31ec4780c1f296f8adc",
+      "bytes": 41686
+    },
+    "bundle2/inputs/gpt-oss-20b-paged-ssd-b1.json": {
+      "sha256": "add4db013cd87cc491b79d094307ed49eccda4686ff62d157f66f493ceb35ac4",
+      "bytes": 41686
+    },
+    "bundle2/inputs/qwen35-paged-off-b1.json": {
+      "sha256": "9cd5ff9f55b9e3d1ee2f51bc1b6da7a7950cbea536782d5153f395bab225f208",
+      "bytes": 43302
+    },
+    "bundle2/inputs/qwen35-paged-ssd-b1.json": {
+      "sha256": "52e3ac62be673347bd2db9eaf55acb1b77687f591b6e7f4af490ebaab1547e21",
+      "bytes": 43302
+    },
+    "bundle2/inputs/qwen36-paged-off-b1.json": {
+      "sha256": "62444f61909e640b555073c3549a648d557be757d003066cbc341f87953afb46",
+      "bytes": 43219
+    },
+    "bundle2/inputs/qwen36-paged-ssd-b1.json": {
+      "sha256": "bcd97b42419f15ae8a9d20d58e6594079a036e4aa2d5853ad9b789383ea30016",
+      "bytes": 43219
+    },
+    "bundle2/inputs/qwen38-paged-off-b1.json": {
+      "sha256": "535d48f6b80374c9ee84ee67d77913fc1e5b204b32e133db472654d1e11180a5",
+      "bytes": 43549
+    },
+    "bundle2/inputs/qwen38-paged-ssd-b1.json": {
+      "sha256": "9f97f8bda6d6af948befd6b4d69bf85c3e33f228a4fc2ed19005000341b56cbf",
+      "bytes": 43549
+    },
+    "bundle2/make_inputs.py": {
+      "sha256": "9c8cd8a2ce6b872c44f1d8bc9868305bf0f825ad3f4ea812e56c9a53b8c2660e",
+      "bytes": 6077
+    },
+    "bundle2/manifests/gemma-4-26b.json": {
+      "sha256": "45c83bee7fc3fde8bdca900fa2f5fc0012672573c346cd372561244d528cdcee",
+      "bytes": 2870
+    },
+    "bundle2/manifests/gpt-oss-20b.json": {
+      "sha256": "04c92344224faade11fe72ac95959af56cea235feea259eb5cf607ab5a9a2bb2",
+      "bytes": 2263
+    },
+    "bundle2/manifests/qwen35.json": {
+      "sha256": "8e93b0bf6b07f413adbd0e874addffbd8bec6245139c957209166ea77b2a6785",
+      "bytes": 3029
+    },
+    "bundle2/manifests/qwen36.json": {
+      "sha256": "b5ea3e4580ffa296e1e0c3bad3213bbf8e1c6f918b45178786fa2ee312f738d6",
+      "bytes": 2872
+    },
+    "bundle2/manifests/qwen38.json": {
+      "sha256": "9a97486e7e3a2ac88f7a92cbc3fab3324805e18e895fc481c6f66275891e25cb",
+      "bytes": 3062
+    },
+    "bundle2/package-diff.json": {
+      "sha256": "642b4403d96bada3dac254220fafd4ec6266e85efa3888c160cfc1192a7c9918",
+      "bytes": 3804
+    },
+    "bundle2/package-manifest.json": {
+      "sha256": "2af7b2ac59d0200e466b9ef4c2c39fef085156fe8c24152b27b571e18e02acc2",
+      "bytes": 183721
+    },
+    "bundle2/paired-input-validation.json": {
+      "sha256": "fb0aae4c7ef61b931063c708a0a87a47c16afb3e141eced621c731945d024f25",
+      "bytes": 6461
+    },
+    "bundle2/preparation/commands.json": {
+      "sha256": "e8b8a42b03813d6042cb2b3ef52cb706d3dd91d48c89d40955f6d61983eb14a2",
+      "bytes": 1082
+    },
+    "bundle2/preparation/cpu-prompt-plans.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "bundle2/preparation/cpu-prompt-plans.stdout": {
+      "sha256": "ed0336fedfe80fb500bec4dc29ffe856dbce4c6bb51eeb0cfad798d9dbfec12f",
+      "bytes": 3366
+    },
+    "bundle2/preparation/generate-inputs.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "bundle2/preparation/generate-inputs.stdout": {
+      "sha256": "fbfcc3ff3b8bbc7bfbefa135570e7d6a497e43b8dfd2ce09877ff86394000866",
+      "bytes": 19
+    },
+    "bundle2/preparation/helper-source-diff.patch": {
+      "sha256": "cac8e448aa03c95dc4b405cee0cb2cb2cfb519323a34ac4adb3fda5300cfdee4",
+      "bytes": 9553
+    },
+    "bundle2/preparation/python-helper-tests.stderr": {
+      "sha256": "3113f4444ea12b124a0050234b2ccdde08228792d86f75457e143cd9d605292b",
+      "bytes": 2262
+    },
+    "bundle2/preparation/python-helper-tests.stdout": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "bundle2/previous-package/README.md": {
+      "sha256": "e9c97f7a75a0d3f44f0f1a88a5393af969769d5837774086e66221bd6914f60f",
+      "bytes": 8591
+    },
+    "bundle2/previous-package/freeze.json": {
+      "sha256": "cb26cac7b7fff06ef32fd7530d6c840b98c48bfa2b65e204fe8bf0cfd99f659e",
+      "bytes": 778
+    },
+    "bundle2/previous-package/package-manifest.json": {
+      "sha256": "c6e1bf7b11885477661ddd63b5b7715fbac0d993c369d0d9505c9a14faf5c711",
+      "bytes": 177426
+    },
+    "bundle2/previous-package/parent-bank.json": {
+      "sha256": "bb8392283c8f14c3a624603431fcab5c47c38f89f73544679be87476e865b44c",
+      "bytes": 197
+    },
+    "bundle2/previous-package/remote-preflight-readonly.json": {
+      "sha256": "dae7bf326826f9f3ddbf239932e14ae253d706f16a8d3c41a40282218686366a",
+      "bytes": 3611
+    },
+    "bundle2/review-handoff.json": {
+      "sha256": "c1ba51347aa8bbf73e824e48bd476db76012f13e0b1d0a981a69e1b99a708ffe",
+      "bytes": 717
+    },
+    "bundle2/reviews/assistant-path-review.json": {
+      "sha256": "b928bc828b9aba71d3bd890d803ec4390cf265005f20b8b3eb5057074e41508f",
+      "bytes": 3226
+    },
+    "bundle2/reviews/original-bundle-root-review.json": {
+      "sha256": "4aea87bcd63b723bf085393dc446359cca2ff42a35621e3e472d9f9224c4be8f",
+      "bytes": 1198
+    },
+    "bundle2/reviews/sse-reader-root-review.json": {
+      "sha256": "05ca2c7eae3cd9d04987e1180e0221cf82d706fe09a53cba8da24c754bd47abe",
+      "bytes": 1185
+    },
+    "bundle2/run_connected_fixture.py": {
+      "sha256": "361aaef714a553f8510af28f30f93e0f10e60e505f335d923ab764abac9d071f",
+      "bytes": 13208
+    },
+    "bundle2/source-gates.json": {
+      "sha256": "6779ae21fec854a5dd49fb2c732e22b63dc670d34b4c37dc406f83a24dbf272d",
+      "bytes": 1787
+    },
+    "bundle2/source-inputs/darkbloom-0.9-validation--http-feature-plan.json": {
+      "sha256": "2cccd4c634fa4a673f3bbd9f9a845d776f6cbb5bc7bcd399b740cc1642900783",
+      "bytes": 2623
+    },
+    "bundle2/source-inputs/darkbloom-cache-routing-release-audit--artifact-identities.json": {
+      "sha256": "69543ab828f561ac970b1ec693957fa40939a233700e761440d25f814a019079",
+      "bytes": 9611
+    },
+    "bundle2/source-inputs/darkbloom-final-fleet-smoke1--plan.json": {
+      "sha256": "d8d8fa3dc044069db5c2e36dab6e9cb1da9c3d4ae4cf3dcc4419a8eca62c8b9d",
+      "bytes": 3122
+    },
+    "bundle2/source-inputs/gemma-assistant--manifest.json": {
+      "sha256": "8b7c00b7f131345156f5f20fa9c94a895c5340f16d9331bafb9e59628bf45bf2",
+      "bytes": 859
+    },
+    "bundle2/source-inputs/payload--transfer-manifest.json": {
+      "sha256": "a002d1a8cea75ca3a96332943b48ae41fda17aaf6ebc9ddc11675bb9cf2a005f",
+      "bytes": 7125
+    },
+    "bundle2/source-inputs/qwen35b-ssd-model-inventory--catalog.json": {
+      "sha256": "72dc4f9c5ff51a959ff94ceab082a2ac32b8cf81aa30ecf84e9e802ff02db153",
+      "bytes": 13384
+    },
+    "bundle2/source-verification.json": {
+      "sha256": "74b538135207fc4e5025e0383ee441aeeb63956b1ed1cfc6a72e2707a765f598",
+      "bytes": 716
+    },
+    "bundle2/temporary_model_alias.py": {
+      "sha256": "06f1d1e8750f38bb56a90036183f4a30d72d1eb16663d398a3a30822ec99a4ad",
+      "bytes": 5577
+    },
+    "bundle2/test_connected_bundle.py": {
+      "sha256": "00898d8fc06d6c41c4364cc116c414785c36a73f1ef2cb564a68c6b9aac22957",
+      "bytes": 3910
+    },
+    "bundle2/test_local_assistant.py": {
+      "sha256": "1631de882f4f441d69ba51f03cce1b17a81e3948b0e7092f4ecc1c4e3a27ea31",
+      "bytes": 3342
+    },
+    "bundle2/test_temporary_model_alias.py": {
+      "sha256": "1d334f43d58acfb98c597adf842158df4d4ab829898b09ab5217dcadedddb4df",
+      "bytes": 3332
+    },
+    "bundle2/tokenizer-plan.json": {
+      "sha256": "ed0336fedfe80fb500bec4dc29ffe856dbce4c6bb51eeb0cfad798d9dbfec12f",
+      "bytes": 3366
+    },
+    "bundle2/tokenizer-plan.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "bundle2/verify_package.py": {
+      "sha256": "13ff608a4b5b97f17324d2e1b6bfbdc59d188d32cc142833b53ccb0a842506dd",
+      "bytes": 810
+    },
+    "bundle2/verify_prompt_counts.py": {
+      "sha256": "b384100b8424cc3a8645f38f3d89fb4f1cae55ab48214ef995940874c10c4cf5",
+      "bytes": 4241
+    },
+    "freeze.json": {
+      "sha256": "5046a83a732a26cd59f042521df1638e1ce44f48c452ed61446705ed42cf1171",
+      "bytes": 1392
+    },
+    "root-review.json": {
+      "sha256": "c12f420e193ff9a6c6a58b24a74eaa124ebfd5cca9c5ed97a5e6ced66390ab2f",
+      "bytes": 648
+    },
+    "verify-package.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "verify-package.stdout": {
+      "sha256": "c90f279cecf31ab142ce76c41ea9c96f67df76e9121498cf15ab998ed7fc6b0d",
+      "bytes": 153
+    }
+  }
+}

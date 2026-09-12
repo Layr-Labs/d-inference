@@ -1,0 +1,559 @@
+Test Suite 'Selected tests' started at 2026-09-04 22:32:06.184.
+Test Suite 'DarkbloomProviderPackageTests.xctest' started at 2026-09-04 22:32:06.185.
+Test Suite 'DarkbloomProviderPackageTests.xctest' passed at 2026-09-04 22:32:06.185.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-04 22:32:06.185.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite "EngineV2 lookup receipt terminal coverage" started.
+◇ Suite "SSD prefix cache: HMAC lookup keys" started.
+◇ Suite "SSD prefix cache: staging reservations" started.
+◇ Suite "SSD prefix cache: metadata planning" started.
+◇ Suite "EngineV2 bridge hardening" started.
+◇ Suite "SSD prefix cache: ready write failure barriers" started.
+◇ Suite "EngineV2Bridge paged KV backend" started.
+◇ Suite "EngineV2 translation: ChatCompletionRequest → CBv2Request" started.
+◇ Suite "SSD prefix cache: windowed sidecar (WS-4.2)" started.
+◇ Suite "EngineV2 logprobs passthrough" started.
+◇ Suite "EngineV2 admission-error mapping" started.
+◇ Suite "EngineV2 KV-backend gate (real tiny models)" started.
+◇ Suite "EngineV2 event framing matches the legacy GenerationEvent shape" started.
+◇ Suite "EngineV2 capacity: CBv2CapacitySnapshot → BackendSlotCapacity" started.
+◇ Suite "SSD prefix cache: DBK3 block store" started.
+◇ Suite "Outer inference-handler prefix cache receipts" started.
+◇ Suite "SSD prefix cache: donation outcomes" started.
+◇ Suite "SSD prefix cache: own root survives the legacy kv sweep" started.
+◇ Suite "Provider-confirmed prefix cache receipts" started.
+◇ Suite "SSD prefix cache: donation, staging, adoption" started.
+◇ Suite "EngineV2 shared-budget KV accounting" started.
+◇ Suite "SSD prefix cache: durable-ready receipts" started.
+◇ Suite "EngineV2 bridge shutdown" started.
+◇ Suite "EngineV2 logprobs channel bounding" started.
+◇ Suite "SSD prefix cache: production gate" started.
+◇ Suite "EngineV2 seeded sampling reproducibility" started.
+◇ Test "engine submit rejection emits exactly one final lookup receipt" started.
+◇ Test "resident preflight skips equal or shorter SSD matches and stages longer ones" started.
+◇ Test "cache-disabled path emits once even when terminal usage follows" started.
+◇ Suite "EngineV2 fail-loud factory (v0.7.5 one engine — no selection, no fallback)" started.
+◇ Test "cacheScope maps onto CBv2Request.cacheSalt; "" maps to nil" started.
+◇ Test "low disk, generic write error, ENOSPC, and shutdown never cross durable barrier" started.
+◇ Test "shared-budget rejection emits exactly one final lookup receipt" started.
+◇ Test "RAM probe respects replay and byte caps without reading or pinning files" started.
+◇ Test "same input, different install key ⇒ different tag (T-041 leak #2 closed)" started.
+◇ Suite "SSD prefix cache: per-donation gate" started.
+◇ Test "shutdown cancels live pump tasks and releases their reservations (fix #7)" started.
+◇ Test "unknown backend capacity (0) does not bind" started.
+◇ Suite "EngineV2 cancellation wiring" started.
+◇ Suite "EngineV2 matched stop sequence" started.
+◇ Test "bridge stamps the tenant cache scope as CBv2Request.cacheSalt" started.
+◇ Suite "EngineV2 SSD prefix cache (live)" started.
+◇ Test "teardown without finished emits exactly one final lookup receipt" started.
+◇ Test "request-id validation: nil / empty / over-long / control chars → fresh id (fix #4)" started.
+◇ Test "unset knobs collapse to legacy defaults (greedy temperature 0)" started.
+◇ Test "a malformed request-id is normalized before it becomes a cancel handle" started.
+◇ Test "paged slots skip the per-request shared-KV reserve" started.
+◇ Test "logit_bias string keys parse to token ids; junk keys are dropped" started.
+◇ Test "salt scoping: different scopes can never share a tag; empty salt is length-prefixed" started.
+◇ Suite "SSD prefix cache: unloaded whole-root maintenance" started.
+◇ Test "nil/empty delta logprobs leave the channel empty" started.
+◇ Test "terminal kv_capacity_exhausted maps to the retryable capacity error" started.
+◇ Test "logprobs/top_logprobs mapping (0 = none; chosen-token → 1; clamp 20)" started.
+◇ Test "parseLogitBias reports a dropped-key count for the silent-drop signal (fix #9)" started.
+◇ Test "no channel wired → logprob-bearing deltas stream normally (dropped)" started.
+◇ Test "other terminal engine errors pass through unmapped" started.
+◇ Test "nextRawId uses wrapping increment (fix #5)" started.
+◇ Test "duplicate request id is rejected with the legacy planner message" started.
+◇ Test "capacityExhausted → canonical token_budget_exhausted string → retryable class" started.
+◇ Test "real byte figures near the sentinel still classify as token-budget capacity" started.
+◇ Test "delta logprobs publish to the channel in OpenAI entry shape, in order" started.
+◇ Test "engine logprobs convert to the OpenAI streaming entry shape" started.
+◇ Test "unknown submit error → generic failure, never claims capacity" started.
+◇ Test "bridge resolves the stop set once at construction and stamps every request" started.
+◇ Test "typed platform terminal surfaces as .terminal with cause + reconciled usage" started.
+◇ Test "success path: reserve before read, release at endAdoption" started.
+◇ Test "stage → restart → rehydrate: a windowed sidecar survives and restores byte-exactly" started.
+◇ Test ".legacyRequestTimeout has no wire cause → legacy .error string" started.
+◇ Test "stream closed without terminal → teardown sentinel error" started.
+◇ Test "full request translates field-by-field" started.
+◇ Test "sidecar tags come from a separate HMAC domain and never collide with block tags" started.
+◇ Test "engine queue-full sentinel maps to the legacy queue-full class (429), not token-budget (503)" started.
+◇ Test "legacy DBK2 bytes and pre-frozen epochs are rejected by the DBK3 tier" started.
+◇ Test "cancel before any decode: prompt-only usage info, then cancel error" started.
+◇ Test "idle when nothing runs; budget gate disengaged when kvBytesPerToken unknown" started.
+◇ Test "active cache I/O rejects symlinked root, model, and fanout paths" started.
+◇ Test "logprobs preserve Unicode bytes and alternative probabilities" started.
+◇ Test "descriptor-relative root creation rejects a concurrent symlink replacement" started.
+◇ Test "layout epoch: layer-kind changes produce a different epoch (fail-closed binding)" started.
+◇ Test "length finish frames usage like stop but preserves finish_reason 'length'" started.
+◇ Test "ledger-only reslice never claims physical reclaim or grows past the pool" started.
+◇ Test "finish reason threads through: .length => 'length', .stop => 'stop', cancel partial => nil" started.
+◇ Test "stop resolution follows buildStopTokenIds semantics" started.
+◇ Test "budget fields follow the legacy committed/worst-case contract; activeTokens stays engine truth" started.
+◇ Test "finished requests release their committed budget from the heartbeat" started.
+◇ Test "budget max clamps to the live fleet budget; nil clamp preserves the raw grant" started.
+◇ Test "cancel that did work: usage info BEFORE the cancel error (legacy abort framing)" started.
+◇ Test "a corrupted sidecar drops the window only; the block adoption stands" started.
+◇ Test "wedge trips only when the engine step counter flatlines under hanging admits" started.
+◇ Test "backendIneligible → non-retryable generation failure" started.
+◇ Test "staging a window costs the sidecar read and nothing structural" started.
+◇ Test "an ordinary block's canonical metadata JSON is unchanged by the new fields" started.
+◇ Test "wedge counters flow into the slot (admits / first tokens / engine steps)" started.
+◇ Test "header length fields decode correctly across sizes (unaligned-safe byte decode)" started.
+◇ Test "atomic writer uses the exact Darkbloom-owned crash-temp grammar" started.
+◇ Test "tokenize failure surfaces as a tokenize error without touching the engine" started.
+◇ Test "descriptor-relative active I/O cannot be redirected by a fanout symlink race" started.
+◇ Test "the feature is OFF by default: no geometry ⇒ no sidecars, no window" started.
+◇ Test "fixed and block-rounded request bytes are reflected in heartbeat tokens" started.
+◇ Test "a cache without sidecars tells the engine not to snapshot sliding rows" started.
+◇ Test "terminal usage can only raise observed counts (billing-zero defense)" started.
+◇ Test "heartbeat binds advertised capacity to backend pool truth" started.
+◇ Test "runtime summary recomputes each bridge's budget from live fleet residency" started.
+◇ Test "AAD binding: tampering body or metadata bytes breaks authentication" started.
+◇ Test "re-donating a covered boundary refreshes its sidecars, not just its blocks" started.
+◇ Test "the contiguous windowed ring conforms to the donor seam WS-4.1 freezes" started.
+◇ Test "a written sidecar's plaintext header carries no absolute token position" started.
+◇ Test "runtime capacity summary aggregates registered bridges" started.
+◇ Test "pre-decrypt shutdown admission emits exactly one capacity receipt" started.
+◇ Test "the frozen request-aware overload carries no windows — the defect this replaced" started.
+◇ Test "round-trip: metadata + chunks survive encrypt/decrypt byte-exactly" started.
+◇ Test "happy path: chunks then a single usage info, then finish" started.
+◇ Test "the REAL legacy sweeper (LegacyKVCacheSweeper.sweep) leaves SSD entries intact and adoptable" started.
+◇ Test "startup temp sweep preserves young writes and removes stale crash orphans" started.
+◇ Test "pre-decrypt policy failure emits exactly one lookup receipt" started.
+◇ Test "an incomplete tiling replays instead of restoring a PARTIAL window" started.
+◇ Test "two donors straddling a boundary tile its window; the second completes it" started.
+◇ Test "geometry derives only for layouts whose window tiles into whole blocks" started.
+◇ Test "SSD staging never false-rejects a request that fits cold at the exact boundary" started.
+◇ Test "a nearly-drained write bucket funds the required blocks, never the sidecars" started.
+◇ Test "shutdown drains through the engine" started.
+◇ Test "ready is durable/readable and increases across successive donations" started.
+◇ Test "bridge resolution wins over the outer policy backstop without duplication" started.
+◇ Test "engine error: error only — no info (legacy failure framing)" started.
+◇ Test "teardown without a terminal still releases the reservation" started.
+◇ Test "prompt plus max-token overflow rejects before cache staging" started.
+◇ Test "auto is CONTIGUOUS for GPT-OSS and cannot drift with family defaults" started.
+◇ Test "detached terminal helper queues lookup before error without duplicate" started.
+◇ Test "native-width rate rejects staged-to-cold fallback before over-admission" started.
+◇ Test "native request byte multiplication overflow rejects before engine submission" started.
+◇ Test "no reservation when kvBytesPerToken is unknown (0)" started.
+◇ Test "coveredBlocks: a mid-block donor covers W/blockSize − 1 blocks, and donors tile" started.
+◇ Test "an in-flight v2 request reserves its worst-case KV in the shared budget, released on finish" started.
+◇ Test "bridge records terminal saved-prefill truth exactly once" started.
+◇ Test "gemma-4 sidecar economics: 10:1 sliding:full, 200 MiB read, 140 ms planned" started.
+◇ Test "same seed + same prompt reproduce identical output across submissions" started.
+◇ Test "cacheDirectory lives under darkbloom/kv3, never under the legacy darkbloom/kv root" started.
+◇ Test "the request-aware production donation captures windows (the feature is not inert)" started.
+◇ Test "every donation opportunity settles one bounded outcome" started.
+◇ Test "a live identical seeded request falls back to a fresh id (collision guard)" started.
+◇ Test "shared-budget gate: another request's live reservation blocks a worst case that no longer fits" started.
+◇ Test "v2 sequencer buffers ready, orders terminal, and assigns strict sequence" started.
+◇ Test "under the cap nothing is dropped; drain empties the buffer" started.
+◇ Test "different seed or different prompt produce different ids (and RNG streams)" started.
+◇ Test "ready stage cost is optional, finite, and bounded" started.
+◇ Test "stableSeededRawId is deterministic, tagged, and input-sensitive" started.
+◇ Test "sequential identical seeded requests keep receipt callbacks and cleanup isolated" started.
+◇ Test "SSD defaults on and the single local kill switch disables it" started.
+◇ Test "engine rejection after the gate releases the shared reservation" started.
+◇ Test "resident L1 wins are memory even when SSD staging also matched" started.
+◇ Test "degenerate maxTokens <= 0 skips the gate (engine finishes it without KV)" started.
+◇ Test "shared-budget gate: exhausted pool rejects as capacity BEFORE the engine sees the request" started.
+◇ Test "SSD knobs: TTL is capped at 15 minutes; write cap parses; stage gates parse" started.
+◇ Test "a restored window does not shorten the replay bound it advertises" started.
+◇ Test "undrained channel is capped at maxEntries with drop-oldest" started.
+◇ Test "v2 sequence stays strictly monotonic under concurrent callbacks" started.
+◇ Test "request translation carries explicit cache disable while local defaults enabled" started.
+◇ Test "v2 proof mismatch drops evidence but preserves terminal fallback" started.
+◇ Test "engine outcomes map precisely; adoption failure is conservative policy" started.
+◇ Test "reusable SSD cache requires a verified non-empty live weight hash" started.
+◇ Test "native rate is reserved on cache miss, disabled cache, and staged hit exactly once" started.
+◇ Test case passing 2 arguments adoptionBound → 0, expectedSaved → 16 to "RAM probe respects replay and byte caps without reading or pinning files" started.
+◇ Test "concurrent terminal waits until the claimed lookup is queued" started.
+◇ Test "durable-byte stage estimate is positive, conservative, and wire-bounded" started.
+◇ Test case passing 2 arguments adoptionBound → 8, expectedSaved → 8 to "RAM probe respects replay and byte caps without reading or pinning files" started.
+◇ Test "remote scope is authenticated outer metadata; absence disables cache" started.
+◇ Test case passing 2 arguments adoptionBound → 16, expectedSaved → 0 to "RAM probe respects replay and byte caps without reading or pinning files" started.
+◇ Test "v2 sequencer invalidates callbacks across epoch rollover" started.
+◇ Test "test root is isolated and requires the ephemeral-key gate" started.
+◇ Test "unseeded submissions keep fresh monotonic ids" started.
+◇ Test "failure finalization uses known stage result and remains exactly once" started.
+◇ Test "box-wide disk budget: env override wins; default = min(20 GiB, free/2)" started.
+◇ Test "lookup callback is exactly once and runs after result publication" started.
+◇ Test "lookup and ready receipts are synchronously queued before terminal error" started.
+◇ Test "missing-stage and cache-disabled attempts finalize once" started.
+◇ Test "engine terminal distinguishes matched prefix from prefill saved" started.
+◇ Test "resident memory hits never emit durable v2 holder evidence" started.
+◇ Test "stale resident preflight falls back without inventing an SSD miss" started.
+◇ Test "donate writes encrypted per-block files, dedupes re-donation, frees RAM" started.
+◇ Test "snapshot L2 wins retain SSD staging evidence" started.
+◇ Test "late SSD ready after a resident terminal leaves only expiring state" started.
+◇ Test "factory: init failure THROWS + ERROR engine_v2_refusal telemetry (no fallback)" started.
+◇ Test "concurrency clamp: [1, 8] product ceiling" started.
+◇ Test "factory: refusal reasons ride the telemetry for every classified failure" started.
+◇ Test "supported set mirrors the makeProductionEngine switch (model_type keyed)" started.
+◇ Test "factory bridge reserves exact resolved recurrent and MTP fixed bytes" started.
+◇ Test "factory: healthy builder → v2 bridge + one INFO kv-backend event" started.
+◇ Test "refusal reasons classify construction errors" started.
+◇ Test "TOML: engine_v2_max_concurrent + per-model map parse from provider.toml" started.
+◇ Test "backend config: engine_v2 still parses (retired, surfaced); concurrency keys decode" started.
+◇ Test "retired selection env vars are detected for the startup WARN, never consulted" started.
+◇ Test "factory: paged fallback rides the kv-backend event reason" started.
+◇ Test "gpt-oss constants: sub-2.5k donations skipped, above-floor donations persist" started.
+◇ Test "cancel for an unknown id is a no-op" started.
+◇ Test "bridge cancel maps the provider request-id to the minted engine id" started.
+◇ Test "runtime fan-out (the ProviderLoop handleCancellation hook path)" started.
+◇ Test "engine stop records the exact matched caller sequence" started.
+✔ Test "cacheScope maps onto CBv2Request.cacheSalt; "" maps to nil" passed after 0.093 seconds.
+◇ Test "returns the exact first caller sequence present in generated text" started.
+◇ Test "preserves caller order for same-position overlapping sequences" started.
+◇ Test "compares Unicode scalars exactly rather than canonically" started.
+◇ Test "finish-time detokenizer flush records a matched caller sequence" started.
+◇ Test "natural EOS does not invent a matched sequence" started.
+◇ Test "natural EOS token rendering cannot impersonate a stop string" started.
+➜ Test "gpt-oss-20b: donate→disk (RAM freed), from-disk adoption byte-identical, restart warmth, TTL" skipped.
+✔ Test "same input, different install key ⇒ different tag (T-041 leak #2 closed)" passed after 0.093 seconds.
+✔ Test "unset knobs collapse to legacy defaults (greedy temperature 0)" passed after 0.093 seconds.
+✔ Test "unknown backend capacity (0) does not bind" passed after 0.093 seconds.
+✔ Test "request-id validation: nil / empty / over-long / control chars → fresh id (fix #4)" passed after 0.093 seconds.
+✔ Test "logit_bias string keys parse to token ids; junk keys are dropped" passed after 0.093 seconds.
+✔ Test "salt scoping: different scopes can never share a tag; empty salt is length-prefixed" passed after 0.094 seconds.
+◇ Test "startup sweep expires files in unloaded model directories" started.
+✔ Test "a malformed request-id is normalized before it becomes a cancel handle" passed after 0.093 seconds.
+✔ Test "logprobs/top_logprobs mapping (0 = none; chosen-token → 1; clamp 20)" passed after 0.094 seconds.
+✔ Test "parseLogitBias reports a dropped-key count for the silent-drop signal (fix #9)" passed after 0.094 seconds.
+✔ Test "engine submit rejection emits exactly one final lookup receipt" passed after 0.094 seconds.
+✔ Test "shared-budget rejection emits exactly one final lookup receipt" passed after 0.094 seconds.
+✔ Test "real byte figures near the sentinel still classify as token-budget capacity" passed after 0.093 seconds.
+✔ Test "duplicate request id is rejected with the legacy planner message" passed after 0.093 seconds.
+✔ Test "engine logprobs convert to the OpenAI streaming entry shape" passed after 0.093 seconds.
+✔ Test "engine queue-full sentinel maps to the legacy queue-full class (429), not token-budget (503)" passed after 0.094 seconds.
+✔ Test "sidecar tags come from a separate HMAC domain and never collide with block tags" passed after 0.094 seconds.
+✔ Test "full request translates field-by-field" passed after 0.094 seconds.
+✔ Test "logprobs preserve Unicode bytes and alternative probabilities" passed after 0.094 seconds.
+✔ Test "capacityExhausted → canonical token_budget_exhausted string → retryable class" passed after 0.094 seconds.
+✔ Test "layout epoch: layer-kind changes produce a different epoch (fail-closed binding)" passed after 0.094 seconds.
+✔ Test "idle when nothing runs; budget gate disengaged when kvBytesPerToken unknown" passed after 0.094 seconds.
+✔ Test "stop resolution follows buildStopTokenIds semantics" passed after 0.094 seconds.
+✔ Test "RAM probe respects replay and byte caps without reading or pinning files" with 3 test cases passed after 0.094 seconds.
+✔ Test "budget fields follow the legacy committed/worst-case contract; activeTokens stays engine truth" passed after 0.094 seconds.
+✔ Test "budget max clamps to the live fleet budget; nil clamp preserves the raw grant" passed after 0.093 seconds.
+✔ Test "backendIneligible → non-retryable generation failure" passed after 0.094 seconds.
+✔ Test "atomic writer uses the exact Darkbloom-owned crash-temp grammar" passed after 0.093 seconds.
+✔ Test "an ordinary block's canonical metadata JSON is unchanged by the new fields" passed after 0.094 seconds.
+✔ Test "ledger-only reslice never claims physical reclaim or grows past the pool" passed after 0.094 seconds.
+✔ Test "descriptor-relative root creation rejects a concurrent symlink replacement" passed after 0.094 seconds.
+✔ Test "wedge trips only when the engine step counter flatlines under hanging admits" passed after 0.094 seconds.
+✔ Test "fixed and block-rounded request bytes are reflected in heartbeat tokens" passed after 0.094 seconds.
+✔ Test "heartbeat binds advertised capacity to backend pool truth" passed after 0.093 seconds.
+✔ Test "runtime summary recomputes each bridge's budget from live fleet residency" passed after 0.094 seconds.
+✔ Test "a cache without sidecars tells the engine not to snapshot sliding rows" passed after 0.094 seconds.
+✔ Test "tokenize failure surfaces as a tokenize error without touching the engine" passed after 0.094 seconds.
+✔ Test "unknown submit error → generic failure, never claims capacity" passed after 0.094 seconds.
+✔ Test "active cache I/O rejects symlinked root, model, and fanout paths" passed after 0.094 seconds.
+✔ Test "runtime capacity summary aggregates registered bridges" passed after 0.094 seconds.
+✔ Test "AAD binding: tampering body or metadata bytes breaks authentication" passed after 0.094 seconds.
+✔ Test "legacy DBK2 bytes and pre-frozen epochs are rejected by the DBK3 tier" passed after 0.094 seconds.
+✔ Test "pre-decrypt shutdown admission emits exactly one capacity receipt" passed after 0.094 seconds.
+✔ Test "round-trip: metadata + chunks survive encrypt/decrypt byte-exactly" passed after 0.098 seconds.
+✔ Test "startup temp sweep preserves young writes and removes stale crash orphans" passed after 0.098 seconds.
+✔ Test "pre-decrypt policy failure emits exactly one lookup receipt" passed after 0.098 seconds.
+✔ Test "descriptor-relative active I/O cannot be redirected by a fanout symlink race" passed after 0.102 seconds.
+✔ Test "geometry derives only for layouts whose window tiles into whole blocks" passed after 0.102 seconds.
+✔ Test "header length fields decode correctly across sizes (unaligned-safe byte decode)" passed after 0.102 seconds.
+✔ Test "the contiguous windowed ring conforms to the donor seam WS-4.1 freezes" passed after 0.103 seconds.
+✔ Test "shutdown drains through the engine" passed after 0.102 seconds.
+✔ Test "bridge resolution wins over the outer policy backstop without duplication" passed after 0.151 seconds.
+✔ Test "native request byte multiplication overflow rejects before engine submission" passed after 0.157 seconds.
+✔ Test "coveredBlocks: a mid-block donor covers W/blockSize − 1 blocks, and donors tile" passed after 0.157 seconds.
+✔ Test "gemma-4 sidecar economics: 10:1 sliding:full, 200 MiB read, 140 ms planned" passed after 0.162 seconds.
+✔ Test "cacheDirectory lives under darkbloom/kv3, never under the legacy darkbloom/kv root" passed after 0.162 seconds.
+✔ Test "a live identical seeded request falls back to a fresh id (collision guard)" passed after 0.169 seconds.
+✔ Test "under the cap nothing is dropped; drain empties the buffer" passed after 0.169 seconds.
+✔ Test "ready stage cost is optional, finite, and bounded" passed after 0.169 seconds.
+✔ Test "stableSeededRawId is deterministic, tagged, and input-sensitive" passed after 0.171 seconds.
+✔ Test "SSD defaults on and the single local kill switch disables it" passed after 0.173 seconds.
+✔ Test "resident L1 wins are memory even when SSD staging also matched" passed after 0.173 seconds.
+✔ Test "engine rejection after the gate releases the shared reservation" passed after 0.173 seconds.
+✔ Test "SSD knobs: TTL is capped at 15 minutes; write cap parses; stage gates parse" passed after 0.173 seconds.
+✔ Test "shared-budget gate: exhausted pool rejects as capacity BEFORE the engine sees the request" passed after 0.173 seconds.
+✔ Test "request translation carries explicit cache disable while local defaults enabled" passed after 0.175 seconds.
+✔ Test "engine outcomes map precisely; adoption failure is conservative policy" passed after 0.175 seconds.
+✔ Test "reusable SSD cache requires a verified non-empty live weight hash" passed after 0.175 seconds.
+✔ Test "durable-byte stage estimate is positive, conservative, and wire-bounded" passed after 0.175 seconds.
+✔ Test "remote scope is authenticated outer metadata; absence disables cache" passed after 0.181 seconds.
+✔ Test "concurrent terminal waits until the claimed lookup is queued" passed after 0.181 seconds.
+✔ Test "failure finalization uses known stage result and remains exactly once" passed after 0.181 seconds.
+✔ Test "box-wide disk budget: env override wins; default = min(20 GiB, free/2)" passed after 0.181 seconds.
+✔ Test "lookup callback is exactly once and runs after result publication" passed after 0.181 seconds.
+✔ Test "test root is isolated and requires the ephemeral-key gate" passed after 0.182 seconds.
+✔ Test "missing-stage and cache-disabled attempts finalize once" passed after 0.182 seconds.
+✔ Test "engine terminal distinguishes matched prefix from prefill saved" passed after 0.181 seconds.
+✔ Test "lookup and ready receipts are synchronously queued before terminal error" passed after 0.182 seconds.
+✔ Test "stale resident preflight falls back without inventing an SSD miss" passed after 0.181 seconds.
+✔ Test "snapshot L2 wins retain SSD staging evidence" passed after 0.184 seconds.
+✔ Test "undrained channel is capped at maxEntries with drop-oldest" passed after 0.187 seconds.
+✔ Test "every donation opportunity settles one bounded outcome" passed after 0.190 seconds.
+✔ Test "concurrency clamp: [1, 8] product ceiling" passed after 0.100 seconds.
+✔ Test "factory: init failure THROWS + ERROR engine_v2_refusal telemetry (no fallback)" passed after 0.100 seconds.
+✔ Test "factory: refusal reasons ride the telemetry for every classified failure" passed after 0.100 seconds.
+✔ Test "supported set mirrors the makeProductionEngine switch (model_type keyed)" passed after 0.100 seconds.
+✔ Test "factory bridge reserves exact resolved recurrent and MTP fixed bytes" passed after 0.100 seconds.
+✔ Test "factory: healthy builder → v2 bridge + one INFO kv-backend event" passed after 0.100 seconds.
+✔ Test "refusal reasons classify construction errors" passed after 0.100 seconds.
+✔ Test "TOML: engine_v2_max_concurrent + per-model map parse from provider.toml" passed after 0.100 seconds.
+✔ Test "backend config: engine_v2 still parses (retired, surfaced); concurrency keys decode" passed after 0.100 seconds.
+✔ Test "retired selection env vars are detected for the startup WARN, never consulted" passed after 0.100 seconds.
+✔ Test "factory: paged fallback rides the kv-backend event reason" passed after 0.100 seconds.
+✔ Test "cancel for an unknown id is a no-op" passed after 0.098 seconds.
+✔ Test "runtime fan-out (the ProviderLoop handleCancellation hook path)" passed after 0.098 seconds.
+✔ Test "returns the exact first caller sequence present in generated text" passed after 0.098 seconds.
+✔ Test "preserves caller order for same-position overlapping sequences" passed after 0.098 seconds.
+✔ Test "compares Unicode scalars exactly rather than canonically" passed after 0.098 seconds.
+✔ Test "natural EOS does not invent a matched sequence" passed after 0.098 seconds.
+✔ Suite "SSD prefix cache: HMAC lookup keys" passed after 0.193 seconds.
+✔ Test "shutdown cancels live pump tasks and releases their reservations (fix #7)" passed after 0.192 seconds.
+✔ Test "cache-disabled path emits once even when terminal usage follows" passed after 0.192 seconds.
+✔ Test "teardown without finished emits exactly one final lookup receipt" passed after 0.192 seconds.
+✔ Test "nil/empty delta logprobs leave the channel empty" passed after 0.192 seconds.
+✔ Test "startup sweep expires files in unloaded model directories" passed after 0.098 seconds.
+✔ Test "no channel wired → logprob-bearing deltas stream normally (dropped)" passed after 0.192 seconds.
+✔ Suite "EngineV2 admission-error mapping" passed after 0.193 seconds.
+✔ Test "bridge resolves the stop set once at construction and stamps every request" passed after 0.192 seconds.
+✔ Test "delta logprobs publish to the channel in OpenAI entry shape, in order" passed after 0.192 seconds.
+✔ Test "other terminal engine errors pass through unmapped" passed after 0.192 seconds.
+✔ Test "terminal kv_capacity_exhausted maps to the retryable capacity error" passed after 0.192 seconds.
+✔ Test "stream closed without terminal → teardown sentinel error" passed after 0.192 seconds.
+✔ Test "cancel before any decode: prompt-only usage info, then cancel error" passed after 0.192 seconds.
+✔ Test "length finish frames usage like stop but preserves finish_reason 'length'" passed after 0.192 seconds.
+✔ Test ".legacyRequestTimeout has no wire cause → legacy .error string" passed after 0.192 seconds.
+✔ Suite "SSD prefix cache: DBK3 block store" passed after 0.193 seconds.
+✔ Suite "SSD prefix cache: metadata planning" passed after 0.193 seconds.
+✔ Test "finished requests release their committed budget from the heartbeat" passed after 0.192 seconds.
+✔ Test "cancel that did work: usage info BEFORE the cancel error (legacy abort framing)" passed after 0.192 seconds.
+✔ Test "wedge counters flow into the slot (admits / first tokens / engine steps)" passed after 0.192 seconds.
+✔ Test "typed platform terminal surfaces as .terminal with cause + reconciled usage" passed after 0.192 seconds.
+✔ Test "terminal usage can only raise observed counts (billing-zero defense)" passed after 0.192 seconds.
+✔ Test "happy path: chunks then a single usage info, then finish" passed after 0.192 seconds.
+✔ Test "auto is CONTIGUOUS for GPT-OSS and cannot drift with family defaults" passed after 0.192 seconds.
+✔ Test "paged slots skip the per-request shared-KV reserve" passed after 0.193 seconds.
+✔ Suite "EngineV2 bridge shutdown" passed after 0.194 seconds.
+✔ Test "engine error: error only — no info (legacy failure framing)" passed after 0.224 seconds.
+✔ Test "teardown without a terminal still releases the reservation" passed after 0.224 seconds.
+✔ Test "detached terminal helper queues lookup before error without duplicate" passed after 0.224 seconds.
+✔ Test "an in-flight v2 request reserves its worst-case KV in the shared budget, released on finish" passed after 0.224 seconds.
+✔ Test "shared-budget gate: another request's live reservation blocks a worst case that no longer fits" passed after 0.224 seconds.
+✔ Suite "EngineV2 logprobs channel bounding" passed after 0.226 seconds.
+✔ Suite "SSD prefix cache: production gate" passed after 0.226 seconds.
+✔ Test "degenerate maxTokens <= 0 skips the gate (engine finishes it without KV)" passed after 0.224 seconds.
+✔ Test "v2 sequencer buffers ready, orders terminal, and assigns strict sequence" passed after 0.224 seconds.
+✔ Test "v2 proof mismatch drops evidence but preserves terminal fallback" passed after 0.224 seconds.
+✔ Test "v2 sequencer invalidates callbacks across epoch rollover" passed after 0.224 seconds.
+✔ Test "resident memory hits never emit durable v2 holder evidence" passed after 0.224 seconds.
+✔ Test "the feature is OFF by default: no geometry ⇒ no sidecars, no window" passed after 0.225 seconds.
+✔ Test "the frozen request-aware overload carries no windows — the defect this replaced" passed after 0.225 seconds.
+✔ Test "an incomplete tiling replays instead of restoring a PARTIAL window" passed after 0.226 seconds.
+✔ Test "the REAL legacy sweeper (LegacyKVCacheSweeper.sweep) leaves SSD entries intact and adoptable" passed after 0.226 seconds.
+✔ Suite "EngineV2 fail-loud factory (v0.7.5 one engine — no selection, no fallback)" passed after 0.228 seconds.
+✔ Test "bridge cancel maps the provider request-id to the minted engine id" passed after 0.134 seconds.
+✔ Test "engine stop records the exact matched caller sequence" passed after 0.134 seconds.
+✔ Test "finish-time detokenizer flush records a matched caller sequence" passed after 0.134 seconds.
+✔ Test "natural EOS token rendering cannot impersonate a stop string" passed after 0.134 seconds.
+➜ Test "gemma-qat, DEFAULT config, typical prompt: zero disk writes, serves normally" skipped.
+✔ Suite "EngineV2 logprobs passthrough" passed after 0.228 seconds.
+✔ Test "nextRawId uses wrapping increment (fix #5)" passed after 0.228 seconds.
+✔ Suite "EngineV2Bridge paged KV backend" passed after 0.228 seconds.
+✔ Suite "EngineV2 capacity: CBv2CapacitySnapshot → BackendSlotCapacity" passed after 0.228 seconds.
+✔ Suite "Outer inference-handler prefix cache receipts" passed after 0.234 seconds.
+✔ Test "unseeded submissions keep fresh monotonic ids" passed after 0.232 seconds.
+✔ Test "a written sidecar's plaintext header carries no absolute token position" passed after 0.233 seconds.
+◇ Test "durable and deduplicated donations settle distinctly" started.
+✔ Test "v2 sequence stays strictly monotonic under concurrent callbacks" passed after 0.233 seconds.
+✔ Test "late SSD ready after a resident terminal leaves only expiring state" passed after 0.231 seconds.
+✔ Test "success path: reserve before read, release at endAdoption" passed after 0.235 seconds.
+✔ Suite "SSD prefix cache: own root survives the legacy kv sweep" passed after 0.238 seconds.
+✔ Suite "EngineV2 cancellation wiring" passed after 0.237 seconds.
+✔ Suite "EngineV2 matched stop sequence" passed after 0.237 seconds.
+◇ Test "20 GiB-style budget is global across unloaded model directories" started.
+✔ Suite "EngineV2 bridge hardening" passed after 0.238 seconds.
+✔ Test "finish reason threads through: .length => 'length', .stop => 'stop', cancel partial => nil" passed after 0.237 seconds.
+◇ Test "auto resolves CONTIGUOUS for Gemma-4" started.
+✔ Test "no reservation when kvBytesPerToken is unknown (0)" passed after 0.242 seconds.
+✔ Test "same seed + same prompt reproduce identical output across submissions" passed after 0.242 seconds.
+✔ Test "different seed or different prompt produce different ids (and RNG streams)" passed after 0.242 seconds.
+✔ Suite "Provider-confirmed prefix cache receipts" passed after 0.252 seconds.
+✔ Test "a corrupted sidecar drops the window only; the block adoption stands" passed after 0.251 seconds.
+✔ Test "prompt plus max-token overflow rejects before cache staging" passed after 0.252 seconds.
+➜ Test "gemma-qat, DEFAULT config, long context (>27.1k): tail cached, adopted from disk byte-identically" skipped.
+✔ Test "bridge stamps the tenant cache scope as CBv2Request.cacheSalt" passed after 0.253 seconds.
+✔ Test "a nearly-drained write bucket funds the required blocks, never the sidecars" passed after 0.252 seconds.
+✔ Suite "EngineV2 event framing matches the legacy GenerationEvent shape" passed after 0.253 seconds.
+✔ Test "re-donating a covered boundary refreshes its sidecars, not just its blocks" passed after 0.253 seconds.
+✔ Test "low disk, generic write error, ENOSPC, and shutdown never cross durable barrier" passed after 0.254 seconds.
+◇ Test "corrupt tail block: reservation + accounting shrink to the SHORTENED run" started.
+✔ Suite "EngineV2 SSD prefix cache (live)" passed after 0.254 seconds.
+✔ Suite "EngineV2 translation: ChatCompletionRequest → CBv2Request" passed after 0.255 seconds.
+✔ Test "resident preflight skips equal or shorter SSD matches and stages longer ones" passed after 0.258 seconds.
+✔ Test "auto resolves CONTIGUOUS for Gemma-4" passed after 0.020 seconds.
+✔ Test "20 GiB-style budget is global across unloaded model directories" passed after 0.020 seconds.
+✔ Suite "EngineV2 lookup receipt terminal coverage" passed after 0.259 seconds.
+◇ Test "in-flight close classifies correlated and uncorrelated durable writes as cache_closed" started.
+✔ Test "SSD staging never false-rejects a request that fits cold at the exact boundary" passed after 0.258 seconds.
+◇ Test "an EXPLICIT paged selection still resolves paged after the v0.8.1 flip" started.
+◇ Test "whole-root eviction durably rotates the model epoch before unlink" started.
+✔ Test "stage → restart → rehydrate: a windowed sidecar survives and restores byte-exactly" passed after 0.266 seconds.
+✔ Test "bridge records terminal saved-prefill truth exactly once" passed after 0.269 seconds.
+✔ Test "in-flight close classifies correlated and uncorrelated durable writes as cache_closed" passed after 0.013 seconds.
+◇ Test "queue overflow drops the new receipt job without blocking" started.
+✔ Test "native-width rate rejects staged-to-cold fallback before over-admission" passed after 0.273 seconds.
+✔ Test "whole-root eviction durably rotates the model epoch before unlink" passed after 0.013 seconds.
+◇ Test "whole-root eviction keeps an active cache on the rotated epoch" started.
+✔ Test "queue overflow drops the new receipt job without blocking" passed after 0.012 seconds.
+✔ Suite "SSD prefix cache: ready write failure barriers" passed after 0.285 seconds.
+✔ Test "native rate is reserved on cache miss, disabled cache, and staged hit exactly once" passed after 0.290 seconds.
+✔ Suite "EngineV2 shared-budget KV accounting" passed after 0.292 seconds.
+✔ Test "durable and deduplicated donations settle distinctly" passed after 0.062 seconds.
+✔ Suite "SSD prefix cache: donation outcomes" passed after 0.298 seconds.
+✔ Test "the request-aware production donation captures windows (the feature is not inert)" passed after 0.296 seconds.
+✔ Test "two donors straddling a boundary tile its window; the second completes it" passed after 0.303 seconds.
+✔ Test "staging a window costs the sidecar read and nothing structural" passed after 0.319 seconds.
+✔ Test "whole-root eviction keeps an active cache on the rotated epoch" passed after 0.049 seconds.
+◇ Test "young temp bytes consume global budget without making the active temp evictable" started.
+✔ Test "young temp bytes consume global budget without making the active temp evictable" passed after 0.002 seconds.
+◇ Test "malformed exact-looking files remain untouched without DBK3 ownership proof" started.
+✔ Test "malformed exact-looking files remain untouched without DBK3 ownership proof" passed after 0.001 seconds.
+◇ Test "maintenance rejects roots reached through a symlinked ancestor" started.
+✔ Test "maintenance rejects roots reached through a symlinked ancestor" passed after 0.001 seconds.
+◇ Test "whole-root sweep preserves young and near-match temps but removes stale owned temps" started.
+✔ Test "whole-root sweep preserves young and near-match temps but removes stale owned temps" passed after 0.003 seconds.
+◇ Test "periodic maintenance sweeps stale unloaded-model temps and can restart" started.
+✔ Test "a restored window does not shorten the replay bound it advertises" passed after 0.338 seconds.
+✔ Suite "SSD prefix cache: windowed sidecar (WS-4.2)" passed after 0.340 seconds.
+✔ Test "corrupt tail block: reservation + accounting shrink to the SHORTENED run" passed after 0.093 seconds.
+◇ Test "backstop path (lookup never ran): completeStaging releases" started.
+✔ Test "periodic maintenance sweeps stale unloaded-model temps and can restart" passed after 0.042 seconds.
+✔ Suite "SSD prefix cache: unloaded whole-root maintenance" passed after 0.375 seconds.
+✔ Test "backstop path (lookup never ran): completeStaging releases" passed after 0.057 seconds.
+◇ Test "bridge deadline refusal abandons a real staged SSD hit" started.
+✔ Test "sequential identical seeded requests keep receipt callbacks and cleanup isolated" passed after 0.431 seconds.
+✔ Suite "EngineV2 seeded sampling reproducibility" passed after 0.433 seconds.
+✔ Test "bridge deadline refusal abandons a real staged SSD hit" passed after 0.037 seconds.
+◇ Test "cancel path: a cancelled staging task releases and stages nothing" started.
+✔ Test "ready is durable/readable and increases across successive donations" passed after 0.465 seconds.
+◇ Test "too-short, rate-limited, immediate-eviction, corrupt, and shutdown donations emit no ready" started.
+✔ Test "cancel path: a cancelled staging task releases and stages nothing" passed after 0.032 seconds.
+◇ Test "refusal path: no shared-budget headroom ⇒ no staging, no leak" started.
+✔ Test "refusal path: no shared-budget headroom ⇒ no staging, no leak" passed after 0.030 seconds.
+◇ Test "conversion peak reserves host, per-block MLX, and concatenated arrays" started.
+✔ Test "gpt-oss constants: sub-2.5k donations skipped, above-floor donations persist" passed after 0.453 seconds.
+◇ Test "gemma constants: the >27.1k evidence-backed tail caches; shorter writes nothing" started.
+✔ Test "conversion peak reserves host, per-block MLX, and concatenated arrays" passed after 0.075 seconds.
+◇ Test "close(): open tickets drained, reservations released, files kept" started.
+✔ Test "donate writes encrypted per-block files, dedupes re-donation, frees RAM" passed after 0.626 seconds.
+◇ Test "restart warmth: a FRESH cache over the same dir scans, stages, and adopts byte-exactly" started.
+✔ Test "close(): open tickets drained, reservations released, files kept" passed after 0.070 seconds.
+◇ Test "concurrent same-prefix requests bind exact tickets to one reserved entry" started.
+✔ Test "restart warmth: a FRESH cache over the same dir scans, stages, and adopts byte-exactly" passed after 0.044 seconds.
+◇ Test "real SSD hit and miss p95 stay inside the configured stage deadline" started.
+✔ Test "concurrent same-prefix requests bind exact tickets to one reserved entry" passed after 0.060 seconds.
+◇ Test "same-prefix attachment needs no spare provisional headroom" started.
+✔ Test "same-prefix attachment needs no spare provisional headroom" passed after 0.066 seconds.
+◇ Test "two cache instances may reserve the same raw receipt id independently" started.
+SSD stage latency: miss_p95=0.000143291 seconds hit_p95=0.005472791 seconds deadline=1.0 seconds
+✔ Test "real SSD hit and miss p95 stay inside the configured stage deadline" passed after 0.150 seconds.
+◇ Test "salt isolation on disk: scoped donation is unfindable by other scopes" started.
+✔ Test "salt isolation on disk: scoped donation is unfindable by other scopes" passed after 0.037 seconds.
+◇ Test "corrupt block: auth failure ⇒ file deleted, index dropped, recompute fallback" started.
+✔ Test "two cache instances may reserve the same raw receipt id independently" passed after 0.083 seconds.
+✔ Suite "SSD prefix cache: staging reservations" passed after 0.864 seconds.
+✔ Test "corrupt block: auth failure ⇒ file deleted, index dropped, recompute fallback" passed after 0.039 seconds.
+◇ Test "TTL: expired entries are swept (files unlinked) and never adopted" started.
+✔ Test "TTL: expired entries are swept (files unlinked) and never adopted" passed after 0.032 seconds.
+◇ Test "TTL slides on hit: a staged (hit) entry survives what an untouched one doesn't" started.
+✔ Test "TTL slides on hit: a staged (hit) entry survives what an untouched one doesn't" passed after 0.056 seconds.
+◇ Test "LRU eviction at the box-wide budget: oldest-by-last-hit unlinked first" started.
+✔ Test "LRU eviction at the box-wide budget: oldest-by-last-hit unlinked first" passed after 0.085 seconds.
+◇ Test "active capacity eviction persists a new epoch before unlink" started.
+✔ Test "active capacity eviction persists a new epoch before unlink" passed after 0.034 seconds.
+◇ Test "capability publication waits for destructive mutation completion" started.
+✔ Test "capability publication waits for destructive mutation completion" passed after 0.012 seconds.
+◇ Test "reconciliation drops a symlink-replaced indexed file without following it" started.
+✔ Test "reconciliation drops a symlink-replaced indexed file without following it" passed after 0.001 seconds.
+◇ Test "budget eviction skips an undeletable oldest file and removes another victim" started.
+✔ Test "budget eviction skips an undeletable oldest file and removes another victim" passed after 0.001 seconds.
+◇ Test "TTL telemetry counts only successful owned-file removals" started.
+✔ Test "TTL telemetry counts only successful owned-file removals" passed after 0.001 seconds.
+◇ Test "endurance write cap: an exhausted token bucket drops donations, engine unaffected" started.
+✔ Test "endurance write cap: an exhausted token bucket drops donations, engine unaffected" passed after 0.001 seconds.
+◇ Test "exhausted write cap: donation dropped BEFORE extraction (synchronous), tags settled for retry" started.
+✔ Test "exhausted write cap: donation dropped BEFORE extraction (synchronous), tags settled for retry" passed after 0.003 seconds.
+◇ Test "stage pre-floor is overflow-safe: absurd MIN_EFFECTIVE_TOKENS disables staging, never traps" started.
+✔ Test "stage pre-floor is overflow-safe: absurd MIN_EFFECTIVE_TOKENS disables staging, never traps" passed after 0.043 seconds.
+✔ Suite "SSD prefix cache: donation, staging, adoption" passed after 1.176 seconds.
+✔ Test "an EXPLICIT paged selection still resolves paged after the v0.8.1 flip" passed after 0.991 seconds.
+◇ Test "explicit contiguous wins over the GPT-OSS auto default" started.
+✔ Test "explicit contiguous wins over the GPT-OSS auto default" passed after 0.004 seconds.
+◇ Test "explicit paged GPT-OSS preflights packaged resources and physical pool truth" started.
+✔ Test "gemma constants: the >27.1k evidence-backed tail caches; shorter writes nothing" passed after 0.934 seconds.
+◇ Test "unknown/saturated adoption bound: never persists (the only 'never cached' case)" started.
+✔ Test "explicit paged GPT-OSS preflights packaged resources and physical pool truth" passed after 0.555 seconds.
+◇ Test "explicit paged serves Gemma-4 TEXT (eligible shapes, opt-in)" started.
+✔ Test "unknown/saturated adoption bound: never persists (the only 'never cached' case)" passed after 0.407 seconds.
+◇ Test "persisted-run byte cap: blocks beyond maxStageBytes are never written (leading run kept)" started.
+✔ Test "persisted-run byte cap: blocks beyond maxStageBytes are never written (leading run kept)" passed after 0.256 seconds.
+◇ Test "stage cap below hybrid benefit floor writes no unusable blocks" started.
+✔ Test "explicit paged serves Gemma-4 TEXT (eligible shapes, opt-in)" passed after 0.357 seconds.
+◇ Test "fleet kill switch forces explicit paged to contiguous at the deepest layer" started.
+✔ Test "fleet kill switch forces explicit paged to contiguous at the deepest layer" passed after 0.004 seconds.
+◇ Test "kernel-ineligible shape REFUSES an explicit paged request" started.
+✔ Test "kernel-ineligible shape REFUSES an explicit paged request" passed after 0.183 seconds.
+◇ Test "failed kernel preflight REFUSES before slab construction" started.
+✔ Test "failed kernel preflight REFUSES before slab construction" passed after 0.003 seconds.
+◇ Test "physical-capacity shortfall REFUSES an explicit paged request" started.
+✔ Test "physical-capacity shortfall REFUSES an explicit paged request" passed after 0.002 seconds.
+◇ Test "non-explicit selections permit paged-failure degradation" started.
+✔ Test "non-explicit selections permit paged-failure degradation" passed after 0.001 seconds.
+◇ Test "`.auto` never enters the paged ladder — no preflight, no reason, no dtype" started.
+✔ Test "`.auto` never enters the paged ladder — no preflight, no reason, no dtype" passed after 0.002 seconds.
+◇ Test "the crash-loop guard is DORMANT under the v0.8.1 contiguous default" started.
+✔ Test "the crash-loop guard is DORMANT under the v0.8.1 contiguous default" passed after 0.005 seconds.
+◇ Test "explicit paged IGNORES the crash-loop guard — operator intent beats automation" started.
+✔ Test "stage cap below hybrid benefit floor writes no unusable blocks" passed after 0.322 seconds.
+◇ Test "write-behind admits one full max-size (~600 MB) donation; oversize is dropped, never stalled" started.
+✔ Test "write-behind admits one full max-size (~600 MB) donation; oversize is dropped, never stalled" passed after 0.028 seconds.
+✔ Suite "SSD prefix cache: per-donation gate" passed after 2.497 seconds.
+✔ Test "explicit paged IGNORES the crash-loop guard — operator intent beats automation" passed after 0.372 seconds.
+◇ Test "kill-switch degrade constructs frozen-full cache for resolved contiguous backend" started.
+✔ Test "kill-switch degrade constructs frozen-full cache for resolved contiguous backend" passed after 0.003 seconds.
+◇ Test "paged pool is sized from the ONE scheduler config the engine runs on" started.
+✔ Test "too-short, rate-limited, immediate-eviction, corrupt, and shutdown donations emit no ready" passed after 2.315 seconds.
+◇ Test "terminal cleanup retention covers the coordinator two-minute attempt window" started.
+✔ Test "terminal cleanup retention covers the coordinator two-minute attempt window" passed after 0.001 seconds.
+◇ Test "write-behind maintenance/ready never blocks donation return" started.
+✔ Test "write-behind maintenance/ready never blocks donation return" passed after 0.018 seconds.
+✔ Suite "SSD prefix cache: durable-ready receipts" passed after 2.801 seconds.
+✔ Test "paged pool is sized from the ONE scheduler config the engine runs on" passed after 0.349 seconds.
+◇ Test "resident cache policy is prompt-bound and follows the master gate" started.
+✔ Test "resident cache policy is prompt-bound and follows the master gate" passed after 0.001 seconds.
+◇ Test "resolved paged backend installs resident L1; contiguous ignores it" started.
+✔ Test "resolved paged backend installs resident L1; contiguous ignores it" passed after 0.335 seconds.
+◇ Test "slot factory hands the cache factory the RESOLVED backend's capability" started.
+✔ Test "slot factory hands the cache factory the RESOLVED backend's capability" passed after 0.337 seconds.
+◇ Test "slot factory REFUSES an explicit paged request it cannot serve" started.
+✔ Test "slot factory REFUSES an explicit paged request it cannot serve" passed after 0.002 seconds.
+◇ Test "slot factory publishes GPT-OSS native contiguous rate without SSD staging" started.
+✔ Test "slot factory publishes GPT-OSS native contiguous rate without SSD staging" passed after 0.004 seconds.
+◇ Test "a resolved-CONTIGUOUS slot gets NO prefix cache — adoption is not exact there" started.
+✔ Test "a resolved-CONTIGUOUS slot gets NO prefix cache — adoption is not exact there" passed after 0.003 seconds.
+◇ Test "a resolved-PAGED slot KEEPS the prefix cache — the gate is not a global disable" started.
+✔ Test "a resolved-PAGED slot KEEPS the prefix cache — the gate is not a global disable" passed after 0.351 seconds.
+◇ Test "the gate follows the RESOLVED backend: paged degraded by the kill switch gets no cache" started.
+✔ Test "the gate follows the RESOLVED backend: paged degraded by the kill switch gets no cache" passed after 0.003 seconds.
+◇ Test "`.auto` slots get no prefix cache, because `.auto` is contiguous" started.
+✔ Test "`.auto` slots get no prefix cache, because `.auto` is contiguous" passed after 0.002 seconds.
+◇ Test "slot factory routes a VLM slot to paged now that the cache vouches" started.
+✔ Test "slot factory routes a VLM slot to paged now that the cache vouches" passed after 0.352 seconds.
+◇ Test "a VLM slot whose cache does not vouch is still forced to contiguous" started.
+✔ Test "a VLM slot whose cache does not vouch is still forced to contiguous" passed after 0.001 seconds.
+✔ Suite "EngineV2 KV-backend gate (real tiny models)" passed after 4.493 seconds.
+✔ Test run with 242 tests in 32 suites passed after 4.494 seconds.

@@ -1,0 +1,101 @@
+{
+  "accepted_counts": {
+    "expanded_cases": 14,
+    "failed": 0,
+    "skipped": 0,
+    "suites": 3,
+    "test_functions": 11
+  },
+  "accepted_root_log": {
+    "bytes": 4353,
+    "path": "cpu-coordination-root.txt",
+    "sha256": "652a16e5016693e0bb221e72ce372e8e16494f1cb2526b5ebf4869c74484b1c6"
+  },
+  "alias_reproduction_after_fix": {
+    "expanded_cases": 14,
+    "failed": 0,
+    "path": "alias-after-fix.txt",
+    "skipped": 0,
+    "suites": 3,
+    "test_functions": 11
+  },
+  "alias_reproduction_before_fix": {
+    "accepted_candidate_evidence": false,
+    "historical_result": "failed_before_alias_fix",
+    "path": "alias-before-fix.txt"
+  },
+  "bounded_source_re_review": "source-scope-review.json",
+  "counts_not_added_to_fresh_m5_totals": true,
+  "final_alias_rule": "Expand known tmp/var aliases during lexical traversal before parent traversal; never depend on target existence.",
+  "final_source_link_inventory": {
+    "Sources/ProviderCore/SSDAuthenticatedFileIdentity.swift": {
+      "bytes": 1359,
+      "repository_path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDAuthenticatedFileIdentity.swift",
+      "sha256": "0dbe5273892371c865ae9ce28d8be7f292dd8409cfdd6963933afb53ec96d484"
+    },
+    "Sources/ProviderCore/SSDBlockPathGuard.swift": {
+      "bytes": 5907,
+      "repository_path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockPathGuard.swift",
+      "sha256": "f9eaa3df78a7ef855f88dbb61be18eed3f532fcb9433158aa83d7041eab62388"
+    },
+    "Sources/ProviderCore/SSDBlockStore+Streaming.swift": {
+      "bytes": 7468,
+      "repository_path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore+Streaming.swift",
+      "sha256": "ac9503f6e7cdd225bb9396dd90c7137f4e12c56e4aa72344d65982bbb92522d3"
+    },
+    "Sources/ProviderCore/SSDBlockStore.swift": {
+      "bytes": 24962,
+      "repository_path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore.swift",
+      "sha256": "9a1bf81c76e0ed7999d1e8ced2b380802ddfbeb0e51ea069411a4268b29678bc"
+    },
+    "Sources/ProviderCore/SSDCheckpointFileCoordinator.swift": {
+      "bytes": 4358,
+      "repository_path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCheckpointFileCoordinator.swift",
+      "sha256": "bf790f199d0b056ea1f42adac809fb2031e5cd452f76d77f7f252a00eb92791b"
+    },
+    "Sources/ProviderCore/SSDNoFollowIO.swift": {
+      "bytes": 22028,
+      "repository_path": "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDNoFollowIO.swift",
+      "sha256": "4c17b1e7e3f2f0ee305816977a9a6df9d30e22f403f659b03535ea79bcf2ce38"
+    },
+    "Tests/ProviderCoreTests/SSDCheckpointCoordinationTestSupport.swift": {
+      "bytes": 1236,
+      "repository_path": "provider-swift/Tests/ProviderCoreTests/SSDCheckpointCoordinationTestSupport.swift",
+      "sha256": "58254150450633f1bb3774eea7ec41d32b8a05a5b9977b3e1b62477318cbaa1f"
+    },
+    "Tests/ProviderCoreTests/SSDCheckpointFileCoordinatorPathTests.swift": {
+      "bytes": 5288,
+      "repository_path": "provider-swift/Tests/ProviderCoreTests/SSDCheckpointFileCoordinatorPathTests.swift",
+      "sha256": "7ae775f93fa270cf4469f0949a03d531d4ce0db8a0d61fe268b9541658d01119"
+    },
+    "Tests/ProviderCoreTests/SSDCheckpointFileCoordinatorTests.swift": {
+      "bytes": 4639,
+      "repository_path": "provider-swift/Tests/ProviderCoreTests/SSDCheckpointFileCoordinatorTests.swift",
+      "sha256": "68f04345dbc24f324b88d3c19275abe2c50d8addaba6ce7f1857a14c7acc1aaa"
+    },
+    "Tests/ProviderCoreTests/SSDCheckpointRecencyCoordinationTests.swift": {
+      "bytes": 7066,
+      "repository_path": "provider-swift/Tests/ProviderCoreTests/SSDCheckpointRecencyCoordinationTests.swift",
+      "sha256": "135b3f51f3f374d9e5a254d73dce842c52b9469f7e861159cf24b6e84fe613c6"
+    }
+  },
+  "harness_files": {
+    "cpu-harness/CBv2LayerKind.swift": {
+      "bytes": 2039,
+      "sha256": "68bad4ab3f42646423518bb4ea3803fd807dd03f002f3a07ef0ff784122bc0db"
+    },
+    "cpu-harness/Package.swift": {
+      "bytes": 359,
+      "sha256": "3d89f7889aa2dd0391f0676598c6a3ed77a5314213d579459b3f7f06ce0c877e"
+    }
+  },
+  "historical_failure_not_relabelled_as_current_candidate_failure": true,
+  "original_file_identity_unchanged": {
+    "git_blob": "36767824b5f17bd3cee82926f2f59c1b440817fc",
+    "sha256": "0dbe5273892371c865ae9ce28d8be7f292dd8409cfdd6963933afb53ec96d484"
+  },
+  "review_record": "source-review.json",
+  "scope": "Original CPU/file-system regression package; not inference or GPU execution.",
+  "source_parent": "35fea6d0e3b05ff65d60d9675ab480159913ac62",
+  "stub_scope": "MLXLMCommon contains a small CBv2LayerKind compile stub, not the native MLX runtime."
+}

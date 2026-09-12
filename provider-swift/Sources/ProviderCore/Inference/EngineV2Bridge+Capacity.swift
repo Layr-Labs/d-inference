@@ -21,6 +21,7 @@
 //     directions).
 
 import Foundation
+import MLX
 import MLXLMCommon
 
 extension EngineV2Bridge {
@@ -122,13 +123,9 @@ extension EngineV2Bridge {
         } else {
             budgetUsed = maxTokensPotential
         }
-        // Physical backend truth binds the advertised capacity from below
-        // the admission ledger: on the PAGED backend a re-slice GROW moves
-        // only the ledger — the construction-fixed pool is what actually
-        // places pages, so advertising ledger tokens past pool truth would
-        // over-route into the capacity-requeue path. (Contiguous backends
-        // resize both ledgers together — the min is a no-op. 0 ⇒ unknown,
-        // e.g. an idle point-update snapshot — no bind.)
+        // Both ceilings resize for segmented and contiguous storage. Their
+        // minimum also protects explicit fixed-reference pools, whose backend
+        // capacity cannot grow. Zero means an unreported backend ceiling.
         var boundedKVBytesCapacity = snapshot.kvBytesCapacity
         if snapshot.kvBytesBackendCapacity > 0 {
             boundedKVBytesCapacity = min(
@@ -157,6 +154,35 @@ extension EngineV2Bridge {
         } else {
             budgetMax = 0
         }
+
+        // Profiler slot telemetry (slice 2). ALWAYS attached: the object's
+        // presence is the coordinator's "new provider" sentinel. Everything
+        // here is bridge/engine bookkeeping already on hand — no new eval,
+        // no new actor hop (`mtpStatusSnapshot` is a synchronous read).
+        let mtp = mtpStatusSnapshot()
+        var partialPrefillRows: Int64 = 0
+        for requestState in active.values where requestState.firstTokenAt == nil {
+            partialPrefillRows += 1
+        }
+        // Process-global in-flight blocking eval (MLX `EvalProbe`) — also
+        // populates the pre-existing `eval_in_flight_ms` slot field that the
+        // v2 bridge never filled.
+        let evalInFlightMs = EvalProbe.currentEvalElapsedMs
+        let slotTelemetry = SlotTelemetry(
+            queuedPrefillTokens: Int64(queuedPrefillTokens),
+            partialPrefillRows: partialPrefillRows,
+            prefillTokensTotal: prefillTokensTotal,
+            isolatedPrefillTps: isolatedPrefillEwmaInitialized ? isolatedPrefillTpsEwma : 0,
+            ewmaInitialized: isolatedPrefillEwmaInitialized,
+            pumpTasks: Int64(pumpTasks.count),
+            mtpRoundsTotal: Int64(mtp.rounds),
+            mtpProposedTotal: Int64(mtp.proposedTokens),
+            mtpAcceptedTotal: Int64(mtp.acceptedDraftTokens),
+            kvBytesInUse: Int64(snapshot.kvBytesInUse),
+            kvBytesCapacity: Int64(boundedKVBytesCapacity),
+            evalInFlightMs: evalInFlightMs,
+            stepWallNsTotal: Int64(clamping: snapshot.stepWallNanosTotal),
+            decodeRowsTotal: Int64(clamping: snapshot.decodeRowsTotal))
 
         let state: String
         if recoveryReloading {
@@ -217,7 +243,12 @@ extension EngineV2Bridge {
             firstTokensEmitted: Int64(wedgeMonitor.firstTokens),
             secondsSinceLastStep: wedgeMonitor.secondsSinceLastStep(now: now),
             secondsSinceLastFirstToken: wedgeMonitor.secondsSinceLastFirstToken(now: now),
-            wedgeSuspected: wedgeMonitor.wedgeSuspected(now: now)
+            wedgeSuspected: wedgeMonitor.wedgeSuspected(now: now),
+            evalInFlightMs: evalInFlightMs,
+            telemetry: slotTelemetry,
+            prefixCache: prefixCacheTelemetry.snapshot(),
+            pagedStorage: pagedStorageTelemetry.snapshot(
+                snapshot.pagedStorage.flatMap(PagedStorageTelemetryCapture.init))
         )
     }
 

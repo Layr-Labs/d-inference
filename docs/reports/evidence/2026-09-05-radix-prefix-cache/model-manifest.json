@@ -1,0 +1,123 @@
+{
+  "recorded_unix": 1788585653.7201579,
+  "model": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+  "revision": "06d517d395dfc5588090f7f534112bee331f7b4a",
+  "root": "/Users/gaj/.cache/huggingface/hub/models--EigenLabs--Qwen3.8-27B-4bit-mtp/snapshots/06d517d395dfc5588090f7f534112bee331f7b4a",
+  "os": "macOS-26.5.2-arm64-arm-64bit",
+  "chip": "Apple M5 Max",
+  "memory_bytes": 137438953472,
+  "files": [
+    {
+      "name": ".gitattributes",
+      "bytes": 1570,
+      "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930",
+      "blob": "52373fe24473b1aa44333d318f578ae6bf04b49b",
+      "blob_sha256_verified": false
+    },
+    {
+      "name": "README.md",
+      "bytes": 1579,
+      "sha256": "f4e1dcf3ec2fbbdf1c97ffaef0d17e575521b9464c98b5703330450b3bda034d",
+      "blob": "7fac73abf61db8d19a38743222da63c5f1ed6926",
+      "blob_sha256_verified": false
+    },
+    {
+      "name": "chat_template.jinja",
+      "bytes": 8952,
+      "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+      "blob": "c0c686f9c38d70d179fb7b5f5aa7530bc913dda3",
+      "blob_sha256_verified": false
+    },
+    {
+      "name": "config.json",
+      "bytes": 4441,
+      "sha256": "4691da94a1b4ef415aad112ec46abebd33f8a41ad07380e486c0526eb945c1ff",
+      "blob": "0e486ad0750bf57c5a0164ad76776e083f0db20c",
+      "blob_sha256_verified": false
+    },
+    {
+      "name": "generation_config.json",
+      "bytes": 202,
+      "sha256": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+      "blob": "023756cfadf88e5bf69eefeee3e172f38c448d64",
+      "blob_sha256_verified": false
+    },
+    {
+      "name": "model-00001-of-00003.safetensors",
+      "bytes": 5343268662,
+      "sha256": "6cc1508e96fb5d0865dfd5753a79f4ec60651bf3e2a82844a7e8ae9c60528c0d",
+      "blob": "6cc1508e96fb5d0865dfd5753a79f4ec60651bf3e2a82844a7e8ae9c60528c0d",
+      "blob_sha256_verified": true
+    },
+    {
+      "name": "model-00002-of-00003.safetensors",
+      "bytes": 5354185130,
+      "sha256": "83f2a20ca8058f486a3634a27faf99587f4cd3c156a83dee34fb99e6ac178670",
+      "blob": "83f2a20ca8058f486a3634a27faf99587f4cd3c156a83dee34fb99e6ac178670",
+      "blob_sha256_verified": true
+    },
+    {
+      "name": "model-00003-of-00003.safetensors",
+      "bytes": 5357087557,
+      "sha256": "31b8c91ef899f79efaaa69e3d2c096f6e2ebeb2ff20e29222abbd9ebc79e560a",
+      "blob": "31b8c91ef899f79efaaa69e3d2c096f6e2ebeb2ff20e29222abbd9ebc79e560a",
+      "blob_sha256_verified": true
+    },
+    {
+      "name": "model.safetensors.index.json",
+      "bytes": 211561,
+      "sha256": "8bf770b4b22fa4cffe3000a16314c41ea52d7556ad1acafb2e7bb33d96fd4e23",
+      "blob": "f19b683accaa074e256740be05a2b344addc7965",
+      "blob_sha256_verified": false
+    },
+    {
+      "name": "mtp-00001.safetensors",
+      "bytes": 238934237,
+      "sha256": "384df9fc2018011aeb43f0c16f393125d5c97531dd076943389c2b36d081411c",
+      "blob": "384df9fc2018011aeb43f0c16f393125d5c97531dd076943389c2b36d081411c",
+      "blob_sha256_verified": true
+    },
+    {
+      "name": "preprocessor_config.json",
+      "bytes": 390,
+      "sha256": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+      "blob": "2ea84a437d448ff71b08df68fdd949d5cc4ebb64",
+      "blob_sha256_verified": false
+    },
+    {
+      "name": "processor_config.json",
+      "bytes": 991,
+      "sha256": "45fc17c8dd2474af6b493b52483c26c0584b0082d368c480f9fa611e73070040",
+      "blob": "8f29fe38a79a9d8367009ebebd25c35b1f3c4e40",
+      "blob_sha256_verified": false
+    },
+    {
+      "name": "tokenizer.json",
+      "bytes": 19989325,
+      "sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+      "blob": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+      "blob_sha256_verified": true
+    },
+    {
+      "name": "tokenizer_config.json",
+      "bytes": 1165,
+      "sha256": "792fa3f0cb88b111e54ef3134c873531008c4df471d108da17903426e308aa7b",
+      "blob": "1d134cd298be1e3be25db393d93a1cefe80e3214",
+      "blob_sha256_verified": false
+    },
+    {
+      "name": "video_preprocessor_config.json",
+      "bytes": 385,
+      "sha256": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",
+      "blob": "3ba673a5ad7d4d13f54155ecd38b2a94a6dac8fe",
+      "blob_sha256_verified": false
+    },
+    {
+      "name": "vocab.json",
+      "bytes": 6722759,
+      "sha256": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003",
+      "blob": "0aa0ce0658d60ac4a5d609f4eadb0e8e43514176",
+      "blob_sha256_verified": false
+    }
+  ]
+}

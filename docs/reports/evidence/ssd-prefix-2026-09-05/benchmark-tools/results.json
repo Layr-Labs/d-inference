@@ -1,0 +1,23 @@
+{
+  "python_checks": 20,
+  "python_command": "python3 -m unittest discover -s scripts/benchmarks -p 'test_*.py'",
+  "source_manifest": "source-manifest.json",
+  "source_manifest_sha256": "84fd526f0f3df9aaf51612ba63a9c4288609e7a24ea08864ad1938808c0722fb",
+  "build_command": "RADIX_SOURCE_ROOT=$PWD RADIX_CANDIDATE_BUILD=1 swift build --package-path scripts/benchmarks/radix-engine --scratch-path provider-swift/.build -c release --product radix-engine --jobs 4 --disable-automatic-resolution",
+  "artifact_manifest": "artifact-manifest.json",
+  "logs": {
+    "radix-ssd-benchmark-python-tests.txt.gz": {
+      "sha256": "ede66f0eaba82bbcf926325dcb6298da5439e4172acd4468893d759b67a064d4",
+      "uncompressed_sha256": "5ac41b80404f9634a6da1d6b103faac48bb877a803d0adcbfef78dc27262d504"
+    },
+    "radix-ssd-engine-quantized-release.txt.gz": {
+      "sha256": "059d26f995a2ab68d41f47306cb6a71c6c69d165602d9d3cfa103e6cdf7fc185",
+      "uncompressed_sha256": "14f3749d015cb5dc7cf2183a1ba2b5b92c3d9158a71bf07c342959111bd95001"
+    },
+    "radix-ssd-cli-quantized-release.txt.gz": {
+      "sha256": "f7bb79b37a116bb3b04c6aaa1717e955ee101df491e8742edda8412af69d4841",
+      "uncompressed_sha256": "9e58a9d33e77bdfc20ae9d4c940476f85f3282321c36fe3809e071e503d96d7a"
+    }
+  },
+  "scope": "Normal startup binding, production slot/default-SSD and explicit key-mode harness; model measurements are retained separately."
+}

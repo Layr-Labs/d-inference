@@ -17,7 +17,7 @@ func TestSecurityInfoWaiterRejectsOverlapAndCleansCancellation(t *testing.T) {
 	firstDone := make(chan error, 1)
 	go func() {
 		defer release()
-		_, err := awaitSecurityInfo(ctx, ch, "UDID-ONE", time.Minute)
+		_, err := awaitSecurityInfo(ctx, ch, time.Minute)
 		firstDone <- err
 	}()
 	if _, _, _, err := c.registerSecurityInfoWaiter(
@@ -47,7 +47,7 @@ func TestMDAWaiterRejectsOverlapAndCleansCancellation(t *testing.T) {
 	firstDone := make(chan error, 1)
 	go func() {
 		defer release()
-		_, err := awaitDeviceAttestation(ctx, ch, "UDID-MDA", time.Minute)
+		_, err := awaitDeviceAttestation(ctx, ch, time.Minute)
 		firstDone <- err
 	}()
 	if _, _, _, err := c.registerDeviceAttestationWaiter(

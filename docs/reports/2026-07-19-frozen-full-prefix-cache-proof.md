@@ -1,5 +1,7 @@
 # Frozen-Full Hybrid Prefix Cache Proof
 
+> Last updated: 2026-07-20 · commit `ee671f7ef`
+
 Date: 2026-07-19  
 Parent base: `ac3d934a979036611b2ea3b66e51c977abfd7483`  
 Engine base: `bdf4b367a3dec5a0db23797f759427965a81c0fd`

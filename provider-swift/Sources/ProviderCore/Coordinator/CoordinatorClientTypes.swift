@@ -103,9 +103,13 @@ public enum CoordinatorEvent: Sendable {
         cacheReceiptNonce: String?,
         cacheScope: String?,
         prefixCacheProtocol: Int?,
+        cacheReceiptBoundaryMode: String? = nil,
         toolSchemaMetadataProtocol: Int?,
         firstContentDeadline: FirstContentDeadline?,
-        receivedAt: ContinuousClock.Instant
+        receivedAt: ContinuousClock.Instant,
+        /// Profiler accumulator anchored at frame receipt (created
+        /// unconditionally, unlike the budget-derived deadline).
+        profile: RequestProfileBuilder
     )
     case cancel(requestId: String)
     case attestationChallenge(nonce: String, timestamp: String)
@@ -158,6 +162,10 @@ public struct CoordinatorClientConfig: Sendable {
     /// nil on headless/no-GUI boxes (no token) — those register un-attested.
     public let apnsDeviceToken: String?
     public let apnsEnvironment: String?
+    /// Idle-memory policy reported in every heartbeat (`idle_unload_mins`):
+    /// `[backend] idle_timeout_mins` — 0 keeps models resident, N unloads
+    /// after N idle minutes. nil omits the field (test/legacy clients).
+    public let idleUnloadMins: UInt64?
 
     public init(
         url: String,
@@ -176,7 +184,8 @@ public struct CoordinatorClientConfig: Sendable {
         runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
         privateOnly: Bool = false,
         apnsDeviceToken: String? = nil,
-        apnsEnvironment: String? = nil
+        apnsEnvironment: String? = nil,
+        idleUnloadMins: UInt64? = nil
     ) {
         self.url = url
         self.hardware = hardware
@@ -195,6 +204,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.privateOnly = privateOnly
         self.apnsDeviceToken = apnsDeviceToken
         self.apnsEnvironment = apnsEnvironment
+        self.idleUnloadMins = idleUnloadMins
     }
 }
 
@@ -220,16 +230,23 @@ public struct RuntimeHashes: Sendable {
 public enum OutboundMessage: Sendable {
     case inferenceAccepted(requestId: String)
     case inferenceChunk(requestId: String, data: String, encryptedData: EncryptedPayload?)
+    /// `profile` rides the terminal as the live BUILDER, not the wire
+    /// struct: `SendHandle.send` stamps the flush barrier and the send
+    /// instant on it, and `CoordinatorClientCodec.providerMessage(for:)`
+    /// materializes `wireObject()` at encode time so those stamps (and the
+    /// outbound-queue latency in `total_us`) land in the object.
     case inferenceComplete(
         requestId: String,
         usage: UsageInfo,
         stopSequence: String?,
         seSignature: String?,
-        responseHash: String?
+        responseHash: String?,
+        profile: RequestProfileBuilder? = nil
     )
     case inferenceError(
         requestId: String,
-        failure: InferenceFailure
+        failure: InferenceFailure,
+        profile: RequestProfileBuilder? = nil
     )
     case attestationResponse(AttestationResponsePayload)
     case codeAttestationResponse(nonce: String, signature: String)

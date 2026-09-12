@@ -1,20 +1,32 @@
+%% Provider trust stack as built at c5c404fca. Source of truth for attestation-layers.svg;
+%% re-render after editing: mmdc -i attestation-layers.mmd -o attestation-layers.svg
+%% MDA and code identity are flags carried alongside the level, not levels themselves.
+%% Symbols: coordinator/registry/registry.go, coordinator/api/provider.go,
+%% coordinator/api/trust_reuse.go, coordinator/registry/routing_eligibility.go.
 flowchart TB
-    subgraph layers["Provider trust stack"]
-        direction TB
-        L5["Layer 5: APNs code identity<br/>Genuine Darkbloom binary proof<br/>enforced by AppleMobileFileIntegrity.kext"]
-        L4["Layer 4: Challenge-response<br/>Fresh SIP / SecureBoot / RDMA every 5 min"]
-        L3["Layer 3: MDA-over-MDM<br/>Apple-signed hardware certificate"]
-        L2["Layer 2: MDM SecurityInfo<br/>Independent SIP/SecureBoot/ARV"]
-        L1["Layer 1: SE P-256 blob<br/>Hardware-bound identity + X25519 binding"]
+    subgraph L0["Level none (TrustNone)"]
+        A0["No attestation blob (Open Mode), or MarkUntrusted:<br/>invalid blob under a binary-hash policy, 3 hard challenge failures,<br/>SIP/Secure Boot off, hash drift, MDM posture mismatch, chunk violation"]
     end
-
-    L1 --> L2
-    L2 --> L3
-    L3 --> L4
-    L4 --> L5
-
-    Gate["Routing gate:<br/>providerSupportsPrivateTextLocked"]
-    L5 --> Gate
-
-    style L5 fill:#e8f5e9
-    style Gate fill:#fff3e0
+    subgraph L1["Level self_signed (TrustSelfSigned)"]
+        A1["Registration blob signed by the SE P-256 key<br/>verifyProviderAttestation → SetAttested(true, TrustSelfSigned)"]
+        A2["challengeLoop every DefaultChallengeInterval = 5m<br/>ChallengeResponseTimeout = 30s · routable while LastChallengeVerified ≤ 16m old"]
+    end
+    subgraph L2["Level hardware (TrustHardware)"]
+        A3["MDM SecurityInfo cross-check, scheduled per connection<br/>SIP on · SecureBootLevel == full · agrees with the SE blob<br/>recordTrustReuse → GrantHardwareEvidenceAtEpochIfNotUntrusted"]
+    end
+    subgraph F["Flags alongside the level"]
+        B1["mda_verified — Apple DevicePropertiesAttestation chain<br/>SetMDAProofIfHardwareBound (hardware first)"]
+        B2["code_attested — APNs / resume code-identity challenge<br/>GrantProcessCodeAttested (same K + same APNs token)"]
+    end
+    A0 -->|"SE blob verifies"| A1
+    A1 --> A2
+    A2 -->|"SecurityInfo passes, or trust-reuse fast-skip"| A3
+    A3 --> B1
+    A1 --> B2
+    A3 --> B2
+    A2 -->|"3 hard failures, SIP/Secure Boot off"| A0
+    A3 -->|"posture mismatch (terminal)"| A0
+    A3 -.->|"reconnect: RestoreProviderState caps to self_signed"| A1
+    G["Routing: providerLivenessGateReasonLocked<br/>status · private-only · trust floor · RuntimeVerified ·<br/>providerSupportsPrivateTextLocked · challenge ≤ 16m"]
+    A3 --> G
+    B2 -->|"required once codeAttestationEnforcedLocked"| G

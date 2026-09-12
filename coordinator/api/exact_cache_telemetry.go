@@ -92,3 +92,16 @@ func (s *Server) emitExactCacheEstimatedTTFTSaved(pr *registry.PendingRequest, t
 	}
 	s.ddHistogram("exact_cache.estimated_ttft_saved_ms", value, tags)
 }
+
+// Count acceptance separately from provider-reported usage. Rejected evidence
+// never becomes a cache hit merely because the provider reported saved tokens.
+func (s *Server) emitCacheReceiptResult(kind string, result registry.CacheReceiptResult) {
+	outcome := "rejected"
+	if result.Accepted {
+		outcome = "accepted"
+	}
+	if s.metrics != nil {
+		s.metrics.IncCounter("exact_cache_receipt_total", MetricLabel{"type", kind}, MetricLabel{"outcome", outcome}, MetricLabel{"reason", string(result.Reason)})
+	}
+	s.ddIncr("exact_cache.receipt", []string{"type:" + kind, "outcome:" + outcome, "reason:" + string(result.Reason)})
+}

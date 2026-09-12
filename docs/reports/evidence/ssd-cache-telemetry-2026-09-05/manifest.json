@@ -1,0 +1,123 @@
+{
+  "parent": "ac1dc301c7b15b7d8f0b7bb18cf3d70e93157f75",
+  "staged_source_sha256": {
+    "CHANGELOG.md": "2a506e1318ea1538531695fc31f0f18572ee2ebd23322f57ba1791a69b002c1a",
+    "console-ui/src/app/providers/types.ts": "57d58a7f5a2691b4102919bfd30bd7ef20192c710a18a65cb07ba1ff5743e989",
+    "coordinator/api/exact_cache_artifact_status_test.go": "59817750366fd0e2a2bfcfbd3af60ff5d1ea32faa81d1ed9f300a1a9f78333b4",
+    "coordinator/api/exact_cache_metrics.go": "11ab136aee85cb8c3b744874e3167e34165602daf1c31ad4bff056e681fe0a92",
+    "coordinator/api/exact_cache_status.go": "9a0f0a21e4bd3ce1571621f8109e3c5edfce4afe01d65165a6d2e2aa1902e510",
+    "coordinator/api/exact_cache_status_test.go": "f34c1e7608b769829a5c6eca49691c1a1d3faa8085812e3b88ce3c0fbe7a867b",
+    "coordinator/api/provider_heartbeat.go": "6a783f6ce0ddbf7a108bd2117a6e46fac33dbbdd3f2cec254b925fc261814893",
+    "coordinator/api/provider_prefix_cache_telemetry.go": "5e50e37ec3090fbfa2fe8c70ba75896d5ca8bae76b748963d5b1bb9f3479be2e",
+    "coordinator/api/provider_prefix_cache_telemetry_test.go": "da6eb6bc0528a10f89fdce7a5d49d580b005e766d94b57e4c6649a318723135f",
+    "coordinator/cmd/coordinator/main.go": "3253d316a2ad16b2df968e77586d7e6d3da3e04a5eb46ba8c9fef94cc22fc9e0",
+    "coordinator/protocol/messages.go": "7b5d90c83b08c45cdb206cd5bd4d459a4fdbdf112dd350375af2521cad844b21",
+    "coordinator/protocol/prefix_cache_telemetry.go": "285de3f2221c888424e910014b6b50c612f7232f065bcf9c6b528d9d1b7c6450",
+    "coordinator/protocol/prefix_cache_telemetry_test.go": "4cc9139c825d3faa847ef023967ac9546f65f4bbe876af1c82a5b7b4e7fb41b7",
+    "coordinator/registry/cache_memory_test.go": "7c2530add3463907c4e6623297af89d3daba0f2201425d1fc8b71c0ddd7716e8",
+    "coordinator/registry/heartbeat.go": "7a45896e12d75b372ffb8ddb02298c45c17878662b0ba92f042834c4d1629fea",
+    "coordinator/registry/prefix_cache_telemetry.go": "93ee59ce60063d54924ff764927b59c4c17b2062ff9ffe2b68e9eb2dc1655661",
+    "coordinator/registry/prefix_cache_telemetry_test.go": "80df7017a51c3a288e30984f0fda49608abab04c8e640d96feda0ac2662aac75",
+    "coordinator/registry/scheduler.go": "637a2ae9c0141051caf7159212d9029b2a7c7e34b20785a8d65e3a76149fe588",
+    "docs/architecture/telemetry.md": "4e5e1cd49f48c698ffd2f4f8e075f6d010d9c4454424528e084512ad52ede721",
+    "docs/operations/cache-routing-rollout.md": "f9b3c466d578bbb24f3ab6ad741e78abc691a8a6406a512fd63e2f9ab288d16d",
+    "docs/reference/api-contracts.md": "5cc1f9fe9ba7b97210b2b0c6a4d3d0d99ee6663b4484a3d95e7df6087ecade2b",
+    "docs/reference/configuration.md": "bfdcb6b89e3dfdba8540d99c3eafc33d849820eda460df7a681a96f17c5cf633",
+    "docs/reference/protocol-messages.md": "f1d98ccb3c2fec3f11344d0ab5ca8d448bdf66535778848f6a055fe65a761b26",
+    "docs/reference/ssd-kv-cache.md": "54e4f17034dbf9780751aebde1888c8fbc6fb7bedac740af1d583d068c2bb168",
+    "docs/reference/telemetry-inventory.md": "b1771fae778f49c0ae0663a310b306a5d4733dcfd41abb5f57251c9cfa3208f2",
+    "docs/reference/telemetry-schema.md": "1d1e662b287aa1493e15006a7bc736edc1ca127b6696ccbbae2a12d89c7b71fd",
+    "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Capacity.swift": "0f62c47d55b09cc0d5d2c8250505f3cc3e88503606daf6b1e37a2aa63c2ae584",
+    "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Lifecycle.swift": "e7b3672be3ba7a51654bcd60aba1d09e8a047baabbb05aecb511be94634c5be3",
+    "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift": "d715df3faeb1892bbecfff35bdfdb991a5c6069771220f0936d96e509ca1330c",
+    "provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift": "7e168d050139d6c66c32c58d4604ed51ee66075d7def1c7748ee3848d7bccfbd",
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/EngineV2Bridge+SSDPrefixCache.swift": "25e99ef99568ca9323d228bdf666aaa045f7a991521feab2cf3d3c6a5e83cca6",
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockIndex.swift": "3d9807e6b5f5ef13783fe8729a7e1c7f4a53fa820cf79e7185035057159cd005",
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointEnvelope.swift": "b4ddfa4ee572c142b402c1fe0bffc55056282221d75b2589de6e7db6e9223dee",
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStats.swift": "c6e4290cb773c122e720e32d69e2aad512d50543d65ef693d81ea11a2e2f34b8",
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Maintenance.swift": "f259a4357b6539a64311b767d0fbdb7410de6e68ca67c8ff5477924283de72e6",
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Write.swift": "aec03a3c2431f6959faa7c9e12927750e7590b20056b7b8b4ebe10ba14f3751f",
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore.swift": "9abd76c1167412088ec3cb6bc6dea0056319b571758e71efb6c7253c1bf0d96d",
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift": "1e6b27e6b8f53ffa13455da2334e50f2b8582ee8b4e94cf3e39a6aff78dda5ff",
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheTelemetry.swift": "af47b72035bd0cd7d00efc8067381b950d345b5174a29dae32ee0be204f2e89e",
+    "provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWholeRootMaintainer.swift": "a6d41fc0f0e481a36b21c40342a3ec9df90fc55be50c36da8623e666f177513b",
+    "provider-swift/Sources/ProviderCore/Protocol/PrefixCacheTelemetry.swift": "b503eed573de9e77c8e8b2bd01ed3254095900cb4208d3356c7d6aec5d9096c6",
+    "provider-swift/Sources/ProviderCore/Protocol/Types.swift": "802bcde31d41cce978d173b20afdb381367412d941bb045b0e1d9aabe516bd0b",
+    "provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift": "3d63c6f27af72ece2a46d07d8fb1a6ae71db0176bf5af5fd1d195862f5079671",
+    "provider-swift/Tests/ProviderCoreTests/SSDHybridCheckpointStoreTests.swift": "02ab92d0c33c5de2ac7545f1bd2dadf9fc6f2c390c45c5fb5fbadc0f92f122f9",
+    "provider-swift/Tests/ProviderCoreTests/SSDHybridCheckpointTestFixture.swift": "248890d710e9716546919bc4dca9346f23d42796496e8979be1c02f4e3c23c56",
+    "provider-swift/Tests/ProviderCoreTests/SSDPrefixCacheTelemetryTests.swift": "dba1ab191345e44f28e164eb918cd31eb934c7f7d438e5e462df74bc07234290",
+    "provider-swift/Tests/ProviderCoreTests/SSDWholeRootTelemetryConcurrencyTests.swift": "7ed1b6ec7d1606684c4291e272f02d77d70742404435c559fbebf44d4a41ee1d"
+  },
+  "post_compile_cosmetic_change": {
+    "path": "provider-swift/Sources/ProviderCore/Protocol/PrefixCacheTelemetry.swift",
+    "change": "remove one blank EOF line only",
+    "compiled_sha256": "6c0534643d82c3c8307307f009be35ca4510eebb40befd6d8d26fe2bb90ac52d",
+    "final_sha256": "b503eed573de9e77c8e8b2bd01ed3254095900cb4208d3356c7d6aec5d9096c6"
+  },
+  "artifacts": [
+    {
+      "path": "go-full-initial.log.gz",
+      "sha256": "f18d77c1141353aafbbc5d8184fed2cedfd5f745c6ac4074c2575a2fbc0e4009",
+      "bytes": 12230,
+      "uncompressed_sha256": "2458a9069842bd878fba733654a16fefe629245386631eff56fb314154777eea",
+      "uncompressed_bytes": 95675
+    },
+    {
+      "path": "go-full.log.gz",
+      "sha256": "d6e4e0a421326adcab134bdab1dbfe7609ef94ed83ff96ea1043c14d874d7fe7",
+      "bytes": 322,
+      "uncompressed_sha256": "7e7a0ee818082ff560890c2dab4bdc2fe6d2058a1ad11f7d61787e9e16195b23",
+      "uncompressed_bytes": 2122
+    },
+    {
+      "path": "go-race.log.gz",
+      "sha256": "ff781e1b1e1607252058c2a882a7e702e5c489560cdb6cb1fc1d661a2204d57c",
+      "bytes": 277,
+      "uncompressed_sha256": "9397b7ca457dbe03b26179f9740a174818973e11665ddb470f793dbb3da6c7d5",
+      "uncompressed_bytes": 500
+    },
+    {
+      "path": "cache-tier-race.log.gz",
+      "sha256": "bc6b9c59107b21146aa96993ffed81b72cf75f4c43a25abe4bcae9e224bc40a9",
+      "bytes": 82,
+      "uncompressed_sha256": "de4e90c6fec7907855dab30d3a79e92b81c77fa088282daa6fcadb33b4d81af8",
+      "uncompressed_bytes": 71
+    },
+    {
+      "path": "go-source-manifest.json.gz",
+      "sha256": "51b242c15fac948adadf7ff78355db3f2b58821c6b3d9ec4512eb216c4916448",
+      "bytes": 42029,
+      "uncompressed_sha256": "0570af920d7d23be63df94cb0e24b6b428ee5607ecab39733146c64ac0b9cb57",
+      "uncompressed_bytes": 102560
+    },
+    {
+      "path": "swift-build.log.gz",
+      "sha256": "c434f69abb0fde5fb75d0dba674c8f20a94bce6020ce58de4c9447333fb2504f",
+      "bytes": 34157,
+      "uncompressed_sha256": "82f6601dc66152e03c03e0229b188ef627ad0f302d8c502f83dd7ea5ba3d3651",
+      "uncompressed_bytes": 1240577
+    },
+    {
+      "path": "swift-focused.log.gz",
+      "sha256": "0457c2d12199ac3f683ab3a92d7cf02f83a85949fc55dd654d7c2b43835c5c4a",
+      "bytes": 5618,
+      "uncompressed_sha256": "1b7c69b401b7d6ff9c50a40393138e6f5c97365af39b6882d70f600eafbacae0",
+      "uncompressed_bytes": 30220
+    },
+    {
+      "path": "swift-source-manifest.json.gz",
+      "sha256": "83dc2832b2c42d44da770aa76e244c146b1a583a86fa828f09c6f27865f824d3",
+      "bytes": 54697,
+      "uncompressed_sha256": "bb7b10285d505601614673a22ed8a0e59b92d249476095a6ea29557c6c8ed0e1",
+      "uncompressed_bytes": 156464
+    },
+    {
+      "path": "docs-check.log.gz",
+      "sha256": "003c638ff337f43a0360ce1b702d2183148bc09f885973e08e38d30a3632eaa0",
+      "bytes": 47,
+      "uncompressed_sha256": "0eb5e669aab7b602c687a29c4e89dde00d8b1a8c245e433d9961a51d68ee1578",
+      "uncompressed_bytes": 27
+    }
+  ]
+}

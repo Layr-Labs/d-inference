@@ -1,0 +1,40 @@
+{
+  "passed": true,
+  "errors": [],
+  "rows": [
+    {
+      "id": "long-first",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 14.643630291,
+      "candidate_ttft_s": 14.923784375,
+      "saved_tokens": 0,
+      "cache_outcome": "miss",
+      "baseline_terminal_tail_s": 5.512499999937859e-05,
+      "candidate_terminal_tail_s": 0.007655458000002113
+    },
+    {
+      "id": "long-repeat",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 15.11529225,
+      "candidate_ttft_s": 5.086432917,
+      "saved_tokens": 8192,
+      "cache_outcome": "hit",
+      "baseline_terminal_tail_s": 5.400000000221894e-05,
+      "candidate_terminal_tail_s": 0.00011520799999953368
+    },
+    {
+      "id": "long-continuation",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 15.366678375,
+      "candidate_ttft_s": 5.222008334,
+      "saved_tokens": 8192,
+      "cache_outcome": "hit",
+      "baseline_terminal_tail_s": 5.3749999999297415e-05,
+      "candidate_terminal_tail_s": 6.724999999985215e-05
+    }
+  ],
+  "generated_token_ids_compared": true,
+  "cancellation_cache_policy": "cancelled hybrid donor must not publish",
+  "baseline_decode_tps": null,
+  "candidate_decode_tps": null
+}

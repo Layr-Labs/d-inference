@@ -1,0 +1,25 @@
+{
+  "files": {
+    "analysis.json": {
+      "bytes": 28452,
+      "mode": "0o644",
+      "sha256": "c397df041a7916db99b3bd6747efe41b84e0307ba49f1a77a34a32e373560888"
+    },
+    "analyze.py": {
+      "bytes": 3878,
+      "mode": "0o644",
+      "sha256": "845e8b78b4a57673285ef33607edfb24e1f2b97a792031b85d2e2a7e165b1c50"
+    },
+    "reference-fp64.bin": {
+      "bytes": 32768,
+      "mode": "0o600",
+      "sha256": "c3a165817f9e5d40c24da634730516094e6c470fcd0cf193c3d79f46741c1e82"
+    },
+    "source-verification.json": {
+      "bytes": 1038,
+      "mode": "0o644",
+      "sha256": "3af1b8ff7380ba2fffe07bf34a98fa3fea787e1abefa4b7c769874beff471d77"
+    }
+  },
+  "scope": "Supplementary FP64 reference; separate from the original four-cell FP32 archive."
+}

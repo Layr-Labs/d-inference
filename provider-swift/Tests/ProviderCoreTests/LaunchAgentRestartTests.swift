@@ -48,10 +48,10 @@ struct LaunchAgentRestartTests {
 @Suite("LaunchAgent environment passthrough")
 struct LaunchAgentEnvironmentTests {
     @Test func forwardsAllowlistedNonEmptyVars() {
-        let env = ["DARKBLOOM_PREFIX_CACHE": "0", "PATH": "/usr/bin", "HOME": "/Users/x"]
+        let env = ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "1", "PATH": "/usr/bin", "HOME": "/Users/x"]
         let out = LaunchAgent.passthroughEnvironment(from: env)
         // Only the allowlisted opt-out is forwarded to the daemon; PATH/HOME are not.
-        #expect(out == ["DARKBLOOM_PREFIX_CACHE": "0"])
+        #expect(out == ["DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_MEMORY": "1"])
     }
 
     @Test func dropsEmptyAndMissingVars() {
@@ -311,7 +311,6 @@ struct LaunchAgentServicePlistTests {
             binaryPath: "/usr/local/bin/darkbloom",
             coordinatorURL: "wss://api.darkbloom.dev/ws/provider",
             models: ["org/model"],
-            idleTimeout: 15,
             configPath: URL(fileURLWithPath: "/tmp/custom provider.toml")
         )
         let flagIndex = try #require(arguments.firstIndex(of: "--config"))
@@ -323,9 +322,21 @@ struct LaunchAgentServicePlistTests {
             binaryPath: "/usr/local/bin/darkbloom",
             coordinatorURL: "wss://api.darkbloom.dev/ws/provider",
             models: [],
-            idleTimeout: nil,
             configPath: nil
         )
         #expect(!arguments.contains("--config"))
+    }
+
+    @Test func idlePolicyIsNeverBakedIntoTheServiceArgv() {
+        // `[backend] idle_timeout_mins` is the single authority: `darkbloom idle`
+        // + `darkbloom restart` must be able to change the policy without a
+        // plist rewrite, so the daemon argv carries no `--idle-timeout`.
+        let arguments = LaunchAgent.serviceProgramArguments(
+            binaryPath: "/usr/local/bin/darkbloom",
+            coordinatorURL: "wss://api.darkbloom.dev/ws/provider",
+            models: ["org/model"],
+            configPath: nil
+        )
+        #expect(!arguments.contains("--idle-timeout"))
     }
 }

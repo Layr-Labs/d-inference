@@ -276,11 +276,6 @@ public final class SSDPrefixCache:
         subsystem: "com.darkbloom.provider", category: "ssd_prefix_cache")
     #endif
 
-    /// DType ↔ name map for chunk descriptors (complete over DType).
-    private static let dtypeByName: [String: DType] = {
-        Dictionary(uniqueKeysWithValues: DType.allCases.map { (String(describing: $0), $0) })
-    }()
-
     init(
         config: Config,
         kekKey: SymmetricKey,
@@ -1257,6 +1252,24 @@ public final class SSDPrefixCache:
 
     // MARK: - Pre-submit staging (the bridge hook)
 
+    /// Estimated reusable tokens from RAM metadata, with the same replay,
+    /// benefit and staging caps as stage(). No file reads, reservations, LRU
+    /// touches or hit accounting occur here. Staging revalidates this hint.
+    func estimatedPrefillTokensSaved(promptTokens: [Int], cacheScope: String) -> Int {
+        guard index.count > 0, lock.withLock({ !closed && !destructiveChangeInProgress }),
+            config.epochStore == nil || config.epochStore?.current != nil
+        else { return 0 }
+        let hasher = hasher(cacheSalt: cacheScope)
+        let hashes = hasher.chainHashes(
+            tokens: promptTokens,
+            maxBlocks: hasher.maxLookupBlocks(tokenCount: promptTokens.count))
+        guard case .candidate(let plan) = planStaging(
+            chainHashes: hashes, cacheScope: cacheScope, lookupKeys: lookupKeys)
+        else { return 0 }
+        let matched = plan.blockCount * config.blockSize
+        return max(0, matched - min(config.adoptionBoundTokens, matched))
+    }
+
     /// Rehydrate the longest usable on-disk prefix run for `promptTokens`
     /// into the staging map so the engine's synchronous `lookup()` hits.
     /// Runs on the request's own task (never the engine/submit hot path).
@@ -1297,91 +1310,22 @@ public final class SSDPrefixCache:
             stageEpoch = nil
         }
         guard !isClosed, hasSafeRoot else { return finish(.skippedPolicy) }
-        guard index.count > 0 else { return finish(.missAbsent) }
+        let plan: StageMetadata
+        switch planStaging(
+            chainHashes: evidenceHashes, cacheScope: cacheScope, lookupKeys: lookupKeys)
+        {
+        case .candidate(let candidate): plan = candidate
+        case .skipped(let disposition): return finish(disposition)
+        }
         let salt = cacheScope
-        guard maxBlocks > 0 else { return finish(.skippedCost) }
-        // Cheap pre-floor: a run can only clear the benefit gate when even
-        // a FULL match would (matched − bound ≥ minEffective). Overflow-safe
-        // like the donate-path floor (line ~418): an operator-set
-        // `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` near Int.max
-        // must DISABLE staging (saturated floor never passes), not trap the
-        // provider on every request.
-        let (preFloor, preFloorOverflow) =
-            config.adoptionBoundTokens.addingReportingOverflow(config.minEffectiveTokens)
-        guard !preFloorOverflow, maxBlocks * config.blockSize >= preFloor
-        else { return finish(.skippedCost) }
-
         let hashes = evidenceHashes
-        var fullTags: [Data] = []
-        var tags16: [Data] = []
-        for hash in hashes {
-            let full = lookupKeys.tag(chainHash: hash, cacheSalt: salt)
-            fullTags.append(full)
-            tags16.append(full.prefix(SSDLookupKeys.truncatedTagLength))
-        }
-        // WS-4.2: the terminal-four sidecars that would restore the donor's
-        // window at each candidate boundary. Probed inside the trim loop so
-        // their bytes are inside the stage byte/time caps rather than added
-        // on top of a run those caps already saturated.
+        let k = plan.blockCount
+        let fullTags = plan.fullTags
+        let tags16 = plan.tags16
+        let runBytes = plan.runBytes
+        let runSizes = plan.runSizes
+        let windowTags = plan.windowTags
         let windowGeometry = config.windowSidecar
-
-        // Longest contiguous run, trimmed to the stage caps (bytes/time)
-        // while it still clears the benefit floor.
-        var k = index.longestRun(tags16: tags16)
-        guard k > 0 else { return finish(.missAbsent) }
-        var runBytes = 0
-        var runSizes: [Int] = []
-        var windowTags: [Data] = []
-        while k > 0 {
-            let matched = k * config.blockSize
-            // Monotone impossibility test: shorter runs match strictly less
-            // against the same bound, so failing here means no candidate can
-            // pass and the loop can stop rather than count down to 1.
-            guard matched - min(config.adoptionBoundTokens, matched)
-                >= config.minEffectiveTokens
-            else { return finish(.skippedCost) }
-            guard let sizes = index.fileBytes(tags16: tags16[0 ..< k]) else {
-                // Raced an eviction — re-probe.
-                k = min(k - 1, index.longestRun(tags16: tags16))
-                continue
-            }
-            runSizes = sizes
-            runBytes = 0
-            for size in sizes {
-                let (sum, overflow) = runBytes.addingReportingOverflow(max(0, size))
-                guard !overflow else { return finish(.skippedCapacity) }
-                runBytes = sum
-            }
-            windowTags = windowSidecarTags(
-                geometry: windowGeometry, chainHashes: hashes, cacheSalt: salt, blocks: k)
-            // Emptiness FIRST: `fileBytes` takes the index lock, and with the
-            // sidecar knob off (the default) `windowTags` is always empty, so
-            // testing it second bought an index-lock acquisition per trim
-            // iteration — up to ~112 on a long prompt — to learn nothing.
-            if !windowTags.isEmpty, let windowSizes = index.fileBytes(tags16: windowTags[...]) {
-                for size in windowSizes {
-                    let (sum, overflow) = runBytes.addingReportingOverflow(max(0, size))
-                    guard !overflow else { return finish(.skippedCapacity) }
-                    runBytes = sum
-                }
-            } else {
-                // Incomplete tiling (or a raced eviction): a PARTIAL window is
-                // not exact, so the whole window is dropped and the adopter
-                // replays. Never shortens the block run.
-                windowTags = []
-            }
-            // A restored window does NOT shorten the replay: no row can
-            // install one, so every boundary is judged against the same
-            // conservative bound whether or not its tiling is complete.
-            if matched - min(config.adoptionBoundTokens, matched) >= config.minEffectiveTokens,
-                runBytes <= config.maxStageBytes,
-                SSDPrefixCachePolicy.estimatedStageMillis(bytes: runBytes) <= config.maxStageMillis
-            {
-                break
-            }
-            k -= 1
-        }
-        guard k > 0 else { return finish(.skippedCost) }
 
         // Concurrent same-prefix request: attach BEFORE taking a provisional
         // reservation. The existing entry already owns one exact reservation;
@@ -1411,42 +1355,59 @@ public final class SSDPrefixCache:
                 shortenedByCorruption: false),
                 deviceBytes: attachedDeviceBytes)
         }
-        // Multi-block conversion temporarily holds three full representations:
-        // decrypted host Data, per-block MLX inputs, and concatenated outputs.
-        let (initialPeakBytes, initialPeakOverflow) = runBytes.multipliedReportingOverflow(by: 3)
-        guard !initialPeakOverflow else { return finish(.skippedCapacity) }
+        guard let initialPeakBytes = SSDNativePrefixBuilder.stagingPeakBytes(runBytes: runBytes)
+        else { return finish(.skippedCapacity) }
         if let kvBudget {
-            guard await kvBudget.reserveBytes(
-                requestID: reservationKey,
-                bytes: UInt64(initialPeakBytes))
+            guard await kvBudget.reserveBytes(requestID: reservationKey, bytes: UInt64(initialPeakBytes))
             else { return finish(.skippedCapacity) }
         }
 
-        // Read + decrypt + verify blocks 1..k off the engine threads.
-        var blockPayloads: [(metadata: SSDBlockMetadata, chunks: [Data])] = []
-        var usableBlocks = k
+        var builder: SSDNativePrefixBuilder?
         var shortenedByCorruption = false
-        for i in 0 ..< k {
-            if Task.isCancelled {
+        for i in 0..<k {
+            let url = SSDBlockStore.fileURL(
+                root: config.root, tag16Hex: SSDLookupKeys.hex(tags16[i]))
+            do {
+                try SSDBlockStore.readStreaming(
+                    from: url, kekKey: kekKey,
+                    maximumChunkBytes: min(runSizes[i], SSDNativePrefixBuilder.maximumChunkBytes),
+                    maximumPlaintextBytes: runSizes[i],
+                    maximumMetadataBytes: min(runSizes[i], SSDNativePrefixBuilder.maximumMetadataBytes),
+                    maximumWrappedDEKBytes: 1_024, requireEOF: true,
+                    checkCancellation: {
+                        if Task.isCancelled || self.isClosed { throw CancellationError() }
+                    },
+                    validateMetadata: { metadata in
+                        guard metadata.weightHash == self.config.weightHash,
+                            metadata.layoutEpoch == self.config.layoutEpoch,
+                            metadata.blockSize == self.config.blockSize,
+                            metadata.lookupTag == SSDLookupKeys.hex(fullTags[i]),
+                            metadata.windowKind == nil
+                        else { throw SSDBlockStoreError.bindingMismatch("full prefix block binding") }
+                        if builder == nil {
+                            builder = try SSDNativePrefixBuilder(
+                                metadata: metadata, blockSize: self.config.blockSize,
+                                capacityBlocks: k, maximumDestinationBytes: runBytes,
+                                checkCancellation: {
+                                    if Task.isCancelled || self.isClosed { throw CancellationError() }
+                                })
+                        }
+                        try builder?.beginBlock(metadata: metadata)
+                    }, consumeChunk: { index, bytes in
+                        try builder?.append(chunkIndex: index, data: bytes)
+                    })
+                try builder?.commitBlock()
+            } catch is CancellationError {
+                builder?.close()
                 await releaseReservation(reservationKey)
                 return finish(.skippedPolicy)
-            }
-            let tag16Hex = SSDLookupKeys.hex(tags16[i])
-            let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: tag16Hex)
-            do {
-                let (metadata, chunks) = try SSDBlockStore.read(from: url, kekKey: kekKey)
-                guard metadata.weightHash == config.weightHash,
-                    metadata.layoutEpoch == config.layoutEpoch,
-                    metadata.blockSize == config.blockSize,
-                    metadata.lookupTag == SSDLookupKeys.hex(fullTags[i])
-                else {
-                    throw SSDBlockStoreError.bindingMismatch(
-                        "weightHash/layoutEpoch/blockSize/tag binding")
-                }
-                blockPayloads.append((metadata, chunks))
+            } catch is SSDNativePrefixBuilder.Failure {
+                // Allocation and reservation failures are local pressure, not
+                // evidence that an authenticated disk file is corrupt.
+                builder?.close()
+                await releaseReservation(reservationKey)
+                return finish(.skippedCapacity)
             } catch {
-                // Corrupt / torn / stale-binding block: delete, drop from
-                // the index, fall back to the shorter run (or recompute).
                 statsBox.add(corruptDropped: 1)
                 _ = performDestructiveChange {
                     _ = SSDBlockStore.removeItemIfSafe(at: url, under: config.root)
@@ -1456,140 +1417,71 @@ public final class SSDPrefixCache:
                 Self.logger.warning(
                     "ssd prefix cache (\(self.config.modelId, privacy: .public)): dropped unreadable block (\(String(describing: error), privacy: .public)) — recompute fallback")
                 #endif
-                usableBlocks = i
                 shortenedByCorruption = true
                 break
             }
         }
-        // Re-apply the benefit gate to the (possibly shortened) run against
-        // the same conservative replay bound the trim loop used.
+        let usableBlocks = builder?.committedBlocks ?? 0
         let matched = usableBlocks * config.blockSize
         let settledBound = config.adoptionBoundTokens
-        guard usableBlocks > 0, matched - min(settledBound, matched) >= config.minEffectiveTokens
-        else {
+        let effective = matched - min(settledBound, matched)
+        guard usableBlocks > 0, effective >= config.minEffectiveTokens else {
+            builder?.close()
             await releaseReservation(reservationKey)
             return finish(shortenedByCorruption ? .missCorrupt : .skippedCost)
         }
-        blockPayloads = Array(blockPayloads.prefix(usableBlocks))
-
-        // A corrupt block SHORTENED the run: the reservation and the staging
-        // accounting must track the bytes actually staged, not the original
-        // run — the difference would otherwise falsely consume shared KV
-        // headroom until this request's release. Reconcile by re-reserving
-        // the smaller amount (release + reserve; a raced refusal means real
-        // memory pressure ⇒ silent recompute, exactly as if the shortened
-        // run had been probed first).
-        var stagedRunBytes = runBytes
-        var reservedPeakBytes = initialPeakBytes
-        if usableBlocks < k {
-            stagedRunBytes = 0
-            for size in runSizes.prefix(usableBlocks) {
-                let (sum, overflow) = stagedRunBytes.addingReportingOverflow(max(0, size))
-                guard !overflow else {
-                    await releaseReservation(reservationKey)
-                    return finish(.skippedCapacity)
-                }
-                stagedRunBytes = sum
-            }
-            let (shortenedPeakBytes, shortenedPeakOverflow) =
-                stagedRunBytes.multipliedReportingOverflow(by: 3)
-            guard !shortenedPeakOverflow else {
-                await releaseReservation(reservationKey)
-                return finish(.skippedCapacity)
-            }
-            if let kvBudget, shortenedPeakBytes != reservedPeakBytes {
-                guard await kvBudget.resizeReservationBytes(
-                    requestID: reservationKey,
-                    bytes: UInt64(shortenedPeakBytes))
-                else {
-                    await releaseReservation(reservationKey)
-                    return finish(.skippedCapacity)
-                }
-            }
-            reservedPeakBytes = shortenedPeakBytes
-        }
-
-        // Rebuild per-layer arrays: per (layer × tensor), one MLXArray per
-        // block chunk, concatenated along the token axis (graph op), then
-        // ONE eval — the staged bytes become real device arrays here,
-        // covered by the reservation taken above.
-        guard let prefix = Self.rebuildPrefix(
-            blocks: blockPayloads, blockSize: config.blockSize, matched: matched)
-        else {
-            statsBox.add(corruptDropped: 1)
-            await releaseReservation(reservationKey)
-            return finish(.missCorrupt)
-        }
-        if Task.isCancelled {
-            await releaseReservation(reservationKey)
-            return finish(.skippedPolicy)
-        }
-        // WS-4.2: restore the donor's sliding window from the terminal-four
-        // sidecars whose bytes the trim loop already budgeted. Attempted only
-        // on an unshortened run — a corruption-shortened boundary has a
-        // different tiling than the one accounted for, and a PARTIAL window is
-        // not exact. Any failure drops the window ALONE: the block adoption
-        // stands and the adopter replays, exactly as it does today.
-        var restoredWindow: [SSDWindowSidecar.Window?]?
-        if let geometry = windowGeometry, usableBlocks == k, !windowTags.isEmpty {
-            restoredWindow = readWindowSidecars(
-                geometry: geometry, chainHashes: hashes, cacheSalt: salt, blocks: usableBlocks)
-        }
-        // No re-settle is needed for a sidecar that was indexed but turned
-        // out unreadable: the benefit was never credited to the window in the
-        // first place, because no row can install one.
-        let effective = matched - min(settledBound, matched)
-        var exactDeviceBytes = 0
-        for entry in prefix {
-            guard let entry else { continue }
-            let (entryBytes, entryOverflow) = entry.keys.nbytes.addingReportingOverflow(
-                entry.values.nbytes)
-            let (total, totalOverflow) = exactDeviceBytes.addingReportingOverflow(entryBytes)
-            guard !entryOverflow, !totalOverflow else {
-                await releaseReservation(reservationKey)
-                return finish(.skippedCapacity)
-            }
-            exactDeviceBytes = total
-        }
-        for entry in restoredWindow ?? [] {
-            guard let entry else { continue }
-            let (entryBytes, entryOverflow) = entry.keys.nbytes.addingReportingOverflow(
-                entry.values.nbytes)
-            let (total, totalOverflow) = exactDeviceBytes.addingReportingOverflow(entryBytes)
-            guard !entryOverflow, !totalOverflow else {
-                await releaseReservation(reservationKey)
-                return finish(.skippedCapacity)
-            }
-            exactDeviceBytes = total
-        }
-        guard exactDeviceBytes > 0 else {
-            await releaseReservation(reservationKey)
-            return finish(.missCorrupt)
-        }
-        let (conversionPeakBytes, conversionPeakOverflow) =
-            stagedRunBytes.addingReportingOverflow(exactDeviceBytes)
-        guard !conversionPeakOverflow else {
+        // A shorter prefix cannot keep views of the original allocation while
+        // charging only its logical size. Reserve the rare compact-copy peak
+        // first, then replace and release one original tensor at a time.
+        guard let compactionPeak = builder?.compactionPeakBytes else {
+            builder?.close()
             await releaseReservation(reservationKey)
             return finish(.skippedCapacity)
         }
-        if let kvBudget, conversionPeakBytes != reservedPeakBytes {
+        if let kvBudget, compactionPeak > initialPeakBytes {
             guard await kvBudget.resizeReservationBytes(
-                requestID: reservationKey,
-                bytes: UInt64(conversionPeakBytes))
+                requestID: reservationKey, bytes: UInt64(compactionPeak))
             else {
+                builder?.close()
                 await releaseReservation(reservationKey)
                 return finish(.skippedCapacity)
             }
         }
-        // The evaluated prefix owns its MLX storage. Drop decrypted host chunks
-        // before converting the provisional peak reservation to steady device
-        // residence, so no unaccounted host+device overlap remains.
-        blockPayloads.removeAll(keepingCapacity: false)
-        if let kvBudget, exactDeviceBytes != conversionPeakBytes {
+        var prefix: SSDNativePrefixBuilder.Prefix
+        do { prefix = try builder?.finish() ?? [] }
+        catch is CancellationError {
+            builder?.close()
+            await releaseReservation(reservationKey)
+            return finish(.skippedPolicy)
+        } catch {
+            builder?.close()
+            await releaseReservation(reservationKey)
+            return finish(.skippedCapacity)
+        }
+        var restoredWindow: [SSDWindowSidecar.Window?]?
+        let prefixBytes = prefix.compactMap { $0 }.reduce(0) { $0 + $1.keys.nbytes + $1.values.nbytes }
+        if let geometry = windowGeometry, usableBlocks == k, !windowTags.isEmpty {
+            restoredWindow = readWindowSidecars(
+                geometry: geometry, chainHashes: hashes, cacheSalt: salt, blocks: usableBlocks,
+                maximumDestinationBytes: runBytes - prefixBytes)
+        }
+        if Task.isCancelled || isClosed {
+            prefix.removeAll()
+            restoredWindow = nil
+            await releaseReservation(reservationKey)
+            return finish(.skippedPolicy)
+        }
+        let exactDeviceBytes = prefixBytes + (restoredWindow ?? []).compactMap { $0 }.reduce(0) {
+            $0 + $1.keys.nbytes + $1.values.nbytes
+        }
+        // All read callbacks and any compaction have returned; only the final
+        // native tensors remain. Transfer precisely their bytes to staging.
+        if let kvBudget {
             guard await kvBudget.resizeReservationBytes(
-                requestID: reservationKey,
-                bytes: UInt64(exactDeviceBytes))
+                requestID: reservationKey, bytes: UInt64(exactDeviceBytes))
             else {
+                prefix.removeAll()
+                restoredWindow = nil
                 await releaseReservation(reservationKey)
                 return finish(.skippedCapacity)
             }
@@ -1639,10 +1531,14 @@ public final class SSDPrefixCache:
         }
         switch resolution {
         case .failed:
+            prefix.removeAll()
+            restoredWindow = nil
             await releaseReservation(reservationKey)
             return finish(.skippedPolicy)
         case .attached(let attachedDeviceBytes):
-            // Redundant with the winner's per-entry reservation.
+            // Drop redundant tensors before releasing their reservation.
+            prefix.removeAll()
+            restoredWindow = nil
             await releaseReservation(reservationKey)
             return finish(.staged(
                 matchedTokens: matched,
@@ -1651,7 +1547,8 @@ public final class SSDPrefixCache:
                 shortenedByCorruption: shortenedByCorruption),
                 deviceBytes: attachedDeviceBytes)
         case .created:
-            break  // reservation is now owned by the staged entry
+            prefix.removeAll()
+            restoredWindow = nil  // tensors and reservation now belong to the staged entry
         }
         // Sliding TTL: bump index recency AND file mtimes so warmth
         // survives a restart (the scan seeds lastAccess from mtime). The
@@ -1684,23 +1581,6 @@ public final class SSDPrefixCache:
             cacheScope: cacheScope)
     }
 
-    /// Truncated sidecar tags tiling the window that ends at block boundary
-    /// `blocks`, oldest first. Empty when the boundary is shorter than one
-    /// window — there is nothing to restore below `W` tokens, because the row
-    /// legitimately has no older entries and cold prefill is already exact.
-    private func windowSidecarTags(
-        geometry: SSDWindowSidecarGeometry?,
-        chainHashes: [Data],
-        cacheSalt: String,
-        blocks: Int
-    ) -> [Data] {
-        guard let geometry, blocks >= geometry.blocksPerWindow, blocks <= chainHashes.count
-        else { return [] }
-        return (blocks - geometry.blocksPerWindow ..< blocks).map {
-            lookupKeys.windowTag16(chainHash: chainHashes[$0], cacheSalt: cacheSalt)
-        }
-    }
-
     /// Read, authenticate and reassemble the sliding window that ends at
     /// block boundary `blocks`. nil ⇒ the adopter replays.
     ///
@@ -1711,32 +1591,62 @@ public final class SSDPrefixCache:
         geometry: SSDWindowSidecarGeometry,
         chainHashes: [Data],
         cacheSalt: String,
-        blocks: Int
+        blocks: Int,
+        maximumDestinationBytes: Int
     ) -> [SSDWindowSidecar.Window?]? {
         let first = blocks - geometry.blocksPerWindow
-        guard first >= 0, blocks <= chainHashes.count else { return nil }
-        var payloads: [(metadata: SSDBlockMetadata, chunks: [Data])] = []
-        payloads.reserveCapacity(geometry.blocksPerWindow)
-        for b in first ..< blocks {
+        guard first >= 0, blocks <= chainHashes.count, maximumDestinationBytes > 0 else { return nil }
+        var builder: SSDNativePrefixBuilder?
+        defer { builder?.close() }
+        for b in first..<blocks {
             let fullTag = lookupKeys.windowTag(chainHash: chainHashes[b], cacheSalt: cacheSalt)
             let tag16 = fullTag.prefix(SSDLookupKeys.truncatedTagLength)
+            guard let fileBytes = index.fileBytes(tags16: [tag16][...])?.first else { return nil }
             let url = SSDBlockStore.fileURL(
                 root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
             do {
-                let (metadata, chunks) = try SSDBlockStore.read(from: url, kekKey: kekKey)
-                guard metadata.weightHash == config.weightHash,
-                    metadata.layoutEpoch == config.layoutEpoch,
-                    metadata.lookupTag == SSDLookupKeys.hex(fullTag),
-                    SSDWindowSidecar.isBound(
-                        metadata,
-                        expectedBaseTag: lookupKeys.windowBaseCommitmentHex(
-                            windowTag: fullTag, base: b * config.blockSize),
-                        geometry: geometry)
-                else {
-                    throw SSDBlockStoreError.bindingMismatch(
-                        "window sidecar weightHash/layoutEpoch/tag/base binding")
-                }
-                payloads.append((metadata, chunks))
+                try SSDBlockStore.readStreaming(
+                    from: url, kekKey: kekKey,
+                    maximumChunkBytes: min(fileBytes, SSDNativePrefixBuilder.maximumChunkBytes),
+                    maximumPlaintextBytes: fileBytes,
+                    maximumMetadataBytes: min(fileBytes, SSDNativePrefixBuilder.maximumMetadataBytes),
+                    maximumWrappedDEKBytes: 1_024, requireEOF: true,
+                    checkCancellation: {
+                        if Task.isCancelled || self.isClosed { throw CancellationError() }
+                    }, validateMetadata: { metadata in
+                        guard metadata.weightHash == self.config.weightHash,
+                            metadata.layoutEpoch == self.config.layoutEpoch,
+                            metadata.lookupTag == SSDLookupKeys.hex(fullTag),
+                            SSDWindowSidecar.isBound(
+                                metadata,
+                                expectedBaseTag: self.lookupKeys.windowBaseCommitmentHex(
+                                    windowTag: fullTag, base: b * self.config.blockSize),
+                                geometry: geometry)
+                        else { throw SSDBlockStoreError.bindingMismatch("window sidecar binding") }
+                        for (index, descriptor) in metadata.chunks.enumerated() {
+                            let layer = geometry.layers[index / 2]
+                            guard descriptor.layerIndex == layer.index,
+                                descriptor.shape == [1, layer.kvHeads, geometry.blockSize, layer.headDim]
+                            else { throw SSDBlockStoreError.bindingMismatch("window sidecar geometry") }
+                        }
+                        if builder == nil {
+                            builder = try SSDNativePrefixBuilder(
+                                metadata: metadata, blockSize: geometry.blockSize,
+                                capacityBlocks: geometry.blocksPerWindow,
+                                maximumDestinationBytes: maximumDestinationBytes,
+                                checkCancellation: {
+                                    if Task.isCancelled || self.isClosed { throw CancellationError() }
+                                })
+                        }
+                        try builder?.beginBlock(metadata: metadata)
+                    }, consumeChunk: { index, bytes in
+                        try builder?.append(chunkIndex: index, data: bytes)
+                    })
+                try builder?.commitBlock()
+            } catch is CancellationError {
+                return nil
+            } catch is SSDNativePrefixBuilder.Failure {
+                return nil
             } catch {
                 statsBox.add(corruptDropped: 1)
                 _ = performDestructiveChange {
@@ -1750,11 +1660,11 @@ public final class SSDPrefixCache:
                 return nil
             }
         }
-        return SSDWindowSidecar.rebuildWindow(
-            blocks: payloads,
-            geometry: geometry,
-            base: blocks * config.blockSize - geometry.windowTokens,
-            dtypeByName: Self.dtypeByName)
+        guard let prefix = try? builder?.finish() else { return nil }
+        let base = blocks * config.blockSize - geometry.windowTokens
+        return prefix.map { entry in
+            entry.map { (keys: $0.keys, values: $0.values, base: base) }
+        }
     }
 
     /// WS-4.2 adoption seam: the donor's sliding window staged for
@@ -1764,7 +1674,7 @@ public final class SSDPrefixCache:
     /// NO ENGINE CONSUMER EXISTS YET — this would be read by WS-4.1's
     /// `restoreWindow(_:at:)` via `CBv2PagedWindowSnapshot(keys:values:base:)`,
     /// which is not in this repo. It is kept because the path that FILLS it
-    /// (`readWindowSidecars` → decrypt → authenticate → `rebuildWindow`) does
+    /// (`readWindowSidecars` → decrypt → authenticate → native fill) does
     /// run in production whenever the sidecar knob is on, is counted in the
     /// `windowsRestored` stat printed by `logSSDPrefixCacheStats`, and has no
     /// other observation point: deleting this accessor would delete the only
@@ -2034,8 +1944,9 @@ public final class SSDPrefixCache:
 
     public func stats() -> SSDPrefixCacheStats {
         var snapshot = statsBox.snapshot()
-        snapshot.entries = index.count
-        snapshot.bytesOnDisk = index.totalBytes
+        let usage = index.usageSnapshot()
+        snapshot.entries = usage.entries
+        snapshot.bytesOnDisk = usage.bytes
         return snapshot
     }
 
@@ -2140,12 +2051,21 @@ public final class SSDPrefixCache:
                 root: config.root,
                 tag16Hex: SSDLookupKeys.hex(tags16[i]))
             do {
-                let (metadata, _) = try SSDBlockStore.read(from: url, kekKey: kekKey)
-                guard metadata.weightHash == config.weightHash,
-                    metadata.layoutEpoch == config.layoutEpoch,
-                    metadata.blockSize == config.blockSize,
-                    metadata.lookupTag == SSDLookupKeys.hex(fullTags[i])
-                else { return false }
+                guard let fileBytes = index.fileBytes(tags16: [tags16[i]][...])?.first else { return false }
+                try SSDBlockStore.readStreaming(
+                    from: url, kekKey: kekKey,
+                    maximumChunkBytes: min(fileBytes, SSDNativePrefixBuilder.maximumChunkBytes),
+                    maximumPlaintextBytes: fileBytes,
+                    maximumMetadataBytes: min(fileBytes, SSDNativePrefixBuilder.maximumMetadataBytes),
+                    maximumWrappedDEKBytes: 1_024, requireEOF: true,
+                    checkCancellation: { if self.isClosed { throw CancellationError() } },
+                    validateMetadata: { metadata in
+                        guard metadata.weightHash == self.config.weightHash,
+                            metadata.layoutEpoch == self.config.layoutEpoch,
+                            metadata.blockSize == self.config.blockSize,
+                            metadata.lookupTag == SSDLookupKeys.hex(fullTags[i])
+                        else { throw SSDBlockStoreError.bindingMismatch("durable prefix binding") }
+                    }, consumeChunk: { _, _ in })
                 readableBlocks += 1
             } catch {
                 // A durable-ready receipt must never attest through corruption,
@@ -2218,77 +2138,6 @@ public final class SSDPrefixCache:
         return true
     }
 
-    /// Rebuild the per-layer adopted prefix from per-block chunk payloads.
-    /// nil on any inconsistency (shape/dtype/order drift across blocks) —
-    /// the caller treats it as corruption and recomputes.
-    static func rebuildPrefix(
-        blocks: [(metadata: SSDBlockMetadata, chunks: [Data])],
-        blockSize: Int,
-        matched: Int
-    ) -> [(keys: MLXArray, values: MLXArray, offset: Int)?]? {
-        guard let first = blocks.first else { return nil }
-        let descriptors = first.metadata.chunks
-        let layerCount = first.metadata.layerCount
-        guard layerCount > 0, layerCount <= 4096,
-            descriptors.count % 2 == 0, !descriptors.isEmpty
-        else { return nil }
-        // Every block must carry the identical chunk layout.
-        for block in blocks {
-            guard block.metadata.chunks == descriptors,
-                block.metadata.layerCount == layerCount,
-                block.chunks.count == descriptors.count
-            else { return nil }
-        }
-        // Validate descriptors + byte counts BEFORE MLXArray init (its
-        // shape/byte mismatch is an uncatchable trap).
-        for (d, desc) in descriptors.enumerated() {
-            guard desc.shape.count == 4, desc.shape[2] == blockSize,
-                desc.layerIndex >= 0, desc.layerIndex < layerCount,
-                desc.tensor == d % 2,
-                let dtype = dtypeByName[desc.dtype]
-            else { return nil }
-            var expected = dtype.size
-            for dim in desc.shape {
-                guard dim > 0 else { return nil }
-                let (product, overflow) = expected.multipliedReportingOverflow(by: dim)
-                guard !overflow else { return nil }
-                expected = product
-            }
-            for block in blocks {
-                guard block.chunks[d].count == expected else { return nil }
-            }
-        }
-        var prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?] =
-            Array(repeating: nil, count: layerCount)
-        var toEval: [MLXArray] = []
-        var d = 0
-        while d < descriptors.count {
-            let keyDesc = descriptors[d]
-            let valueDesc = descriptors[d + 1]
-            guard keyDesc.layerIndex == valueDesc.layerIndex,
-                keyDesc.tensor == 0, valueDesc.tensor == 1,
-                prefix[keyDesc.layerIndex] == nil,
-                let keyDType = dtypeByName[keyDesc.dtype],
-                let valueDType = dtypeByName[valueDesc.dtype]
-            else { return nil }
-            var keyParts: [MLXArray] = []
-            var valueParts: [MLXArray] = []
-            for block in blocks {
-                keyParts.append(MLXArray(block.chunks[d], keyDesc.shape, dtype: keyDType))
-                valueParts.append(MLXArray(block.chunks[d + 1], valueDesc.shape, dtype: valueDType))
-            }
-            let keys = keyParts.count == 1 ? keyParts[0] : concatenated(keyParts, axis: 2)
-            let values = valueParts.count == 1 ? valueParts[0] : concatenated(valueParts, axis: 2)
-            guard keys.dim(2) == matched else { return nil }
-            prefix[keyDesc.layerIndex] = (keys: keys, values: values, offset: matched)
-            toEval.append(keys)
-            toEval.append(values)
-            d += 2
-        }
-        eval(toEval)
-        return prefix
-    }
-
     static func hexDecode(_ hex: String) -> Data? {
         guard hex.count % 2 == 0 else { return nil }
         var data = Data(capacity: hex.count / 2)
@@ -2302,7 +2151,7 @@ public final class SSDPrefixCache:
         return data
     }
 
-    private static func volumeSpace(at url: URL) -> (free: Int, capacity: Int)? {
+    static func volumeSpace(at url: URL) -> (free: Int, capacity: Int)? {
         let keys: Set<URLResourceKey> = [
             .volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey,
             .volumeTotalCapacityKey,

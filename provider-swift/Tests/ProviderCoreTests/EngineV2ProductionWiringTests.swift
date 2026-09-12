@@ -287,6 +287,7 @@ private func makeOpenAIRequest(model: String = "gemma-4-26b-qat-4bit") -> OpenAI
 /// Collect a server-engine event stream into a comparable shape.
 private enum RecordedServerEvent: Equatable {
     case content(String)
+    case parsed(ParsedReasoning)
     case info(prompt: Int, completion: Int)
 }
 
@@ -298,6 +299,8 @@ private func recordServerStream(
         switch event {
         case .content(let text):
             events.append(.content(text))
+        case .parsed(let parsed):
+            events.append(.parsed(parsed))
         case .info(let info):
             events.append(.info(prompt: info.promptTokens, completion: info.completionTokens))
         case .toolCall:
@@ -312,15 +315,38 @@ private func recordServerStream(
 @Suite("EngineV2 production wiring: v2-only slot build")
 struct EngineV2SlotBuildTests {
 
-    @Test("production selects adaptive depth only for request-stateful assistants")
+    @Test("production bounds adaptive Gemma QAT depth without widening other stateless models")
     func productionMTPDepthModeFollowsDrafterCapability() {
-        #expect(
-            MTPAutomaticVerificationPolicy.fixedDraftTokens(
-                usesRequestStatefulDrafter: true) == nil)
-        #expect(
-            MTPAutomaticVerificationPolicy.fixedDraftTokens(
-                usesRequestStatefulDrafter: false)
-                == MTPAutomaticVerificationPolicy.initialDraftTokens)
+        for modelID in [nil, "gemma-4-26b-qat-4bit", "qwen3.8-27b"] as [String?] {
+            let stateful = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+                usesRequestStatefulDrafter: true, modelID: modelID)
+            #expect(stateful.fixed == nil)
+            #expect(stateful.maximum == CBv2MTPConfig.testedMaxDraftTokens)
+        }
+        let qat = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+            usesRequestStatefulDrafter: false, modelID: "gemma-4-26b-qat-4bit")
+        #expect(qat.fixed == nil)
+        #expect(qat.maximum == 1)
+        for modelID in [nil, "gemma-4-26b-8bit", "gemma-4-26b-qat-4bit-copy",
+            "GEMMA-4-26B-QAT-4BIT", " gemma-4-26b-qat-4bit "] as [String?]
+        {
+            let stateless = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+                usesRequestStatefulDrafter: false, modelID: modelID)
+            #expect(stateless.fixed == MTPAutomaticVerificationPolicy.initialDraftTokens)
+            #expect(stateless.maximum == CBv2MTPConfig.testedMaxDraftTokens)
+        }
+    }
+
+    @Test("explicit QAT verification benchmark retains fixed depth one")
+    func benchmarkMTPDepthRetainsFixedControl() {
+        let policy = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+            usesRequestStatefulDrafter: false, modelID: "gemma-4-26b-qat-4bit",
+            hasBenchmarkVerificationOverride: true)
+        let configuration = CBv2MTPConfig(
+            enabled: true, maxDraftTokens: policy.maximum, fixedDraftTokens: policy.fixed)
+        #expect(configuration.enabled)
+        #expect(configuration.fixedDraftTokens == 1)
+        #expect(configuration.maxDraftTokens == CBv2MTPConfig.testedMaxDraftTokens)
     }
 
     @Test("slot build is unconditional: builds, registers, and streams translated events")
@@ -674,33 +700,10 @@ struct EngineV2ReslicingWiringTests {
         #expect(engineA.capacityUpdates.last == grownA)
     }
 
-    @Test("all-paged co-residency: the shrink strands physical KV, the regrow is deferred, and both residues are measured")
-    func allPagedCoResidencyStrandsThenDefers() async throws {
-        // THE POST-FLIP SHAPE. Once `.auto` resolves `.paged` there is no
-        // contiguous slot left to contrast against — BOTH co-resident slots
-        // are paged — so the surviving asymmetry is not paged-vs-contiguous.
-        // It is between a slot's CONSTRUCTION-FIXED pool and the fair share
-        // the fleet re-slicer keeps moving underneath it.
-        //
-        // Each pool here is smaller than the logical grant its slot was
-        // built with: the production shape since #535, where
-        // `PagedKVPhysicalCapacityPolicy` bounds physical capacity by useful
-        // concurrent context, machine size, and live headroom — never by the
-        // grant. (The stale premise in §15 of the migration plan, that a
-        // lone paged slot commits ~the whole fleet budget as slabs, predates
-        // that policy: it was written in #531 and bounded in #535.)
-        //
-        // The drill:
-        //   1. A loads alone at the FULL fleet budget and materializes a
-        //      pool sized for the box as it looked THEN;
-        //   2. B arrives and the share is re-cut. A's pool is now LARGER
-        //      than A's share — the surplus is STRANDED: re-promised to B on
-        //      paper, still held by A's slabs in Metal;
-        //   3. B leaves and A's share returns to the whole budget, far past
-        //      the pool, which cannot grow — the regrow is DEFERRED.
-        // Not one byte moves either way today. Both residues are now
-        // MEASURED, which is exactly what a pool resize consumes and the
-        // only signal an operator gets with no canary fleet.
+    @Test("fixed-reference co-residency preserves physical clamp diagnostics")
+    func fixedReferenceCoResidencyStrandsThenDefers() async throws {
+        // Explicit fixed-slab reference engines retain their construction
+        // capacity. Production segmented engines are covered separately.
         let loop = try makeWiringLoop()
         let runtime = EngineV2Runtime()
         let recorder = GrantRecorder()
@@ -863,23 +866,10 @@ struct EngineV2ReslicingWiringTests {
         #expect(regrowEvent.fields?["pool_stranded_bytes"]?.description == "0")
     }
 
-    @Test("mixed paged+contiguous: only the contiguous survivor can actually take its regrow")
-    func mixedPagedContiguousResliceIsLedgerOnly() async throws {
-        // A mixed box stays reachable after the flip: `.auto` degrades to
-        // contiguous whenever `PagedKVPhysicalCapacityPolicy` cannot carve a
-        // ≥1 GiB pool, which is the normal outcome for the SECOND load on a
-        // small box. So this pins what mixed now means, rather than the
-        // pre-flip paged-vs-contiguous contrast that a paged default erases.
-        //
-        // Slot A is PAGED with a demand-capped physical pool SMALLER than
-        // its logical grant; slot B is contiguous. The ProviderLoop-driven
-        // load/unload re-slice must:
-        //   * shrink/grow ONLY admission ledgers,
-        //   * keep A's physical pool byte-for-byte constant, and
-        //   * let the CONTIGUOUS survivor take its regrow in full — the one
-        //     thing its paged neighbour cannot do (see
-        //     `allPagedCoResidencyStrandsThenDefers`), and the reason a
-        //     paged-by-default fleet loses capacity that a mixed one keeps.
+    @Test("fixed-reference and contiguous co-residency retain their distinct resize contracts")
+    func mixedFixedReferenceContiguousReslice() async throws {
+        // This scripted fixed-reference pool remains supported for native
+        // tests. No provider serving factory constructs it.
         let loop = try makeWiringLoop()
         let runtime = EngineV2Runtime()
         let recorder = GrantRecorder()
@@ -982,9 +972,16 @@ struct EngineV2ReslicingWiringTests {
         // paged neighbour, whose identical regrow clamps to pool truth — it
         // takes every byte.
         await loop.unloadModel("gemma-4-26b-qat-4bit")
+        // With the unmeasured gemma gone, the surviving set is {gpt-oss-20b}
+        // and the activation reserve relaxes to its measured floor
+        // (unloadModel refreshes BEFORE the regrow) — the survivor's regrow
+        // is sized against that relaxed reserve, gaining the difference over
+        // the flat default.
         let regrowB = UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: wiringPhysicalBytes,
             residentWeightBytes: UInt64(sizingB.weightsBytes),
+            activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
+                modelIDs: ["gpt-oss-20b"]),
             configReserveBytes: wiringReserveBytes)
         #expect(regrowB > UInt64(targetB))
         #expect(engineB.capacityUpdates.last == Int(regrowB))
@@ -1371,7 +1368,7 @@ struct EngineV2RequestRoutingTests {
         } catch let error as MultiModelBatchSchedulerEngineError {
             #expect(
                 error == .toolChoiceViolation(
-                    "required tool_choice produced visible text before a tool call"))
+                    "forced tool_choice produced visible text before a validated call"))
         }
         #expect(emitted.isEmpty)
         #expect(engine.submitted.count == 1)
@@ -1448,7 +1445,7 @@ struct EngineV2RequestRoutingTests {
         #expect(engine.submitted[0].tokenConstraint == nil)
     }
 
-    @Test("required Qwen tool choice rejects a non-XML parser before submit")
+    @Test("required Qwen tool choice rejects an unframed JSON parser before submit")
     func requiredQwenToolChoiceRejectsParserOverride() async throws {
         let engine = WiringScriptedEngine(script: .stream([]))
         let bridge = makeBridge(engine: engine)
@@ -1473,7 +1470,7 @@ struct EngineV2RequestRoutingTests {
             Issue.record("expected Qwen parser mismatch rejection")
         } catch let error as MultiModelBatchSchedulerEngineError {
             #expect(error == .invalidToolPayload(
-                "inference-enforced Qwen tool_choice requires the qwen3_coder tool parser"))
+                "inference-enforced structured tool_choice requires an XML or Nemotron tool parser"))
         }
         #expect(engine.submitted.isEmpty)
     }
@@ -1548,7 +1545,7 @@ struct EngineV2RequestRoutingTests {
         } catch let error as MultiModelBatchSchedulerEngineError {
             #expect(
                 error == .toolChoiceViolation(
-                    "named tool_choice produced visible text before a tool call"))
+                    "forced tool_choice produced visible text before a validated call"))
         }
         #expect(emitted.isEmpty)
     }

@@ -115,6 +115,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Absolute provider-local deadline derived once when the coordinator frame
     /// was received. Nil for local HTTP and legacy coordinator requests.
     private let firstContentDeadline: FirstContentDeadline?
+    /// Profiler accumulator for the coordinator request this engine view
+    /// serves (prompt-prep / tool-constraint / vision-prep stamps; handed on
+    /// to the bridge). Nil for local HTTP and tests.
+    private let profile: RequestProfileBuilder?
 
     public init(
         registryProvider: @escaping @Sendable () async -> Registry,
@@ -129,8 +133,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         engineV2Sampling: EngineV2SamplingOverrides? = nil,
         engineV2Vision: EngineV2VisionPlumbing? = nil,
         engineV2Usage: EngineV2RequestUsageSignal? = nil,
-        firstContentDeadline: FirstContentDeadline? = nil
+        firstContentDeadline: FirstContentDeadline? = nil,
+        profile: RequestProfileBuilder? = nil
     ) {
+        self.profile = profile
         self.registryProvider = registryProvider
         self.ensureLoaded = ensureLoaded
         self.reserveModel = reserveModel
@@ -198,6 +204,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.engineV2Usage = nil
         self.allowInternalToolSchemaMetadata = false
         self.firstContentDeadline = nil
+        self.profile = nil
     }
 
     // MARK: - MLXServerEngine
@@ -213,6 +220,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     public func streamChatCompletion(
         request: OpenAIChatCompletionRequest
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        let templateControls = self.templateControls.resolvingPromptDate()
         try checkFirstContentDeadline()
 
         // I1: prefer the atomic-`acquire` path. The legacy three-closure
@@ -377,8 +385,21 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 let plumbing = engineV2Vision ?? .production
                 do {
                     try checkFirstContentDeadline()
+                    profile?.mark(.promptPrepStart)
+                    let visionPrepStart = SuspendingClock.now
                     let visionPrepared = try await plumbing.prepare(
                         container, visionRequest, templateControls)
+                    if let profile {
+                        // Media prompt prep = decode + vision tower; one lock.
+                        let visionPrepUs = RequestProfileBuilder.microseconds(
+                            SuspendingClock.now - visionPrepStart)
+                        let visionPromptTokens = Int64(visionPrepared.promptTokens.count)
+                        profile.update { f, now in
+                            f.mark(.promptPrepEnd, offsetUs: now)
+                            f.set(.promptTokens, visionPromptTokens)
+                            f.add(.visionPrep, us: visionPrepUs)
+                        }
+                    }
                     // MLX vision evaluation mutates container/Metal state and is
                     // not safely cancellable. Reject immediately after it returns.
                     try checkFirstContentDeadline()
@@ -423,7 +444,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         usageSignal: engineV2Usage,
                         multimodal: visionPrepared.multimodalInput(),
                         mediaKind: visionPrepared.mediaKind,
-                        firstContentDeadline: firstContentDeadline
+                        firstContentDeadline: firstContentDeadline,
+                        profile: profile
                     )
                     do {
                         try checkFirstContentDeadline()
@@ -431,14 +453,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         await bridge.cancel(requestId: visionRequestId)
                         throw error
                     }
-                    // Qwen3.6/DeepSeek-style templates pre-open a <think>
-                    // block at the prompt tail (output carries only the
-                    // close). Without a synthesized open, the downstream
-                    // streaming think parser buffers the whole block —
-                    // TTFT becomes the full thinking duration. Same probe
-                    // as the text path below.
+                    // Initialize the think parser from the rendered media
+                    // prompt: reasoning for an open block, content for a
+                    // pre-closed block (thinking-disabled media).
                     try checkFirstContentDeadline()
-                    let synthesizeThinkOpen = ReasoningPromptProbe.shouldSynthesizeThinkOpen(
+                    let reasoningPrefix = ReasoningPromptProbe.streamingPrefix(
                         reasoningParser: visionRequest.reasoningParser,
                         stream: visionRequest.stream,
                         promptTokens: visionPrepared.promptTokens,
@@ -451,7 +470,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         toolHandler: nil,
                         prepared: prepared,
                         releaseBox: releaseBox,
-                        synthesizeThinkOpen: synthesizeThinkOpen
+                        reasoningPrefix: reasoningPrefix
                     )
                 } catch let failure as PreContentDeadlineFailure {
                     await mediaGate.release(requestId: mediaReqId)
@@ -547,6 +566,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let promptTokens: [Int]
         do {
             try checkFirstContentDeadline()
+            // Profiler: template render + BPE encode is the dominant CPU
+            // stage before submit.
+            profile?.mark(.promptPrepStart)
             promptTokens = try ProviderPromptContractPipeline.tokenize(
                 prepared: prepared,
                 request: request,
@@ -562,20 +584,24 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw error
         }
+        if let profile {
+            let promptTokenCount = Int64(promptTokens.count)
+            profile.update { f, now in
+                f.mark(.promptPrepEnd, offsetUs: now)
+                f.set(.promptTokens, promptTokenCount)
+            }
+        }
 
-        // Qwen3.6/DeepSeek-style templates pre-open a <think> block at the
-        // prompt tail (the model's output carries only the close). Without a
-        // synthesized open, the downstream streaming think parser sits in its
-        // `undecided` state buffering the ENTIRE block — the consumer's first
-        // delta (TTFT) is delayed by the whole thinking duration. See
-        // `ReasoningPromptProbe`.
+        // The rendered prompt determines whether output starts in reasoning
+        // or content mode. Seed that state before any model output so neither
+        // thinking-enabled nor thinking-disabled answers buffer until finish.
         do {
             try checkFirstContentDeadline()
         } catch {
             await releaseBox.fire()
             throw error
         }
-        let synthesizeThinkOpen = ReasoningPromptProbe.shouldSynthesizeThinkOpen(
+        let reasoningPrefix = ReasoningPromptProbe.streamingPrefix(
             reasoningParser: request.reasoningParser,
             stream: request.stream,
             promptTokens: promptTokens,
@@ -625,6 +651,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 throw MultiModelBatchSchedulerEngineError.generationFailed(
                     "internal error: model '\(modelId)' has no serving engine (no v2 bridge)")
             }
+            let toolConstraintStart = SuspendingClock.now
             tokenConstraint = try ToolConstraintFactory.make(
                 prepared: prepared,
                 request: request,
@@ -633,6 +660,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     modelId: request.model, modelType: modelType),
                 defaultMaxTokens: defaultMaxTokens,
                 stopTokenIDs: bridge.stopTokenIds)
+            // Grammar compile (Gemma) can take the tool-constraint lock on the
+            // first build per stop-set; only worth a lock when tools exist.
+            if prepared.tools?.isEmpty == false {
+                profile?.markDuration(.toolConstraint, start: toolConstraintStart)
+            }
             try checkFirstContentDeadline()
         } catch {
             await releaseBox.fire()
@@ -680,7 +712,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     logprobsChannel: engineV2Logprobs?.channel,
                     usageSignal: engineV2Usage,
                     tokenConstraint: tokenConstraint,
-                    firstContentDeadline: firstContentDeadline
+                    firstContentDeadline: firstContentDeadline,
+                    profile: profile
                 )
                 do {
                     try checkFirstContentDeadline()
@@ -708,7 +741,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             toolHandler: toolHandler,
             prepared: prepared,
             releaseBox: releaseBox,
-            synthesizeThinkOpen: synthesizeThinkOpen
+            reasoningPrefix: reasoningPrefix,
+            nativeReasoningPrefix: ToolChoiceEnforcementPolicy.nativeStructuredTarget(
+                ChatTemplateFixContext(modelId: modelId, modelType: modelType))
+                ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
+                    tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
+                                           skipSpecialTokens: false)) ?? "<think></think>") : nil
         )
     }
 
@@ -738,7 +776,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         toolHandler: BatchedToolStreamHandler?,
         prepared: ToolChoicePromptPolicy.Prepared,
         releaseBox: OneShotRelease,
-        synthesizeThinkOpen: Bool = false
+        reasoningPrefix: String? = nil,
+        nativeReasoningPrefix: String? = nil
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -753,7 +792,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             toolHandler: toolHandler,
             prepared: prepared,
             releaseBox: releaseBox,
-            synthesizeThinkOpen: synthesizeThinkOpen)
+            reasoningPrefix: reasoningPrefix,
+            nativeReasoningPrefix: nativeReasoningPrefix)
         do {
             try checkFirstContentDeadline()
             return stream
@@ -776,7 +816,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         toolHandler: BatchedToolStreamHandler?,
         prepared: ToolChoicePromptPolicy.Prepared,
         releaseBox: OneShotRelease,
-        synthesizeThinkOpen: Bool = false
+        reasoningPrefix: String? = nil,
+        nativeReasoningPrefix: String? = nil
     ) -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -791,18 +832,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // carrying the cause + reconciled usage so they survive the
                 // throw instead of being flattened into a string by `failed`.
                 var failedTerminal: MultiModelBatchSchedulerEngineError?
+                var router = NativeToolStreamRouter(handler: toolHandler,
+                    requiresToolCall: prepared.requiresToolCall, nativePrefix: nativeReasoningPrefix)
                 startedAt = Date()
 
-                // Synthetic <think> open (see `ReasoningPromptProbe`): the
-                // rendered prompt already opened a think block, so hand the
-                // downstream streaming parser the marker it will never see
-                // in model output. The parser consumes it as a pure state
-                // transition — no SSE frame reaches the consumer — and then
-                // streams reasoning deltas incrementally instead of
-                // buffering until `</think>`. Deliberately BYPASSES the
-                // tool handler: the marker is not model output.
-                if synthesizeThinkOpen {
-                    continuation.yield(.content(ReasoningPromptProbe.thinkOpen))
+                // Restore the prompt-side reasoning state in the downstream
+                // parser before model output. This prefix emits no SSE frame
+                // and bypasses the tool handler because it is not generated
+                // output. Real content and usage continue through the normal
+                // event handling below.
+                if let reasoningPrefix, !router.usesNativeChannels {
+                    continuation.yield(.content(reasoningPrefix))
                 }
 
                 for await event in upstream {
@@ -817,36 +857,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         if firstTokenAt == nil { firstTokenAt = Date() }
                         lastTokenAt = Date()
                         if !text.isEmpty {
-                            if let handler = toolHandler {
-                                if let visible = handler.processChunk(text),
-                                    !visible.isEmpty
-                                {
-                                    if prepared.requiresToolCall {
-                                        let policy =
-                                            switch prepared.mode {
-                                            case .named: "named"
-                                            case .required: "required"
-                                            case .auto, .none: "constrained"
-                                            }
-                                        await cancelUpstream()
-                                        await releaseBox.fire()
-                                        continuation.finish(
-                                            throwing: MultiModelBatchSchedulerEngineError
-                                                .toolChoiceViolation(
-                                                    "\(policy) tool_choice produced visible text before a tool call"
-                                                ))
-                                        return
-                                    }
-                                    // Auto prose remains genuinely streaming. Tool-call bytes
-                                    // stay withheld and parsed calls are emitted only after the
-                                    // validation boundary below; a later invalid call therefore
-                                    // becomes a normal in-band stream error without exposing the
-                                    // invalid call. Buffering this prose would turn every
-                                    // tool-enabled auto stream into a non-streaming response.
-                                    continuation.yield(.content(visible))
-                                }
-                            } else {
-                                continuation.yield(.content(text))
+                            do {
+                                for routed in try router.process(text) { continuation.yield(routed) }
+                            } catch {
+                                await cancelUpstream()
+                                await releaseBox.fire()
+                                continuation.finish(throwing: error)
+                                return
                             }
                         }
                     case .info(let p, let c, _, let reason):
@@ -909,12 +926,19 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // sampler-constrained; Qwen required/named are prompt-forced
                 // and fail closed here before a call is exposed. This remains
                 // defense in depth for every mode.
+                do {
+                    for routed in try router.finishText() { continuation.yield(routed) }
+                } catch {
+                    await releaseBox.fire()
+                    continuation.finish(throwing: error)
+                    return
+                }
                 let toolCalls = toolHandler?.finish() ?? []
                 if prepared.mode == .auto,
                     let residual = toolHandler?.takeResidualText(),
                     !residual.isEmpty
                 {
-                    continuation.yield(.content(residual))
+                    continuation.yield(router.visibleEvent(residual))
                 }
                 if prepared.mode == .auto, (toolHandler?.parseFailureCount ?? 0) > 0 {
                     emitToolConstraintTelemetry(

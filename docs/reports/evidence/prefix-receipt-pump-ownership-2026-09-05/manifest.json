@@ -1,0 +1,762 @@
+{
+  "scope": "Provider receipt-pump ownership regression: reproduced baseline failure, candidate88 unique functions/92 executions PASS. Native diagnostic union retained as provenance, diagnostics nil. Real HTTP rerun pending.",
+  "source_commit": "53e45fc1460a5420ee397d130968137b2edf3f68",
+  "originals": {
+    "provider-validation": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1",
+      "manifest_sha256": "78c24dfaf5aa2ae5c5e0692bf136f2610a8946062f008d0d61c11ffcfe61c4a6",
+      "payloads_verified": 63
+    },
+    "receipt-source": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2",
+      "manifest_sha256": "771c8d366fe67e7ff67b9b57e2af0c0c6a4479f7767e6e2283d0f3eec4ff6758",
+      "payloads_verified": 25
+    },
+    "native-diagnostic-provenance": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3",
+      "manifest_sha256": "5b2e3d6136498a5964f725ccebefcc42d7eb7d8d349164a26bdf7a27bb735ffd",
+      "payloads_verified": 51
+    }
+  },
+  "source_proof": [
+    {
+      "path": "provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Submission.swift",
+      "sha256": "41669183e8a69a75cfe6e71b30e4df8173d90082dc29f32b9dada714e985e519",
+      "matches_reviewed_freeze_and_executed_candidate": true
+    },
+    {
+      "path": "provider-swift/Tests/ProviderCoreTests/EngineV2BridgeTests.swift",
+      "sha256": "c44de8a0e5f1afe5b2c0b048bce5ec8b2301cdc9e29dcba1ec253ac1384d70d6",
+      "matches_reviewed_freeze_and_executed_candidate": true
+    }
+  ],
+  "archive": {
+    "path": "payloads.tar.gz",
+    "bytes": 3278418,
+    "sha256": "b091dc779db5bf7a73e1ff49adb1c45926b77a77d2dd2c65f5f5bd3bf330ba86"
+  },
+  "payload_count": 144,
+  "payload_bytes": 9641538,
+  "files": {
+    "archive-builder.py": {
+      "source": "/tmp/darkbloom-prefix-receipt-milestone-evidence1-build.py",
+      "bytes": 4865,
+      "sha256": "09bee0a9cab37d4ba0b8f216f8164745fb3e3358a1ac53c0ab73f027f63598ff"
+    },
+    "archive-preparation.json": {
+      "source": "generated from exact reviewed and executed source comparisons",
+      "bytes": 941,
+      "sha256": "caf79ed0abf805f853065d5bc48ec229ee3871ada1ddc62e2ad266387d2624d7"
+    },
+    "native-diagnostic-provenance/CBv2LogitDiagnosticTests.log": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/CBv2LogitDiagnosticTests.log",
+      "bytes": 1820,
+      "sha256": "6f765b9bc0dc9711159e56cf143f07470c255bd25081d394444284d34eca45e9"
+    },
+    "native-diagnostic-provenance/CBv2MTPCaptureVerifyTests.log": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/CBv2MTPCaptureVerifyTests.log",
+      "bytes": 3706,
+      "sha256": "d1caed6d20301a6ef322cfabb6affb1dc905f082fbed92f628fbde4cbc790e9e"
+    },
+    "native-diagnostic-provenance/CBv2MTPDepthControllerTests.log": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/CBv2MTPDepthControllerTests.log",
+      "bytes": 4945,
+      "sha256": "a7981bea24dab3d892d19f458df773cac2bf07cc6ad3bd7aa3c730e34a48048d"
+    },
+    "native-diagnostic-provenance/CBv2MTPEngineParityTests.log": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/CBv2MTPEngineParityTests.log",
+      "bytes": 2634,
+      "sha256": "07ee2189916940935bfa5c1dcd085a3ffb84c8b6010d7e9e4be557f18da713d2"
+    },
+    "native-diagnostic-provenance/CBv2MTPKVStaging.log": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/CBv2MTPKVStaging.log",
+      "bytes": 3665,
+      "sha256": "4c81e4a87eb94fad9b6fe9b20652700150b9fb4b7eb90e1d53d09c709f3d3fa1"
+    },
+    "native-diagnostic-provenance/CBv2MTPOutputBudgetTests.log": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/CBv2MTPOutputBudgetTests.log",
+      "bytes": 1433,
+      "sha256": "ec4441e9ed934df257a21845b9659239bef5efbfb5087813d5a007da089f5cba"
+    },
+    "native-diagnostic-provenance/CBv2MTPProbeCadenceTests.log": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/CBv2MTPProbeCadenceTests.log",
+      "bytes": 1637,
+      "sha256": "7f384793bdbdadddb16e796119597bf313e59a24203fbf74b84a8778ff863f75"
+    },
+    "native-diagnostic-provenance/CBv2MTPRectangularDegradeTests.log": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/CBv2MTPRectangularDegradeTests.log",
+      "bytes": 1787,
+      "sha256": "d05aef0868358f6a2bd1f49d2f800ea559ceacc2057ec8e10dad2b03a32903e6"
+    },
+    "native-diagnostic-provenance/CBv2MTPRoundSmokeTests.log": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/CBv2MTPRoundSmokeTests.log",
+      "bytes": 2142,
+      "sha256": "deb6d11737aacccda54dad526e94b0d48012b7397591ea853c95292fbe8e4a7d"
+    },
+    "native-diagnostic-provenance/CBv2OrdinaryLogitDiagnosticTests.log": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/CBv2OrdinaryLogitDiagnosticTests.log",
+      "bytes": 1371,
+      "sha256": "3c8e94735afb6077dc8c62cfa84cda52ce65bfbc14724e86cfb680f980f83138"
+    },
+    "native-diagnostic-provenance/CBv2QwenMTPIntegrationTests.log": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/CBv2QwenMTPIntegrationTests.log",
+      "bytes": 7220,
+      "sha256": "0ba6c1683b04a5c2ec4fcd5432886b9195f97437e7762123cdb387d381a4a67e"
+    },
+    "native-diagnostic-provenance/Qwen35MTPTopTwoTests.log": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/Qwen35MTPTopTwoTests.log",
+      "bytes": 1549,
+      "sha256": "00f3a5bc8b32d25e33aca58a96dcfe9f5c047a50bbe7a4579e8d2a82c1b1778e"
+    },
+    "native-diagnostic-provenance/actual-after-debug.yaml.gz": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/actual-after-debug.yaml.gz",
+      "bytes": 321906,
+      "sha256": "4c5fd74d30fcdef06a6dd980955c868b10a99c59c9048c7faab3f450d0731ee6"
+    },
+    "native-diagnostic-provenance/actual-after-workspace-state.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/actual-after-workspace-state.json",
+      "bytes": 17086,
+      "sha256": "5c1473f931815bace731d54d50fe069fe4222954bf8eeb806ee37ff452cf5b71"
+    },
+    "native-diagnostic-provenance/actual-build-debug.yaml.gz": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/actual-build-debug.yaml.gz",
+      "bytes": 322082,
+      "sha256": "8a88e45ed499b32af4278a1a14af5fb08187f06d799ad53094efc0b02c80da6b"
+    },
+    "native-diagnostic-provenance/actual-build-workspace-state.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/actual-build-workspace-state.json",
+      "bytes": 17086,
+      "sha256": "5c1473f931815bace731d54d50fe069fe4222954bf8eeb806ee37ff452cf5b71"
+    },
+    "native-diagnostic-provenance/actual-compiler-source-proof.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/actual-compiler-source-proof.json",
+      "bytes": 2714,
+      "sha256": "489babf63032f6a8d66c029d45d3f9c558345fd49c16b8f04ec064a809363439"
+    },
+    "native-diagnostic-provenance/all-owned-graph-source-proof.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/all-owned-graph-source-proof.json",
+      "bytes": 288480,
+      "sha256": "bdecb9ac2165cc0cd4d6f89704cd89cd74e0b97ab448ed9fa26b0e3aac8dc702"
+    },
+    "native-diagnostic-provenance/ancillary-package-manifest.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/ancillary-package-manifest.json",
+      "bytes": 57123,
+      "sha256": "21264ec77774aa77e324891cb5a62e83e09c2eb7f22a63c21fe78b6a24cbd9bf"
+    },
+    "native-diagnostic-provenance/build.log": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/build.log",
+      "bytes": 493963,
+      "sha256": "626e5ce5be354ad6e781707575c3af47cf822eaf1f9f9ff236739e3a309b22ce"
+    },
+    "native-diagnostic-provenance/dependency-source-manifest.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/dependency-source-manifest.json",
+      "bytes": 161754,
+      "sha256": "f1e16b19ad215312c227f0b27f0370556eddfb7afde02fb2c6940fecdb0c1419"
+    },
+    "native-diagnostic-provenance/environment.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/environment.json",
+      "bytes": 3,
+      "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+    },
+    "native-diagnostic-provenance/execution.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/execution.json",
+      "bytes": 6450,
+      "sha256": "1ef251771d08530440faed11b0da859d358e010c4ea35df4254165b8beb95c47"
+    },
+    "native-diagnostic-provenance/filters.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/filters.json",
+      "bytes": 370,
+      "sha256": "4b077b1d8b6937a4bce352c267f38b4d2b62185ea5dbb6045321c0621e011612"
+    },
+    "native-diagnostic-provenance/freeze.py": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/freeze.py",
+      "bytes": 4977,
+      "sha256": "2db71b3a7fd484fd6fce3372f7b627454797c40a6328e813674ece821322fa2d"
+    },
+    "native-diagnostic-provenance/identifiers.log": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/identifiers.log",
+      "bytes": 135013,
+      "sha256": "8e3f4d561ab68e6fe166168d4299c0584da513792391959d10147c8386eb79aa"
+    },
+    "native-diagnostic-provenance/integration.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/integration.json",
+      "bytes": 1407,
+      "sha256": "6f13d6f652220f04ab4aad23fc844d5517721451f23fec601bcab6981ac4c6ca"
+    },
+    "native-diagnostic-provenance/jinja-source-manifest.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/jinja-source-manifest.json",
+      "bytes": 2907,
+      "sha256": "1a3c73a25aab033a5ce568f263db5ff9560d648206313843983afa3280760598"
+    },
+    "native-diagnostic-provenance/manifest.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/manifest.json",
+      "bytes": 8306,
+      "sha256": "5b2e3d6136498a5964f725ccebefcc42d7eb7d8d349164a26bdf7a27bb735ffd"
+    },
+    "native-diagnostic-provenance/metallib-placement.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/metallib-placement.json",
+      "bytes": 435,
+      "sha256": "be0bb8eb4f6884ac260240721c0b86d6b44d45eee3de6a01fb37ab98353160d1"
+    },
+    "native-diagnostic-provenance/native-source-manifest.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/native-source-manifest.json",
+      "bytes": 65358,
+      "sha256": "b3784d117bf90309039fe414a4ce7d162b4919023a15ec9d28f38e17717dc161"
+    },
+    "native-diagnostic-provenance/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2LogitDiagnostic.swift": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2LogitDiagnostic.swift",
+      "bytes": 11407,
+      "sha256": "16ba94359fd351171516760a4b6bef4a61a76ab75a27517b68d6565b9bca495c"
+    },
+    "native-diagnostic-provenance/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift",
+      "bytes": 219215,
+      "sha256": "9c2f87d7361bc1d8a57c7179264450e4a6e1a35b356fabce36b478acbe418000"
+    },
+    "native-diagnostic-provenance/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineV2.swift",
+      "bytes": 61669,
+      "sha256": "b7dfd178345c3e67f62cd04ecd979c4b02680bd74c5362ceebac70643b6ccba3"
+    },
+    "native-diagnostic-provenance/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift",
+      "bytes": 36273,
+      "sha256": "fe54253eebb0b22b81ba4c29758f7ab8ec01851538fa479acc3a0fcffd2e664b"
+    },
+    "native-diagnostic-provenance/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTP.swift": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTP.swift",
+      "bytes": 4506,
+      "sha256": "22006bad3082cb84ee1f51128fbefde1f0c961a722b4c206dff8dac632b94d3b"
+    },
+    "native-diagnostic-provenance/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPExecution.swift": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPExecution.swift",
+      "bytes": 31425,
+      "sha256": "307ca88418f3d4477cce3e4e88414a8bc97283a17a6a4902e749d7b0e36d7170"
+    },
+    "native-diagnostic-provenance/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPFinalize.swift",
+      "bytes": 17326,
+      "sha256": "ba76aebe1297e2b57b41a1f3a929681124f08e598b3008b4202e19b22e52b322"
+    },
+    "native-diagnostic-provenance/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPTargetVerification.swift": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/owned/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPTargetVerification.swift",
+      "bytes": 17531,
+      "sha256": "33ffd8eb88775517d8dfa4361481f5b2ab7e4ef2f04eaf220c2303a01ef7ae55"
+    },
+    "native-diagnostic-provenance/owned/Tests/MLXLMTests/CBv2LogitDiagnosticTests.swift": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/owned/Tests/MLXLMTests/CBv2LogitDiagnosticTests.swift",
+      "bytes": 6927,
+      "sha256": "071b26395af39397214cad6021fba3ff28476a8f4f336a6912bff4dd0e15ad59"
+    },
+    "native-diagnostic-provenance/owned/Tests/MLXLMTests/CBv2OrdinaryLogitDiagnosticTests.swift": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/owned/Tests/MLXLMTests/CBv2OrdinaryLogitDiagnosticTests.swift",
+      "bytes": 6531,
+      "sha256": "38465f42c7792c403eb1a06930a036c23393ed34a615a2ef8802a7411bfdb29d"
+    },
+    "native-diagnostic-provenance/owned/Tests/MLXLMTests/CBv2QwenMTPIntegrationTests.swift": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/owned/Tests/MLXLMTests/CBv2QwenMTPIntegrationTests.swift",
+      "bytes": 68433,
+      "sha256": "72ed256427229fcf03ce7c86b0a09175c34cf20687a2d4234d9aa13d10d388a5"
+    },
+    "native-diagnostic-provenance/prepare.py": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/prepare.py",
+      "bytes": 1976,
+      "sha256": "f0386d3a30f00507263396fecf3407f975f0f48e17c2a350e6a4a4241f6ef4ef"
+    },
+    "native-diagnostic-provenance/run-nested-suite.sh": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/run-nested-suite.sh",
+      "bytes": 3578,
+      "sha256": "14ecf2a47a07c07b2bdc535ac1a6fdd64c674763963a2fa9b86cb07d8feeda48"
+    },
+    "native-diagnostic-provenance/run-status.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/run-status.json",
+      "bytes": 46,
+      "sha256": "5c3755030c086b05b4a591c980c2ae6337dc03b984d1afe5b91a6cca2178b571"
+    },
+    "native-diagnostic-provenance/run.py": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/run.py",
+      "bytes": 4636,
+      "sha256": "3103b0b72a8c93c7a0ee8b4c3525e0c8eed1eefc3df8373e792d69296e7d9d38"
+    },
+    "native-diagnostic-provenance/selected-identifiers.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/selected-identifiers.json",
+      "bytes": 15291,
+      "sha256": "9ed5d853166c2f78e72908a5e93856559cc0fbf7f7f3a844011d3d68f8dc64dc"
+    },
+    "native-diagnostic-provenance/source-verified-after.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/source-verified-after.json",
+      "bytes": 77,
+      "sha256": "1bf5e1adcec9f5e50bf232e4cb9b2f09ab16d864ec9b8cbb806b9fef196bf43d"
+    },
+    "native-diagnostic-provenance/source-verified-before.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/source-verified-before.json",
+      "bytes": 77,
+      "sha256": "1bf5e1adcec9f5e50bf232e4cb9b2f09ab16d864ec9b8cbb806b9fef196bf43d"
+    },
+    "native-diagnostic-provenance/source-verified-postcompile.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/source-verified-postcompile.json",
+      "bytes": 77,
+      "sha256": "1bf5e1adcec9f5e50bf232e4cb9b2f09ab16d864ec9b8cbb806b9fef196bf43d"
+    },
+    "native-diagnostic-provenance/test-binary.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/test-binary.json",
+      "bytes": 274,
+      "sha256": "cc8c2ff77d83a4832a28d8ed9c49fdf194c3d7dc266ad9ec98deae4346e9fcb3"
+    },
+    "native-diagnostic-provenance/verdict.json": {
+      "source": "/tmp/darkbloom-q36-logit-diagnostic-validation3/verdict.json",
+      "bytes": 755,
+      "sha256": "7be6c04032a088cb63e205a67e0bb11a167dd271a492c76ae720b427b1e1ebe6"
+    },
+    "provider-validation/REVIEW.md": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/REVIEW.md",
+      "bytes": 1494,
+      "sha256": "b4b30878b6a5f31a394a337e2d0edcd9a2e2a07306d9e9b141159c9ea5581b2e"
+    },
+    "provider-validation/ancillary-package-manifest.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/ancillary-package-manifest.json",
+      "bytes": 57123,
+      "sha256": "21264ec77774aa77e324891cb5a62e83e09c2eb7f22a63c21fe78b6a24cbd9bf"
+    },
+    "provider-validation/baseline/actual-after-debug.yaml.gz": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/actual-after-debug.yaml.gz",
+      "bytes": 399399,
+      "sha256": "075c4a6bd388a542c64e3d0548e5c2d852c47e376bdc9eb7ea55b41971075c37"
+    },
+    "provider-validation/baseline/actual-after-workspace-state.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/actual-after-workspace-state.json",
+      "bytes": 20789,
+      "sha256": "40a88bd28802cf4f6072aa71b3c888803f8f926236ad901baa5b9b9897b9d97b"
+    },
+    "provider-validation/baseline/actual-build-debug.yaml.gz": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/actual-build-debug.yaml.gz",
+      "bytes": 399382,
+      "sha256": "d7e65b6a6d2635a0ba47ba4dc415e111284b9c88a3a8bd90e949b441c4aa17f6"
+    },
+    "provider-validation/baseline/actual-build-workspace-state.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/actual-build-workspace-state.json",
+      "bytes": 20789,
+      "sha256": "40a88bd28802cf4f6072aa71b3c888803f8f926236ad901baa5b9b9897b9d97b"
+    },
+    "provider-validation/baseline/actual-compiler-source-proof.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/actual-compiler-source-proof.json",
+      "bytes": 1411,
+      "sha256": "b47aa9a782ff6a80d9a731214916159d7c266686a9e4ed69c01fa9d617c0c022"
+    },
+    "provider-validation/baseline/all-owned-graph-source-proof.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/all-owned-graph-source-proof.json",
+      "bytes": 552322,
+      "sha256": "f0d96935e6bfd6bf64186af338df0d12cdd047b300a2a49011f479ad2eea1f67"
+    },
+    "provider-validation/baseline/build.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/build.log",
+      "bytes": 1140002,
+      "sha256": "990705869acc3db7fad442a2730b2a4aa694c875dab70cbd312decc31fa1d339"
+    },
+    "provider-validation/baseline/changed-source/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Submission.swift": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/changed-source/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Submission.swift",
+      "bytes": 32022,
+      "sha256": "7deec47104eff682000eed06562271d124022c0dab7a1d72c0641985710506d9"
+    },
+    "provider-validation/baseline/changed-source/provider-swift/Tests/ProviderCoreTests/EngineV2BridgeTests.swift": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/changed-source/provider-swift/Tests/ProviderCoreTests/EngineV2BridgeTests.swift",
+      "bytes": 139232,
+      "sha256": "c44de8a0e5f1afe5b2c0b048bce5ec8b2301cdc9e29dcba1ec253ac1384d70d6"
+    },
+    "provider-validation/baseline/identifiers.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/identifiers.log",
+      "bytes": 193244,
+      "sha256": "467e590e1b9b128e1de92bf8b965e066e0d8f22a12d46ce446b00eb6809db45e"
+    },
+    "provider-validation/baseline/provider-source-manifest.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/provider-source-manifest.json",
+      "bytes": 98976,
+      "sha256": "a3149234f3c50be59270734ac25911a30c7d1a20034a3118cc91a90d6b31061c"
+    },
+    "provider-validation/baseline/readyAfterSubmitReturns.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/readyAfterSubmitReturns.log",
+      "bytes": 1818,
+      "sha256": "7fbd61cd0664de12c5f64b22a6f883dea1d5a5a0c9f0477c5eb574364b8c1a8f"
+    },
+    "provider-validation/baseline/source-verified-after.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/source-verified-after.json",
+      "bytes": 125,
+      "sha256": "501138a40b98a2126ff054cfb53ed0a27dfa123ee0ad38df69e47bf7c8af9076"
+    },
+    "provider-validation/baseline/source-verified-before.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/source-verified-before.json",
+      "bytes": 125,
+      "sha256": "501138a40b98a2126ff054cfb53ed0a27dfa123ee0ad38df69e47bf7c8af9076"
+    },
+    "provider-validation/baseline/source-verified-postcompile.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/source-verified-postcompile.json",
+      "bytes": 125,
+      "sha256": "501138a40b98a2126ff054cfb53ed0a27dfa123ee0ad38df69e47bf7c8af9076"
+    },
+    "provider-validation/baseline/test-binary.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/test-binary.json",
+      "bytes": 378,
+      "sha256": "670bf90b53de1c3710fe835de9804eef231a286c469722d394f33a07d30de226"
+    },
+    "provider-validation/baseline/verdict.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/baseline/verdict.json",
+      "bytes": 178,
+      "sha256": "ff04f1a8d1fc31f197a9c0227c393e40de401ec1eee8ad901ae5063f45f091bd"
+    },
+    "provider-validation/candidate/EngineProfileCancelTests.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/EngineProfileCancelTests.log",
+      "bytes": 2988,
+      "sha256": "018d03d241d354f6f3f2ca0b6a7246653726bf76ec6dbf55348f99d63ae9ca06"
+    },
+    "provider-validation/candidate/EngineV2BridgePumpReceiptTests.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/EngineV2BridgePumpReceiptTests.log",
+      "bytes": 1188,
+      "sha256": "acc08aaf9b2505e46aa9d61af76318d9836e621da816ce688a5c8f75a3752af9"
+    },
+    "provider-validation/candidate/EngineV2CancellationTests.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/EngineV2CancellationTests.log",
+      "bytes": 1245,
+      "sha256": "95ddcbe1a8ab146665827aefd11892e73e7782560f450a8913317679ca410a30"
+    },
+    "provider-validation/candidate/EngineV2ErrorMappingTests.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/EngineV2ErrorMappingTests.log",
+      "bytes": 1966,
+      "sha256": "fe71ec3bd5b19d58b4d1c5d1f46b3d401fa653a35bb4213a40f10ede3d48d723"
+    },
+    "provider-validation/candidate/EngineV2HardeningTests.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/EngineV2HardeningTests.log",
+      "bytes": 1510,
+      "sha256": "246ac0c8ca15391bc12ded661d877b37053582103f77b68ff74cebdc45a315b2"
+    },
+    "provider-validation/candidate/EngineV2LookupReceiptCoverageTests.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/EngineV2LookupReceiptCoverageTests.log",
+      "bytes": 1719,
+      "sha256": "8bffc33a45a02f19c36190feb39dbe0236484584398fec145533c5340653874f"
+    },
+    "provider-validation/candidate/EngineV2ResliceUnwindTests.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/EngineV2ResliceUnwindTests.log",
+      "bytes": 1276,
+      "sha256": "601c556c7a972c1f5990ca6431ac35f9a3ddd5db6943ed6030173f13a6bd0919"
+    },
+    "provider-validation/candidate/EngineV2SharedBudgetTests.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/EngineV2SharedBudgetTests.log",
+      "bytes": 3422,
+      "sha256": "798c2cc3a4c477d0c448f1d8e205c3f34076618d85b2fefdddb2319454048dec"
+    },
+    "provider-validation/candidate/EngineV2ShutdownTests.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/EngineV2ShutdownTests.log",
+      "bytes": 854,
+      "sha256": "0e7b42aa9abe139c9754a5e3422c9f72272017ce3b2c492df97b8fc00b117ffb"
+    },
+    "provider-validation/candidate/OuterPrefixCacheReceiptTests.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/OuterPrefixCacheReceiptTests.log",
+      "bytes": 1544,
+      "sha256": "bc963c255bd710beefd07b0dad06c95f314028b7f737a11d7de77f8885a85726"
+    },
+    "provider-validation/candidate/PrefixCacheReceiptTests.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/PrefixCacheReceiptTests.log",
+      "bytes": 5712,
+      "sha256": "7c2694d8d6690fd7ab8ad1f0d7091d6753742baf471b1ff8b26e4c88d81bfed0"
+    },
+    "provider-validation/candidate/ResidentPrefixCacheEvidenceTests.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/ResidentPrefixCacheEvidenceTests.log",
+      "bytes": 1998,
+      "sha256": "05750b65cb9e11a07993082e3422ee4fca9777aa47e8cd72dc93bcb0ad676636"
+    },
+    "provider-validation/candidate/RetirementGateTests.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/RetirementGateTests.log",
+      "bytes": 864,
+      "sha256": "056a78339f3f3eae60cb244f70dac4347f6382b58ba16cf2e8b4114fdebaf674"
+    },
+    "provider-validation/candidate/SSDHybridCheckpointStoreTests.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/SSDHybridCheckpointStoreTests.log",
+      "bytes": 3213,
+      "sha256": "8a73f037a9e7e543487be0387e7079c6b6c21a61c2303bebf688fa82aad5afd2"
+    },
+    "provider-validation/candidate/actual-after-debug.yaml.gz": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/actual-after-debug.yaml.gz",
+      "bytes": 399533,
+      "sha256": "b6c8accebac97e2090b565a86ee8455ac0e7e5f0500f357e2fdbd88570861e72"
+    },
+    "provider-validation/candidate/actual-after-workspace-state.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/actual-after-workspace-state.json",
+      "bytes": 20791,
+      "sha256": "d507e11d0283e03ef7b3de37f2d793c0d6b31676b29f13ee96840e8433ccde98"
+    },
+    "provider-validation/candidate/actual-build-debug.yaml.gz": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/actual-build-debug.yaml.gz",
+      "bytes": 399515,
+      "sha256": "10c18b27b73799f8e7af80c596446fe0f750b4a565f38f103f0e77b4318560d1"
+    },
+    "provider-validation/candidate/actual-build-workspace-state.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/actual-build-workspace-state.json",
+      "bytes": 20791,
+      "sha256": "d507e11d0283e03ef7b3de37f2d793c0d6b31676b29f13ee96840e8433ccde98"
+    },
+    "provider-validation/candidate/actual-compiler-source-proof.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/actual-compiler-source-proof.json",
+      "bytes": 1416,
+      "sha256": "d72fc6bd4e434f1715ad2f68d1a29abdef47be24f57b8296b7e14a256c5d8460"
+    },
+    "provider-validation/candidate/all-owned-graph-source-proof.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/all-owned-graph-source-proof.json",
+      "bytes": 553980,
+      "sha256": "8d20f81da14c939feef2b53275ff86e4785194796aa48c995fabbd13f402d521"
+    },
+    "provider-validation/candidate/build.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/build.log",
+      "bytes": 1141452,
+      "sha256": "804dbc150620fbbdacb4528fac19abf65a42559bf0c0739766d29e51fa4dd6a3"
+    },
+    "provider-validation/candidate/changed-source/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Submission.swift": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/changed-source/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Submission.swift",
+      "bytes": 32330,
+      "sha256": "41669183e8a69a75cfe6e71b30e4df8173d90082dc29f32b9dada714e985e519"
+    },
+    "provider-validation/candidate/changed-source/provider-swift/Tests/ProviderCoreTests/EngineV2BridgeTests.swift": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/changed-source/provider-swift/Tests/ProviderCoreTests/EngineV2BridgeTests.swift",
+      "bytes": 139232,
+      "sha256": "c44de8a0e5f1afe5b2c0b048bce5ec8b2301cdc9e29dcba1ec253ac1384d70d6"
+    },
+    "provider-validation/candidate/filters.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/filters.json",
+      "bytes": 450,
+      "sha256": "facfa64e42f6125737bf8c2bc4930e82f31ea50e95fb024fc11fae5b85410725"
+    },
+    "provider-validation/candidate/identifiers.log": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/identifiers.log",
+      "bytes": 193244,
+      "sha256": "467e590e1b9b128e1de92bf8b965e066e0d8f22a12d46ce446b00eb6809db45e"
+    },
+    "provider-validation/candidate/provider-source-manifest.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/provider-source-manifest.json",
+      "bytes": 98976,
+      "sha256": "9869c8716dea17a3e72e89a4a282b9bf3f8534ae5eee79a475e6e6f2bed38d79"
+    },
+    "provider-validation/candidate/source-verified-after.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/source-verified-after.json",
+      "bytes": 125,
+      "sha256": "501138a40b98a2126ff054cfb53ed0a27dfa123ee0ad38df69e47bf7c8af9076"
+    },
+    "provider-validation/candidate/source-verified-before.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/source-verified-before.json",
+      "bytes": 125,
+      "sha256": "501138a40b98a2126ff054cfb53ed0a27dfa123ee0ad38df69e47bf7c8af9076"
+    },
+    "provider-validation/candidate/source-verified-postcompile.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/source-verified-postcompile.json",
+      "bytes": 125,
+      "sha256": "501138a40b98a2126ff054cfb53ed0a27dfa123ee0ad38df69e47bf7c8af9076"
+    },
+    "provider-validation/candidate/test-binary.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/test-binary.json",
+      "bytes": 378,
+      "sha256": "d1f79c109cccb00ad2844614724af18ba91c93c77c0024450ec4e2fb5de75b9f"
+    },
+    "provider-validation/candidate/test-identifier-coverage.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/test-identifier-coverage.json",
+      "bytes": 8483,
+      "sha256": "c17f0e306c8d988aac07910093661860bee2a2dd5d581b8d147603ffa7fce4c4"
+    },
+    "provider-validation/candidate/verdict.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/candidate/verdict.json",
+      "bytes": 178,
+      "sha256": "da00afd7586b649ef3aa386c7c799364b2ea029a3aba5e5c17c6a70b7573aca2"
+    },
+    "provider-validation/dependency-source-manifest.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/dependency-source-manifest.json",
+      "bytes": 161754,
+      "sha256": "f1e16b19ad215312c227f0b27f0370556eddfb7afde02fb2c6940fecdb0c1419"
+    },
+    "provider-validation/environment.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/environment.json",
+      "bytes": 3,
+      "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+    },
+    "provider-validation/execution.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/execution.json",
+      "bytes": 9924,
+      "sha256": "d3bd13554ad1b9f2a144df6264cfadbf7a2c1214561d71002d2cfef0079fe55a"
+    },
+    "provider-validation/freeze.py": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/freeze.py",
+      "bytes": 5869,
+      "sha256": "6d39f4bfd7e7a7af7d36c68138fec5e7d8669e78273ced00b3a4178c3158587a"
+    },
+    "provider-validation/integration.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/integration.json",
+      "bytes": 857,
+      "sha256": "5202976cd53b0a0b4a3b4a839e234fcbebb975ddbd388315eda5c39cdd251bdf"
+    },
+    "provider-validation/jinja-source-manifest.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/jinja-source-manifest.json",
+      "bytes": 2907,
+      "sha256": "1a3c73a25aab033a5ce568f263db5ff9560d648206313843983afa3280760598"
+    },
+    "provider-validation/manifest.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/manifest.json",
+      "bytes": 9995,
+      "sha256": "78c24dfaf5aa2ae5c5e0692bf136f2610a8946062f008d0d61c11ffcfe61c4a6"
+    },
+    "provider-validation/native-source-manifest.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/native-source-manifest.json",
+      "bytes": 65358,
+      "sha256": "b3784d117bf90309039fe414a4ce7d162b4919023a15ec9d28f38e17717dc161"
+    },
+    "provider-validation/prepare.py": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/prepare.py",
+      "bytes": 2684,
+      "sha256": "9ca4b71497ffcbf789d8bba38081da7cd6afe863c17e196eb127d22c81b3059e"
+    },
+    "provider-validation/run-resume.py": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/run-resume.py",
+      "bytes": 6531,
+      "sha256": "4489020b9ac61696935afd21787a019500b07d4ddc1c8441a65447109891b9e4"
+    },
+    "provider-validation/run.py": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/run.py",
+      "bytes": 6273,
+      "sha256": "d873fcbdbfe3615e1e751536c733eda22d4bae495660a251c1c927a3ac7c0d30"
+    },
+    "provider-validation/runner-provenance-correction.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/runner-provenance-correction.json",
+      "bytes": 404,
+      "sha256": "47b5c6081e20c70e52cfb05dd96ca191c351b93f00c0abcd000864ada0d3717a"
+    },
+    "provider-validation/validation-summary.json": {
+      "source": "/tmp/darkbloom-receipt-diagnostic-provider-validation1/validation-summary.json",
+      "bytes": 2319,
+      "sha256": "6a05dfd38617580f02b001c73e435d7e7f220ee2123a215eb8eb2929da70b8ae"
+    },
+    "receipt-source/AUDIT.md": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/AUDIT.md",
+      "bytes": 7636,
+      "sha256": "145aeb8e255ba68ea73ec879527a59eceabad576f6b9af567650e25cb5001172"
+    },
+    "receipt-source/after/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Submission.swift": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/after/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Submission.swift",
+      "bytes": 32330,
+      "sha256": "41669183e8a69a75cfe6e71b30e4df8173d90082dc29f32b9dada714e985e519"
+    },
+    "receipt-source/after/provider-swift/Tests/ProviderCoreTests/EngineV2BridgeTests.swift": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/after/provider-swift/Tests/ProviderCoreTests/EngineV2BridgeTests.swift",
+      "bytes": 139232,
+      "sha256": "c44de8a0e5f1afe5b2c0b048bce5ec8b2301cdc9e29dcba1ec253ac1384d70d6"
+    },
+    "receipt-source/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Submission.swift": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/before/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Submission.swift",
+      "bytes": 32022,
+      "sha256": "7deec47104eff682000eed06562271d124022c0dab7a1d72c0641985710506d9"
+    },
+    "receipt-source/before/provider-swift/Tests/ProviderCoreTests/EngineV2BridgeTests.swift": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/before/provider-swift/Tests/ProviderCoreTests/EngineV2BridgeTests.swift",
+      "bytes": 133203,
+      "sha256": "022c2a28b2cf946c1cb08770f58a01de81327bb1d1dd00a6bb8cc69cb0022ed2"
+    },
+    "receipt-source/candidate.patch": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/candidate.patch",
+      "bytes": 8747,
+      "sha256": "42302dd6f24abd9972e358031f6fc8c5746a82f3146a97d7d54e585f1e38707d"
+    },
+    "receipt-source/freeze-command.stdout": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/freeze-command.stdout",
+      "bytes": 710,
+      "sha256": "2ebab30229edf63722cbd29b4bbb222c11757db7abff89398efcbe2fd9514a67"
+    },
+    "receipt-source/freeze.py": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/freeze.py",
+      "bytes": 3336,
+      "sha256": "e185b6bbb1789a0a232fb1a9d66deaf80ffe41c509e309f2affac3b779ced8cf"
+    },
+    "receipt-source/manifest.json": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/manifest.json",
+      "bytes": 4396,
+      "sha256": "771c8d366fe67e7ff67b9b57e2af0c0c6a4479f7767e6e2283d0f3eec4ff6758"
+    },
+    "receipt-source/observations.json": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/observations.json",
+      "bytes": 1923,
+      "sha256": "190b4ed256dd394f2bbdcc335f5cac9da1a23eb12c4900a8e8114d779d36f1a4"
+    },
+    "receipt-source/raw/cli7-provider-source-manifest.json": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/raw/cli7-provider-source-manifest.json",
+      "bytes": 98976,
+      "sha256": "7d6179be5f808131e8331ca83ef7daed25edbe2efd0d98d9bf5fe62568dc2d32"
+    },
+    "receipt-source/raw/failed-cell-manifest.json": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/raw/failed-cell-manifest.json",
+      "bytes": 1084,
+      "sha256": "86cf3a303410738d7e374a5898cd7754dcf092c23901065baebd40fdfb2a7cdc"
+    },
+    "receipt-source/raw/failed-connected.log": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/raw/failed-connected.log",
+      "bytes": 624,
+      "sha256": "10026ccca18359ff2ccf8669abf184359889e304afb6632dd6a47a3e41f0ee16"
+    },
+    "receipt-source/raw/failed-report.json": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/raw/failed-report.json",
+      "bytes": 197855,
+      "sha256": "3537fe1ee1a10662509552bc7ffd81f1503120c5060c3ff56ab6925b6a3f71e0"
+    },
+    "receipt-source/raw/fleet-freeze-manifest.json": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/raw/fleet-freeze-manifest.json",
+      "bytes": 7041,
+      "sha256": "404e3eefdc6cfa209da236726a44225d11e030cea36d797a711316b3b1a67c67"
+    },
+    "receipt-source/source-change.json": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/source-change.json",
+      "bytes": 659,
+      "sha256": "b131fbc4a13b2652e2c94021a523879c944ad9c5475f898ad1a9208c1373d849"
+    },
+    "receipt-source/source-checks.json": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/source-checks.json",
+      "bytes": 442,
+      "sha256": "1e98fc315eebc4f829c3e2860fa1a15dc4e847c23862f68a2f408fc2ff1ccb7f"
+    },
+    "receipt-source/source/coordinator/registry/cache_receipts_v2.go": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/source/coordinator/registry/cache_receipts_v2.go",
+      "bytes": 15765,
+      "sha256": "c52df1b2c1daa9fbe88b8ac1d0fca68393c3ab693305bb32eb65b8ca7808b83d"
+    },
+    "receipt-source/source/e2e/connected_cache_http_test.go": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/source/e2e/connected_cache_http_test.go",
+      "bytes": 14320,
+      "sha256": "46768a05d9da3081522a53a8a34185676c3c646b25d739945719157aa5782a61"
+    },
+    "receipt-source/source/e2e/exact_cache_routing_test.go": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/source/e2e/exact_cache_routing_test.go",
+      "bytes": 22182,
+      "sha256": "6e8e2ce1f50e059a05b91387a1aa23d3105de43a8f277c557c4d3773a32cfa3a"
+    },
+    "receipt-source/source/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Admission.swift": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/source/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Admission.swift",
+      "bytes": 10988,
+      "sha256": "c85e7052233525cb785ec37064d06e3bfff858d81d9a184acde52c5db53dbd3e"
+    },
+    "receipt-source/source/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/source/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Events.swift",
+      "bytes": 15630,
+      "sha256": "593a807a85feaa33ff59c5ad720f99e673614a88a35c5cb1b5ba493a5a7fee19"
+    },
+    "receipt-source/source/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/source/provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift",
+      "bytes": 24423,
+      "sha256": "054c69af6b053fcd638c09de51c9be3a58c6e5563071ad942605d04332ec325a"
+    },
+    "receipt-source/source/provider-swift/Sources/ProviderCore/Inference/PrefixCacheEvidenceSequencer.swift": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/source/provider-swift/Sources/ProviderCore/Inference/PrefixCacheEvidenceSequencer.swift",
+      "bytes": 15880,
+      "sha256": "c9d768c0dc9fe969b93d604abab4b6dfe39983f9e79582dc0b080580fbef4454"
+    },
+    "receipt-source/source/provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Maintenance.swift": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/source/provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Maintenance.swift",
+      "bytes": 9026,
+      "sha256": "ad27bba22e590221e3a21a5e5cb831dffc681e649bf2417824e061cafa0148e7"
+    },
+    "receipt-source/source/provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Write.swift": {
+      "source": "/tmp/darkbloom-prefix-receipt-pump-ownership2/source/provider-swift/Sources/ProviderCore/KVCacheSSD/SSDHybridCheckpointStore+Write.swift",
+      "bytes": 13508,
+      "sha256": "aa1b352a82a63b0ab306d0a924f5057cb99ebfea9fe71fa451c77c90cd8ed060"
+    }
+  }
+}

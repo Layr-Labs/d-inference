@@ -9,6 +9,13 @@ package api
 // off *Server only to record rejection telemetry. Split out of consumer.go
 // to keep the request-handling orchestrator thin.
 //
+// The estimates and media/tool detection share ONE walk of the message tree
+// (introspectRequest → requestShape); estimatePromptTokens,
+// estimateBillingPromptTokens, detectMediaRequirement, countMediaParts and
+// requestHasTools are thin wrappers over it, so the handler can take every
+// value from a single pass while callers that need just one keep their
+// signature.
+//
 // Remote-media flow note: on the chat-completions surface the media resolver
 // (media_resolve.go / coordinator/mediafetch) FETCHES remote image_url/video_url
 // links and inlines them as data: URIs, so rejectRemoteMediaURLs only fires
@@ -58,6 +65,20 @@ func intFromRequestValue(v any) (int, bool) {
 	}
 }
 
+// jsonValueLen returns len(json.Marshal(v)), counting decoder-shaped values
+// without allocating the encoding and marshaling anything else. A value the
+// encoder rejects reports 0, exactly as the marshal-and-measure path did.
+func jsonValueLen(v any) int {
+	if n, ok := jsonEncodedLen(v); ok {
+		return n
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return 0
+	}
+	return len(b)
+}
+
 // approximateTokenCount returns a rough token estimate for routing and queue
 // admission. The len/4 heuristic is a reasonable average for English text
 // with GPT-style BPE tokenizers. This value feeds into the scheduler's
@@ -72,25 +93,30 @@ func approximateTokenCount(v any) int {
 	}
 	switch x := v.(type) {
 	case string:
-		if x == "" {
-			return 0
-		}
-		tokens := len(x) / 4
-		if tokens < 1 {
-			tokens = 1
-		}
-		return tokens
+		return textPromptTokens(x)
 	default:
-		b, err := json.Marshal(v)
-		if err != nil {
+		n := jsonValueLen(v)
+		if n == 0 {
 			return 0
 		}
-		tokens := len(b) / 4
+		tokens := n / 4
 		if tokens < 1 {
 			tokens = 1
 		}
 		return tokens
 	}
+}
+
+// textPromptTokens is the len/4 routing heuristic for one text string: empty
+// text costs nothing, any other text at least one token.
+func textPromptTokens(s string) int {
+	if s == "" {
+		return 0
+	}
+	if t := len(s) / 4; t > 0 {
+		return t
+	}
+	return 1
 }
 
 // approximateTokenCountUpperBound returns a guaranteed upper bound on the
@@ -111,29 +137,102 @@ func approximateTokenCountUpperBound(v any) int {
 	case string:
 		return len(x)
 	default:
-		b, err := json.Marshal(v)
-		if err != nil {
-			return 0
-		}
-		return len(b)
+		return jsonValueLen(v)
 	}
 }
 
-func estimatePromptTokens(parsed map[string]any) int {
-	total := 0
+// requestShape is everything the handlers derive from one walk of the
+// messages / input / prompt tree: the media-aware routing token estimate, the
+// byte-length billing bound, the count of image/video parts, and whether a
+// non-empty tools array is declared.
+//
+// routingTokens and billingTokens are the field-level totals BEFORE the
+// whole-body fallback: a request whose messages/input/prompt all estimate to
+// zero is measured over the entire parsed body instead, and that fallback
+// depends on fields the handler mutates after introspection (model,
+// max_tokens, runtime defaults), so it is applied lazily by
+// routingPromptTokens / billingPromptTokens at the call site.
+type requestShape struct {
+	routingTokens int
+	billingTokens int
+	mediaParts    int
+	hasTools      bool
+}
+
+// introspectRequest composes the two passes below: the routing/media walk
+// (type-level, never scans string contents) and the billing byte count (scans
+// every string once). Handlers that need everything call this once; the
+// single-value wrappers call only the pass they need.
+func introspectRequest(parsed map[string]any) requestShape {
+	routingTokens, mediaParts := routingShape(parsed)
+	return requestShape{
+		routingTokens: routingTokens,
+		billingTokens: billingBytes(parsed),
+		mediaParts:    mediaParts,
+		hasTools:      requestHasTools(parsed),
+	}
+}
+
+// routingShape walks messages[], input[] and prompt once for the media-aware
+// routing estimate and the image/video part count.
+func routingShape(parsed map[string]any) (routingTokens, mediaParts int) {
 	if v, ok := parsed["messages"]; ok {
-		total += messagesPromptTokens(v)
+		tokens, media := messagesShape(v)
+		routingTokens += tokens
+		mediaParts += media
 	}
 	if v, ok := parsed["input"]; ok {
-		total += inputPromptTokens(v)
+		tokens, media := inputShape(v)
+		routingTokens += tokens
+		mediaParts += media
 	}
 	if v, ok := parsed["prompt"]; ok {
-		total += approximateTokenCount(v)
+		routingTokens += approximateTokenCount(v)
 	}
-	if total == 0 {
-		total = approximateTokenCount(parsed)
+	return routingTokens, mediaParts
+}
+
+// billingBytes is the byte-length reservation bound over the same fields.
+// Billing MUST stay a guaranteed upper bound (len(bytes) >= tokens for any BPE
+// tokenizer), so it counts full message bytes — including a base64 image's
+// bytes and every non-content field (role, tool_calls, name). Switching to the
+// media-aware flat count here would DROP those fields and under-reserve for
+// tool-calling requests. Over-reservation on a large image is safe (it is
+// refunded after inference); the routing/ITPM estimate is the media-aware one.
+func billingBytes(parsed map[string]any) int {
+	total := 0
+	for _, field := range []string{"messages", "input", "prompt"} {
+		if v, ok := parsed[field]; ok {
+			total += approximateTokenCountUpperBound(v)
+		}
 	}
 	return total
+}
+
+// routingPromptTokens is the routing/ITPM estimate, falling back to the whole
+// body when no prompt-bearing field contributed.
+func (s requestShape) routingPromptTokens(parsed map[string]any) int {
+	if s.routingTokens == 0 {
+		return approximateTokenCount(parsed)
+	}
+	return s.routingTokens
+}
+
+// billingPromptTokens is the reservation upper bound, falling back to the
+// whole body when no prompt-bearing field contributed.
+func (s requestShape) billingPromptTokens(parsed map[string]any) int {
+	if s.billingTokens == 0 {
+		return approximateTokenCountUpperBound(parsed)
+	}
+	return s.billingTokens
+}
+
+// requiresVision reports whether the request carries any image/video part.
+func (s requestShape) requiresVision() bool { return s.mediaParts > 0 }
+
+func estimatePromptTokens(parsed map[string]any) int {
+	routingTokens, _ := routingShape(parsed)
+	return requestShape{routingTokens: routingTokens}.routingPromptTokens(parsed)
 }
 
 // estimateBillingPromptTokens returns a guaranteed upper bound on prompt
@@ -141,27 +240,7 @@ func estimatePromptTokens(parsed map[string]any) int {
 // pre-flight reservation always covers actual cost. This value must NOT
 // be used for routing — see estimatePromptTokens for that.
 func estimateBillingPromptTokens(parsed map[string]any) int {
-	total := 0
-	if v, ok := parsed["messages"]; ok {
-		// Billing MUST stay a guaranteed upper bound (len(bytes) >= tokens for any
-		// BPE tokenizer), so it keeps counting full message bytes — including a
-		// base64 image's bytes and every non-content field (role, tool_calls,
-		// name). Switching to the media-aware flat count here would DROP those
-		// fields and under-reserve for tool-calling requests. Over-reservation on a
-		// large image is safe (it is refunded after inference); the routing/ITPM
-		// estimate (estimatePromptTokens) is the media-aware one.
-		total += approximateTokenCountUpperBound(v)
-	}
-	if v, ok := parsed["input"]; ok {
-		total += approximateTokenCountUpperBound(v)
-	}
-	if v, ok := parsed["prompt"]; ok {
-		total += approximateTokenCountUpperBound(v)
-	}
-	if total == 0 {
-		total = approximateTokenCountUpperBound(parsed)
-	}
-	return total
+	return requestShape{billingTokens: billingBytes(parsed)}.billingPromptTokens(parsed)
 }
 
 // isMediaPartType reports whether an OpenAI/OpenRouter content-part type denotes
@@ -176,26 +255,19 @@ func isMediaPartType(t string) bool {
 	return false
 }
 
-// messageContentTokens estimates ROUTING prompt tokens for one message's
-// `content`, counting text parts as text (len/4) and each image/video part as a
-// flat media cost (never the base64 length). Used only for the routing/ITPM
-// estimate; billing uses approximateTokenCountUpperBound (a guaranteed upper
-// bound that intentionally still counts the base64 bytes).
-func messageContentTokens(content any) int {
-	textTokens := func(s string) int {
-		if s == "" {
-			return 0
-		}
-		if t := len(s) / 4; t > 0 {
-			return t
-		}
-		return 1
-	}
+// contentShape estimates ROUTING prompt tokens for one message's `content`
+// and counts its image/video parts in the same pass. Text parts count as text
+// (len/4); each image/video part costs a flat media price (never the base64
+// length) and counts as one media part; other part shapes count their JSON
+// length. Non-object parts are skipped, exactly as the media detection always
+// did. Used only for the routing/ITPM estimate; billing uses
+// approximateTokenCountUpperBound (a guaranteed upper bound that intentionally
+// still counts the base64 bytes).
+func contentShape(content any) (tokens, mediaParts int) {
 	switch c := content.(type) {
 	case string:
-		return textTokens(c)
+		return textPromptTokens(c), 0
 	case []any:
-		total := 0
 		for _, part := range c {
 			pm, ok := part.(map[string]any)
 			if !ok {
@@ -205,94 +277,75 @@ func messageContentTokens(content any) int {
 			switch {
 			case typ == "text" || typ == "input_text":
 				if s, ok := pm["text"].(string); ok {
-					total += textTokens(s)
+					tokens += textPromptTokens(s)
 				}
 			case typ == "image_url" || typ == "input_image" || typ == "image":
-				total += imagePromptTokenCost
+				tokens += imagePromptTokenCost
+				mediaParts++
 			case typ == "video_url" || typ == "input_video" || typ == "video":
-				total += videoPromptTokenCost
+				tokens += videoPromptTokenCost
+				mediaParts++
 			default:
-				if b, err := json.Marshal(pm); err == nil {
-					total += len(b) / 4
-				}
+				tokens += jsonValueLen(pm) / 4
 			}
 		}
-		return total
+		return tokens, mediaParts
 	default:
-		return approximateTokenCount(content)
+		return approximateTokenCount(content), 0
 	}
 }
 
-// messagesPromptTokens sums media-aware routing content tokens across a messages
-// array. Falls back to the len/4 heuristic when messages isn't the standard
-// array shape.
-func messagesPromptTokens(messages any) int {
+// messagesShape sums media-aware routing content tokens and media parts across
+// a messages array. Falls back to the len/4 heuristic (and no media) when
+// messages isn't the standard array shape.
+func messagesShape(messages any) (tokens, mediaParts int) {
 	arr, ok := messages.([]any)
 	if !ok {
-		return approximateTokenCount(messages)
+		return approximateTokenCount(messages), 0
 	}
-	total := 0
 	for _, m := range arr {
 		mm, ok := m.(map[string]any)
 		if !ok {
-			total += approximateTokenCount(m)
+			tokens += approximateTokenCount(m)
 			continue
 		}
-		total += 4 // small per-message framing (role + delimiters)
-		total += messageContentTokens(mm["content"])
+		t, media := contentShape(mm["content"])
+		tokens += 4 + t // small per-message framing (role + delimiters)
+		mediaParts += media
 	}
-	return total
+	return tokens, mediaParts
 }
 
-// inputPromptTokens estimates the Responses API `input` field. A string input
-// is plain text (len/4). Structured input is an array of message-like items with
+// inputShape estimates the Responses API `input` field. A string input is
+// plain text (len/4). Structured input is an array of message-like items with
 // `content` parts, so reuse the same media-aware content estimator as chat
 // messages instead of counting JSON wrapper bytes.
-func inputPromptTokens(input any) int {
+func inputShape(input any) (tokens, mediaParts int) {
 	switch x := input.(type) {
 	case string:
-		return approximateTokenCount(x)
+		return approximateTokenCount(x), 0
 	case []any:
-		total := 0
 		for _, item := range x {
 			switch m := item.(type) {
 			case string:
-				total += approximateTokenCount(m)
+				tokens += approximateTokenCount(m)
 			case map[string]any:
 				content, ok := m["content"]
 				if !ok {
-					total += approximateTokenCount(m)
+					tokens += approximateTokenCount(m)
 					continue
 				}
-				total += 4 // role/type framing, matching messagesPromptTokens.
-				total += messageContentTokens(content)
+				t, media := contentShape(content)
+				tokens += 4 + t // role/type framing, matching messagesShape.
+				mediaParts += media
 			default:
-				total += approximateTokenCount(item)
+				tokens += approximateTokenCount(item)
 			}
 		}
-		return total
+		return tokens, mediaParts
 	default:
-		return approximateTokenCount(input)
+		return approximateTokenCount(input), 0
 	}
-}
-
-// contentPartsHaveMedia reports whether a `content` value (a content-part array)
-// carries any image/video part.
-func contentPartsHaveMedia(content any) bool {
-	parts, ok := content.([]any)
-	if !ok {
-		return false
-	}
-	for _, part := range parts {
-		pm, ok := part.(map[string]any)
-		if !ok {
-			continue
-		}
-		if typ, _ := pm["type"].(string); isMediaPartType(typ) {
-			return true
-		}
-	}
-	return false
 }
 
 // detectMediaRequirement reports whether the request carries image/video input.
@@ -302,63 +355,18 @@ func contentPartsHaveMedia(content any) bool {
 // `messages[].content` parts and the Responses API `input[].content` parts so a
 // media request on either surface is gated (never silently routed text-blind).
 func detectMediaRequirement(parsed map[string]any) bool {
-	if messages, ok := parsed["messages"].([]any); ok {
-		for _, m := range messages {
-			if mm, ok := m.(map[string]any); ok && contentPartsHaveMedia(mm["content"]) {
-				return true
-			}
-		}
-	}
-	// Responses API: `input` may be a string (no media) or an array of items,
-	// each carrying `content` parts in the same image_url/input_image shape.
-	if input, ok := parsed["input"].([]any); ok {
-		for _, item := range input {
-			if im, ok := item.(map[string]any); ok && contentPartsHaveMedia(im["content"]) {
-				return true
-			}
-		}
-	}
-	return false
+	return countMediaParts(parsed) > 0
 }
 
 // countMediaParts counts the image/video content parts across a chat
 // (messages[]) or Responses API (input[]) body — the count-only vision shape
 // term a capacity probe carries (protocol.CapacityProbeMessage
 // VisionImageCount: counts, never bytes or content-derived dimensions).
-// Same traversal as detectMediaRequirement so the two can never disagree on
+// Same traversal as the routing estimate so the two can never disagree on
 // what constitutes a media part.
 func countMediaParts(parsed map[string]any) int {
-	count := 0
-	countContent := func(content any) {
-		parts, ok := content.([]any)
-		if !ok {
-			return
-		}
-		for _, part := range parts {
-			pm, ok := part.(map[string]any)
-			if !ok {
-				continue
-			}
-			if typ, _ := pm["type"].(string); isMediaPartType(typ) {
-				count++
-			}
-		}
-	}
-	if messages, ok := parsed["messages"].([]any); ok {
-		for _, m := range messages {
-			if mm, ok := m.(map[string]any); ok {
-				countContent(mm["content"])
-			}
-		}
-	}
-	if input, ok := parsed["input"].([]any); ok {
-		for _, item := range input {
-			if im, ok := item.(map[string]any); ok {
-				countContent(im["content"])
-			}
-		}
-	}
-	return count
+	_, mediaParts := routingShape(parsed)
+	return mediaParts
 }
 
 // isInlineDataURI reports whether a media reference is an inline base64 data: URI

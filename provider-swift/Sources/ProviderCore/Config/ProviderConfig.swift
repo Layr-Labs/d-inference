@@ -69,16 +69,11 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 }
 /// Operator policy for multi-token prediction.
 ///
-/// `auto` turns MTP on for checkpoints that DECLARE an embedded head
-/// (`mtplx_mtp.included = true` in config.json) and belong to the Qwen 3.5
-/// family — dense `qwen3_5` (Qwen3.5-9B / Qwen3.8-27B) and `qwen3_5_moe`
-/// (Qwen3.5/3.6 35B-A3B). The family gate is deliberately hardcoded to Qwen
-/// for now: it widens only when another family actually ships embedded
-/// artifacts. A Qwen checkpoint WITHOUT an embedded head is not asked about
-/// at all under `auto` — no catalog lookup, no prefetch, a plain
-/// config-disabled fallback — because embedded is the one automatic
-/// mechanism; separately published assistants (and `mtp_drafter_path`
-/// overrides) require an explicit `mtp_mode = "on"`.
+/// `auto` enables embedded Qwen 3.5-family and Nemotron Lightning heads, plus the separately published
+/// assistant for the exact `gemma-4-26b-qat-4bit` target. Other Gemma artifacts
+/// and Qwen checkpoints without an embedded declaration require explicit `on`.
+/// Model IDs are exact catalog identities; model types retain the funnel's
+/// case/whitespace normalization.
 ///
 /// The declaration alone never activates anything: full artifact inspection
 /// and the process-wide kill switch remain enforced by
@@ -90,24 +85,52 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     case off
 
     /// `model_type` values whose embedded heads self-activate under `auto`.
-    /// Kept in sync with `SpecDecArtifactFunnel.isQwen35Target` — the funnel
-    /// stays the single authority on which models it will *resolve*; this set
-    /// only decides which ones `auto` is willing to *ask about*.
-    static let automaticQwen35ModelTypes: Set<String> = ["qwen3_5", "qwen3_5_moe"]
+    /// Kept in sync with `SpecDecArtifactFunnel.isInlineTarget` — the
+    /// funnel stays the single authority on which models it will *resolve*;
+    /// this set only decides which ones `auto` is willing to *ask about*.
+    static let automaticEmbeddedModelTypes: Set<String> = [
+        "qwen3_5", "qwen3_5_moe", "nemotron_h",
+    ]
 
-    func enablesMTP(forModelType modelType: String?, embeddedArtifactDeclared: Bool) -> Bool {
+    private static func isAutomaticGemmaTarget(modelType: String?, modelID: String?) -> Bool {
+        modelID == "gemma-4-26b-qat-4bit"
+            && SpecDecArtifactFunnel.isGemma4Target(modelType: modelType)
+    }
+
+    func enablesMTP(
+        forModelType modelType: String?,
+        embeddedArtifactDeclared: Bool,
+        modelID: String? = nil
+    ) -> Bool {
         switch self {
         case .on:
             return true
         case .off:
             return false
         case .auto:
+            if Self.isAutomaticGemmaTarget(modelType: modelType, modelID: modelID) {
+                return true
+            }
             guard embeddedArtifactDeclared,
                 let raw = modelType?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .lowercased(), !raw.isEmpty
             else { return false }
-            return Self.automaticQwen35ModelTypes.contains(raw)
+            return Self.automaticEmbeddedModelTypes.contains(raw)
+        }
+    }
+
+    /// Startup warms metadata only for eligible external assistants. Embedded
+    /// Qwen and Nemotron heads resolve from their checkpoint and need no catalog request.
+    func requiresCatalogPrewarm(forModelType modelType: String?, modelID: String) -> Bool {
+        switch self {
+        case .off:
+            return false
+        case .auto:
+            return Self.isAutomaticGemmaTarget(modelType: modelType, modelID: modelID)
+        case .on:
+            return SpecDecArtifactFunnel.isGemma4Target(modelType: modelType)
+                || SpecDecArtifactFunnel.isInlineTarget(modelType: modelType)
         }
     }
 }
@@ -148,14 +171,12 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// `engineV2MaxConcurrent`.
     public var engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
-    /// `[backend]`): "auto" (default — resolves CONTIGUOUS as of v0.8.1,
-    /// reverting v0.8.0's paged default; see
-    /// `EngineV2Factory.prepareProductionBackend`), "paged", or
-    /// "contiguous". Setting "paged" explicitly is the ONLY way to put a
-    /// box on paged — the `DARKBLOOM_CBV2_PAGED_KV` env var is a
-    /// negative-polarity kill switch and cannot turn paged on. Note the
-    /// consequence of an explicit "paged" under a contiguous default: a
-    /// box that cannot serve paged now REFUSES the load
+    /// `[backend]`): "auto" follows the exact-model policy in
+    /// `EngineV2KVBackendPolicy.preferredBackend`; "paged" and "contiguous"
+    /// are explicit selections. `DARKBLOOM_CBV2_PAGED_KV` is a
+    /// negative-polarity kill switch and cannot turn paged on.
+    /// Automatic paged failures may fall back, but a box that cannot
+    /// construct an explicitly requested paged backend REFUSES the load
     /// (`EngineV2ProductionError.pagedUnavailable` ⇒ 503, the coordinator
     /// reroutes) rather than degrading, because refusal is reserved for a
     /// selection someone asked for by name.
@@ -209,7 +230,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// MTP (multi-token prediction / speculative decoding) policy
     /// (`mtp_mode` under `[backend]`, default `"auto"` — beta id `mtp`).
     /// Automatic mode activates Qwen3.5-family checkpoints (`qwen3_5`,
-    /// `qwen3_5_moe`) that declare an embedded head (`mtplx_mtp`).
+    /// `qwen3_5_moe`) that declare an embedded head (`mtplx_mtp`), and the
+    /// catalog-declared assistant for exact `gemma-4-26b-qat-4bit`.
     /// The legacy `mtp = true|false` key is accepted only when `mtp_mode` is
     /// absent. Serialization emits only `mtp_mode`.
     ///

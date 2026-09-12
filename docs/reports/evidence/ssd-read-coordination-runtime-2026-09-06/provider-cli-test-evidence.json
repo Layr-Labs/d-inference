@@ -1,0 +1,502 @@
+{
+  "category": "fresh_provider_cli",
+  "expanded_cases": 324,
+  "passed": true,
+  "source": {
+    "c": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+    "core": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+    "native": "f2d79145e040bbc28c6e0e355a19bc8923a70434",
+    "parent": "35fea6d0e3b05ff65d60d9675ab480159913ac62",
+    "swift": "9561227d55a07db29f70a78aadc5d6b5aaeb10bf",
+    "unused_top_level_mlx": "0a725e3000edabc4911cde345270ca950bfa152f"
+  },
+  "suites": {
+    "BenchmarkSweepExitTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 10,
+      "failed": 0,
+      "log": {
+        "bytes": 2479,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-BenchmarkSweepExitTests.log",
+        "sha256": "d5879b493084907899213371e477d3d0ed16fb3da39f08d4776f9e3fbf934b99"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 10,
+      "test_functions": 10,
+      "xctest_functions": 0
+    },
+    "DoctorClearBackendGuardTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 3,
+      "failed": 0,
+      "log": {
+        "bytes": 1367,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-DoctorClearBackendGuardTests.log",
+        "sha256": "145db3d3714bb677fee77e74131af26a6deeab8f83a3f2e4cb6773a0761b62a2"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 3,
+      "test_functions": 3,
+      "xctest_functions": 0
+    },
+    "EngineV2FP32PagedRateTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 4,
+      "failed": 0,
+      "log": {
+        "bytes": 1540,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2FP32PagedRateTests.log",
+        "sha256": "1e57f125e2dac57a6a1818273a6f6bbd83e20fb29ecef6f3ef10e727c01a280c"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 4,
+      "test_functions": 4,
+      "xctest_functions": 0
+    },
+    "EngineV2KVBackendFallbackHeartbeatTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 4,
+      "failed": 0,
+      "log": {
+        "bytes": 1512,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2KVBackendFallbackHeartbeatTests.log",
+        "sha256": "351b6bd5f4023a72e9173a04e6ed481d44b62f0da21b9a55b43209e2b3f5d540"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 4,
+      "test_functions": 4,
+      "xctest_functions": 0
+    },
+    "EngineV2KVBackendGateTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 62,
+      "failed": 0,
+      "log": {
+        "bytes": 12690,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2KVBackendGateTests.log",
+        "sha256": "558e18caf0c4b332483cbd6573e8c5ab0f4794757e6fd3f9a751ec0e1b0db09a"
+      },
+      "passing_names_containing_failed": [
+        "\"failed kernel preflight REFUSES before slab construction\""
+      ],
+      "skipped": 0,
+      "swift_testing_functions": 39,
+      "test_functions": 39,
+      "xctest_functions": 0
+    },
+    "EngineV2KVBackendPolicyTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 28,
+      "failed": 0,
+      "log": {
+        "bytes": 5862,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2KVBackendPolicyTests.log",
+        "sha256": "e2a0959209bfdfb8f7b081cfec9d591285acebaf5ae191d7d60b4d2f7274ced4"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 8,
+      "test_functions": 8,
+      "xctest_functions": 0
+    },
+    "EngineV2PagedPoolDTypeEnvTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 11,
+      "failed": 0,
+      "log": {
+        "bytes": 2924,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2PagedPoolDTypeEnvTests.log",
+        "sha256": "1d89b0f9615151a495e6b1b6ccd340f04d7d750c93a6a8f46be4873691c1ef12"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 11,
+      "test_functions": 11,
+      "xctest_functions": 0
+    },
+    "EngineV2PrefixCacheUsageTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 6,
+      "failed": 0,
+      "log": {
+        "bytes": 1944,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2PrefixCacheUsageTests.log",
+        "sha256": "d2f293c3fa838971250b047a61744fb110add66702c3098c03e830438d4a91ed"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 6,
+      "test_functions": 6,
+      "xctest_functions": 0
+    },
+    "EngineV2RequestRoutingTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 21,
+      "failed": 0,
+      "log": {
+        "bytes": 4778,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2RequestRoutingTests.log",
+        "sha256": "09682bbae503c21f2de3a3eea932bda08e3c9df759b89bedc21727abbad53d14"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 21,
+      "test_functions": 21,
+      "xctest_functions": 0
+    },
+    "EngineV2ResliceTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 8,
+      "failed": 0,
+      "log": {
+        "bytes": 2274,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2ResliceTests.log",
+        "sha256": "268fbdfd36a1fc081558e6da9ddcd5506b53cf990dee332cb3a0aa9cb2ea888c"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 8,
+      "test_functions": 8,
+      "xctest_functions": 0
+    },
+    "EngineV2ResliceUnwindTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 2,
+      "failed": 0,
+      "log": {
+        "bytes": 1276,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2ResliceUnwindTests.log",
+        "sha256": "7badc9bf47740c2abfaadfdcc3ece404ef0f6baa659c7e7f64e5412bc30e8ec4"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 2,
+      "test_functions": 2,
+      "xctest_functions": 0
+    },
+    "EngineV2ReslicingWiringTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 8,
+      "failed": 0,
+      "log": {
+        "bytes": 2384,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2ReslicingWiringTests.log",
+        "sha256": "4a8dfbc77b5fd7d2b331d4e53fae61e000b96f6a383c5b2febcf77a1db8ab190"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 8,
+      "test_functions": 8,
+      "xctest_functions": 0
+    },
+    "EngineV2RuntimeGuardTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 7,
+      "failed": 0,
+      "log": {
+        "bytes": 2135,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2RuntimeGuardTests.log",
+        "sha256": "74dfb3ebe10dd06e98c8886cf30cc0cc1c7040fb70b74fb22f2aad3e75fd07fc"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 7,
+      "test_functions": 7,
+      "xctest_functions": 0
+    },
+    "EngineV2SlotBuildTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 8,
+      "failed": 0,
+      "log": {
+        "bytes": 2360,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-EngineV2SlotBuildTests.log",
+        "sha256": "603513a7256899f6866bf09629d1d54f28a71ed91087b10fcc226f10ff565e90"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 8,
+      "test_functions": 8,
+      "xctest_functions": 0
+    },
+    "KVBackendGuardDiagnosticsTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 9,
+      "failed": 0,
+      "log": {
+        "bytes": 2411,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-KVBackendGuardDiagnosticsTests.log",
+        "sha256": "6c1c08da3b6a7f4d8fddef4a6d22c9c69426f17f300863e60ed2fb3d29074534"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 9,
+      "test_functions": 9,
+      "xctest_functions": 0
+    },
+    "KVBackendPostureTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 18,
+      "failed": 0,
+      "log": {
+        "bytes": 4485,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-KVBackendPostureTests.log",
+        "sha256": "1ee925195e33ac308a97892fcbe877a964882969d09c2cbc10d6245442c40712"
+      },
+      "passing_names_containing_failed": [
+        "\"status names the resolved backend for paged, contiguous, and failed slots\""
+      ],
+      "skipped": 0,
+      "swift_testing_functions": 16,
+      "test_functions": 16,
+      "xctest_functions": 0
+    },
+    "MTPBenchmarkTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 32,
+      "failed": 0,
+      "log": {
+        "bytes": 6381,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-MTPBenchmarkTests.log",
+        "sha256": "a7fe15a1b888aa72b20f0e468f4b93150555e81c88248e811ca74779c2ae3f67"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 32,
+      "test_functions": 32,
+      "xctest_functions": 0
+    },
+    "PrefillDeadlineProductionConfigTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 5,
+      "failed": 0,
+      "log": {
+        "bytes": 1745,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-PrefillDeadlineProductionConfigTests.log",
+        "sha256": "62649b477b9817a7d913a1e5609c0ac518872788ef8e16fe42698652cfc3e838"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 5,
+      "test_functions": 5,
+      "xctest_functions": 0
+    },
+    "PrefixCachePolicyTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 12,
+      "failed": 0,
+      "log": {
+        "bytes": 3097,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-PrefixCachePolicyTests.log",
+        "sha256": "7d4e956ca371a3c752d3a0cece88737bbd58e68bbffb03242183cbd9c7da77ca"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 12,
+      "test_functions": 12,
+      "xctest_functions": 0
+    },
+    "SSDBlockStreamingTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 10,
+      "failed": 0,
+      "log": {
+        "bytes": 2625,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDBlockStreamingTests.log",
+        "sha256": "494c9dc49a2d03e81538fb4cd5cd4221a689ce81e3cfeab382ab3c9541b9d4ab"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 10,
+      "test_functions": 10,
+      "xctest_functions": 0
+    },
+    "SSDCheckpointFileCoordinatorPathTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 6,
+      "failed": 0,
+      "log": {
+        "bytes": 2108,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDCheckpointFileCoordinatorPathTests.log",
+        "sha256": "df7a89ea93a9ebc1c6b1c7ae3f672256167bc7946020ab9f85b7a05b8f6e4788"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 4,
+      "test_functions": 4,
+      "xctest_functions": 0
+    },
+    "SSDCheckpointFileCoordinatorTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 4,
+      "failed": 0,
+      "log": {
+        "bytes": 1566,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDCheckpointFileCoordinatorTests.log",
+        "sha256": "028079e271cb9003661ae85f26b5880aee20307c07f870918eda52edd3cc0c77"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 4,
+      "test_functions": 4,
+      "xctest_functions": 0
+    },
+    "SSDCheckpointLookupTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 2,
+      "failed": 0,
+      "log": {
+        "bytes": 1006,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDCheckpointLookupTests.log",
+        "sha256": "100042f3be03ac3769141bdf78befcbf5d23003677c60e8f0327d77648b43974"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 2,
+      "test_functions": 2,
+      "xctest_functions": 0
+    },
+    "SSDCheckpointRecencyCoordinationTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 4,
+      "failed": 0,
+      "log": {
+        "bytes": 1722,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDCheckpointRecencyCoordinationTests.log",
+        "sha256": "3c0fa5930be6d6a46bcc2ff7c2d28a797a3c64dc20fc4e19c7ffc83fab4d4861"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 3,
+      "test_functions": 3,
+      "xctest_functions": 0
+    },
+    "SSDCheckpointStageReservationTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 3,
+      "failed": 0,
+      "log": {
+        "bytes": 1423,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDCheckpointStageReservationTests.log",
+        "sha256": "dd4ceb6dd34d55e5a36ed1e42827064f33ce25853164471cdf67c01cf8d2b05a"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 2,
+      "test_functions": 2,
+      "xctest_functions": 0
+    },
+    "SSDHybridCheckpointCoordinationTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 10,
+      "failed": 0,
+      "log": {
+        "bytes": 2877,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDHybridCheckpointCoordinationTests.log",
+        "sha256": "47e9ef6362a9d55e87e3875427234998cd9f8197654dce982b8d9cb74230089b"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 5,
+      "test_functions": 5,
+      "xctest_functions": 0
+    },
+    "SSDHybridCheckpointRecencyTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 1,
+      "failed": 0,
+      "log": {
+        "bytes": 1012,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDHybridCheckpointRecencyTests.log",
+        "sha256": "5545957b7261f104d579b5478fd859045b1fe06a083692691a9c75540dac1fa0"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 1,
+      "test_functions": 1,
+      "xctest_functions": 0
+    },
+    "SSDHybridCheckpointStoreTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 12,
+      "failed": 0,
+      "log": {
+        "bytes": 3213,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDHybridCheckpointStoreTests.log",
+        "sha256": "6b048bc51948cfcf6ae9f6ce6d537c3187b609cc043bcd04e7b8f059549e4e22"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 12,
+      "test_functions": 12,
+      "xctest_functions": 0
+    },
+    "SSDSharedProcessCheckpointTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 6,
+      "failed": 0,
+      "log": {
+        "bytes": 2038,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SSDSharedProcessCheckpointTests.log",
+        "sha256": "ee5567632c4a9cf637333f2dae8c2b0396f5c9ecbc6952b727d374685af781ba"
+      },
+      "passing_names_containing_failed": [
+        "\"Failed native allocation drains both owners and preserves authenticated ciphertext\""
+      ],
+      "skipped": 0,
+      "swift_testing_functions": 6,
+      "test_functions": 6,
+      "xctest_functions": 0
+    },
+    "SegmentedProductionGrantTests": {
+      "category": "provider_or_cli_not_native_only",
+      "expanded_cases": 8,
+      "failed": 0,
+      "log": {
+        "bytes": 2270,
+        "mode": 420,
+        "path": "/private/tmp/darkbloom-qwen-first-runtime3/review/logs/test-SegmentedProductionGrantTests.log",
+        "sha256": "0cc84aafe00016f50e1206bc710c5ca6c35ae33117a1fe4ec9485511a7f3a003"
+      },
+      "passing_names_containing_failed": [],
+      "skipped": 0,
+      "swift_testing_functions": 8,
+      "test_functions": 8,
+      "xctest_functions": 0
+    }
+  },
+  "test_functions": 270
+}

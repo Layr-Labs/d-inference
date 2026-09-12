@@ -104,7 +104,7 @@ extension ProviderLoop {
     func acquireModelForLocal(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
         // Fast-path drain/shutdown reject; an authoritative re-check follows the
         // `await` below, right before the reservation is taken (see comment there).
-        try throwIfRefusingNewLocalWork()
+        try throwIfRefusingNewLocalWork(modelId: modelId)
         do {
             try await ensureModelLoaded(modelId: modelId)
         } catch is ModelRuntimeIneligibleError {
@@ -118,6 +118,7 @@ extension ProviderLoop {
                 throw MultiModelBatchSchedulerEngineError.queueFull("local capacity unavailable for \(modelId)")
             }
         }
+        await waitForMTPUpgrade(modelId)
         guard let slot = modelSlots[modelId] else {
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
         }
@@ -126,7 +127,7 @@ extension ProviderLoop {
         // No `await` sits between this check and `reserve`, so on the actor it
         // is atomic — the reservation is either refused or counted in
         // `hasInflightWork` before any drain snapshot can miss it.
-        try throwIfRefusingNewLocalWork()
+        try throwIfRefusingNewLocalWork(modelId: modelId)
         localReservations.reserve(modelId)
         modelSlots[modelId]?.lastInferenceAt = .now
         let release: @Sendable (String) async -> Void = { [weak self] mid in

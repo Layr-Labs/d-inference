@@ -1,0 +1,16 @@
+{
+  "started_unix": 1788589320.492285,
+  "arguments": {
+    "binary": "/Users/gaj/autoresearch/radix-prefix-cache/artifacts/baseline-mtp-build2/radix-engine",
+    "model_directory": "/Users/gaj/.cache/huggingface/hub/models--gpt-oss-20b/snapshots/local",
+    "input": "/Users/gaj/autoresearch/radix-prefix-cache/inputs/paged-attention-long-input.json",
+    "output": "/Users/gaj/autoresearch/radix-prefix-cache/runs/baseline-engine-paged-gpt-oss-long",
+    "cache": "on",
+    "mtp": "off",
+    "kv_backend": "paged"
+  },
+  "entry_gpu_temp_c": 27.423921585083008,
+  "exit_code": 0,
+  "ended_unix": 1788589342.038882,
+  "ranked_job_at_end": false
+}

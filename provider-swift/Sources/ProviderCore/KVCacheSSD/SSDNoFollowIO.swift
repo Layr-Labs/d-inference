@@ -432,9 +432,12 @@ enum SSDNoFollowIO {
         return fstat(fd, &info) == 0 && (info.st_mode & S_IFMT) == S_IFREG
     }
 
-    private static func posixError(_ operation: String, url: URL) -> SSDBlockStoreError {
-        SSDBlockStoreError.ioFailure(
-            "\(operation) \(url.lastPathComponent): \(String(cString: strerror(errno)))")
+    static func posixError(_ operation: String, url: URL) -> SSDBlockStoreError {
+        // Capture before formatting or cleanup can replace the thread's errno.
+        // Keep the typed code so callers never need to parse a private message.
+        let code = errno
+        return .posixFailure(
+            "\(operation) \(url.lastPathComponent): \(String(cString: strerror(code)))", code: code)
     }
     #else
     static func prepareModelRoot(

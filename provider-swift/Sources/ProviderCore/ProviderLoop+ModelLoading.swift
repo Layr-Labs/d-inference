@@ -197,16 +197,24 @@ extension ProviderLoop {
     internal func ensureModelLoaded(
         modelId: String, allowEviction: Bool = true
     ) async throws {
+        await waitForMTPUpgrade(modelId)
         try ModelRuntimeRequirements.requireEligible(
             modelID: modelId, available: loopConfig.runtimeCapabilities)
         if isShuttingDown {
             throw CancellationError()
         }
 
+        try throwIfRetiring(modelId)
+
         while modelsUnloading.contains(modelId) {
             await waitForModelUnload(modelId)
             if isShuttingDown { throw CancellationError() }
         }
+        // Retirement can begin during any of the suspensions above/below —
+        // the entry guard alone does not cover a request that was already
+        // parked when the tombstone landed. Re-check before every
+        // resident-slot return.
+        try throwIfRetiring(modelId)
 
         if modelSlots[modelId] != nil {
             return
@@ -222,6 +230,10 @@ extension ProviderLoop {
                 await waitForModelUnload(modelId)
                 if isShuttingDown { throw CancellationError() }
             }
+            // Same rule after the loading-waiter resume: the load we waited
+            // on may have FAILED its self-test and begun retiring while we
+            // were parked.
+            try throwIfRetiring(modelId)
             if modelSlots[modelId] != nil { return }
             try await ensureModelLoaded(
                 modelId: modelId, allowEviction: allowEviction)
@@ -253,6 +265,10 @@ extension ProviderLoop {
             await waitForModelUnload(modelId)
             if isShuttingDown { throw CancellationError() }
         }
+        // specDecPreparation suspended above — a self-test failure can have
+        // begun retiring this model meanwhile; the resident return below
+        // must not hand the request to the failed build.
+        try throwIfRetiring(modelId)
         if modelSlots[modelId] != nil { return }
         if modelsLoading.contains(modelId) {
             try await ensureModelLoaded(
@@ -273,6 +289,8 @@ extension ProviderLoop {
                 await waitForModelUnload(modelId)
                 if isShuttingDown { throw CancellationError() }
             }
+            // Same rule at the load-gate wait's resident return.
+            try throwIfRetiring(modelId)
             if modelSlots[modelId] != nil { return }
         }
         isLoadingAny = true
@@ -281,7 +299,7 @@ extension ProviderLoop {
         if modelSlots.count >= maxModelSlots {
             let modelsWithInflight = Set(requestToModel.values)
             let evictable = modelSlots.filter {
-                !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key)
+                !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key)
             }
             if evictable.isEmpty || !allowEviction {
                 isLoadingAny = false
@@ -295,15 +313,28 @@ extension ProviderLoop {
                 )
             }
             if let lru = evictable.min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt }) {
-                await unloadModel(lru.key)
+                guard await unloadModel(lru.key, forEviction: true) else {
+                    isLoadingAny = false
+                    releaseLoadGateWaiters()
+                    throw InferenceError.invalidModelDirectory(
+                        "Selected model slot became unavailable for eviction; retry loading '\(modelId)'")
+                }
             }
         }
 
-        // Q6 (serve-while-load): id for the pending-load reservation placed in
-        // kvBudget once the gate passes and released once the weights are
-        // resident. Declared out here so the catch can release it on any path.
+        // The generation handle survives every load phase and catch cleanup.
         let pendingLoadID = "pending-load:\(modelId)"
+        var pendingLoad: PendingModelLoadLease?
         modelsLoading.insert(modelId)
+        // The insert happens AFTER the specDecPreparation suspension above —
+        // a hard swap during that await can have dropped this model from
+        // advertisedModels and pushed a RELAXED reserve while it was in
+        // neither basis set. The direct load/probe math below resolves the
+        // floor live (and now sees this id via modelsLoading), but the KV
+        // budget actor holds the pushed value — re-push so runtime admission
+        // carves the floor this load re-pins. Epoch-stamped: a stale
+        // concurrent relax cannot land over it.
+        await refreshActivationReserve()
         do {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -319,14 +350,16 @@ extension ProviderLoop {
             // load a model it could actually serve. `availableMemoryGb` now
             // clamps to real OS-available memory and subtracts in-flight KV
             // reservations, so dropping the multiplier here is still OOM-safe.
+            // Deliberately the PADDED estimate (disk×1.2), not the measured
+            // steady residency: the ADMIT decision covers the LOAD TRANSIENT
+            // (shard staging exceeds the post-load figure), which is exactly
+            // what the padding was sized for. Measured residency informs only
+            // the coordinator's POST-load token-budget estimate.
             let targetWeightsGb = Self.loadGateWeightsGb(
                 estimatedWeightsGb: modelInfo.estimatedMemoryGb,
                 extraWeightBytes: 0)
-            let requiredGb = ModelLoadAdmission.requiredToLoadGb(
-                weightsGb: targetWeightsGb,
-                headroomGb: Self.loadHeadroomGb)
             do {
-                try await evictUntilAvailable(requiredGb: requiredGb, allowEviction: allowEviction)
+                try await evictUntilAvailable(weightsGb: targetWeightsGb, allowEviction: allowEviction)
             } catch let InferenceError.modelLoadFailed(message) {
                 // Record for diagnostics so `doctor` shows the operator the exact
                 // "Insufficient memory …" reason, then rethrow unchanged.
@@ -336,22 +369,37 @@ extension ProviderLoop {
             // The assistant is optional and must never make an otherwise
             // loadable target fail. It is charged before allocation when it
             // fits; otherwise this load continues target-only.
+            // Weight basis, not a requirement: the helper resolves the
+            // headroom AFTER its own memory sample (the floor may move
+            // across that suspension, as across the eviction waits above).
             mtpPreparation = await admitSpecDecIfMemoryAllows(
-                mtpPreparation, targetRequiredGb: requiredGb)
-            let extraWeightBytes = mtpPreparation.artifact?.additionalWeightBytes ?? 0
+                mtpPreparation, targetWeightsGb: targetWeightsGb)
+            var extraWeightBytes = mtpPreparation.artifact?.additionalWeightBytes ?? 0
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
-            // Q6: reserve this load's weight footprint in the shared KV budget so
-            // a concurrent KV reservation on an already-loaded model can't grant
-            // headroom that, plus these incoming (not-yet-in-mlxUsed) weights,
-            // blows the unified-memory cap. Released once the weights are resident.
-            // Includes `extraWeightBytes` (the drafter): those bytes land in
-            // mlxUsed during this load window just like the target's.
-            let pendingLoadBytes = Self.pendingLoadReservationBytes(
+            // The accepted lease is the allocation permit. Advisory eviction and
+            // assistant checks above cannot reserve process memory across awaits.
+            var pendingLoadBytes = Self.pendingLoadReservationBytes(
                 estimatedWeightsGb: modelInfo.estimatedMemoryGb,
                 extraWeightBytes: extraWeightBytes)
-            await kvBudget.reservePendingLoad(requestID: pendingLoadID, bytes: pendingLoadBytes)
+            pendingLoad = await kvBudget.claimPendingLoad(
+                requestID: pendingLoadID, weightBytes: pendingLoadBytes)
+            if pendingLoad == nil, extraWeightBytes > 0 {
+                // A concurrent engine may consume only the assistant's margin.
+                // Retry the independently serveable target once, without eviction.
+                mtpPreparation = mtpPreparation.fallingBack(.assistantMemoryUnavailable)
+                extraWeightBytes = 0
+                pendingLoadBytes = Self.pendingLoadReservationBytes(
+                    estimatedWeightsGb: modelInfo.estimatedMemoryGb, extraWeightBytes: 0)
+                pendingLoad = await kvBudget.claimPendingLoad(
+                    requestID: pendingLoadID, weightBytes: pendingLoadBytes)
+            }
+            guard let acceptedLoad = pendingLoad else {
+                throw InferenceError.modelLoadFailed(
+                    "Insufficient memory for '\(modelId)' at final load admission")
+            }
+            pendingLoadLeases[modelId] = acceptedLoad
 
             logger.info("Loading model: \(modelId) from \(modelPath.path)")
             // Cold-start load timing (slot-level `model_load_time_ms`): from
@@ -363,7 +411,7 @@ extension ProviderLoop {
             // goes active guarantees a challenge arriving mid-serve reports the
             // hash of the bytes actually loaded — not the disk state at daemon
             // start. (See `captureWeightHash` for the full rationale.)
-            let reusableSSDRequested = PrefixCachePolicy.isEnabled()
+            let reusableSSDRequested = PrefixCachePolicy.isEnabled(modelId: modelId)
             let preLoadHash = try await captureWeightHash(
                 modelId: modelId,
                 modelPath: modelPath,
@@ -377,6 +425,14 @@ extension ProviderLoop {
                 try Task.checkCancellation()
                 if isShuttingDown { throw CancellationError() }
             }
+            // Hashing and hooks may suspend; recheck this exact held owner with
+            // current policy and coherent usage before shard allocation begins.
+            guard await kvBudget.recheckPendingLoad(acceptedLoad) else {
+                throw InferenceError.modelLoadFailed(
+                    "Insufficient memory for '\(modelId)' at allocation: load headroom changed")
+            }
+            try Task.checkCancellation()
+            if isShuttingDown { throw CancellationError() }
             // Ownership box (Codex-review unwind ordering): every later
             // access to the loading container goes through this box so
             // failure paths can drop the LAST strong reference to the
@@ -452,8 +508,12 @@ extension ProviderLoop {
             // off from the pending-load reservation to the live mlxUsed view —
             // concurrent KV reservations see the weights from here on. (Also
             // released in catch for the error paths above.)
-            await kvBudget.replacePendingLoadReservation(
-                requestID: pendingLoadID, bytes: extraWeightBytes)
+            guard await kvBudget.reducePendingLoad(
+                acceptedLoad, remainingWeightBytes: extraWeightBytes)
+            else {
+                newcomer.release()
+                throw InferenceError.modelLoadFailed("Model load ownership changed during setup")
+            }
             if isShuttingDown || Task.isCancelled {
                 newcomer.release()
                 MLX.Memory.clearCache()
@@ -476,10 +536,10 @@ extension ProviderLoop {
             // serveable model. Mirrors evictUntilAvailable / fastAdmissionReject's
             // clearCache-then-measure self-heal.
             MLX.Memory.clearCache()
-            if !KVHeadroomProbe.hasServeableKVHeadroom() {
+            if !KVHeadroomProbe.hasServeableKVHeadroom(activationReserveBytes: resolvedActivationReserveBytes) {
                 let headroomGb = String(
                     format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
+                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes(activationReserveBytes: resolvedActivationReserveBytes)) / (1024.0 * 1024.0 * 1024.0))
                 let minGb = String(
                     format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
                 // Pre-shrink failure: no grants were mutated, so ordering is
@@ -552,7 +612,9 @@ extension ProviderLoop {
             }
             // Assistant construction has completed. Its bytes are now either
             // live and reflected in MLX, or fully released on fallback.
-            await kvBudget.release(requestID: pendingLoadID)
+            // Weight loading has ended, but keep the minimum-KV allowance
+            // through post-build checks and any target-only rebuild.
+            await kvBudget.reducePendingLoad(acceptedLoad, remainingWeightBytes: 0)
             var engineBundle = slotBuild.bundle
             var sizing = slotBuild.sizing
             var engineV2Bridge = engineBundle.bridge
@@ -581,7 +643,8 @@ extension ProviderLoop {
             MLX.Memory.clearCache()
             var postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: engineV2Bridge.kvBackendKind,
-                pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes())
+                pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes(),
+                activationReserveBytes: resolvedActivationReserveBytes)
             let runtimeMTPActive = await engineV2Bridge.mtpStatusSnapshot().active
             if engineBundle.mtpStatus.active,
                 !postBridgeServeable || !runtimeMTPActive
@@ -622,12 +685,13 @@ extension ProviderLoop {
                 MLX.Memory.clearCache()
                 postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: engineV2Bridge.kvBackendKind,
-                    pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes())
+                    pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes(),
+                    activationReserveBytes: resolvedActivationReserveBytes)
             }
             if !postBridgeServeable {
                 let headroomGb = String(
                     format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
+                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes(activationReserveBytes: resolvedActivationReserveBytes)) / (1024.0 * 1024.0 * 1024.0))
                 // Retire the bridge, release the newcomer's weights, THEN
                 // regrow survivors — in that order (Codex review): regrowing
                 // while the aborted newcomer's weights are still resident
@@ -668,6 +732,12 @@ extension ProviderLoop {
                 modelType: modelInfo.modelType,
                 lastInferenceAt: .now
             )
+            if let pendingLoad {
+                await kvBudget.finishPendingLoad(pendingLoad)
+                if pendingLoadLeases[modelId]?.owner == pendingLoad.owner {
+                    pendingLoadLeases.removeValue(forKey: modelId)
+                }
+            }
             // Newcomer installed — parked regrows now see the full slot set.
             releaseResliceGate()
 
@@ -684,18 +754,38 @@ extension ProviderLoop {
                 waiter.resume()
             }
             releaseLoadGateWaiters()
+            // The load is installed: desired builds deferred behind it
+            // (advertise-raises are serialized behind in-flight loads) are
+            // re-offered now rather than on their backoff.
+            await retryReserveDeferredPrefetches()
         } catch {
-            modelsLoading.remove(modelId)
-            isLoadingAny = false
-            // Release the pending-load reservation on every failure path (no-op
-            // if it was never placed, or already released on the success path).
-            await kvBudget.release(requestID: pendingLoadID)
+            // Keep the load gate through cleanup and survivor-grant restoration.
+            // Only this generation's lease can retire its pending allocation.
+            if let pendingLoad {
+                await kvBudget.finishPendingLoad(pendingLoad)
+                if pendingLoadLeases[modelId]?.owner == pendingLoad.owner {
+                    pendingLoadLeases.removeValue(forKey: modelId)
+                }
+            }
             // Release pool buffers a failed load left behind (same wedge as unload).
             MLX.Memory.clearCache()
+            modelsLoading.remove(modelId)
+            // A FAILED load can be the last thing keeping a dropped
+            // high-floor id in the basis (advertised entry hard-swapped away
+            // mid-load): without a relax here the budget and survivor grants
+            // stay pinned at the dead model's floor indefinitely (grant
+            // clamps are min(granted, current) — nothing else hands the
+            // difference back). No-op when the floor didn't move.
+            await refreshActivationReserve()
+            await resliceGrowSurvivors()
+            isLoadingAny = false
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
                 waiter.resume(throwing: error)
             }
             releaseLoadGateWaiters()
+            // The load is over (failed): builds deferred behind it are
+            // re-offered now — the box's arithmetic is back to pre-load.
+            await retryReserveDeferredPrefetches()
             throw error
         }
     }
@@ -740,14 +830,23 @@ extension ProviderLoop {
         }
     }
 
-    internal func unloadModel(_ modelId: String) async {
-        // Bind ONLY the bridge, never the whole slot: the slot value is the
-        // last owner of the container AND the opaque MTP drafter handle, and
-        // both must be released at `removeValue` below — BEFORE the cache
-        // purge — not kept alive by a local until this function returns.
+    @discardableResult
+    internal func unloadModel(_ modelId: String, forEviction: Bool = false) async -> Bool {
+        await waitForMTPUpgrade(modelId)
+        // Recheck after the transition wait: staging or new work can begin
+        // after the LRU/idle snapshot. Explicit retirement still may unload;
+        // its retained target stays charged until preparation/discard ends.
+        if forEviction && (isMTPUpgradeTargetRetained(modelId)
+            || requestToModel.values.contains(modelId) || hasLocalReservation(modelId)) {
+            return false
+        }
+        // Bind only the bridge, never the whole slot: remove the slot's
+        // container and opaque drafter ownership before the cache purge,
+        // without extending it through a local. Explicit retirement can leave
+        // a separately charged MTP preparation owner until its cleanup.
         guard let engineBundle = modelSlots[modelId]?.engineBundle,
             !modelsUnloading.contains(modelId)
-        else { return }
+        else { return false }
         let engineV2 = engineBundle.bridge
         modelsUnloading.insert(modelId)
         // Retire the slot's v2 bridge: unregister so heartbeats/cancellation
@@ -764,6 +863,10 @@ extension ProviderLoop {
         // load-admission counts as used — without this the box 503s every load
         // until restart.
         MLX.Memory.clearCache()
+        // The unloaded model can no longer run a step: the serving-set floor
+        // (advertised ∪ resident) may relax now — BEFORE the survivors regrow,
+        // so their new grants are sized against the reserve they'll live under.
+        await refreshActivationReserve()
         // Re-slice GROW the survivors: with this model's weights gone the
         // fleet KV budget rises, and the remaining engines take their new
         // fair shares (a lone survivor gets the FULL budget back).
@@ -780,6 +883,10 @@ extension ProviderLoop {
         }
         await updateAggregateCapacity()
         logger.info("Unloaded model: \(modelId) (\(modelSlots.count) model(s) remaining)")
+        // Room appeared: re-offer desired builds deferred for capacity
+        // (their bounded backoff may have expired long before this unload).
+        await retryReserveDeferredPrefetches()
+        return true
     }
 
     /// Weight-hash observations for only the models currently loaded in memory.
@@ -821,9 +928,9 @@ extension ProviderLoop {
     ///      (`SystemMemory.availableBytes`), not just `total − MLX.active −
     ///      MLX.cache`, which over-reports whenever the OS/other processes hold
     ///      RAM.
-    ///   2. KV already promised to in-flight requests
-    ///      (`kvBudget.outstandingReservedBytes`) is subtracted, so a concurrent
-    ///      load can't consume memory a mid-decode request is counting on.
+    ///   2. The same process snapshot supplies unmaterialized commitments (C-M),
+    ///      so a concurrent load cannot consume bytes promised to live requests
+    ///      or count their already materialized backing twice.
     ///
     /// `doctor`'s model-fit check shares the SAME arithmetic via
     /// `ModelLoadAdmission`, so the operator-facing verdict can never drift from
@@ -833,28 +940,65 @@ extension ProviderLoop {
     /// preload (`ProviderLoop+StartupPreload`), which must skip — never evict
     /// for — a preload candidate that doesn't fit.
     internal func availableMemoryGb() async -> Double {
-        let outstanding = await kvBudget.outstandingReservedBytes()
-        // Hold back enough to honor the 90% unified cap: max(configured reserve,
-        // physical − cap). Without this the free-memory gate would load models
-        // until only `configReserve` (4 GiB) remained — past the cap on big boxes.
-        let reserve = UnifiedMemoryCap.loadReserveBytes(
-            configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
-        return ModelLoadAdmission.freeForLoadGb(
-            totalBytes: ProcessInfo.processInfo.physicalMemory,
-            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
-            gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
-            gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
-            reserveBytes: reserve,
-            outstandingReservationBytes: outstanding)
+        engineV2SlotHooks?.availableMemoryGb ?? kvBudget.availableForLoadGb()
+    }
+
+    /// The activation reserve resolved for the CURRENT serving set —
+    /// advertised models UNION resident slots (measured per-model floors, env
+    /// raise-only above them —
+    /// `UnifiedMemoryCap.resolvedActivationReserveBytes(modelIDs:)`).
+    /// Computed live so a prefetch-advertised build raises it the moment the
+    /// build joins the set. Resident slots are included because a
+    /// hard-swapped build leaves `advertisedModels` while its slot keeps
+    /// serving in-flight decodes (the lazy drop) — the reserve must keep
+    /// covering every model that can still run a step, so the relax lands
+    /// only after the retired slot actually unloads.
+    var resolvedActivationReserveBytes: UInt64 {
+        UnifiedMemoryCap.resolvedActivationReserveBytes(
+            // In-flight loads (modelsLoading) are part of the basis: a
+            // hard-swap can drop a high-floor model from advertisedModels
+            // while its load is still running (it is in neither advertised
+            // nor modelSlots during that window), and a relax computed then
+            // would size admission and grants below the reserve the model
+            // decodes under once it installs.
+            // Pending advertisements (a verified prefetch between its
+            // reserve push and its insert into advertisedModels) are in
+            // the basis too, so a load admitted during that push already
+            // sees the raised floor — see `pendingAdvertise`.
+            modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys)
+                + Array(modelsLoading) + Array(pendingAdvertise))
     }
 
     /// Headroom (GB) reserved above the weights at load time. Must be at least
     /// the runtime activation reserve + a minimum serveable KV, or the gate would
     /// admit a near-cap model that GlobalKVCacheBudget then rejects every request
     /// for (the old flat 2 GiB was LESS than the 3 GiB activation reserve). Sized
-    /// from UnifiedMemoryCap so the load gate and the runtime KV path agree.
-    static let loadHeadroomGb =
-        Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0)
+    /// from UnifiedMemoryCap — including the serving set's measured per-model
+    /// floor — so the load gate and the runtime KV path agree. Computed, not
+    /// stored: the advertised set can change at runtime.
+    var loadHeadroomGb: Double {
+        Double(UnifiedMemoryCap.loadHeadroomBytes(
+            activationReserveBytes: resolvedActivationReserveBytes))
+            / (1024.0 * 1024.0 * 1024.0)
+    }
+
+    /// Push the reserve resolved for the CURRENT advertised set into the KV
+    /// budget actor. Call after every advertised-set mutation — for an ADD,
+    /// before the new model can be loaded, so its decode steps never run
+    /// against a reserve resolved without it; for a removal it lets the
+    /// reserve relax back to the remaining set's floor.
+    func refreshActivationReserve() async {
+        await pushActivationReserve(resolvedActivationReserveBytes)
+    }
+
+    /// Stamp and push a resolved reserve into the KV budget actor. The
+    /// epoch increments under ProviderLoop's isolation, so pushes carry the
+    /// true mutation order and the budget can discard one that arrives
+    /// stale (see `activationReserveEpoch`).
+    func pushActivationReserve(_ bytes: UInt64) async {
+        activationReserveEpoch += 1
+        await kvBudget.setActivationReserveBytes(bytes, epoch: activationReserveEpoch)
+    }
 
     private static func saturatingAdd(_ values: UInt64...) -> UInt64 {
         var total: UInt64 = 0
@@ -875,13 +1019,45 @@ extension ProviderLoop {
     /// it degrades to a pure availability check (with the clearCache
     /// self-heal) that throws instead of reclaiming — a later preload must
     /// not churn out an earlier one.
-    private func evictUntilAvailable(requiredGb: Double, allowEviction: Bool = true) async throws {
-        while await availableMemoryGb() < requiredGb {
+    /// `weightsGb` rather than a precomputed requirement: the eviction loop
+    /// suspends (memory samples, unloads), and a concurrent verified prefetch
+    /// can RAISE the serving-set floor meanwhile — comparing against a
+    /// requirement captured before the wait would admit a load the post-load
+    /// guard then rejects (accepted-then-503). Resolve the headroom live.
+    internal func evictUntilAvailable(weightsGb: Double, allowEviction: Bool = true) async throws {
+        while true {
+            // Sample FIRST, resolve the requirement AFTER that suspension:
+            // the exit decision must compare against the floor as it stands
+            // when the sample returns, not as it stood before the await.
+            let available = await availableMemoryGb()
+            let requiredGb = ModelLoadAdmission.requiredToLoadGb(
+                weightsGb: weightsGb, headroomGb: loadHeadroomGb)
+            if available >= requiredGb { return }
             let modelsWithInflight = Set(requestToModel.values)
+            let evictable = modelSlots
+                .filter { !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key) }
+            // Feasibility BEFORE the first eviction: if even evicting every
+            // idle model (plus the reclaimable buffer cache) cannot reach the
+            // requirement, refuse now rather than unload a model the box can
+            // serve for one it cannot — the #653 32 GB report's "a request
+            // for a model I can't serve killed the one I could".
+            if allowEviction, !evictable.isEmpty {
+                let reclaimableGb = evictable.reduce(0.0) {
+                    $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
+                } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+                if !ModelLoadAdmission.evictionCanReach(
+                    availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
+                {
+                    let availableText = String(format: "%.1f", available)
+                    let requiredText = String(format: "%.1f", requiredGb)
+                    let reclaimableText = String(format: "%.1f", reclaimableGb)
+                    throw InferenceError.modelLoadFailed(
+                        "Insufficient memory (\(availableText) GB free, need \(requiredText) GB) even after "
+                            + "evicting every idle model (\(reclaimableText) GB reclaimable) — refusing without evicting")
+                }
+            }
             let candidate = allowEviction
-                ? modelSlots
-                    .filter { !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) }
-                    .min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })
+                ? evictable.min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })
                 : nil
 
             guard let (modelId, _) = candidate else {
@@ -890,9 +1066,11 @@ extension ProviderLoop {
                 // that fits. Same self-heal as fastAdmissionReject.
                 MLX.Memory.clearCache()
                 let retried = await availableMemoryGb()
-                if retried >= requiredGb { return }
+                let retriedRequiredGb = ModelLoadAdmission.requiredToLoadGb(
+                    weightsGb: weightsGb, headroomGb: loadHeadroomGb)
+                if retried >= retriedRequiredGb { return }
                 let available = String(format: "%.1f", retried)
-                let required = String(format: "%.1f", requiredGb)
+                let required = String(format: "%.1f", retriedRequiredGb)
                 throw InferenceError.modelLoadFailed(
                     allowEviction
                         ? "Insufficient memory (\(available) GB free, need \(required) GB) and all loaded models are actively serving"
@@ -901,7 +1079,7 @@ extension ProviderLoop {
             }
 
             logger.info("Evicting idle model \(modelId) to free memory")
-            await unloadModel(modelId)
+            await unloadModel(modelId, forEviction: true)
         }
     }
 
@@ -914,7 +1092,35 @@ extension ProviderLoop {
     /// ``evictUntilAvailable`` WITHOUT loading anything and is deliberately
     /// conservative: anything that *could* succeed (including via eviction of
     /// an idle model) is admitted and left for the post-accept load path.
+    /// A model mid-retirement (failed its load self-test; drain and
+    /// coordinator un-advertisement in flight) must not accept NEW work —
+    /// the 404 the retirement promises only lands after the drain. "slot"
+    /// in the message maps to 503 via loadErrorStatusCode: transient, the
+    /// coordinator reroutes to a provider whose build passed. Callers
+    /// re-invoke this after EVERY actor suspension that precedes a
+    /// resident-slot return: the tombstone can land while a request is
+    /// parked on a waiter or a memory sample. Checks the durable record
+    /// too (`isRefusedByRetirement`): a suspension can span an ENTIRE
+    /// retirement, after which the tombstone is gone but the request still
+    /// holds the pre-retirement `modelInfo` for the build that failed.
+    internal func throwIfRetiring(_ modelId: String) throws {
+        guard !isRefusedByRetirement(modelId) else {
+            throw InferenceError.invalidModelDirectory(
+                "Model '\(modelId)' slot is retiring after a failed self-test")
+        }
+    }
+
     internal func fastAdmissionReject(modelId: String) async -> Bool {
+        // Mid-retirement (failed self-test, drain in flight): the resident
+        // slot LOOKS serviceable but serving it would hand out a build that
+        // failed its serving-path self-test — reject fast so the
+        // coordinator reroutes now instead of accepting-then-failing.
+        // Likewise a RETIRED id whose removal the coordinator has not learned
+        // yet (the post-drain reconnect is pending): reject fast rather than
+        // accept-then-404 at the advertised guard.
+        if isRefusedByRetirement(modelId) {
+            return true
+        }
         // Already resident — definitely serviceable.
         if modelSlots[modelId] != nil {
             return false
@@ -932,9 +1138,9 @@ extension ProviderLoop {
         // must not schedule catalog or artifact prefetch work for requests
         // that may be rejected. The accepted load path performs the real
         // preparation (and any prefetch) itself.
-        let requiredGb = ModelLoadAdmission.requiredToLoadGb(
+        var requiredGb = ModelLoadAdmission.requiredToLoadGb(
             weightsGb: modelInfo.estimatedMemoryGb,
-            headroomGb: Self.loadHeadroomGb)
+            headroomGb: loadHeadroomGb)
 
         // Sample live memory FIRST — this is the only suspension point in the
         // method (it awaits the KV-budget actor). Reading all the actor-local
@@ -942,18 +1148,46 @@ extension ProviderLoop {
         // atomically with respect to this actor: nothing can mutate slots
         // between the reads and the verdict, so there is no TOCTOU window.
         let available = await availableMemoryGb()
+        // Recompute the requirement after the suspension too: a concurrent
+        // verified prefetch can have RAISED the serving-set floor while we
+        // awaited memory (measured-only set + unmeasured advertise), and
+        // admitting against the stale lower figure is accepted-then-503.
+        requiredGb = ModelLoadAdmission.requiredToLoadGb(
+            weightsGb: modelInfo.estimatedMemoryGb,
+            headroomGb: loadHeadroomGb)
 
-        // Re-check residency after the suspension: the model may have been
-        // loaded by a concurrent request while we were awaiting memory.
+        // Re-check BOTH verdicts after the suspension: retirement may have
+        // begun (reject fast — do not send inference_accepted for a build
+        // that failed its self-test), or the model may have been loaded by
+        // a concurrent request while we were awaiting memory.
+        if isRefusedByRetirement(modelId) {
+            return true
+        }
         if modelSlots[modelId] != nil {
             return false
         }
 
-        // An idle slot (loaded, no in-flight work, not already unloading) can be
-        // evicted to make room, so its presence means we must NOT pre-reject.
+        // An idle slot with no in-flight work, unload, or MTP target retention
+        // can be eviction credit; check the resulting headroom before rejecting.
         let modelsWithInflight = Set(requestToModel.values)
-        let hasEvictable = modelSlots.contains {
-            !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key)
+        let evictable = modelSlots.filter {
+            !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) && !isMTPUpgradeTargetRetained($0.key)
+        }
+        let hasEvictable = !evictable.isEmpty
+        // ...but only if evicting could actually reach the requirement: when
+        // even every idle model's weights plus the buffer cache fall short,
+        // the load path refuses without evicting (see evictUntilAvailable),
+        // so reject fast here and let the coordinator reroute instead of
+        // accepting a request that would only fail after the same check.
+        if available < requiredGb, hasEvictable {
+            let reclaimableGb = evictable.reduce(0.0) {
+                $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
+            } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+            if !ModelLoadAdmission.evictionCanReach(
+                availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
+            {
+                return true
+            }
         }
 
         // Not enough free memory and nothing idle to evict. Drop the reclaimable
@@ -961,6 +1195,15 @@ extension ProviderLoop {
         if available < requiredGb && !hasEvictable {
             MLX.Memory.clearCache()
             let retried = await availableMemoryGb()
+            // The retry sample is another suspension: re-resolve the
+            // requirement (a concurrent prefetch can have raised the floor)
+            // before comparing.
+            requiredGb = ModelLoadAdmission.requiredToLoadGb(
+                weightsGb: modelInfo.estimatedMemoryGb,
+                headroomGb: loadHeadroomGb)
+            if isRefusedByRetirement(modelId) {  // retirement began mid-retry
+                return true
+            }
             if modelSlots[modelId] != nil {  // a concurrent load won the race
                 return false
             }

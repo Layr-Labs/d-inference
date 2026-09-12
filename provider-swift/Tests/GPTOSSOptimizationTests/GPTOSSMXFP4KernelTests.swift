@@ -1,0 +1,1 @@
+../../../libs/mlx-swift/Tests/MLXTests/GPTOSSMXFP4KernelTests.swift

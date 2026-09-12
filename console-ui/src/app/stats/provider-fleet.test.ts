@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isProviderRoutable,
+  passesPublishedVerificationChecks,
   matchesTrustFilter,
   providerRouteReason,
   providerRouteState,
@@ -33,27 +34,41 @@ function provider(overrides: Partial<ProviderStats> = {}): ProviderStats {
 }
 
 describe("provider routing presentation", () => {
-  it("separates ready nodes from nodes actively serving", () => {
-    expect(providerRouteState(provider(), NOW)).toBe("ready");
-    expect(providerRouteState(provider({ status: "serving" }), NOW)).toBe("serving");
+  it("separates published ready verdicts from nodes actively serving", () => {
+    expect(providerRouteState(provider({ routable: true }))).toBe("ready");
+    expect(providerRouteState(provider({ routable: true, status: "serving" }))).toBe("serving");
   });
 
-  it("treats stale and missing challenges as attention states", () => {
+  it("keeps missing routing verdicts unknown even when public checks pass", () => {
+    expect(passesPublishedVerificationChecks(provider(), NOW)).toBe(true);
+    expect(isProviderRoutable(provider())).toBe(false);
+    expect(providerRouteState(provider())).toBe("unreported");
+    expect(providerRouteReason(provider(), NOW)).toContain("Routing eligibility is not published");
+  });
+
+  it("keeps stale and missing challenges out of the published verification subset", () => {
     const stale = provider({ last_challenge_verified: "2026-07-13T01:13:00Z" });
-    expect(isProviderRoutable(stale, NOW)).toBe(false);
-    expect(providerRouteState(stale, NOW)).toBe("attention");
-    expect(providerRouteReason(stale, NOW)).toContain("older than sixteen minutes");
+    expect(passesPublishedVerificationChecks(stale, NOW)).toBe(false);
+    expect(passesPublishedVerificationChecks(provider({ last_challenge_verified: undefined }), NOW)).toBe(false);
+    expect(providerRouteState(stale)).toBe("unreported");
+    expect(providerRouteReason(stale, NOW)).toContain("outside the sixteen-minute verification window");
   });
 
-  it("keeps challenges routable through the coordinator's sixteen-minute window", () => {
+  it("keeps delayed challenges verified through sixteen minutes without inferring routing", () => {
     const delayed = provider({ last_challenge_verified: "2026-07-13T01:15:00Z" });
-    expect(isProviderRoutable(delayed, NOW)).toBe(true);
-    expect(providerRouteState(delayed, NOW)).toBe("ready");
+    expect(passesPublishedVerificationChecks(delayed, NOW)).toBe(true);
+    expect(isProviderRoutable(delayed)).toBe(false);
   });
 
-  it("uses the coordinator routable verdict when it is published", () => {
-    expect(isProviderRoutable(provider({ routable: false }), NOW)).toBe(false);
-    expect(isProviderRoutable(provider({ trust_level: "self_signed", routable: true }), NOW)).toBe(true);
+  it("requires a published successful runtime check for verification", () => {
+    expect(passesPublishedVerificationChecks(provider({ runtime_verified: undefined }), NOW)).toBe(false);
+  });
+
+  it("uses the coordinator routable verdict when published, independently of partial public fields", () => {
+    expect(isProviderRoutable(provider({ routable: false }))).toBe(false);
+    expect(providerRouteState(provider({ routable: false }))).toBe("attention");
+    expect(isProviderRoutable(provider({ trust_level: "self_signed", routable: true }))).toBe(true);
+    expect(providerRouteReason(provider({ routable: false }), NOW)).toContain("excluded from public routing");
   });
 
   it("treats every non-hardware identity as basic trust", () => {
@@ -62,12 +77,12 @@ describe("provider routing presentation", () => {
     expect(matchesTrustFilter(selfSigned, "hardware")).toBe(false);
   });
 
-  it("summarizes each readiness state independently", () => {
+  it("summarizes observed serving, hardware trust, and routing verdicts separately", () => {
     const summary = summarizeProviderFleet([
-      provider(),
+      provider({ routable: true }),
       provider({ id: "node-2", status: "serving" }),
-      provider({ id: "node-3", trust_level: "self_signed" }),
-    ], NOW);
-    expect(summary).toEqual({ visible: 3, ready: 1, serving: 1, attention: 1 });
+      provider({ id: "node-3", trust_level: "self_signed", routable: false }),
+    ]);
+    expect(summary).toEqual({ visible: 3, ready: 1, serving: 1, attention: 1, unreported: 1, hardware: 2 });
   });
 });

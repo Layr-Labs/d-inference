@@ -72,7 +72,7 @@ func TestHeartbeat(t *testing.T) {
 // TestHeartbeatAccumulatesUptime is the integration regression: the
 // heartbeat handler credits the wall-clock gap since the previous heartbeat as
 // uptime (bounded), so an always-online provider's reputation can exceed 0.85.
-// This test fails without the registry.go Heartbeat change.
+// This test fails without the Heartbeat inventory update.
 func TestHeartbeatAccumulatesUptime(t *testing.T) {
 	reg := New(testLogger())
 	p := reg.Register("p1", nil, testRegisterMessage())
@@ -139,8 +139,7 @@ func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 	lastSessionStats := lifetimeStats
 	lifetimeJSON, _ := json.Marshal(lifetimeStats)
 	lastSessionJSON, _ := json.Marshal(lastSessionStats)
-
-	reg.RestoreProviderState(p, &store.ProviderRecord{
+	if err := reg.RestoreProviderState(p, &store.ProviderRecord{
 		ID:                         "persisted-p1",
 		TrustLevel:                 string(TrustHardware),
 		Attested:                   true,
@@ -150,7 +149,9 @@ func TestHeartbeatAccumulatesAcrossRestarts(t *testing.T) {
 		LastSessionTokensGenerated: 2000,
 		LifetimeStats:              lifetimeJSON,
 		LastSessionStats:           lastSessionJSON,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	reg.Heartbeat("p1", &protocol.HeartbeatMessage{
 		Type:   protocol.TypeHeartbeat,
@@ -217,13 +218,14 @@ func TestRestoreProviderStateKeepsFreshChallengeVerification(t *testing.T) {
 	fresh := time.Now()
 	stale := fresh.Add(-10 * time.Minute)
 	p.SetLastChallengeVerified(fresh)
-
-	reg.RestoreProviderState(p, &store.ProviderRecord{
+	if err := reg.RestoreProviderState(p, &store.ProviderRecord{
 		ID:                    "persisted-p1",
 		TrustLevel:            string(TrustHardware),
 		Attested:              true,
 		LastChallengeVerified: &stale,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	if !p.LastChallengeVerified.Equal(fresh) {
 		t.Fatalf("LastChallengeVerified = %v, want fresh registration value %v", p.LastChallengeVerified, fresh)
@@ -236,13 +238,14 @@ func TestRestoreProviderStateAcceptsNewerChallengeVerification(t *testing.T) {
 	old := time.Now().Add(-10 * time.Minute)
 	newer := old.Add(5 * time.Minute)
 	p.SetLastChallengeVerified(old)
-
-	reg.RestoreProviderState(p, &store.ProviderRecord{
+	if err := reg.RestoreProviderState(p, &store.ProviderRecord{
 		ID:                    "persisted-p1",
 		TrustLevel:            string(TrustSelfSigned),
 		Attested:              true,
 		LastChallengeVerified: &newer,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	if !p.LastChallengeVerified.Equal(newer) {
 		t.Fatalf("LastChallengeVerified = %v, want newer stored value %v", p.LastChallengeVerified, newer)

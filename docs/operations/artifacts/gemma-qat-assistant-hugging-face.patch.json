@@ -1,0 +1,34 @@
+[
+  {
+    "op": "test",
+    "path": "/id",
+    "value": "gemma-4-26b-qat-4bit"
+  },
+  {
+    "op": "test",
+    "path": "/aggregate_sha256",
+    "value": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785"
+  },
+  {
+    "op": "test",
+    "path": "/metadata/spec_dec",
+    "value": {
+      "allowed_file_types": ["config", "weight"],
+      "config_sha256": "0cd54ff36e53a258532c5c1433bc44b88ba758cfe9b59bb4e6eecfd5453fabcf",
+      "file_count": 2,
+      "manifest_sha256": "8b7c00b7f131345156f5f20fa9c94a895c5340f16d9331bafb9e59628bf45bf2",
+      "max_file_count": 2,
+      "r2_prefix": "v2/mlx-community-gemma-4-26B-A4B-it-qat-assistant-4bit--2acc3ce46483/bb94eae1b70a80dac16cbf959bb4b7d56bd1fb8c",
+      "revision": "bb94eae1b70a80dac16cbf959bb4b7d56bd1fb8c",
+      "total_size_bytes": 236127665
+    }
+  },
+  {
+    "op": "add",
+    "path": "/metadata/spec_dec/hugging_face_artifact",
+    "value": {
+      "repo_id": "mlx-community/gemma-4-26B-A4B-it-qat-assistant-4bit",
+      "revision": "bb94eae1b70a80dac16cbf959bb4b7d56bd1fb8c"
+    }
+  }
+]

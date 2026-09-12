@@ -1,0 +1,7 @@
+error: Repository lacks these prerequisite commits:
+error: 2f7e4dd065b40104ba2ae2a023ba8b310ec4116f 
+Traceback (most recent call last):
+  File "<string>", line 24, in <module>
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/subprocess.py", line 528, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['git', '-C', '/Users/gaj/autoresearch/radix-prefix-cache/097-qwen-first-runtime1/workspace', '-c', 'core.hooksPath=/dev/null', 'fetch', '--no-recurse-submodules', '/Users/gaj/autoresearch/radix-prefix-cache/097-qwen-first-runtime1/parent.bundle', 'HEAD']' returned non-zero exit status 1.

@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "scope": "Frozen old-source signing/notarization infrastructure evidence only; not Qwen56fa, M5 pilot or production rollout",
+  "run_id": 34043318652,
+  "workflow_sha": "f9423f94ef41ced998009f4d503919e038c35175",
+  "source_sha": "f91fe843b0cb22e2d1b2a85c0652982f3a8ff146",
+  "version": "0.8.16",
+  "files": {
+    "artifact-verification.json": {
+      "sha256": "83dfd84d8fcbfbc8a4d57437a1d952d8abc4ccdeb48425326618e9c277b439c4",
+      "bytes": 4138
+    },
+    "ci-excerpts.txt": {
+      "sha256": "fe016b543d3940a9c80e96c170e8c42edfd8225e460c524e29b0550ac2c93cec",
+      "bytes": 1221
+    },
+    "git-inclusion.json": {
+      "sha256": "c015ec30cd135db1c46e797d16a2db3a91fad04888d64d692e0ea725174f1ec6",
+      "bytes": 3738
+    },
+    "keychain-cleanup.json": {
+      "sha256": "042b9b54b77e649d9645c197050737b972e222e0bcd91fdde12df2fd5aec364b",
+      "bytes": 127
+    },
+    "notary-result.json": {
+      "sha256": "ff0170855978a01fa872a30bf7027840f41419653dcb7442bb794b5fb89c9e26",
+      "bytes": 111
+    },
+    "prior-failure.json": {
+      "sha256": "b1bda9ead7fe52d60e2eb9968ead14bb6a079af8c5117a45cd8a5afd60dac23b",
+      "bytes": 1144
+    },
+    "provenance.json": {
+      "sha256": "18de5da72a57cd7302788812774e7f840292d2ce594e9ec14cd28f83f7564101",
+      "bytes": 5063
+    },
+    "run-summary.json": {
+      "sha256": "fc33117ffe4e70b8eb404da53a2678d5be68f47d8e4b24383f14f9062a8b6645",
+      "bytes": 1763
+    },
+    "signing-identity.json": {
+      "sha256": "e4f34b385999aedbc886fe1ed3043fb6295d2f70fdb2cbf8022f3c8107ce6179",
+      "bytes": 612
+    },
+    "verification-excerpts.txt": {
+      "sha256": "958c4d8f63358864e04908940ff014f9e261edf31e7e8cab3d22c157271b4318",
+      "bytes": 2598
+    }
+  },
+  "inventory_contract": "Every regular file in this directory except manifest.json and manifest.sha256 is listed. manifest.sha256 hashes this manifest. git-inclusion.json covers all directory files plus report/index.",
+  "payload_policy": "UTF-8 JSON and selected redacted text only; no executable, archive, certificate/key, profile, device identifier or secret payloads"
+}

@@ -1,0 +1,41 @@
+{
+  "capsule_members": 153,
+  "excluded_cache_payloads": 7,
+  "files": {
+    "backend-comparison.json": {
+      "bytes": 2921,
+      "sha256": "fdf2d22cc7424332b7778555dcae62e759d09d66af728bfa5378d8bf6ae667b2"
+    },
+    "cache-comparison.json": {
+      "bytes": 2882,
+      "sha256": "7fe3179d9612a0c895192aa170fd40ea3c1a2c49999b65a272d1f5ab5d38ad54"
+    },
+    "capsule-receipt.json": {
+      "bytes": 28861,
+      "sha256": "5fd03a2642d58cda7af184042e7fa035a6553d93024de3077ca12ef15a2f0332"
+    },
+    "review-capsule.tar.gz": {
+      "bytes": 5864052,
+      "sha256": "33eac5d9c5857fa8a9bd64ba95a5edd1da800fbbc945cf9cab7476eddaf6fafd"
+    },
+    "review-summary.json": {
+      "bytes": 9896,
+      "sha256": "743569a74ec8e4cfdd5776820d4cbe3347b82e13eafce20abe8cf82b86f2b15c"
+    }
+  },
+  "full_archive": {
+    "bytes": 2637722385,
+    "path": "/Users/gaj/autoresearch/radix-prefix-cache/102-qwen38-b4-pilot1/attempt-1/evidence.tar.gz",
+    "sha256": "b39ac77013899785cb40935b39e25a17c4062214c101d5afa4b5fa3aa6046bd5",
+    "verified_on_host": true
+  },
+  "model_aggregate": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+  "native": "f2d79145e040bbc28c6e0e355a19bc8923a70434",
+  "required_width": 4,
+  "resident_bank_enabled": false,
+  "schema": "darkbloom.qwen38-b4-coordinated-read-evidence.v1",
+  "scope": "One retained B4 triad; not repeated/sustained, full-matrix, HTTP/default, signed restart or release acceptance",
+  "source_parent": "35fea6d0e3b05ff65d60d9675ab480159913ac62",
+  "strict_backend_passed": true,
+  "strict_cache_passed": true
+}

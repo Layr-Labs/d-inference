@@ -103,6 +103,8 @@ extension ProviderLoop {
         /// Machine-memory override for the re-slice fleet budget (nil ⇒
         /// real physical memory).
         let physicalMemoryBytes: UInt64?
+        /// Deterministic load-admission sample for eviction integration tests.
+        let availableMemoryGb: Double?
         /// Backend kind the hook-built bridge reports per model (default
         /// `.contiguous`). A `.paged` entry makes the bridge apply the
         /// production paged semantics — resize clamps to the scripted
@@ -124,6 +126,7 @@ extension ProviderLoop {
             extraEOSTokens: [String] = [],
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
             physicalMemoryBytes: UInt64? = nil,
+            availableMemoryGb: Double? = nil,
             kvBackendKindByModel: [String: EngineV2KVBackendKind] = [:],
             assistantLoader: (any ProviderMTPAssistantLoading)? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
@@ -133,6 +136,7 @@ extension ProviderLoop {
             self.extraEOSTokens = extraEOSTokens
             self.emitTelemetry = emitTelemetry
             self.physicalMemoryBytes = physicalMemoryBytes
+            self.availableMemoryGb = availableMemoryGb
             self.kvBackendKindByModel = kvBackendKindByModel
             self.assistantLoader = assistantLoader
             self.makeEngine = makeEngine
@@ -154,8 +158,13 @@ extension ProviderLoop {
     /// cap minus Σ resident weights (ALL slots, including any mid-unload —
     /// their weights are still resident — plus the newcomer's), minus the
     /// activation reserve, honoring the operator `memory_reserve_gb`.
-    private func fleetKVBudgetBytes(extraWeightBytes: Int) -> UInt64 {
-        var totalWeights = UInt64(max(0, extraWeightBytes))
+    /// `activationReserveBytes` overrides the live serving-set reserve for a
+    /// PROSPECTIVE set (an advertise-only raise preflight); nil reads live.
+    private func fleetKVBudgetBytes(
+        extraWeightBytes: Int,
+        activationReserveBytes: UInt64? = nil
+    ) -> UInt64 {
+        var totalWeights = MTPStagingReservations.adding(UInt64(max(0, extraWeightBytes)), mtpStagingBytes)
         for (_, slot) in modelSlots {
             let (sum, overflow) = totalWeights
                 .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
@@ -166,8 +175,33 @@ extension ProviderLoop {
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
             residentWeightBytes: totalWeights,
+            // The serving set's resolved reserve, so engine grants carve the
+            // same activation floor the load gate and runtime KV gate hold.
+            activationReserveBytes: activationReserveBytes ?? resolvedActivationReserveBytes,
             configReserveBytes: Self.memoryReserveBytes(
                 forGiB: loopConfig.config.provider.memoryReserveGB))
+    }
+
+    /// Preflight for an advertise-only reserve raise (no newcomer slot —
+    /// a verified prefetch of an unmeasured model joining a measured set):
+    /// true iff every resident slot's re-sliced grant under `reserveBytes`
+    /// still clears the serviceability floor. The load path refuses a
+    /// newcomer that would strand a co-resident below the floor; a raise
+    /// without a newcomer has the same effect on survivors and must be
+    /// refused the same way rather than published as a serving set that
+    /// disables its own resident models. CALLER HOLDS the re-slice gate
+    /// (as the load path does across its own preflight-through-install),
+    /// so the slot set cannot move between this check and the re-slice
+    /// that follows a passed preflight.
+    internal func reserveRaiseKeepsSurvivorsServiceable(reserveBytes: UInt64) async -> Bool {
+        let survivors = await existingSlotGrants(excludingModelId: "")
+        guard !survivors.isEmpty else { return true }
+        let targets = EngineV2KVSizing.resliceGrants(
+            existing: survivors.map(\.slot),
+            newcomer: nil,
+            fleetKVBudgetBytes: fleetKVBudgetBytes(
+                extraWeightBytes: 0, activationReserveBytes: reserveBytes))
+        return EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets, fixedCarveBytes: [:])
     }
 
     /// Existing v2 slots eligible for re-slicing: live (not mid-unload)
@@ -299,8 +333,9 @@ extension ProviderLoop {
         // and engine build. The re-slice floor fallback below already does
         // exactly this for its own fail-open.
         if prepared.assistant == nil, specDecPreparation.artifact != nil {
-            await kvBudget.replacePendingLoadReservation(
-                requestID: "pending-load:\(modelId)", bytes: 0)
+            if let pendingLoad = pendingLoadLeases[modelId] {
+                await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
+            }
         }
         var sizing = targetSizing.replacingAuxiliaryWeightBytes(
             prepared.assistantBytes)
@@ -329,8 +364,9 @@ extension ProviderLoop {
             prepared.assistant?.release()
             prepared = prepared.fallingBack(.assistantResliceFloor)
             sizing = targetSizing.replacingAuxiliaryWeightBytes(0)
-            await kvBudget.replacePendingLoadReservation(
-                requestID: "pending-load:\(modelId)", bytes: 0)
+            if let pendingLoad = pendingLoadLeases[modelId] {
+                await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
+            }
             MLX.Memory.clearCache()
             fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
             targets = EngineV2KVSizing.resliceGrants(
@@ -532,7 +568,8 @@ extension ProviderLoop {
         kvBytesCapacity: Int,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2PreparedModel?,
-        cacheEligibleWeightHash: String? = nil
+        cacheEligibleWeightHash: String? = nil,
+        registerInRuntime: Bool = true
     ) async throws -> ProviderEngineBundle {
         let maxConcurrent = engineV2MaxConcurrent(forModel: modelId)
 
@@ -572,7 +609,7 @@ extension ProviderLoop {
                         kvBackendFallbackReason: nil)
                 })
             let status = preparedModel?.mtpStatus ?? specDecPreparation.status
-            await bridge.configureMTPStatus(status)
+            await bridge.configureMTPStatus(status, metricsInterval: registerInRuntime ? .seconds(60) : .zero)
             bundle = ProviderEngineBundle(
                 bridge: bridge,
                 assistant: preparedModel?.assistant,
@@ -592,6 +629,10 @@ extension ProviderLoop {
                 kvBytesCapacity: kvBytesCapacity,
                 maxConcurrentRequests: maxConcurrent,
                 kvBudget: kvBudget,
+                // The serving-set resolved reserve, so the paged capacity
+                // decision inside the factory measures headroom against the
+                // same reserve every other gate on this load path carves.
+                activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: loopConfig.config.backend.engineV2KVBackend,
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
                 prefillDeadlineMode:
@@ -601,6 +642,7 @@ extension ProviderLoop {
                 weightHash: cacheEligibleWeightHash,
                 specDecPreparation: specDecPreparation,
                 preparedModel: preparedModel,
+                startServingTelemetry: registerInRuntime,
                 logInfo: { slotLogger.info($0) },
                 logWarning: { slotLogger.warning($0) })
         }
@@ -611,7 +653,9 @@ extension ProviderLoop {
         // (Prefix-cache construction — RAM carve AND the SSD offload tier —
         // budget bookkeeping, stats loggers, and the cache-state log line
         // all live inside the shared slot factory.)
-        await engineV2Runtime.register(modelId: modelId, bridge: bridge)
+        if registerInRuntime {
+            await engineV2Runtime.register(modelId: modelId, bridge: bridge)
+        }
         if isVLM {
             logger.info(
                 "engine_v2: serving \(modelId) via ContinuousBatchingV2 "

@@ -1,0 +1,297 @@
+{
+  "status": "GPT_PAGED_SPECIFIC_QUALITY_CONCERNS_CLOSED_BY_EXACT_CONTIGUOUS_CONTROL",
+  "scope": {
+    "jobs": 1,
+    "tasks": 4,
+    "responses": 8,
+    "native_controls": 7,
+    "backend": "contiguous",
+    "cache": "off",
+    "mtp": "off",
+    "prompt_date": "2026-09-07",
+    "output_cap": 1024
+  },
+  "runtime": {
+    "runtime_review_sha256": "0294038647e97e98398c516bb6df6c52914c49c1897726a9fffd00064c2e86ee",
+    "source_manifest_sha256": "da88c7aabccd399e20544a73dc182775493a0d4b5db5568b34a8169ffae54bbf",
+    "binary_sha256": "6165cedafd539d01da427bbb20ee7810cb9292f0facfb26f5ca86110acf5bd5c",
+    "metallib_sha256": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+  },
+  "structural_worker_accepted": true,
+  "seconds": 145.402336208,
+  "external_pings_received": 73,
+  "semantic_review": {
+    "reviewer": "gpt_finish",
+    "reviewed_unix": 1788749533.612143,
+    "status": "EXACT_CONTIGUOUS_CONTROL_REPRODUCES_ALL_EIGHT_OBSERVED_GPT_CONCERNS",
+    "runtime_review_sha256": "0294038647e97e98398c516bb6df6c52914c49c1897726a9fffd00064c2e86ee",
+    "report144_sha256": "8f1ed0208ac5121b632f393afe7df3e81c5c4735ba7246fc3db36e5438341e97",
+    "report140_sha256": "1ed68186b3525decdc39c7d878ef6b6829b0edbe549a4292ae5c91dbf2891c24",
+    "input144_sha256": "bc38349c51f9efe896c6750febbc20d5b68826b9a0a03ff5740a367fa0ba12d7",
+    "input140_sha256": "0c5717682552f8ccb1bcbcd27ea762dbbff10ee6cd693e52587b04232e9d2146",
+    "original140_semantic_review_sha256": "d12d50af073d6f1c6b139e1969ffa39b09e02d2195e7a4d291eff35846263158",
+    "records": [
+      {
+        "row_id": "code-cpython-fractions-short::long-first",
+        "original140_row_index": 0,
+        "prompt_tokens": 552,
+        "prompt_arrays_exact": true,
+        "request_objects_exact": true,
+        "generated_token_arrays_exact": true,
+        "generated_text_exact": true,
+        "generated_text_sha256": "4f37bb2f44166a32bcc219fe75eddbbe10513842a4aaada371be0933d203bd8d",
+        "completion_tokens": 1024,
+        "finish": "length",
+        "final_channel_present": true,
+        "semantic_outcome": "FAIL",
+        "semantic_reason": "The same completed __hash__ uses hash((numerator, denominator)), breaking numeric hash compatibility; final code truncates inside __eq__.",
+        "comparison_conclusion": "Observed concern reproduced identically on contiguous attention; no Paged-Attention-specific regression established by this pair."
+      },
+      {
+        "row_id": "code-cpython-fractions-short::long-repeat",
+        "original140_row_index": 1,
+        "prompt_tokens": 552,
+        "prompt_arrays_exact": true,
+        "request_objects_exact": true,
+        "generated_token_arrays_exact": true,
+        "generated_text_exact": true,
+        "generated_text_sha256": "4f37bb2f44166a32bcc219fe75eddbbe10513842a4aaada371be0933d203bd8d",
+        "completion_tokens": 1024,
+        "finish": "length",
+        "final_channel_present": true,
+        "semantic_outcome": "FAIL",
+        "semantic_reason": "The same completed __hash__ uses hash((numerator, denominator)), breaking numeric hash compatibility; final code truncates inside __eq__.",
+        "comparison_conclusion": "Observed concern reproduced identically on contiguous attention; no Paged-Attention-specific regression established by this pair."
+      },
+      {
+        "row_id": "code-cpython-functools-short::long-first",
+        "original140_row_index": 2,
+        "prompt_tokens": 482,
+        "prompt_arrays_exact": true,
+        "request_objects_exact": true,
+        "generated_token_arrays_exact": true,
+        "generated_text_exact": true,
+        "generated_text_sha256": "2329f5863658704964050ecbcc09521da00d0c6445bf2a60d394dba157893517",
+        "completion_tokens": 1024,
+        "finish": "length",
+        "final_channel_present": false,
+        "semantic_outcome": "INCONCLUSIVE",
+        "semantic_reason": "The same repetitive analysis exhausts the fixed budget without the requested final code or prose continuation.",
+        "comparison_conclusion": "Observed concern reproduced identically on contiguous attention; no Paged-Attention-specific regression established by this pair."
+      },
+      {
+        "row_id": "code-cpython-functools-short::long-repeat",
+        "original140_row_index": 3,
+        "prompt_tokens": 482,
+        "prompt_arrays_exact": true,
+        "request_objects_exact": true,
+        "generated_token_arrays_exact": true,
+        "generated_text_exact": true,
+        "generated_text_sha256": "2329f5863658704964050ecbcc09521da00d0c6445bf2a60d394dba157893517",
+        "completion_tokens": 1024,
+        "finish": "length",
+        "final_channel_present": false,
+        "semantic_outcome": "INCONCLUSIVE",
+        "semantic_reason": "The same repetitive analysis exhausts the fixed budget without the requested final code or prose continuation.",
+        "comparison_conclusion": "Observed concern reproduced identically on contiguous attention; no Paged-Attention-specific regression established by this pair."
+      },
+      {
+        "row_id": "prose-gutenberg-11-short::long-first",
+        "original140_row_index": 4,
+        "prompt_tokens": 574,
+        "prompt_arrays_exact": true,
+        "request_objects_exact": true,
+        "generated_token_arrays_exact": true,
+        "generated_text_exact": true,
+        "generated_text_sha256": "8ce32735e96f900ab84a213a6344b9ff0f76df972f25cf4606af7050a33b6633",
+        "completion_tokens": 1024,
+        "finish": "length",
+        "final_channel_present": false,
+        "semantic_outcome": "INCONCLUSIVE",
+        "semantic_reason": "The same repetitive analysis exhausts the fixed budget without the requested final code or prose continuation.",
+        "comparison_conclusion": "Observed concern reproduced identically on contiguous attention; no Paged-Attention-specific regression established by this pair."
+      },
+      {
+        "row_id": "prose-gutenberg-11-short::long-repeat",
+        "original140_row_index": 5,
+        "prompt_tokens": 574,
+        "prompt_arrays_exact": true,
+        "request_objects_exact": true,
+        "generated_token_arrays_exact": true,
+        "generated_text_exact": true,
+        "generated_text_sha256": "8ce32735e96f900ab84a213a6344b9ff0f76df972f25cf4606af7050a33b6633",
+        "completion_tokens": 1024,
+        "finish": "length",
+        "final_channel_present": false,
+        "semantic_outcome": "INCONCLUSIVE",
+        "semantic_reason": "The same repetitive analysis exhausts the fixed budget without the requested final code or prose continuation.",
+        "comparison_conclusion": "Observed concern reproduced identically on contiguous attention; no Paged-Attention-specific regression established by this pair."
+      },
+      {
+        "row_id": "prose-gutenberg-35-short::long-first",
+        "original140_row_index": 6,
+        "prompt_tokens": 533,
+        "prompt_arrays_exact": true,
+        "request_objects_exact": true,
+        "generated_token_arrays_exact": true,
+        "generated_text_exact": true,
+        "generated_text_sha256": "4334a0e625b1fe7a19b10ab19a4897885305e3f803233995414c1ad7749851a7",
+        "completion_tokens": 1024,
+        "finish": "length",
+        "final_channel_present": false,
+        "semantic_outcome": "INCONCLUSIVE",
+        "semantic_reason": "The same repetitive analysis exhausts the fixed budget without the requested final code or prose continuation.",
+        "comparison_conclusion": "Observed concern reproduced identically on contiguous attention; no Paged-Attention-specific regression established by this pair."
+      },
+      {
+        "row_id": "prose-gutenberg-35-short::long-repeat",
+        "original140_row_index": 7,
+        "prompt_tokens": 533,
+        "prompt_arrays_exact": true,
+        "request_objects_exact": true,
+        "generated_token_arrays_exact": true,
+        "generated_text_exact": true,
+        "generated_text_sha256": "4334a0e625b1fe7a19b10ab19a4897885305e3f803233995414c1ad7749851a7",
+        "completion_tokens": 1024,
+        "finish": "length",
+        "final_channel_present": false,
+        "semantic_outcome": "INCONCLUSIVE",
+        "semantic_reason": "The same repetitive analysis exhausts the fixed budget without the requested final code or prose continuation.",
+        "comparison_conclusion": "Observed concern reproduced identically on contiguous attention; no Paged-Attention-specific regression established by this pair."
+      }
+    ],
+    "counts": {
+      "pairs": 8,
+      "FAIL": 2,
+      "INCONCLUSIVE": 6,
+      "PASS": 0
+    },
+    "all_four_distinct_outputs_read_in_full": true,
+    "same_request_prompt_date_and_budget": true,
+    "requested_and_resolved_backend": "contiguous",
+    "cache_requested": false,
+    "mtp": "off; no drafter supplied",
+    "structural_worker_passed": true,
+    "no_backend_fallback": true,
+    "native_controls": 7,
+    "before_after_source_runtime_model_audit_sha256": "fbaeb223f2277448350db5187faa0183d5d1288cc45caedd21ed88e6ab86a711",
+    "before_after_audits_identical": true,
+    "all_request_and_kv_reservations_drained": true,
+    "all_owned_processes_retired": true,
+    "clean_release_sha256": "7a0fbfa5445d6277abab5ebba02b61f50d2f84daa4f7fa28987ff0b4da2c8f5c",
+    "collection_receipt_sha256": "4e588cffbfed886d801d106d37bce00819199a046359d657d07ed7b7f48b349e",
+    "verified_original_files": 326,
+    "original_manifest_sha256": "11931cc8a5a8127e841156adc0ab6a9aece02a5591bbc6fdb922c9d7612cf8b4",
+    "exact_generated_equality_is_observed_not_a_new_release_requirement": true,
+    "limits": [
+      "Original140 failures and capped results remain unchanged.",
+      "Matching bad/incomplete outputs establish bounded backend comparison, not successful task answers or universal model quality.",
+      "This GPT run has SSD and MTP disabled; it does not establish Qwen caching, connected routing or production-key restart.",
+      "Earlier correct GPT arithmetic and tool capability evidence is separate.",
+      "No additional GPT run is required to explain these exact observed paged-versus-contiguous concerns; overall release acceptance is a separate root decision."
+    ]
+  },
+  "root_output_equivalence_review": {
+    "reviewer": "/root",
+    "reviewed_unix": 1788749516.536076,
+    "original_files_verified": 326,
+    "status": "GPT_OBSERVED_CONCERNS_REPRODUCED_EXACTLY_CONTIGUOUS",
+    "baseline_report_sha256": "8f1ed0208ac5121b632f393afe7df3e81c5c4735ba7246fc3db36e5438341e97",
+    "paged_report_sha256": "1ed68186b3525decdc39c7d878ef6b6829b0edbe549a4292ae5c91dbf2891c24",
+    "pairs": [
+      {
+        "id": "code-cpython-fractions-short::long-first",
+        "prompt_token_count": 552,
+        "exact_full_prompt_ids": true,
+        "exact_generated_ids": true,
+        "exact_text": true,
+        "text_sha256": "4f37bb2f44166a32bcc219fe75eddbbe10513842a4aaada371be0933d203bd8d"
+      },
+      {
+        "id": "code-cpython-fractions-short::long-repeat",
+        "prompt_token_count": 552,
+        "exact_full_prompt_ids": true,
+        "exact_generated_ids": true,
+        "exact_text": true,
+        "text_sha256": "4f37bb2f44166a32bcc219fe75eddbbe10513842a4aaada371be0933d203bd8d"
+      },
+      {
+        "id": "code-cpython-functools-short::long-first",
+        "prompt_token_count": 482,
+        "exact_full_prompt_ids": true,
+        "exact_generated_ids": true,
+        "exact_text": true,
+        "text_sha256": "2329f5863658704964050ecbcc09521da00d0c6445bf2a60d394dba157893517"
+      },
+      {
+        "id": "code-cpython-functools-short::long-repeat",
+        "prompt_token_count": 482,
+        "exact_full_prompt_ids": true,
+        "exact_generated_ids": true,
+        "exact_text": true,
+        "text_sha256": "2329f5863658704964050ecbcc09521da00d0c6445bf2a60d394dba157893517"
+      },
+      {
+        "id": "prose-gutenberg-11-short::long-first",
+        "prompt_token_count": 574,
+        "exact_full_prompt_ids": true,
+        "exact_generated_ids": true,
+        "exact_text": true,
+        "text_sha256": "8ce32735e96f900ab84a213a6344b9ff0f76df972f25cf4606af7050a33b6633"
+      },
+      {
+        "id": "prose-gutenberg-11-short::long-repeat",
+        "prompt_token_count": 574,
+        "exact_full_prompt_ids": true,
+        "exact_generated_ids": true,
+        "exact_text": true,
+        "text_sha256": "8ce32735e96f900ab84a213a6344b9ff0f76df972f25cf4606af7050a33b6633"
+      },
+      {
+        "id": "prose-gutenberg-35-short::long-first",
+        "prompt_token_count": 533,
+        "exact_full_prompt_ids": true,
+        "exact_generated_ids": true,
+        "exact_text": true,
+        "text_sha256": "4334a0e625b1fe7a19b10ab19a4897885305e3f803233995414c1ad7749851a7"
+      },
+      {
+        "id": "prose-gutenberg-35-short::long-repeat",
+        "prompt_token_count": 533,
+        "exact_full_prompt_ids": true,
+        "exact_generated_ids": true,
+        "exact_text": true,
+        "text_sha256": "4334a0e625b1fe7a19b10ab19a4897885305e3f803233995414c1ad7749851a7"
+      }
+    ],
+    "scope": "Eight exact task/prompt/model/runtime paired observations; does not convert failing or capped tasks into general quality passes.",
+    "all_four_distinct_output_texts_read_in_full": true,
+    "semantic_assessment": {
+      "fractions": "The final channel completes __hash__ as hash((numerator, denominator)), which violates equal numeric value hash compatibility; __eq__ is then truncated. Same defect under both backends. Two task failures remain.",
+      "functools": "Only analysis, with repeated typing.Union discussion and no final completion; both observations remain inconclusive at the cap.",
+      "alice": "Only repetitive analysis about a whimsical continuation; no final story. Both observations remain inconclusive at the cap.",
+      "time_machine": "Only analysis with a sustained repeated peace/war loop; no final story. Both observations remain inconclusive at the cap.",
+      "causal_conclusion": "The eight matched outputs reproduce identically with contiguous attention and caching disabled. These observed quality concerns are not specific to paged attention or SSD restoration; no migration correction is indicated for them."
+    }
+  },
+  "collection": {
+    "excluded_prefix_cache_files": 0,
+    "full_archive": {
+      "bytes": 4422484,
+      "not_downloaded_or_rehashed_by_projection": true,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/144-final-gpt-quality-baseline1/run/evidence.tar.gz",
+      "sha256_from_original_verified_collection": "ee95068d48b472010f07f2c5dfa1c23a3a56b5ea4f49bf58f36faeb0bcdc0e0b"
+    },
+    "original_manifest_sha256": "11931cc8a5a8127e841156adc0ab6a9aece02a5591bbc6fdb922c9d7612cf8b4",
+    "projection_does_not_claim_test_success": true,
+    "selected_archive_sha256": "eed5c0a86890ce4b6b7abebd09f168a43b1ad6a41fe27bc9c26d2326103c61fa",
+    "selected_files": 326,
+    "verified_against_original_manifest": true
+  },
+  "publication_archive": {
+    "sha256": "96ebb689666456988c5180ebc749d237d6a5ea17f9fbe4c9d98cb924be5dcf1b",
+    "bytes": 2266100,
+    "members": 31
+  },
+  "projection": "Selected original144 and140 reports, inputs, metadata, audits, runtime and review identities. Original140 task failures/inconclusive results retained. No universal task-quality, routing, cache or release pass. Original full remote archive not rehashed by this projection; file modes are publication-local."
+}

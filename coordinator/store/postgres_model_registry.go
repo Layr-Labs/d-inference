@@ -78,15 +78,15 @@ func (s *PostgresStore) SetModelVersion(entry *ModelRegistryEntry, version *Mode
 		return err
 	}
 	err = tx.QueryRow(ctx, `
-		INSERT INTO model_versions (model_id, version, r2_prefix, aggregate_sha256, total_size_bytes, file_count, status, uploaded_by, uploaded_at, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9)
+		INSERT INTO model_versions (model_id, version, r2_prefix, aggregate_sha256, total_size_bytes, file_count, status, uploaded_by, uploaded_at, metadata, hugging_face_artifact)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9, $10)
 		ON CONFLICT (model_id, version) DO UPDATE SET
 		  r2_prefix = $3, aggregate_sha256 = $4, total_size_bytes = $5, file_count = $6,
-		  status = $7, uploaded_by = $8, metadata = $9
+		  status = $7, uploaded_by = $8, metadata = $9, hugging_face_artifact = $10
 		RETURNING id, uploaded_at, promoted_at`,
 		version.ModelID, version.Version, version.R2Prefix, version.AggregateSHA256,
 		version.TotalSizeBytes, version.FileCount, version.Status, version.UploadedBy,
-		versionMetadata).Scan(&version.ID, &version.UploadedAt, &version.PromotedAt)
+		versionMetadata, version.HuggingFaceArtifact).Scan(&version.ID, &version.UploadedAt, &version.PromotedAt)
 	if err != nil {
 		return fmt.Errorf("store: upsert model version: %w", err)
 	}
@@ -213,7 +213,9 @@ func (s *PostgresStore) GetModelRegistryRecord(modelID string) (*ModelRegistryRe
 	rec, err := scanModelRegistryRecord(s.pool.QueryRow(ctx, activeModelRegistryQuery+` AND mr.id = $1`, modelID))
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, fmt.Errorf("model %q not found", modelID)
+			// ErrNotFound renders as "not found", so the message is unchanged;
+			// the sentinel lets errors.Is callers recognize a true miss.
+			return nil, fmt.Errorf("model %q %w", modelID, ErrNotFound)
 		}
 		return nil, fmt.Errorf("store: get model registry record: %w", err)
 	}
@@ -295,7 +297,7 @@ const activeModelRegistryQuery = `
 	       mr.status, mr.description, mr.runtime_parameters, mr.metadata, mr.created_at, mr.updated_at,
 	       mv.id, mv.model_id, mv.version, mv.r2_prefix, mv.aggregate_sha256,
 	       mv.total_size_bytes, mv.file_count, mv.status, mv.uploaded_by,
-	       mv.uploaded_at, mv.promoted_at, mv.metadata
+	       mv.uploaded_at, mv.promoted_at, mv.metadata, mv.hugging_face_artifact
 	FROM model_registry mr
 	JOIN model_active_versions mav ON mav.model_id = mr.id
 	JOIN model_versions mv ON mv.id = mav.model_version_id
@@ -311,7 +313,7 @@ func scanModelRegistryRecord(row scanner) (*ModelRegistryRecord, error) {
 		&rec.Status, &rec.Description, &entryRuntimeParameters, &entryMetadata, &rec.CreatedAt, &rec.UpdatedAt,
 		&version.ID, &version.ModelID, &version.Version, &version.R2Prefix, &version.AggregateSHA256,
 		&version.TotalSizeBytes, &version.FileCount, &version.Status, &version.UploadedBy,
-		&version.UploadedAt, &version.PromotedAt, &versionMetadata,
+		&version.UploadedAt, &version.PromotedAt, &versionMetadata, &version.HuggingFaceArtifact,
 	)
 	if err != nil {
 		return nil, err

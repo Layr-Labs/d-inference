@@ -72,6 +72,7 @@ class SoakTests(unittest.TestCase):
 
     def test_interrupt_stops_admission_before_executor_drains(self):
         stop = threading.Event()
+        testcase = self
 
         def interrupt(timeout):
             raise KeyboardInterrupt
@@ -83,8 +84,8 @@ class SoakTests(unittest.TestCase):
                 return self
             def submit(self, worker):
                 return SimpleNamespace(result=lambda: None)
-            def __exit__(inner, *args):
-                self.assertTrue(stop.is_set(), "executor drain must follow admission stop")
+            def __exit__(self, *args):
+                testcase.assertTrue(stop.is_set(), "executor drain must follow admission stop")
 
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(load_soak, "threading", SimpleNamespace(Event=lambda: stop, Lock=threading.Lock)), \

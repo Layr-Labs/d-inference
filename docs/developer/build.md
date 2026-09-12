@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-11 · commit `cdb7bf231`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -51,6 +51,9 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 | `admin-ui/` | Next.js 16 / React 19 | `npm`; dev/start on port `4001`. |
 | `landing/` | static HTML/JS | No build step; `earn-calculator-core.test.js` runs with `node --test`. |
 | `Makefile` | — | Every target below; `make help` lists them. |
+
+Dependency update checks in [`.github/dependabot.yml`](../../.github/dependabot.yml)
+use the root Go module and the console UI's package directory.
 
 ## Steps
 

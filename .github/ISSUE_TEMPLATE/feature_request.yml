@@ -15,10 +15,11 @@ body:
       description: Which part of the system would this affect?
       options:
         - coordinator (Go)
-        - provider (Rust, legacy)
-        - provider-swift (Swift CLI)
+        - prompt sidecar (Rust)
+        - provider-swift (Swift CLI, app, and helpers)
         - console-ui (Next.js)
-        - enclave (Swift Secure Enclave helper)
+        - admin-ui (Next.js)
+        - landing
         - infra / deploy / CI
         - docs
         - cross-cutting / not sure
@@ -30,7 +31,7 @@ body:
     attributes:
       label: Problem / motivation
       description: What problem are you trying to solve? Who is this for? Why does it matter now?
-      placeholder: e.g. "Providers running on 8GB Macs can't serve any catalog model and there's no way to opt them into STT-only mode."
+      placeholder: e.g. "I need to compare provider earnings across dates, but the current view only shows totals."
     validations:
       required: true
 

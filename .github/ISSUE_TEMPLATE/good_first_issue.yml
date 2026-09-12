@@ -15,10 +15,11 @@ body:
       label: Component
       options:
         - coordinator (Go)
-        - provider (Rust, legacy)
-        - provider-swift (Swift CLI)
+        - prompt sidecar (Rust)
+        - provider-swift (Swift CLI, app, and helpers)
         - console-ui (Next.js)
-        - enclave (Swift Secure Enclave helper)
+        - admin-ui (Next.js)
+        - landing
         - infra / deploy / CI
         - docs
     validations:

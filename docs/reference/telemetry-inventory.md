@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-12 · commit `ea75820bf`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -191,6 +191,13 @@ have different populations and must not be summed together.
 `telemetry_events_total{source, severity, kind}`, `routing.throughput_anomaly`
 and computed gauges in memory; `GET /v1/admin/metrics` returns them as JSON or
 Prometheus text (`?format=prom`). Reset on restart.
+
+Histogram counts are cumulative and include samples equal to their upper
+bound. For example, a 5 ms sample increments the `le="5"` bucket and every
+larger bucket, including `+Inf`; JSON `counts` uses the same boundaries.
+`Histogram.Observe` compares the original sample directly with the configured
+upper bounds. Integer millisecond measurements are not rounded into a later
+bucket (`coordinator/api/metrics.go`).
 
 | In-process counter | Labels | Source / Datadog counterpart |
 |---|---|---|

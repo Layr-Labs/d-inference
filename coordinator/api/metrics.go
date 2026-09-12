@@ -221,7 +221,7 @@ func (h *Histogram) Observe(v float64) {
 	defer h.mu.Unlock()
 	h.sum += v
 	h.count++
-	idx := sort.SearchFloat64s(h.buckets, v+1e-9)
+	idx := sort.SearchFloat64s(h.buckets, v)
 	h.counts[idx]++
 }
 

@@ -114,7 +114,7 @@ func pinnedReleasedDigest(t *testing.T, variable string) string {
 
 // Pin verification must reject special files before hashing: opening a FIFO
 // can block the compatibility job indefinitely without a provider ever starting.
-func TestMixedVersionArtifactRejectsNonRegularInputs(t *testing.T) {
+func TestIntegrationMixedVersionArtifactRejectsNonRegularInputs(t *testing.T) {
 	for _, target := range []string{"darkbloom", releasedMetallibName} {
 		for _, kind := range []string{"directory", "fifo"} {
 			t.Run(target+"/"+kind, func(t *testing.T) {
@@ -139,7 +139,7 @@ func TestMixedVersionArtifactRejectsNonRegularInputs(t *testing.T) {
 	}
 }
 
-func TestMixedVersionArtifactRejectsNonExecutableOrWrongBinary(t *testing.T) {
+func TestIntegrationMixedVersionArtifactRejectsNonExecutableOrWrongBinary(t *testing.T) {
 	root := t.TempDir()
 	binary := filepath.Join(root, "darkbloom")
 	contents := []byte("verified fixture")

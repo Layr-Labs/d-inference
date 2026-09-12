@@ -57,7 +57,7 @@ For UI changes, include a screenshot or short video.
 
 <!--
 If you changed a WebSocket message, an HTTP endpoint, a config key, or a CLI flag:
-- Did you update the matching side? (provider-swift/Sources/ProviderCore/Protocol/Messages.swift ↔ coordinator/protocol/messages.go)
+- Did you update the matching side? (provider-swift/Sources/ProviderCore/Protocol/ ↔ coordinator/protocol/messages.go)
 - Are release artifacts (`release-swift.yml`, `scripts/install.sh`, `LatestProviderVersion`) still consistent?
 - Does this need a version bump or a migration note?
 -->

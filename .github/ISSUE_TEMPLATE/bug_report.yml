@@ -63,7 +63,7 @@ body:
     attributes:
       label: Environment
       description: |
-        Include `darkbloom --version`, macOS version, Mac model + RAM, and browser for web bugs. For a source build, include the commit and toolchain versions.
+        Include the affected component's version and environment: `darkbloom --version`, macOS version and Mac model + RAM for provider bugs; browser for web bugs; server, container or CI details when relevant. For a source build, include the commit and toolchain versions.
       placeholder: |
         - provider: output of `darkbloom --version`
         - macOS: output of `sw_vers -productVersion`

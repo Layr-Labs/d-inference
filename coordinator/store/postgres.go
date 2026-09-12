@@ -1186,7 +1186,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	if err := s.migrateEarningsSummary(ctx); err != nil {
 		return err
 	}
-	if err := s.ensureProviderRestoreIndexes(ctx); err != nil {
+	if err := s.ensureConcurrentIndexes(ctx); err != nil {
 		return err
 	}
 

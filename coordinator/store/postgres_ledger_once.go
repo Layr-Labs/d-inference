@@ -44,12 +44,13 @@ func creditOnceTx(ctx context.Context, tx pgx.Tx, accountID string, amountMicroU
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, string(entryType)+":"+reference); err != nil {
 		return false, fmt.Errorf("store: advisory lock: %w", err)
 	}
-	// Account scoping uses the existing idx_ledger_account index. Stripe
-	// deposits and refunds carry the stable checkout or withdrawal reference.
+	// The digest index accepts arbitrary-length ledger references. Exact
+	// reference equality remains authoritative when digests share a bucket.
 	var exists bool
 	if err := tx.QueryRow(ctx,
 		`SELECT EXISTS (SELECT 1 FROM ledger_entries
-		  WHERE account_id = $1 AND entry_type = $2 AND reference = $3)`,
+		  WHERE account_id = $1 AND entry_type = $2
+		    AND md5(reference) = md5($3) AND reference = $3)`,
 		accountID, string(entryType), reference).Scan(&exists); err != nil {
 		return false, fmt.Errorf("store: check ledger reference: %w", err)
 	}

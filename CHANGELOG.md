@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — provider registration robustness
+
+- Ignore inference completions received before provider registration, keeping the WebSocket available for registration instead of closing it through a nil-pointer panic.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

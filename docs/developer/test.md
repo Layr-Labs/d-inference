@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `beca0ca59`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -76,6 +76,11 @@ API fixtures use isolated encrypted WebSocket providers;
 Postgres tests require an explicitly disposable `DATABASE_URL` and include an
 upgrade from the old profile schema. See
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
+
+`TestProviderCompletionBeforeRegistrationIsIgnored` sends an early completion
+over a real local WebSocket, then requires a successful registration challenge
+on that same connection. It uses the in-memory store and needs no provider
+binary or model (`coordinator/api/provider_completion_registration_test.go`).
 
 The [admission calibration baseline](../reports/2026-09-06-admission-calibration-baseline.md)
 gives the focused `TestTTFTPendingPrompt` comparison command. Its registry

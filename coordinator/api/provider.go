@@ -671,6 +671,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			s.handleChunk(providerID, provider, chunkMsg)
 
 		case protocol.TypeInferenceComplete:
+			if provider == nil {
+				s.logger.Warn("complete from unregistered provider", "provider_id", providerID)
+				continue
+			}
 			completeMsg := msg.Payload.(*protocol.InferenceCompleteMessage)
 			_, receivedAt := provider.MarkPendingCompletionIngressNow(completeMsg.RequestID)
 			if receivedAt.IsZero() {

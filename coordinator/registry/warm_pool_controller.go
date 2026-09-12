@@ -501,7 +501,8 @@ func (c *warmPoolController) targetInputs(fleet warmPoolModelSnapshot, pressure 
 // this window. It consumes ALL signals fed to the controller — capacity rejects,
 // TTFT misses, cold dispatches, speculative starts/wins (now including the W3
 // preflight-fed near-misses), an aged coordinator queue, and a saturated warm set
-// under any external pressure. With no demand pressure the pool is left as-is.
+// under any external pressure. Proactive headroom and configured minimums can
+// still grow the pool without a pressure event.
 func (c *warmPoolController) hasDemandPressure(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, queue warmPoolQueuePressure) bool {
 	if pressure.capacityRejects >= c.config.CapacityRejectThreshold ||
 		pressure.ttftMisses >= c.config.TTFTMissThreshold ||
@@ -606,60 +607,43 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 		}
 		for _, model := range models {
 			warm := r.providerHasWarmModelLocked(p, model, now)
+			s := out[model]
+			s.model = model
 			if warm {
-				s := out[model]
-				s.model = model
 				s.warm++
 				running, waiting := warmPoolModelLoadLocked(p, model)
 				s.running += running
 				s.waiting += waiting
 				if !r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, model) || warmPoolBackendSlotBusyLocked(p) {
 					s.warmSaturated++
-					// Saturated while serving NONE of this model's requests means
-					// a co-resident model is holding the capacity. That load is
-					// invisible in s.running/s.waiting, so the warm-pool target
-					// must not treat this provider as usable capacity for this
-					// model (see headroomTarget).
+					// Only foreign load is missing from this model's running/waiting
+					// counts; adding self-saturated providers would double-count it.
 					if running+waiting == 0 {
 						s.warmForeignBlocked++
 					}
 				}
-				out[model] = s
-				// decodeSamples feed soloDecodeTPS → qualityConcurrency in the
-				// warm target. Use the SAME solo resolver as the admission cap
-				// (solo median / seed → provider benchmark), NOT the per-slot
-				// observed EWMA: the EWMA is a contended rate, and planning warm
-				// targets from it while admission caps from the solo rate would
-				// let the two disagree. The observed-EWMA chain
-				// (resolvedModelTPSLocked) still feeds serviceSamples/prefill —
-				// E[S] wants the load-inclusive rate a request actually sees.
-				serviceTPS, prefillTPS := resolvedModelTPSLocked(p, model)
-				decodeSamples[model] = append(decodeSamples[model], r.resolvedSoloModelTPSLocked(p, model).tps)
-				serviceSamples[model] = append(serviceSamples[model], serviceTPS)
-				prefillSamples[model] = append(prefillSamples[model], prefillTPS)
-				concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
-				continue
-			}
-			candidate, reason := r.warmPoolCandidateReasonLocked(p, model, now)
-			s := out[model]
-			s.model = model
-			if reason == warmColdEligible {
-				s.eligibleCold = append(s.eligibleCold, candidate)
-				out[model] = s
-				// Same solo-resolver / service-rate split as the warm branch above.
-				serviceTPS, prefillTPS := resolvedModelTPSLocked(p, model)
-				decodeSamples[model] = append(decodeSamples[model], r.resolvedSoloModelTPSLocked(p, model).tps)
-				serviceSamples[model] = append(serviceSamples[model], serviceTPS)
-				prefillSamples[model] = append(prefillSamples[model], prefillTPS)
-				concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
 			} else {
-				if s.coldDisq == nil {
-					s.coldDisq = make(map[warmColdReason]int)
+				candidate, reason := r.warmPoolCandidateReasonLocked(p, model, now)
+				if reason != warmColdEligible {
+					if s.coldDisq == nil {
+						s.coldDisq = make(map[warmColdReason]int)
+					}
+					s.coldDisq[reason]++
+					s.coldIneligible++
+					out[model] = s
+					continue
 				}
-				s.coldDisq[reason]++
-				s.coldIneligible++
-				out[model] = s
+				s.eligibleCold = append(s.eligibleCold, candidate)
 			}
+			out[model] = s
+			// Both warm and eligible-cold providers contribute to the same cohort.
+			// The static solo resolver matches admission's quality cap; the observed
+			// service rate separately estimates the duration a request will see.
+			serviceTPS, prefillTPS := resolvedModelTPSLocked(p, model)
+			decodeSamples[model] = append(decodeSamples[model], r.resolvedSoloModelTPSLocked(p, model).tps)
+			serviceSamples[model] = append(serviceSamples[model], serviceTPS)
+			prefillSamples[model] = append(prefillSamples[model], prefillTPS)
+			concSamples[model] = append(concSamples[model], float64(p.maxConcurrencyForModelLocked(model)))
 		}
 		p.mu.Unlock()
 	}

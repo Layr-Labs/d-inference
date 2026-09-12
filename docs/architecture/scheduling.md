@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-10 · commit `213b8c2b6`
+> Last updated: 2026-09-11 · commit `5c5789018`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -93,10 +93,19 @@ active update or shutdown barrier remains authoritative
 `setRetirementReconnectBarrier`).
 
 `PopNextFresh` skips stale entries as it pops; `RequeueFront` returns a
-waiter that could not be placed; `PreferWaiterOwners` lets a drain favour
-waiters that own the provider that just freed. `FailQueuedRequestsForModel`
-fails every waiter for a model with a specific error (used for
-capability-unavailable and disconnect outcomes).
+waiter that could not be placed. `PreferWaiterOwners` gathers owner IDs before
+the registry computes their eligibility outside the queue lock.
+`FailQueuedRequestsForModel` reports timeout to public waiters while preserving
+exclusive self-route waiters and prefer-owner waiters whose owners remain
+eligible. Specific deadline, TTFT and tool-constraint causes use
+`QueuedRequest.failWithReason` instead.
+
+Both rejection paths and stale cleanup share `finishWithoutProvider`: mark the
+waiter done, release any scheduler-owned assignment, then publish a nonblocking
+nil sentinel. A full response channel does not count as a new notification.
+Successful assignment transfers cleanup ownership only when
+`WaitForProviderContext` accepts it; cancellation still releases an unaccepted
+offer (`coordinator/registry/queue.go`).
 
 **Lazy stale sweep.** There is no background timer. `cleanStaleLocked` runs
 inside `Enqueue` and `QueuedModels`, dropping entries older than `maxWait`
@@ -330,24 +339,40 @@ warm-saturated fraction (`warmSaturated / warm`) reaches
 `WarmSaturationThreshold`. A warm provider is *saturated* when it has no
 concurrency headroom for the model or its backend slot is busy.
 
-**Target** (`warmTarget`, `coordinator/registry/warm_pool_target.go`) applies
-Little's Law when pressure is present and otherwise holds the current warm
-count:
+**Rate cohort.** `warmPoolFleetSnapshot` collects rates from warm providers and
+eligible cold providers. Rejected cold providers contribute reason counts but
+no rate sample. Static solo rates size quality concurrency; observed service
+rates estimate request duration. Each uses the same eligible cohort and its
+median (`coordinator/registry/warm_pool_controller.go`).
+
+**Target** (`warmTarget`, `coordinator/registry/warm_pool_target.go`) sizes to
+observed load when proactive headroom is enabled. Disabling headroom restores
+the purely reactive mode, which holds the current warm count until pressure
+appears:
 
 ```text
 serviceTime  = clamp(AssumedPromptTokens / prefillTPS + AssumedCompletionTokens / decodeTPS,
                      warmPoolMinServiceTime, warmPoolMaxServiceTime)   # 500 * time.Millisecond … 2 * time.Minute
 L            = running + waiting + queueDepth + spillArrivalRate × serviceTime
 target       = ceil(L / qualityConcurrency) + BurstBuffer
-target       = max(target, warm + 1)              # reactive: pressure always earns one more
+target       = max(target, headroomTarget)        # proactive floor when enabled
+target       = max(target, warm + 1)              # only when demand pressure is present
 target       = clamp(target, warm, warm + eligibleCold)
 ```
 
 `spillArrivalRate` is an EWMA of arrivals the warm set could not absorb,
 `warmPoolArrivalEWMAAlpha = 0.3` (`coordinator/registry/warm_pool_state.go`).
+The proactive floor covers occupied capacity plus growth expected during a
+cold load, with a correction for providers blocked by a co-resident model.
+`headroomProviders` derives spare providers from the measured occupancy ramp,
+load windows and quality concurrency, subject to the configured override/cap.
+Negative occupancy deltas become zero-growth samples; they do not subtract
+from the ramp, but still apply ordinary EWMA decay. Pressure and occupancy
+observations retain separate expiry clocks.
 `targetWarm` then applies anti-flap and floors: a target lower than the last
 one is held for `MinDwell`, and `MinWarmByModel` raises the target (both
-capped at `warm + eligibleCold`).
+capped at `warm + eligibleCold`). For a dedicated build under demand pressure,
+it targets the entire eligible pool; the ramp below still bounds issued loads.
 
 **Ramp.** The gap between target and warm is closed at
 `rampLoadsThisTick(gap, MaxLoadsPerTick, MaxLoadsPerTickCeiling,

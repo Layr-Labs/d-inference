@@ -113,7 +113,8 @@ type warmTargetInputs struct {
 	PrefillTPS      float64 // representative prefill tok/s
 	MaxProviderConc int     // representative per-provider concurrency cap (0 = unknown)
 	// DemandPressure is true when any pressure signal crossed its threshold this
-	// window. With no demand pressure the pool is left as-is (no growth).
+	// window. Without pressure, the purely reactive mode retains the warm count;
+	// proactive headroom mode still sizes to observed load.
 	DemandPressure bool
 }
 

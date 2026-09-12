@@ -49,9 +49,8 @@ type warmPoolPressureBucket struct {
 	// rate, NOT the absolute arrival rate (which would size headroom to total
 	// traffic and demand far more hardware than exists).
 	//
-	// Only INCREASES are folded. A falling occupancy is not negative demand
-	// growth, and letting it pull the EWMA down would shrink headroom fastest
-	// right after a spike drains — exactly when the next one is most likely.
+	// Negative deltas are clamped to zero: a falling occupancy is not negative
+	// demand growth. Zero-growth samples still decay the EWMA normally.
 	//
 	// lastOccupancyAt timestamps the baseline so a fold can normalize the delta
 	// to one control interval, and so staleness is judged on the OCCUPANCY
@@ -217,7 +216,7 @@ func (s *warmPoolState) foldArrivalRates(now time.Time, minInterval time.Duratio
 // interval <= 0 or minInterval <= 0 disables the normalization and gate (every
 // call folds its raw delta), which keeps the pure-unit-test path simple.
 //
-// Only positive deltas are folded (see occupancyRampEWMA). Models absent from the
+// Negative deltas become zero-growth samples (see occupancyRampEWMA). Models absent from the
 // map this tick are left untouched rather than decayed, so a model that stops
 // being reported does not silently lose its measured ramp.
 func (s *warmPoolState) foldOccupancyRamp(occupancy map[string]int, now time.Time, interval, minInterval time.Duration, alpha float64) {

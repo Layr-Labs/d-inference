@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `fd1fd7969`
+> Last updated: 2026-09-11 · commit `6d775977d`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -9,12 +9,6 @@ the docs lint locally; CI runs a subset per pull request (see the CI workflow
 map: the console UI job lints and builds but does not run vitest, and the
 benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
 Mac with the test checkpoints cached.
-
-Record the checks you ran in the
-[pull request template](../../.github/pull_request_template.md), along with a
-before-and-after diagram of the changed behavior and code paths. The
-[bug report form](../../.github/ISSUE_TEMPLATE/bug_report.yml) lists the version,
-environment and provider log details needed to reproduce a failure.
 
 The Nemotron coordinator-serving path uses typed SDK events. `OpenAIServiceTests`
 and `ToolCallParserIntegrationTests` in `libs/mlx-swift-lm/Tests/MLXLMServerTests`
@@ -928,6 +922,10 @@ node --test landing/earn-calculator-core.test.js
 ```
 
 ### 6. Scripts and release integrity
+
+For changes to [dependency update configuration](../../.github/dependabot.yml),
+confirm that each update directory contains its ecosystem’s manifest, then run
+the relevant component checks in this guide.
 
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)

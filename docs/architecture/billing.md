@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-06 · commit `23e6f986f`
+> Last updated: 2026-09-11 · commit `1ac25845d`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -186,6 +186,8 @@ sequence is stated under Failure modes.
 Withdrawal row state machine: `pending → transferred → paid | failed`
 (`handleStripeWithdraw` comment block). There is no coordinator-side payout
 schedule or threshold beyond `MinWithdrawMicroUSD`.
+
+Submission progress is conditional on the last acknowledged row state. `persistWithdrawalUpdate` calls `CompareAndSwapStripeWithdrawal` (`coordinator/store/stripe_withdrawal_progress.go`), comparing transfer/payout/sweep IDs, status, failure reason and both refund flags under one memory lock or PostgreSQL update. An exact desired state is an idempotent retry success; another state is preserved. Account, amounts, method and creation time are never overwritten. Legacy already-refunded status flips use the same comparison against their lookup snapshot. A submission conflict stops subsequent steps and returns 409 `withdrawal_state_changed`; it does not undo an external Stripe call or move ledger balance by itself.
 
 ### International bank withdrawals
 

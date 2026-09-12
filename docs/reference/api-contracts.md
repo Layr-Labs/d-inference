@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-11 · commit `1ac25845d`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -531,6 +531,10 @@ Sealed mode hides request and response bodies from TLS-terminating intermediarie
 ### Device code shapes
 
 See the [Device-code flow](#device-code-flow-3) table for the three bodies. `verification_uri` is `<console>/link` when `EIGENINFERENCE_CONSOLE_URL` is set, else `<scheme>://<request host>/link` (`handleDeviceCode`).
+
+### Connect withdrawal submission conflicts
+
+`POST /v1/billing/withdraw/stripe` returns 409 `withdrawal_state_changed` when a webhook changes the withdrawal while its Connect submission is awaiting Stripe. The newer row is preserved and the handler stops subsequent submission steps. Check `GET /v1/billing/stripe/withdrawals` before retrying; this response does not mean prior Stripe calls or ledger activity were rolled back (`coordinator/api/stripe_withdraw.go`, `persistWithdrawalUpdate`).
 
 ### International withdrawal confirmation
 

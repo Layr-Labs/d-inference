@@ -190,8 +190,9 @@ func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, connectedAcct
 		// Legacy row already refunded under the old semantics — leave it
 		// terminal so we never double-account.
 		if wd.Status != "failed" {
-			wd.Status = "failed"
-			if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
+			next := *wd
+			next.Status = "failed"
+			if _, err := s.billing.Store().CompareAndSwapStripeWithdrawal(wd, &next); err != nil {
 				s.logger.Error("stripe connect webhook: status flip failed", "error", err)
 				return err
 			}
@@ -498,8 +499,9 @@ func (s *Server) handleTransferFailed(event *billing.WebhookEvent) error {
 		// sweep reconciliation — if it fails, return the error so Stripe
 		// redelivers rather than leaving a refunded row claimable.
 		if wd.Status != "failed" {
-			wd.Status = "failed"
-			if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
+			next := *wd
+			next.Status = "failed"
+			if _, err := s.billing.Store().CompareAndSwapStripeWithdrawal(wd, &next); err != nil {
 				s.logger.Error("stripe connect webhook: refunded-row status flip failed",
 					"error", err, "withdrawal_id", wd.ID)
 				return err

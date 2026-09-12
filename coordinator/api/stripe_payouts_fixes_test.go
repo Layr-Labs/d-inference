@@ -552,6 +552,14 @@ func (f *flakyPayoutStore) UpdateStripeWithdrawal(wd *store.StripeWithdrawal) er
 	return f.MemoryStore.UpdateStripeWithdrawal(wd)
 }
 
+// Production updates compare their lookup/submission snapshot atomically.
+func (f *flakyPayoutStore) CompareAndSwapStripeWithdrawal(previous, next *store.StripeWithdrawal) (bool, error) {
+	if f.failUpdates {
+		return false, errors.New("connection reset by peer")
+	}
+	return f.MemoryStore.CompareAndSwapStripeWithdrawal(previous, next)
+}
+
 // newFlakyPayoutServer wires a Server + billing around a flakyPayoutStore.
 func newFlakyPayoutServer(t *testing.T, fakeStripe *httptest.Server) (*Server, *flakyPayoutStore) {
 	t.Helper()

@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-11 · commit `1ac25845d`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -206,6 +206,8 @@ Choose **Unlink Stripe account and start over** to remove the destination curren
   `remaining_usd` shrinking toward `0`.
 
 ## Troubleshooting
+
+If a Connect withdrawal reports that its status changed during submission, refresh withdrawal history before submitting again. A bank update or refund may have arrived while the request was waiting for Stripe. The newer status is preserved; the message does not mean the earlier transfer was canceled (`coordinator/api/stripe_withdraw.go`, `writeWithdrawalStateChanged`).
 
 | Symptom | Cause | Fix |
 |---|---|---|

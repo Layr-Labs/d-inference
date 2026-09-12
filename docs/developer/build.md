@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-12 · commit `6a6b18f4d`
+> Last updated: 2026-09-12 · commit `3914674ba`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -416,8 +416,11 @@ requires Python 3.10+ and no third-party packages or build step. Its tests use
 local stub servers; its default observation mode sends only public GETs.
 
 The [provider relay checks](test.md) use local Go HTTP/WebSocket servers without
-a provider build or model weights. They check catalog forwarding, upstream errors,
-shutdown cancellation and bounded WS recording before the real-model gates.
+a provider build or model weights. They check catalog/manifest forwarding,
+rejection of other HTTP routes, upstream errors, shutdown cancellation and bounded
+WS recording before the real-model gates.
+The `test-coordinator` job in `.github/workflows/ci.yml` runs all testbed unit
+packages and the Qwen/workflow fixture-policy checks as blocking CPU steps.
 
 ## `make` targets
 

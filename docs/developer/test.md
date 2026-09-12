@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-12 · commit `6a6b18f4d`
+> Last updated: 2026-09-12 · commit `3914674ba`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1013,6 +1013,15 @@ provider processes serving MLX checkpoints, then drives the OpenAI-compatible
 API. It is a Go test binary; run it from the repo root with `-p=1` (suites
 share GPU/ports).
 
+The `test-coordinator` job in `.github/workflows/ci.yml` runs the full testbed
+unit packages and the fixture-policy tests as blocking CPU checks. They require
+no provider build or model weights:
+
+```bash
+go test -race ./e2e/testbed/... -count=1
+go test -race ./e2e/ -run '^Test(Qwen38|IntegrationWorkflow)' -count=1
+```
+
 ```bash
 # Blocking lane as CI runs it (paged KV @ 8, engine-reported backend asserted):
 DARKBLOOM_TESTBED_KV_BACKEND=paged DARKBLOOM_TESTBED_MAX_CONCURRENT=8 \
@@ -1036,6 +1045,15 @@ so contiguous is the expected automatic backend for that fixture. Exact catalog
 those defaults. The small e2b cache-routing fixture explicitly opts into SSD;
 its informational status remains until a real run passes the full gate. It is
 not evidence of a current output mismatch if setup fails before adoption.
+
+The Qwen3.8 tools/video fixture in `e2e/integration_test.go`
+(`qwen38ConcreteModel`, `qwen38ExpectedBuiltKVBackend`) pins
+`EigenLabs/Qwen3.8-27B-4bit` at revision
+`301e9e2767fd0efcfab7883004720ba3c9a552a1`. Its automatic backend is contiguous;
+an explicit paged request still requires paged. The qualified
+`EigenLabs/Qwen3.8-27B-4bit-mtp` publication is a separate artifact covered by
+the exact-catalog release-default gate. The tools/video fixture does not rename
+or substitute that publication.
 
 The harness builds the provider itself (`e2e/testbed/provider.go`,
 `BuildProvider`): `swift build -c release` (or `TESTBED_PROVIDER_CONFIG=debug`)
@@ -1064,7 +1082,7 @@ binary that already has `mlx.metallib` beside it.
 
 | File | Tests |
 |---|---|
-| `e2e/integration_test.go` | `TestIntegration_NonStreamingInference`, `_StreamingInference`, `_GreedyDeterminism`, `_MultipleRequestsAccounting`, `_E2EEncryptionCorrectness`, `_BillingBalanceDeduction`, `_ProviderPayoutSplit`, `_InsufficientBalance`, `_InvalidModel`, `_StreamingContentValidation`, `_ConcurrentRequests`, `_AttestationHeaders`, `_SwiftProviderRealRoutingGates`, `_FullNetworkSingleSwiftProviderMultiModelRouting`, `_ReferralRewardDistribution`, `_Qwen38RealProcessToolsAndVideo`; plus `TestQwen38GatePolicy`, `TestQwen38ExpectedBuiltKVBackend` |
+| `e2e/integration_test.go` | `TestIntegration_NonStreamingInference`, `_StreamingInference`, `_GreedyDeterminism`, `_MultipleRequestsAccounting`, `_E2EEncryptionCorrectness`, `_BillingBalanceDeduction`, `_ProviderPayoutSplit`, `_InsufficientBalance`, `_InvalidModel`, `_StreamingContentValidation`, `_ConcurrentRequests`, `_AttestationHeaders`, `_SwiftProviderRealRoutingGates`, `_FullNetworkSingleSwiftProviderMultiModelRouting`, `_ReferralRewardDistribution`, `_Qwen38RealProcessToolsAndVideo`; plus `TestQwen38GatePolicy`, `TestQwen38BaseArtifactBackendSelection` |
 | `e2e/profile_test.go` | `TestProfile_SingleProviderNonStreaming`, `TestProfile_RequestProfilesRecorded` |
 | `e2e/exact_cache_routing_test.go` | `TestIntegrationExactCacheRouting` (small e2b fixture with explicit SSD opt-in; exact cold/adopted checks retained in the informational CI step) |
 | `e2e/mixed_version_test.go` | `TestIntegrationMixedVersionReleasedV0712Provider`, `TestIntegrationMixedVersionGateContract` |
@@ -1429,10 +1447,12 @@ The runner fences UTC rollover and preserves failed, running and unrun cells in
 an atomically replaced partial JSON report. Keep the `go test` log beside it for
 setup failures and interrupted process evidence.
 
-The loopback relay forwards coordinator HTTP requests, including the model
-catalog used by normal assistant resolution. It preserves upstream status, headers
-and body without recording them, and cancels active HTTP requests on shutdown
-(`e2e/testbed/provider_wire_relay.go`, `ProviderWireRelay.Start`).
+The loopback relay forwards only `GET /v1/models/catalog` and
+`GET /v1/models/catalog/manifest/{id}` for the normal provider catalog client.
+Other HTTP paths/methods and traversal paths return 404 without reaching the
+coordinator, including through owned-host SSH tunnels. Allowed reads preserve
+upstream status, headers and body without recording them; shutdown cancels
+active reads (`e2e/testbed/provider_wire_relay.go`, `ProviderWireRelay.Start`).
 
 A bounded transparent loopback relay records negotiation, checkpoint echo,
 receipt positions, cancellation and typed terminal usage/profile without keys,

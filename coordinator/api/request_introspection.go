@@ -540,7 +540,10 @@ func requestHasTools(parsed map[string]any) bool {
 	return ok && len(tools) > 0
 }
 
-func estimateRequestedMaxTokens(parsed map[string]any) int {
+// estimateRequestedMaxTokens reports whether the selected output bound times
+// the choice count fits in an int. Overflow is invalid input, not a token value
+// that can safely continue into quota, price or capacity arithmetic.
+func estimateRequestedMaxTokens(parsed map[string]any) (int, bool) {
 	maxTokens := 256
 	for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
 		if n, ok := intFromRequestValue(parsed[key]); ok && n > 0 {
@@ -549,14 +552,36 @@ func estimateRequestedMaxTokens(parsed map[string]any) int {
 		}
 	}
 	if copies, ok := intFromRequestValue(parsed["n"]); ok && copies > 1 {
-		// An overflowing estimate must stay conservative for token quotas,
-		// reservations and routing, never wrap into a smaller request.
 		if maxTokens > math.MaxInt/copies {
-			return math.MaxInt
+			return 0, false
 		}
-		return maxTokens * copies
+		return maxTokens * copies, true
 	}
-	return maxTokens
+	return maxTokens, true
+}
+
+func (s *Server) validateRequestedMaxTokens(w http.ResponseWriter, r *http.Request, parsed map[string]any, model, publicModel string) (int, bool) {
+	if tokens, ok := estimateRequestedMaxTokens(parsed); ok {
+		return tokens, true
+	}
+	copies, _ := intFromRequestValue(parsed["n"])
+	stream, _ := parsed["stream"].(bool)
+	s.recordRejection(rejectionInfo{
+		r:               r,
+		stage:           "validation",
+		reasonCode:      "bad_param",
+		httpStatus:      http.StatusBadRequest,
+		keyID:           keyIDFromContext(r.Context()),
+		consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
+		requestedModel:  publicModel,
+		resolvedModel:   model,
+		stream:          stream,
+		n:               copies,
+		params:          rejectionSamplingParams(parsed),
+	})
+	writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+		"n times the requested output token limit exceeds the supported integer range", withParam("n")))
+	return 0, false
 }
 
 // stripProviderRoutingFields drops the retired consumer-side serial allowlist.

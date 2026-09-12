@@ -2022,7 +2022,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := shape.routingPromptTokens(parsed)
 	billingPromptTokens := shape.billingPromptTokens(parsed)
-	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
+	requestedMaxTokens, ok := s.validateRequestedMaxTokens(w, r, parsed, model, publicModel)
+	if !ok {
+		return
+	}
 	deadline := s.FirstContentDeadline(model, estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
 	rp.Mark(registry.StampReqParsed)
@@ -2786,7 +2789,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	billingPromptTokens := estimateBillingPromptTokens(parsed)
-	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
+	requestedMaxTokens, ok := s.validateRequestedMaxTokens(w, r, parsed, model, publicModel)
+	if !ok {
+		return
+	}
 	genericDeadline := s.FirstContentDeadline(model, estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
 	rp.Mark(registry.StampReqParsed)

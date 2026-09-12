@@ -44,15 +44,16 @@ func TestGenericOutputTokenOverflowCannotBypassKeyQuota(t *testing.T) {
 			for _, tc := range []struct {
 				name              string
 				copies, maxTokens int
+				status            int
 				quotaRejected     bool
 			}{
 				// The limiter admits at most one burst per request, even when
 				// its estimate is larger. Spend half a burst first so a normal
 				// oversized estimate is refused while a wrapped value fits.
-				{"spend_half_burst", 1, 50, false},
-				{"ordinary_over_quota", 1, 101, true},
-				{"negative_wrap", math.MaxInt, 2, true},
-				{"positive_wrap", math.MaxInt/2 + 2, 4, true},
+				{"spend_half_burst", 1, 50, http.StatusTooManyRequests, false},
+				{"ordinary_over_quota", 1, 101, http.StatusTooManyRequests, true},
+				{"negative_wrap", math.MaxInt, 2, http.StatusBadRequest, false},
+				{"positive_wrap", math.MaxInt/2 + 2, 4, http.StatusBadRequest, false},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					body["n"], body["max_tokens"] = tc.copies, tc.maxTokens
@@ -76,7 +77,7 @@ func TestGenericOutputTokenOverflowCannotBypassKeyQuota(t *testing.T) {
 						t.Fatal(err)
 					}
 					quotaRejected := strings.Contains(string(response), "output_tokens")
-					if resp.StatusCode != http.StatusTooManyRequests || quotaRejected != tc.quotaRejected {
+					if resp.StatusCode != tc.status || quotaRejected != tc.quotaRejected {
 						t.Fatalf("quotaRejected=%v, want %v: status=%d body=%s", quotaRejected, tc.quotaRejected, resp.StatusCode, response)
 					}
 				})
@@ -85,29 +86,30 @@ func TestGenericOutputTokenOverflowCannotBypassKeyQuota(t *testing.T) {
 	}
 }
 
-func TestRequestedOutputTokenEstimateSaturates(t *testing.T) {
+func TestRequestedOutputTokenEstimateRejectsOverflow(t *testing.T) {
 	for _, field := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
 		t.Run(field, func(t *testing.T) {
 			for _, tc := range []struct {
 				maxTokens, copies, want int
+				valid                   bool
 			}{
-				{7, 3, 21},
-				{math.MaxInt / 2, 2, math.MaxInt - 1},
-				{math.MaxInt/2 + 1, 2, math.MaxInt},
-				{4, math.MaxInt/2 + 2, math.MaxInt},
-				{math.MaxInt, 1, math.MaxInt},
+				{7, 3, 21, true},
+				{math.MaxInt / 2, 2, math.MaxInt - 1, true},
+				{math.MaxInt/2 + 1, 2, 0, false},
+				{4, math.MaxInt/2 + 2, 0, false},
+				{math.MaxInt, 1, math.MaxInt, true},
 			} {
 				parsed := map[string]any{field: tc.maxTokens, "n": tc.copies}
-				if got := estimateRequestedMaxTokens(parsed); got != tc.want {
-					t.Errorf("%d tokens across %d choices = %d, want %d", tc.maxTokens, tc.copies, got, tc.want)
+				if got, valid := estimateRequestedMaxTokens(parsed); got != tc.want || valid != tc.valid {
+					t.Errorf("%d tokens across %d choices = (%d, %t), want (%d, %t)", tc.maxTokens, tc.copies, got, valid, tc.want, tc.valid)
 				}
 			}
 		})
 	}
-	if got := estimateRequestedMaxTokens(map[string]any{"n": math.MaxInt}); got != math.MaxInt {
-		t.Errorf("default-token overflow = %d, want %d", got, math.MaxInt)
+	if got, valid := estimateRequestedMaxTokens(map[string]any{"n": math.MaxInt}); valid || got != 0 {
+		t.Errorf("default-token overflow = (%d, %t), want (0, false)", got, valid)
 	}
-	if got := estimateRequestedMaxTokens(nil); got != 256 {
-		t.Errorf("default-token estimate = %d, want 256", got)
+	if got, valid := estimateRequestedMaxTokens(nil); !valid || got != 256 {
+		t.Errorf("default-token estimate = (%d, %t), want (256, true)", got, valid)
 	}
 }

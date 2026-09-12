@@ -1,6 +1,6 @@
 # Model registry
 
-> Last updated: 2026-09-06 · commit `32b28b0a7`
+> Last updated: 2026-09-11 · commit `88e9baeed`
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
@@ -234,6 +234,18 @@ the budget.
    `providerSupportsDesiredModels` (backend + version floor) and
    `DesiredModelsForProvider` (already a member of the alias, capable of the
    build) gate every send.
+
+9. **Namespace validation reads must succeed before registration or an alias upsert.**
+   `handleModelAliasUpsert` preserves stored rollout lineage and endpoint
+   ownership when `GetModelAlias` fails. Both it and
+   `handleOpenRouterAliasUpsert` abort on namespace lookup errors other than
+   `store.ErrNotFound`; a failed desired/previous build lookup returns 500,
+   while a confirmed missing member remains 400
+   (`coordinator/api/model_alias_handlers.go`,
+   `coordinator/api/openrouter_alias_handlers.go`). The reverse guard in
+   `handleRegisterModel` returns 500 when its alias lookup fails, before
+   fetching artifacts or writing a concrete model
+   (`coordinator/api/model_registry_handlers.go`).
 
 ## Failure modes
 

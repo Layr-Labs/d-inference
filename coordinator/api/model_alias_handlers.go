@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -79,9 +80,20 @@ func (s *Server) handleModelAliasUpsert(w http.ResponseWriter, r *http.Request) 
 	// name itself as a member. `takeover` is the deliberate exception for the
 	// public-name migration: an alias adopts the name of an existing concrete
 	// model and absorbs that same-named build as its previous_build (fallback).
-	collidingRec, _ := s.store.GetModelRegistryRecord(req.AliasID)
+	collidingRec, err := s.store.GetModelRegistryRecord(req.AliasID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to check model namespace"))
+		return
+	}
 	idCollision := collidingRec != nil
-	prior := s.priorAlias(req.AliasID)
+	prior, found, err := s.store.GetModelAlias(req.AliasID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to get alias"))
+		return
+	}
+	if !found {
+		prior = nil
+	}
 	if prior != nil && prior.OpenRouterOnly {
 		writeJSON(w, http.StatusConflict, errorResponse("invalid_request_error", "alias_id belongs to the dedicated OpenRouter alias endpoint", withParam("alias_id")))
 		return
@@ -117,15 +129,21 @@ func (s *Server) handleModelAliasUpsert(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// Both builds must be registered models so we never alias to a phantom id.
-	if rec, err := s.store.GetModelRegistryRecord(req.DesiredBuild); err != nil || rec == nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
-			"desired_build "+req.DesiredBuild+" is not a registered model", withParam("desired_build")))
-		return
-	}
-	if req.PreviousBuild != "" {
-		if rec, err := s.store.GetModelRegistryRecord(req.PreviousBuild); err != nil || rec == nil {
+	for _, member := range []struct{ field, id string }{
+		{"desired_build", req.DesiredBuild},
+		{"previous_build", req.PreviousBuild},
+	} {
+		if member.id == "" {
+			continue
+		}
+		rec, err := s.store.GetModelRegistryRecord(member.id)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to get alias member"))
+			return
+		}
+		if rec == nil {
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
-				"previous_build "+req.PreviousBuild+" is not a registered model", withParam("previous_build")))
+				member.field+" "+member.id+" is not a registered model", withParam(member.field)))
 			return
 		}
 	}
@@ -182,17 +200,6 @@ const maxAliasIDLength = 128
 // maxRetiredBuilds bounds the per-alias lineage list; the oldest retirements
 // are dropped first once a (pathologically) churned alias exceeds it.
 const maxRetiredBuilds = 16
-
-// priorAlias fetches the existing alias definition, or nil when none exists
-// (or the store errored — treated as "no prior" since upsert will surface real
-// store failures itself).
-func (s *Server) priorAlias(aliasID string) *store.ModelAlias {
-	prior, found, err := s.store.GetModelAlias(aliasID)
-	if err != nil || !found {
-		return nil
-	}
-	return prior
-}
 
 // retiredBuildsAfterUpsert computes the alias's lineage after an upsert: prior
 // retired builds, plus any prior desired/previous member rotated out by the new

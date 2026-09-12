@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-11 · commit `9cf12c433`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -150,6 +150,8 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 
 `stripe_withdrawals.status` (`coordinator/api/stripe_withdraw.go`
 `handleStripeWithdraw`): `pending` → `transferred` → `paid` \| `failed`.
+An automatic payout failure can reopen `paid` as `transferred`; see
+[Connect sweep recovery](#connect-sweep-recovery) for the ownership guard.
 Connected-account status `users.stripe_account_status`
 (`coordinator/api/stripe_payouts.go`): `""` → `pending` → `ready` \|
 `restricted` \| `rejected`. Service agreements (`coordinator/billing/stripe_regions.go`):
@@ -283,6 +285,12 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | `EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_ADMIN_EMAILS` | admin authorization for admin billing routes (`isAdminAuthorized`, `coordinator/api/release_handlers.go`) | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |
 | `MODEL_REGISTRY_PUBLISHING_KEY` | bootstrap publishing key accepted by `POST /v1/admin/models/register` (`requirePublishingAPIKey`) | [Model registry, releases and R2/CDN](configuration.md#model-registry-releases-and-r2cdn) |
 | `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS`, `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_BURST`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_RPS`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_BURST` | financial and service limiters; compiled defaults under [Constants](#constants) | [Routing, admission and TTFT](configuration.md#routing-admission-and-ttft) |
+
+### Connect sweep recovery
+
+| Transition | Policy | Citation |
+|---|---|---|
+| `paid → transferred` after an automatic sweep fails | Reopen only an unrefunded row still stamped with the failed sweep ID. A newer sweep's paid state is preserved. No ledger credit or new withdrawal is created. | `coordinator/store/stripe_sweep_failure.go` (`ReopenStripeWithdrawalAfterSweepFailure`); [billing invariants](../architecture/billing.md#invariants) |
 
 ## Global Payouts withdrawals
 

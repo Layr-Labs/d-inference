@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-06 · commit `23e6f986f`
+> Last updated: 2026-09-11 · commit `9cf12c433`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -379,6 +379,16 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
     `SumProviderEarningsByKey` excludes from the next epoch's `earned`
     (`coordinator/store/postgres_base_rewards.go`).
 
+16. **A sweep failure only reopens withdrawals still owned by that sweep.**
+    `reopenSweepBouncedRows` passes the event's sweep ID to
+    `ReopenStripeWithdrawalAfterSweepFailure`, which atomically requires
+    `paid`, not refunded, and the same stored `SweepPayoutID`. A stale snapshot
+    cannot clear a newer sweep's paid state. A successful reopen clears only
+    the sweep stamp, records its failure reason, refreshes `UpdatedAt`, and
+    returns the row to `transferred`; it moves no ledger money
+    (`coordinator/api/stripe_payouts_webhooks.go`,
+    `coordinator/store/stripe_sweep_failure.go`).
+
 ## Failure modes
 
 ### Payment-required responses
@@ -436,7 +446,7 @@ help (`coordinator/api/stripe_payouts_webhooks.go`).
 |---|---|
 | `account.updated` | `handleAccountUpdated` mirrors Stripe's view into `users.stripe_*` (`stripeStatusForAccount`: `pending`, `ready`, `restricted`, or `rejected`). Best-effort; the status endpoint re-syncs on page load. |
 | `payout.paid` | `handlePayoutTerminal(success=true)`: matched by payout id → `MarkStripeWithdrawalPaid` (no-op on an already `paid` row; a refunded/terminal row is logged for manual review, never overwritten). Unmatched → `reconcileUnmatchedPayout`: only automatic sweep payouts reconcile; they mark every `transferred` row of that connected account whose funds had become available (`stripeRecipientTransferDelay = 24 * time.Hour` for `recipient` accounts, immediate for `full`) and that has no in-flight payout of its own as `paid`. Amounts are ignored (FX-converted). |
-| `payout.failed`, `payout.canceled` | `handlePayoutTerminal(success=false)`: refund the instant fee via `CreditWithdrawableOnce(stripe_withdraw_fee:<id>)`, detach the payout id, reopen the row as `transferred` so the sweep retries. A refunded+paid row is logged for manual review. |
+| `payout.failed`, `payout.canceled` | `handlePayoutTerminal(success=false)`: refund the instant fee via `CreditWithdrawableOnce(stripe_withdraw_fee:<id>)`, detach the payout id, reopen the row as `transferred` so the sweep retries. A refunded+paid row is logged for manual review. Automatic sweep failures use `reopenSweepBouncedRows` and a guarded store transition (invariant 16) to reopen only rows still paid by that exact sweep. |
 | `transfer.reversed` | `handleTransferFailed`: refund the net principal (`stripe_withdraw:<id>`) and the fee (`stripe_withdraw_fee:<id>`) once each via `CreditWithdrawableOnce`, mark the row `failed`. |
 | anything else | acknowledged, ignored |
 

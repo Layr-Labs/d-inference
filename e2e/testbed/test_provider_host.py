@@ -250,6 +250,7 @@ class OwnedLifecycle(unittest.TestCase):
                     try:
                         os.killpg(group, signal.SIGKILL)
                     except ProcessLookupError:
+                        # The group may already be gone after the owner's cleanup.
                         pass
                 if owner.poll() is None:
                     owner.terminate()

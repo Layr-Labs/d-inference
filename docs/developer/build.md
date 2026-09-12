@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-11 · commit `31e63a9d9`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -125,6 +125,9 @@ production prompt vectors against a Linux sidecar binary (CI job "Prompt
 Sidecar Tests").
 
 ### 5. Provider CLI (Swift) with source-matched metallib
+
+Config-mutation test builds use the same CLI helpers with migration disabled
+for temporary fixtures; see [the provider test procedure](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib).
 
 ```bash
 make provider-build

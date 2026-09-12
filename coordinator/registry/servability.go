@@ -1,6 +1,9 @@
 package registry
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // Servability prediction.
 //
@@ -395,15 +398,18 @@ func providerBudgetFits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int
 	if !known {
 		return true, false
 	}
-	prompt := reqPromptTokens
-	if prompt < 0 {
-		prompt = 0
+	return budget >= 0 && servableRequestTokens(reqPromptTokens, reqMaxTokens) <= uint64(budget), true
+}
+
+// servableRequestTokens shares the request-size normalization used by live
+// provider fit and structural fleet prediction. Two nonnegative int values fit
+// in uint64 even when their sum cannot be represented by int, so an enormous
+// request cannot wrap below a known budget or context ceiling.
+func servableRequestTokens(prompt, output int) uint64 {
+	if output <= 0 {
+		output = defaultRequestedMaxTokens
 	}
-	maxTok := reqMaxTokens
-	if maxTok <= 0 {
-		maxTok = defaultRequestedMaxTokens
-	}
-	return int64(prompt)+int64(maxTok) <= budget, true
+	return uint64(max(prompt, 0)) + uint64(output)
 }
 
 // PredictServable reports whether the fleet can structurally serve a request of
@@ -422,34 +428,22 @@ func providerBudgetFits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int
 // contextPromptTokens == estimatedPromptTokens; a value below the raw estimate is
 // floored to it (calibration only scales up).
 func (r *Registry) PredictServable(model string, estimatedPromptTokens, contextPromptTokens, requestedMaxTokens, contextLimit int, traits RequestTraits, requiresVision bool, allowedSerials ...string) ServabilityVerdict {
-	reqPrompt := estimatedPromptTokens
-	if reqPrompt < 0 {
-		reqPrompt = 0
-	}
-	reqContextPrompt := contextPromptTokens
-	if reqContextPrompt < reqPrompt {
-		reqContextPrompt = reqPrompt
-	}
-	reqMax := requestedMaxTokens
-	if reqMax <= 0 {
-		reqMax = defaultRequestedMaxTokens
-	}
-	budgetRequestTokens := reqPrompt + reqMax
-	contextRequestTokens := reqContextPrompt + reqMax
+	budgetRequestTokens := servableRequestTokens(estimatedPromptTokens, requestedMaxTokens)
+	contextRequestTokens := servableRequestTokens(max(contextPromptTokens, estimatedPromptTokens), requestedMaxTokens)
 
 	verdict := ServabilityVerdict{
 		Servable:      true,
-		RequestTokens: budgetRequestTokens,
+		RequestTokens: int(min(budgetRequestTokens, uint64(math.MaxInt))),
 		ContextLimit:  contextLimit,
 	}
 
 	// Tier 1: context window. Model-level and provider-agnostic. Exceeding the
 	// model's context is a guaranteed failure on every provider. Uses the
 	// (possibly calibrated) context-prompt count.
-	if contextLimit > 0 && contextRequestTokens > contextLimit {
+	if contextLimit > 0 && contextRequestTokens > uint64(contextLimit) {
 		verdict.Servable = false
 		verdict.Reason = ServabilityContextExceeded
-		verdict.RequestTokens = contextRequestTokens
+		verdict.RequestTokens = int(min(contextRequestTokens, uint64(math.MaxInt)))
 		return verdict
 	}
 
@@ -518,7 +512,7 @@ func (r *Registry) PredictServable(model string, estimatedPromptTokens, contextP
 	// all-zero-budget fleet would fail open and dispatch into a guaranteed
 	// provider-side token/KV rejection. Any unknown budget, or zero eligible
 	// providers (a different rejection path owns that), still fails open.
-	if providerCount > 0 && !sawUnknown && int64(budgetRequestTokens) > fleetMax {
+	if providerCount > 0 && !sawUnknown && budgetRequestTokens > uint64(fleetMax) {
 		verdict.Servable = false
 		verdict.Reason = ServabilityPromptTooLong
 		return verdict

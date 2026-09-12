@@ -16,8 +16,12 @@ import "strings"
 // the coordinator entrypoint to read EIGENINFERENCE_DEDICATED_MODELS. An empty
 // or all-blank input yields a nil slice (feature disabled).
 func ParseDedicatedModels(csv string) []string {
+	return normalizeDedicatedModels(strings.Split(csv, ","))
+}
+
+func normalizeDedicatedModels(patterns []string) []string {
 	var out []string
-	for _, p := range strings.Split(csv, ",") {
+	for _, p := range patterns {
 		p = strings.ToLower(strings.TrimSpace(p))
 		if p == "" {
 			continue
@@ -32,20 +36,9 @@ func ParseDedicatedModels(csv string) []string {
 // empty (or all-blank) list disables the feature. Called once at startup before
 // the coordinator begins serving.
 func (r *Registry) SetDedicatedModels(patterns []string) {
-	normalized := make([]string, 0, len(patterns))
-	for _, p := range patterns {
-		p = strings.ToLower(strings.TrimSpace(p))
-		if p == "" {
-			continue
-		}
-		normalized = append(normalized, p)
-	}
+	normalized := normalizeDedicatedModels(patterns)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(normalized) == 0 {
-		r.dedicatedModels = nil
-		return
-	}
 	r.dedicatedModels = normalized
 }
 

@@ -480,8 +480,8 @@ func qwen38SuiteConfig(cfg qwen38E2EConfig) testbed.SuiteConfig {
 func qwen38ExpectedBuiltKVBackend(requested string) (string, error) {
 	switch requested {
 	case "", testbed.KVBackendAuto:
-		// The provider's production .auto selection resolves contiguous.
-		return testbed.KVBackendContiguous, nil
+		// This fixture uses the exact qualified Qwen3.8 catalog ID.
+		return testbed.KVBackendPaged, nil
 	case testbed.KVBackendPaged, testbed.KVBackendContiguous:
 		return requested, nil
 	default:
@@ -491,8 +491,8 @@ func qwen38ExpectedBuiltKVBackend(requested string) (string, error) {
 
 func TestQwen38ExpectedBuiltKVBackend(t *testing.T) {
 	for requested, want := range map[string]string{
-		"":                          testbed.KVBackendContiguous,
-		testbed.KVBackendAuto:       testbed.KVBackendContiguous,
+		"":                          testbed.KVBackendPaged,
+		testbed.KVBackendAuto:       testbed.KVBackendPaged,
 		testbed.KVBackendContiguous: testbed.KVBackendContiguous,
 		testbed.KVBackendPaged:      testbed.KVBackendPaged,
 	} {

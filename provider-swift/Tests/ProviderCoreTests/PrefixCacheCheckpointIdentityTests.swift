@@ -6,6 +6,17 @@ import Testing
 
 @Suite("Complete checkpoint identity")
 struct PrefixCacheCheckpointIdentityTests {
+    @Test("v3 and v4 prompt contracts cannot share a checkpoint namespace")
+    func rendererUpgradeSeparatesCheckpointNamespace() throws {
+        let previous = try #require(identity(prompt: "5ad939859eefd380ecd155fcc74e4d03a39d3284251dad0304bd1cf695a7e16b"))
+        let current = try #require(identity(prompt: "6222caeeacbe4822577b6ce9aa5de8d72f5d9042bcf9139c575a1faa73c2db1b"))
+        #expect(previous != current)
+        #expect(SSDHybridCheckpointStoreFactory.namespace(modelId: "nemotron", identity: previous,
+            backendLayout: CBv2CompleteCheckpointManifest.historicalAttentionLayout)
+            != SSDHybridCheckpointStoreFactory.namespace(modelId: "nemotron", identity: current,
+                backendLayout: CBv2CompleteCheckpointManifest.historicalAttentionLayout))
+    }
+
     private func identity(
         model: String? = String(repeating: "a", count: 64),
         prompt: String? = String(repeating: "b", count: 64),

@@ -44,6 +44,9 @@ pub fn normalize(
     let requires_tool_call = apply_tool_choice_policy(&body, &mut messages, &mut tools)?;
     messages = sanitize_array(messages);
     tools = tools.map(sanitize_array);
+    if !model_type.is_some_and(|value| value.trim().eq_ignore_ascii_case("nemotron_h")) {
+        tools = tools.map(drop_nemotron_only_tool_metadata);
+    }
     if crate::leading_system::qwen_applies(&model_id, model_type)
         || is_harmony(Some(&model_id), model_type)
     {
@@ -111,6 +114,19 @@ pub fn normalize(
         body: Value::Object(normalized_body),
         prompt_date,
     })
+}
+
+fn drop_nemotron_only_tool_metadata(mut tools: Vec<Value>) -> Vec<Value> {
+    for tool in &mut tools {
+        if let Some(function) = tool
+            .as_object_mut()
+            .and_then(|tool| tool.get_mut("function"))
+            .and_then(Value::as_object_mut)
+        {
+            function.remove("strict");
+        }
+    }
+    tools
 }
 
 fn template_additional_context(
@@ -328,8 +344,19 @@ fn top_level_function_definition(
         }
         Some(_) => return Err(NormalizeError::InvalidTools),
     }
-    if let Some(parameters) = tool.get("parameters").or_else(|| tool.get("input_schema")) {
+    if let Some(parameters) = tool
+        .get("parameters")
+        .filter(|value| !value.is_null())
+        .or_else(|| tool.get("input_schema"))
+    {
         function.insert("parameters".into(), parameters.clone());
+    }
+    match tool.get("strict") {
+        None | Some(Value::Null) => {}
+        Some(Value::Bool(value)) => {
+            function.insert("strict".into(), Value::Bool(*value));
+        }
+        Some(_) => return Err(NormalizeError::InvalidTools),
     }
     Ok(function)
 }
@@ -345,7 +372,22 @@ fn validate_function_definition(
         None | Some(Value::Null | Value::String(_)) => {}
         Some(_) => return Err(NormalizeError::InvalidTools),
     }
-    Ok(function.clone())
+    match function.get("strict") {
+        None | Some(Value::Null | Value::Bool(_)) => {}
+        Some(_) => return Err(NormalizeError::InvalidTools),
+    }
+    // Mirror OpenAIFunctionDefinition rather than rendering metadata its
+    // typed provider decoder discards.
+    Ok(function
+        .iter()
+        .filter(|(key, _)| {
+            matches!(
+                key.as_str(),
+                "name" | "description" | "parameters" | "strict"
+            )
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect())
 }
 
 fn normalize_legacy_function_calls(body: &mut Map<String, Value>) -> Result<(), NormalizeError> {
@@ -2011,6 +2053,31 @@ mod tests {
             "parallel_tool_calls":"false"
         });
         assert!(normalize(malformed.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+    }
+
+    #[test]
+    fn strict_tool_metadata_is_scoped_to_nemotron() {
+        let body = json!({
+            "model":"fixture",
+            "messages":[{"role":"user","content":"weather"}],
+            "tools":[{"type":"function","function":{
+                "name":"get_weather", "strict":true,
+                "parameters":{"type":"object"}
+            }}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let nemotron = normalize(body.clone(), Some("nemotron_h")).unwrap();
+        assert_eq!(nemotron.tools.unwrap()[0]["function"]["strict"], true);
+        for model_type in ["qwen3_5", "gemma4_text", "gpt_oss"] {
+            let normalized = normalize(body.clone(), Some(model_type)).unwrap();
+            assert!(
+                normalized.tools.unwrap()[0]["function"]
+                    .get("strict")
+                    .is_none()
+            );
+        }
     }
 
     #[test]

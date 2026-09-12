@@ -22,7 +22,7 @@
           "sha256": "0303030303030303030303030303030303030303030303030303030303030303"
         }
       ],
-      "expected_prompt_contract_id": "5ad939859eefd380ecd155fcc74e4d03a39d3284251dad0304bd1cf695a7e16b",
+      "expected_prompt_contract_id": "6222caeeacbe4822577b6ce9aa5de8d72f5d9042bcf9139c575a1faa73c2db1b",
       "name": "sorted-manifest-artifacts"
     }
   ]

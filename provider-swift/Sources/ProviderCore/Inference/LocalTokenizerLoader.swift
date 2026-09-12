@@ -20,6 +20,8 @@ public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
 
     public func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
         let upstream = try await AutoTokenizer.from(modelFolder: directory)
+        let modelType = ModelScanner.parseConfigJSON(
+            at: directory.appendingPathComponent("config.json")).modelType
         let templateURL = directory.appendingPathComponent("chat_template.jinja")
         let chatTemplate: String?
         if FileManager.default.fileExists(atPath: templateURL.path) {
@@ -27,7 +29,8 @@ public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
         } else {
             chatTemplate = nil
         }
-        return LocalTokenizerBridge(upstream, chatTemplate: chatTemplate)
+        return LocalTokenizerBridge(
+            upstream, chatTemplate: chatTemplate, modelType: modelType)
     }
 }
 
@@ -39,10 +42,15 @@ public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
 private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer {
     private let upstream: any Tokenizers.Tokenizer
     private let chatTemplate: String?
+    private let modelType: String?
 
-    init(_ upstream: any Tokenizers.Tokenizer, chatTemplate: String?) {
+    init(_ upstream: any Tokenizers.Tokenizer, chatTemplate: String?, modelType: String?) {
         self.upstream = upstream
-        self.chatTemplate = chatTemplate.map(normalizeSwiftJinjaTemplate)
+        self.chatTemplate = chatTemplate.map {
+            NemotronTemplateFilters.bindingFilters(
+                in: normalizeSwiftJinjaTemplate($0), modelType: modelType)
+        }
+        self.modelType = modelType
     }
 
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
@@ -70,6 +78,10 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer 
         tools: [[String: any Sendable]]?,
         additionalContext: [String: any Sendable]?
     ) throws -> [Int] {
+        var effectiveContext = additionalContext ?? [:]
+        if let filters = NemotronTemplateFilters.additionalContext(modelType: modelType) {
+            effectiveContext.merge(filters) { _, referenceFilter in referenceFilter }
+        }
         do {
             if let chatTemplate {
                 return try upstream.applyChatTemplate(
@@ -79,13 +91,13 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer 
                     truncation: false,
                     maxLength: nil,
                     tools: tools,
-                    additionalContext: additionalContext
+                    additionalContext: effectiveContext.isEmpty ? nil : effectiveContext
                 )
             }
             return try upstream.applyChatTemplate(
                 messages: messages,
                 tools: tools,
-                additionalContext: additionalContext
+                additionalContext: effectiveContext.isEmpty ? nil : effectiveContext
             )
         } catch Tokenizers.TokenizerError.missingChatTemplate {
             throw MLXLMCommon.TokenizerError.missingChatTemplate

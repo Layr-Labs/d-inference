@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-11 · commit `720e3b7a1`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -40,6 +40,12 @@ responses and error codes are unchanged.
 | `fin` | Financial tier: the stricter limiter installed by `SetFinancialRateLimiter`, applied to every account regardless of role; same 429 shape | `rateLimitFinancial` |
 
 Both tiers set `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `x-ratelimit-reset-requests` on allowed *and* rejected responses (`setRequestRateLimitHeaders`). Limiter `Retry-After` values are clamped to `[DefaultRetryAfter, maxRetryAfter]` ([Timeouts and constants](#timeouts-and-constants)).
+
+Inference token-quota checks and charges are serialized per account across
+key and account buckets by `admitTokenBuckets`
+(`coordinator/api/token_admission.go`). A rejected charge consumes no tokens;
+429 responses keep their existing tier, dimension and `Retry-After` fields.
+The mechanism is described in the [consumer invariants](../architecture/components/consumer.md#invariants).
 
 ## Routes
 

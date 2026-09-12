@@ -1,6 +1,6 @@
 # Consumer surface
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-11 · commit `720e3b7a1`
 
 The consumer surface is the coordinator's OpenAI- and Anthropic-compatible request pipeline: it speaks OpenAI Chat Completions, OpenAI Responses, Anthropic Messages and legacy Completions to clients and turns each request into one provider job through a single pipeline in `handleChatCompletions` (`coordinator/api/consumer.go`), with an endpoint-specific lowering step before it and a re-shaping step after it. This page is for engineers changing or debugging that pipeline: it explains what "compatible" means concretely, walks the stages, and lists the invariants and failure modes that follow. The exact routes, headers, and JSON shapes are in [`../../reference/api-contracts.md`](../../reference/api-contracts.md).
 
@@ -34,7 +34,7 @@ Stages in the order `handleChatCompletions` runs them. Each stage either advance
 | 5 | Model resolve: alias → build under the request's constraints; unresolvable → unavailable | `resolveRequestedModel` → `registry.ResolveModelConstrainedWithTraits` | 503 `model_unavailable` |
 | 6 | Vision/tool fail-fast and remote-media gate | `visionToolsFailFast`, `gateRemoteMediaPreDispatch` | 400, 503 `model_unavailable` |
 | 7 | Bounds and deadline: clamp `max_tokens`, compute the first-content deadline, shed if the model is rejecting | `ensureMaxTokensBound`, `FirstContentDeadline`, `shedIfModelRejected` | 429 with `Retry-After` |
-| 8 | Token-rate admission (input/output tokens per minute) | `applyTokenRateLimitWithAdmission` (`coordinator/api/server.go`) | 429 with `Retry-After` |
+| 8 | Token-rate admission (input/output tokens per minute) | `applyTokenRateLimitWithAdmission` (`coordinator/api/server.go`) → `admitTokenBuckets` (`coordinator/api/token_admission.go`) | 429 with `Retry-After` |
 | 9 | Reserve balance for the worst-case cost | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`) | 402 (`error.type` and `code` per [`billing.md`](../billing.md#payment-required-responses)) |
 | 10 | Fetch remote media (billed as media, after the reservation) | `resolveRemoteMedia` | 400 |
 | 11 | Capacity admission: can any eligible provider take this prompt now? | `runInferenceAdmission` | 429, 503, 413 `payload_too_large` |
@@ -54,6 +54,8 @@ Provider-side execution between stages 13 and 14 — the WebSocket `inference_re
 5. **No keepalives.** Silence on a stream means no token has been produced; the first-content deadline bounds it before commit (a miss is a 429 with `Retry-After`) and [`inferenceTimeout`](../../reference/api-contracts.md#timeouts-and-constants) between chunks after (a terminal `error` event).
 6. **Providers never see the caller.** They receive an encrypted job carrying the build id and the prompt, not the API key or account.
 7. **A departed client cancels the job.** Client disconnect before commit is recorded as 499 and sends `cancel` to the provider (`emitClientGone`, `sendProviderCancel`).
+
+8. **Concurrent token admissions share one account transaction.** `admitTokenBuckets` checks the key and account input/output buckets before charging any of them, under a bounded account-sharded lock. `debitAdmissionOutput` uses the same lock for extra output-token debt. `CheckN` and `CheckNWithRate` calculate availability and retry hints without consuming tokens; HTTP errors and headers are written after releasing the transaction lock (`coordinator/api/token_admission.go`, `coordinator/ratelimit/bucket_check.go`).
 
 ## Failure modes
 

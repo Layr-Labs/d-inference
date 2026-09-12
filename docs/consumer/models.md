@@ -1,6 +1,6 @@
 # Models reference
 
-> Last updated: 2026-09-11 · commit `49b62bfe6`
+> Last updated: 2026-09-12 · commit `8d8d9b505`
 
 Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
@@ -42,7 +42,7 @@ What is listed (`listModelEntries`, `aliasModelEntries`):
 | `description` | string | From the registry entry | |
 | `input_modalities` | string[] | `["text"]` plus `"image"`, `"audio"`, `"video"` when the build's capabilities include them; embedding models report `["text"]` → `["embedding"]` | `deriveModalities` (`coordinator/api/openrouter_models.go`) |
 | `output_modalities` | string[] | `["text"]` (or `["embedding"]`) | `deriveModalities` |
-| `quantization` | string | Quantization of a concrete build; empty on alias entries because an alias spans quants | `mapQuantizationToOpenRouter` |
+| `quantization` | string | Quantization of a concrete build; empty on alias entries because an alias spans quants. Decorated labels use the longest recognized spelling, then its first occurrence: `bfloat16-gs64` maps to `bf16`. Unrecognized labels are omitted. | `mapQuantizationToOpenRouter` (`coordinator/api/openrouter_models.go`) |
 | `context_length` | int | Maximum prompt+completion context of the primary build | registry `MaxContextLength` |
 | `max_output_length` | int | Maximum completion length; `max_tokens` above it is clamped at request time (`ensureMaxTokensBound`, `coordinator/api/consumer.go`) | registry `MaxOutputLength` |
 | `pricing` | object | `prompt`, `completion`, `image`, `request`, `input_cache_read` — USD per unit as decimal strings, from the platform price table | `buildModelPricing`, `resolvePlatformPricing`; see [`../reference/pricing-model.md`](../reference/pricing-model.md) |

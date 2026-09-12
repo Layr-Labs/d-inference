@@ -26,6 +26,7 @@ package api
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"strings"
 
@@ -540,18 +541,22 @@ func requestHasTools(parsed map[string]any) bool {
 }
 
 func estimateRequestedMaxTokens(parsed map[string]any) int {
+	maxTokens := 256
 	for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
 		if n, ok := intFromRequestValue(parsed[key]); ok && n > 0 {
-			if copies, ok := intFromRequestValue(parsed["n"]); ok && copies > 1 {
-				return n * copies
-			}
-			return n
+			maxTokens = n
+			break
 		}
 	}
 	if copies, ok := intFromRequestValue(parsed["n"]); ok && copies > 1 {
-		return 256 * copies
+		// An overflowing estimate must stay conservative for token quotas,
+		// reservations and routing, never wrap into a smaller request.
+		if maxTokens > math.MaxInt/copies {
+			return math.MaxInt
+		}
+		return maxTokens * copies
 	}
-	return 256
+	return maxTokens
 }
 
 // stripProviderRoutingFields drops the retired consumer-side serial allowlist.

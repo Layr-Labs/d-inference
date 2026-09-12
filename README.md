@@ -326,7 +326,7 @@ The coordinator and provider share WebSocket message types that must stay in syn
 # Run these commands from the repository root.
 # Coordinator (Go)
 go test ./coordinator/...
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o coordinator-linux ./coordinator/cmd/coordinator   # container build
+make coordinator-build-linux                  # → coordinator/coordinator-linux
 
 # Provider (Swift) — depends on libs/mlx-swift and libs/mlx-swift-lm submodules
 (cd provider-swift && swift test)

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `31e63a9d9`
+> Last updated: 2026-09-12 · commit `69265d97c`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -198,6 +198,25 @@ The mixed-mutation fixture checks both explicit pins and unrelated legacy
 settings. Run these with `RuntimeSnapshotConfigTests` when changing
 `provider-swift/Sources/darkbloom/ConfigMutation.swift` (`withMutableConfig`).
 CLI calls retain default-on migration before the sidecar lock and reload.
+
+`HiddenFileSkippingTest` includes hidden allowlisted weights and configuration,
+so removing hidden-entry skipping changes the manifest. `TemplateRenderCheckTests`
+uses templates that reject an incorrect BOS value for both tokenizer-config
+forms and require the empty default when the config is absent.
+`storeRejectsTamperedMetadata` in
+`provider-swift/Tests/ProviderCoreTests/KVCache/EncryptedKVStoreTests.swift`
+keeps changed metadata valid JSON and requires a `KVCacheKEKError` from the
+authenticated read; it separately retains malformed-metadata rejection.
+Run these after building and staging the test product as described below:
+
+```bash
+cd provider-swift
+swift test --skip-build --no-parallel \
+  --filter 'HiddenFileSkippingTest|TemplateRenderCheckTests|storeRejectsTamperedMetadata'
+```
+
+These fixtures use temporary files and an in-memory KEK. They do not exercise
+model inference or a hardware-backed encryption key.
 
 The general provider suite passes `--no-parallel` explicitly to Swift Testing.
 Unrelated cases share process-wide MLX state and executor capacity; overlapping

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-11 · commit `31e63a9d9`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -189,6 +189,15 @@ production prompt vectors against it with
 
 CI also applies the [restored-resource cleanup](build.md#restored-swiftpm-runtime-resources)
 before building the debug test product.
+
+`BetaCommandTests` and `IdleCommandTests` pass `migrateOnDisk: false` through
+`setBetaFeature` and `setIdleUnloadMinutes` to the existing runtime-snapshot
+loader. Their unique temporary config directories are the only mutation and
+cleanup targets; they never create or remove the operator's canonical config.
+The mixed-mutation fixture checks both explicit pins and unrelated legacy
+settings. Run these with `RuntimeSnapshotConfigTests` when changing
+`provider-swift/Sources/darkbloom/ConfigMutation.swift` (`withMutableConfig`).
+CLI calls retain default-on migration before the sidecar lock and reload.
 
 The general provider suite passes `--no-parallel` explicitly to Swift Testing.
 Unrelated cases share process-wide MLX state and executor capacity; overlapping

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-11 · commit `223f4cb25`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -922,6 +922,13 @@ node --test landing/earn-calculator-core.test.js
 ```
 
 ### 6. Scripts and release integrity
+
+`python3 scripts/test_cache_soak_monitor.py` runs the actual Bash observer with
+owned log, process and sampling stubs. It checks that INT/TERM stop sampling and
+clean up once, split log lines are counted after completion, and successive
+windows preserve marker counts and the latest hit rate. This runs in Release
+Integrity CI and makes no provider or system-log request. See
+[cache rollout observation](../operations/cache-routing-rollout.md#provider-soak-observation).
 
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)

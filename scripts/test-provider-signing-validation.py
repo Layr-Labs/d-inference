@@ -19,6 +19,43 @@ SPEC.loader.exec_module(VALIDATION)
 
 
 class SigningValidationTests(unittest.TestCase):
+    def test_signing_keychain_preserves_search_paths_with_spaces_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            keychain = Path(temporary, "signing validation.keychain-db")
+            keychain.touch()
+            path = str(keychain.resolve())
+            login = "/Users/runner/Library/Keychains/login keychain-db"
+            identity = "Developer ID Application: Example (TESTTEAM)"
+            arguments = argparse.Namespace(keychain=keychain, identity=identity)
+            for already_present in [False, True]:
+                with self.subTest(already_present=already_present):
+                    paths = [path, login] if already_present else [login]
+                    listing = "\n".join(json.dumps(value) for value in paths)
+                    with mock.patch.object(VALIDATION.subprocess, "check_output", side_effect=[
+                            listing, '1) ' + 'a' * 40 + ' "' + identity + '"\n1 valid identities found']), \
+                            mock.patch.object(VALIDATION.subprocess, "run") as run, \
+                            mock.patch("builtins.print"):
+                        VALIDATION.configure_keychain(arguments)
+                    if already_present:
+                        run.assert_not_called()
+                    else:
+                        run.assert_called_once_with(
+                            ["security", "list-keychains", "-d", "user", "-s", path, login], check=True)
+
+    def test_signing_keychain_refuses_missing_or_wrong_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            keychain = Path(temporary, "signing.keychain-db")
+            keychain.touch()
+            for identities in ["0 valid identities found", '1) abc "Developer ID Application: Other"']:
+                with self.subTest(identities=identities), \
+                        mock.patch.object(VALIDATION.subprocess, "check_output", side_effect=[
+                            json.dumps(str(keychain.resolve())), identities]), \
+                        mock.patch.object(VALIDATION.subprocess, "run") as run:
+                    with self.assertRaisesRegex(ValueError, "identity is unavailable"):
+                        VALIDATION.configure_keychain(argparse.Namespace(
+                            keychain=keychain, identity="Developer ID Application: Expected"))
+                    run.assert_not_called()
+
     def test_workflow_has_no_environment_or_publication_route(self):
         workflow = (ROOT / ".github/workflows/provider-signing-validation.yml").read_text()
         self.assertNotRegex(workflow, r"(?m)^\s+environment:")

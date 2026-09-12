@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-12 · commit `d5c07ea67`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -88,6 +88,8 @@ CI checks formatting of tracked Go source while preserving frozen report
 evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).
 The [provider config cleanup tests](test.md#provider-config-cleanup) run with
 temporary home directories and need no provider build or model.
+The speculative terminal-order regressions also use only the Go coordinator
+and isolated in-memory providers; see [coordinator checks](test.md#2-coordinator-go).
 
 ```bash
 make coordinator-build            # cd coordinator && go build ./cmd/coordinator

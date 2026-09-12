@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased coordinator fixes
+
+- Keep a healthy speculative attempt running when the other provider fails before content. Closed chunk streams inspect their queued error before cancelling the other attempt, so the primary or backup can still complete within the original first-content budget.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

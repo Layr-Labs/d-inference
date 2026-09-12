@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-12 · commit `bbe228bad`
+> Last updated: 2026-09-12 · commit `9a1fab617`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -471,6 +471,13 @@ ls -l provider-swift/.build/debug/darkbloom provider-swift/.build/debug/mlx.meta
 ls console-ui/.next
 ```
 
+### Harness assertion checks
+
+The latency and accounting report helpers compile and run with Go alone:
+`go test -race ./e2e/testbed/assert -count=1`. These CPU fixtures use synthetic
+latency samples and stub query rows; they do not build a provider or require a
+Postgres server. See [test.md](test.md#harness-assertion-contracts) for their scope.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -494,10 +501,3 @@ Candidate native prefix-cache benchmarks must build ProviderCore and
 prompt SPI carries production sampling parameters into each engine request.
 See [native benchmark validation](test.md#resident-prefix-benchmark-validation)
 for sampling scope, regression filters and diagnostic restrictions.
-
-## Harness assertion checks
-
-The latency and accounting report helpers compile and run with Go alone:
-`go test -race ./e2e/testbed/assert -count=1`. These CPU fixtures use synthetic
-latency samples and stub query rows; they do not build a provider or require a
-Postgres server. See [test.md](test.md#harness-assertion-contracts) for their scope.

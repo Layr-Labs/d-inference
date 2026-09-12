@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-12 · commit `ccd1c0162`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -494,3 +494,7 @@ Candidate native prefix-cache benchmarks must build ProviderCore and
 prompt SPI carries production sampling parameters into each engine request.
 See [native benchmark validation](test.md#resident-prefix-benchmark-validation)
 for sampling scope, regression filters and diagnostic restrictions.
+
+Integration fixture identities differ from the exact release catalog IDs. See
+[the E2E defaults and cache lanes](test.md#8-end-to-end-suite) before interpreting
+a contiguous HF-fixture smoke as release backend/cache qualification.

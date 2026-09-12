@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-11 · commit `ef7b5a9aa`
+> Last updated: 2026-09-11 · commit `fa6d62dcd`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -253,9 +253,11 @@ Throughput anomaly detector:
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_THROUGHPUT_ANOMALY_INTERVAL` | Go duration > 0 | `5m` | `coordinator/api/throughput_anomaly.go` (`StartThroughputAnomalyDetector`) | Sweep cadence comparing observed decode rate to expectation per (model, chip class). |
-| `EIGENINFERENCE_THROUGHPUT_ANOMALY_RATIO` | float > 0 | `0.35` | `coordinator/api/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Observed/expected ratio below which a bucket is anomalous. |
+| `EIGENINFERENCE_THROUGHPUT_ANOMALY_RATIO` | finite float > 0 | `0.35` | `coordinator/api/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Observed/expected ratio below which a bucket is anomalous. |
 | `EIGENINFERENCE_THROUGHPUT_ANOMALY_MIN_SAMPLES` | integer > 0 | `3` | `coordinator/api/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Providers required in a bucket before it is judged. |
-| `EIGENINFERENCE_THROUGHPUT_ANOMALY_EFFICIENCY` | float > 0 | `0.80` | `coordinator/api/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Expected decode efficiency relative to the chip's theoretical rate. |
+| `EIGENINFERENCE_THROUGHPUT_ANOMALY_EFFICIENCY` | finite float > 0 | `0.80` | `coordinator/api/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Expected decode efficiency relative to the chip's theoretical rate. |
+
+Invalid throughput-detector overrides, including `NaN` and infinity, retain the field's default; startup logs report the resulting settings (`coordinator/api/throughput_anomaly.go`, `throughputAnomalyConfigFromEnv`).
 
 ### Billing, Stripe and base rewards
 

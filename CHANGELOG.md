@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Throughput anomaly validation** — Keep default detector thresholds when overrides are non-finite, and skip invalid observations or unusable expected rates so they cannot produce misleading anomaly reports. Existing valid thresholds, model classes and routing policy remain unchanged.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-12 · commit `1bfb5d65e`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -76,6 +76,10 @@ Continue with the per-component steps when you need one piece or want to
 understand what `make` runs.
 
 ### 3. Coordinator (Go)
+
+PostgreSQL model-price operations live in `coordinator/store/postgres_model_prices.go`
+and build with the coordinator target. Their [cache regression tests](test.md#2-coordinator-go)
+use the standard disposable PostgreSQL test database.
 
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only

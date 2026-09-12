@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — model price lookup consistency
+
+- Clear cached prices after a successful local update or deletion, and prevent delayed lookups from restoring the prior rate. Keep existing in-flight work and other coordinator processes' normal cache lifetimes.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

@@ -40,6 +40,22 @@ func TestContractIDIsOrderIndependentAndSemanticallyBound(t *testing.T) {
 	}
 }
 
+func TestPreviousRendererVersionsFailClosed(t *testing.T) {
+	artifacts := []Artifact{{Path: "config.json", Role: "config", SizeBytes: 1, SHA256: hex.EncodeToString(bytesOf(2))}}
+	for _, field := range []string{"normalization", "renderer", "both"} {
+		old := CurrentVersions()
+		if field != "renderer" {
+			old.Normalization = "darkbloom-request-normalization-v3"
+		}
+		if field != "normalization" {
+			old.Renderer = "swift-jinja-request-date-compatible-v3"
+		}
+		if _, err := ContractID(artifacts, old); !errors.Is(err, ErrInvalidVersions) {
+			t.Fatalf("%s: previous versions accepted: %v", field, err)
+		}
+	}
+}
+
 func TestSharedBlockHashVectors(t *testing.T) {
 	type vector struct {
 		ContractID   string `json:"contract_id"`

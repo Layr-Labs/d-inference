@@ -108,6 +108,7 @@ public enum TemplateRenderCheck {
         guard !sources.isEmpty else { return nil }
 
         let includeMultimodal = configDeclaresVision(at: snapshotDir)
+        let modelType = configModelType(at: snapshotDir)
         let fixtures = canonicalFixtures(includeMultimodal: includeMultimodal)
         let specialTokens = specialTokenContext(at: snapshotDir)
 
@@ -117,7 +118,8 @@ public enum TemplateRenderCheck {
             let template: Template
             do {
                 template = try Template(
-                    normalizeSwiftJinjaTemplate(source),
+                    NemotronTemplateFilters.bindingFilters(
+                        in: normalizeSwiftJinjaTemplate(source), modelType: modelType),
                     with: .init(lstripBlocks: true, trimBlocks: true))
             } catch {
                 // A template that doesn't compile can't render at request time.
@@ -126,7 +128,9 @@ public enum TemplateRenderCheck {
             for fixture in fixtures {
                 do {
                     let context = try renderContext(for: fixture, specialTokens: specialTokens)
-                    _ = try template.render(context)
+                    let environment = Environment()
+                    NemotronTemplateFilters.install(in: environment, modelType: modelType)
+                    _ = try template.render(context, environment: environment)
                 } catch {
                     return false
                 }
@@ -145,6 +149,14 @@ public enum TemplateRenderCheck {
             let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else { return false }
         return json["vision_config"] != nil
+    }
+
+    static func configModelType(at snapshotDir: URL) -> String? {
+        let configURL = snapshotDir.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configURL),
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return nil }
+        return json["model_type"] as? String
     }
 
     // MARK: - Render context

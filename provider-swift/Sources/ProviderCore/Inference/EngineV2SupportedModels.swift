@@ -34,11 +34,18 @@ public enum EngineV2SupportedModels {
     public static let nemotron35LightningMTPModelID =
         "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp"
     public static let nemotron35LightningRegistryModelID = "nvidia-nemotron-3.5-lightning"
+    /// Concrete build ids behind the public `nvidia-nemotron-3.5-lightning`
+    /// name during the mixed-precision rollout (takeover alias): the
+    /// Mamba/attention-Q8 build and the pre-positioned rollback copy of the
+    /// 4-bit build. Both carry the same checkpoint contract as the listing.
+    public static let nemotron35LightningHybrid8BuildID = "nvidia-nemotron-3.5-lightning-hybrid8"
+    public static let nemotron35LightningRollback4bitBuildID = "nvidia-nemotron-3.5-lightning-4bit-r1"
 
     public static func isNemotron35ListingModelID(_ modelID: String?) -> Bool {
         switch modelID {
         case nemotron35LightningModelID, nemotron35LightningMTPModelID,
-            nemotron35LightningRegistryModelID:
+            nemotron35LightningRegistryModelID,
+            nemotron35LightningHybrid8BuildID, nemotron35LightningRollback4bitBuildID:
             return true
         default:
             return false

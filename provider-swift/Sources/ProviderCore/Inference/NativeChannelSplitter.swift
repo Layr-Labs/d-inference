@@ -4,6 +4,11 @@ import MLXLMServer
 /// Bounded native think-channel lexer. Tool frames are opaque argument data:
 /// reasoning markers within them are never interpreted as channel controls.
 /// Conversely, tool frames inside reasoning remain reasoning, not invocations.
+///
+/// Content-state `</think>` handling follows the vendor-documented Nemotron
+/// parser (vLLM `nemotron_v3`, which reuses the qwen3 parser-engine config):
+/// a closing marker seen while already in content is absorbed and the text
+/// before it stays content. It is never reinterpreted as a reasoning boundary.
 struct NativeChannelSplitter {
     private enum State { case content, reasoning, tool(end: String) }
     private var state: State
@@ -30,7 +35,9 @@ struct NativeChannelSplitter {
             let reasoning: Bool
             switch state {
             case .content:
-                markers = protectToolFrames ? ["<think>", "<tool_call>", "<function="] : ["<think>"]
+                markers = protectToolFrames
+                    ? ["<think>", "</think>", "<tool_call>", "<function="]
+                    : ["<think>", "</think>"]
                 reasoning = false
             case .reasoning:
                 markers = ["</think>"]
@@ -47,7 +54,10 @@ struct NativeChannelSplitter {
                 case .content:
                     append(String(buffer[..<range.lowerBound]), reasoning: false, to: &result)
                     if marker == "<think>" { state = .reasoning }
-                    else {
+                    else if marker == "</think>" {
+                        // Stray close after a prompt-side `<think></think>` (or a
+                        // duplicate close): drop the marker, stay in content.
+                    } else {
                         append(marker, reasoning: false, to: &result)
                         state = .tool(end: marker == "<tool_call>" ? "</tool_call>" : "</function>")
                     }

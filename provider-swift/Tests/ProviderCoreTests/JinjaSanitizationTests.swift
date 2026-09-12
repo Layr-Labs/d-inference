@@ -498,4 +498,28 @@ final class JinjaSanitizationTests: XCTestCase {
         let bad = try XCTUnwrap(properties["bad"] as? [String: any Sendable])
         XCTAssertEqual(bad["properties"] as? String, "not an object")
     }
+
+    func testStrictMetadataIsScopedToNemotron() throws {
+        let raw: [[String: any Sendable]] = [[
+            "type": "function",
+            "function": [
+                "name": "get_weather",
+                "strict": true,
+                "parameters": ["type": "object"],
+            ] as [String: any Sendable],
+        ]]
+        let nemotron = try XCTUnwrap(ChatTemplateFixes.normalizeTools(
+            raw, context: .init(modelType: "nemotron_h"))?.first)
+        let nemotronFunction = try XCTUnwrap(
+            nemotron["function"] as? [String: any Sendable])
+        XCTAssertEqual(nemotronFunction["strict"] as? Bool, true)
+
+        for modelType in ["qwen3_5", "gemma4_text", "gpt_oss"] {
+            let other = try XCTUnwrap(ChatTemplateFixes.normalizeTools(
+                raw, context: .init(modelType: modelType))?.first)
+            let otherFunction = try XCTUnwrap(
+                other["function"] as? [String: any Sendable])
+            XCTAssertNil(otherFunction["strict"])
+        }
+    }
 }

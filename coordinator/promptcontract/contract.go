@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	NormalizationVersion = "darkbloom-request-normalization-v3"
-	RendererVersion      = "swift-jinja-request-date-compatible-v3"
+	NormalizationVersion = "darkbloom-request-normalization-v4"
+	RendererVersion      = "swift-jinja-request-date-compatible-v4"
 	TokenizerVersion     = "huggingface-tokenizer-json-v1"
 	BlockHashVersion     = "darkbloom-block-chain-v1"
 	BlockSize            = uint32(256)

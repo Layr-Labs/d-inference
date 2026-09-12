@@ -2,8 +2,8 @@ import Crypto
 import Foundation
 
 public enum PromptContractIdentity {
-    public static let normalizationVersion = "darkbloom-request-normalization-v3"
-    public static let rendererVersion = "swift-jinja-request-date-compatible-v3"
+    public static let normalizationVersion = "darkbloom-request-normalization-v4"
+    public static let rendererVersion = "swift-jinja-request-date-compatible-v4"
     public static let tokenizerVersion = "huggingface-tokenizer-json-v1"
     public static let blockHashVersion = "darkbloom-block-chain-v1"
     public static let blockSize: UInt32 = 256

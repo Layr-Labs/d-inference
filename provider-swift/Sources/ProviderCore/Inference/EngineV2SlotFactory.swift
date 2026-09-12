@@ -398,6 +398,13 @@ enum EngineV2SlotFactory {
             base: snapshot.eosTokenIds,
             tokenToId: { tokenizer.inner.convertTokenToId($0) }
         )
+        // Artifact sampling defaults (`generation_config.json`) for admitted
+        // families; `.legacy` (greedy) for everything else. Resolved once
+        // here, alongside the stop-token set, never per request.
+        let samplingDefaults = EngineV2SamplingDefaults.resolve(
+            modelId: modelId,
+            modelType: modelType,
+            modelDirectory: modelDirectory)
 
         // SSD offload never carves the live KV grant.
         let engineKVBytesCapacity = kvBytesCapacity
@@ -683,6 +690,7 @@ enum EngineV2SlotFactory {
             tokenizer: tokenizer,
             eosTokenIds: eosTokenIds,
             extraEOSTokens: snapshot.extraEOSTokens,
+            samplingDefaults: samplingDefaults,
             defaultMaxTokens: sizing.defaultMaxTokens,
             maxConcurrentRequests: maxConcurrentRequests,
             prefillDeadlineMode: prefillDeadlineMode,

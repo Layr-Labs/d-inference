@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Preserve function-level `strict` for Nemotron tool prompts and align the pinned Nemotron template's scalar/JSON filters with Transformers. Other model families retain their existing rendering and tool normalization. This repairs prompt fidelity, not all reasoning-off tool-selection failures in Q4.
+- Advance prompt normalization and renderer identities to v4 across provider and coordinator. This invalidates prompt-contract/cache identities for all families; regenerate sidecar contracts and allowlists together before rollout. No model weights, sampling defaults, tool-choice policy, or inference kernels change.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

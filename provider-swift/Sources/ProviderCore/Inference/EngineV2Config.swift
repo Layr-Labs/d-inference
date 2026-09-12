@@ -152,6 +152,7 @@ public enum EngineV2Factory {
         tokenizer: TokenizerHandle,
         eosTokenIds: Set<Int>,
         extraEOSTokens: [String] = [],
+        samplingDefaults: EngineV2SamplingDefaults = .legacy,
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
@@ -182,6 +183,7 @@ public enum EngineV2Factory {
                 tokenizer: tokenizer,
                 eosTokenIds: eosTokenIds,
                 extraEOSTokens: extraEOSTokens,
+                samplingDefaults: samplingDefaults,
                 defaultMaxTokens: defaultMaxTokens,
                 maxConcurrentRequests: maxConcurrentRequests,
                 prefillDeadlineMode: PrefillDeadlineMode.resolve(

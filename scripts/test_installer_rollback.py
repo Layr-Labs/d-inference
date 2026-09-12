@@ -114,7 +114,7 @@ sys.exit(subprocess.run(["/bin/mv", *sys.argv[1:]]).returncode)
 def snapshot(path):
     """Capture contents, modes and link text without following symlinks."""
     if path.is_symlink():
-        return ("link", os.readlink(path))
+        return ("link", path.lstat().st_mode & 0o777, os.readlink(path))
     if path.is_dir():
         return ("directory", path.stat().st_mode & 0o777,
                 {child.name: snapshot(child) for child in path.iterdir()})

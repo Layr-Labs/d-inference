@@ -1,6 +1,9 @@
 package api
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestCalibratedContextPromptTokens(t *testing.T) {
 	cases := []struct {
@@ -14,6 +17,7 @@ func TestCalibratedContextPromptTokens(t *testing.T) {
 		{"non_matching_family_unchanged", "gemma-4-26b-qat-4bit", 100000, 100000},
 		{"zero_unchanged", "gpt-oss-20b", 0, 0},
 		{"negative_unchanged", "gpt-oss-20b", -5, -5},
+		{"oversized_estimate_saturates", "gpt-oss-20b", math.MaxInt, math.MaxInt},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -53,8 +57,27 @@ func TestSetPromptContextCalibrationFromEnv(t *testing.T) {
 		// 0.5 < 1.0 is rejected (would under-reject), the others are malformed.
 		t.Errorf("all-invalid applied = %d, want 0", n)
 	}
+	for _, raw := range []string{"gpt-oss:NaN", "gpt-oss:+Inf", "gpt-oss:-Inf"} {
+		if n := SetPromptContextCalibrationFromEnv(raw); n != 0 {
+			t.Errorf("non-finite override %q applied %d pairs", raw, n)
+		}
+	}
+
 	// The last valid override (1.5) must still be in effect after the no-ops.
 	if got := calibratedContextPromptTokens("gpt-oss-20b", 100000); got != 150000 {
 		t.Errorf("after no-op overrides, gpt-oss = %d, want 150000 (unchanged)", got)
+	}
+
+	if n := SetPromptContextCalibrationFromEnv("gpt-oss:NaN,gemma:+Inf,qwen:1.5"); n != 1 {
+		t.Errorf("mixed override applied %d pairs, want only the finite pair", n)
+	}
+	if got := calibratedContextPromptTokens("qwen-3.5", 100); got != 150 {
+		t.Errorf("finite mixed override = %d, want 150", got)
+	}
+	if n := SetPromptContextCalibrationFromEnv("gpt-oss:1.7976931348623157e308"); n != 1 {
+		t.Fatalf("large finite multiplier rejected: %d", n)
+	}
+	if got := calibratedContextPromptTokens("gpt-oss-20b", 100); got != math.MaxInt {
+		t.Errorf("overflowed finite product = %d, want saturated %d", got, math.MaxInt)
 	}
 }

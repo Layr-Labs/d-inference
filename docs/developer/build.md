@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-11 · commit `223f4cb25`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -16,6 +16,10 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
 
 ## Prerequisites
+
+- The cache soak observer uses macOS Bash 3.2 and stock logging tools. Its
+  [offline fixtures](test.md#6-scripts-and-release-integrity) use Python and owned
+  command stubs; they require no provider build or running inference service.
 
 - **Toolchain via [`mise`](https://mise.jdx.dev/).** Every version is pinned in
   [`mise.toml`](../../mise.toml); `mise install` installs them all.

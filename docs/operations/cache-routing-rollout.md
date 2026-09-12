@@ -1,6 +1,6 @@
 # Cache-aware routing: activation, ramp and rollback
 
-> Last updated: 2026-09-11 · commit `ef7b5a9aa`
+> Last updated: 2026-09-11 · commit `223f4cb25`
 
 How to turn provider-confirmed prefix-cache routing on for the production
 coordinator, widen its activation bounds one at a time, and turn it off again.
@@ -267,6 +267,20 @@ cache-selected reported-hit subset. This remains a scheduler estimate, not a
 measured uncached comparison. Admin metrics expose the same counters and timing
 histograms. See the [metric inventory](../reference/telemetry-inventory.md#cache-results-by-model-internal).
 These breakdowns start at deployment and cannot reconstruct prior model counts.
+
+### Provider soak observation
+
+For an already running local provider soak, run `scripts/cache_soak_monitor.sh`
+on its Mac with separate output paths for the CSV, events and raw unified log.
+Use `--help` for the sampling, duration and path options. The observer starts
+only its own log capture; it does not start inference or change cache settings.
+
+The CSV counts complete new log lines per sample. A line split across writes
+is carried into the next sample until its newline arrives, and the latest
+reported hit rate persists between stats lines. INT or TERM exits after the
+current foreground sample command returns, then stops and waits for the owned
+capture once. Keep the raw log when interpreting a partial final line; these
+local markers complement the coordinator evidence above.
 
 ## Rollback
 

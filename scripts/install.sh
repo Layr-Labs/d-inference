@@ -237,8 +237,11 @@ commit_install_paths() {
         installed[i]=1
     done
     if [ "$i" -eq "${#names[@]}" ]; then
-        rm -rf "$backup"
-        return $?
+        # Both live paths are committed. Cleanup cannot undo that success.
+        if ! rm -rf "$backup"; then
+            echo "  Warning: Installation succeeded, but obsolete backup cleanup failed at $backup. Resolve the filesystem error before removing that directory." >&2
+        fi
+        return 0
     fi
     for ((j=i; j>=0; j--)); do
         if [ "${installed[j]}" -eq 1 ]; then

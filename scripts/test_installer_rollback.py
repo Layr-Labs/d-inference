@@ -244,6 +244,22 @@ sys.exit(subprocess.run(["/bin/" + tool, *sys.argv[1:]]).returncode)
         self.assertEqual(snapshot(installed / "bin"), before[2]["bin"])
         self.assertIn(str(backups[0]), result.stderr)
 
+    def test_backup_cleanup_failure_reports_successful_commit_and_retained_path(self):
+        for kind in ("app", "flat"):
+            with self.subTest(kind=kind):
+                installed, before, result = self.fixture(kind, {"rm": [1]})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((installed / "bin" / "darkbloom").read_text(), "new darkbloom")
+                self.assertEqual(snapshot(installed / "bin" / ".user-file"),
+                                 before[2]["bin"][2][".user-file"])
+                backups = list(installed.glob(".install-backup-*"))
+                self.assertEqual(len(backups), 1)
+                self.assertEqual(snapshot(backups[0] / "bin"), before[2]["bin"])
+                if kind == "app":
+                    self.assertEqual(snapshot(backups[0] / "Darkbloom.app"), before[2]["Darkbloom.app"])
+                self.assertIn("Installation succeeded", result.stderr)
+                self.assertIn(str(backups[0]), result.stderr)
+
     def test_first_install_success_and_failed_moves(self):
         for kind in ("app", "flat"):
             for call in range(0, 3 if kind == "app" else 2):

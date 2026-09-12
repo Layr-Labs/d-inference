@@ -90,3 +90,30 @@ func TestAssertionReportSummaryTable(t *testing.T) {
 
 	assert.NotEmpty(t, report.SummaryTable())
 }
+
+func TestAsserterRequiresObservedSamples(t *testing.T) {
+	a := NewAsserter([]Threshold{{Segment: testbed.SegmentTTFT, MaxMean: time.Second}})
+	for name, stats := range map[string]*SegmentStatsView{"nil": nil, "empty": {}, "invalid count": {Count: -1}} {
+		t.Run(name, func(t *testing.T) {
+			require.NotPanics(t, func() {
+				report := a.Evaluate(map[testbed.Segment]*SegmentStatsView{testbed.SegmentTTFT: stats})
+				require.False(t, report.Passed)
+				require.Len(t, report.Results, 1)
+				require.Equal(t, "ttft:present", report.Results[0].Name)
+			})
+		})
+	}
+	require.True(t, a.Evaluate(map[testbed.Segment]*SegmentStatsView{testbed.SegmentTTFT: {Count: 1}}).Passed, "one observed zero-duration sample is valid")
+}
+
+func TestAsserterPreservesThresholdOrderBoundaryAndDetails(t *testing.T) {
+	a := NewAsserter([]Threshold{{Segment: testbed.SegmentTTFT, MaxMean: 2 * time.Second, MaxP95: 2 * time.Second, MaxP99: 2 * time.Second, MaxMedian: 500 * time.Millisecond}})
+	report := a.Evaluate(map[testbed.Segment]*SegmentStatsView{testbed.SegmentTTFT: {Count: 10, Mean: 2 * time.Second, P95: 3 * time.Second, P99: time.Second, Median: time.Second}})
+	require.False(t, report.Passed)
+	require.Equal(t, []AssertionResult{
+		{Name: "ttft:mean<=2s", Passed: true, Message: "mean=2s (threshold=2s)"},
+		{Name: "ttft:p95<=2s", Passed: false, Message: "p95=3s (threshold=2s)"},
+		{Name: "ttft:p99<=2s", Passed: true, Message: "p99=1s (threshold=2s)"},
+		{Name: "ttft:median<=500ms", Passed: false, Message: "median=1s (threshold=500ms)"},
+	}, report.Results)
+}

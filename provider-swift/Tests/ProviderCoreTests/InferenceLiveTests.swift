@@ -129,8 +129,8 @@ struct InferenceLiveTests {
                     #expect(response.status == .ok, "standalone response for \(model): \(response.status) \(responseBody)")
                     let decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: Data(responseBody.utf8))
                     #expect(decoded.model == model)
-                    #expect(!decoded.choices.isEmpty)
-                    #expect(!decoded.choices[0].message.content.isEmpty)
+                    let choice = try #require(decoded.choices.first, "standalone response has no choices")
+                    #expect(!choice.message.content.isEmpty)
                     #expect(decoded.usage.completion_tokens > 0)
                 }
             }

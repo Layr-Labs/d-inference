@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-12 · commit `67412a710`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -67,7 +67,10 @@ curl "https://api.darkbloom.dev/v1/billing/stripe/session?id=3f0e..." \
 ```
 
 `status` moves from `pending` to `completed` when the webhook has been
-processed (`handleStripeSessionStatus`).
+processed (`handleStripeSessionStatus`). If the session remains `pending`,
+check your balance before starting another payment. The credit can land before
+the session status is saved; redelivery of the same Checkout payment does not
+add credit again. See [deposit bookkeeping](../architecture/billing.md#stripe-checkout-webhook-incomplete-session-bookkeeping).
 
 ### 3. Read your balance and usage
 

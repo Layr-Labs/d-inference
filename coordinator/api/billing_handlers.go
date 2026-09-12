@@ -174,7 +174,8 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 
 	if billingSessionID != "" {
 		// Best-effort: the deposit is already credited above, but a failure here
-		// leaves the session marked incomplete (and replayable). Surface it.
+		// leaves the session marked incomplete. The ledger credit is idempotent,
+		// so redelivery can retry this bookkeeping without adding funds again.
 		if err := s.billing.Store().CompleteBillingSession(billingSessionID); err != nil {
 			s.logger.Error("stripe: failed to mark billing session complete",
 				"billing_session_id", billingSessionID, "error", err)

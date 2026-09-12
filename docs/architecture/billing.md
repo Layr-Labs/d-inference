@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-11 · commit `d15c4a08a`
+> Last updated: 2026-09-12 · commit `67412a710`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -105,7 +105,7 @@ and which balance column moves:
 | `payout` | `provider_earnings` credit path (`CreditProviderAccount` ledger CTE) | both |
 | `platform_fee` | `handleCompleteAt` → `store.Credit("platform", …)` | `balance` |
 | `referral_reward` | `coordinator/billing/referral.go` `DistributeReferralReward` → `CreditWithdrawable` | both |
-| `stripe_deposit` | `handleStripeWebhook` → `Service.CreditDeposit` → `store.Credit` | `balance` |
+| `stripe_deposit` | `handleStripeWebhook` → `Service.CreditDeposit` → `store.CreditOnce` | `balance` |
 | `stripe_payout` | `coordinator/api/stripe_withdraw.go` `handleStripeWithdraw` → `CreateStripeWithdrawalWithDebit` | both (guarded by `withdrawable_micro_usd >= amount`) |
 | `invite_credit` | `coordinator/api/invite_handlers.go` `handleRedeemInviteCode` → `store.Credit` | `balance` |
 | `admin_credit` | `handleAdminCredit` → `store.Credit` | `balance` |
@@ -119,13 +119,29 @@ leaderboard and `GET /v1/me/summary` count as "reward" rather than "work"
 earnings (`coordinator/store/interface.go` `IsRewardLedgerType`;
 `coordinator/api/me_handlers.go` `handleMySummary`).
 
-Three credit primitives (`coordinator/store/postgres.go`):
+Credit primitives (`coordinator/store/postgres.go` and
+`coordinator/store/postgres_ledger_once.go`; memory equivalents use the same
+ledger identity in `coordinator/store/memory_ledger_once.go`):
 
 | Primitive | Effect | Used for |
 |---|---|---|
-| `Credit` (`creditTx`) | raises `balance_micro_usd` only; not reference-idempotent | deposits, invite/admin credits, reservation and settlement refunds, platform fee |
-| `CreditWithdrawable` (`creditWithdrawableTx`) | raises both columns; not reference-idempotent | referral rewards, admin rewards |
-| `CreditWithdrawableOnce` | `CreditWithdrawable` guarded by a `pg_advisory_xact_lock` on `entry_type:reference` and an existence check on `(account_id, entry_type, reference)`; returns whether it applied | withdrawal principal and fee refunds |
+| `Credit` (`creditBalance`) | raises `balance_micro_usd` only; not reference-idempotent | invite/admin credits, reservation and settlement refunds, platform fee |
+| `CreditOnce` | raises `balance_micro_usd` once per `(account_id, entry_type, reference)`; returns whether it applied | Stripe deposits |
+| `CreditWithdrawable` (`creditWithdrawableBalance`) | raises both columns; not reference-idempotent | referral rewards, admin rewards |
+| `CreditWithdrawableOnce` | raises both columns once per `(account_id, entry_type, reference)`; returns whether it applied | withdrawal principal and fee refunds |
+
+Both `Once` methods share `creditOnce`. In Postgres it takes a
+`pg_advisory_xact_lock` on `entry_type:reference`, checks existing ledger rows,
+and commits the balance and ledger credit in the same transaction. The
+[ledger identity index](storage.md#migrations-run-inside-the-process-at-every-boot)
+narrows this lookup while preserving exact reference equality and support for
+long references. The memory
+store holds its mutex across the same check and credit. Existing rows written
+before adoption of these methods also suppress a matching replay. Reversal
+refunds retain the caller-owned lock or transaction through
+`creditWithdrawableOnceLocked` and `creditWithdrawableOnceTx`, which delegate
+to the same ledger check and credit without acquiring another store mutex or
+committing the enclosing withdrawal update.
 
 `CreditProviderAccount` and `SettleProviderFloorDraw` are single-statement
 CTEs whose first `INSERT … ON CONFLICT DO NOTHING` gates every downstream
@@ -159,17 +175,19 @@ The platform fee follows the same per-user override as everyone else.
    `checkout.session.completed` is processed; every other event type is
    acknowledged with 200 and ignored.
 3. If `metadata.billing_session_id` names a session already `completed`, the
-   handler returns 200 without crediting. Otherwise it credits
-   `AmountTotal × 10_000` µUSD (`CreditDeposit` → `store.Credit`, entry
-   `stripe_deposit`, reference `stripe:<checkout_session_id>`), then marks the
-   session complete and applies the referral code — both best-effort (metrics
+   handler returns 200 without crediting. Otherwise `CreditDeposit` calls
+   `store.CreditOnce` with `AmountTotal × 10_000` µUSD, entry `stripe_deposit`,
+   and reference `stripe:<checkout_session_id>`. The account, entry type and
+   reference identify the credit independently of local session metadata.
+   After the first credit or a duplicate no-op, the handler marks the session
+   complete and applies the referral code — both best-effort (metrics
    `billing.session_complete_failed`, `billing.referral_apply_failed`).
 4. `GET /v1/billing/stripe/session?id=<session_id>` polls the row;
    `GET /v1/billing/methods` (public) lists configured methods — Stripe only
    (`coordinator/billing/billing.go` `SupportedMethods`).
 
-Deposits are **not withdrawable** (they use `Credit`). The dedup gap in this
-sequence is stated under Failure modes.
+Deposits are **not withdrawable** (`CreditOnce` changes only the spendable
+balance). Session bookkeeping can lag the credit; see Failure modes.
 
 ### Provider payouts (Stripe Connect Express)
 
@@ -326,14 +344,15 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
    withdrawable credit, so a re-settled job is a no-op instead of a second
    payout (`coordinator/store/postgres.go`).
 8. **`withdrawable_micro_usd ≤ balance_micro_usd`.** `Debit` lowers
-   withdrawable to `LEAST(withdrawable, balance − amount)`; `Credit` raises
-   only `balance`; `CreditWithdrawable`, `CreditWithdrawableOnce`, and
+   withdrawable to `LEAST(withdrawable, balance − amount)`; `Credit` and
+   `CreditOnce` raise only `balance`; `CreditWithdrawable`,
+   `CreditWithdrawableOnce`, and
    `CreditProviderAccount` raise both by the same amount;
    `CreateStripeWithdrawalWithDebit` debits both and fails unless
    `withdrawable ≥ amount` (`coordinator/store/postgres.go`).
-9. **Only earned money is withdrawable.** `stripe_deposit`, `invite_credit`,
-   `admin_credit`, and reservation or settlement `refund` entries go through
-   `Credit`; `payout`, `referral_reward`, `admin_reward`,
+9. **Only earned money is withdrawable.** `stripe_deposit` entries use
+   `CreditOnce`; `invite_credit`, `admin_credit`, and reservation or settlement
+   `refund` entries use `Credit`; `payout`, `referral_reward`, `admin_reward`,
    `provider_floor_draw`, and withdrawal refunds go through the withdrawable
    primitives (`coordinator/api/billing_handlers.go` `handleStripeWebhook`,
    `handleAdminCredit`, `handleAdminReward`; `coordinator/api/invite_handlers.go`
@@ -347,7 +366,7 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
     redelivered webhook or a reconciler pass cannot refund twice
     (`coordinator/api/stripe_withdraw.go` `creditRefundOnceWithRetry`;
     `coordinator/api/stripe_payouts_webhooks.go` `handlePayoutTerminal`,
-    `handleTransferFailed`; `coordinator/store/postgres.go`
+    `handleTransferFailed`; `coordinator/store/postgres_ledger_once.go`
     `CreditWithdrawableOnce`). Full transfer reversals call
     `RefundStripeWithdrawalAfterReversal` in `coordinator/store/stripe_reversal.go`:
     the current withdrawal is locked, a paid/refunded row or changed transfer ID
@@ -384,6 +403,13 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
     `provider_earnings` row with `model = 'base_reward'` that
     `SumProviderEarningsByKey` excludes from the next epoch's `earned`
     (`coordinator/store/postgres_base_rewards.go`).
+16. **A Stripe deposit credits an account once per Checkout reference.**
+    `CreditDeposit` uses `CreditOnce` with the account, `LedgerStripeDeposit`,
+    and `stripe:<checkout_session_id>`. Concurrent calls through independent
+    Postgres stores serialize under the same transaction lock; absent or
+    incomplete local billing-session state does not bypass the ledger check
+    (`coordinator/billing/billing.go`;
+    `coordinator/store/postgres_ledger_once.go` `creditOnce`).
 
 ## Failure modes
 
@@ -421,16 +447,17 @@ balance still serves free self-route.
 | Admin route without admin credentials | 403 | `forbidden` | `isAdminAuthorized`, `requireAdminKey` |
 | Privy-only route called with an API key | 401 | `auth_error` | `requirePrivyUser` |
 
-### Stripe Checkout webhook: deposit dedup gap
+### Stripe Checkout webhook: incomplete session bookkeeping
 
-`handleStripeWebhook` checks `billing_sessions.status == "completed"`
-**before** crediting and marks the session complete **after** crediting, and
-`store.Credit` is not reference-idempotent. A redelivered
-`checkout.session.completed` that arrives between the credit and the mark, or
-after a failed `CompleteBillingSession`, credits the deposit twice. A session
-without `billing_session_id` metadata has no dedup at all. `IsExternalIDProcessed`
-(`coordinator/billing/billing.go`; `coordinator/store/postgres.go`) exists
-but is not called by the webhook.
+`handleStripeWebhook` returns 500 if `CreditDeposit` fails. After a successful
+credit, a failed `CompleteBillingSession` increments
+`billing.session_complete_failed` and the webhook still returns 200. The
+spendable balance may therefore be credited while the local session remains
+`pending`. A later redelivery retries the bookkeeping after `CreditOnce`
+recognizes the existing ledger row; it does not add the deposit again.
+Missing session metadata or a missing session row follows the same ledger
+check (`coordinator/api/billing_handlers.go` `handleStripeWebhook`;
+`coordinator/store/postgres_ledger_once.go` `creditOnce`).
 
 ### Stripe Connect webhook semantics
 
@@ -492,7 +519,7 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 | Prices and cost | `coordinator/payments/pricing.go` (`DefaultInputPricePerMillion`, `DefaultOutputPricePerMillion`, `minimumChargeMicroUSD`, `platformFeePercent`, `calculateCost`, `CalculateCostWithOverrides`, `CalculateCostWithOverridesNoMinimum`, `resolveFeePercent`, `PlatformFeeWithPercent`, `ProviderPayoutWithPercent`, `FormatPerTokenUSD`); `coordinator/store/postgres.go` (`model_prices`, `GetModelPrice`) | `GET /v1/pricing`, `PUT /v1/pricing`, `DELETE /v1/pricing`, `PUT /v1/admin/pricing`, `POST /v1/admin/models/register` |
 | Reservation | `coordinator/api/inference_admission.go` (`reserveInferenceBalance`, `topUpReservationForInlinedMedia`); `coordinator/api/consumer.go` (`reservationCost`, `providerReservationCost`, `reserveAdditionalForProvider`, `explicitMaxTokens`, `ensureMaxTokensBound`, `defaultMaxOutputTokens`); `coordinator/api/reservations.go` (`serviceReservationManager`, `useServiceReservation`) | — |
 | Settlement | `coordinator/api/provider.go` (`handleCompleteAt`); `coordinator/api/consumer.go` (`refundReservedBalance`, `refundProviderExtra`); `coordinator/api/settlement.go` (`settlementHolder`, `holdForSettlement`, `defaultTerminalSettleGrace`); `coordinator/registry/pending_request.go` (`PendingRequest.FinalizeReservation`, `MarkReservationFinalized`); `coordinator/payments/payments.go` (`Ledger.Charge`, `Ledger.RecordUsage`) | `GET /v1/payments/balance`, `GET /v1/payments/usage` |
-| Ledger and balances | `coordinator/store/interface.go` (`LedgerEntryType`, `RewardLedgerTypes`); `coordinator/store/postgres.go` (`balances`, `ledger_entries`, `provider_earnings`, `creditTx`, `creditWithdrawableTx`, `CreditWithdrawableOnce`, `Debit`, `CreditProviderAccount`, `idx_provider_earnings_job`) | `GET /v1/provider/earnings`, `GET /v1/provider/account-earnings`, `GET /v1/me/summary` |
+| Ledger and balances | `coordinator/store/interface.go` (`LedgerEntryType`, `RewardLedgerTypes`); `coordinator/store/postgres.go` (`balances`, `ledger_entries`, `provider_earnings`, `creditBalance`, `creditWithdrawableBalance`, `Debit`, `CreditProviderAccount`, `idx_provider_earnings_job`); `coordinator/store/postgres_ledger_once.go` and `coordinator/store/memory_ledger_once.go` (`CreditOnce`, `CreditWithdrawableOnce`, `creditOnce`) | `GET /v1/provider/earnings`, `GET /v1/provider/account-earnings`, `GET /v1/me/summary` |
 | Deposits | `coordinator/billing/stripe.go` (`CreateCheckoutSession`, `VerifyWebhookSignature`, `ParseCheckoutSession`); `coordinator/billing/billing.go` (`CreditDeposit`, `IsExternalIDProcessed`); `coordinator/api/billing_handlers.go` (`handleStripeCreateSession`, `handleStripeWebhook`, `handleStripeSessionStatus`, `handleWalletBalance`, `handleBillingMethods`) | `POST /v1/billing/stripe/create-session`, `POST /v1/billing/stripe/webhook`, `GET /v1/billing/stripe/session`, `GET /v1/billing/wallet/balance`, `GET /v1/billing/methods` |
 | Payouts | `coordinator/billing/stripe_connect.go` (`MinWithdrawMicroUSD`, `InstantFeeBps`, `InstantFeeMinMicroUSD`, `FeeForMethodMicroUSD`); `coordinator/billing/stripe_regions.go` (`RequiredServiceAgreement`); `coordinator/api/stripe_payouts.go` (`handleStripeOnboard`, `handleStripeStatus`, `handleStripeWithdrawals`, `handleStripeDashboardLink`, `handleStripeUnlink`, `microUSDToCents`); `coordinator/api/stripe_withdraw.go` (`handleStripeWithdraw`, `creditRefundOnceWithRetry`); `coordinator/api/stripe_payouts_webhooks.go` (`handleStripeConnectWebhook`, `stripeRecipientTransferDelay`); `coordinator/api/stripe_reconcile.go` (`StartStripePayoutReconciler`); `coordinator/store/postgres.go` (`CreateStripeWithdrawalWithDebit`); `coordinator/store/stripe_reversal.go` (`RefundStripeWithdrawalAfterReversal`) | `POST /v1/billing/stripe/onboard`, `GET /v1/billing/stripe/status`, `POST /v1/billing/withdraw/stripe`, `GET /v1/billing/stripe/withdrawals`, `POST /v1/billing/stripe/dashboard`, `DELETE /v1/billing/stripe/account`, `POST /v1/billing/stripe/connect/webhook` |
 | Referral | `coordinator/billing/referral.go` (`ReferralService`, `Register`, `Apply`, `DistributeReferralReward`, `validateReferralCode`); `coordinator/billing/config.go` (`ReferralSharePercent`) | `POST /v1/referral/register`, `POST /v1/referral/apply`, `GET /v1/referral/stats`, `GET /v1/referral/info` |

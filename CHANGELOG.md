@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Inclusive metric buckets** — Count latency samples equal to a histogram upper bound in that bucket. A 5 ms observation now appears in `le="5"` in both cumulative JSON and Prometheus output.
+- **Inclusive metric buckets** — Count latency samples equal to a histogram upper bound in that bucket. A 5 ms observation now contributes to the 5 ms cumulative bucket in JSON and Prometheus output.
 
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 

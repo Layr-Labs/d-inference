@@ -10,6 +10,7 @@ text/count equality is deliberately not presented as generated-token equality.
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import time
 import unicodedata
@@ -164,12 +165,18 @@ def equality(left, right):
             "generated_token_ids_compared": False}
 
 
-def load_replay(path, model):
+def load_replay(path, model, output=None):
     """Validate replay ownership/order before creating artifacts or sending work."""
     report = json.loads(Path(path).read_text())
     rows = report.get("rows") if isinstance(report, dict) else None
     if not isinstance(rows, list) or not rows:
         raise ValueError("replay requires a nonempty row list")
+    # The run directory must remain absent until validation succeeds. Query
+    # its nearest existing ancestor for the destination filesystem's limit.
+    destination = Path(output).absolute() if output is not None else Path(path).absolute().parent
+    while not destination.exists():
+        destination = destination.parent
+    name_limit = os.pathconf(destination, "PC_NAME_MAX")
     reference = {}
     filenames = {"warmup", "cancellation", "report"}
     for row in rows:
@@ -177,6 +184,8 @@ def load_replay(path, model):
         name = case.get("id") if isinstance(case, dict) else None
         if not isinstance(name, str) or not name or any(char in name for char in ("/", "\\", "\x00")):
             raise ValueError("replay case ID must be one nonempty filename component")
+        if name_limit >= 0 and len(os.fsencode(name + ".json")) > name_limit:
+            raise ValueError("replay case ID exceeds the artifact filename byte limit")
         filename = unicodedata.normalize("NFC", name).casefold()
         if filename in filenames:
             raise ValueError("replay case ID duplicates or overwrites retained evidence")
@@ -184,7 +193,7 @@ def load_replay(path, model):
         if not isinstance(request_body, dict) or request_body.get("model") != model:
             raise ValueError("replay model must match baseline")
         equal_to = case.get("equal_to")
-        if equal_to and (not isinstance(equal_to, str) or equal_to not in reference):
+        if equal_to is not None and (not isinstance(equal_to, str) or not equal_to or equal_to not in reference):
             raise ValueError("replay comparison must reference an earlier case")
         reference[name] = row
         filenames.add(filename)
@@ -192,7 +201,7 @@ def load_replay(path, model):
 
 
 def run(args):
-    reference = load_replay(args.replay, args.model) if args.replay else {}
+    reference = load_replay(args.replay, args.model, args.output) if args.replay else {}
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=False)
     rows = []

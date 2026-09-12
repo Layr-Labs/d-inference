@@ -1,6 +1,7 @@
 import json
 from contextlib import redirect_stdout
 import io
+import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import radix_prefix_cache as bench
+import run_radix_http
 
 
 def frame(delta=None, finish=None, usage=None):
@@ -76,7 +78,9 @@ class ReplayInputTests(unittest.TestCase):
                  [row("cancellation")], [row("same"), row("same")],
                  [row("same"), row("SAME")], [row("first", "other-model")],
                  [row("first", equal_to="missing")], [row(None)],
-                 [row("café"), row("cafe\u0301")], [row("first", equal_to=["missing"])]]
+                 [row("café"), row("cafe\u0301")], [row("first", equal_to=["missing"])],
+                 *[[row("first", equal_to=value)] for value in (0, False, [], {}, "")],
+                 [row("x" * 251)], [row("é" * 126)]]
         for rows in plans:
             with self.subTest(rows=rows), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -94,6 +98,34 @@ class ReplayInputTests(unittest.TestCase):
                 metrics.assert_not_called()
                 self.assertFalse(output.exists())
                 self.assertFalse((root / "escaped.json").exists())
+
+    def test_wrapper_refuses_invalid_replay_before_host_work(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "invalid.json"
+            source.write_text('{"rows": []}')
+            output = root / "new-output"
+            argv = ["run_radix_http.py", "--binary", "/unused/provider", "--output", str(output),
+                    "--model", "fixture", "--replay", str(source)]
+            with patch.object(run_radix_http.sys, "argv", argv), \
+                 patch.object(run_radix_http, "ranked_job", side_effect=AssertionError("host probe")) as ranked, \
+                 patch.object(run_radix_http.subprocess, "Popen") as launch, \
+                 self.assertRaises(ValueError):
+                run_radix_http.main()
+            ranked.assert_not_called()
+            launch.assert_not_called()
+            self.assertFalse(output.exists())
+
+    def test_filename_byte_boundary_includes_json_suffix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            limit = os.pathconf(root, "PC_NAME_MAX")
+            source = root / "source.json"
+            for name in ("x" * (limit - 5), "é" * ((limit - 5) // 2)):
+                row = {"case": {"id": name, "kind": "first", "equal_to": None},
+                       "request": {"model": "fixture"}}
+                source.write_text(json.dumps({"rows": [row]}))
+                self.assertEqual(list(bench.load_replay(source, "fixture")), [name])
 
     def test_replay_preserves_order_and_entire_request_body(self):
         response = {"text": "retained answer", "reasoning": "", "finish_reasons": ["stop"],

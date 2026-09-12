@@ -17,6 +17,8 @@ import sys
 import time
 import urllib.request
 
+from radix_prefix_cache import load_replay
+
 
 def ranked_job():
     return subprocess.run(["pgrep", "-f", r"Runner\.Worker|benchctl measure-job|measure-job\.sh"],
@@ -53,6 +55,8 @@ def main():
     parser.add_argument("--lengths", default="512,2048,8192")
     parser.add_argument("--replay")
     args = parser.parse_args()
+    if args.replay:
+        load_replay(args.replay, args.model, args.output)
     if ranked_job() or subprocess.run(["pgrep", "-x", "darkbloom"], stdout=subprocess.DEVNULL).returncode == 0:
         raise SystemExit("Dedicated host is busy")
     if os.getloadavg()[0] > 4:

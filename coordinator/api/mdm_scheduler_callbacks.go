@@ -87,10 +87,6 @@ func (s *mdmVerificationScheduler) ObserveAttemptCommand(
 		job.record.UDID != udid {
 		return
 	}
-	if oldUDID := job.record.UDID; oldUDID != "" &&
-		oldUDID != udid && s.byUDID[oldUDID] == key {
-		delete(s.byUDID, oldUDID)
-	}
 	job.callbackGen = binding.generation
 	job.callbackUUID = commandUUID
 	s.byUDID[udid] = key
@@ -172,14 +168,7 @@ func (s *mdmVerificationScheduler) CompleteLateSecurityInfo(
 		store.VerificationOutcomeSuccess, now,
 	)
 	cancel()
-	if s.deps.reuseMDA(binding) {
-		s.metricCounter("mda_verification_total", "outcome", "reused")
-		s.mu.Lock()
-		delete(s.bindings, binding.attestation.PublicKey)
-		s.mu.Unlock()
-	} else {
-		s.enqueueMDA(binding, udid)
-	}
+	s.finishSecurityInfo(binding, udid)
 	s.metricCounter("mdm_scheduler_grants_total", "path", "late")
 	s.signal()
 }

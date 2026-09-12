@@ -107,7 +107,7 @@ func TestRuntimeManifestAcceptsEveryActiveReleaseMetallib(t *testing.T) {
 	if err := srv.SyncRuntimeManifest(); err != nil {
 		t.Fatalf("SyncRuntimeManifest: %v", err)
 	}
-	accepted := srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"]
+	accepted := srv.knownRuntimeManifest.Load().TemplateHashes["mlx_metallib"]
 	if len(accepted) != 2 || !accepted[unionPreviousMetallib] || !accepted[unionNewestMetallib] {
 		t.Fatalf("mlx_metallib accepted set = %v, want both active releases' hashes", sortedTemplateHashes(accepted))
 	}
@@ -174,7 +174,7 @@ func TestRuntimeManifestDeactivationRemovesOnlyThatReleaseMetallib(t *testing.T)
 	if err := srv.SyncRuntimeManifest(); err != nil {
 		t.Fatalf("SyncRuntimeManifest after deactivation: %v", err)
 	}
-	accepted := srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"]
+	accepted := srv.knownRuntimeManifest.Load().TemplateHashes["mlx_metallib"]
 	if len(accepted) != 1 || !accepted[unionNewestMetallib] {
 		t.Fatalf("mlx_metallib accepted set = %v, want only the remaining active release", sortedTemplateHashes(accepted))
 	}
@@ -217,7 +217,7 @@ func TestRuntimeManifestUnionsPerFamilyTemplateHashes(t *testing.T) {
 	if err := srv.SyncRuntimeManifest(); err != nil {
 		t.Fatalf("SyncRuntimeManifest: %v", err)
 	}
-	manifest := srv.knownRuntimeManifest
+	manifest := srv.knownRuntimeManifest.Load()
 	if got := manifest.TemplateHashes["qwen3.5"]; len(got) != 2 || !got[qwenOld] || !got[qwenNew] {
 		t.Fatalf("qwen3.5 accepted set = %v, want both releases' values", sortedTemplateHashes(got))
 	}
@@ -256,7 +256,7 @@ func TestRuntimeManifestUnionsPerFamilyTemplateHashes(t *testing.T) {
 	if err := srv.SyncRuntimeManifest(); err != nil {
 		t.Fatalf("SyncRuntimeManifest after deactivation: %v", err)
 	}
-	manifest = srv.knownRuntimeManifest
+	manifest = srv.knownRuntimeManifest.Load()
 	if got := manifest.TemplateHashes["qwen3.5"]; len(got) != 1 || !got[qwenNew] {
 		t.Fatalf("qwen3.5 accepted set after deactivation = %v, want only the newer value", sortedTemplateHashes(got))
 	}

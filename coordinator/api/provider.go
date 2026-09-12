@@ -464,15 +464,16 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// Verify runtime integrity against the known-good manifest. Swift
 			// providers omit Python/vllm hashes, but they still report external
 			// runtime assets such as mlx.metallib under template_hashes.
-			if s.knownRuntimeManifest != nil {
-				runtimeOK, mismatches := s.verifyRuntimeHashesForBackend(
-					regMsg.Backend, regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
-				provider.Mu().Lock()
+			provider.Mu().Lock()
+			manifest := s.knownRuntimeManifest.Load()
+			if manifest != nil {
+				runtimeOK, mismatches := s.verifyRuntimeHashesForBackendWithManifest(
+					manifest, regMsg.Backend, regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
 				provider.RuntimeVerified = runtimeOK
 				provider.RuntimeManifestChecked = runtimeOK
 				provider.MetallibVerified = runtimeOK &&
 					runtimeManifestApprovesMetallib(
-						s.knownRuntimeManifest, regMsg.TemplateHashes)
+						manifest, regMsg.TemplateHashes)
 				if !runtimeOK || !provider.MetallibVerified {
 					provider.RuntimeCapabilities = nil
 					provider.FreshCodeAttested = false
@@ -511,7 +512,6 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				}
 			} else {
 				// No manifest configured — fail-closed for routing.
-				provider.Mu().Lock()
 				provider.RuntimeVerified = true
 				provider.RuntimeManifestChecked = false
 				provider.MetallibVerified = false
@@ -1703,16 +1703,17 @@ func (s *Server) applyChallengeRuntimePolicy(
 	provider *registry.Provider,
 	resp *protocol.AttestationResponseMessage,
 ) (bool, bool, []protocol.RuntimeMismatch) {
-	manifest := s.knownRuntimeManifest
+	provider.Mu().Lock()
+	defer provider.Mu().Unlock()
+	manifest := s.knownRuntimeManifest.Load()
 	policyActive := manifest != nil
 	runtimeOK := false
 	var mismatches []protocol.RuntimeMismatch
 	if policyActive {
-		runtimeOK, mismatches = s.verifyRuntimeHashesForBackend(
-			provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
+		runtimeOK, mismatches = s.verifyRuntimeHashesForBackendWithManifest(
+			manifest, provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
 	}
 
-	provider.Mu().Lock()
 	runtimeIdentityChanged :=
 		resp.PythonHash != provider.PythonHash ||
 			resp.RuntimeHash != provider.RuntimeHash ||
@@ -1737,7 +1738,6 @@ func (s *Server) applyChallengeRuntimePolicy(
 	provider.PythonHash = resp.PythonHash
 	provider.RuntimeHash = resp.RuntimeHash
 	provider.TemplateHashes = registry.CloneStringMap(resp.TemplateHashes)
-	provider.Mu().Unlock()
 	return policyActive, runtimeOK, mismatches
 }
 

@@ -74,7 +74,7 @@ extension ProviderLoop {
     }
 
     func pendingMTPUpgradeModels() -> [String] {
-        guard !isShuttingDown, !state.refusingNewWork,
+        guard autopilotCommand == nil, !isShuttingDown, !state.refusingNewWork,
             SpecDecArtifactFunnel.killSwitchEnabled(environment: ProcessInfo.processInfo.environment)
         else { return [] }
         return modelSlots.compactMap { modelID, slot in

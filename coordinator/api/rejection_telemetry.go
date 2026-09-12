@@ -66,6 +66,7 @@ type rejectionInfo struct {
 // blocks or fails the request.
 func (s *Server) recordRejection(info rejectionInfo) {
 	annotateOutcomeRejection(info)
+	annotateAutopilotDemandRejection(info)
 	if s == nil || s.store == nil {
 		return
 	}

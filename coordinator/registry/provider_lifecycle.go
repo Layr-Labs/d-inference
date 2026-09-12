@@ -81,6 +81,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	}
 
 	p := &Provider{
+		ModelAutopilot:              cloneAutopilotState(msg.ModelAutopilot),
 		ID:                          id,
 		stateRestorePending:         r.store != nil,
 		Hardware:                    msg.Hardware,

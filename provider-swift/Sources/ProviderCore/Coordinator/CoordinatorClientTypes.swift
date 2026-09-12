@@ -119,6 +119,7 @@ public enum CoordinatorEvent: Sendable {
     /// (off-thread) and reply with a `loadModelStatus` outbound message
     /// when the load completes or fails.
     case loadModel(modelId: String)
+    case modelAutopilot(ModelAutopilotCommand)
     /// Coordinator-driven background prefetch. Provider should download +
     /// verify the build on disk (off-thread, no GPU load) and reply with
     /// `prefetchModelStatus` outbound messages. `priority` orders concurrent
@@ -251,6 +252,7 @@ public enum OutboundMessage: Sendable {
     case attestationResponse(AttestationResponsePayload)
     case codeAttestationResponse(nonce: String, signature: String)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)
+    case modelAutopilotStatus(ModelAutopilotStatus)
     case prefetchModelStatus(
         modelId: String,
         status: ProviderMessage.PrefetchModelStatus.Status,

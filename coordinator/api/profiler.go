@@ -130,10 +130,11 @@ func (s *Server) profilerEnabled() bool {
 
 // newRequestProfile creates the request-level profile at inference-handler
 // entry (lazily, never in the middleware) and copies the pre-handler stamps.
-// With heavy profiling off, only accounted inference requests create compact
-// lifecycle evidence. Other call sites remain nil-safe and allocation-free.
+// With heavy profiling off, accounted inference requests and enabled autopilot
+// observations create compact lifecycle evidence. Other call sites remain
+// nil-safe and allocation-free.
 func (s *Server) newRequestProfile(r *http.Request, model, publicModel string, stream bool) *registry.RequestProfile {
-	if r == nil || (!s.profilerEnabled() && requestOutcomeFromContext(r.Context()) == nil) {
+	if r == nil || (!s.profilerEnabled() && requestOutcomeFromContext(r.Context()) == nil && autopilotDemandFromContext(r.Context()) == nil) {
 		return nil
 	}
 	setOutcomeStage(r, "validation")
@@ -149,6 +150,7 @@ func (s *Server) newRequestProfile(r *http.Request, model, publicModel string, s
 		o.attemptFinalized(rp, ap)
 		s.finalizeAttemptProfile(rp, ap)
 	}, profileFallbackGrace)
+	bindAutopilotDemandProfile(r, rp)
 	rp.CompactOnly = !s.profilerEnabled()
 	if o != nil {
 		o.mu.Lock()

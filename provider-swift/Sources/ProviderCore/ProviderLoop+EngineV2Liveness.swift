@@ -78,6 +78,7 @@ extension ProviderLoop {
     /// capacity-refresh tick; `now` is injectable so tests can drive the
     /// 120s thresholds without waiting.
     internal func recoverWedgedEngineV2Slots(now: ContinuousClock.Instant = .now) async {
+        guard autopilotCommand == nil else { return }
         guard hasEngineV2Slots, !isShuttingDown else { return }
         for modelId in modelSlots.keys.sorted() {
             await recoverEngineV2SlotIfWedged(modelId: modelId, now: now)
@@ -89,7 +90,7 @@ extension ProviderLoop {
     internal func recoverEngineV2SlotIfWedged(
         modelId: String, now: ContinuousClock.Instant
     ) async {
-        guard let slot = modelSlots[modelId],
+        guard autopilotCommand == nil, !engineV2RecoveryInProgress.contains(modelId), let slot = modelSlots[modelId],
             !modelsUnloading.contains(modelId),
             !modelsLoading.contains(modelId)
         else { return }
@@ -98,11 +99,14 @@ extension ProviderLoop {
         guard await bridge.confirmedWedgeForRecovery(now: now) else { return }
         // Re-validate after the verdict's suspension: an unload/reload may
         // have swapped the slot while we awaited the bridge actor.
-        guard modelSlots[modelId]?.engineV2 === bridge,
+        guard autopilotCommand == nil, !engineV2RecoveryInProgress.contains(modelId), modelSlots[modelId]?.engineV2 === bridge,
             !modelsUnloading.contains(modelId),
             !modelsLoading.contains(modelId),
             !isShuttingDown
         else { return }
+
+        engineV2RecoveryInProgress.insert(modelId)
+        defer { engineV2RecoveryInProgress.remove(modelId) }
 
         // Cooldown: a second confirmed wedge within 120s of the last
         // recovery ATTEMPT means the rebuild did not stick — stop
@@ -111,6 +115,11 @@ extension ProviderLoop {
         // load path until a later lazy reload gets a fresh chance).
         if let last = engineV2LastRecoveryAt[modelId],
             now - last < Self.engineV2RecoveryCooldown {
+            // Own this emergency unload before telemetry suspends, so a new
+            // autopilot plan cannot mistake the slot for an idle resident.
+            let recoveryPin = Self.engineV2RecoveryPinPrefix + modelId
+            requestToModel[recoveryPin] = modelId
+            defer { requestToModel.removeValue(forKey: recoveryPin) }
             logger.error(
                 "engine_v2 liveness: \(modelId) wedged again inside the recovery cooldown — unloading (fail loud)")
             await bridge.emitSelfRestartTelemetry(

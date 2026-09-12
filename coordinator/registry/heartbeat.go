@@ -305,6 +305,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
 	p.BackendCapacity = backendCapacity
+	r.reconcileAutopilotHeartbeatLocked(p, msg.ModelAutopilot, now)
 	// Per-slot KV backend (v0.8.0 paged rollout). Recorded from the canonical
 	// report after unaccepted model identifiers have been removed,
 	// BEFORE the nil-clearing semantics above take effect for it: the record is

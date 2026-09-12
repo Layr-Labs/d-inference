@@ -237,6 +237,8 @@ func main() {
 	)
 	stopWarmPool := reg.StartWarmPoolController(ctx, cfg.RegistryCfg.WarmPool)
 	defer stopWarmPool()
+	stopAutopilot := reg.StartAutopilotController(ctx, cfg.RegistryCfg.Autopilot)
+	defer stopAutopilot()
 	if cfg.RegistryCfg.WarmPool.Enabled {
 		logger.Info("warm-pool controller enabled", "observe_only", cfg.RegistryCfg.WarmPool.ObserveOnly, "interval", cfg.RegistryCfg.WarmPool.Interval.String())
 	}

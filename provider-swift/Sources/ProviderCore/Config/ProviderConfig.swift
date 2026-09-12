@@ -149,6 +149,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// coordinator-driven preloads so advertised model count cannot become a
     /// memory-unbounded slot cap.
     public var maxModelSlots: UInt64
+    /// Explicit network residency control; advertising all cached models is not consent.
+    public var modelAutopilot: ModelAutopilotSettings
     /// Box-wide concurrent-request cap per v2 engine slot
     /// (`engine_v2_max_concurrent` under `[backend]`). Default
     /// ``defaultEngineV2MaxConcurrent`` — 4 as of v0.8.1, reverting v0.8.0's
@@ -297,7 +299,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         mtp: Bool? = nil,
         mtpMode: MTPMode = .auto,
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
-        mtpDrafterPath: String? = nil
+        mtpDrafterPath: String? = nil,
+        modelAutopilot: ModelAutopilotSettings = .init()
     ) {
         self.port = port
         self.model = model
@@ -316,6 +319,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.mtpMode = mtp.map { $0 ? .on : .off } ?? mtpMode
         self.prefillDeadlineMode = prefillDeadlineMode
         self.mtpDrafterPath = mtpDrafterPath
+        self.modelAutopilot = modelAutopilot
     }
 
     enum CodingKeys: String, CodingKey {
@@ -324,6 +328,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case enabledModels = "enabled_models"
         case idleTimeoutMins = "idle_timeout_mins"
         case maxModelSlots = "max_model_slots"
+        case modelAutopilot = "model_autopilot"
         case engineV2MaxConcurrent = "engine_v2_max_concurrent"
         case engineV2MaxConcurrentByModel = "engine_v2_max_concurrent_by_model"
         case engineV2KVBackend = "engine_v2_kv_backend"
@@ -358,6 +363,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.enabledModels = try container.decodeIfPresent([String].self, forKey: .enabledModels) ?? []
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
+        self.modelAutopilot = try container.decodeIfPresent(ModelAutopilotSettings.self, forKey: .modelAutopilot) ?? .init()
         self.engineV2MaxConcurrent =
             try container.decodeIfPresent(UInt64.self, forKey: .engineV2MaxConcurrent)
             ?? Self.defaultEngineV2MaxConcurrent
@@ -403,6 +409,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         try container.encode(enabledModels, forKey: .enabledModels)
         try container.encode(idleTimeoutMins, forKey: .idleTimeoutMins)
         try container.encode(maxModelSlots, forKey: .maxModelSlots)
+        try container.encode(modelAutopilot, forKey: .modelAutopilot)
         try container.encode(engineV2MaxConcurrent, forKey: .engineV2MaxConcurrent)
         try container.encode(engineV2MaxConcurrentByModel, forKey: .engineV2MaxConcurrentByModel)
         try container.encode(engineV2KVBackend, forKey: .engineV2KVBackend)

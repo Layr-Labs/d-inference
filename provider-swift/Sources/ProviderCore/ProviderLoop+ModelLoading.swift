@@ -195,9 +195,10 @@ extension ProviderLoop {
     /// the assistant before admission. The target remains independently
     /// loadable: assistant headroom failure selects target-only decode.
     internal func ensureModelLoaded(
-        modelId: String, allowEviction: Bool = true
+        modelId: String, allowEviction: Bool = true, autopilotCommandId: String? = nil
     ) async throws {
         await waitForMTPUpgrade(modelId)
+        try checkAutopilotLoadOwnership(autopilotCommandId)
         try ModelRuntimeRequirements.requireEligible(
             modelID: modelId, available: loopConfig.runtimeCapabilities)
         if isShuttingDown {
@@ -205,6 +206,7 @@ extension ProviderLoop {
         }
 
         try throwIfRetiring(modelId)
+        try checkAutopilotLoadOwnership(autopilotCommandId)
 
         while modelsUnloading.contains(modelId) {
             await waitForModelUnload(modelId)
@@ -215,6 +217,7 @@ extension ProviderLoop {
         // parked when the tombstone landed. Re-check before every
         // resident-slot return.
         try throwIfRetiring(modelId)
+        try checkAutopilotLoadOwnership(autopilotCommandId)
 
         if modelSlots[modelId] != nil {
             return
@@ -234,9 +237,10 @@ extension ProviderLoop {
             // on may have FAILED its self-test and begun retiring while we
             // were parked.
             try throwIfRetiring(modelId)
+            try checkAutopilotLoadOwnership(autopilotCommandId)
             if modelSlots[modelId] != nil { return }
             try await ensureModelLoaded(
-                modelId: modelId, allowEviction: allowEviction)
+                modelId: modelId, allowEviction: allowEviction, autopilotCommandId: autopilotCommandId)
             return
         }
 
@@ -252,7 +256,9 @@ extension ProviderLoop {
             )
         }
         var mtpPreparation = await specDecPreparation(
-            modelId: modelId, modelInfo: modelInfo, modelDirectory: modelPath)
+            modelId: modelId, modelInfo: modelInfo, modelDirectory: modelPath,
+            allowDownload: autopilotCommandId == nil)
+        if autopilotCommandId != nil { try validateAutopilotAssistant(mtpPreparation) }
 
         // Re-check residency and in-flight loads after the preparation await:
         // a concurrent request for the same cold model can pass the checks
@@ -269,10 +275,11 @@ extension ProviderLoop {
         // begun retiring this model meanwhile; the resident return below
         // must not hand the request to the failed build.
         try throwIfRetiring(modelId)
+        try checkAutopilotLoadOwnership(autopilotCommandId)
         if modelSlots[modelId] != nil { return }
         if modelsLoading.contains(modelId) {
             try await ensureModelLoaded(
-                modelId: modelId, allowEviction: allowEviction)
+                modelId: modelId, allowEviction: allowEviction, autopilotCommandId: autopilotCommandId)
             return
         }
 
@@ -291,8 +298,10 @@ extension ProviderLoop {
             }
             // Same rule at the load-gate wait's resident return.
             try throwIfRetiring(modelId)
+            try checkAutopilotLoadOwnership(autopilotCommandId)
             if modelSlots[modelId] != nil { return }
         }
+        try checkAutopilotLoadOwnership(autopilotCommandId)
         isLoadingAny = true
 
         // Re-check slot cap after gate (another load may have consumed a slot)
@@ -439,6 +448,9 @@ extension ProviderLoop {
             // weights BEFORE survivor grants are restored/regrown. Never
             // bind `borrow()` to a long-lived local — that would keep the
             // weights alive past `release()`.
+            // Recheck command ownership/draining after hashing and memory
+            // waits. Acceptance expiry never abandons a started replacement.
+            try checkAutopilotLoadOwnership(autopilotCommandId)
             let newcomer = EngineV2NewcomerBox(try await loadModelContainer(from: modelPath))
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -831,8 +843,13 @@ extension ProviderLoop {
     }
 
     @discardableResult
-    internal func unloadModel(_ modelId: String, forEviction: Bool = false) async -> Bool {
+    internal func unloadModel(_ modelId: String, forEviction: Bool = false, autopilotCommandId: String? = nil) async -> Bool {
         await waitForMTPUpgrade(modelId)
+        // An idle/eviction candidate may have been captured before the
+        // autopilot transaction reserved this box. Only its explicit victims
+        // may be removed until the transaction settles.
+        if forEviction, let command = autopilotCommand,
+           command.commandId != autopilotCommandId { return false }
         // Recheck after the transition wait: staging or new work can begin
         // after the LRU/idle snapshot. Explicit retirement still may unload;
         // its retained target stays charged until preparation/discard ends.
@@ -902,6 +919,7 @@ extension ProviderLoop {
     }
 
     internal func syncWarmModelState() {
+        publishModelAutopilotSnapshot()
         let loaded = modelSlots.keys.filter { !modelsUnloading.contains($0) }.sorted()
         state.warmModels = loaded
         let activeSlots = modelSlots.filter { !modelsUnloading.contains($0.key) }

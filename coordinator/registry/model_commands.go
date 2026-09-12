@@ -22,7 +22,7 @@ func (r *Registry) SendLoadModel(providerID, modelID string) error {
 		return fmt.Errorf("provider %q not found", providerID)
 	}
 	p.mu.Lock()
-	eligible := r.providerServesCatalogModelLocked(p, modelID)
+	eligible := !providerLegacyModelChangesBlockedLocked(p) && r.providerServesCatalogModelLocked(p, modelID)
 	p.mu.Unlock()
 	r.mu.RUnlock()
 	if !eligible {
@@ -75,7 +75,7 @@ func (r *Registry) SendPrefetchModel(providerID, modelID string, priority int) e
 		return fmt.Errorf("provider %q not found", providerID)
 	}
 	p.mu.Lock()
-	eligible := r.providerCanAcquireCatalogModelLocked(p, modelID)
+	eligible := !providerLegacyModelChangesBlockedLocked(p) && r.providerCanAcquireCatalogModelLocked(p, modelID)
 	p.mu.Unlock()
 	r.mu.RUnlock()
 	if !eligible {

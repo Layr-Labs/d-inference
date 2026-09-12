@@ -242,6 +242,8 @@ func preflightScanWait(deadline time.Duration) time.Duration {
 // prefer modes short-circuit the public capacity gate exactly as before.
 func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, parsed map[string]any, p inferenceAdmissionParams) (string, bool) {
 	model := p.model
+	armAutopilotDemand(r, p)
+	defer func() { setAutopilotDemandModel(r, model) }()
 	publicModel := p.publicModel
 	refundReservation := p.refundReservation
 	requestTraits := func() registry.RequestTraits {

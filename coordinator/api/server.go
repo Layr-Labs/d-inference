@@ -3622,8 +3622,10 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 			ctx = context.WithValue(ctx, requestMetaKey{}, meta)
 		}
 		r = r.WithContext(ctx)
+		r, autopilotDemand := s.beginAutopilotDemand(r, start)
 
 		next.ServeHTTP(sw, r)
+		s.finishAutopilotDemand(r, autopilotDemand, sw.status)
 
 		dur := time.Since(start)
 

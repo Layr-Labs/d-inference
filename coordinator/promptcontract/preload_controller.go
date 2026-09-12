@@ -245,13 +245,17 @@ func (c *PreloadController) matches(provisioned ProvisionSnapshot, child Supervi
 
 func (c *PreloadController) setUnavailable(reason string) {
 	c.mu.Lock()
+	c.setUnavailableLocked(boundedStatusError(reason))
+	c.mu.Unlock()
+}
+
+func (c *PreloadController) setUnavailableLocked(reason string) {
 	c.status.Ready = false
 	c.status.CatalogGeneration = 0
 	c.status.ChildGeneration = 0
 	c.status.ContractCount = 0
-	c.status.LastError = boundedStatusError(reason)
+	c.status.LastError = reason
 	c.contracts = make(map[string]struct{})
-	c.mu.Unlock()
 }
 
 func (c *PreloadController) recordFailure(
@@ -271,13 +275,8 @@ func (c *PreloadController) recordFailure(
 	c.retryCatalogGeneration = catalogGeneration
 	c.retryChildGeneration = childGeneration
 	c.retryAt = time.Now().Add(c.failureBackoff)
-	c.status.Ready = false
-	c.status.CatalogGeneration = 0
-	c.status.ChildGeneration = 0
-	c.status.ContractCount = 0
+	c.setUnavailableLocked(errorText)
 	c.status.Failures++
-	c.status.LastError = errorText
-	c.contracts = make(map[string]struct{})
 	backoff := c.failureBackoff
 	c.mu.Unlock()
 	slog.Warn("prompt sidecar active-set preload failed",

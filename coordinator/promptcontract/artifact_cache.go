@@ -75,6 +75,8 @@ func NewArtifactCache(config ArtifactCacheConfig) (*ArtifactCache, error) {
 	if config.BaseURL.User != nil || config.BaseURL.RawQuery != "" || config.BaseURL.Fragment != "" {
 		return nil, ErrUnsafeArtifactPath
 	}
+	// Retain the validated origin independently of caller-owned URL storage.
+	baseURL := *config.BaseURL
 	client := config.HTTPClient
 	if client == nil {
 		client = &http.Client{}
@@ -82,7 +84,7 @@ func NewArtifactCache(config ArtifactCacheConfig) (*ArtifactCache, error) {
 	clientCopy := *client
 	originalRedirectPolicy := client.CheckRedirect
 	clientCopy.CheckRedirect = func(request *http.Request, via []*http.Request) error {
-		if !sameOrigin(request.URL, config.BaseURL) {
+		if !sameOrigin(request.URL, &baseURL) {
 			return ErrArtifactIntegrity
 		}
 		if originalRedirectPolicy != nil {
@@ -100,7 +102,7 @@ func NewArtifactCache(config ArtifactCacheConfig) (*ArtifactCache, error) {
 	}
 	return &ArtifactCache{
 		root:            root,
-		baseURL:         config.BaseURL,
+		baseURL:         &baseURL,
 		httpClient:      client,
 		downloadTimeout: downloadTimeout,
 		inflight:        make(map[string]*artifactCall),
@@ -116,6 +118,14 @@ func (c *ArtifactCache) Ensure(ctx context.Context, manifest Manifest) (string, 
 	}
 	contractID, err := ContractID(artifacts, CurrentVersions())
 	if err != nil {
+		return "", err
+	}
+	// Every caller supplies its own model manifest, even when prompt artifacts
+	// share one contract and download. Validate before joining that work.
+	if !validRelativePath(manifest.R2Prefix) {
+		return "", ErrUnsafeArtifactPath
+	}
+	if err := verifyManifestAggregate(manifest); err != nil {
 		return "", err
 	}
 	c.mu.Lock()
@@ -141,12 +151,6 @@ func (c *ArtifactCache) Ensure(ctx context.Context, manifest Manifest) (string, 
 }
 
 func (c *ArtifactCache) ensureOne(ctx context.Context, manifest Manifest, artifacts []Artifact, contractID string) (string, error) {
-	if !validRelativePath(manifest.R2Prefix) {
-		return "", ErrUnsafeArtifactPath
-	}
-	if err := verifyManifestAggregate(manifest); err != nil {
-		return "", err
-	}
 	root, err := openVerifiedRoot(c.root, 0o700)
 	if err != nil {
 		if errors.Is(err, ErrUnsafeArtifactPath) {
@@ -216,8 +220,8 @@ func (c *ArtifactCache) ensureOne(ctx context.Context, manifest Manifest, artifa
 	}
 	if err := renameRootEntry(root, c.root, tempName, contractID); err != nil {
 		if ok, verifyErr := verifyPublished(root, contractID); ok {
-			_ = root.RemoveAll(tempName)
-			published = true
+			// Another publisher won. The deferred cleanup makes our read-only
+			// staging directories writable before removing only our tree.
 			return path.Join(c.root, contractID), nil
 		} else if verifyErr != nil &&
 			!errors.Is(verifyErr, fs.ErrNotExist) &&

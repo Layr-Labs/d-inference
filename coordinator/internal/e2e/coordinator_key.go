@@ -5,8 +5,7 @@
 // their request body to it, and POST as application/eigeninference-sealed+json.
 // Only the coordinator (which knows the private key) can decrypt.
 //
-// The private key is derived from the same BIP39 mnemonic used for billing,
-// but with a distinct HKDF domain so the two keys are unrelated.
+// The configured BIP39 mnemonic feeds a dedicated HKDF domain for sender sealing.
 
 package e2e
 
@@ -40,7 +39,7 @@ type CoordinatorKey struct {
 
 // DeriveCoordinatorKey derives the coordinator's X25519 keypair from a BIP39
 // mnemonic. It returns ErrNoMnemonic if mnemonic is empty so callers can run
-// the coordinator in environments without billing configured (the encryption
+// the coordinator without sender sealing configured (the encryption
 // endpoint will simply be unavailable).
 func DeriveCoordinatorKey(mnemonic string) (*CoordinatorKey, error) {
 	mnemonic = strings.TrimSpace(mnemonic)

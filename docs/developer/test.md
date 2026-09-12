@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `31e63a9d9`
+> Last updated: 2026-09-12 · commit `89ec9c846`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -232,6 +232,17 @@ For a custom SwiftPM `--scratch-path`, stage the authoritative `mlx.metallib`
 in the active `debug` or `release` directory containing the `.xctest` bundle.
 `LiveInferenceFixtures.findSourceMetallib` uses that same-configuration source
 before replacing the runner copy; a runner-local file alone is insufficient.
+
+Live-fixture result collection must retain both ordinary errors and typed
+terminal failures. The loop-path arms in
+`provider-swift/Tests/ProviderCoreTests/EngineV2PagedParityLiveTests.swift`
+reuse `collect` and require completion usage as well as output.
+`provider-swift/Tests/ProviderCoreTests/GemmaToolCallLiveTests.swift`
+uses `LiveInferenceFixtures.swift`'s shared `collect` result before parsing a
+tool call. The video mixed-media and standalone response fixtures use throwing
+requirements before accessing a required image span or response choice. Run
+each enabled live suite in its own supervised process; disabled model gates
+provide no inference evidence.
 
 Tests that change process-wide MLX settings must use Swift Testing's
 `#expect(processExitsWith: .success)` child-process boundary. Restoring an

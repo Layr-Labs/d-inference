@@ -189,13 +189,14 @@ private func unknownFeatureError(_ id: String) -> ValidationError {
 func setBetaFeature(
     _ id: String,
     enabled: Bool,
-    configPath: String?
+    configPath: String?,
+    migrateOnDisk: Bool = true
 ) throws {
     guard let feature = BetaFeatures.feature(id: id) else {
         throw unknownFeatureError(id)
     }
 
-    try withMutableConfig(configPath: configPath) { savePath, config in
+    try withMutableConfig(configPath: configPath, migrateOnDisk: migrateOnDisk) { savePath, config in
         // No-op only when the file already PINS the requested value. An absent
         // key (or absent [section]) can decode to the same effective value via
         // the default, but an explicit enable/disable means "make it so,

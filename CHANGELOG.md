@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Remote media recovery** — Release shared byte-budget reservations when a media reader panics, allowing sibling workers to finish and the request to fail instead of hanging.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

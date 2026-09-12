@@ -1,6 +1,6 @@
 # Consumer surface
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-11 · commit `ef7b5a9aa`
 
 The consumer surface is the coordinator's OpenAI- and Anthropic-compatible request pipeline: it speaks OpenAI Chat Completions, OpenAI Responses, Anthropic Messages and legacy Completions to clients and turns each request into one provider job through a single pipeline in `handleChatCompletions` (`coordinator/api/consumer.go`), with an endpoint-specific lowering step before it and a re-shaping step after it. This page is for engineers changing or debugging that pipeline: it explains what "compatible" means concretely, walks the stages, and lists the invariants and failure modes that follow. The exact routes, headers, and JSON shapes are in [`../../reference/api-contracts.md`](../../reference/api-contracts.md).
 
@@ -55,6 +55,8 @@ Provider-side execution between stages 13 and 14 — the WebSocket `inference_re
 6. **Providers never see the caller.** They receive an encrypted job carrying the build id and the prompt, not the API key or account.
 7. **A departed client cancels the job.** Client disconnect before commit is recorded as 499 and sends `cancel` to the provider (`emitClientGone`, `sendProviderCancel`).
 
+8. **Media worker failure releases shared read capacity.** `budgetReader.Read` releases its byte reservation on normal return and panic; `fetchAll` can then recover a failed worker, cancel siblings and join them without leaving readers blocked in the shared budget (`coordinator/mediafetch/budget.go`, `coordinator/mediafetch/resolver.go`).
+
 ## Failure modes
 
 | Symptom | Cause | Where |
@@ -86,6 +88,7 @@ Provider-side execution between stages 13 and 14 — the WebSocket `inference_re
 | Endpoint lowering | `coordinator/promptcontract/endpoint_lower.go`, `coordinator/promptcontract/endpoint_lower_responses.go`, `coordinator/promptcontract/endpoint_lower_messages.go` |
 | Endpoint-specific response and stream builders | `coordinator/api/generic_endpoint_response.go`, `coordinator/api/generic_endpoint_stream.go`, `coordinator/api/generic_endpoint_stop.go`, `coordinator/api/responses_stream.go`, `coordinator/api/chat_metadata_stream.go`, `coordinator/api/sse_response.go` |
 | Provider metadata, timing header | `coordinator/api/response_metadata.go`, `coordinator/api/profiler_dispatch.go` |
+| Remote media reads and worker cleanup | `coordinator/mediafetch/budget.go` (`budgetReader.Read`, `byteBudget.finish`), `coordinator/mediafetch/resolver.go` (`fetchAll`) |
 | Tools and media | `coordinator/api/toolschema.go`, `coordinator/api/tool_constraints.go`, `coordinator/api/media_resolve.go` |
 | Self-route policy | `coordinator/api/self_route.go` |
 | Sealed client transport | `coordinator/api/sender_encryption.go` |

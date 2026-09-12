@@ -1,8 +1,13 @@
 """Check review-diff selection with synthetic patches and no model/API calls."""
 
 import importlib.util
+import json
+import os
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
+import textwrap
 import types
 import unittest
 from unittest.mock import patch
@@ -17,6 +22,48 @@ with patch.dict(sys.modules, {name: types.ModuleType(name) for name in ("anthrop
 
 
 class ReviewAutomationTests(unittest.TestCase):
+    def test_pr_metadata_round_trips_multiline_text(self):
+        workflow = (ROOT / ".github/workflows/codex.yml").read_text()
+        step = workflow.split("      - name: Get PR metadata\n", 1)[1]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1]
+                                .split("\n      - name:", 1)[0])
+        # A normal fenced shell example can contain the old fixed delimiter.
+        body = 'Before\n```bash\ncat <<EOF\nexample\nEOF\n```\nAfter "quotes" \\ and $(literal)\n'
+        metadata = dict(head={"sha": "a" * 40}, base={"sha": "b" * 40, "ref": "master"},
+                        title='Review "quoted" input', body=body)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = root / "pr.json"
+            payload.write_text(json.dumps(metadata))
+            gh = root / "gh"
+            gh.write_text('#!/bin/sh\ncat "$TEST_PR_JSON"\n')
+            gh.chmod(0o700)
+            output = root / "output"
+            subprocess.run(["bash", "-euo", "pipefail", "-c", script], check=True,
+                           env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                                "REPO": "fixture/repository", "PR_NUMBER": "1",
+                                "TEST_PR_JSON": str(payload), "GITHUB_OUTPUT": str(output)})
+            values = {}
+            lines = iter(output.read_text().splitlines())
+            for line in lines:
+                if "<<" in line and ("=" not in line or line.index("<<") < line.index("=")):
+                    name, delimiter = line.split("<<", 1)
+                    content = []
+                    for part in lines:
+                        if part == delimiter:
+                            break
+                        content.append(part)
+                    values[name] = "\n".join(content)
+                else:
+                    name, value = line.split("=", 1)
+                    values[name] = value
+        actual = json.loads(values["metadata"]) if "metadata" in values else values
+        self.assertEqual(actual["body"], body)
+        self.assertEqual(actual["title"], metadata["title"])
+        self.assertEqual(actual["head_sha"], metadata["head"]["sha"])
+        self.assertEqual(actual["base_sha"], metadata["base"]["sha"])
+        self.assertEqual(actual["base_ref"], metadata["base"]["ref"])
+
     def test_deleted_security_file_is_included_in_threat_review(self):
         diff = """diff --git a/coordinator/auth/check.go b/coordinator/auth/check.go
 deleted file mode 100644

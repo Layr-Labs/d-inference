@@ -21,6 +21,7 @@ compatibility checks and outstanding runtime qualification.
 
 ### Companion coordinator and console changes
 
+- **Concurrent duplicate-provider detection** — Read each provider's immutable attestation snapshot under its mutex before comparing device serials, so duplicate scans do not race attestation renewal. Matching duplicates still disconnect through the existing cleanup path.
 - **Warm-pool headroom** — Grow warm replicas from measured headroom before a failed request, using measured occupancy growth, per-model headroom limits and bounded load bursts. Requires a coordinator deployment; the provider release does not activate this policy.
 - **Earnings navigation** — Keep earnings accessible after removing all linked Macs and display the supported payout-coverage notice. Requires a console deployment.
 

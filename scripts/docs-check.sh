@@ -126,21 +126,28 @@ text = "\n".join(body)
 # Backtick spans contain literal examples, not rendered links.
 text = re.sub(r"(?<!`)(`+)(?!`).*?\1(?!`)", "", text, flags=re.DOTALL)
 links = re.compile(
-    r"(?<!\\)(?P<image>!)?\[(?P<label>[^]\n]*)\]"
+    r"(?<!\\)(?P<image>!)?\[(?P<label>(?:[^\[\]\n]|\[[^\[\]\n]*\])*)\]"
     r"(?:\(\s*(?:<(?P<angle>[^>\n]+)>|(?P<bare>[^\s)]+))[^)]*\)|\[(?P<reference>[^]\n]*)\])?"
 )
-for match in links.finditer(text):
-    # Image targets must exist, but an image alone is not clickable navigation.
-    if mode != "all" and match["image"]:
-        continue
-    if match["angle"] is not None or match["bare"] is not None:
-        print(match["angle"] or match["bare"])
-    else:
-        # Full [text][id], collapsed [id][], and shortcut [id] references.
-        reference = match["reference"] or match["label"]
-        target = definitions.get(label(reference))
-        if target is not None:
-            print(target)
+def print_targets(text):
+    for match in links.finditer(text):
+        # A link label may itself be an image: [![alt](image)](page). Check
+        # the image destination too, but only the outer link navigates.
+        if mode == "all" and not match["image"]:
+            print_targets(match["label"])
+        if mode != "all" and match["image"]:
+            continue
+        if match["angle"] is not None or match["bare"] is not None:
+            print(match["angle"] or match["bare"])
+        else:
+            # Full [text][id], collapsed [id][], and shortcut [id] references.
+            reference = match["reference"] or match["label"]
+            target = definitions.get(label(reference))
+            if target is not None:
+                print(target)
+
+
+print_targets(text)
 PY_LINKS
 }
 

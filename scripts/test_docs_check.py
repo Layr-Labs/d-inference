@@ -100,6 +100,29 @@ class DocsCheckTests(unittest.TestCase):
         result = self.check(r"\![guide]" + "\n[guide]: Page.md\n")
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_clickable_images_preserve_outer_navigation(self):
+        (self.root / "docs/asset.svg").write_text("<svg/>")
+        for usage in (
+            "[![diagram](asset.svg)](Page.md)",
+            "[![diagram][image]][guide]\n[image]: asset.svg\n[guide]: Page.md",
+            "[![image][]][guide]\n[image]: asset.svg\n[guide]: Page.md",
+        ):
+            with self.subTest(usage=usage):
+                result = self.check(usage + "\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_clickable_image_checks_missing_outer_target(self):
+        (self.root / "docs/asset.svg").write_text("<svg/>")
+        result = self.check("[![diagram](asset.svg)](Missing.md)\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("broken link -> Missing.md", result.stderr)
+
+    def test_clickable_image_checks_missing_image_target(self):
+        result = self.check("[![diagram](Missing.svg)](Page.md)\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("broken link -> Missing.svg", result.stderr)
+        self.assertNotIn("orphan", result.stderr)
+
     def test_orphans_and_missing_citations_are_independent_errors(self):
         result = self.check("", content="`coordinator/missing.go`\n")
         self.assertNotEqual(result.returncode, 0)

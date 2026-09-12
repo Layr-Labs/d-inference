@@ -66,6 +66,8 @@ coordinator and console changes require their own deployments.
 
 ## Unreleased — stats request-flow refresh
 
+- Preserve newer withdrawal settlements when an older instant-payout failure arrives concurrently; payout ownership is rechecked in the store transition.
+
 - Restore Stats refreshes on large usage windows by aggregating request origins before looking up provider locations. Preserve weighted coordinates, request/token counts, and the top-50 flow limit while avoiding large temporary sorts.
 
 ## Unreleased — provider console entry

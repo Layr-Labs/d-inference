@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-11 · commit `72a6210b7`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -221,6 +221,7 @@ Choose **Unlink Stripe account and start over** to remove the destination curren
 | `401` `auth_error` on `POST /v1/keys`, `/v1/referral/register`, `/v1/referral/apply` | Called with an API key | Use the Privy access token |
 | `429` on `create-session`, key mutations, referral or invite calls | The [financial rate limiter](../reference/pricing-model.md#constants) | Back off for `Retry-After` |
 | Balance dropped by more than the response should cost, then recovered | Reservation debited at admission, refund at settlement | Expected; read balance after the response completes |
+| Instant payout fails after reporting paid | Funds return to the connected account for the daily sweep; stale failure events preserve any newer settlement | Monitor the existing withdrawal; see [instant payout recovery](../reference/pricing-model.md#instant-payout-failure-recovery) |
 | `503` `billing_error` | Stripe or the referral service is not configured on this coordinator | Operator issue |
 
 Mechanism for each error, including the exact functions, is in

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `63a40326b`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -110,6 +110,27 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 `postgres:16` service with user/password/db `testbed`. The pre-push hook runs
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
+
+#### Blue-green session and uptime assertions
+
+Use an explicitly disposable `DATABASE_URL`; the store harness truncates its
+tables. From the repository root:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/store ./coordinator/payments/baserewards \
+  -run '^(TestListProviderSessionsOverlapping|TestSettleEpoch|TestUptimeByProviderKey|TestPeriod|TestEpoch)' \
+  -count=1 -timeout=90s
+```
+
+`TestListProviderSessionsOverlapping_BlueGreenDoubleOpen` in
+`coordinator/store/base_rewards_test.go` requires both open session IDs exactly
+once, with their original heartbeat and account/provider identity, on Memory
+and PostgreSQL. `TestSettleEpoch_BlueGreenDoubleOpen` in
+`coordinator/payments/baserewards/engine_test.go` settles intervals covering
+`[0%, 60%]` and `[50%, 95%]` of one epoch. The reward must match `PeriodFloor`
+at 95% uptime; summing durations and capping at 100% would overpay. The checks
+exercise the store projections and the actual reward engine's interval union.
+They do not launch providers or simulate a coordinator deployment.
 
 #### Provider config cleanup
 

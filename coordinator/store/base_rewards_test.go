@@ -259,8 +259,8 @@ func TestSumProviderEarningsByKey_Filters(t *testing.T) {
 }
 
 // TestListProviderSessionsOverlapping_BlueGreenDoubleOpen asserts two overlapping
-// open sessions for one serial both surface (caller unions them) and that the
-// union of covered time cannot exceed the epoch length.
+// open sessions for one serial both surface with their original identity and
+// heartbeats. The reward engine unions their covered intervals.
 func TestListProviderSessionsOverlapping_BlueGreenDoubleOpen(t *testing.T) {
 	ctx := context.Background()
 	for name, s := range storeBackends(t) {
@@ -268,7 +268,7 @@ func TestListProviderSessionsOverlapping_BlueGreenDoubleOpen(t *testing.T) {
 			serial := uniqueID("SER")
 			// Anchor the window on real time: OpenProviderSession stamps
 			// connected_at = NOW(), so the epoch must contain "now".
-			now := time.Now().UTC()
+			now := time.Now().UTC().Truncate(time.Microsecond)
 			start := now.Add(-1 * time.Hour)
 			end := now.Add(30 * 24 * time.Hour)
 
@@ -295,23 +295,28 @@ func TestListProviderSessionsOverlapping_BlueGreenDoubleOpen(t *testing.T) {
 				t.Fatalf("list overlapping: %v", err)
 			}
 
-			mine := 0
+			want := map[string]time.Time{
+				open1: now.Add(2 * time.Hour),
+				open2: now.Add(72 * time.Hour),
+			}
 			for _, ps := range sessions {
-				if ps.SerialNumber == serial {
-					mine++
+				if ps.SerialNumber != serial {
+					continue
+				}
+				lastSeen, ok := want[ps.SessionID]
+				if !ok {
+					t.Fatalf("unexpected or duplicate session %q: %+v", ps.SessionID, ps)
+				}
+				delete(want, ps.SessionID)
+				if !ps.LastSeen.Equal(lastSeen) || ps.ProviderKey != "PK" || ps.AccountID != "acct" || ps.DisconnectedAt != nil {
+					t.Fatalf("session %q = %+v, want open account acct/provider PK with last_seen %v", ps.SessionID, ps, lastSeen)
+				}
+				if ps.ConnectedAt.Before(start) || !ps.ConnectedAt.Before(end) {
+					t.Fatalf("session %q connected_at %v outside [%v, %v)", ps.SessionID, ps.ConnectedAt, start, end)
 				}
 			}
-			if mine != 2 {
-				t.Fatalf("overlapping sessions for serial = %d, want 2 (blue-green double-open)", mine)
-			}
-
-			// Union the covered intervals per machine; clamp open sessions to a
-			// reasonable end. The union of two overlapping-or-disjoint intervals
-			// within one month can never exceed the month length.
-			covered := unionCoveredSeconds(sessions, serial, start, end)
-			epochSeconds := end.Sub(start).Seconds()
-			if covered > epochSeconds {
-				t.Fatalf("union covered %.0fs exceeds epoch %.0fs (uptime > 1.0)", covered, epochSeconds)
+			if len(want) != 0 {
+				t.Fatalf("missing overlapping sessions: %v", want)
 			}
 		})
 	}
@@ -436,58 +441,6 @@ func TestSettleProviderFloorDraw_RecordsVisibleEarning(t *testing.T) {
 }
 
 // --- test helpers ---
-
-// unionCoveredSeconds clamps open sessions to `end`, then unions overlapping
-// intervals for one serial and returns total covered seconds.
-func unionCoveredSeconds(sessions []ProviderSession, serial string, start, end time.Time) float64 {
-	type iv struct{ s, e time.Time }
-	var ivs []iv
-	for _, ps := range sessions {
-		if ps.SerialNumber != serial {
-			continue
-		}
-		s0 := ps.ConnectedAt
-		if s0.Before(start) {
-			s0 = start
-		}
-		e0 := ps.LastSeen
-		if ps.DisconnectedAt != nil {
-			e0 = *ps.DisconnectedAt
-		}
-		if e0.After(end) {
-			e0 = end
-		}
-		if !e0.After(s0) {
-			continue
-		}
-		ivs = append(ivs, iv{s0, e0})
-	}
-	// Sort by start (insertion sort — small N).
-	for i := 1; i < len(ivs); i++ {
-		for j := i; j > 0 && ivs[j].s.Before(ivs[j-1].s); j-- {
-			ivs[j], ivs[j-1] = ivs[j-1], ivs[j]
-		}
-	}
-	var total float64
-	var curS, curE time.Time
-	have := false
-	for _, v := range ivs {
-		if !have {
-			curS, curE, have = v.s, v.e, true
-			continue
-		}
-		if v.s.After(curE) {
-			total += curE.Sub(curS).Seconds()
-			curS, curE = v.s, v.e
-		} else if v.e.After(curE) {
-			curE = v.e
-		}
-	}
-	if have {
-		total += curE.Sub(curS).Seconds()
-	}
-	return total
-}
 
 func countSessions(sessions []ProviderSession, serial string) int {
 	n := 0

@@ -32,7 +32,6 @@ import csv
 import json
 import os
 import random
-import statistics
 import sys
 import threading
 import time
@@ -141,7 +140,8 @@ class Stats:
     def snapshot_and_reset(self, window_secs):
         with self.lock:
             ok, err, toks = self.w_ok, self.w_err, self.w_tokens
-            ttfb, tot, kinds = self.w_ttfb, self.w_total, dict(self.w_err_kinds)
+            ttfb, tot, kinds = self.w_ttfb, self.w_total, self.w_err_kinds
+            totals = {"cum_ok": self.total_ok, "cum_err": self.total_err}
             self.reset_window()
         return {
             "ok": ok,
@@ -154,6 +154,7 @@ class Stats:
             "total_p50": round(_percentile(tot, 50), 4),
             "total_p95": round(_percentile(tot, 95), 4),
             "err_kinds": kinds,
+            **totals,
         }
 
 
@@ -232,7 +233,7 @@ def do_request(args, n, stats, pool):
         stats.record_err(f"exc_{type(e).__name__}")
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser(description="SSD KV-cache stress soak driver (stdlib-only)")
     p.add_argument("--base-url", default="http://127.0.0.1:8000/v1")
     p.add_argument("--model", required=True)
@@ -274,8 +275,11 @@ def main():
     p.add_argument("--request-timeout", type=float, default=600.0)
     p.add_argument("--report-every-seconds", type=float, default=60.0)
     p.add_argument("--out", default="soak_client.csv")
-    args = p.parse_args()
+    args = p.parse_args(argv)
+    return run_soak(args)
 
+
+def run_soak(args):
     # --prompt-tokens (if set) overrides --prefix-repeat via the calibration.
     effective_repeat = args.prefix_repeat
     if args.prompt_tokens > 0:
@@ -285,48 +289,45 @@ def main():
     stats = Stats()
     deadline = time.monotonic() + args.duration_minutes * 60.0
     stop = threading.Event()
-    counter = {"n": 0}
-    clock = {"start": time.monotonic()}
+    counter = 0
+    started = time.monotonic()
 
     # Context manager so the CSV handle is always closed deterministically,
     # even if an exception fires during setup or the soak run.
     with open(args.out, "w", newline="") as fout:
-        writer = csv.writer(fout)
-        writer.writerow(["elapsed_s", "ok", "err", "req_per_s", "tok_per_s",
-                         "ttfb_p50", "ttfb_p95", "ttfb_p99", "total_p50", "total_p95",
-                         "cum_ok", "cum_err", "err_kinds"])
+        writer = csv.DictWriter(fout, fieldnames=["elapsed_s", "ok", "err", "req_per_s", "tok_per_s",
+                                "ttfb_p50", "ttfb_p95", "ttfb_p99", "total_p50", "total_p95",
+                                "cum_ok", "cum_err", "err_kinds"])
+        writer.writeheader()
         fout.flush()
 
         def worker():
+            nonlocal counter
             while not stop.is_set() and time.monotonic() < deadline:
                 with stats.lock:
-                    counter["n"] += 1
-                    n = counter["n"]
+                    counter += 1
+                    n = counter
                 do_request(args, n, stats, pool)
 
-        def reporter():
-            last = time.monotonic()
-            while not stop.is_set() and time.monotonic() < deadline:
-                stop.wait(args.report_every_seconds)
-                now = time.monotonic()
-                window = now - last
-                last = now
-                if window <= 0:
-                    continue
-                snap = stats.snapshot_and_reset(window)
-                elapsed = round(now - clock["start"], 1)
-                line = [elapsed, snap["ok"], snap["err"], snap["req_per_s"],
-                        snap["tok_per_s"], snap["ttfb_p50"], snap["ttfb_p95"],
-                        snap["ttfb_p99"], snap["total_p50"], snap["total_p95"],
-                        stats.total_ok, stats.total_err, json.dumps(snap["err_kinds"])]
-                writer.writerow(line)
-                fout.flush()
-                print(f"[{elapsed:8.0f}s] ok={snap['ok']:4d} err={snap['err']:3d} "
-                      f"req/s={snap['req_per_s']:6.2f} tok/s={snap['tok_per_s']:7.1f} "
-                      f"ttfb p50/p95/p99={snap['ttfb_p50']:.2f}/{snap['ttfb_p95']:.2f}/{snap['ttfb_p99']:.2f}s "
-                      f"cum_err={stats.total_err}"
-                      + (f"  ERR={snap['err_kinds']}" if snap['err_kinds'] else ""),
-                      flush=True)
+        last_report = started
+
+        def report():
+            nonlocal last_report
+            now = time.monotonic()
+            window = now - last_report
+            if window <= 0:
+                return
+            last_report = now
+            snap = stats.snapshot_and_reset(window)
+            elapsed = round(now - started, 1)
+            writer.writerow({"elapsed_s": elapsed, **snap, "err_kinds": json.dumps(snap["err_kinds"])})
+            fout.flush()
+            print(f"[{elapsed:8.0f}s] ok={snap['ok']:4d} err={snap['err']:3d} "
+                  f"req/s={snap['req_per_s']:6.2f} tok/s={snap['tok_per_s']:7.1f} "
+                  f"ttfb p50/p95/p99={snap['ttfb_p50']:.2f}/{snap['ttfb_p95']:.2f}/{snap['ttfb_p99']:.2f}s "
+                  f"cum_err={snap['cum_err']}"
+                  + (f"  ERR={snap['err_kinds']}" if snap['err_kinds'] else ""),
+                  flush=True)
 
         if pool:
             tok = f" ~{args.prompt_tokens}tok" if args.prompt_tokens > 0 else ""
@@ -335,24 +336,28 @@ def main():
             mode = f"legacy shared={args.shared_fraction:.0%}"
         print(f"soak: {args.duration_minutes}min @ concurrency={args.concurrency} "
               f"model={args.model} {mode} -> {args.out}", flush=True)
-        rep = threading.Thread(target=reporter, daemon=True)
-        rep.start()
         try:
-            with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
-                for _ in range(args.concurrency):
-                    ex.submit(worker)
-                while time.monotonic() < deadline and not stop.is_set():
-                    time.sleep(1.0)
+            with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+                futures = [executor.submit(worker) for _ in range(args.concurrency)]
+                try:
+                    while time.monotonic() < deadline:
+                        stop.wait(min(args.report_every_seconds, max(0, deadline - time.monotonic())))
+                        report()
+                finally:
+                    # Stop admission before the executor waits for in-flight requests.
+                    stop.set()
+                for future in futures:
+                    future.result()
         except KeyboardInterrupt:
             print("\ninterrupted — draining", flush=True)
         finally:
-            stop.set()
-            time.sleep(0.2)
-            fout.flush()  # the `with` closes the handle on exit (incl. SystemExit)
-            print(f"\nDONE: cum_ok={stats.total_ok} cum_err={stats.total_err} "
-                  f"cum_tokens={stats.total_tokens}. CSV: {args.out}", flush=True)
-            sys.exit(1 if stats.total_ok == 0 else 0)
+            # The executor has drained. This thread owns every CSV write, and
+            # the final window includes completions after the admission deadline.
+            report()
+        print(f"\nDONE: cum_ok={stats.total_ok} cum_err={stats.total_err} "
+              f"cum_tokens={stats.total_tokens}. CSV: {args.out}", flush=True)
+        return 1 if stats.total_ok == 0 else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

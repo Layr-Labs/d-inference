@@ -15,6 +15,8 @@ jobs:
         run: |
           ./scripts/check-release-version.sh
           python3 scripts/test-provider-release-resolution.py
+          python3 scripts/test-provider-signing-validation.py
+          python3 scripts/test_release_workflow.py
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
       - name: Test startup observer against local stubs

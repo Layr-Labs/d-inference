@@ -71,7 +71,7 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "key not found or already revoked"))
 		return
 	}
-	s.invalidateAPIKeyCache(body.Key)
+	s.invalidateAllAPIKeyCache()
 
 	writeJSON(w, http.StatusOK, types.RevokeKeyResponse{Status: "revoked"})
 }

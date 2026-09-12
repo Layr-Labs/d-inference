@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-06 · commit `23e6f986f`
+> Last updated: 2026-09-11 · commit `db30ab83c`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -107,7 +107,7 @@ and which balance column moves:
 | `referral_reward` | `coordinator/billing/referral.go` `DistributeReferralReward` → `CreditWithdrawable` | both |
 | `stripe_deposit` | `handleStripeWebhook` → `Service.CreditDeposit` → `store.Credit` | `balance` |
 | `stripe_payout` | `coordinator/api/stripe_withdraw.go` `handleStripeWithdraw` → `CreateStripeWithdrawalWithDebit` | both (guarded by `withdrawable_micro_usd >= amount`) |
-| `invite_credit` | `coordinator/api/invite_handlers.go` `handleRedeemInviteCode` → `store.Credit` | `balance` |
+| `invite_credit` | `coordinator/api/invite_handlers.go` `handleRedeemInviteCode` → `store.RedeemInviteCode` | `balance` |
 | `admin_credit` | `handleAdminCredit` → `store.Credit` | `balance` |
 | `admin_reward` | `handleAdminReward` → `CreditWithdrawable` | both |
 | `provider_floor_draw` | `coordinator/store/postgres_base_rewards.go` `SettleProviderFloorDraw` | both |
@@ -123,7 +123,7 @@ Three credit primitives (`coordinator/store/postgres.go`):
 
 | Primitive | Effect | Used for |
 |---|---|---|
-| `Credit` (`creditTx`) | raises `balance_micro_usd` only; not reference-idempotent | deposits, invite/admin credits, reservation and settlement refunds, platform fee |
+| `Credit` (`creditTx`) | raises `balance_micro_usd` only; not reference-idempotent | deposits, admin credits, reservation and settlement refunds, platform fee |
 | `CreditWithdrawable` (`creditWithdrawableTx`) | raises both columns; not reference-idempotent | referral rewards, admin rewards |
 | `CreditWithdrawableOnce` | `CreditWithdrawable` guarded by a `pg_advisory_xact_lock` on `entry_type:reference` and an existence check on `(account_id, entry_type, reference)`; returns whether it applied | withdrawal principal and fee refunds |
 
@@ -225,8 +225,11 @@ Admins create (`POST /v1/admin/invite-codes`: `amount_usd`, optional `code`,
 account redeems with `POST /v1/invite/redeem`; `RedeemInviteCode` locks the
 code row and checks active, unexpired, under `max_uses`, then inserts into
 `invite_redemptions` whose primary key `(code, account_id)` blocks a second
-redemption by the same account; the credit is a non-withdrawable
-`invite_credit`. `POST /v1/admin/credit` (`admin_credit`, non-withdrawable)
+redemption by the same account. The use count, redemption, non-withdrawable
+`invite_credit` balance and ledger row commit together; a failed credit rolls
+back the claim so the code can be retried. PostgreSQL uses `creditBalance`
+inside the redemption transaction; memory applies `creditLocked` under the
+same store lock (`coordinator/store/postgres.go`, `coordinator/store/memory.go`). `POST /v1/admin/credit` (`admin_credit`, non-withdrawable)
 and `POST /v1/admin/reward` (`admin_reward`, withdrawable) credit by user
 email. These, plus free self-route, are the only free-credit paths — there is
 no sign-up credit or trial in code. Admin authorization for these routes is
@@ -331,9 +334,10 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
    `CreditProviderAccount` raise both by the same amount;
    `CreateStripeWithdrawalWithDebit` debits both and fails unless
    `withdrawable ≥ amount` (`coordinator/store/postgres.go`).
-9. **Only earned money is withdrawable.** `stripe_deposit`, `invite_credit`,
-   `admin_credit`, and reservation or settlement `refund` entries go through
-   `Credit`; `payout`, `referral_reward`, `admin_reward`,
+9. **Only earned money is withdrawable.** `stripe_deposit`, `admin_credit`,
+   and reservation or settlement `refund` entries go through `Credit`.
+   `invite_credit` uses the same non-withdrawable credit primitive inside
+   `RedeemInviteCode`, atomically with its claim and use count; `payout`, `referral_reward`, `admin_reward`,
    `provider_floor_draw`, and withdrawal refunds go through the withdrawable
    primitives (`coordinator/api/billing_handlers.go` `handleStripeWebhook`,
    `handleAdminCredit`, `handleAdminReward`; `coordinator/api/invite_handlers.go`

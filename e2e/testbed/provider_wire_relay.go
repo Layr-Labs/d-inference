@@ -3,8 +3,11 @@ package testbed
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -26,9 +29,10 @@ type ProviderWireEvent struct {
 	Fields     map[string]json.RawMessage `json:"fields,omitempty"`
 }
 
-// ProviderWireRelay is a bounded, transparent test-only loopback WS hop. One
-// pump per direction preserves frame order. Neither authentication nor payload
-// encryption is replaced, and no provider frame is synthesized.
+// ProviderWireRelay is a bounded, transparent test-only loopback hop. One pump
+// per direction preserves WS frame order; other HTTP requests reach the real
+// coordinator without recording. Neither authentication nor payload encryption
+// is replaced, and no provider frame is synthesized.
 type ProviderWireRelay struct {
 	mu          sync.Mutex
 	events      []ProviderWireEvent
@@ -40,12 +44,19 @@ type ProviderWireRelay struct {
 }
 
 func (r *ProviderWireRelay) Start(coordinatorURL string) string {
+	target, err := url.Parse(coordinatorURL)
+	if err != nil {
+		panic(err)
+	}
+	proxy := &httputil.ReverseProxy{Rewrite: func(req *httputil.ProxyRequest) {
+		req.SetURL(target)
+	}}
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
 	upstream := "ws" + strings.TrimPrefix(coordinatorURL, "http") + "/ws/provider"
-	r.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	r.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/ws/provider" {
-			http.NotFound(w, req)
+			proxy.ServeHTTP(w, req)
 			return
 		}
 		// Forward the authentication header; the real server still validates both
@@ -93,6 +104,8 @@ func (r *ProviderWireRelay) Start(coordinatorURL string) string {
 		back.CloseNow()
 		<-done
 	}))
+	r.server.Config.BaseContext = func(net.Listener) context.Context { return ctx }
+	r.server.Start()
 	return r.server.URL
 }
 

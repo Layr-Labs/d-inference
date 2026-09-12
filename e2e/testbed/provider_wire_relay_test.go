@@ -3,6 +3,7 @@ package testbed
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,97 @@ import (
 	"github.com/stretchr/testify/require"
 	"nhooyr.io/websocket"
 )
+
+func TestProviderWireRelayPreservesCoordinatorHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		path   string
+		status int
+		body   string
+	}{
+		{"/v1/models/catalog?model=gemma-4-26b-qat-4bit", http.StatusOK, `{"metadata":{"spec_dec":{"revision":"pinned-assistant"}}}`},
+		{"/v1/models/catalog", http.StatusServiceUnavailable, `{"error":"catalog unavailable"}`},
+	} {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+			seen := make(chan *http.Request, 1)
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				seen <- req
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("ETag", `"catalog-version"`)
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer backend.Close()
+			relay := &ProviderWireRelay{}
+			url := relay.Start(backend.URL)
+			defer relay.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+tc.path, nil)
+			require.NoError(t, err)
+			req.Header.Set("Authorization", "Bearer fixture-token")
+			req.Header.Set("If-None-Match", `"previous-catalog"`)
+			response, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			require.NoError(t, err)
+			require.Equal(t, tc.status, response.StatusCode)
+			require.Equal(t, tc.body, string(body))
+			require.Equal(t, "application/json", response.Header.Get("Content-Type"))
+			require.Equal(t, `"catalog-version"`, response.Header.Get("ETag"))
+			select {
+			case forwarded := <-seen:
+				require.Equal(t, http.MethodGet, forwarded.Method)
+				require.Equal(t, tc.path, forwarded.URL.RequestURI())
+				require.Equal(t, "Bearer fixture-token", forwarded.Header.Get("Authorization"))
+				require.Equal(t, `"previous-catalog"`, forwarded.Header.Get("If-None-Match"))
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			events, dropped := relay.Snapshot()
+			require.Empty(t, events)
+			require.Zero(t, dropped)
+		})
+	}
+}
+
+func TestProviderWireRelayCloseCancelsCoordinatorHTTP(t *testing.T) {
+	started, canceled := make(chan struct{}), make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		close(started)
+		<-req.Context().Done()
+		close(canceled)
+	}))
+	defer backend.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	relay := &ProviderWireRelay{}
+	url := relay.Start(backend.URL)
+	defer relay.Close()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/v1/models/catalog", nil)
+	require.NoError(t, err)
+	clientDone := make(chan struct{})
+	go func() {
+		defer close(clientDone)
+		if response, err := http.DefaultClient.Do(req); err == nil {
+			response.Body.Close()
+		}
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	relay.Close()
+	for _, done := range []<-chan struct{}{canceled, clientDone} {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	require.NoError(t, ctx.Err(), "relay close must cancel HTTP before the client timeout")
+}
 
 func TestProviderWireRelayPreservesTransport(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

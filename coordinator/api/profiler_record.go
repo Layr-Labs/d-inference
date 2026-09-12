@@ -334,7 +334,7 @@ func (p *profiler) alwaysRecord(rec *store.RequestProfileRecord) bool {
 }
 
 // finalizeAttemptProfile is the ProfileFinalizeFn installed on every request
-// profile: build the row, apply sampling, enqueue.
+// profile: enqueue the attempt for row construction and sampling on the sink.
 func (s *Server) finalizeAttemptProfile(rp *registry.RequestProfile, ap *registry.AttemptProfile) {
 	if s == nil || s.profiler == nil || !s.profiler.enabled || s.profiler.sink == nil {
 		return

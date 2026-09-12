@@ -36,6 +36,8 @@ struct EngineV2SamplingDefaultsTests {
             EngineV2SupportedModels.nemotron35LightningMTPModelID,
             EngineV2SupportedModels.nemotron35LightningModelID,
             EngineV2SupportedModels.nemotron35LightningRegistryModelID,
+            EngineV2SupportedModels.nemotron35LightningHybrid8BuildID,
+            EngineV2SupportedModels.nemotron35LightningRollback4bitBuildID,
         ] {
             #expect(EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: id, modelType: "nemotron_h"))
             #expect(EngineV2SamplingDefaults.honorsArtifactDefaults(modelId: id, modelType: " Nemotron_H\n"))

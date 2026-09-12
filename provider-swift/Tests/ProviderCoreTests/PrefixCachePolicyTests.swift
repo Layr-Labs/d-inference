@@ -35,6 +35,8 @@ struct PrefixCachePolicyTests {
         "nvidia-nemotron-3.5-lightning",
         "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
         "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit",
+        "nvidia-nemotron-3.5-lightning-hybrid8",
+        "nvidia-nemotron-3.5-lightning-4bit-r1",
     ])
     func releaseArtifactsDefaultSSD(modelID: String) {
         for value in [nil, "", "   "] as [String?] {

@@ -25,6 +25,7 @@ type ModelCapacity struct {
 // providerCapSnap is a per-provider snapshot collected under the registry
 // lock, then aggregated into ModelCapacity outside the lock.
 type providerCapSnap struct {
+	providerID            string
 	model                 string
 	warm                  bool
 	running               bool
@@ -68,6 +69,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 
 	// Phase 1: collect per-provider snapshots under the lock.
 	var snaps []providerCapSnap
+	breakerModels := make(map[string]struct{})
 
 	r.mu.RLock()
 	for _, p := range r.providers {
@@ -108,8 +110,11 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			// path enforces, so the public capacity feed doesn't advertise a capped
 			// box (e.g. Gemma at 2) as routable up to the flat fallback (24) and lure
 			// upstream routers into sending requests this coordinator immediately 429s.
-			hasHeadroom := r.providerPassesRoutingGatesLocked(p, m.ID, RequestTraits{}, false, now) &&
-				r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, m.ID)
+			passesGates, reason := r.providerRoutingGateReasonLockedEx(p, m.ID, RequestTraits{}, false, now, false, false)
+			if reason == GateBreaker || reason == GateEjection {
+				breakerModels[m.ID] = struct{}{}
+			}
+			hasHeadroom := passesGates && r.hasConcurrencyHeadroomForModelCapResolvedLocked(p, m.ID)
 			// Count only pending requests for this specific model, not the
 			// total across all models. Using the total inflates
 			// activeRequests for multi-model providers.
@@ -136,6 +141,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			)
 
 			snap := providerCapSnap{
+				providerID:            p.ID,
 				model:                 m.ID,
 				hasHeadroom:           hasHeadroom,
 				effectiveTPS:          decodeTPS,
@@ -180,6 +186,17 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 			snaps = append(snaps, snap)
 		}
 		p.mu.Unlock()
+	}
+	// A strict per-provider gate cannot decide the fleet-wide breaker valve.
+	// Only affected models need the shared dispatch scan; inventory stays intact.
+	for model := range breakerModels {
+		if fallback := r.modelCapacityBreakerFallbackLocked(model); fallback != nil {
+			for i := range snaps {
+				if snaps[i].model == model {
+					snaps[i].hasHeadroom = fallback[snaps[i].providerID]
+				}
+			}
+		}
 	}
 	r.mu.RUnlock()
 
@@ -305,4 +322,27 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 		})
 	}
 	return result
+}
+
+// modelCapacityBreakerFallbackLocked returns the fleet's last-resort cohort only
+// when dispatch would bypass health breakers. Capacity has no request shape, so
+// test the smallest positive text reservation (one output token, no deadline).
+// Healthy-but-busy peers suppress the fallback through the shared scan tallies;
+// structural, thermal, memory and cooldown gates still apply on its second pass.
+// Caller holds r.mu and no provider lock. No reservation is committed.
+func (r *Registry) modelCapacityBreakerFallbackLocked(model string) map[string]bool {
+	request := &PendingRequest{Model: model, RequestedMaxTokens: 1}
+	scan := r.scanCandidatesLocked(model, request, false)
+	if len(scan.pool) > 0 || !shouldBypassBreakerFailOpen(nil, scan.breakerRejected, scan.capacityRejections, scan.ttftRejections) {
+		return nil
+	}
+	scan = r.scanCandidatesLocked(model, request, true)
+	if len(scan.pool) == 0 {
+		return nil
+	}
+	providers := make(map[string]bool, len(scan.pool))
+	for _, candidate := range scan.pool {
+		providers[candidate.provider.ID] = true
+	}
+	return providers
 }

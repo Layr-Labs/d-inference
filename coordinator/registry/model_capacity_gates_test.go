@@ -1,6 +1,10 @@
 package registry
 
-import "testing"
+import (
+	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"testing"
+)
 
 func TestModelCapacityDoesNotAdvertiseStructurallyExcludedPairs(t *testing.T) {
 	for _, tc := range []struct {
@@ -46,5 +50,58 @@ func TestModelCapacityDoesNotAdvertiseStructurallyExcludedPairs(t *testing.T) {
 				t.Fatal("excluded pair disappeared from model inventory")
 			}
 		})
+	}
+}
+
+func TestModelCapacityPreservesFleetBreakerFallback(t *testing.T) {
+	for _, health := range []bool{false, true} {
+		for _, peer := range []string{"none", "healthy", "busy", "thermal", "broken template"} {
+			t.Run(fmt.Sprintf("ejection=%v/peer=%s", health, peer), func(t *testing.T) {
+				reg := New(testLogger())
+				model := "capacity-breaker"
+				bad := makeSchedulerProvider(t, reg, "bad", model, 100)
+				if health {
+					bad.AttestationResult = &attestation.VerificationResult{Valid: true, SerialNumber: "CAPACITY-BAD"}
+					for range healthEjectionConsecTrip {
+						reg.RecordProviderServeOutcome("serial:CAPACITY-BAD", false, 500, "boom")
+					}
+					if !reg.HealthEjectionOpen("serial:CAPACITY-BAD") {
+						t.Fatal("ejection did not open")
+					}
+				} else {
+					for range providerBreakerConsecTrip {
+						reg.RecordProviderOutcome(bad.ID, false, 500, "boom")
+					}
+					if !reg.ProviderBreakerOpen(bad.ID) {
+						t.Fatal("breaker did not open")
+					}
+				}
+				if peer != "none" {
+					p := makeSchedulerProvider(t, reg, "peer", model, 50)
+					switch peer {
+					case "busy":
+						p.BackendCapacity.Slots[0].MaxConcurrency = 1
+						p.AddPending(&PendingRequest{RequestID: "busy", Model: model})
+					case "thermal":
+						p.SystemMetrics.ThermalState = "critical"
+					case "broken template":
+						p.Models[0].TemplateRenderOK = boolPtr(false)
+					}
+				}
+				capacity := reg.ModelCapacitySnapshot()
+				request := &PendingRequest{RequestID: "probe", Model: model, RequestedMaxTokens: 1}
+				selected, decision := reg.ReserveProviderEx(model, request)
+				want := 1
+				if peer == "busy" {
+					want = 0
+				}
+				if (selected != nil) != (want > 0) || decision.CandidateCount != want {
+					t.Fatalf("dispatch precondition: selected=%v decision=%+v", selected != nil, decision)
+				}
+				if len(capacity) != 1 || capacity[0].RoutableProviders != want || capacity[0].Ready != (want > 0) {
+					t.Fatalf("capacity disagrees with dispatch cohort: %+v; want %d", capacity, want)
+				}
+			})
+		}
 	}
 }

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `c489b2b40`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -110,6 +110,22 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 `postgres:16` service with user/password/db `testbed`. The pre-push hook runs
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
+
+#### Reward allocation determinism
+
+Run the pure allocator and ranking checks without PostgreSQL or providers:
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/payments/baserewards \
+  -run '^Test(AllocateDraws|ValuePerFloorDollar)' -count=1 -timeout=60s
+```
+
+`TestAllocateDraws_Deterministic` in
+`coordinator/payments/baserewards/alloc_test.go` disables the separate account
+cap so candidate demand exceeds the pool. It requires identical per-provider
+payouts after an input shuffle and full use of the pool; equal-score candidates
+must therefore use the `ProviderKey` tiebreaker in `AllocateDraws`. Dedicated
+fixtures retain the account cap and cumulative cap across settlement runs.
 
 #### Provider config cleanup
 

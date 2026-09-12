@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-12 · commit `c489b2b40`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -98,6 +98,9 @@ The host build writes `./coordinator/coordinator`. Version identity is injected
 only by the container build (`-ldflags -X …api.BuildVersion/BuildCommit/BuildDate`
 in `coordinator/Dockerfile`); a local `go build` reports `dev`/`unknown` on
 `GET /health` (`coordinator/api/consumer.go`, `handleHealth`).
+
+The [reward allocation checks](test.md#reward-allocation-determinism) compile
+only Go and need neither PostgreSQL nor a provider build.
 
 ### 4. Prompt-contract sidecar (Rust)
 

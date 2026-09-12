@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-11 · commit `75a7185dc`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -14,6 +14,13 @@ Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 Profiler wire changes require both coordinator and provider builds; the shared
 Go/Swift fixture and focused checks are described in [test.md](test.md) and
 [prediction telemetry](../reference/prediction-decision-telemetry.md).
+
+Installer changes start in `scripts/install.sh`. Regenerate the coordinator's
+embedded copy with `scripts/sync-install-embed.sh`, then run
+`scripts/sync-install-embed.sh check` and the offline installer fixtures in
+[test.md](test.md). The commit helpers prepare executable permissions and bin
+links before replacing live paths; app and bin replacement share rollback so
+failed restoration retains a recovery backup.
 
 ## Prerequisites
 

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-12 · commit `ccd1c0162`
+> Last updated: 2026-09-12 · commit `6a6b18f4d`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1428,6 +1428,11 @@ counts; timing-dependent cancellation partial lengths are retained separately.
 The runner fences UTC rollover and preserves failed, running and unrun cells in
 an atomically replaced partial JSON report. Keep the `go test` log beside it for
 setup failures and interrupted process evidence.
+
+The loopback relay forwards coordinator HTTP requests, including the model
+catalog used by normal assistant resolution. It preserves upstream status, headers
+and body without recording them, and cancels active HTTP requests on shutdown
+(`e2e/testbed/provider_wire_relay.go`, `ProviderWireRelay.Start`).
 
 A bounded transparent loopback relay records negotiation, checkpoint echo,
 receipt positions, cancellation and typed terminal usage/profile without keys,

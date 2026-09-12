@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-11 · commit `e3993c611`
+> Last updated: 2026-09-12 · commit `52ba357f6`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -306,9 +306,7 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
    otherwise this constant. `platformFee = totalCost × fee / 100` and
    `providerPayout = totalCost − platformFee` (`PlatformFeeWithPercent`,
    `ProviderPayoutWithPercent`), so at the default every provider receives
-   the full `totalCost` and every referral reward is zero. The comments
-   claiming a 10% fee in `coordinator/payments/payments.go` and a 95/5 split
-   in `coordinator/billing/referral.go` are stale.
+   the full `totalCost` and every referral reward is zero.
 5. **Cached tokens are free.** `calculateCost` takes only `promptTokens` and
    `completionTokens`; `Usage.CachedTokens` and `PrefillTokensSaved` from the
    provider's terminal message feed only the `routing.cache_*` metrics

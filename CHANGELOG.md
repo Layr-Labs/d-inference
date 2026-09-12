@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **API-key mutation consistency** — Prevent delayed authentication lookups from restoring revoked keys, old limits, or stale disabled-key results after a successful local key update. Keep already-authenticated requests and the ordinary cache lifetime for other coordinator processes unchanged.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `38fbddbce`
+> Last updated: 2026-09-12 · commit `95ac26523`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -934,6 +934,9 @@ The environment is reused until `scripts/benchmarks/attention_packet/requirement
 changes; ordinary test invocations do not run pip or access the package index.
 Set `TOOLING_VENV` to choose another isolated directory. To rebuild a damaged
 environment, remove that directory and run `make tooling-install` again.
+`scripts/test_make_tooling.py`
+(`test_outer_make_override_does_not_change_stub_environment`) checks an actual
+outer make override while isolating the fixture's temporary Makefile defaults.
 
 This target runs Gemma/GPT-OSS report validators, startup observers, offline
 attention/reference tests, owned-host process fixtures, release-validation

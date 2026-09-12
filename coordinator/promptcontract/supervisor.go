@@ -149,7 +149,7 @@ func (s *Supervisor) run(ctx context.Context) {
 			continue
 		}
 		s.setRestartSuppressed(time.Time{})
-		reason, detail, stderr, ran, stable := s.runChild(ctx)
+		reason, detail, stderr, stable := s.runChild(ctx)
 		if ctx.Err() != nil {
 			break
 		}
@@ -157,8 +157,6 @@ func (s *Supervisor) run(ctx context.Context) {
 		restartTimes = append(restartTimes, time.Now())
 		if stable {
 			backoff = s.config.RestartBackoffMin
-		} else if ran {
-			backoff = nextBackoff(backoff, s.config.RestartBackoffMax)
 		} else {
 			backoff = nextBackoff(backoff, s.config.RestartBackoffMax)
 		}
@@ -170,11 +168,11 @@ func (s *Supervisor) run(ctx context.Context) {
 }
 
 // runChild returns a bounded reason/detail/stderr record and whether the child
-// started and ever answered liveness. Readiness degradation alone never ends
+// ever answered liveness. Readiness degradation alone never ends
 // the child; it only closes the cache-routing gate.
-func (s *Supervisor) runChild(ctx context.Context) (string, string, string, bool, bool) {
+func (s *Supervisor) runChild(ctx context.Context) (string, string, string, bool) {
 	if err := prepareSocketDirectory(s.config.SocketPath); err != nil {
-		return "socket_error", err.Error(), "", false, false
+		return "socket_error", err.Error(), "", false
 	}
 	stderr := newTailBuffer(s.config.StderrMaxBytes)
 	cmd := exec.Command(s.config.BinaryPath, s.arguments()...)
@@ -182,7 +180,7 @@ func (s *Supervisor) runChild(ctx context.Context) (string, string, string, bool
 	cmd.Stdout = io.Discard
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
-		return "start_error", err.Error(), stderr.String(), false, false
+		return "start_error", err.Error(), stderr.String(), false
 	}
 	generation := s.noteChildStarted(processRSSBytes(cmd.Process.Pid))
 	waited := make(chan error, 1)
@@ -197,16 +195,16 @@ func (s *Supervisor) runChild(ctx context.Context) (string, string, string, bool
 		select {
 		case <-ctx.Done():
 			s.terminate(cmd, waited)
-			return "shutdown", "", stderr.String(), true, live
+			return "shutdown", "", stderr.String(), live
 		case err := <-waited:
 			detail := childExitReason(err, cmd.ProcessState)
 			s.setChildStopped(generation)
-			return "child_exit", detail, stderr.String(), true, live
+			return "child_exit", detail, stderr.String(), live
 		case <-startup.C:
 			if !live {
 				s.terminate(cmd, waited)
 				s.setChildStopped(generation)
-				return "startup_timeout", "liveness startup deadline exceeded", stderr.String(), true, false
+				return "startup_timeout", "liveness startup deadline exceeded", stderr.String(), false
 			}
 		case <-ticker.C:
 			rss := processRSSBytes(cmd.Process.Pid)
@@ -214,7 +212,7 @@ func (s *Supervisor) runChild(ctx context.Context) (string, string, string, bool
 				s.setRuntimeState(generation, true, false, rss, consecutiveFailures)
 				s.terminate(cmd, waited)
 				s.setChildStopped(generation)
-				return "rss_limit", fmt.Sprintf("RSS %d exceeded %d MiB", rss, s.config.MemoryLimitMiB), stderr.String(), true, live
+				return "rss_limit", fmt.Sprintf("RSS %d exceeded %d MiB", rss, s.config.MemoryLimitMiB), stderr.String(), live
 			}
 			if err := s.client.Health(ctx); err != nil {
 				if live {
@@ -224,7 +222,7 @@ func (s *Supervisor) runChild(ctx context.Context) (string, string, string, bool
 				if live && consecutiveFailures >= s.config.HealthFailureThreshold {
 					s.terminate(cmd, waited)
 					s.setChildStopped(generation)
-					return "health_failure_threshold", err.Error(), stderr.String(), true, true
+					return "health_failure_threshold", err.Error(), stderr.String(), true
 				}
 				continue
 			}

@@ -126,7 +126,9 @@ public struct ModelCatalogClient: Sendable {
 
     static let manifestDecoder: JSONDecoder = {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        decoder.dateDecodingStrategy = .formatted(formatter)
         return decoder
     }()
 

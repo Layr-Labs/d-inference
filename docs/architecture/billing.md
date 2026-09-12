@@ -1,6 +1,6 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-06 · commit `23e6f986f`
+> Last updated: 2026-09-11 · commit `72a6210b7`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
@@ -348,7 +348,9 @@ the design record is [`design/base-rewards.md`](../design/base-rewards.md).
     (`coordinator/api/stripe_withdraw.go` `creditRefundOnceWithRetry`;
     `coordinator/api/stripe_payouts_webhooks.go` `handlePayoutTerminal`,
     `handleTransferFailed`; `coordinator/store/postgres.go`
-    `CreditWithdrawableOnce`).
+    `CreditWithdrawableOnce`). Matched payout-failure transitions also
+    recheck the event payout ID inside the store update; a detached payout
+    cannot reopen a newer settlement (`ReopenStripeWithdrawalAfterPayoutFailure`).
 11. **A capped key never debits.** `checkKeySpendCap` runs before the `Debit`
     in `reserveInferenceBalance`, `topUpReservationForInlinedMedia`, and
     `reserveAdditionalForProvider`, so a rejected request leaves no ledger
@@ -436,7 +438,7 @@ help (`coordinator/api/stripe_payouts_webhooks.go`).
 |---|---|
 | `account.updated` | `handleAccountUpdated` mirrors Stripe's view into `users.stripe_*` (`stripeStatusForAccount`: `pending`, `ready`, `restricted`, or `rejected`). Best-effort; the status endpoint re-syncs on page load. |
 | `payout.paid` | `handlePayoutTerminal(success=true)`: matched by payout id → `MarkStripeWithdrawalPaid` (no-op on an already `paid` row; a refunded/terminal row is logged for manual review, never overwritten). Unmatched → `reconcileUnmatchedPayout`: only automatic sweep payouts reconcile; they mark every `transferred` row of that connected account whose funds had become available (`stripeRecipientTransferDelay = 24 * time.Hour` for `recipient` accounts, immediate for `full`) and that has no in-flight payout of its own as `paid`. Amounts are ignored (FX-converted). |
-| `payout.failed`, `payout.canceled` | `handlePayoutTerminal(success=false)`: refund the instant fee via `CreditWithdrawableOnce(stripe_withdraw_fee:<id>)`, detach the payout id, reopen the row as `transferred` so the sweep retries. A refunded+paid row is logged for manual review. |
+| `payout.failed`, `payout.canceled` | `handlePayoutTerminal(success=false)`: refund the instant fee via `CreditWithdrawableOnce(stripe_withdraw_fee:<id>)`, detach the payout id and reopen the row as `transferred` only while `ReopenStripeWithdrawalAfterPayoutFailure` still matches the event's non-empty payout ID and the row is neither refunded nor failed. A stale lookup cannot reopen a later sweep settlement. A refunded+paid row is logged for manual review. |
 | `transfer.reversed` | `handleTransferFailed`: refund the net principal (`stripe_withdraw:<id>`) and the fee (`stripe_withdraw_fee:<id>`) once each via `CreditWithdrawableOnce`, mark the row `failed`. |
 | anything else | acknowledged, ignored |
 

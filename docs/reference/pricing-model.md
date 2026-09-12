@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-11 · commit `72a6210b7`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -87,6 +87,12 @@ updated_at)`, primary key `(account_id, model)`
 | Withdrawal fee | `0` (standard); `max(gross × InstantFeeBps / 10_000, InstantFeeMinMicroUSD)` (instant) | `coordinator/billing/stripe_connect.go` (`FeeForMethodMicroUSD`) |
 | Withdrawal net | `gross − fee`, transferred as `microUSDToCents(net)`; must be ≥ 1 cent | `coordinator/api/stripe_withdraw.go` (`handleStripeWithdraw`) |
 | Key spend | `Σ usage.cost_micro_usd` for the key since `KeySpendWindowStart(limit_reset, now)`; request rejected when `spend + additional > LimitMicroUSD` | `coordinator/store/postgres.go` (`KeySpendSince`); `coordinator/api/apikey_handlers.go` (`checkKeySpendCap`) |
+
+## Instant payout failure recovery
+
+| Event | Result | Code |
+|---|---|---|
+| Matched instant payout fails or is canceled | The fee refund remains reference-idempotent. Reopening for the daily sweep requires the current, non-empty payout ID to still match the event and the row to remain unrefunded and not failed; a newer settlement is preserved. | `coordinator/api/stripe_payouts_webhooks.go` (`handlePayoutTerminal`); `coordinator/store/postgres.go` (`ReopenStripeWithdrawalAfterPayoutFailure`) |
 
 ## Ledger entry types
 

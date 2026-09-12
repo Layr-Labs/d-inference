@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -118,6 +119,12 @@ func (g *ipAPIGeoResolver) lookupIPAPI(ip net.IP) *store.ProviderLocation {
 	resp, err := client.Do(req)
 	if err != nil {
 		if g.logger != nil {
+			// Do wraps the failure with the request URL, whose query contains
+			// the PRO API key. Keep the underlying transport cause in logs.
+			var requestErr *url.Error
+			if errors.As(err, &requestErr) {
+				err = requestErr.Err
+			}
 			g.logger.Debug("ip-api lookup failed", "ip", ip.String(), "pro", g.apiKey != "", "error", err)
 		}
 		return nil

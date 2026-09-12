@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `1bfb5d65e`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -65,6 +65,13 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 ```
 
 ### 2. Coordinator (Go)
+
+`TestModelPriceMutationsAreVisible` checks set, update, delete and recreation
+through both store backends. `TestPostgresPriceMutationRejectsDelayedCacheFill`
+holds a completed real SQL read while an update or delete finishes, then checks
+later prices and cache hits (`coordinator/store/model_price_cache_test.go`,
+`coordinator/store/postgres_model_price_cache_test.go`). Run these with the
+disposable `DATABASE_URL` below to include PostgreSQL.
 
 Run prediction telemetry checks from the repository root:
 

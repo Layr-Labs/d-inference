@@ -219,6 +219,17 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Keep the last acknowledged state across external Stripe calls so a
+	// webhook transition cannot be overwritten by our older local copy.
+	persisted := *wd
+	persistUpdate := func(stage string) error {
+		err := s.persistWithdrawalUpdate(&persisted, wd, stage)
+		if err == nil {
+			persisted = *wd
+		}
+		return err
+	}
+
 	// markFailedRefund refunds the ledger and marks the row failed
 	// (best-effort — neither store call has rollback). Returns whether the
 	// refund credit is durably applied; the Refunded flag prevents webhook
@@ -230,7 +241,7 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		}
 		wd.Status = "failed"
 		wd.FailureReason = reason
-		if uerr := s.persistWithdrawalUpdate(wd, "failure"); uerr != nil {
+		if uerr := persistUpdate("failure"); uerr != nil {
 			s.logger.Error("stripe payout: mark failed failed", "error", uerr, "withdrawal_id", withdrawalID)
 		}
 		return refunded
@@ -257,7 +268,12 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		// alert and completes the row from the Stripe dashboard via the
 		// idempotency key; if it didn't, the same alert drives the refund.
 		wd.FailureReason = "transfer_create_unconfirmed: " + err.Error()
-		if uerr := s.persistWithdrawalUpdate(wd, "ambiguous transfer"); uerr != nil {
+		if uerr := persistUpdate("ambiguous transfer"); uerr != nil {
+			if errors.Is(uerr, errWithdrawalStateChanged) {
+				s.writeWithdrawalStateChanged(w, withdrawalID)
+				return
+			}
+
 			s.logger.Error("stripe payout: persist ambiguous-transfer state failed",
 				"error", uerr, "withdrawal_id", withdrawalID)
 		}
@@ -299,7 +315,12 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 	}
 	wd.TransferID = transfer.ID
 	wd.Status = "transferred"
-	if err := s.persistWithdrawalUpdate(wd, "transfer_id"); err != nil {
+	if err := persistUpdate("transfer_id"); err != nil {
+		if errors.Is(err, errWithdrawalStateChanged) {
+			s.writeWithdrawalStateChanged(w, withdrawalID)
+			return
+		}
+
 		// Transfer succeeded but we lost track of it: the row is stuck
 		// "pending" with no transfer_id, invisible to the webhook matcher and
 		// sweep reconciler. Money is in the connected account and the daily
@@ -363,7 +384,12 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		// idempotency key. If it didn't land, the daily sweep delivers and
 		// completes the row; ops refunds the fee from the same alert trail.
 		wd.FailureReason = "instant_payout_unconfirmed: " + err.Error()
-		if uerr := s.persistWithdrawalUpdate(wd, "ambiguous payout"); uerr != nil {
+		if uerr := persistUpdate("ambiguous payout"); uerr != nil {
+			if errors.Is(uerr, errWithdrawalStateChanged) {
+				s.writeWithdrawalStateChanged(w, withdrawalID)
+				return
+			}
+
 			s.logger.Error("stripe payout: persist ambiguous-payout state failed",
 				"error", uerr, "withdrawal_id", withdrawalID)
 		}
@@ -399,7 +425,12 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 			wd.FeeRefunded = true
 			wd.FailureReason += " (instant fee refunded)"
 		}
-		if uerr := s.persistWithdrawalUpdate(wd, "payout failure"); uerr != nil {
+		if uerr := persistUpdate("payout failure"); uerr != nil {
+			if errors.Is(uerr, errWithdrawalStateChanged) {
+				s.writeWithdrawalStateChanged(w, withdrawalID)
+				return
+			}
+
 			s.logger.Error("stripe payout: persist payout failure failed",
 				"error", uerr, "withdrawal_id", withdrawalID)
 		}
@@ -423,7 +454,12 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wd.PayoutID = payout.ID
-	if err := s.persistWithdrawalUpdate(wd, "payout_id"); err != nil {
+	if err := persistUpdate("payout_id"); err != nil {
+		if errors.Is(err, errWithdrawalStateChanged) {
+			s.writeWithdrawalStateChanged(w, withdrawalID)
+			return
+		}
+
 		// Payout succeeded but we couldn't persist the ID. Webhook will
 		// arrive with the payout ID — without the index entry the sweep
 		// matcher will still reconcile it by connected account. Log loudly
@@ -498,24 +534,38 @@ func (s *Server) creditRefundOnceWithRetry(accountID string, amountMicroUSD int6
 	return false
 }
 
-// persistWithdrawalUpdate retries a withdrawal-row update with short backoff.
+// persistWithdrawalUpdate retries transient errors with the same expected state.
+// A changed row returns immediately; retrying it must not overwrite a webhook.
 // Used after money has moved (transfer/payout created): losing the update
 // strands the row in a state the webhook matcher and sweep reconciler don't
 // look at, so it's worth riding out a transient store blip in-request. Like
 // creditRefundOnceWithRetry, it deliberately ignores request-context
 // cancellation (bounded at 600ms total backoff) — abandoning the persist on
 // client disconnect is exactly how rows get orphaned.
-func (s *Server) persistWithdrawalUpdate(wd *store.StripeWithdrawal, stage string) error {
+func (s *Server) persistWithdrawalUpdate(previous, wd *store.StripeWithdrawal, stage string) error {
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
 		}
-		if err = s.billing.Store().UpdateStripeWithdrawal(wd); err == nil {
+		var applied bool
+		applied, err = s.billing.Store().CompareAndSwapStripeWithdrawal(previous, wd)
+		if err == nil {
+			if !applied {
+				return errWithdrawalStateChanged
+			}
 			return nil
 		}
 		s.logger.Warn("stripe payout: persist "+stage+" attempt failed",
 			"attempt", attempt+1, "error", err, "withdrawal_id", wd.ID)
 	}
 	return err
+}
+
+var errWithdrawalStateChanged = errors.New("withdrawal state changed during submission")
+
+func (s *Server) writeWithdrawalStateChanged(w http.ResponseWriter, withdrawalID string) {
+	s.logger.Warn("stripe payout: submission state changed; preserving webhook state", "withdrawal_id", withdrawalID)
+	writeJSON(w, http.StatusConflict, errorResponse("withdrawal_state_changed",
+		"your withdrawal was updated while it was being submitted — check its status before retrying"))
 }

@@ -369,8 +369,16 @@ type BillingStore interface {
 	// ID (tr_…). Used in transfer.failed webhook handlers.
 	GetStripeWithdrawalByTransferID(transferID string) (*StripeWithdrawal, error)
 
-	// UpdateStripeWithdrawal persists status/transfer/payout/fail-reason changes.
+	// UpdateStripeWithdrawal is an unconditional legacy update. New production
+	// read-modify-write paths must use CompareAndSwapStripeWithdrawal or a
+	// purpose-specific atomic transition.
 	UpdateStripeWithdrawal(withdrawal *StripeWithdrawal) error
+
+	// CompareAndSwapStripeWithdrawal changes mutable progress only while it
+	// matches previous. An exact next state is an idempotent success. Missing
+	// or concurrently changed rows return false; immutable money/account fields
+	// are preserved. Use this for submission and legacy status-only updates.
+	CompareAndSwapStripeWithdrawal(previous, next *StripeWithdrawal) (bool, error)
 
 	// MarkStripeWithdrawalPaid atomically flips a withdrawal to "paid" —
 	// but only from a non-terminal, non-refunded state ("pending" or

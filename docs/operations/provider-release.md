@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-11 · commit `75a7185dc`
+> Last updated: 2026-09-11 · commit `e9018bb41`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -330,6 +330,11 @@ that directory, resolve the reported filesystem error, and restore its
 `Darkbloom.app` and/or `bin` payload before retrying. Keep relative symlinks as
 symlinks when moving them back to their original path. Installer output does not claim
 that a failed restoration left the live installation unchanged.
+
+If replacement succeeds but obsolete backup cleanup fails, installation continues
+successfully and reports the leftover path. The new app and bin are already
+active: resolve the cleanup error before removing that obsolete backup; this
+warning does not call for restoring the previous installation.
 
 A registered release is immutable (hash-pinned); rollback means **deactivating
 it** so the previous active version becomes "latest" again.

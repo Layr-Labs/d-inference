@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `75a7185dc`
+> Last updated: 2026-09-11 · commit `e9018bb41`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -916,7 +916,8 @@ permission, link, copy and rename failures into app and legacy-flat commit
 functions under conditional invocation (where Bash disables `errexit`). It checks
 unchanged live paths after preparation failures, rollback of both app and bin,
 relative/dangling symlink restoration, retention after rollback failure, unrelated
-bin entries, and private download-file permissions and cleanup.
+bin entries, successful replacement despite obsolete-backup cleanup failure,
+and private download-file permissions and cleanup.
 These fixtures use temporary directories without downloads, signing, enrollment,
 or running the provider; Release Integrity CI runs them on Linux.
 

@@ -1,6 +1,6 @@
 # Install, update, and uninstall the provider
 
-> Last updated: 2026-09-11 · commit `75a7185dc`
+> Last updated: 2026-09-11 · commit `e9018bb41`
 
 How to put the `darkbloom` CLI on an Apple Silicon Mac with `scripts/install.sh`,
 what the script verifies before it touches an existing install, how the binary
@@ -94,7 +94,9 @@ The script performs these actions in order (`scripts/install.sh`; failures exit
      `.install-backup-*` and prints its recovery location. Keep that directory
      and follow [installer rollback](../operations/provider-release.md#rollback)
      before retrying or removing any backup. Relative and dangling symlink
-     backups are retained and restored as links.
+     backups are retained and restored as links. Once both live paths are installed,
+     backup cleanup failure emits a warning with the obsolete backup path and
+     continues successfully; the new installation remains active.
 4. **PATH.** `ln -sf ~/.darkbloom/bin/darkbloom /usr/local/bin/darkbloom`
    (errors ignored). The rc file is `~/.zshrc`, or `~/.bashrc` only when
    `~/.zshrc` does not exist. If the rc does not already mention

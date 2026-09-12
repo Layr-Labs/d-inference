@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-11 · commit `31e63a9d9`
+> Last updated: 2026-09-12 · commit `be52008ef`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -128,6 +128,8 @@ Sidecar Tests").
 
 Config-mutation test builds use the same CLI helpers with migration disabled
 for temporary fixtures; see [the provider test procedure](test.md#4-provider-swift--unit-tests-with-a-source-matched-metallib).
+The same test product includes the [stream and model-list assertion checks](test.md#stream-and-model-list-assertions);
+those checks use scripted engines and need no downloaded model.
 
 ```bash
 make provider-build

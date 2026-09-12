@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-11 · commit `beb33a8c7`
 
 How the coordinator's `promptsidecar` child process derives deterministic,
 provider-compatible token boundaries so exact-cache routing can predict which
@@ -152,6 +152,12 @@ this instruction itself. Qwen and Harmony system-turn folding then mirrors
 `Qwen35TemplateFix` / `GPTOSSHarmonyTemplateFix` / `LeadingSystemMessageNormalizer` before rendering
 (`coordinator/promptsidecar/src/leading_system.rs`, `normalize_messages`). Invalid or
 unsupported shapes fail cold.
+
+Constrained tool validation and grammar-cost accounting inspect the same borrowed
+`const`/`enum` values from the parsed schema; they do not allocate temporary
+reference vectors. Numeric, nullable, delimiter and grammar-complexity bounds
+remain in `coordinator/promptsidecar/src/tool_constraint.rs`
+(`validate_finite_values`, `constrained_schema_grammar_cost`).
 
 The production parity gate captures the request entering the engine through
 `MLXOpenAIService.streamChatCompletionFrames`, then checks tokens and scoped
@@ -401,11 +407,14 @@ gate.
 | Configuration and startup checks | `coordinator/promptcontract/config.go` (`ReadSupervisorConfig`, `Check`) |
 | Go client: plan, fail-cold, preload, metrics | `coordinator/promptcontract/client.go` (`Plan`, `PlanFailCold`), `coordinator/promptcontract/client_control.go` (`Ready`, `Preload`, `Metrics`) |
 | Artifact provisioning and verified publication | `coordinator/promptcontract/provisioner.go`, `coordinator/promptcontract/artifact_cache.go` |
+| Descriptor-relative artifact paths | `coordinator/promptcontract/secure_files_unix.go` (`walkSecureDirectories`): absolute and root-relative path validation share descriptor traversal, optional directory creation, `O_NOFOLLOW` checks and ownership cleanup |
 | Preload gate per child generation | `coordinator/promptcontract/preload_controller.go` |
 | Contract identity and block chain (Go) | `coordinator/promptcontract/contract.go`, `coordinator/promptcontract/blockhash.go` |
 | Sidecar process, socket server, routes | `coordinator/promptsidecar/src/main.rs`, `coordinator/promptsidecar/src/server.rs`, `coordinator/promptsidecar/src/server/handler.rs` |
+| Bounded HTTP JSON decoding | `coordinator/promptsidecar/src/server/handler.rs` (`decode_request`): plan and preload share declared/streamed body bounds, read deadline and JSON decoding; each operation retains its own malformed-request message and worker timeout policy |
 | Planner, contract LRU, artifact loading | `coordinator/promptsidecar/src/planner.rs`, `coordinator/promptsidecar/src/artifact_cache.rs`, `coordinator/promptsidecar/src/artifacts.rs` |
 | Normalisation, render, tokenizer-side identity and hashes | `coordinator/promptsidecar/src/normalize.rs`, `coordinator/promptsidecar/src/render.rs`, `coordinator/promptsidecar/src/contract.rs`, `coordinator/promptsidecar/src/hash.rs` |
+| Template value coercion | `coordinator/promptsidecar/src/render_values.rs` (`sanitize`, `sanitize_array`, `scalar_string`): base/Harmony normalization and Gemma argument/schema preparation share null removal and scalar string rendering |
 | Wire shapes and metrics | `coordinator/promptsidecar/src/api.rs`, `coordinator/promptsidecar/src/preload.rs`, `coordinator/promptsidecar/src/metrics.rs` |
 | Provider-side identity | `provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift` |
 | Fixtures, generator, parity gate | `fixtures/prompt-contract/v1`, `coordinator/promptsidecar/src/bin/prompt-fixtures.rs`, `coordinator/cmd/promptfixtureinput`, `coordinator/cmd/promptsidecarloadproof`, `scripts/verify-prompt-parity.sh`, `coordinator/promptsidecar/tests/planner_fixture.rs` |

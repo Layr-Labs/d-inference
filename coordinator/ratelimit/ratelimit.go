@@ -99,23 +99,7 @@ func (l *Limiter) AllowN(accountID string, n int) (bool, time.Duration) {
 	now := time.Now()
 	e := l.bucketFor(accountID, now)
 
-	if e.limiter.AllowN(now, n) {
-		return true, 0
-	}
-	// Denied. Compute Retry-After from the token deficit. TokensAt is a
-	// pure read so this doesn't affect bucket state.
-	deficit := float64(n) - e.limiter.TokensAt(now)
-	if deficit < 0 {
-		deficit = 0
-	}
-	retryAfter := time.Duration(deficit / l.cfg.RPS * float64(time.Second))
-	if retryAfter < time.Millisecond {
-		retryAfter = DefaultRetryAfter
-	}
-	if retryAfter > maxRetryAfter {
-		retryAfter = maxRetryAfter
-	}
-	return false, retryAfter
+	return allowBucket(e.limiter, now, n, l.cfg.RPS)
 }
 
 func (l *Limiter) DebitN(accountID string, n int) {
@@ -124,16 +108,7 @@ func (l *Limiter) DebitN(accountID string, n int) {
 	}
 	now := time.Now()
 	e := l.bucketFor(accountID, now)
-	for remaining := n; remaining > 0; {
-		chunk := remaining
-		if chunk > l.cfg.Burst {
-			chunk = l.cfg.Burst
-		}
-		if chunk <= 0 || !e.limiter.ReserveN(now, chunk).OK() {
-			return
-		}
-		remaining -= chunk
-	}
+	debitBucket(e.limiter, now, n, l.cfg.Burst)
 }
 
 // CanN reports whether n units are currently available for the account WITHOUT
@@ -208,10 +183,25 @@ func (l *Limiter) AllowNWithRate(key string, n int, rps float64, burst int) (boo
 	}
 	now := time.Now()
 	e := l.bucketForWithRate(key, rps, burst, now)
-	if e.limiter.AllowN(now, n) {
+	return allowBucket(e.limiter, now, n, rps)
+}
+
+func (l *Limiter) DebitNWithRate(key string, n int, rps float64, burst int) {
+	if key == "" || n <= 0 || rps <= 0 || burst <= 0 {
+		return
+	}
+	now := time.Now()
+	e := l.bucketForWithRate(key, rps, burst, now)
+	debitBucket(e.limiter, now, n, burst)
+}
+
+// allowBucket uses an atomic, non-reserving check. Retry-After is a pure
+// token-deficit read, so rejected requests do not accumulate phantom debt.
+func allowBucket(bucket *rate.Limiter, now time.Time, n int, rps float64) (bool, time.Duration) {
+	if bucket.AllowN(now, n) {
 		return true, 0
 	}
-	deficit := float64(n) - e.limiter.TokensAt(now)
+	deficit := float64(n) - bucket.TokensAt(now)
 	if deficit < 0 {
 		deficit = 0
 	}
@@ -225,18 +215,10 @@ func (l *Limiter) AllowNWithRate(key string, n int, rps float64, burst int) (boo
 	return false, retryAfter
 }
 
-func (l *Limiter) DebitNWithRate(key string, n int, rps float64, burst int) {
-	if key == "" || n <= 0 || rps <= 0 || burst <= 0 {
-		return
-	}
-	now := time.Now()
-	e := l.bucketForWithRate(key, rps, burst, now)
+func debitBucket(bucket *rate.Limiter, now time.Time, n, burst int) {
 	for remaining := n; remaining > 0; {
-		chunk := remaining
-		if chunk > burst {
-			chunk = burst
-		}
-		if chunk <= 0 || !e.limiter.ReserveN(now, chunk).OK() {
+		chunk := min(remaining, burst)
+		if chunk <= 0 || !bucket.ReserveN(now, chunk).OK() {
 			return
 		}
 		remaining -= chunk

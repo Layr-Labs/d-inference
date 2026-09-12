@@ -531,23 +531,7 @@ func (c *StripeConnect) CreatePayout(params CreatePayoutParams) (*Payout, error)
 	if err != nil {
 		return nil, fmt.Errorf("stripe connect: create payout: %w", err)
 	}
-	var resp struct {
-		ID          string `json:"id"`
-		Amount      int64  `json:"amount"`
-		Method      string `json:"method"`
-		Status      string `json:"status"`
-		ArrivalDate int64  `json:"arrival_date"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("stripe connect: parse payout: %w", err)
-	}
-	return &Payout{
-		ID:          resp.ID,
-		AmountCents: resp.Amount,
-		Method:      resp.Method,
-		Status:      resp.Status,
-		ArrivalDate: resp.ArrivalDate,
-	}, nil
+	return parsePayout(body)
 }
 
 // GetPayout fetches a payout's live state from Stripe, authenticated as the
@@ -575,6 +559,11 @@ func (c *StripeConnect) GetPayout(connectedAcctID, payoutID string) (*Payout, er
 	if err != nil {
 		return nil, fmt.Errorf("stripe connect: get payout: %w", err)
 	}
+	return parsePayout(body)
+}
+
+// parsePayout shares the wire projection for payout creation and reconciliation.
+func parsePayout(body []byte) (*Payout, error) {
 	var resp struct {
 		ID          string `json:"id"`
 		Amount      int64  `json:"amount"`
@@ -585,8 +574,13 @@ func (c *StripeConnect) GetPayout(connectedAcctID, payoutID string) (*Payout, er
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("stripe connect: parse payout: %w", err)
 	}
-	return &Payout{ID: resp.ID, AmountCents: resp.Amount, Method: resp.Method,
-		Status: resp.Status, ArrivalDate: resp.ArrivalDate}, nil
+	return &Payout{
+		ID:          resp.ID,
+		AmountCents: resp.Amount,
+		Method:      resp.Method,
+		Status:      resp.Status,
+		ArrivalDate: resp.ArrivalDate,
+	}, nil
 }
 
 // stripePayoutIDRe validates payout IDs before path construction (same
@@ -911,23 +905,14 @@ func parseAccount(body []byte) (*ExpressAccount, error) {
 
 	// Pick the default external account (or the first one) as the destination
 	// we display. Instant Payouts only work against debit cards.
-	var pick *struct {
-		Object             string `json:"object"`
-		Last4              string `json:"last4"`
-		Brand              string `json:"brand"`
-		Funding            string `json:"funding"`
-		DefaultForCurrency bool   `json:"default_for_currency"`
-	}
-	for i := range resp.ExternalAccounts.Data {
-		ea := &resp.ExternalAccounts.Data[i]
-		if pick == nil || ea.DefaultForCurrency {
-			pick = ea
+	if len(resp.ExternalAccounts.Data) > 0 {
+		pick := &resp.ExternalAccounts.Data[0]
+		for i := range resp.ExternalAccounts.Data {
+			if resp.ExternalAccounts.Data[i].DefaultForCurrency {
+				pick = &resp.ExternalAccounts.Data[i]
+				break
+			}
 		}
-		if ea.DefaultForCurrency {
-			break
-		}
-	}
-	if pick != nil {
 		switch pick.Object {
 		case "bank_account":
 			acct.DestinationType = "bank"

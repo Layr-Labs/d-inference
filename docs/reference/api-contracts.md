@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-11 · commit `e3993c611`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -222,8 +222,8 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | POST | `/v1/admin/auth/verify` | `handleAdminAuthVerify` (`coordinator/api/release_handlers.go`) | `—` | Verifies the OTP and returns a session token for the admin console |
 | POST | `/v1/admin/invite-codes` | `handleAdminCreateInviteCode` (`coordinator/api/invite_handlers.go`) | `admin` (`fin`) | 409 `conflict` on code collision |
 | GET / DELETE | `/v1/admin/invite-codes` | `handleAdminListInviteCodes`, `handleAdminDeactivateInviteCode` (`coordinator/api/invite_handlers.go`) | `admin` | Two registrations |
-| POST | `/v1/admin/credit` | `handleAdminCredit` (`coordinator/api/billing_handlers.go`) | `admin` | Manual ledger credit |
-| POST | `/v1/admin/reward` | `handleAdminReward` (`coordinator/api/billing_handlers.go`) | `admin` | Manual provider reward |
+| POST | `/v1/admin/credit` | `handleAdminCredit` (`coordinator/api/admin_balance_adjustment.go`) | `admin` | Manual ledger credit |
+| POST | `/v1/admin/reward` | `handleAdminReward` (`coordinator/api/admin_balance_adjustment.go`) | `admin` | Manual provider reward |
 | GET | `/v1/admin/log-reports/{id}` | `handleGetLogReport` (`coordinator/api/log_report_handlers.go`) | `admin` | Fetch an uploaded provider log bundle |
 | GET | `/v1/admin/metrics` | `handleAdminMetrics` | `admin-key` | Telemetry counters |
 | GET | `/v1/admin/base-rewards` | `handleAdminBaseRewards` (`coordinator/api/base_rewards_handlers.go`) | `admin-key` | |
@@ -558,4 +558,5 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |
 | Release, enrollment, provider WS, log reports | `coordinator/api/release_handlers.go`, `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
 | Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |
+| Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |
 | Shared types and helpers | `coordinator/api/types/types.go`, `coordinator/api/httputil.go`, `coordinator/ratelimit/ratelimit.go`, `coordinator/modelpolicy/first_content_deadline.go` |

@@ -14,11 +14,13 @@ import (
 
 type requestOutcomeKey struct{}
 type requestOutcome struct {
-	mu        sync.Mutex
-	sink      *requestOutcomeSink
-	record    store.RequestOutcomeRecord
-	profile   *registry.RequestProfile
-	finalized map[string]store.RequestAttemptOutcome
+	mu      sync.Mutex
+	sink    *requestOutcomeSink
+	record  store.RequestOutcomeRecord
+	profile *registry.RequestProfile
+	// Finalization only needs membership; refreshLocked reads current evidence
+	// from the profile instead of retaining a second attempt snapshot.
+	finalized map[string]struct{}
 	finished  bool
 }
 
@@ -62,7 +64,7 @@ func (s *Server) observeRequestOutcome(next http.HandlerFunc) http.HandlerFunc {
 			meta = &requestMeta{coordID: uuid.NewString(), start: time.Now()}
 			r = r.WithContext(context.WithValue(r.Context(), requestMetaKey{}, meta))
 		}
-		o := &requestOutcome{sink: s.requestOutcomes, finalized: make(map[string]store.RequestAttemptOutcome), record: store.RequestOutcomeRecord{CoordRequestID: meta.coordID, SchemaVersion: store.RequestOutcomeSchemaVersion, ReceivedAt: meta.start, Endpoint: r.URL.Path, RawStage: "drain", Termination: "in_progress", ResponseProgress: "unknown", ProviderOutcome: "no_terminal", ResponseTerminal: "unknown", Attempts: []store.RequestAttemptOutcome{}}}
+		o := &requestOutcome{sink: s.requestOutcomes, finalized: make(map[string]struct{}), record: store.RequestOutcomeRecord{CoordRequestID: meta.coordID, SchemaVersion: store.RequestOutcomeSchemaVersion, ReceivedAt: meta.start, Endpoint: r.URL.Path, RawStage: "drain", Termination: "in_progress", ResponseProgress: "unknown", ProviderOutcome: "no_terminal", ResponseTerminal: "unknown", Attempts: []store.RequestAttemptOutcome{}}}
 		r = r.WithContext(context.WithValue(r.Context(), requestOutcomeKey{}, o))
 		ow := &outcomeWriter{ResponseWriter: w, outcome: o}
 		s.requestOutcomes.received.Add(1)
@@ -107,7 +109,7 @@ func (o *requestOutcome) attemptFinalized(rp *registry.RequestProfile, ap *regis
 	defer o.mu.Unlock()
 	key := ap.RequestID + "/" + strconv.Itoa(ap.Attempt)
 	if len(o.finalized) < store.MaxRequestOutcomeAttempts {
-		o.finalized[key] = compactAttemptOutcome(ap)
+		o.finalized[key] = struct{}{}
 	} else {
 		o.record.AttemptsTruncated = true
 	}

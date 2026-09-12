@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-09 · commit `4c77fc285`
+> Last updated: 2026-09-11 · commit `e8790dafe`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -214,6 +214,8 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 
 ### Global Payouts state
 
+Claims, result application and definitive-rejection records use one locked PostgreSQL mutation boundary (`coordinator/store/global_payouts_postgres.go`, `mutateGlobalPayout`). Operation-specific checks run under the withdrawal row lock; any refund ledger entry and payout update commit together. A no-op claim rolls back without changing the lease or dispatch count.
+
 Payouts marked `manual_reconciliation_required` without an external payment ID are excluded from automatic scans and claims; their pending row and debit are retained. A verified external ID permits readback reconciliation to resume (`coordinator/store/global_payouts.go`, `GlobalPayout.RequiresManualReconciliation`).
 
 Global Payouts uses separate recipient and withdrawal tables with immutable request data, persisted dispatch counts, definitive rejection records, an indexed quote expiry and a unique external-payment index. `GlobalPayoutStore` is accessed through `store.As` so decorators preserve the capability. These mutations do not write the cached users table. The migration creates the payout tables and adds/backfills indexed quote expiry for an earlier Global Payouts schema (`coordinator/store/global_payouts_postgres.go`, `globalPayoutSchema`). Cleanup locks and removes only expired, never-confirmed quotes in bounded batches; confirmed payout and ledger records are retained (`coordinator/store/global_payouts_maintenance.go`, `PruneExpiredGlobalPayoutQuotes`).
@@ -311,6 +313,7 @@ KV blocks under a per-model key, not tokens.
 | Interface and record types | `coordinator/store/interface.go`, `coordinator/store/interface_domains.go` |
 | Backend selection and validation | `coordinator/store/config.go`, `coordinator/cmd/coordinator/main.go` |
 | Postgres pool, schema, one-shot migrations | `coordinator/store/postgres.go`, `coordinator/store/postgres_usage_totals_migration.go`, `coordinator/store/postgres_withdrawable_migration.go`, `coordinator/store/postgres_log_report_privacy.go` |
+| Provider identity and usage reads | `coordinator/store/postgres_provider_read.go` (`providerRecordColumns`, `scanProviderRecord`, `GetProviderRecord`, `GetProviderBySerial`); `coordinator/store/provider_restore.go` (`GetProviderForRestore`, using the same projection); `coordinator/store/postgres_usage_read.go` (`readUsageRecords`, `UsageRecords`, `UsageRecordsSince`); `coordinator/store/postgres_row.go` (`rowScanner`) |
 | Domain files | `coordinator/store/postgres_model_registry.go`, `coordinator/store/postgres_base_rewards.go`, `coordinator/store/postgres_profiles.go`, `coordinator/store/route_telemetry.go`, `coordinator/store/usage_time_series.go`, `coordinator/store/apikey.go` |
 | Memory backend | `coordinator/store/memory.go`, `coordinator/store/memory_base_rewards.go` |
 | Manual SQL | `coordinator/store/migrations/` |

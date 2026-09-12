@@ -52,8 +52,8 @@ export function NormalMode({
       color: "text-purple",
       title: "Anti-Tampering",
       description:
-        "No process can inspect memory during inference. Debuggers are blocked and memory is wiped after each request.",
-      info: "PT_DENY_ATTACH prevents debugger attachment. Hardened Runtime blocks task_for_pid. Memory is zeroed after each request.",
+        "The signed provider uses macOS hardened runtime protections and debugger restrictions during inference.",
+      info: "PT_DENY_ATTACH and Hardened Runtime restrict debugger attachment and task inspection. The provider processes plaintext to run inference.",
       ok: isHardware,
     },
   ];

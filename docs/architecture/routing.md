@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-11 · commit `fd31a0570`
+> Last updated: 2026-09-11 · commit `6716a2cff`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -276,6 +276,15 @@ Useful reuse subtracts a bounded credit; excess restore cost increases
 `ThisReqMs`. Queue, load, decode and admission costs remain intact. The rules
 and their flag are the subject of
 [`cache-aware-routing.md`](cache-aware-routing.md).
+
+Capacity readiness preserves the same fleet-wide health-breaker fallback. If a
+model has an observed breaker/ejection rejection, `modelCapacityBreakerFallbackLocked`
+in `coordinator/registry/model_capacity.go` uses the shared candidate scan and
+`shouldBypassBreakerFailOpen` before admitting last-resort providers. A healthy
+but busy peer suppresses that fallback. The read-only probe represents the
+smallest positive text reservation (one output token, no TTFT ceiling); it does
+not commit a reservation. Structural, thermal, memory and cooldown gates remain
+in force, and inventory totals stay separate from readiness.
 
 ### Selection paths
 

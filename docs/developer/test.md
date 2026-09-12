@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `b8d26a28c`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1262,6 +1262,20 @@ construction suite does not replace the real-checkpoint fixture above. Live test
 skips must be reported as unrun qualification.
 
 ## Connected coordinator/provider HTTP cache gate
+
+The local capture/input/evidence fixtures need no provider or model:
+
+```bash
+go test -race ./e2e -short -run 'TestConnected|TestIntegrationConnected(Capture|InputRejects|EvidenceRequires)' -count=1
+```
+
+`e2e/connected_cache_stream_test.go` (`postConnectedStream`) retains the exact
+bounded SSE bytes once on return, including cancellation and failure prefixes.
+Request-scoped lookup/terminal evidence must carry the dispatched request ID;
+background observations need none. Malformed null catalog rows return a normal
+input error. The CPU loopback `BenchmarkConnectedCapture` measures capture
+allocation overhead only, not model decode or TTFT performance. Its original
+output bound, finish/DONE checks and report schema are unchanged.
 
 For a focused release-default check, use
 `e2e/release_defaults_http_test.go` (`TestIntegrationReleaseDefaultsHTTP`).

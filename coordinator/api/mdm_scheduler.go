@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -176,6 +177,12 @@ func verificationSchedulerKey(seKey string, kind store.VerificationTaskKind) str
 	return seKey + "\x00" + string(kind)
 }
 
+// Each attempt owns a distinct durable claim. The scheduler prefix lets
+// shutdown and reconnect distinguish its claims from another coordinator's.
+func (s *mdmVerificationScheduler) ownsClaim(owner string) bool {
+	return owner == s.owner || strings.HasPrefix(owner, s.owner+"/")
+}
+
 // isUrgentVerification reports whether a job may occupy the reserved urgent
 // worker capacity: only first/expired SecurityInfo work qualifies.
 func isUrgentVerification(rec store.VerificationJob) bool {
@@ -226,7 +233,7 @@ func (s *mdmVerificationScheduler) Close() {
 		claimed := make([]store.VerificationJob, 0, s.cfg.Workers)
 		for _, job := range s.jobs {
 			if job.record.State == store.VerificationStateRunning &&
-				job.record.ClaimOwner == s.owner {
+				s.ownsClaim(job.record.ClaimOwner) {
 				claimed = append(claimed, job.record)
 			}
 		}
@@ -239,7 +246,7 @@ func (s *mdmVerificationScheduler) Close() {
 		now := s.deps.now().UTC()
 		for _, rec := range claimed {
 			if err := s.store.ReleaseVerificationJob(
-				cleanupCtx, rec.SEPubKey, rec.Kind, s.owner, now,
+				cleanupCtx, rec.SEPubKey, rec.Kind, rec.ClaimOwner, now,
 			); err != nil {
 				s.server.logger.Error(
 					"failed to release MDM scheduler claim during shutdown",

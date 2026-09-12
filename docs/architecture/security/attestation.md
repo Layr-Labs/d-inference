@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-12 · commit `f87bd0e77`
+> Last updated: 2026-09-12 · commit `db418ae70`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -154,6 +154,7 @@ challenge, so a throttled APNs push cannot strand a genuine device.
 | Fact | Value | Code |
 |---|---|---|
 | Scheduling | One durable `VerificationJob` per live connection binding; kinds `security_info` and `mda`; `Workers` ≤ 12 (`defaultMDMVerificationWorkers`), queue ≤ 4096, one worker reserved for first/expired SecurityInfo attempts, claim TTL 3m, dispatch tick 1s | `coordinator/api/mdm_scheduler.go`, `coordinator/api/mdm_scheduler_config.go`, `coordinator/api/server_config.go`; `coordinator/store/interface.go` (`VerificationJob`, `VerificationTaskKind`) |
+| Attempt ownership | Each claim gets a unique token under the scheduler's process ID. A retired worker releases, completes or reschedules only its original token; clearing live cancellation or queue state also checks that token and connection generation. A durable read used to refresh reconnect work is published only while the observed queued record remains unchanged | `coordinator/api/mdm_scheduler_exec.go` (`claimAndDispatch`, `finishAttempt`); `coordinator/api/mdm_scheduler_queue.go` (`refreshReboundJob`); [store completion ownership](../storage.md#verification-job-ownership) |
 | Retry after a transient outcome | first retry 2–4m, second 6–12m, then every 15–30m (jittered) | `coordinator/api/mdm_scheduler.go` (`mdmRetryFirstMin` … `mdmRetrySteadyMax`) |
 | Delay before the first attempt | first or expired verification (the provider holds no usable grant): due almost at once, jitter capped by `mdmFirstVerifySpreadMax` (5 s). Refresh or recovery of a still-valid grant: jitter between [`EIGENINFERENCE_MDM_INITIAL_SPREAD_MIN` and `_MAX`](../../reference/configuration.md#mdm-attestation-and-apns), so releases and coordinator restarts do not stampede MDM | `coordinator/api/mdm_scheduler_queue.go` (`initialSpread`), `coordinator/api/mdm_scheduler.go` (`mdmFirstVerifySpreadMax`) |
 | One attempt | Look up the UDID by serial via the MicroMDM API → enqueue `SecurityInfo` → push → await ≤ 90s → `VerificationResult{DeviceEnrolled, MDMSIPEnabled, MDMSecureBootFull, MDMAuthRootVolume, SIPMatch, SecureBootMatch, SecurityMismatch, Error}` | `coordinator/mdm/mdm.go` (`VerifyProviderWithUDIDObserver`, `awaitSecurityInfo`) |

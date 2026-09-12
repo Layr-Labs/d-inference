@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Preserve replacement MDM verification claims, cancellation and retry state when a retired worker finishes after a reconnect. Each attempt now settles only its own claim token, and stale store reads cannot overwrite a newer queued retry.
 - Preserve a provider reconnect's verification binding when the prior connection finishes its cached Apple proof check or a missing-UDID fallback. Live and late SecurityInfo grants now share the same generation-aware MDA follow-up.
 
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)

@@ -5511,7 +5511,7 @@ func (s *PostgresStore) CompleteVerificationJob(ctx context.Context, seKey strin
 		        reopen_pending = FALSE, updated_at = $5,
 		        claim_owner = '', claim_expires_at = NULL
 		  WHERE se_pubkey = $1 AND task_kind = $2
-		    AND (claim_owner = '' OR claim_owner = $3)`,
+		    AND claim_owner = $3`,
 		seKey, kind, owner, outcome, now)
 	if err != nil {
 		return fmt.Errorf("store: complete verification job: %w", err)

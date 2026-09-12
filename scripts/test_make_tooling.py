@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -42,8 +43,12 @@ if args[:2] == ["-m", "pip"] and os.environ.get("TOOLING_TEST_FAIL_INSTALL"):
     sys.exit(17)
 ''')
         fake_python.chmod(0o755)
+        # Each stub tree exercises its own Makefile defaults. An outer `make
+        # tooling-test TOOLING_VENV=...` exports both recursive flags and values.
+        inherited_make = {"MAKEFLAGS", "MAKEOVERRIDES", "MFLAGS", "GNUMAKEFLAGS", "MAKELEVEL",
+                          "TOOLING_VENV", "TOOLING_PYTHON", "TOOLING_REQUIREMENTS"}
         self.environment = {
-            **os.environ,
+            **{key: value for key, value in os.environ.items() if key not in inherited_make},
             "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
             "TOOLING_TEST_LOG": str(self.log),
         }
@@ -87,6 +92,17 @@ if args[:2] == ["-m", "pip"] and os.environ.get("TOOLING_TEST_FAIL_INSTALL"):
         result = self.make()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sum(call.startswith("-m pip install -r ") for call in self.calls()), 2)
+
+    def test_outer_make_override_does_not_change_stub_environment(self):
+        outer = self.root / "outer.mk"
+        test = "scripts.test_make_tooling.ToolingEnvironmentTests.test_fresh_tests_install_once_and_reuse_pinned_environment"
+        outer.write_text(".PHONY: check\ncheck:\n\t" + shlex.quote(sys.executable)
+                         + " -m unittest " + test + "\n")
+        result = subprocess.run(
+            ["make", "-f", str(outer), "check", "TOOLING_VENV=.venv/tooling-py312"],
+            cwd=MAKEFILE.parent, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

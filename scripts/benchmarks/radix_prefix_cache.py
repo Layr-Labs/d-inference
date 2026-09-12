@@ -12,6 +12,7 @@ import hashlib
 import json
 from pathlib import Path
 import time
+import unicodedata
 import urllib.request
 
 
@@ -163,12 +164,37 @@ def equality(left, right):
             "generated_token_ids_compared": False}
 
 
+def load_replay(path, model):
+    """Validate replay ownership/order before creating artifacts or sending work."""
+    report = json.loads(Path(path).read_text())
+    rows = report.get("rows") if isinstance(report, dict) else None
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("replay requires a nonempty row list")
+    reference = {}
+    filenames = {"warmup", "cancellation", "report"}
+    for row in rows:
+        case = row.get("case") if isinstance(row, dict) else None
+        name = case.get("id") if isinstance(case, dict) else None
+        if not isinstance(name, str) or not name or any(char in name for char in ("/", "\\", "\x00")):
+            raise ValueError("replay case ID must be one nonempty filename component")
+        filename = unicodedata.normalize("NFC", name).casefold()
+        if filename in filenames:
+            raise ValueError("replay case ID duplicates or overwrites retained evidence")
+        request_body = row.get("request")
+        if not isinstance(request_body, dict) or request_body.get("model") != model:
+            raise ValueError("replay model must match baseline")
+        equal_to = case.get("equal_to")
+        if equal_to and (not isinstance(equal_to, str) or equal_to not in reference):
+            raise ValueError("replay comparison must reference an earlier case")
+        reference[name] = row
+        filenames.add(filename)
+    return reference
+
+
 def run(args):
+    reference = load_replay(args.replay, args.model) if args.replay else {}
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=False)
-    reference = {}
-    if args.replay:
-        reference = {row["case"]["id"]: row for row in json.loads(Path(args.replay).read_text())["rows"]}
     rows = []
     by_id = {}
     # Model loading and kernel warmup are explicit, retained and excluded.
@@ -179,8 +205,6 @@ def run(args):
     for case in plan:
         if reference:
             req_body = reference[case["id"]]["request"]
-            if req_body["model"] != args.model:
-                raise ValueError("replay model must match baseline")
         else:
             messages = case.get("messages")
             if messages is None:

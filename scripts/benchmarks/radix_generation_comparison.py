@@ -11,9 +11,12 @@ def comparison_records(report):
         return isinstance(value, list) and bool(value) and all(type(t) is int and t >= 0 for t in value)
     def digest(value):
         return hashlib.sha256(json.dumps(value, separators=(",", ":")).encode()).hexdigest()
+    identities = {}
     def identity(path, row):
-        return dict(path=path, **{key: row.get(key) for key in ("id", "kind", "scope", "finish", "completion_tokens")},
-                    token_ids_sha256=digest(row["token_ids"]), prompt_token_ids_sha256=digest(row["prompt_token_ids"]))
+        if path not in identities:
+            identities[path] = dict(path=path, **{key: row.get(key) for key in ("id", "kind", "scope", "finish", "completion_tokens")},
+                                   token_ids_sha256=digest(row["token_ids"]), prompt_token_ids_sha256=digest(row["prompt_token_ids"]))
+        return dict(identities[path])  # Each comparison keeps an independent value.
     result = []
     for i, (lp, left) in enumerate(rows):
         if not tokens(left.get("token_ids")) or not tokens(left.get("prompt_token_ids")):

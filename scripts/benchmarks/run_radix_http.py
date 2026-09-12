@@ -26,11 +26,17 @@ def ranked_job():
 def terminate(process):
     if process is None or process.poll() is not None:
         return
-    os.killpg(process.pid, signal.SIGTERM)
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass  # The owned group exited between poll and signal; still reap it.
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         process.wait(timeout=5)
 
 

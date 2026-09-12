@@ -2,7 +2,9 @@ import copy
 import contextlib
 import io
 import unittest
+from unittest.mock import patch
 
+import radix_generation_comparison
 from radix_generation_comparison import comparison_records, policy_errors
 from radix_engine_evidence import cancellation_errors, report_errors
 from run_radix_engine import arguments, probe_command
@@ -10,6 +12,19 @@ import test_radix_engine_evidence as fixtures
 
 
 class GenerationComparisonTests(unittest.TestCase):
+    def test_repeated_pairs_hash_each_observation_once_without_aliasing_records(self):
+        row = {"id": "same", "prompt_token_ids": [1, 2], "token_ids": [3, 4],
+               "kind": "first", "scope": "a", "finish": "stop", "completion_tokens": 2}
+        report = {"rows": [dict(row) for _ in range(4)]}
+        sha256 = radix_generation_comparison.hashlib.sha256
+        with patch.object(radix_generation_comparison.hashlib, "sha256", wraps=sha256) as hashes:
+            records = comparison_records(report)
+        self.assertEqual(6, len(records))
+        self.assertEqual(8, hashes.call_count)  # token IDs and prompt IDs once per observation
+        records[0]["left"]["id"] = "changed"
+        self.assertEqual("same", records[1]["left"]["id"])
+        self.assertTrue(all(row["tokens_equal"] for row in records))
+
     def fixture(self, policy="record"):
         r = fixtures.FinalEvidenceTests().primed_fixture()
         # The historical synthetic fixture aliases its two tenant-A rows.

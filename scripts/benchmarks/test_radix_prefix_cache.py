@@ -1,5 +1,11 @@
 import json
+from contextlib import redirect_stdout
+import io
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import radix_prefix_cache as bench
 
@@ -55,6 +61,64 @@ class StreamEvidenceTests(unittest.TestCase):
         self.assertEqual(first["messages"][1]["content"][:32000], branch["messages"][1]["content"][:32000])
         self.assertNotEqual(first["messages"][0], plan[6]["messages"][0])
         self.assertEqual(plan[4]["parent"], first["id"])
+
+
+class ReplayInputTests(unittest.TestCase):
+    response = {"text": "answer", "reasoning": "", "finish_reasons": ["stop"],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2}, "ttft_s": 1}
+
+    def test_invalid_plan_is_refused_before_requests_and_artifact_writes(self):
+        def row(name, model="fixture", **case):
+            return {"case": {"id": name, "kind": "first", **case},
+                    "request": {"model": model}, "response": self.response}
+        plans = [[], [row("../escaped")], [row("/absolute")], [row("nested/file")],
+                 [row("a\\b")], [row("bad\x00id")], [row("warmup")], [row("REPORT")],
+                 [row("cancellation")], [row("same"), row("same")],
+                 [row("same"), row("SAME")], [row("first", "other-model")],
+                 [row("first", equal_to="missing")], [row(None)],
+                 [row("café"), row("cafe\u0301")], [row("first", equal_to=["missing"])]]
+        for rows in plans:
+            with self.subTest(rows=rows), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                rows = [{**item, "case": {**item["case"], "id": str(root / "absolute")}}
+                        if item["case"]["id"] == "/absolute" else item for item in rows]
+                source, output = root / "source.json", root / "run"
+                source.write_text(json.dumps({"rows": rows}))
+                args = SimpleNamespace(output=str(output), replay=str(source), model="fixture",
+                                       base="http://fixture.invalid", lengths=[512], repeats=1, label="fixture")
+                with patch.object(bench, "request", return_value=self.response) as request, \
+                     patch.object(bench, "metrics", return_value="stub") as metrics, \
+                     redirect_stdout(io.StringIO()), self.assertRaises(ValueError):
+                    bench.run(args)
+                request.assert_not_called()
+                metrics.assert_not_called()
+                self.assertFalse(output.exists())
+                self.assertFalse((root / "escaped.json").exists())
+
+    def test_replay_preserves_order_and_entire_request_body(self):
+        response = {"text": "retained answer", "reasoning": "", "finish_reasons": ["stop"],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2}, "ttft_s": 1}
+        body = {"model": "fixture", "messages": [{"role": "user", "content": "authored"}],
+                "tools": [{"type": "function", "function": {"name": "lookup"}}],
+                "temperature": 0.7, "max_tokens": 13, "_darkbloom_prompt_date": "2026-09-05"}
+        rows = [{"case": {"id": "custom-first", "kind": "first"}, "request": body, "response": response},
+                {"case": {"id": "custom-repeat", "kind": "repeat", "equal_to": "custom-first"},
+                 "request": dict(body, seed=42), "response": response}]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "source.json", root / "run"
+            source.write_text(json.dumps({"rows": rows}))
+            original = source.read_bytes()
+            args = SimpleNamespace(output=str(output), replay=str(source), model="fixture",
+                                   base="http://fixture.invalid", lengths=[512], repeats=1, label="fixture")
+            with patch.object(bench, "request", return_value=response) as request, \
+                 patch.object(bench, "metrics", return_value="stub metrics"), redirect_stdout(io.StringIO()):
+                bench.run(args)
+            self.assertEqual([call.args[1] for call in request.call_args_list[1:3]], [row["request"] for row in rows])
+            actual = json.loads((output / "report.json").read_text())["rows"]
+            self.assertEqual([item["case"] for item in actual], [row["case"] for row in rows])
+            self.assertEqual([item["request"] for item in actual], [row["request"] for row in rows])
+            self.assertEqual(source.read_bytes(), original)
 
 
 if __name__ == "__main__":

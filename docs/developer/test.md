@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-12 · commit `0bec448f0`
+> Last updated: 2026-09-12 · commit `d40c94ea9`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -923,10 +923,12 @@ node --test landing/earn-calculator-core.test.js
 
 ### 6. Scripts and release integrity
 
-`python3 scripts/test_review_automation.py` checks the threat review's diff
-selection with synthetic patches. It covers deleted files, metadata-only changes,
-header-like hunk content and excerpt limits without importing real API clients
-or making model calls. Release Integrity CI runs these fixtures.
+`python3 scripts/test_review_automation.py` checks review input preparation.
+Synthetic patches cover deleted files, metadata-only changes, header-like hunk
+content and excerpt limits. A stubbed `gh` command runs the Codex workflow's
+metadata step through Bash and `jq`, checking that multiline PR bodies containing
+`EOF` survive the GitHub output format. The fixtures make no API or model calls
+and run in Release Integrity CI.
 
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)

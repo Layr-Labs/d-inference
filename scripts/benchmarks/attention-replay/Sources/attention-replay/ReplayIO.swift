@@ -13,7 +13,8 @@ func sha256(_ bytes: Data) -> String {
 }
 
 func readBounded(_ url: URL, limit: Int) throws -> Data {
-    let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+    // Non-regular inputs must reach fstat instead of waiting for a FIFO writer.
+    let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
     try require(descriptor >= 0, "cannot open regular input")
     let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
     var status = stat()

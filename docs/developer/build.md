@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-12 · commit `1c4670fdf`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -223,6 +223,11 @@ ATTENTION_REPLAY_SOURCE_ROOT="$REPLAY_SOURCE_ROOT" \
 Retain the executable SHA-256, source/dependency inventory, build graph,
 `mlx.metallib` and SwiftPM resource bundles. An executable hash alone does not
 bind external Metal resources. The Python driver never builds or downloads them.
+After building against those reviewed resources, run the host-only input checks
+with the same source-root binding and scratch directory using `swift test`
+and `--filter ReplayHostTests`
+(`scripts/benchmarks/attention-replay/Tests/AttentionReplayTests/ReplayHostTests.swift`,
+`fifoInputIsRejectedWithoutWaitingForAWriter`).
 Use the [offline NumPy environment](#offline-attention-analysis-environment) for
 packet validation and the independent reference. See [replay validation](test.md#attention-operator-replay)
 and the [source/test milestone](../reports/2026-09-06-attention-operator-replay.md).

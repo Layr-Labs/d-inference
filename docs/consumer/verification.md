@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-07 · commit `efcde6334`
+> Last updated: 2026-09-12 · commit `f87bd0e77`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -115,6 +115,10 @@ A coordinator reconnect still requires a fresh process-possession challenge befo
 private routing. Recorded code-verified continuity can avoid another Apple push
 for the same process; it does not grant hardware trust or bypass verification.
 See [APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity).
+
+Read the current connection's verdict after a reconnect. An earlier connection's
+Apple proof completion does not cancel verification for its replacement
+([MDA completion ownership](../architecture/security/attestation.md#flag--apple-managed-device-attestation)).
 
 ## Related
 

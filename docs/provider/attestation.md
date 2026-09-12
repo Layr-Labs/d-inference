@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-07 · commit `efcde6334`
+> Last updated: 2026-09-12 · commit `f87bd0e77`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -87,6 +87,10 @@ To re-check after fixing something, restart the provider so it re-registers:
 darkbloom restart
 darkbloom status
 ```
+
+If you reconnect while the prior connection finishes checking a cached Apple
+proof, your new connection keeps its verification work. The coordinator scopes
+that cleanup to the completed connection ([MDA completion ownership](../architecture/security/attestation.md#flag--apple-managed-device-attestation)).
 
 ### Keeping the level
 

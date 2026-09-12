@@ -10,6 +10,8 @@ created: "2026-05-14"
 # default available-disk/2 without a fixed ceiling, 20 GiB unknown-space
 # budget fallback, and a fixed 20 GiB pre-write reserve including the pending
 # donation payload. This does not re-verify the surrounding cache threat claims.
+# MDA handoff cleanup re-checked 2026-09-12 against f87bd0e77: only the completing
+# connection generation is removed. Other TB-005 claims were not re-verified.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -514,6 +516,11 @@ trust_boundaries:
       (.8.9.2), OS version (.8.10.1), SepOS version (.8.10.2), Secure Boot level
       (.8.13.2), and freshness code (.8.11.1). The freshness code is compared against
       sha256(SE_public_key_bytes) byte-for-byte (provider.go).
+
+      Live and late SecurityInfo grants share finishSecurityInfo in
+      coordinator/api/mdm_scheduler_completion.go. Its forgetBinding cleanup
+      checks the original connection generation, preserving a replacement
+      connection that arrives during cached proof reuse or missing-UDID fallback.
 
       The SE attestation blob (attestation.go) is a JSON structure
       containing: SE public key (raw 64-byte P-256 X||Y in base64), hardware info, SIP

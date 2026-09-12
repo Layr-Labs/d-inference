@@ -40,7 +40,17 @@ struct LocalContentionSnapshot: Equatable, Sendable {
         )
     }
 
-    private static func runCapture(_ path: String, args: [String]) -> String? {
+    /// Runs `path` and returns its stdout, or nil if it could not be launched.
+    ///
+    /// The pipe is drained to EOF **before** `waitUntilExit()`. A macOS pipe
+    /// buffer holds at most 64 KiB, so waiting first deadlocks on any output
+    /// larger than that: the child blocks in `write()` with a full pipe while
+    /// the parent blocks waiting for the child to exit. `ps -axo comm=` clears
+    /// 64 KiB on a busy Mac -- a booted iOS Simulator alone contributes ~50 KB
+    /// of long runtime paths -- so `doctor` hung for real users.
+    /// `readDataToEndOfFile()` returns when the child closes the stream, so it
+    /// is also the join point; `waitUntilExit()` then just reaps.
+    static func runCapture(_ path: String, args: [String]) -> String? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
         p.arguments = args
@@ -49,11 +59,11 @@ struct LocalContentionSnapshot: Equatable, Sendable {
         p.standardError = FileHandle.nullDevice
         do {
             try p.run()
-            p.waitUntilExit()
         } catch {
             return nil
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
         return String(data: data, encoding: .utf8)
     }
 }

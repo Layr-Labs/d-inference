@@ -4,6 +4,8 @@ This standalone diagnostic consumes one confirmed [attention packet v1](../atten
 
 The Python driver validates the complete packet before creating a fresh output directory, preserves all six native FP16/BF16/FP32 buffers and writes a bounded, hashed transfer. The Swift CLI checks transfer and raw lengths/hashes/packing before constructing an MLX array. Both enforce a 32 MiB input limit and a conservative 256 MiB allocation plan. That plan bounds these arrays and pools; it does not bound process RSS or the framework allocator cache.
 
+`ReplayIO.readBounded` opens inputs without following symlinks or blocking on FIFO writers, then requires a regular file and the exact bounded byte count. `ReplayHostTests` checks this path without invoking any attention operator.
+
 Three arms run sequentially in separate processes:
 
 - `nativeSDPA`: actual `MLXFast.scaledDotProductAttention`, with original Q and the production conversion of stored K/V to Q dtype.

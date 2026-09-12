@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-08 · commit `eba352122`
+> Last updated: 2026-09-12 · commit `87c6a69b7`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -219,6 +219,16 @@ selected by `register.apns_environment`.
 | 7 Persist | An APNs-proven round-trip is upserted as `CodeAttestation{se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash}` so step 3 can authorise a resume on a later connection; the push budget (`CodeAttestPushBudget`) stores only the token hash | `coordinator/api/code_attest_throttle.go` (`persistCodeAttestation`); `coordinator/store/interface.go` (`CodeAttestation`, `CodeAttestPushBudget`) |
 | 8 Exhaustion | After `maxAttempts` unanswered pushes the loop stops and waits for a later reconnect; `CodeAttested` stays false. Token rotation or hard untrust clears an existing flag | `coordinator/api/provider_codeattest.go`; `coordinator/registry/attestation_policy.go` (`MarkUntrusted`) |
 | 9 Enforcement | `SetCodeAttestationConfigured(true)` when an attestor exists; `SetCodeAttestationDeadline` from `APNS_ENFORCE_AFTER`; `codeAttestationEnforcedLocked` = configured ∧ deadline non-zero ∧ now ≥ deadline. Before that the fleet is measured (`attestation.code_attested`, `attestation.code_enforced`) but routes un-attested providers | `coordinator/registry/attestation_policy.go` (`codeAttestationEnforcedLocked`); `coordinator/cmd/coordinator/main.go` (`parseAPNsEnforceAfter`) |
+
+`reservePush` owns admission and retains the per-device reservation lease
+through the dispatch identity check and push. Token rotation uses
+`rotateLoopAndClearPushBudget`; it preserves each token's existing cooldown
+while a permitted reset admits the new token. Pushed challenges use
+`recordChallengeForIdentity`, retaining every unexpired nonce so delayed alert
+delivery can still be answered for the exact token and process key.
+Budget and nonce regression tests exercise these production methods. The two
+lease-release and reset-verdict fixture adapters live only in
+`coordinator/api/code_attest_helpers_test.go`.
 
 Same-process continuity is separate from hardware continuity. The coordinator
 records it only while the exact SE key, version, APNs token, process key and

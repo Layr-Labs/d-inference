@@ -65,9 +65,9 @@ body:
       description: |
         Include the affected component's version and environment: `darkbloom --version`, macOS version and Mac model + RAM for provider bugs; browser for web bugs; server, container or CI details when relevant. For a source build, include the commit and toolchain versions.
       placeholder: |
-        - provider: output of `darkbloom --version`
-        - macOS: output of `sw_vers -productVersion`
-        - hardware: MacBook Pro M3 Pro, 36 GB
+        - component version or source commit:
+        - OS, runtime, browser or container (as applicable):
+        - provider only: `darkbloom --version`, macOS version, Mac model and RAM
     validations:
       required: true
 
@@ -75,7 +75,7 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Include relevant output from `darkbloom logs --last 10m`, or `darkbloom logs --file --lines 50` for file logs. See [the provider CLI reference](https://github.com/Layr-Labs/d-inference/blob/master/docs/provider/cli-reference.md#darkbloom-logs) for options. Redact sensitive data.
+      description: Include logs for the affected component, such as server or container output, browser console errors, or CI logs. For provider bugs, use `darkbloom logs --last 10m` or `darkbloom logs --file --lines 50`; see [the provider CLI reference](https://github.com/Layr-Labs/d-inference/blob/master/docs/provider/cli-reference.md#darkbloom-logs) for options. Redact sensitive data.
       render: shell
 
   - type: checkboxes

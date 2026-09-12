@@ -97,7 +97,7 @@ type codeAttestThrottle struct {
 	reuseWindow      time.Duration
 
 	// Push budget (the hard background-push rate-limit backstop) is mode-aware:
-	// allowPush picks the cooldown by delivery mode.
+	// reservePush picks the cooldown by delivery mode.
 	backgroundPushCooldown time.Duration
 	alertPushCooldown      time.Duration
 
@@ -279,31 +279,10 @@ func (t *codeAttestThrottle) pushCooldown(alert bool) time.Duration {
 	return t.backgroundPushCooldown
 }
 
-// allowPush reports whether the per-device push budget permits another push now,
-// for the given delivery mode (alert is allowed to push far more often).
-func (t *codeAttestThrottle) allowPush(seKey string, alert bool) bool {
-	if seKey == "" {
-		return true // no device identity to throttle on; fall back to the loop's cap
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	last, ok := t.lastPush[seKey]
-	return !ok || t.now().Sub(last) >= t.pushCooldown(alert)
-}
-
 // retryDelay is the loop's wait between wake-ups: a base spacing plus jitter.
 // Decoupled from the push budget so attestation is noticed promptly (Fix 3).
 func (t *codeAttestThrottle) retryDelay() time.Duration {
 	return t.retrySpacing + t.jitter(t.retryJitter)
-}
-
-func (t *codeAttestThrottle) recordPush(seKey string) {
-	if seKey == "" {
-		return
-	}
-	t.mu.Lock()
-	t.lastPush[seKey] = t.now()
-	t.mu.Unlock()
 }
 
 func codeAttestTokenHash(token string) string {
@@ -527,43 +506,6 @@ func (t *codeAttestThrottle) noteBudgetTokenReservationHeld(seKey, tokenHash str
 	t.budgetTokenOrder[seKey] = order
 }
 
-func (t *codeAttestThrottle) tryReservePush(
-	ctx context.Context,
-	seKey, token string,
-	alert bool,
-	generation uint64,
-) bool {
-	release, ok := t.reservePush(ctx, seKey, token, alert, generation)
-	if release != nil {
-		release()
-	}
-	return ok
-}
-
-// clearPushBudget drops the per-device push cooldown so the NEXT push is allowed
-// immediately. Used on APNs token rotation: the cooldown tracks pushes to the OLD
-// token, but Apple's push budget is per-token, so the freshly registered token has
-// its own untouched budget. Without this, the rearm loop sets CodeAttested=false
-// yet cannot challenge the new token until the old token's (up to 20-minute)
-// background cooldown expires — derouting the provider for no reason (Codex #9).
-//
-// Anti-DoS: the reset is itself throttled to at most once per budgetClearCooldown
-// per device, so a provider that floods token changes in heartbeats cannot reset
-// the budget every time and spam APNs beyond the per-device budget. The cooldown
-// is DURABLE (Codex 06:36Z P1): with a budget store wired, the clear is
-// compare-and-set on the sentinel's persisted last-clear instant, so a
-// coordinator restart (empty lastBudgetClear map) or a blue-green peer cannot
-// grant one extra floor clear per deploy. Returns whether the budget was
-// actually cleared (false = the reset was throttled).
-func (t *codeAttestThrottle) clearPushBudget(ctx context.Context, seKey string) bool {
-	if seKey == "" {
-		return false
-	}
-	unlockReservation := t.lockPushReservation(seKey)
-	defer unlockReservation()
-	return t.clearPushBudgetReservationHeld(ctx, seKey)
-}
-
 // clearPushBudgetReservationHeld runs the full throttled clear (reservation
 // lock held, t.mu NOT held across the store call). Admission order: the cheap
 // process-local cooldown first, then the durable compare-and-set — the durable
@@ -625,15 +567,6 @@ func (t *codeAttestThrottle) clearPushBudgetReservationHeld(
 	delete(t.durableNextPush, seKey)
 	t.mu.Unlock()
 	return true
-}
-
-func (t *codeAttestThrottle) recordAttested(seKey, version, token string) {
-	if seKey == "" {
-		return
-	}
-	t.mu.Lock()
-	t.attested[seKey] = codeAttestRecord{at: t.now(), version: version, token: token}
-	t.mu.Unlock()
 }
 
 func (t *codeAttestThrottle) recordAttestedForProcess(
@@ -698,34 +631,6 @@ func (t *codeAttestThrottle) seed(rows []store.CodeAttestation) int {
 	return n
 }
 
-// recordChallenge stores the nonce just pushed to a device so the read-loop
-// delivery path can match the provider's reply — even one that lands on a
-// different (re)connection from the same device (Fix 1). Overwrites any prior
-// outstanding challenge for the device (only the latest push is honored).
-func (t *codeAttestThrottle) recordChallenge(seKey, nonce string) {
-	if seKey == "" {
-		return
-	}
-	t.mu.Lock()
-	now := t.now()
-	// Keep EVERY still-unexpired nonce, not just the latest: in alert mode the push
-	// cooldown (75s) is shorter than the challenge validity (the APNs expiry window),
-	// so a second challenge can be pushed while the first is still deliverable. If we
-	// kept only the newest nonce, a delayed delivery of the first alert would make the
-	// device reply with a nonce we had already discarded, we'd reject a valid proof,
-	// and repeated delayed deliveries could strand attestation (Codex #8). Prune
-	// expired entries on the way in so the slice stays bounded by validity/cooldown.
-	old := t.outstanding[seKey]
-	kept := make([]codeAttestChallenge, 0, len(old)+1)
-	for _, ch := range old {
-		if now.Sub(ch.at) < t.challengeValidity {
-			kept = append(kept, ch)
-		}
-	}
-	t.outstanding[seKey] = append(kept, codeAttestChallenge{nonce: nonce, at: now})
-	t.mu.Unlock()
-}
-
 func (t *codeAttestThrottle) recordChallengeForIdentity(
 	seKey, nonce, token, nodeKey string,
 ) {
@@ -782,45 +687,6 @@ func (t *codeAttestThrottle) consumeChallengeForIdentity(
 			} else {
 				t.outstanding[seKey] = challenges
 			}
-			return true
-		}
-	}
-	return false
-}
-
-// outstandingChallenge reports whether the device has ANY still-valid pushed
-// challenge, returning the most recent one. The delivery path matches a specific
-// reply nonce via matchChallenge; this is the existence / most-recent view.
-func (t *codeAttestThrottle) outstandingChallenge(seKey string) (codeAttestChallenge, bool) {
-	if seKey == "" {
-		return codeAttestChallenge{}, false
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	now := t.now()
-	var best codeAttestChallenge
-	found := false
-	for _, ch := range t.outstanding[seKey] {
-		if now.Sub(ch.at) < t.challengeValidity && (!found || ch.at.After(best.at)) {
-			best = ch
-			found = true
-		}
-	}
-	return best, found
-}
-
-// matchChallenge reports whether nonce equals ANY still-unexpired challenge pushed
-// to this device. Accepting a reply to any in-flight challenge (not only the latest)
-// is what prevents a delayed alert delivery from being rejected (Codex #8).
-func (t *codeAttestThrottle) matchChallenge(seKey, nonce string) bool {
-	if seKey == "" || nonce == "" {
-		return false
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	now := t.now()
-	for _, ch := range t.outstanding[seKey] {
-		if ch.nonce == nonce && now.Sub(ch.at) < t.challengeValidity {
 			return true
 		}
 	}
@@ -1031,7 +897,7 @@ func (t *codeAttestThrottle) expireResumeChallenge(
 
 // persistCodeAttestation best-effort writes a successful code-identity round-trip
 // to the store so it survives a coordinator restart/deploy (W5 Fix 2). It mirrors
-// the in-memory recordAttested and is called from the same event
+// the in-memory recordAttestedForProcess and is called from the same event
 // (handleCodeAttestationResponse). Behind the store seam (no-op until
 // SeedCodeAttestCache wires a store): prod runs the Postgres store, so this makes
 // reuse durable across blue-green deploys (avoiding a fleet-wide re-push storm).

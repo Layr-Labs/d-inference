@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -115,4 +116,25 @@ send({'event':'cleanup','observation':observation})
 	require.NotEqual(t, row.Terminal.PID, row.ProviderPID)
 	require.NotEmpty(t, row.StartupIdentityError)
 	require.Contains(t, row.ControlError, "contradictory provider startup identity")
+}
+
+func TestOwnedMalformedStreamClosesReaderBeforeWaitingForHelper(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	script := `import sys,json
+json.loads(sys.stdin.readline())
+print('{"event":"unknown"}',flush=True)
+for _ in range(2048):
+ print('x'*4096,flush=True)
+`
+	owner, err := startOwnedProvider(ctx, targetFixture(t), ProviderStartSpec{}, []byte("fixture-token"), "nonce", "http://127.0.0.1:1", func(string, ...string) *exec.Cmd {
+		// The deadline bounds the deliberately malformed local fixture even
+		// on the prior implementation, which left its stdout writer blocked.
+		return exec.CommandContext(ctx, "python3", "-u", "-c", script)
+	})
+	require.ErrorContains(t, err, "unknown owned helper event")
+	require.NoError(t, ctx.Err(), "protocol rejection waited for the helper deadline")
+	require.NotNil(t, owner)
+	require.False(t, owner.running())
+	require.ErrorContains(t, owner.stop(), "unknown owned helper event")
 }

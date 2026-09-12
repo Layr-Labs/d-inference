@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-11 · commit `d353f8cb0`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -31,6 +31,8 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 
 - **macOS on Apple Silicon** for anything under `provider-swift/` (MLX + Metal).
   The coordinator, sidecar, e2e harness, and UIs build on macOS or Linux.
+  The [local process cleanup fixtures](test.md#local-process-cleanup-fixtures)
+  need only Go, Python and harmless child stubs; they do not need a provider build or database.
 - **Xcode Command Line Tools + `cmake`** (`brew install cmake`) — the metallib
   helper compiles MLX's Metal kernels with cmake.
 - **Git submodules** checked out: `libs/mlx-swift`, `libs/mlx-swift-lm`,

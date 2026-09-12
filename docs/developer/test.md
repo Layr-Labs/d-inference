@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-11 · commit `d353f8cb0`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -110,6 +110,26 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 `postgres:16` service with user/password/db `testbed`. The pre-push hook runs
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
+
+#### Local process cleanup fixtures
+
+The testbed's local-provider and native-Postgres lifecycle checks use harmless
+child executables and PATH stubs. They verify output draining before provider
+completion, retained child ownership, graceful shutdown and forced termination,
+temporary-data cleanup after initialization/readiness failures, and rejected
+helper-stream cleanup before waiting for its process. They start
+no Swift provider, database, Docker daemon or remote connection.
+
+```bash
+go test -race ./e2e/testbed ./e2e/testbed/deps -short -run 'TestLocalProviderWait|TestNativePostgres|TestPostgres|TestOwnedMalformedStream' -count=1
+```
+
+`e2e/testbed/provider_local.go` waits through `exec.Cmd.Wait` so command output
+and context cleanup finish before completion. `e2e/testbed/deps/postgres.go`
+retains its native child command, waits for it to be reaped and only then removes
+its owned data directory. Unconfirmed termination retains that directory for
+inspection. The [owned-host helper](../../e2e/testbed/OWNED_HOSTS.md) keeps its
+separate process-group, control-lease and receipt contract.
 
 #### Provider config cleanup
 

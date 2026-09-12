@@ -90,13 +90,13 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 
 	go func(done chan struct{}) {
 		defer close(done)
-		state, err := cmd.Process.Wait()
-		if err != nil {
+		err := cmd.Wait()
+		if err != nil && cmd.ProcessState == nil {
 			p.Logger.Warn("provider process wait failed", "error", err)
 			return
 		}
-		if state != nil && state.ExitCode() >= 0 {
-			p.Logger.Warn("provider process exited", "exit_code", state.ExitCode())
+		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() >= 0 {
+			p.Logger.Warn("provider process exited", "exit_code", cmd.ProcessState.ExitCode())
 		}
 	}(p.done)
 

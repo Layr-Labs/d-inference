@@ -394,10 +394,8 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 
 // SetTrustLevel updates a provider's trust level (thread-safe).
 func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
-	r.mu.RLock()
-	p, ok := r.providers[providerID]
-	r.mu.RUnlock()
-	if !ok {
+	p := r.GetProvider(providerID)
+	if p == nil {
 		return
 	}
 	p.mu.Lock()
@@ -422,10 +420,8 @@ func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
 // online. The caller uses that to push a fresh "online" trust_status so the
 // provider's locally persisted operator state reflects recovery.
 func (r *Registry) RecordChallengeSuccess(providerID string) bool {
-	r.mu.RLock()
-	p, ok := r.providers[providerID]
-	r.mu.RUnlock()
-	if !ok {
+	p := r.GetProvider(providerID)
+	if p == nil {
 		return false
 	}
 
@@ -514,10 +510,8 @@ func (r *Registry) recoverIfTransientlyUntrusted(providerID string, p *Provider)
 // disabled, binary hash mismatch, etc.), routing eligibility is cleared
 // immediately because the provider actively failed a security check.
 func (r *Registry) RecordChallengeFailure(providerID string, transientOnly bool) int {
-	r.mu.RLock()
-	p, ok := r.providers[providerID]
-	r.mu.RUnlock()
-	if !ok {
+	p := r.GetProvider(providerID)
+	if p == nil {
 		return 0
 	}
 
@@ -526,12 +520,8 @@ func (r *Registry) RecordChallengeFailure(providerID string, transientOnly bool)
 	p.Reputation.RecordChallengeFail()
 	count := p.FailedChallenges
 
-	if !transientOnly {
-		// Security failure — clear routing eligibility immediately.
-		p.LastChallengeVerified = time.Time{}
-		p.ChallengeVerifiedSIP = false
-	} else if count >= MaxFailedChallenges {
-		// Transient failures only clear after hitting the threshold.
+	// A security failure clears immediately; a timeout clears at the threshold.
+	if !transientOnly || count >= MaxFailedChallenges {
 		p.LastChallengeVerified = time.Time{}
 		p.ChallengeVerifiedSIP = false
 	}

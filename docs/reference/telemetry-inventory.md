@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-11 · commit `fa6d62dcd`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -96,6 +96,14 @@ lists every name).
 | `provider_version_below_minimum` (no `provider.` prefix) | count | `gate:registration`, `challenge_revalidation`, `manifest_sync`; `version` | provider below `EIGENINFERENCE_MIN_PROVIDER_VERSION` at one of the three gates |
 | `provider.load_model_status_rejected` | count | `reason:invalid_status`, `no_pending_command` | `load_model_status` frame that did not match an outstanding `load_model` |
 | `attestation.challenges_sent`, `attestation.challenges` (`outcome:passed`, `failed`, `status_sig_missing`, `status_sig_failed`), `attestation.failures{reason}`, `attestation.force_reconnect{reason}` | count | as listed | SE challenge lifecycle per provider session |
+
+The throughput detector evaluates finite positive observed and expected decode rates.
+An invalid bandwidth uses the existing chip-class fallback; an invalid observation
+or unusable derived expectation skips the bucket without emitting an anomaly.
+Threshold validation and defaults are described in [`configuration.md`](configuration.md).
+The detector remains read-only with respect to provider routing and trust
+(`coordinator/registry/throughput_anomaly.go`, `EvaluateThroughputAnomaly`;
+`coordinator/api/throughput_anomaly.go`, `sweepThroughputAnomalies`).
 
 ### From request outcomes
 

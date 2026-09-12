@@ -124,16 +124,20 @@ var ChipBandwidthGBps = map[string]float64{
 //
 //	expected ≈ bandwidth_GBps × efficiency / (active_params × bytes_per_param)
 //
-// Returns 0 if any input is non-positive.
+// Returns 0 if an input or the derived expectation is non-finite or non-positive.
 func ExpectedDecodeTPS(activeParams, bytesPerParam, bandwidthGBps, efficiency float64) float64 {
-	if activeParams <= 0 || bytesPerParam <= 0 || bandwidthGBps <= 0 || efficiency <= 0 {
+	if !finitePositive(activeParams) || !finitePositive(bytesPerParam) || !finitePositive(bandwidthGBps) || !finitePositive(efficiency) {
 		return 0
 	}
 	readGBPerToken := activeParams * bytesPerParam / 1e9 // bytes → GB
 	if readGBPerToken <= 0 {
 		return 0
 	}
-	return bandwidthGBps * efficiency / readGBPerToken
+	expected := bandwidthGBps * efficiency / readGBPerToken
+	if !finitePositive(expected) {
+		return 0
+	}
+	return expected
 }
 
 // LookupModelDecodeClass resolves a model id to its decode class. It tries an
@@ -283,13 +287,13 @@ func DefaultThroughputAnomalyConfig() ThroughputAnomalyConfig {
 	}
 }
 
-// withDefaults fills any zero/negative field with its default, so a partially
+// withDefaults replaces invalid fields with their defaults, so a partially
 // populated config (or the zero value) still behaves sensibly.
 func (c ThroughputAnomalyConfig) withDefaults() ThroughputAnomalyConfig {
-	if c.Efficiency <= 0 {
+	if !finitePositive(c.Efficiency) {
 		c.Efficiency = DefaultDecodeEfficiency
 	}
-	if c.RatioThreshold <= 0 {
+	if !finitePositive(c.RatioThreshold) {
 		c.RatioThreshold = DefaultAnomalyRatioThreshold
 	}
 	if c.MinSamples <= 0 {
@@ -350,15 +354,15 @@ func EvaluateThroughputAnomaly(in ThroughputAnomalyInput, cfg ThroughputAnomalyC
 	res.BytesPerParam = class.BytesPerParam
 
 	bw := in.BandwidthGBps
-	if bw <= 0 {
+	if !finitePositive(bw) {
 		bw = ChipBandwidthForClass(in.ChipClass)
 	}
 	res.BandwidthGBps = bw
-	if bw <= 0 {
+	if !finitePositive(bw) {
 		res.SkipReason = "unknown_chip"
 		return res
 	}
-	if in.ObservedTPS <= 0 {
+	if !finitePositive(in.ObservedTPS) {
 		res.SkipReason = "no_observation"
 		return res
 	}

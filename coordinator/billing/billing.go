@@ -134,9 +134,11 @@ func (s *Service) IsExternalIDProcessed(externalID string) bool {
 	return s.store.IsExternalIDProcessed(externalID)
 }
 
-// CreditDeposit credits a consumer's balance after a verified deposit.
+// CreditDeposit credits a verified deposit once per account, type and reference.
+// A retry after local session bookkeeping fails must not duplicate ledger funds.
 func (s *Service) CreditDeposit(accountID string, amountMicroUSD int64, entryType store.LedgerEntryType, reference string) error {
-	return s.store.Credit(accountID, amountMicroUSD, entryType, reference)
+	_, err := s.store.CreditOnce(accountID, amountMicroUSD, entryType, reference)
+	return err
 }
 
 // PaymentMethodInfo describes a supported payment method for the API.

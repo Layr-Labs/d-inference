@@ -105,15 +105,7 @@ def persist_failed_report(failure: BenchmarkCommandFailure, output_dir: Path) ->
 
 
 def sweep_argv(benchmark: list[str], args: argparse.Namespace) -> list[str]:
-    """The full `darkbloom benchmark --sweep` argv this wrapper runs.
-
-    Pure, so the two controls that make a run attributable can be asserted
-    without a GPU: before #583 was wired through here, the wrapper measured
-    whatever `--kv-backend auto` happened to resolve, on a `B=1..--max-batch`
-    ladder that stopped below the paged/contiguous crossover at ~B=5. A green
-    run could therefore neither name its backend nor reach the batch sizes
-    the release is claimed on.
-    """
+    """Build the repeated prefill/decode matrix with explicit backend and batch sizes."""
     repeated_lengths = ",".join(
         str(length)
         for length in args.prefill_lengths
@@ -137,15 +129,7 @@ def sweep_argv(benchmark: list[str], args: argparse.Namespace) -> list[str]:
 
 
 def scheduler_argv(benchmark: list[str], args: argparse.Namespace) -> list[str]:
-    """The full `darkbloom benchmark --scheduler-prefill` argv.
-
-    Carries `--kv-backend` for the same reason the sweep does. This phase
-    builds a FRESH production engine per measurement, so without the
-    selection every TTFT number came off `.auto` -- CONTIGUOUS -- while the
-    sweep beside it measured paged, and the report attributed both to one
-    backend. There is no batch-size curve to forward: each cold prefill is a
-    single request, `maxConcurrentRequests: 1` by construction.
-    """
+    """Pin the backend for each fresh single-request scheduler-prefill engine."""
     return benchmark + [
         "--scheduler-prefill",
         "--prefill-lengths",
@@ -158,14 +142,7 @@ def scheduler_argv(benchmark: list[str], args: argparse.Namespace) -> list[str]:
 
 
 def arrival_argv(benchmark: list[str], args: argparse.Namespace) -> list[str]:
-    """The full `darkbloom benchmark --arrival-invariance` argv.
-
-    Same pin, one engine: every arrival topology is measured on a single warm
-    engine, so this phase resolves exactly one backend and an unpinned run
-    resolved `.auto`'s. No batch-size curve here either -- the concurrency is
-    the widest arrival pattern (burst, 4 rows), fixed by the topologies the
-    benchmark defines rather than by a flag.
-    """
+    """Pin the shared warm engine used by every fixed four-row arrival pattern."""
     return benchmark + [
         "--arrival-invariance",
         "--kv-backend",
@@ -312,9 +289,8 @@ def main() -> int:
             comparison_axis=args.comparison_axis,
             metadata=metadata,
         )
-        # Keep the release's contiguous posture fixed across comparisons. A
-        # paged-versus-contiguous difference would otherwise read as a code or
-        # Gemma-optimization delta with no trace of its cause in the summary.
+        # Compare only the same measured backend population, whether the
+        # operator selected the contiguous control or an explicit alternative.
         validate_kv_backend_pin(baseline, kv_backend)
         report["comparison"] = compare(summary, baseline)
 

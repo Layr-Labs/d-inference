@@ -1,4 +1,4 @@
-"""Baseline comparison of a summary against the committed baseline."""
+"""Baseline comparison against an explicitly supplied, validated report."""
 
 from __future__ import annotations
 
@@ -57,83 +57,36 @@ def compare(current: dict, baseline: dict) -> dict:
     baseline_summary = baseline["summary"]
     comparisons: dict[str, object] = {"baselineName": baseline.get("name", "baseline")}
 
-    base_prefill = index_against_baseline(
-        "prefill", current["prefill"], baseline_summary["prefill"], "promptTokens"
-    )
-    comparisons["prefill"] = [
-        {
-            "promptTokens": item["promptTokens"],
-            "tokensPerSecondPercent": percent_delta(
-                item["medianTokensPerSecond"],
-                base_prefill[item["promptTokens"]]["medianTokensPerSecond"],
-            ),
-            "elapsedMsPercent": percent_delta(
-                item["medianElapsedMs"],
-                base_prefill[item["promptTokens"]]["medianElapsedMs"],
-            ),
-        }
-        for item in current["prefill"]
-    ]
-
-    base_ttft = index_against_baseline(
-        "schedulerTTFT",
-        current["schedulerTTFT"],
-        baseline_summary["schedulerTTFT"],
-        "promptTokens",
-    )
-    comparisons["schedulerTTFT"] = [
-        {
-            "promptTokens": item["promptTokens"],
-            "ttftMsPercent": percent_delta(
-                item["medianTTFTMs"],
-                base_ttft[item["promptTokens"]]["medianTTFTMs"],
-            ),
-        }
-        for item in current["schedulerTTFT"]
-    ]
-
-    base_decode = index_against_baseline(
-        "decode", current["decode"], baseline_summary["decode"], "batchSize"
-    )
-    comparisons["decode"] = [
-        {
-            "batchSize": item["batchSize"],
-            "perRequestPercent": percent_delta(
-                item["perRequestTokensPerSecond"],
-                base_decode[item["batchSize"]]["perRequestTokensPerSecond"],
-            ),
-            "aggregatePercent": percent_delta(
-                item["aggregateTokensPerSecond"],
-                base_decode[item["batchSize"]]["aggregateTokensPerSecond"],
-            ),
-        }
-        for item in current["decode"]
-    ]
-
-    base_arrival = index_against_baseline(
-        "arrival", current["arrival"], baseline_summary["arrival"], "name"
-    )
-    comparisons["arrival"] = [
-        {
-            "name": item["name"],
-            "ttftMsPercent": percent_delta(
-                item["medianTTFTMs"], base_arrival[item["name"]]["medianTTFTMs"]
-            ),
-            "aggregateDecodePercent": percent_delta(
-                item["medianAggregateDecodeTokensPerSecond"],
-                base_arrival[item["name"]][
-                    "medianAggregateDecodeTokensPerSecond"
-                ],
-            ),
-            "endToEndPercent": percent_delta(
-                item["medianEndToEndTokensPerSecond"],
-                base_arrival[item["name"]]["medianEndToEndTokensPerSecond"],
-            ),
-            "makespanPercent": percent_delta(
-                item["medianMakespanMs"],
-                base_arrival[item["name"]]["medianMakespanMs"],
-            ),
-        }
-        for item in current["arrival"]
-    ]
+    # Each section names its row identity and its output-to-source metric map.
+    # Keep this order: a malformed earlier section must still fail first.
+    for section, key, metrics in (
+        ("prefill", "promptTokens", {
+            "tokensPerSecondPercent": "medianTokensPerSecond",
+            "elapsedMsPercent": "medianElapsedMs",
+        }),
+        ("schedulerTTFT", "promptTokens", {"ttftMsPercent": "medianTTFTMs"}),
+        ("decode", "batchSize", {
+            "perRequestPercent": "perRequestTokensPerSecond",
+            "aggregatePercent": "aggregateTokensPerSecond",
+        }),
+        ("arrival", "name", {
+            "ttftMsPercent": "medianTTFTMs",
+            "aggregateDecodePercent": "medianAggregateDecodeTokensPerSecond",
+            "endToEndPercent": "medianEndToEndTokensPerSecond",
+            "makespanPercent": "medianMakespanMs",
+        }),
+    ):
+        reference = index_against_baseline(
+            section, current[section], baseline_summary[section], key
+        )
+        comparisons[section] = [
+            {
+                key: item[key],
+                **{
+                    output: percent_delta(item[source], reference[item[key]][source])
+                    for output, source in metrics.items()
+                },
+            }
+            for item in current[section]
+        ]
     return comparisons

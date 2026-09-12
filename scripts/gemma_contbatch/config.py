@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 
 # Schema of the *wrapper* report (distinct from the per-benchmark payload
@@ -32,17 +31,9 @@ SCHEMA_VERSION = 6
 
 
 DEFAULT_MODEL = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
-# The canonical posture this release is measured under. Both defaults are
-# load-bearing:
-#
-#   contiguous — `auto` resolves contiguous as of v0.8.1, but naming the
-#                backend keeps every phase's release posture explicit and
-#                prevents a future default flip from changing the benchmark.
-#   1,2,4,8    — the current production concurrency default is B=4 under the
-#                contiguous `auto` posture, while B=8 remains a supported
-#                stress point. The list is sparse on
-#                purpose: a dense 1..8 ladder doubles wall time for cells no
-#                gate reads.
+# Fixed benchmark controls, independent of per-model serving defaults. Naming
+# the backend keeps every phase comparable across future automatic-policy
+# changes. The sparse batch ladder includes B=8 without timing every 1..8 cell.
 DEFAULT_KV_BACKEND = "contiguous"
 DEFAULT_BATCH_SIZES = [1, 2, 4, 8]
 KV_BACKENDS = ("auto", "contiguous", "paged")

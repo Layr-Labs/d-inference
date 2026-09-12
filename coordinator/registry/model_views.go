@@ -26,6 +26,15 @@ type AggregateModel struct {
 	Attestation       *AttestationSummary `json:"attestation,omitempty"`
 }
 
+// publicModelProviderEligibleLocked is the provider-level gate shared by public
+// model counts and datacenter metadata. Private-only nodes serve their owners
+// and must not contribute to either public surface. Caller holds r.mu and p.mu.
+func (r *Registry) publicModelProviderEligibleLocked(p *Provider) bool {
+	return p.Status != StatusOffline && p.Status != StatusUntrusted &&
+		!p.PrivateOnly && r.trustMeetsMinimum(p.TrustLevel) &&
+		r.providerSupportsPrivateTextLocked(p)
+}
+
 // ListModels returns deduplicated models from all online providers.
 func (r *Registry) ListModels() []AggregateModel {
 	r.mu.RLock()
@@ -59,10 +68,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		// and a handful of field reads — never a walk of its inventory.
 		// Private-only providers serve only their owner's self-route traffic, so
 		// they must not appear in or inflate the public /v1/models aggregation.
-		if p.Status == StatusOffline || p.Status == StatusUntrusted ||
-			p.PrivateOnly ||
-			!r.trustMeetsMinimum(p.TrustLevel) ||
-			!r.providerSupportsPrivateTextLocked(p) {
+		if !r.publicModelProviderEligibleLocked(p) {
 			p.mu.Unlock()
 			continue
 		}
@@ -226,9 +232,10 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 	seen := make(map[string]bool)
 	for _, p := range r.providers {
 		p.mu.Lock()
-		status := p.Status
-		trust := p.TrustLevel
-		privateReady := r.providerSupportsPrivateTextLocked(p)
+		if !r.publicModelProviderEligibleLocked(p) {
+			p.mu.Unlock()
+			continue
+		}
 		var cc string
 		if p.Location != nil {
 			cc = strings.ToUpper(strings.TrimSpace(p.Location.CountryCode))
@@ -236,13 +243,6 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 		serves := cc != "" && r.providerServesCatalogModelLocked(p, modelID)
 		p.mu.Unlock()
 		if !serves {
-			continue
-		}
-		// Apply the same routing-eligibility gates as ListModels.
-		if status == StatusOffline || status == StatusUntrusted {
-			continue
-		}
-		if !r.trustMeetsMinimum(trust) || !privateReady {
 			continue
 		}
 		seen[cc] = true

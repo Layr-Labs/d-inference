@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -80,5 +81,52 @@ func TestAliasUpsertReadFailurePreservesStoredState(t *testing.T) {
 				t.Errorf("failed lookup changed aliases: before=%+v after=%+v err=%v", before, after, err)
 			}
 		})
+	}
+}
+
+func TestRegisterModelAliasReadFailurePreservesNamespace(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	const id = "mlx-community/test"
+	memory := store.NewMemory(store.Config{})
+	seedActiveModel(t, memory, "current", "current")
+	prior := &store.ModelAlias{AliasID: id, DesiredBuild: "current", Active: true}
+	if err := memory.UpsertModelAlias(prior); err != nil {
+		t.Fatal(err)
+	}
+	var fetches atomic.Int64
+	prefix := modelR2Prefix(id, "v1")
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		switch r.URL.Path {
+		case "/" + prefix + "/manifest.json":
+			writeJSON(w, http.StatusOK, validTestManifest())
+		case "/" + prefix + "/config.json":
+			w.Header().Set("Content-Length", "123")
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer cdn.Close()
+	t.Setenv("MODEL_REGISTRY_CDN_BASE_URL", cdn.URL)
+	srv := NewServer(registry.New(slog.Default()), &aliasReadErrorStore{Store: memory, aliasID: id}, ServerConfig{}, slog.Default())
+	defer srv.Close()
+	body := `{"model_id":"mlx-community/test","version":"v1","quantization":"4bit","max_context_length":32768,"max_output_length":8192,"min_ram_gb":16,"input_price":50000,"output_price":200000,"promote":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/register", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer publish-secret")
+	response := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusInternalServerError {
+		t.Errorf("status=%d want500: %s", response.Code, response.Body.String())
+	}
+	if fetches.Load() != 0 {
+		t.Errorf("namespace read failure fetched %d artifacts", fetches.Load())
+	}
+	if rec, err := memory.GetModelRegistryRecord(id); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("concrete record created after lookup failure: %+v err=%v", rec, err)
+	}
+	after, found, err := memory.GetModelAlias(id)
+	if err != nil || !found || after.DesiredBuild != prior.DesiredBuild {
+		t.Errorf("existing alias changed: %+v found=%v err=%v", after, found, err)
 	}
 }

@@ -97,7 +97,10 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 	// Reverse namespace guard (mirror of the alias upsert's collision check): a
 	// concrete model id must not collide with an existing public alias, or the
 	// alias map would hijack raw-id requests for the new model at resolution.
-	if _, found, err := s.store.GetModelAlias(req.ModelID); err == nil && found {
+	if _, found, err := s.store.GetModelAlias(req.ModelID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to check model alias namespace"))
+		return
+	} else if found {
 		writeJSON(w, http.StatusConflict, errorResponse("invalid_request_error",
 			"model_id collides with an existing public alias", withParam("model_id")))
 		return

@@ -204,7 +204,14 @@ they tune is explained in
 `QualityCapConfig.Check` and `WarmPoolConfig.Check` in
 `coordinator/registry/config.go` reject non-finite floating-point tunables at
 startup, including when the warm controller is disabled. Existing finite ranges
-and zero-value disable/fallback semantics remain in effect.
+and zero-value disable/fallback semantics remain in effect. Specifically,
+`EIGENINFERENCE_WARM_POOL_ENABLED=false` together with
+`EIGENINFERENCE_WARM_POOL_INTERVAL=0s` bypasses the
+warm-controller range checks after the finite checks. This preserves acceptance
+of a finite negative decode floor in that disabled-controller configuration;
+`coordinator/registry/concurrency_cap.go` (`qualityConcurrency`) treats a floor
+≤ 0 as disabling the quality cap. The ranges in the warm-pool table apply when
+that disabled, zero-interval exception is not selected.
 
 Cache-aware routing (semantics in [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md)). `refresh-env.sh` seeds absent keys from `deploy/gcp/prod/release-env-defaults` — production ships `MODE=off`, `PERCENT=1`, `MAX_PLAN_QPS=1` — and never overwrites a value an operator has set:
 

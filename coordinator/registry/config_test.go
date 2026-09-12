@@ -275,3 +275,23 @@ func TestRegistryConfigRejectsNonFiniteTargetTunables(t *testing.T) {
 		})
 	}
 }
+
+func TestDisabledZeroIntervalWarmPoolPreservesFiniteRangeBypass(t *testing.T) {
+	clearWarmPoolEnv(t)
+	t.Setenv(env.EnvPrefix+"_WARM_POOL_ENABLED", "false")
+	t.Setenv(env.EnvPrefix+"_WARM_POOL_INTERVAL", "0s")
+	t.Setenv(env.EnvPrefix+"_WARM_POOL_DECODE_FLOOR_TPS", "-1")
+	cfg := ReadConfig()
+	if err := cfg.Check(); err != nil {
+		t.Fatalf("existing disabled-controller finite range bypass rejected: %v", err)
+	}
+	if cfg.WarmPool.DecodeFloorTPS != -1 {
+		t.Fatalf("decode floor silently normalized: %v", cfg.WarmPool.DecodeFloorTPS)
+	}
+	for _, value := range []string{"NaN", "+Inf", "-Inf"} {
+		t.Setenv(env.EnvPrefix+"_WARM_POOL_DECODE_FLOOR_TPS", value)
+		if err := ReadConfig().Check(); err == nil {
+			t.Fatalf("disabled-controller bypass accepted non-finite floor %s", value)
+		}
+	}
+}

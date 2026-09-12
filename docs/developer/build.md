@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-12 · commit `5fc3b1081`
+> Last updated: 2026-09-12 · commit `618641ddd`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -70,7 +70,8 @@ prepares it automatically when missing and reinstalls dependencies only when
 the requirements file changes. See [the tooling checks](test.md#6-scripts-and-release-integrity).
 Use `make tooling-test TOOLING_VENV=.venv/tooling-py312` to select a different
 directory (`Makefile`, `TOOLING_VENV`); nested offline bootstrap fixtures retain
-their own temporary environments.
+their own temporary environments. The CPU tooling target supports macOS and
+Linux; its owned-process fixtures manage their own child cleanup.
 
 ### 2. Build everything
 

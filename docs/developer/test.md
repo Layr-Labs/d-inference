@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-12 · commit `5fc3b1081`
+> Last updated: 2026-09-12 · commit `618641ddd`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -463,6 +463,12 @@ it does not establish model correctness or pass a release gate. Unsupported or
 unconfirmed captures remain inconclusive. The [packet format](../../scripts/benchmarks/attention_packet/FORMAT.md)
 defines required native bytes and metadata; [synthetic calibration](../reports/2026-09-06-attention-packet-analyzer.md)
 records what the tests prove.
+
+`scripts/benchmarks/test_attention_packet_numerics.py` checks the FP32 operator
+against an independent FP64 formula and bounds the generated rounded-output
+comparison by that operator tolerance plus one output-dtype ULP at the fixture's
+largest magnitude. This permits rounding-midpoint crossings while rejecting a
+corrupted rounded reference.
 
 #### Attention operator replay
 
@@ -963,6 +969,11 @@ attention/reference tests, owned-host process fixtures, release-validation
 fixtures, and Git-hook/docs navigation regressions. It launches no Swift, Metal
 or model workload. CI runs the same target in the `Tooling Tests` job.
 
+The exited-leader fixture in `e2e/testbed/test_provider_host.py` enables a Linux
+child subreaper only in its isolated owner process. It reaps the recorded orphan
+itself, so the test does not depend on container PID 1. The fixture still requires
+a successful terminal cleanup receipt and verifies that the sleeper is gone.
+
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)
 ./scripts/check-release-version.sh # ProviderCore.version == coordinator LatestProviderVersion (see operations/provider-release.md)
@@ -1040,8 +1051,11 @@ This prevents task scheduling from silently changing admission order. Sources: `
 
 ### 7. Docs lint
 
-Link existence and orphan detection share the same target parser, including
-reference definitions and percent-encoded spaces.
+Link existence and orphan detection share one Python parsing pass over all
+selected files. The parser handles reference definitions, percent-encoded spaces,
+and escaped brackets in link labels; unused definitions and image targets do not
+hide orphan pages. `scripts/test_docs_check.py` checks these cases and verifies
+that adding pages does not launch an interpreter per page.
 
 ```bash
 make docs-check          # scripts/docs-check.sh — stamps, relative links, cited paths, orphans

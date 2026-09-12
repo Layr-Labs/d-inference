@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `d5c07ea67`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -121,6 +121,19 @@ file created during a test must be removed after shutdown.
 
 ```bash
 go test ./e2e/testbed -run '^TestCleanup' -count=1
+```
+
+The race terminal tests use the real provider error handler and an in-memory
+coordinator. Selected closed-chunk operations are tested directly so both
+failure branches are deterministic; full `runRace` checks also preserve the
+survivor for any ready-channel selection. Content, clean completion and buffered
+content followed by an error retain winner cancellation and terminal delivery
+(`coordinator/api/dispatch_race_terminal_test.go`). No provider binary or model
+is needed:
+
+```bash
+cd coordinator
+go test -race ./api -run 'Test(RaceClosedError|RunRaceQueuedError|RaceChunkWinner)' -count=1
 ```
 
 #### Coordinator startup and reconnect recovery

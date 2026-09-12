@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-09-12 · commit `d5c07ea67`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -363,6 +363,14 @@ excludes them from TTFT calibration (`observeTTFTCalibration`,
 `coordinator/api/settlement.go`). The acquired governor slot is released
 exactly once on every exit path (`noteHedgeResolved`).
 
+A closed chunk stream can also mean that the provider failed before producing
+content. `resolvePrimaryRaceChunk` and `resolveBackupRaceChunk`
+(`coordinator/api/dispatch_race_terminal.go`) inspect its queued error before
+cancelling the other attempt. Closed-stream and direct error events share the
+same failure transition: retire the failed attempt, preserve the live survivor,
+and wait within its remaining first-content budget. Content buffered before an
+error still commits that attempt and retains the error for the response relay.
+
 ### Early-429 servability predictor
 
 Before a request is queued or dispatched, `PredictServable`
@@ -677,8 +685,10 @@ must not run in parallel with other scheduler tests in the same process.
    exceeds the fleet-wide hedge budget** — `hedgeGovernorVerdict`;
    acquisition and release are exactly-once (`tryAcquireHedge`,
    `noteHedgeResolved`).
-9. **Exactly one attempt of a race commits; the other is cancelled** —
-   `runRace` calls `cancelDispatch` on the loser before committing.
+9. **At most one attempt of a race commits; failure alone never cancels its
+   live survivor** — `runRace` and the terminal operations in
+   `coordinator/api/dispatch_race_terminal.go` cancel the other attempt when
+   committing a winner and use `cancelDispatchAfterTerminal` for a failed racer.
 10. **Fault memory survives reconnects** — `Disconnect` preserves breaker,
     cooldown and ejection state keyed by stable identity
     (`detachSessionGate`, `coordinator/registry/gate_index.go`).
@@ -732,6 +742,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Reputation | `coordinator/registry/reputation.go` — `Score`, `RecordLatency` |
 | TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/api/settlement.go` |
 | Hedge timing, governor, race | `coordinator/api/hedge_schedule.go`, `coordinator/api/hedge_governor.go`, `coordinator/api/dispatch.go` (`runSpeculative`, `runRace`), `coordinator/api/first_token_clock.go` |
+| Race terminal selection and survivor ownership | `coordinator/api/dispatch_race_terminal.go` — `resolvePrimaryRaceChunk`, `resolveBackupRaceChunk`, `resolvePrimaryRaceError`, `resolveBackupRaceError` |
 | Probes and plan wiring | `coordinator/api/dispatch_plan_wiring.go` |
 | `Retry-After`, speculative ratio, route EWMA | `coordinator/api/consumer.go` — `estimateRetryAfter`, `estimateTTFTRetryAfter`, `speculativeTimerRatio` |
 | Queue-before-shed and cold dispatch flags | `coordinator/api/cold_dispatch.go` |

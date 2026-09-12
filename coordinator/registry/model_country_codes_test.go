@@ -32,3 +32,33 @@ func TestModelCountryCodesOnlyEligibleProviders(t *testing.T) {
 		t.Fatalf("country codes = %v, want [US] (the DE provider is not routing-eligible)", got)
 	}
 }
+
+func TestModelCountryCodesExcludesPrivateOnlyProviders(t *testing.T) {
+	reg := New(testLogger())
+	const model = "mlx-community/Qwen3.5-9B-Instruct-4bit"
+	for _, row := range []struct {
+		id, country string
+		private     bool
+	}{
+		{"public", "us", false},
+		{"private", "IN", true},
+	} {
+		p := reg.Register(row.id, nil, testRegisterMessage())
+		testMakeTextRoutable(p)
+		p.mu.Lock()
+		p.PrivateOnly = row.private
+		p.Location = &store.ProviderLocation{CountryCode: row.country}
+		p.mu.Unlock()
+	}
+	if codes := reg.ModelCountryCodes(model); len(codes) != 1 || codes[0] != "US" {
+		t.Fatalf("public datacenters include a private self-route provider: %v", codes)
+	}
+	// When every eligible provider becomes private, no country is advertised.
+	p := reg.GetProvider("public")
+	p.mu.Lock()
+	p.PrivateOnly = true
+	p.mu.Unlock()
+	if codes := reg.ModelCountryCodes(model); len(codes) != 0 {
+		t.Fatalf("private-only model has public datacenters: %v", codes)
+	}
+}

@@ -64,6 +64,10 @@ coordinator and console changes require their own deployments.
 - **Incoming request accounting** — Add an unsampled request-outcome ledger and bounded admin inspection with explicit coverage and completion evidence. Record recovered HTTP errors and parsed streaming mode, and distinguish completed, incomplete and error response terminals after successful writes while preserving contradictory evidence and earlier content progress.
 - **Partial network geography** — Keep the stats overview available when request-location or route analytics time out. Refresh geography independently, expose unavailable sections, preserve valid empty maps and restore geography after recovery.
 
+## Unreleased — public model datacenters
+
+- Exclude private-only self-route providers from public model datacenter countries. Model counts and country metadata now share the same provider eligibility check.
+
 ## Unreleased — stats request-flow refresh
 
 - Restore Stats refreshes on large usage windows by aggregating request origins before looking up provider locations. Preserve weighted coordinates, request/token counts, and the top-50 flow limit while avoiding large temporary sorts.

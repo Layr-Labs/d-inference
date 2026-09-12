@@ -118,26 +118,55 @@ public struct StatusCanonicalInput: Sendable, Equatable {
     }
 }
 
+private struct StatusCanonicalPayload: Encodable {
+    let nonce: String
+    let timestamp: String
+    let rdmaDisabled: Bool?
+    let sipEnabled: Bool?
+    let secureBootEnabled: Bool?
+    let binaryHash: String?
+    let activeModelHash: String?
+    let pythonHash: String?
+    let runtimeHash: String?
+    let templateHashes: [String: String]?
+    let modelHashes: [String: String]?
+
+    enum CodingKeys: String, CodingKey {
+        case nonce
+        case timestamp
+        case rdmaDisabled = "rdma_disabled"
+        case sipEnabled = "sip_enabled"
+        case secureBootEnabled = "secure_boot_enabled"
+        case binaryHash = "binary_hash"
+        case activeModelHash = "active_model_hash"
+        case pythonHash = "python_hash"
+        case runtimeHash = "runtime_hash"
+        case templateHashes = "template_hashes"
+        case modelHashes = "model_hashes"
+    }
+}
+
 public enum StatusCanonical {
     public static func build(_ input: StatusCanonicalInput) throws -> Data {
-        var object: [String: Any] = [
-            "nonce": input.nonce,
-            "timestamp": input.timestamp,
-        ]
-        if let value = input.rdmaDisabled { object["rdma_disabled"] = value }
-        if let value = input.sipEnabled { object["sip_enabled"] = value }
-        if let value = input.secureBootEnabled { object["secure_boot_enabled"] = value }
-        if let value = nonEmpty(input.binaryHash) { object["binary_hash"] = value }
-        if let value = nonEmpty(input.activeModelHash) { object["active_model_hash"] = value }
-        if let value = nonEmpty(input.pythonHash) { object["python_hash"] = value }
-        if let value = nonEmpty(input.runtimeHash) { object["runtime_hash"] = value }
-        if !input.templateHashes.isEmpty { object["template_hashes"] = input.templateHashes }
-        if !input.modelHashes.isEmpty { object["model_hashes"] = input.modelHashes }
-
-        return try JSONSerialization.data(
-            withJSONObject: object,
-            options: [.sortedKeys, .withoutEscapingSlashes]
+        let payload = StatusCanonicalPayload(
+            nonce: input.nonce,
+            timestamp: input.timestamp,
+            rdmaDisabled: input.rdmaDisabled,
+            sipEnabled: input.sipEnabled,
+            secureBootEnabled: input.secureBootEnabled,
+            binaryHash: nonEmpty(input.binaryHash),
+            activeModelHash: nonEmpty(input.activeModelHash),
+            pythonHash: nonEmpty(input.pythonHash),
+            runtimeHash: nonEmpty(input.runtimeHash),
+            templateHashes: input.templateHashes.isEmpty ? nil : input.templateHashes,
+            modelHashes: input.modelHashes.isEmpty ? nil : input.modelHashes
         )
+
+        // JSONEncoder's sortedKeys ordering matches Go's encoding/json bytewise
+        // string-key ordering, including for mixed-case keys in nested maps.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(payload)
     }
 
     private static func nonEmpty(_ value: String?) -> String? {

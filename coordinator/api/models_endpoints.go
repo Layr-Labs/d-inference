@@ -31,12 +31,11 @@ func (s *Server) aliasModelEntries(
 	capByModel map[string]*registry.ModelCapacity,
 	catalogByID map[string]store.SupportedModel,
 	registryByID map[string]store.ModelRegistryEntry,
-) ([]types.ModelEntry, map[string]struct{}) {
+) ([]types.ModelEntry, map[string]struct{}, error) {
 	hidden := make(map[string]struct{})
 	aliases, err := s.store.ListModelAliases()
 	if err != nil {
-		s.logger.Error("model registry: failed to list aliases", "error", err)
-		return nil, hidden
+		return nil, nil, err
 	}
 
 	entries := make([]types.ModelEntry, 0, len(aliases))
@@ -130,7 +129,7 @@ func (s *Server) aliasModelEntries(
 		entries = append(entries, entry)
 	}
 
-	return entries, hidden
+	return entries, hidden, nil
 }
 
 // listModelEntries assembles the consumer-facing model entries shared by
@@ -171,7 +170,10 @@ func (s *Server) listModelEntries(includeBuilds bool) ([]types.ModelEntry, error
 		concreteOrder = append(concreteOrder, model.ID)
 	}
 
-	aliasEntries, hiddenBuilds := s.aliasModelEntries(capByModel, catalogByID, registryByID)
+	aliasEntries, hiddenBuilds, err := s.aliasModelEntries(capByModel, catalogByID, registryByID)
+	if err != nil {
+		return nil, err
+	}
 	data := make([]types.ModelEntry, 0, len(concreteEntries)+len(aliasEntries))
 	data = append(data, aliasEntries...)
 	for _, modelID := range concreteOrder {

@@ -3,7 +3,6 @@
 ## Unreleased
 
 - **Coordinator capacity and admission** — Model readiness honors public routing gates while retaining inventory and the fleet-wide health-breaker fallback. Expired capacity probes settle as timeouts; oversized prompt/output sums are rejected without integer wrapping.
-||||||| parent of 00d1ffad2 (Record finite coordinator configuration handling)
 - **Coordinator settings** — Reject non-finite warm-pool and quality-admission values before serving. Ignore non-finite prompt-calibration overrides and bound oversized calibrated estimates before integer conversion.
 
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)

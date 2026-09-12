@@ -423,22 +423,23 @@ func TestSettleEpoch_EmptyFleet_NoNaN(t *testing.T) {
 }
 
 func TestSettleEpoch_BlueGreenDoubleOpen(t *testing.T) {
-	// Two overlapping open sessions for one machine (blue-green deploy) must union
-	// to at most 100% uptime — never >1.0, which would over-pay the floor.
+	// Overlapping sessions for one machine must pay only for their union.
+	// Summing their durations and capping at 100% still overpays partial coverage.
 	epochID, start, end, clock := closedEpoch()
 	st := newEngineStore()
 	reg := registry.New(testLogger())
 	p := addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
 	setSerial(p, "S1", "Mac15,8")
 
-	// Two sessions, each covering most of the epoch, heavily overlapping. Closed
-	// at end so they fully cover the period.
+	// Coverage is [0%, 60%] and [50%, 95%]: the union is 95%, while the
+	// individual durations add to 105% and would incorrectly hit the 100% cap.
 	half := start.Add(end.Sub(start) / 2)
-	disc := end
-	s1 := store.ProviderSession{SessionID: "s1", SerialNumber: "S1", AccountID: "acc1", ProviderKey: "PK1", ConnectedAt: start, LastSeen: end, DisconnectedAt: &disc}
-	s2 := store.ProviderSession{SessionID: "s2", SerialNumber: "S1", AccountID: "acc1", ProviderKey: "PK1", ConnectedAt: half, LastSeen: end, DisconnectedAt: &disc}
+	disc1 := start.Add(end.Sub(start) * 60 / 100)
+	disc2 := start.Add(end.Sub(start) * 95 / 100)
+	s1 := store.ProviderSession{SessionID: "s1", SerialNumber: "S1", AccountID: "acc1", ProviderKey: "PK1", ConnectedAt: start, LastSeen: disc1, DisconnectedAt: &disc1}
+	s2 := store.ProviderSession{SessionID: "s2", SerialNumber: "S1", AccountID: "acc1", ProviderKey: "PK1", ConnectedAt: half, LastSeen: disc2, DisconnectedAt: &disc2}
 	st.sessions = []store.ProviderSession{s1, s2}
-	// $0 earned this period → prorated floor, so the test isolates the uptime-cap
+	// $0 earned this period → prorated floor, so the test isolates the uptime-union
 	// behavior without depending on demand.
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 2_000_000, start.Add(-24*time.Hour))}
 
@@ -450,10 +451,9 @@ func TestSettleEpoch_BlueGreenDoubleOpen(t *testing.T) {
 	if res.Settled != 1 {
 		t.Fatalf("expected one settlement, got %+v", res)
 	}
-	// Full coverage (not 150%) → exactly the prorated 64GB floor.
-	want := PeriodFloor(64, 1.0, start, end)
+	want := PeriodFloor(64, 0.95, start, end)
 	if res.TotalDrawMicroUSD != want {
-		t.Fatalf("double-open over-paid: draw=%d, want %d (uptime capped at 1.0)", res.TotalDrawMicroUSD, want)
+		t.Fatalf("overlapping sessions: draw=%d, want %d (95%% uptime)", res.TotalDrawMicroUSD, want)
 	}
 }
 

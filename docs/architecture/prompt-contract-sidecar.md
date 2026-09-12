@@ -1,6 +1,6 @@
 # Prompt-contract sidecar
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-11 · commit `4a3c92016`
 
 How the coordinator's `promptsidecar` child process derives deterministic,
 provider-compatible token boundaries so exact-cache routing can predict which
@@ -102,8 +102,10 @@ use the same singleflight implementation and configured LRU capacity; the
 planner semaphore bounds concurrent loads and plans.
 
 At startup the sidecar binds its socket and reports live but not ready; it does
-not discover or load every directory left on disk. After asynchronous artifact
-provisioning finishes (`Provisioner.Reconcile`,
+not discover or load every directory left on disk. Catalog reconciliation
+snapshots each manifest and its file list before starting background work, so
+later caller changes cannot separate the published path from its recorded
+contract identity. After asynchronous artifact provisioning finishes (`Provisioner.Reconcile`,
 `coordinator/promptcontract/provisioner.go`), the coordinator sends the
 complete, deduplicated active set to `POST /v1/preload`, which loads that set
 sequentially before traffic (`coordinator/promptsidecar/src/preload.rs`). This
@@ -231,13 +233,17 @@ its layout-epoch binding includes the block size.
 The Go cache (`ArtifactCache.Ensure`,
 `coordinator/promptcontract/artifact_cache.go`) accepts catalog manifest data,
 filters to prompt roles, verifies the model aggregate identity
-(`verifyManifestAggregate`), downloads each declared file from the configured
-HTTPS origin, rejects cross-origin redirects (`sameOrigin`), verifies size and
+(`verifyManifestAggregate`) for every caller before joining a shared download,
+and downloads each declared file from an owned snapshot of the configured
+HTTPS origin. It rejects cross-origin redirects (`sameOrigin`), verifies size and
 SHA-256 while writing, fsyncs files and directories, and atomically renames a
 random same-root temporary directory. `os.Root`, exclusive creation,
 relative-path validation, and symlink checks (`rejectSymlinks`) contain
 traversal. Published files are mode `0400` and directories mode `0500`; every
-reuse re-hashes every artifact (`verifyPublished`).
+reuse re-hashes every artifact (`verifyPublished`). When another cache instance
+wins publication, the loser verifies that winner, restores write permission
+only within its own staging tree, and removes that tree through the existing
+scoped cleanup. The published winner remains read-only.
 
 The Rust process never downloads. It opens every path component from `/` with
 `O_NOFOLLOW` (`load`, `coordinator/promptsidecar/src/artifacts.rs`), so a

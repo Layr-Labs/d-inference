@@ -194,14 +194,14 @@ fn validate_finite_values(
     if constant.is_some() && enumeration.is_some() {
         return Err(NormalizeError::InvalidTools);
     }
-    let values: Vec<&Value> = if let Some(constant) = constant {
-        vec![constant]
+    let values: &[Value] = if let Some(constant) = constant {
+        std::slice::from_ref(constant)
     } else if let Some(enumeration) = enumeration {
         let values = enumeration.as_array().ok_or(NormalizeError::InvalidTools)?;
         if values.is_empty() || values.len() > 128 {
             return Err(NormalizeError::InvalidTools);
         }
-        values.iter().collect()
+        values
     } else {
         return Ok(());
     };
@@ -289,13 +289,13 @@ fn constrained_schema_grammar_cost(schema: &Value) -> usize {
         Some(Value::Bool(value)) => nullable |= *value,
         Some(_) => return MAX_GRAMMAR_COMPLEXITY + 1,
     }
-    let finite_values: Option<Vec<&Value>> = if let Some(constant) = schema.get("const") {
-        Some(vec![constant])
+    let finite_values: Option<&[Value]> = if let Some(constant) = schema.get("const") {
+        Some(std::slice::from_ref(constant))
     } else {
         schema
             .get("enum")
             .and_then(Value::as_array)
-            .map(|values| values.iter().collect())
+            .map(Vec::as_slice)
     };
     // JSON Schema applies type and enum/const conjunctively: a nullable type
     // admits null only when the finite value set itself contains null, so
@@ -335,24 +335,18 @@ fn constrained_schema_grammar_cost(schema: &Value) -> usize {
             grammar_add(2, grammar_multiply(grammar_add(item_cost, 1), count))
         }
         "string" => finite_values.map_or(16, |values| {
-            values.into_iter().fold(0, |cost, value| {
+            values.iter().fold(0, |cost, value| {
                 value
                     .as_str()
                     .map_or(cost, |text| grammar_add(cost, text.len() + 10))
             })
         }),
         "boolean" => finite_values.map_or(10, |values| {
-            grammar_multiply(
-                values
-                    .into_iter()
-                    .filter(|value| value.is_boolean())
-                    .count(),
-                5,
-            )
+            grammar_multiply(values.iter().filter(|value| value.is_boolean()).count(), 5)
         }),
         "integer" | "number" => {
             finite_values.map_or(if kind == "integer" { 20 } else { 40 }, |values| {
-                values.into_iter().fold(0, |cost, value| {
+                values.iter().fold(0, |cost, value| {
                     value
                         .as_number()
                         .map_or(cost, |number| grammar_add(cost, number.to_string().len()))

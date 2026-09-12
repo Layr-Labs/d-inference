@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `31e63a9d9`
+> Last updated: 2026-09-12 · commit `10a75a370`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -198,6 +198,14 @@ The mixed-mutation fixture checks both explicit pins and unrelated legacy
 settings. Run these with `RuntimeSnapshotConfigTests` when changing
 `provider-swift/Sources/darkbloom/ConfigMutation.swift` (`withMutableConfig`).
 CLI calls retain default-on migration before the sidecar lock and reload.
+
+`WatchdogCommandTests` fails immediately if writing its temporary TOML fails.
+Config-only assertions supply an empty environment to `Watchdog.settings`, while
+the update opt-out case supplies `DARKBLOOM_NO_UPDATE_CHECK` explicitly.
+`LocalEndpointFileTests` checks its temporary-directory environment override and
+restores the inherited `DARKBLOOM_LOCAL_DIR` value after each fixture. Run both
+suites with `--no-parallel`; suite serialization alone does not isolate other
+suites from process-wide environment changes.
 
 The general provider suite passes `--no-parallel` explicitly to Swift Testing.
 Unrelated cases share process-wide MLX state and executor capacity; overlapping

@@ -20,6 +20,10 @@ final class HiddenFileSkippingTest: XCTestCase {
         let dotGit = withHidden.appendingPathComponent(".git", isDirectory: true)
         try FileManager.default.createDirectory(at: dotGit, withIntermediateDirectories: true)
         try Data("ref: refs/heads/main".utf8).write(to: dotGit.appendingPathComponent("HEAD"))
+        // These pass the integrity allowlist. Only hidden-entry skipping can
+        // exclude them; .DS_Store and HEAD are ignored by either filter.
+        try Data("hidden weights".utf8).write(to: withHidden.appendingPathComponent(".hidden.safetensors"))
+        try Data("{}".utf8).write(to: dotGit.appendingPathComponent("config.json"))
 
         let aManifest = try await ManifestBuilder.build(modelDirectory: baseline, modelID: "test/hidden", version: "v1")
         let bManifest = try await ManifestBuilder.build(modelDirectory: withHidden, modelID: "test/hidden", version: "v1")
@@ -29,6 +33,7 @@ final class HiddenFileSkippingTest: XCTestCase {
             "Hidden entries leaked into manifest: \(bPaths)")
         XCTAssertFalse(bPaths.contains(".DS_Store"))
         XCTAssertFalse(bPaths.contains(".git/HEAD"))
+        XCTAssertEqual(bPaths, aManifest.files.map { $0.path })
 
         XCTAssertEqual(aManifest.aggregateSHA256, bManifest.aggregateSHA256,
             "Hidden files changed the aggregate hash; .skipsHiddenFiles is broken")

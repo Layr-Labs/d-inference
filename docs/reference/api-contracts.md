@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-12 · commit `f5df6b5b5`
+> Last updated: 2026-09-12 · commit `932037b7c`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -466,7 +466,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | Inference body | 16 MiB (`maxInferenceBodyBytes`) → 413 `invalid_request_error`; sealed bodies are read with the same cap (400 `invalid_request_error` when exceeded) | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), `sealedTransport` (`coordinator/api/sender_encryption.go`) |
 | Control-plane bodies | 64 KiB (`maxControlPlaneBodyBytes`) for enroll, device token, admin auth | `coordinator/api/server.go` |
 | MDM webhook body | 1 MiB (`maxMDMWebhookBodyBytes`) | `HandleMDMWebhook` (`coordinator/api/server.go`) |
-| `n` | Chat/Responses reject integer values greater than 1; generic endpoints retain their existing choice-count behavior. Output-token estimates saturate at the maximum integer when multiplying a positive per-choice bound by `n` would overflow. | `handleChatCompletions`; `estimateRequestedMaxTokens` (`coordinator/api/request_introspection.go`) |
+| `n` | Chat/Responses reject integer values greater than 1. Generic endpoints return 400 `invalid_request_error` with `param: "n"` when the positive per-choice output bound times `n` exceeds the supported integer range. | `handleChatCompletions`; `validateRequestedMaxTokens`, `estimateRequestedMaxTokens` (`coordinator/api/request_introspection.go`) |
 | `max_tokens` | `max_completion_tokens` → `max_tokens`; an explicit value is not clamped, a missing one is filled from the [output bound](pricing-model.md#formulas) | `ensureMaxTokensBound` |
 | Prompt size at admission | 413 `payload_too_large` when the estimated prompt exceeds what the model's providers can accept | `runInferenceAdmission` (`coordinator/api/inference_admission.go`) |
 | Catalog membership | Model resolved but absent from the routable catalog → 404 `model_not_found`, after the balance reservation is released | `handleChatCompletions` |
@@ -479,10 +479,11 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | Token rate limits | Per-account input and output tokens per minute → 429 with `Retry-After` | `applyTokenRateLimitWithAdmission`, `writeTokenRateLimited` |
 | Model shedding | A model currently rejecting → 429 with `Retry-After` from `estimateRetryAfter` | `shedIfModelRejected` |
 
-Token admission still charges at most one bucket burst per request. An
-overflowing output estimate therefore cannot become a negative or small charge
-that bypasses a partially spent bucket. The provider-bound output limit and
-the token limiter's existing burst policy are unchanged.
+Output-estimate overflow is rejected before token admission, balance reservation
+or capacity routing, including when token quotas are full or unlimited. The
+coordinator never substitutes a maximum-integer token count for this invalid
+product. Representable estimates retain the existing one-burst admission policy
+and provider-bound output limits.
 
 ## Timeouts and constants
 

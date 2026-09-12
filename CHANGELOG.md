@@ -2,7 +2,7 @@
 
 ## Unreleased — output token estimate bounds
 
-- Keep generic inference output estimates conservative when `n` times the per-choice token limit exceeds the integer range. Saturate the estimate instead of wrapping to a small or negative quota charge; preserve forwarded generation limits and the existing one-burst admission policy.
+- Reject generic inference requests with 400 when `n` times the per-choice output token limit exceeds the supported integer range, before token quotas, billing reservations or routing. Ordinary requests retain their existing output limits and admission policy.
 
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 

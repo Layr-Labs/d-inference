@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-12 · commit `932037b7c`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -124,6 +124,7 @@ defines refresh intervals, maximum cached staleness, and window aliases.
 
 | Response | Cause | Fix |
 |---|---|---|
+| 400 `invalid_request_error` with `param: "n"` | Chat/Responses received `n > 1`, or a generic endpoint's choice count times output limit exceeds the supported integer range | Use `n: 1` or lower the output limit; this rejection occurs before token or balance reservation ([request limits](../reference/api-contracts.md#limits-and-validation)) |
 | 401 `authentication_error` | `Authorization: Bearer` header missing, or the key is unknown, disabled, expired or revoked | Re-export the key; create or rotate one in the console ([`authentication.md`](authentication.md)) |
 | 402 | Balance or key budget cannot cover the worst-case reservation ([payment-required taxonomy](../architecture/billing.md#payment-required-responses)) | Deposit, or lower `max_tokens` ([`billing.md`](billing.md)) |
 | 403 `model_not_allowed` | The key was created with an `allowed_models` list that excludes this model | Pick an id from the list, or `PATCH` the key ([`authentication.md`](authentication.md)) |

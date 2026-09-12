@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `932037b7c`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -65,6 +65,14 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 ```
 
 ### 2. Coordinator (Go)
+
+`TestGenericOutputTokenOverflowRejectedBeforeAdmission` exercises both generic
+HTTP routes with full and unlimited output quotas and real in-process billing.
+It requires a 400 for overflowing output estimates and no charge/refund ledger
+entries. `TestGenericOutputTokenOverflowCannotBypassKeyQuota` keeps the partially
+spent quota controls, and `TestRequestedOutputTokenEstimateRejectsOverflow`
+checks fitting and overflowing products (`coordinator/api/output_token_validation_test.go`,
+`coordinator/api/output_token_overflow_test.go`).
 
 Run prediction telemetry checks from the repository root:
 

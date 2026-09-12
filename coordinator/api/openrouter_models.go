@@ -47,13 +47,14 @@ func mapQuantizationToOpenRouter(q string) string {
 	if mapped, ok := quantAliases[key]; ok {
 		return mapped
 	}
-	// Tolerate descriptors like "4bit-gs64" or "mxfp4". Prefer the
-	// longest spelling so "bfloat16" wins over its "float16" suffix;
-	// equally specific matches use their order in the label.
+	// Tolerate descriptors like "4bit-gs64" or "mxfp4". The earliest
+	// recognized format wins, preserving "q4" in "q4-bfloat16" and
+	// "bfloat16" over its later "float16" suffix. At the same position,
+	// prefer the longest spelling.
 	bestAlias, bestMapping, bestIndex := "", "", len(key)
 	for alias, mapped := range quantAliases {
 		if index := strings.Index(key, alias); index >= 0 &&
-			(len(alias) > len(bestAlias) || len(alias) == len(bestAlias) && index < bestIndex) {
+			(index < bestIndex || index == bestIndex && len(alias) > len(bestAlias)) {
 			bestAlias, bestMapping, bestIndex = alias, mapped, index
 		}
 	}

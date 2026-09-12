@@ -23,8 +23,11 @@ func TestMapQuantizationToOpenRouter(t *testing.T) {
 		"bfloat16-gs64":     "bf16",
 		"  BFLOAT16-GS64  ": "bf16",
 		"float16-gs64":      "fp16",
-		"q4-bfloat16":       "bf16", // prefer the most specific spelling
-		"int8-4bit":         "int8", // equally specific spellings prefer the first
+		"q4-bfloat16":       "int4", // leading weight format wins over compute dtype
+		"4bit-float16":      "int4",
+		"bfloat16-q4":       "bf16",
+		"float16-4bit":      "fp16",
+		"int8-4bit":         "int8", // independent spellings prefer the first
 		"4bit-int8":         "int4",
 		"":                  "",
 		"weird-format":      "",

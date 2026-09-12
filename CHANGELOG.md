@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — alias validation recovery
+
+- Return a server error before changing model aliases when namespace, rollout-history or build validation reads fail. Preserve existing alias ownership and retired-build lineage through transient store errors.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-11 · commit `88e9baeed`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -210,11 +210,11 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | PUT | `/v1/admin/pricing` | `handleAdminPricing` (`coordinator/api/billing_handlers.go`) | `admin` | Platform default price table |
 | PUT | `/v1/admin/users/role` | `handleAdminSetUserRole` (`coordinator/api/billing_handlers.go`) | `admin` | Role selects the consumer or service limiter |
 | PUT | `/v1/admin/users/platform-fee` | `handleAdminSetUserPlatformFee` (`coordinator/api/billing_handlers.go`) | `admin` | Per-user fee override; fee policy in [`../architecture/billing.md#invariants`](../architecture/billing.md#invariants) |
-| POST | `/v1/admin/models/register` | `handleRegisterModel` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Publish a model build |
+| POST | `/v1/admin/models/register` | `handleRegisterModel` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Publish a model build; a failed alias namespace lookup returns 500 before artifact fetches or writes |
 | POST | `/v1/admin/models/` | `handleAdminModelRegistryAction` (`coordinator/api/model_registry_handlers.go`) | `publishing` | Registry actions selected by path suffix |
-| GET / POST | `/v1/admin/models/aliases` | `handleModelAliasList`, `handleModelAliasUpsert` (`coordinator/api/model_alias_handlers.go`) | `publishing` | Two registrations; upserts fan out `desired_models` (see [Version gating](#version-gating)) |
+| GET / POST | `/v1/admin/models/aliases` | `handleModelAliasList`, `handleModelAliasUpsert` (`coordinator/api/model_alias_handlers.go`) | `publishing` | Two registrations; upserts fan out `desired_models` (see [Version gating](#version-gating)). Failed namespace, prior-alias or member reads return 500 before writing; missing members remain 400 |
 | DELETE | `/v1/admin/models/aliases/{aliasID}` | `handleModelAliasDelete` (`coordinator/api/model_alias_handlers.go`) | `publishing` | |
-| GET / POST | `/v1/admin/models/openrouter-aliases` | `handleOpenRouterAliasList`, `handleOpenRouterAliasUpsert` (`coordinator/api/openrouter_alias_handlers.go`) | `publishing` | Two registrations |
+| GET / POST | `/v1/admin/models/openrouter-aliases` | `handleOpenRouterAliasList`, `handleOpenRouterAliasUpsert` (`coordinator/api/openrouter_alias_handlers.go`) | `publishing` | Two registrations; a failed namespace lookup returns 500 before writing |
 | DELETE | `/v1/admin/models/openrouter-aliases/{aliasID}` | `handleOpenRouterAliasDelete` (`coordinator/api/openrouter_alias_handlers.go`) | `publishing` | |
 | GET / DELETE | `/v1/admin/releases` | `handleAdminListReleases`, `handleAdminDeleteRelease` (`coordinator/api/release_handlers.go`) | `admin-key` | Two registrations |
 | GET | `/v1/admin/state-export` | `handleAdminStateExport` (`coordinator/api/admin_state_export.go`) | `admin-key` | 404 unless `EIGENINFERENCE_STATE_EXPORT_ENABLED=true`; 412 `precondition_failed` without an encryption recipient. See [`../operations/state-export.md`](../operations/state-export.md) |

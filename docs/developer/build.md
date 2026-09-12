@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-12 · commit `d40c94ea9`
+> Last updated: 2026-09-12 · commit `030b1a947`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -13,7 +13,7 @@ Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 
 PR review automation has local
 [input fixtures](test.md#6-scripts-and-release-integrity). They use Python's
-standard library, Bash and `jq` to validate review input preparation without
+standard library, Git, Bash and `jq` to validate review input preparation without
 a model API key or a build.
 
 Profiler wire changes require both coordinator and provider builds; the shared

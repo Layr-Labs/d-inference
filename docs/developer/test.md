@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-12 · commit `d40c94ea9`
+> Last updated: 2026-09-12 · commit `030b1a947`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -924,8 +924,9 @@ node --test landing/earn-calculator-core.test.js
 ### 6. Scripts and release integrity
 
 `python3 scripts/test_review_automation.py` checks review input preparation.
-Synthetic patches cover deleted files, metadata-only changes, header-like hunk
-content and excerpt limits. A stubbed `gh` command runs the Codex workflow's
+Synthetic patches cover deleted files, both sides of renames, header-like hunk
+content and complete omission notices under tiny excerpt limits. A real local
+Git diff checks whitespace in filenames. A stubbed `gh` command runs the Codex workflow's
 metadata step through Bash and `jq`, checking that multiline PR bodies containing
 `EOF` survive the GitHub output format. The fixtures make no API or model calls
 and run in Release Integrity CI.

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `31e63a9d9`
+> Last updated: 2026-09-12 · commit `be52008ef`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -250,6 +250,26 @@ See `standaloneServerStopAndWaitReleaseResidentBridgeAndSSDResources` in
 `provider-swift/Tests/ProviderCoreTests/StandaloneServerTests.swift` and
 `periodicSamplerEmitsForEverySlot` / `shutdownStopsSampler` in
 `provider-swift/Tests/ProviderCoreTests/MTPPostureTelemetryTests.swift`.
+
+#### Stream and model-list assertions
+
+After building and staging the test product above, run:
+
+```bash
+cd provider-swift
+swift test --skip-build --no-parallel \
+  --filter 'batcherDeliversEveryFrameExactlyOnce|multiModelEngineReturnsSortedIDs|tokenizeFailure'
+```
+
+`provider-swift/Tests/ProviderCoreTests/ChunkSenderTests.swift`
+(`batcherDeliversEveryFrameExactlyOnce`) requires the complete sequence of unique
+eight-byte frames after the existing delivery deadline and flush barrier.
+`provider-swift/Tests/ProviderCoreTests/MultiModelBatchSchedulerEngineTests.swift`
+(`multiModelEngineReturnsSortedIDs`) checks nonempty registry and advertised
+model lists; the advertised input is deliberately out of order.
+`provider-swift/Tests/ProviderCoreTests/EngineV2BridgeTests.swift`
+(`tokenizeFailure`) requires an error event before checking its message.
+These use the real batcher and adapter with scripted dependencies, not model inference.
 
 **Nested `libs/mlx-swift-lm` suites.** The paged-KV correctness gates live in
 the submodule, not in `provider-swift/`. Build them once, stage the metallib,

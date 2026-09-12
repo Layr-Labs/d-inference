@@ -1,6 +1,6 @@
 # Authentication
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-12 · commit `f176a28ac`
 
 How to obtain and manage each credential the coordinator accepts, and which routes take it. Every request authenticates with one header, `Authorization: Bearer <token>` (`extractBearerToken`, `coordinator/api/server.go`); the token is an API key, a Privy session JWT, a device-flow provider token, or the operator's admin key, and `requireAuth` decides which by shape — JWTs (starting `eyJ`) are verified with Privy, the admin key is compared in constant time, everything else is looked up as an API key. For API consumers and console users; the per-route auth column is in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -51,7 +51,7 @@ All management routes require a Privy JWT (`requirePrivyAuth`); calling them wit
 | Revoke | `DELETE /v1/keys/{id}` |
 | Inspect the key you are calling with | `GET /v1/key` — this one accepts the API key itself (`handleGetCallingKey`) |
 
-`POST /v1/auth/keys` and `DELETE /v1/auth/keys` are the older one-key-per-account endpoints (`handleCreateKey`, `handleRevokeKey`); they still work but the `/v1/keys` family is the managed surface. The coordinator caches key lookups (`coordinator/api/server.go`), so a revocation or a limit change takes up to [`apiKeyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants) to apply everywhere.
+`POST /v1/auth/keys` and `DELETE /v1/auth/keys` are the older one-key-per-account endpoints (`handleCreateKey`, `handleRevokeKey`); they still work but the `/v1/keys` family is the managed surface. A successful update, revocation or rotation invalidates cached key lookups in the coordinator handling the change. Delayed lookups cannot restore the old permissions. Requests already authenticated may finish; other coordinator processes and direct store edits rely on [`apiKeyCacheTTL`](../reference/api-contracts.md#timeouts-and-constants). See [API-key snapshots](../architecture/security/identity-binding.md#consumer-api-key-snapshots) for the exact scope.
 
 ### 4. Sign in with Privy and use the session JWT
 

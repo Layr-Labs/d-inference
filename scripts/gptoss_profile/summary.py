@@ -27,6 +27,23 @@ def dispersion(values):
             "coefficientOfVariation": stdev(values) / mean(values) if len(values) > 1 and mean(values) else None}
 
 
+def decode_intervals(timings):
+    """All row intervals and those wholly inside each repetition's overlap."""
+    intervals, common = [], []
+    for timing in timings:
+        rows = timing["rows"]
+        start = max(row["tokenArrivalMs"][0] for row in rows)
+        end = min(row["tokenArrivalMs"][-1] for row in rows)
+        for row in rows:
+            times = row["tokenArrivalMs"]
+            for first, last in zip(times, times[1:]):
+                interval = last - first
+                intervals.append(interval)
+                if first >= start and last <= end:
+                    common.append(interval)
+    return intervals, common
+
+
 def summarize_cell(report, spec):
     cell = spec["cell"]
     result = {**cell, "iterations": spec["iterations"],
@@ -34,12 +51,7 @@ def summarize_cell(report, spec):
     if cell["phase"] == "decode":
         timings = [s["decodeTiming"] for s in report["decode"]]
         aggregates = [t["overlapAggregateTokensPerSecond"] for t in timings]
-        intervals = [b - a for t in timings for row in t["rows"]
-                     for a, b in zip(row["tokenArrivalMs"], row["tokenArrivalMs"][1:])]
-        common_intervals = [b - a for t in timings for row in t["rows"]
-                            for a, b in zip(row["tokenArrivalMs"], row["tokenArrivalMs"][1:])
-                            if a >= max(r["tokenArrivalMs"][0] for r in t["rows"])
-                            and b <= min(r["tokenArrivalMs"][-1] for r in t["rows"])]
+        intervals, common_intervals = decode_intervals(timings)
         result.update({"aggregateDecodeTPS": median(aggregates),
                        "aggregateDecodeDistribution": dispersion(aggregates),
                        "perRequestDecodeTPS": median(aggregates) / cell["batch"],

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-12 · commit `c489b2b40`
+> Last updated: 2026-09-12 · commit `b4a6160fb`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -122,10 +122,12 @@ GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/payments/baserewards \
 
 `TestAllocateDraws_Deterministic` in
 `coordinator/payments/baserewards/alloc_test.go` disables the separate account
-cap so candidate demand exceeds the pool. It requires identical per-provider
-payouts after an input shuffle and full use of the pool; equal-score candidates
-must therefore use the `ProviderKey` tiebreaker in `AllocateDraws`. Dedicated
-fixtures retain the account cap and cumulative cap across settlement runs.
+cap so candidate demand exceeds the pool. Account names sort in reverse
+`ProviderKey` order, and exact expected grants require `a=18_000_000`,
+`b=7_000_000`, and zero for `c` and `d` (micro-USD). The fixture also requires
+identical payouts after an input shuffle and full use of the pool. This checks
+the actual `ProviderKey` tiebreaker in `AllocateDraws`; dedicated fixtures retain
+the account cap and cumulative cap across settlement runs.
 
 #### Provider config cleanup
 

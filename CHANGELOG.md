@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — sweep payout ownership
+
+- Preserve newer completed payouts when an old automatic sweep failure arrives concurrently. Reopen withdrawals only while the stored paid state still belongs to that exact sweep, without moving ledger funds.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

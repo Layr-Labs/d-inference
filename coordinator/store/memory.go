@@ -948,12 +948,13 @@ func (s *MemoryStore) RecordRejection(record *RejectionRecord) error {
 }
 
 // RejectionRecordsSince returns rejection records created at or after the
-// given time. Zero since returns all records.
+// given time, newest-first, capped at maxTelemetryReadRows. Zero since
+// includes all creation times, subject to the same cap.
 func (s *MemoryStore) RejectionRecordsSince(since time.Time) []RejectionRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	out := make([]RejectionRecord, 0, len(s.inferenceRejections))
+	out := make([]RejectionRecord, 0, min(len(s.inferenceRejections), maxTelemetryReadRows))
 	for i := len(s.inferenceRejections) - 1; i >= 0; i-- {
 		r := s.inferenceRejections[i]
 		if !since.IsZero() && r.CreatedAt.Before(since) {
@@ -1030,7 +1031,7 @@ func (s *MemoryStore) RequestProfilesSinceFiltered(since time.Time, filter Reque
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	out := make([]RequestProfileRecord, 0, len(s.requestProfiles))
+	out := make([]RequestProfileRecord, 0, min(len(s.requestProfiles), maxTelemetryReadRows))
 	for i := len(s.requestProfiles) - 1; i >= 0; i-- {
 		r := s.requestProfiles[i]
 		if !since.IsZero() && r.CreatedAt.Before(since) {
@@ -1074,7 +1075,7 @@ func (s *MemoryStore) FleetSnapshotsSince(since time.Time) []FleetSnapshotRow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	out := make([]FleetSnapshotRow, 0, len(s.fleetSnapshots))
+	out := make([]FleetSnapshotRow, 0, min(len(s.fleetSnapshots), maxTelemetryReadRows))
 	for i := len(s.fleetSnapshots) - 1; i >= 0; i-- {
 		r := s.fleetSnapshots[i]
 		if !since.IsZero() && r.SampledAt.Before(since) {

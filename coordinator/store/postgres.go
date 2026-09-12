@@ -1817,7 +1817,8 @@ const inferenceRouteSelectColumns = `
 			admitted_but_failed, used_backup, backup_won, error_reason`
 
 // InferenceRouteRecordsSince returns routing records created at or after the
-// given time. Zero since returns all records.
+// given time, newest-first, capped at maxTelemetryReadRows. Zero since
+// includes all creation times, subject to the same cap.
 func (s *PostgresStore) InferenceRouteRecordsSince(since time.Time) []InferenceRouteRecord {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -2006,7 +2007,8 @@ func (s *PostgresStore) RecordRejection(record *RejectionRecord) error {
 }
 
 // RejectionRecordsSince returns rejection records created at or after the given
-// time. Zero since returns all records.
+// time, newest-first, capped at maxTelemetryReadRows. Zero since includes all
+// creation times, subject to the same cap.
 func (s *PostgresStore) RejectionRecordsSince(since time.Time) []RejectionRecord {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

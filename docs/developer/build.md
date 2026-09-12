@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-12 · commit `e56edbb69`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -470,6 +470,13 @@ ls -l provider-swift/.build/debug/darkbloom provider-swift/.build/debug/mlx.meta
 ./provider-swift/.build/debug/darkbloom --version    # prints ProviderCore.version, e.g. 0.8.16
 ls console-ui/.next
 ```
+
+### Model benchmark wrapper fixtures
+
+The Gemma and GPT-OSS report tooling has CPU-only Python checks that need no
+provider build, model snapshot or Metal runtime. Run both package suites from
+[the wrapper verification procedure](test.md#model-benchmark-wrapper-contracts)
+before running a native benchmark with either launcher.
 
 ## Troubleshooting
 

@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-12 · commit `d2fb9efc9`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -440,6 +440,13 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 ### Responses API
 
 Bodies are lowered into the chat pipeline (`coordinator/promptcontract/endpoint_lower_responses.go`) and the provider's chat output is raised back into `ResponsesResponse` (`coordinator/api/types/types.go`): `id` (`resp_…`), `object`, `created_at`, `status`, `error`, `incomplete_details.reason`, `instructions`, `max_output_tokens`, `model`, `output[]`, `parallel_tool_calls`, `temperature`, `tool_choice`, `tools`, `top_p`, `metadata`, `usage` (`input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens`, `output_tokens_details.reasoning_tokens`), `se_signature`, `response_hash`. Streams use `event:`-typed frames from `response.created` / `response.in_progress` through the item deltas to `response.completed` (or `response.incomplete` when truncated) and carry **no** `data: [DONE]` (`newResponsesStreamEmitter`, `coordinator/api/responses_stream.go`).
+
+Each reasoning or message item owns its text. Its `done` events and final
+`output[]` entry contain only the deltas for that item ID, including when
+reasoning, messages and tool calls alternate. Opening a new item resets its
+builder after the previous item has been saved (`appendReasoning`,
+`ensureMessageOpen`, `coordinator/api/responses_stream.go`). Provider usage
+counts and the legacy reasoning-token fallback remain request-wide.
 
 ### Completions and Messages
 

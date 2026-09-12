@@ -1,6 +1,6 @@
 # Quickstart: first request in five steps
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-12 · commit `d2fb9efc9`
 
 Get an API key from the console, list the models your key can use, and make your first chat completion against `https://api.darkbloom.dev` — first with `curl`, then from the OpenAI and Anthropic SDKs. For developers integrating the API; each step is one action. Route details for everything used here are in [`../reference/api-contracts.md`](../reference/api-contracts.md).
 
@@ -89,6 +89,11 @@ print(resp.choices[0].message.content)
 ```
 
 `client.models.list()` and `client.responses.create(...)` also work: they hit `GET /v1/models` and `POST /v1/responses`, both registered routes. Endpoints the coordinator does not implement (embeddings, moderations, files) return a structured 404 from the `/v1/` catch-all (`handleUnimplementedEndpoint`, `coordinator/api/server.go`).
+
+For streamed Responses, group text deltas by `item_id`. Each completed
+reasoning or message item contains that item's text; the terminal response
+keeps the items separately in `output`. See the
+[Responses contract](../reference/api-contracts.md#responses-api).
 
 ### 7. Use the Anthropic SDK
 

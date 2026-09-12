@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `d2fb9efc9`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -65,6 +65,12 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 ```
 
 ### 2. Coordinator (Go)
+
+`TestResponsesStreamReopenedItemsContainOnlyTheirOwnText` exercises alternating
+reasoning, message and tool-call items through the real SSE emitter. It compares
+each item's completed text with its own deltas and checks the terminal output
+and both provider-reported and legacy reasoning usage
+(`coordinator/api/responses_item_text_test.go`).
 
 Run prediction telemetry checks from the repository root:
 

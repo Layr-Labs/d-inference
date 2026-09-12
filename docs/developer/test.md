@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `31e63a9d9`
+> Last updated: 2026-09-12 · commit `4edbceb0c`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -198,6 +198,15 @@ The mixed-mutation fixture checks both explicit pins and unrelated legacy
 settings. Run these with `RuntimeSnapshotConfigTests` when changing
 `provider-swift/Sources/darkbloom/ConfigMutation.swift` (`withMutableConfig`).
 CLI calls retain default-on migration before the sidecar lock and reload.
+
+For SSD authentication and donation changes, run the filter
+`SSDBlockStoreTests|SSDPrefixCacheLifecycleTests|SSDPrefixCacheReadyReceiptTests|SSDPrefixCacheDonationGateTests`
+with `--no-parallel`. In `provider-swift/Tests/ProviderCoreTests/SSDPrefixCacheTests.swift`,
+`tamperFailsClosed` distinguishes valid metadata rejected by DEK authentication
+from invalid schemas rejected by header parsing. `responsePathNotDelayed`
+requires donation to return while maintenance is held; negative write and ready
+checks await `waitForWritesForTesting` before inspecting the result. These use
+temporary encrypted files and tiny MLX arrays, not a downloaded model.
 
 The general provider suite passes `--no-parallel` explicitly to Swift Testing.
 Unrelated cases share process-wide MLX state and executor capacity; overlapping

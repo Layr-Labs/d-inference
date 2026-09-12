@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-12 · commit `d2fb9efc9`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -86,6 +86,8 @@ lease used after launch. See the [test procedure](test.md#connected-coordinatorp
 
 CI checks formatting of tracked Go source while preserving frozen report
 evidence bytes; see the [coordinator checks](test.md#2-coordinator-go).
+The Responses stream fixtures compile in the coordinator API test binary and
+use generated SSE data; they need no provider binary or model artifact.
 The [provider config cleanup tests](test.md#provider-config-cleanup) run with
 temporary home directories and need no provider build or model.
 

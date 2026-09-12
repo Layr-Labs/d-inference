@@ -11,7 +11,7 @@
 // cross-language compatibility.
 //
 // Flow:
-//  1. Coordinator generates ephemeral X25519 key pair per request (forward secrecy)
+//  1. Coordinator generates an ephemeral X25519 key pair per request
 //  2. Encrypts prompt with: ephemeral private + provider public → shared secret
 //  3. Sends: ephemeral public key + nonce + ciphertext
 //  4. Provider decrypts with: provider private + ephemeral public → same shared secret
@@ -39,7 +39,7 @@ type EncryptedPayload struct {
 }
 
 // SessionKeys holds the ephemeral key pair for a single request.
-// The coordinator creates one per inference request for forward secrecy.
+// The coordinator creates one per inference request for key isolation.
 type SessionKeys struct {
 	PublicKey  [32]byte
 	PrivateKey [32]byte

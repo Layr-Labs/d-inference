@@ -113,14 +113,14 @@ func (s *MemoryStore) updateInferenceRouteOutcomeLocked(requestID string, attemp
 	s.inferenceRoutes[idx].UpdatedAt = time.Now()
 }
 
-// InferenceRouteRecordsSince returns route rows created at or after since
-// (zero = all), newest first, capped at maxTelemetryReadRows, with each row's
-// merged outcome applied.
+// InferenceRouteRecordsSince returns route rows created at or after since,
+// newest first, capped at maxTelemetryReadRows, with merged outcomes applied.
+// Zero since includes all creation times, subject to the same cap.
 func (s *MemoryStore) InferenceRouteRecordsSince(since time.Time) []InferenceRouteRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	out := make([]InferenceRouteRecord, 0, len(s.inferenceRoutes))
+	out := make([]InferenceRouteRecord, 0, min(len(s.inferenceRoutes), maxTelemetryReadRows))
 	for i := len(s.inferenceRoutes) - 1; i >= 0; i-- {
 		r := s.inferenceRoutes[i]
 		if !since.IsZero() && r.CreatedAt.Before(since) {

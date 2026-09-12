@@ -196,7 +196,8 @@ type TelemetryStore interface {
 	UpdateInferenceRouteOutcomes(updates []InferenceRouteOutcomeUpdate) error
 
 	// InferenceRouteRecordsSince returns routing records created at or after the
-	// given time. Zero since returns all records.
+	// given time, newest-first, capped at maxTelemetryReadRows. Zero since
+	// includes all creation times, subject to the same cap.
 	InferenceRouteRecordsSince(since time.Time) []InferenceRouteRecord
 
 	// RecordRejection writes a rejected-request record (4xx/5xx) with its
@@ -205,7 +206,8 @@ type TelemetryStore interface {
 	RecordRejection(record *RejectionRecord) error
 
 	// RejectionRecordsSince returns rejection records created at or after the
-	// given time. Zero since returns all records.
+	// given time, newest-first, capped at maxTelemetryReadRows. Zero since
+	// includes all creation times, subject to the same cap.
 	RejectionRecordsSince(since time.Time) []RejectionRecord
 
 	// RecordRequestProfiles writes one request_profiles row per record in a

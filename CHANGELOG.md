@@ -66,6 +66,8 @@ coordinator and console changes require their own deployments.
 
 ## Unreleased — stats request-flow refresh
 
+- Commit invite redemption and balance credit together, so a failed credit leaves the code available for retry.
+
 - Restore Stats refreshes on large usage windows by aggregating request origins before looking up provider locations. Preserve weighted coordinates, request/token counts, and the top-50 flow limit while avoiding large temporary sorts.
 
 ## Unreleased — provider console entry

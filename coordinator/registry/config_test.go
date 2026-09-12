@@ -233,3 +233,65 @@ func TestConfigureCacheRoutingRejectsExplicitZeroPercent(t *testing.T) {
 		t.Fatal("ConfigureCacheRouting rewrote explicit zero percent instead of rejecting it")
 	}
 }
+
+func TestRegistryConfigRejectsNonFiniteTargetTunables(t *testing.T) {
+	keys := []string{
+		"QUALITY_CONCURRENCY_OVERCOMMIT",
+		"WARM_POOL_WARM_SATURATION_THRESHOLD",
+		"WARM_POOL_DECODE_FLOOR_TPS",
+		"WARM_POOL_RAMP_GAP_FRACTION",
+		"WARM_POOL_HEADROOM_LOAD_WINDOWS",
+	}
+	for _, key := range keys {
+		t.Setenv(env.EnvPrefix+"_"+key, "")
+	}
+	clearWarmPoolEnv(t)
+	if err := ReadConfig().Check(); err != nil {
+		t.Fatalf("defaults rejected: %v", err)
+	}
+	for _, key := range keys {
+		for _, value := range []string{"NaN", "+Inf", "-Inf"} {
+			t.Run(key+"/"+value, func(t *testing.T) {
+				t.Setenv(env.EnvPrefix+"_"+key, value)
+				if err := ReadConfig().Check(); err == nil {
+					t.Fatalf("startup accepted %s=%s", key, value)
+				}
+			})
+		}
+	}
+	// The decode floor also configures admission when the controller is off.
+	if err := (WarmPoolConfig{DecodeFloorTPS: math.NaN()}).Check(); err == nil {
+		t.Fatal("disabled zero-interval controller accepted a non-finite decode floor")
+	}
+	if err := (WarmPoolConfig{}).Check(); err != nil {
+		t.Fatalf("disabled zero-value config rejected: %v", err)
+	}
+	for _, key := range keys {
+		t.Run(key+"/zero", func(t *testing.T) {
+			t.Setenv(env.EnvPrefix+"_"+key, "0")
+			if err := ReadConfig().Check(); err != nil {
+				t.Fatalf("valid zero setting rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestDisabledZeroIntervalWarmPoolPreservesFiniteRangeBypass(t *testing.T) {
+	clearWarmPoolEnv(t)
+	t.Setenv(env.EnvPrefix+"_WARM_POOL_ENABLED", "false")
+	t.Setenv(env.EnvPrefix+"_WARM_POOL_INTERVAL", "0s")
+	t.Setenv(env.EnvPrefix+"_WARM_POOL_DECODE_FLOOR_TPS", "-1")
+	cfg := ReadConfig()
+	if err := cfg.Check(); err != nil {
+		t.Fatalf("existing disabled-controller finite range bypass rejected: %v", err)
+	}
+	if cfg.WarmPool.DecodeFloorTPS != -1 {
+		t.Fatalf("decode floor silently normalized: %v", cfg.WarmPool.DecodeFloorTPS)
+	}
+	for _, value := range []string{"NaN", "+Inf", "-Inf"} {
+		t.Setenv(env.EnvPrefix+"_WARM_POOL_DECODE_FLOOR_TPS", value)
+		if err := ReadConfig().Check(); err == nil {
+			t.Fatalf("disabled-controller bypass accepted non-finite floor %s", value)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,14 +54,20 @@ func calibratedContextPromptTokens(model string, est int) int {
 	if mult <= 1.0 {
 		return est
 	}
-	return int(float64(est) * mult)
+	// Bound before converting: an out-of-range float-to-int result is
+	// architecture-dependent and must never reduce a context estimate.
+	scaled := float64(est) * mult
+	if scaled >= float64(math.MaxInt) {
+		return math.MaxInt
+	}
+	return int(scaled)
 }
 
 // SetPromptContextCalibrationFromEnv parses an override of the form
 // "family:factor,family:factor" (e.g. "gpt-oss:1.3,gemma:1.15") and REPLACES the
-// calibration map when at least one valid pair is present. Invalid pairs and
-// factors < 1.0 are skipped (a factor below 1 would under-reject, the wrong
-// direction). A blank string is a no-op (keeps the built-in default). Returns the
+// calibration map when at least one valid pair is present. Invalid pairs,
+// non-finite factors, and factors < 1.0 are skipped (a factor below 1 would
+// under-reject, the wrong direction). A blank string keeps the current map. Returns the
 // number of pairs applied. Called once at startup from main.go.
 func SetPromptContextCalibrationFromEnv(raw string) int {
 	raw = strings.TrimSpace(raw)
@@ -75,7 +82,7 @@ func SetPromptContextCalibrationFromEnv(raw string) int {
 		}
 		fam := strings.TrimSpace(kv[0])
 		factor, err := strconv.ParseFloat(strings.TrimSpace(kv[1]), 64)
-		if fam == "" || err != nil || factor < 1.0 {
+		if fam == "" || err != nil || math.IsNaN(factor) || math.IsInf(factor, 0) || factor < 1.0 {
 			continue
 		}
 		next[fam] = factor

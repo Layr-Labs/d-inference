@@ -281,8 +281,8 @@ func (c CacheRoutingConfig) Check() error {
 }
 
 func (c QualityCapConfig) Check() error {
-	if c.Overcommit < 0 {
-		return fmt.Errorf("registry: quality concurrency overcommit must be >= 0")
+	if math.IsNaN(c.Overcommit) || math.IsInf(c.Overcommit, 0) || c.Overcommit < 0 {
+		return fmt.Errorf("registry: quality concurrency overcommit must be finite and >= 0")
 	}
 	return nil
 }
@@ -319,6 +319,12 @@ func envModelIntMap(key string) map[string]int {
 }
 
 func (c WarmPoolConfig) Check() error {
+	// The decode floor also feeds admission when the warm controller is disabled.
+	for _, value := range []float64{c.WarmSaturationThreshold, c.DecodeFloorTPS, c.RampGapFraction, c.HeadroomLoadWindows} {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("registry: warm pool target tunables must be finite")
+		}
+	}
 	if !c.Enabled && c.Interval == 0 {
 		return nil
 	}

@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-09 · commit `af7a74126`
+> Last updated: 2026-09-12 · commit `670153a8d`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -24,10 +24,10 @@ This does not add a message type or change the public error code.
 | Rule | Go | Swift |
 |---|---|---|
 | Discriminator | top-level `"type"` string | same |
-| Decode | `DecodeProviderMessage` first tries the single-walk chunk scanner (`coordinator/protocol/chunk_scan.go`, `scanChunkFrame`); unsupported shapes fall back to `ProviderMessage.UnmarshalJSON` (`coordinator/protocol/messages.go`), which reads `type` with `scanTopLevelString` (`coordinator/protocol/type_scan.go`), a byte walk over the top-level keys, then `json.Unmarshal`s the frame **once** into the concrete struct | `ProviderMessage.init(from:)` / `CoordinatorMessage.init(from:)` decode `TypeValue` then switch (`Messages.swift`) |
+| Decode | `DecodeProviderMessage` calls `ProviderMessage.UnmarshalJSON` (`coordinator/protocol/provider_message.go`), which first tries `scanChunkFrame` (`coordinator/protocol/chunk_scan.go`). Unsupported shapes read `type` with `scanTopLevelString` (`coordinator/protocol/type_scan.go`), select the concrete payload type, and share one `json.Unmarshal` and error path. The payload is published only after a successful decode | `ProviderMessage.init(from:)` / `CoordinatorMessage.init(from:)` decode `TypeValue` then switch (`Messages.swift`) |
 | Scanner fallback | escaped string, non-string value, malformed input or missing key → decode a `struct{ Type string }` envelope first (the historic double parse), so error behaviour is unchanged | — |
 | Unknown type | `protocol: unknown message type %q` | `DecodingError` — the decoder **throws**, so the coordinator version-gates `desired_models`, `prefetch_model`, `load_model` and `capacity_probe` sends |
-| Tests | `coordinator/protocol/type_scan_test.go` (`TestProviderMessageUnmarshalScanEquivalence`), `messages_envelope_test.go`, `messages_bench_test.go` | `provider-swift/Tests/ProviderCoreTests/ProtocolTests.swift` |
+| Tests | `coordinator/protocol/type_scan_test.go` (`TestProviderMessageUnmarshalScanEquivalence`), `messages_envelope_test.go` (`TestDecodeProviderMessageFailedDecodePreservesPayload`), `chunk_scan_test.go` (`FuzzChunkFrameDecode`), `messages_bench_test.go` | `provider-swift/Tests/ProviderCoreTests/ProtocolTests.swift` |
 
 ## Message inventory
 

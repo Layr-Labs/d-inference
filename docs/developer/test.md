@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `670153a8d`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -65,6 +65,12 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 ```
 
 ### 2. Coordinator (Go)
+
+Protocol tests cover concrete message dispatch, legacy fields, scanner fallback,
+and receiver state after failed decoding. `TestDecodeProviderMessageFailedDecodePreservesPayload`
+checks that a failed frame cannot replace an earlier payload; `FuzzChunkFrameDecode`
+compares chunk scanning and direct frame decoding with `encoding/json`
+(`coordinator/protocol/messages_envelope_test.go`, `chunk_scan_test.go`).
 
 Run prediction telemetry checks from the repository root:
 

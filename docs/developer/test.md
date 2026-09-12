@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-12 · commit `399391217`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -110,6 +110,23 @@ Store tests that need Postgres skip themselves when `DATABASE_URL` is unset
 `postgres:16` service with user/password/db `testbed`. The pre-push hook runs
 `go test $(go list ./... | grep -v /internal/api)` from `coordinator/` to skip
 the slow WebSocket integration tests; run the full set before merging.
+
+#### Analytics aggregation
+
+Run the geographic aggregation and transaction-scope checks against a disposable
+PostgreSQL database from the repository root:
+
+```bash
+DATABASE_URL='postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable' \
+  go test -race ./coordinator/store -run '^TestUsage(Flow|Location)' -count=1
+```
+
+The fixtures in `coordinator/store/analytics_flows_test.go` and
+`coordinator/store/analytics_locations_test.go` compare the real queries with
+independent historical SQL. They require each geographic key exactly once and
+finite coordinate differences within `1e-10` before normalizing coordinates for
+the remaining field comparison. Weighted totals, descending request counts and
+the flow top-50 limit remain part of the existing fixtures.
 
 #### Provider config cleanup
 

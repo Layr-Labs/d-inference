@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `bbb46b21f`
+> Last updated: 2026-09-12 · commit `9cf1d20be`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -948,7 +948,11 @@ python3 scripts/run-mtp-benchmark.py --self-test-artifact-provenance
 
 The tests use synthetic 40-case reports and mocked child launch, checking rejection
 messages, incomplete/stale evidence, inactive and automatic-verifier policy,
-symlink containment, supervisor command/manifest and cleanup. They do not certify
+symlink containment, supervisor command/manifest and cleanup. The synthetic
+config replacement fixture checks that `artifact_facts` hashes and parses one
+bounded payload. Production report fixtures reject boolean, negative and nonfinite
+elapsed/aggregate-throughput values while retaining zero and finite numeric ranges
+(`scripts/mtp_benchmark/report.py`, `nonnegative_finite_number`). They do not certify
 model speed or numerical parity. The live CLI keeps its external process-group
 deadline and cache-only artifact resolution.
 

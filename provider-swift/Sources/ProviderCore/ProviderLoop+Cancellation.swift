@@ -151,10 +151,10 @@ extension ProviderLoop {
     }
 
     internal func waitForInflightDrain(timeout: Duration, reason: String = "shutdown") async -> Bool {
-        guard hasInflightWork else { return true }
+        guard hasInflightWork || autopilotCommand != nil else { return true }
         logger.info("Waiting up to \(timeout.components.seconds)s for active inference to finish before \(reason)")
         let started = ContinuousClock.now
-        while hasInflightWork {
+        while hasInflightWork || autopilotCommand != nil {
             if Task.isCancelled { return false }
             if ContinuousClock.now - started >= timeout {
                 return false

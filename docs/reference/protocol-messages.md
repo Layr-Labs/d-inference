@@ -1,12 +1,12 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-09 · commit `af7a74126`
+> Last updated: 2026-09-11 · commit `c7fda9228`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
-(`coordinator/protocol/messages.go`, `capacity.go`, `profile.go`); Swift mirrors
+(`coordinator/protocol/messages.go`, `capacity.go`, `profile.go`, `model_autopilot.go`); Swift mirrors
 it (`provider-swift/Sources/ProviderCore/Protocol/Messages.swift`, `Types.swift`,
-`InferenceProfile.swift`). There are 16 provider→coordinator and 10
+`InferenceProfile.swift`, `ModelAutopilot.swift`). There are 17 provider→coordinator and 11
 coordinator→provider message types; nothing else is accepted.
 
 Conventions: **req** = always present; **opt** = Go `omitempty`, Swift
@@ -41,6 +41,7 @@ This does not add a message type or change the public error code.
 | provider → coordinator | `inference_error` | `InferenceErrorMessage` | `.inferenceError` |
 | provider → coordinator | `attestation_response` | `AttestationResponseMessage` | `.attestationResponse` |
 | provider → coordinator | `code_attestation_response` | `CodeAttestationResponseMessage` | `.codeAttestationResponse` |
+| provider → coordinator | `model_autopilot_status` | `ModelAutopilotStatusMessage` (`model_autopilot.go`) | `.modelAutopilotStatus` |
 | provider → coordinator | `load_model_status` | `LoadModelStatusMessage` | `.loadModelStatus` |
 | provider → coordinator | `prefetch_model_status` | `PrefetchModelStatusMessage` | `.prefetchModelStatus` |
 | provider → coordinator | `models_update` | `ModelsUpdateMessage` | `.modelsUpdate` |
@@ -54,14 +55,16 @@ This does not add a message type or change the public error code.
 | coordinator → provider | `attestation_challenge` | `AttestationChallengeMessage` | `.attestationChallenge` |
 | coordinator → provider | `code_attestation_resume_challenge` | `CodeAttestationResumeChallenge` | `.codeAttestationResumeChallenge` |
 | coordinator → provider | `runtime_status` | `RuntimeStatusMessage` | `.runtimeStatus` |
+| coordinator → provider | `model_autopilot` | `ModelAutopilotMessage` (`model_autopilot.go`) | `.modelAutopilot` |
 | coordinator → provider | `load_model` | `LoadModelMessage` | `.loadModel` |
 | coordinator → provider | `prefetch_model` | `PrefetchModelMessage` | `.prefetchModel` |
 | coordinator → provider | `desired_models` | `DesiredModelsMessage` | `.desiredModels` |
 | coordinator → provider | `trust_status` | `TrustStatusMessage` | `.trustStatus` |
 | coordinator → provider | `capacity_probe` | `CapacityProbeMessage` (`capacity.go`) | `.capacityProbe` |
 
-There is no `unload` or `unload_model` message; see
-[Model unloading](#model-unloading-no-message).
+There is no standalone `unload` or `unload_model` message. Explicit opted-in
+unloading uses [`model_autopilot`](#model_autopilot); see
+[Model unloading](#model-unloading).
 
 ## Provider → coordinator
 
@@ -75,6 +78,7 @@ connection, first.
 | `hardware` | `Hardware` | `HardwareInfo` | req | [`hardware`](#hardware) |
 | `models` | `[]ModelInfo` | `[ModelInfo]` | req | [`models[]`](#models) |
 | `backend` | `string` | `String` | req | e.g. `"mlx-swift"`; the coordinator sends `load_model`, `prefetch_model` and `desired_models` only to `backend == "mlx-swift"` |
+| `model_autopilot` | `*ModelAutopilotState` | `ModelAutopilotSnapshot?` | opt | Explicit consent and resident ownership; [state object](#model_autopilot-state). Missing state does not grant consent; scheduling/reconciliation requires a fresh paired backend-capacity snapshot |
 | `runtime_capabilities` | `[]string` | `[ProviderRuntimeCapability]` | opt | connection-scoped runtime capabilities; Swift omits when empty |
 | `version` | `string` | `String?` | opt | provider binary version, e.g. `"0.2.31"` |
 | `public_key` | `string` | `String?` | opt | base64 X25519 public key `K` for E2E encryption |
@@ -171,6 +175,7 @@ the sinks of each field are in [`telemetry-inventory.md`](telemetry-inventory.md
 | `stats` | `HeartbeatStats` | `ProviderStats` | req | [`stats`](#stats) |
 | `warm_models` | `[]string` | `[String]` | opt | resident models; Swift omits when empty |
 | `system_metrics` | `SystemMetrics` | `SystemMetrics` | req | `memory_pressure` (`float64`, 0–1), `cpu_usage` (`float64`, 0–1), `thermal_state` ∈ {`nominal`, `fair`, `serious`, `critical`} |
+| `model_autopilot` | `*ModelAutopilotState` | `ModelAutopilotSnapshot?` | opt | Explicit consent and resident ownership; [state object](#model_autopilot-state). Missing state does not grant consent; scheduling/reconciliation requires a fresh paired backend-capacity snapshot |
 | `backend_capacity` | `*BackendCapacity` | `BackendCapacity?` | opt | nil on old providers; [`backend_capacity`](#backend_capacity) |
 | `prefix_cache_protocol` | `int` | `Int?` | opt | Swift omits nil/0 |
 | `prefix_cache_v2_models` | `*[]PrefixCacheV2Capability` | `[…]?` | ptr | omitted (old provider) vs authoritative `[]` (v2 provider clearing its live set) |
@@ -451,6 +456,26 @@ Go `CodeAttestationResponseMessage` · Swift `CodeAttestationResponse`. `nonce`
 nonce bytes), both required. Verified against the SE key bound at registration,
 never a key carried in this message.
 
+### `model_autopilot_status`
+
+Go `ModelAutopilotStatusMessage` (`coordinator/protocol/model_autopilot.go`) ·
+Swift `ModelAutopilotStatus`
+(`provider-swift/Sources/ProviderCore/Protocol/ModelAutopilot.swift`).
+
+| JSON key | Go / Swift | Presence | Meaning |
+|---|---|---|---|
+| `command_id` | `string` / `String` | req | Identifies the immutable command on this provider session |
+| `status` | `string` / `State` | req | `started`, `succeeded`, `failed` |
+| `error` | `string` / `String?` | opt | Diagnostic failure text; not an authorization or capacity signal |
+| `model_autopilot` | `*ModelAutopilotState` / `ModelAutopilotSnapshot` | opt in Go; current Swift includes it | Provider command/residency state; status alone never changes scheduler capacity |
+
+`Registry.HandleAutopilotStatus` accepts only the matching current session and
+pending command. Completion requires a later accepted capacity sequence paired
+with the same terminal command ID and matching actual residents
+(`coordinator/registry/autopilot_provider_state.go`,
+`reconcileAutopilotHeartbeatLocked`). Repeated status messages are acknowledgements,
+not additional completed operations.
+
 ### `load_model_status`
 
 Go `LoadModelStatusMessage` · Swift `LoadModelStatus`. `model_id` (req);
@@ -614,10 +639,39 @@ encoded by Swift as `[RuntimeMismatch]`). For a `template:<name>` component
 [runtime manifest](../architecture/security/attestation.md#runtime-manifest)
 accepts for that name.
 
+### `model_autopilot`
+
+Go `ModelAutopilotMessage` (`coordinator/protocol/model_autopilot.go`) · Swift
+`ModelAutopilotCommand` (`provider-swift/Sources/ProviderCore/Protocol/ModelAutopilot.swift`).
+Sent only for explicit, compatible provider consent after whole-device reservation.
+
+| JSON key | Go / Swift | Presence | Meaning |
+|---|---|---|---|
+| `command_id` | `string` / `String` | req | Nonempty, at most64 bytes; exact payload/ID reused for bounded retries |
+| `load_model_id` | `string` / `String?` | opt | One advertised local cached build; omitted for unload-only commands |
+| `unload_model_ids` | `[]string` / `[String]` | req | Explicit permitted victims, unique and at most32; `[]` means no eviction |
+| `expected_resident_models` | `[]string` / `[String]` | req | Complete unique resident set expected before mutation, at most32 |
+| `expires_at_ms` | `int64` / `Int64` | req | Unix milliseconds; must be in the future and no more than300s ahead at first acceptance; coordinator's configured default window is in [configuration](configuration.md#model-autopilot) |
+| `lease_seconds` | `int` / `Int` | req | `0...86400`; minimum hold lease on a newly loaded target, separate from provider residence/idle dwell |
+
+The provider rejects a changed resident set, busy device, pinned/young victim,
+active lease, unsupported hardware, missing local primary/assistant or infeasible
+total victim memory. A command must load a model or name at least one victim;
+the target cannot also be a victim. It calls `ensureModelLoaded` with
+`allowEviction: false` and retains disk files. Expiry bounds acceptance and first
+mutation, not completion after a transition already began.
+
+The provider caches a bounded command history. An identical active/completed
+command returns its existing status; reused IDs with altered payload are
+rejected. Same-ID recovery never extends the original expiration. See
+[autopilot ownership](../architecture/model-autopilot.md#invariants).
+
 ### `load_model`
 
 Go `LoadModelMessage` · Swift `LoadModel`. `model_id` (req). Sent only to
 `backend == "mlx-swift"`; the provider replies with `load_model_status`.
+Opted-in autopilot providers block this legacy residency path and use explicit
+`model_autopilot` commands instead.
 
 ### `prefetch_model`
 
@@ -658,6 +712,41 @@ set is pinned by `TestCapacityProbeShapeClosed` (`coordinator/protocol/capacity_
 
 ## Shared objects
 
+### `model_autopilot` state
+
+Go `ModelAutopilotState` · Swift `ModelAutopilotSnapshot`, declared in the
+`model_autopilot.go` / `ModelAutopilot.swift` files cited above. It appears on
+registration and heartbeat, and in command status. The negotiated `protocol`
+value, rather than a provider version string or advertised inventory, identifies
+support.
+
+| JSON key | Go / Swift | Presence | Meaning |
+|---|---|---|---|
+| `protocol` | `int` / `Int` | req | `1` for this cached-only protocol |
+| `enabled`, `cached_only` | `bool` / `Bool` | req | Explicit consent and cached-only scope; both must be true for planning |
+| `min_dwell_seconds` | `int` / `Int` | req | Provider minimum residence and idle duration before replacement |
+| `pinned_models` | `[]string` / `[String]` | req | Up to256 protected model IDs |
+| `max_model_slots` | `int` / `Int` | req | Valid planning range `1...32` |
+| `resident_models` | `[]ModelAutopilotResident` / `[ModelAutopilotResident]` | req | Unique resident inventory, at most32; must match the paired capacity snapshot |
+| `free_for_load_no_evict_gb` | `*float64` / `Double?` | opt | Weight-only incoming headroom in GiB with all residents retained; absent is unknown and cannot authorize a load |
+| `active_command_id`, `last_command_id` | `string` / `String?` | opt | Current owner and most recent terminal command ID |
+| `last_command_status` | `string` / `State?` | opt | Most recent terminal `succeeded` or `failed` state for reconciliation |
+
+Resident entries:
+
+| JSON key | Go / Swift | Presence | Meaning |
+|---|---|---|---|
+| `model_id` | `string` / `String` | req | Concrete build ID |
+| `resident_seconds`, `idle_seconds` | `float64` / `Int` | req | Nonnegative durations; current Swift emits whole seconds |
+| `weights_gb` | `float64` / `Double` | req | Scanner-padded load estimate, not reclaimable free memory |
+| `resident_gb` | `*float64` / `Double?` | opt | Actual slot-owned weight bytes expressed in GiB; the only victim reclaim credit, not OS RSS |
+
+State validation and malformed-report fencing are in
+`coordinator/registry/autopilot_provider_state.go` (`validAutopilotState`,
+`cloneAutopilotState`, `autopilotStateMatchesCapacity`). A status frame cannot
+replace the paired heartbeat, clear an uncertain operation by age alone or
+make unconfirmed slots routable.
+
 ### `EncryptedPayload`
 
 Go `EncryptedPayload` · Swift `EncryptedPayload`. `ephemeral_public_key`
@@ -676,23 +765,27 @@ Go `UsageInfo` · Swift `UsageInfo`.
 | `cached_tokens`, `prefill_tokens_saved` | `int` | `UInt64?` | opt |
 | `cache_stage_ms` | `float64` | `Double?` | opt — the one provider-side duration outside `profile` |
 
-## Model unloading (no message)
+## Model unloading
 
-The coordinator never tells a provider to unload. Residency changes reach a
-provider only as a `desired_models` reconciliation (prefetch → hard-swap →
-`models_update`) and through the provider's own idle timeout
-(`provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift`;
-`idle_timeout_mins` in `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`;
-default in [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli),
-`0` disables). The coordinator observes the result on the next heartbeat
-(`warm_models`, `slots[]`); its assumption about that idle-unload cycle is a
-comment in `coordinator/registry/capacity_cooldown.go`.
+Opted-in providers accept explicit victim lists through `model_autopilot`.
+There is no separate generic unload command. The provider's ordinary idle timer
+is paused while enrolled, and commands cannot fall through to implicit LRU
+victims. Default standalone autopilot unloading is off; load-driven replacement
+still requires all dwell, memory, pin and donor protections.
+
+Non-enrolled providers keep their existing idle and legacy model lifecycle.
+`desired_models` release reconciliation remains independent, is deferred behind
+an active autopilot owner and resumes afterward. Explicitly superseded models
+have a guarded cleanup path so the paused idle timer does not retain retired
+builds. The coordinator observes actual results through the paired resident and
+backend-capacity heartbeat. See [autopilot architecture](../architecture/model-autopilot.md).
 
 ## Tests that pin the wire
 
 | Layer | Files |
 |---|---|
 | Go shape and envelope | `coordinator/protocol/messages_register_heartbeat_test.go`, `messages_backend_capacity_test.go`, `messages_inference_test.go`, `messages_terminal_cause_test.go`, `messages_attestation_test.go`, `messages_model_lifecycle_test.go`, `messages_envelope_test.go`, `prefix_cache_v2_test.go`, `prefix_cache_telemetry_test.go`, `capacity_test.go`, `inference_failure_test.go`, `tool_constraints_test.go`, `type_scan_test.go` |
+| Autopilot command/state | `coordinator/protocol/model_autopilot_test.go`; `provider-swift/Tests/ProviderCoreTests/ModelAutopilotTests.swift` |
 | Go ↔ Swift key pinning | `coordinator/api/provider_wire_test.go`; `provider-swift/Tests/ProviderCoreTests/ProtocolTests.swift`, `CapacityQuoteProtocolTests.swift` |
 | `profile` fixture | `coordinator/protocol/testdata/profiler_wire_fixture.json` — written by Go, loaded by Swift |
 

@@ -159,6 +159,9 @@ extension CoordinatorClient {
                 eventContinuation?.yield(.runtimeOutdated(mismatches: status.mismatches))
             }
 
+        case .modelAutopilot(let command):
+            eventContinuation?.yield(.modelAutopilot(command))
+
         case .loadModel(let load):
             logger.info("Received coordinator-driven preload for: \(load.modelId)")
             eventContinuation?.yield(.loadModel(modelId: load.modelId))

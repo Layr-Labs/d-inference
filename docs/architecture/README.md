@@ -1,6 +1,6 @@
 # Architecture — how Darkbloom works
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-11 · commit `c7fda9228`
 
 Explanation pages: context, mechanism, invariants, failure modes, and a code
 map for each part of the system. The code in `coordinator/`,
@@ -43,6 +43,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 | Page | Concern |
 |---|---|
 | [routing.md](routing.md) | How a request becomes a provider choice: eligibility gates, cost model, selection, hedged dispatch, servability, breakers |
+| [model-autopilot.md](model-autopilot.md) | Opt-in cached model placement, useful shared-GPU capacity, explicit eviction ownership and recovery |
 | [scheduling.md](scheduling.md) | Per-model queue, slot states, token-budget admission, concurrency caps, model swaps, warm pool, heartbeat and eviction |
 | [cache-aware-routing.md](cache-aware-routing.md) | Provider-confirmed exact prefix-cache routing: proof, holders, cost discount, kill switch |
 | [prompt-contract-sidecar.md](prompt-contract-sidecar.md) | The Rust `promptsidecar`: token-boundary planning for cache routing, artifact identity, failure isolation |

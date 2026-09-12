@@ -185,6 +185,8 @@ public final class ProviderState: @unchecked Sendable {
     private var _warmModels: [String] = []
     private var _currentModelHash: String? = nil
     private var _backendCapacity: BackendCapacity? = nil
+    private var _modelAutopilot: ModelAutopilotSnapshot? = nil
+    private var _capacityModelAutopilot: ModelAutopilotSnapshot? = nil
     private var _prefixCacheV2Sources: [String: any DurablePrefixCacheEvidenceSource] = [:]
     private var _prefixCacheMemorySources: [String: ResidentPrefixCacheEvidence] = [:]
     private var _prefixCacheStatuses: [PrefixCacheModelStatus] = []
@@ -223,9 +225,36 @@ public final class ProviderState: @unchecked Sendable {
         set { lock.withLock { _currentModelHash = newValue } }
     }
 
+    public var modelAutopilot: ModelAutopilotSnapshot? {
+        get { lock.withLock { _modelAutopilot } }
+        set { lock.withLock { _modelAutopilot = newValue } }
+    }
+
     public var backendCapacity: BackendCapacity? {
         get { lock.withLock { _backendCapacity } }
         set { lock.withLock { _backendCapacity = newValue } }
+    }
+
+    /// Publish the matching residency/capacity pair. A terminal command must
+    /// never ride an older capacity payload merely because a heartbeat races
+    /// the asynchronous rebuild.
+    public func setModelAutopilotCapacity(_ capacity: BackendCapacity, snapshot: ModelAutopilotSnapshot?) {
+        lock.withLock {
+            _backendCapacity = capacity
+            _capacityModelAutopilot = snapshot
+        }
+    }
+
+    public func modelAutopilotHeartbeat() -> (BackendCapacity?, ModelAutopilotSnapshot?) {
+        lock.withLock {
+            let snapshot = _modelAutopilot?.activeCommandId != nil ? _modelAutopilot : _capacityModelAutopilot
+            var capacity = _backendCapacity
+            if snapshot?.activeCommandId != nil, var fenced = capacity {
+                for index in fenced.slots.indices { fenced.slots[index].state = "reloading" }
+                capacity = fenced
+            }
+            return (stampHeartbeatCapacityLocked(capacity), snapshot)
+        }
     }
 
     /// Mirror of the ProviderLoop's "refuse new work" windows (update drain,
@@ -285,24 +314,26 @@ public final class ProviderState: @unchecked Sendable {
     public func stampAndPublishHeartbeatCapacity(
         _ capacity: BackendCapacity?
     ) -> BackendCapacity? {
-        guard var capacity else { return nil }
-        return lock.withLock {
-            // The caller may have read this payload before a model drain
-            // began. Project the live fence under the publication lock so
-            // that old snapshot cannot advertise the target as routable.
-            for index in capacity.slots.indices
-                where _modelAdmissionDrains.contains(capacity.slots[index].model)
-            {
-                capacity.slots[index].state = "reloading"
-            }
-            _capacitySeq &+= 1
-            capacity.capacitySeq = _capacitySeq
-            let agedProcessMemory = capacity.telemetry?.processMemory?
-                .agedForHeartbeat(now: DispatchTime.now().uptimeNanoseconds)
-            capacity.telemetry?.processMemory = agedProcessMemory
-            _publishedCapacity = capacity
-            return capacity
+        lock.withLock { stampHeartbeatCapacityLocked(capacity) }
+    }
+
+    private func stampHeartbeatCapacityLocked(_ candidate: BackendCapacity?) -> BackendCapacity? {
+        guard var capacity = candidate else { return nil }
+        // The caller may have read this payload before a model drain
+        // began. Project the live fence under the publication lock so
+        // that old snapshot cannot advertise the target as routable.
+        for index in capacity.slots.indices
+            where _modelAdmissionDrains.contains(capacity.slots[index].model)
+        {
+            capacity.slots[index].state = "reloading"
         }
+        _capacitySeq &+= 1
+        capacity.capacitySeq = _capacitySeq
+        let agedProcessMemory = capacity.telemetry?.processMemory?
+            .agedForHeartbeat(now: DispatchTime.now().uptimeNanoseconds)
+        capacity.telemetry?.processMemory = agedProcessMemory
+        _publishedCapacity = capacity
+        return capacity
     }
 
     /// Reset the capacity-seq session on a fresh coordinator connection: the

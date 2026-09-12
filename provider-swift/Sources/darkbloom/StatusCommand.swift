@@ -24,7 +24,12 @@ struct Status: AsyncParsableCommand {
         print("Coordinator: \(config.coordinator.url)")
         print("Backend port: \(config.backend.port)")
         print("Configured model: \(config.backend.model ?? "auto-select")")
-        print("Memory when idle: \(IdleUnloadPolicy.describe(minutes: config.backend.idleTimeoutMins)) (manage with `darkbloom idle`)")
+        if config.backend.modelAutopilot.enabled && !config.coordinator.privateOnly {
+            print("Memory when idle: managed by model autopilot (configured; applies after restart)")
+            print("  Stored idle policy resumes after opt-out: \(IdleUnloadPolicy.describe(minutes: config.backend.idleTimeoutMins))")
+        } else {
+            print("Memory when idle: \(IdleUnloadPolicy.describe(minutes: config.backend.idleTimeoutMins)) (manage with `darkbloom idle`)")
+        }
         print("Beta features: \(betaFeaturesStatus(config)) (manage with `darkbloom beta`)")
         print("Auto-restart: \(autoRestartStatus(config: config))")
 

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-11 · commit `ef7b5a9aa`
+> Last updated: 2026-09-11 · commit `c7fda9228`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -256,6 +256,46 @@ Throughput anomaly detector:
 | `EIGENINFERENCE_THROUGHPUT_ANOMALY_RATIO` | float > 0 | `0.35` | `coordinator/api/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Observed/expected ratio below which a bucket is anomalous. |
 | `EIGENINFERENCE_THROUGHPUT_ANOMALY_MIN_SAMPLES` | integer > 0 | `3` | `coordinator/api/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Providers required in a bucket before it is judged. |
 | `EIGENINFERENCE_THROUGHPUT_ANOMALY_EFFICIENCY` | float > 0 | `0.80` | `coordinator/api/throughput_anomaly.go` (`throughputAnomalyConfigFromEnv`) | Expected decode efficiency relative to the chip's theoretical rate. |
+
+### Model autopilot
+
+All coordinator variables below are startup-only and read by
+`coordinator/registry/autopilot_config.go` (`autopilotConfigFromEnv`, `Check`).
+Provider consent is separate persistent TOML, documented in
+[CLI configuration](../provider/cli-reference.md#providertoml-keys-read-by-the-cli).
+See [architecture](../architecture/model-autopilot.md) and
+[rollout](../operations/model-autopilot.md).
+
+| Variable | Values / type | Default | Effect / source |
+|---|---|---|---|
+| `EIGENINFERENCE_AUTOPILOT_ENABLED` | bool | `false` | Enable demand collection and controller ticks (`autopilotConfigFromEnv`) |
+| `EIGENINFERENCE_AUTOPILOT_OBSERVE_ONLY` | bool | `true` | Compute/log hypothetical plans without reserving, fencing or sending commands (`autopilotConfigFromEnv`; `autopilot_controller.go`, `tick`) |
+| `EIGENINFERENCE_AUTOPILOT_INTERVAL` | Go duration, `1s...1m` | `10s` | Tick cadence (`autopilotConfigFromEnv`, `Check`) |
+| `EIGENINFERENCE_AUTOPILOT_DEMAND_WINDOW` | Go duration, `1m...30m` | `5m` | Arrival-window workload aggregation (`autopilotConfigFromEnv`, `Check`) |
+| `EIGENINFERENCE_AUTOPILOT_MIN_DWELL`, `EIGENINFERENCE_AUTOPILOT_IDLE_UNLOAD_AFTER` | Go durations, dwell `1m...24h`; idle ≥ dwell and ≤ `24h` | `30m`, `1h` | Replacement residence/idle protection and optional standalone quiet window; provider's longer dwell also binds (`autopilotConfigFromEnv`, `Check`) |
+| `EIGENINFERENCE_AUTOPILOT_LOAD_TIME_PRIOR` | Go duration, `1s...5m` | `30s` | Conservative unmeasured load cost; valid slot observations may replace it (`autopilotConfigFromEnv`; `autopilot_snapshot.go`, `autopilotModelFitLocked`) |
+| `EIGENINFERENCE_AUTOPILOT_MAX_ACTIONS_PER_TICK`, `EIGENINFERENCE_AUTOPILOT_MAX_CONCURRENT_OPERATIONS` | ints, `1...32`, `1...64` | `2`, `4` | Per-tick proposals/commands and managed-operation start budget, accounting for currently observed legacy pending loads; legacy controllers retain separate limits (`autopilotConfigFromEnv`; `autopilot_controller.go`, `tick`) |
+| `EIGENINFERENCE_AUTOPILOT_TARGET_UTILIZATION` | float, `0.1...0.9` | `0.7` | Quality-capacity utilization factor (`autopilotConfigFromEnv`; `autopilot_snapshot.go`, `autopilotModelFitLocked`) |
+| `EIGENINFERENCE_AUTOPILOT_ALLOW_IDLE_UNLOAD` | bool | `false` | Allow standalone surplus unloading after quiet/dwell, pins, floors, whole-device-idle and pressure gates (`autopilotConfigFromEnv`; `autopilot_planner.go`, `planAutopilotAction`) |
+
+These implementation defaults have **no environment-variable override** in this
+change; programmatic configuration fields are validated by `AutopilotConfig.Check`.
+
+| Field / rule | Default or bound | Source |
+|---|---|---|
+| `MaxSnapshotAge` | `30s` | `coordinator/registry/autopilot_config.go`, `DefaultAutopilotConfig` |
+| `CommandAcceptTimeout` | `20s`; acceptance/first mutation, not total operation duration | `DefaultAutopilotConfig`; `provider-swift/Sources/ProviderCore/ProviderLoop+Autopilot.swift`, `checkAutopilotLoadOwnership` |
+| `CommandWatchdog` | `5m`; retain uncertain ownership rather than assume completion | `DefaultAutopilotConfig`; `coordinator/registry/autopilot_commands.go`, `markAutopilotWatchdogs` |
+| `FailureBackoff` | `2m` | `DefaultAutopilotConfig`; `coordinator/registry/autopilot_provider_state.go`, `reconcileAutopilotHeartbeatLocked` |
+| `MinBenefitSeconds` | `30` | `DefaultAutopilotConfig`; `coordinator/registry/autopilot_planner.go`, `planAutopilotAction` |
+| Same-command sends | At most `3` total, separated by at least `30s`; immutable ID/payload/expiry | `coordinator/registry/autopilot_retries.go`, `retryAutopilotCommands` |
+| Standalone unload memory-pressure threshold | `0.8`; additional quiet, dwell, work and floor guards apply | `coordinator/registry/autopilot_planner.go`, `planAutopilotAction` |
+| Demand retention | `10s` buckets, at most `256` models; partial boundary bucket retains < `10s` | `coordinator/registry/autopilot_demand.go`, `record`, `snapshot` |
+
+Enrolling a provider changes its local residency rules independently of the
+coordinator flags: legacy cold loads are blocked and the local idle timer is
+paused. Observation mode does not itself mutate provider state, but it also does
+not undo that explicit enrollment.
 
 ### Billing, Stripe and base rewards
 

@@ -1,6 +1,6 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-11 · commit `ef7b5a9aa`
+> Last updated: 2026-09-11 · commit `c7fda9228`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
@@ -26,7 +26,7 @@ set to any value skips it. Logging goes to stderr so launchd captures it in
 
 ## Subcommands
 
-Declaration order of `Darkbloom.configuration.subcommands` (21):
+Declaration order of `Darkbloom.configuration.subcommands` (23):
 
 | Command | Purpose | `--config` | Source (`provider-swift/Sources/darkbloom/…`) |
 |---|---|---|---|
@@ -48,6 +48,8 @@ Declaration order of `Darkbloom.configuration.subcommands` (21):
 | `report` | Upload recent unified logs to the coordinator | ✓ | `ReportCommand.swift` (`Report`) |
 | `autoupdate` | Toggle `provider.auto_update` | ✓ | `AutoUpdateCommand.swift` (`AutoUpdate`) |
 | `beta` | `list`, `status`, `enable`, `disable` beta features | ✓ | `BetaCommand.swift` (`Beta`) |
+| `idle` | Configure the saved idle-memory policy | ✓ | `IdleCommand.swift` (`Idle`) |
+| `autopilot` | Explicit consent, dwell and pins for cached model residency | ✓ | `AutopilotCommand.swift` (`Autopilot`) |
 | `fan` | Experimental fan control (`status`, `diagnose`, `enable`, `configure`, `disable`, `uninstall`) | | `Fan/FanCommand.swift` (`Fan`) |
 | `watchdog` | Internal, hidden: crash-recovery watchdog process | ✓ | `WatchdogCommand.swift` (`Watchdog`) |
 | `runtime-smoke` | Internal, hidden: load packaged Metal runtime and exit | | `RuntimeSmokeCommand.swift` (`RuntimeSmoke`) |
@@ -264,7 +266,36 @@ Examples:
 
 Writes `provider.auto_update` to the config file.
 
-### `darkbloom beta`
+### `darkbloom autopilot`
+
+Explicit consent for coordinator-managed residency of cached advertised models.
+Source: `provider-swift/Sources/darkbloom/AutopilotCommand.swift` (`Autopilot`,
+`setModelAutopilot`). Every subcommand accepts `--config`; changes apply after
+`darkbloom restart`, not to an already-running daemon.
+
+| Command / option | Default | Effect |
+|---|---|---|
+| `darkbloom autopilot` or `status` | read-only | Print saved consent, cached-only scope, dwell, pins and config path; this is not confirmation of coordinator acknowledgement |
+| `status --json` | `false` | Emit the saved `ModelAutopilotSettings` object |
+| `enable` | disabled until explicitly enabled | Persist `enabled = true`; the coordinator also needs an active controller to issue commands |
+| `enable --min-dwell-seconds <n>` | preserve saved value | Set minimum residence and idle time before replacement; accepted range `60...86400` seconds |
+| `enable --pin <id>...` | preserve saved pins when omitted | Replace the saved pin list with these deduplicated model IDs; the configured `[backend] model` is also pinned at runtime |
+| `disable` | — | Persist `enabled = false`; restart restores ordinary idle-policy ownership |
+
+`--all` and `[backend] enabled_models = []` are inventory selection, not opt-in.
+Private-only providers do not enroll. Enrollment pauses automatic idle unloading
+and makes network inference warm-only outside explicit managed transitions;
+this remains true while the coordinator is disabled or observation-only. The
+stored idle timeout is preserved. Direct local inference and desired-build
+release policy retain their own guarded lifecycle.
+
+Autopilot commands require local primary and configured assistant artifacts,
+name every allowed victim and retain disk files. To clear explicit pins, set
+`[backend.model_autopilot] pinned_models = []` in the config and restart; omitting
+`--pin` preserves them. See [autopilot architecture](../architecture/model-autopilot.md)
+and [operator rollout](../operations/model-autopilot.md).
+
+## `darkbloom beta`
 
 | Subcommand | Flag / positional | Type | Default | Effect |
 |---|---|---|---|---|
@@ -758,11 +789,14 @@ override `provider.toml` for one process, are in
 | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |
 | `[provider] update_jitter_seconds` | `300` | Max random delay before an automatic install or a network provider drains a model for a prepared MTP replacement; serving continues during the delay. `0` disables jitter; capped at `3600`. Standalone MTP upgrades skip this delay. Random staggering provides no fleet availability guarantee (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `updateJitterSeconds`; `provider-swift/Sources/ProviderCore/Update/UpdateJitter.swift`, `delay`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`, `waitBeforeMTPUpgradeDrain`) |
 | `[backend] enabled_models` | `[]` | Advertise only these ids; empty = all serveable |
-| `[backend] idle_timeout_mins` | `60` | Unload a model idle this long; `0` disables |
+| `[backend] idle_timeout_mins` | `60` | Unload a model idle this long; `0` disables; paused while model autopilot is enabled |
 | `[backend] max_model_slots` | `3` | Resident models |
 | `[backend] engine_v2_max_concurrent` | `4` (clamped to `[1, 8]`) | Concurrent requests per engine |
 | `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Candidate `auto` tries paged only for the [exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts), with contiguous fallback; all other IDs remain contiguous (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
+| `[backend.model_autopilot] enabled` | `false` | Explicit cached-residency consent; applies after restart, separate from `--all` (`provider-swift/Sources/ProviderCore/Autopilot/ModelAutopilotSettings.swift`) |
+| `[backend.model_autopilot] min_dwell_seconds` | `1800` | Minimum residence and idle time before autopilot replacement; runtime clamps to `60...86400` (`ModelAutopilotSettings.effectiveMinDwellSeconds`) |
+| `[backend.model_autopilot] pinned_models` | `[]` | Models autopilot must retain; configured `[backend] model` is additionally pinned (`provider-swift/Sources/ProviderCore/ProviderLoop+Autopilot.swift`, `autopilotPinnedModels`) |
 | `[backend] startup_preload` | `true` | Load advertised models at start |
 | `[coordinator] url` | `"wss://api.darkbloom.dev/ws/provider"` | |
 | `[coordinator] heartbeat_interval_secs` | `5` | Heartbeat; state file refresh is half of it |

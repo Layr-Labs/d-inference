@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Dev coordinator boot now uses the same validated environment writer as deploys. Failed critical-secret or metadata downloads preserve the existing configuration instead of overwriting it with empty values.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

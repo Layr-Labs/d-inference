@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-11 · commit `d983690b4`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -10,6 +10,11 @@ of it; the per-component steps below explain what each target runs.
 Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the
 [model publishing procedure](../operations/model-migration.md).
+
+For the first dev coordinator deployment, follow the
+[dev bootstrap procedure](../operations/dev-environment.md): populate the required
+secrets and rerun startup before building and deploying the first image. Boot and
+deploy use the same validated environment writer.
 
 Profiler wire changes require both coordinator and provider builds; the shared
 Go/Swift fixture and focused checks are described in [test.md](test.md) and

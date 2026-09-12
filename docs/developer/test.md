@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-11 · commit `d983690b4`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -136,6 +136,14 @@ They run in Release Integrity CI and make no external inference calls:
 
 ```bash
 python3 -m unittest discover -s scripts/startup_measurement -t scripts -p 'test_*.py'
+```
+
+Dev environment boot/deploy parity and critical-secret preservation use local
+metadata and Secret Manager stubs in Release Integrity CI. The fixtures execute
+only the environment phase, without cloud access or host service changes:
+
+```bash
+python3 -m unittest discover -s scripts -p test_dev_env_refresh.py
 ```
 
 

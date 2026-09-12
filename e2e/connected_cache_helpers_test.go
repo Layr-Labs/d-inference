@@ -142,3 +142,16 @@ func TestConnectedReasoningOnlyCompletionIsRetained(t *testing.T) {
 	row.HTTP.Finish = "length"
 	require.NoError(t, validateConnectedCase(row, "ssd", "on", "hit"))
 }
+
+func TestIntegrationConnectedEvidenceRequiresIDsOnRequestEvents(t *testing.T) {
+	for _, index := range []int{0, 1, 2} {
+		row := syntheticConnectedRow()
+		t.Run(row.Wire[index].Type, func(t *testing.T) {
+			row.Wire[index].RequestID = ""
+			require.Error(t, validateConnectedCase(row, "ssd", "on", "hit"), "uncorrelated request event cannot qualify a hit")
+		})
+	}
+	row := syntheticConnectedRow()
+	row.Wire = append(row.Wire, testbed.ProviderWireEvent{Connection: 1, Type: "heartbeat"})
+	require.NoError(t, validateConnectedCase(row, "ssd", "on", "hit"), "background observations need no request ID")
+}

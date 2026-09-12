@@ -5,7 +5,6 @@ import unittest
 from unittest.mock import patch
 
 import radix_generation_comparison
-from radix_generation_comparison import comparison_records, policy_errors
 from radix_engine_evidence import cancellation_errors, report_errors
 from run_radix_engine import arguments, probe_command
 import test_radix_engine_evidence as fixtures
@@ -18,7 +17,7 @@ class GenerationComparisonTests(unittest.TestCase):
         report = {"rows": [dict(row) for _ in range(4)]}
         sha256 = radix_generation_comparison.hashlib.sha256
         with patch.object(radix_generation_comparison.hashlib, "sha256", wraps=sha256) as hashes:
-            records = comparison_records(report)
+            records = radix_generation_comparison.comparison_records(report)
         self.assertEqual(6, len(records))
         self.assertEqual(8, hashes.call_count)  # token IDs and prompt IDs once per observation
         records[0]["left"]["id"] = "changed"
@@ -45,7 +44,7 @@ class GenerationComparisonTests(unittest.TestCase):
         return self.seal(r)
 
     def seal(self, r):
-        r["generated_token_comparisons"] = comparison_records(r)
+        r["generated_token_comparisons"] = radix_generation_comparison.comparison_records(r)
         equal = bool(r["generated_token_comparisons"]) and all(c["tokens_equal"] for c in r["generated_token_comparisons"])
         r["generated_token_comparisons_pass"] = equal
         r["strict_generation_pass"] = r["generation_comparison_policy"] == "strict" and r["status"] == "completed" and equal
@@ -53,8 +52,8 @@ class GenerationComparisonTests(unittest.TestCase):
 
     def test_explicit_record_retains_failure_and_default_validator_rejects_it(self):
         r = self.fixture()
-        self.assertEqual(policy_errors(r, "record"), [])
-        self.assertIn("generation_comparison_policy_mismatch", policy_errors(r))
+        self.assertEqual(radix_generation_comparison.policy_errors(r, "record"), [])
+        self.assertIn("generation_comparison_policy_mismatch", radix_generation_comparison.policy_errors(r))
         self.assertEqual(cancellation_errors(r, "record"), [])
         self.assertEqual(report_errors(r, "record"), [])
         self.assertFalse(r["strict_generation_pass"])
@@ -102,13 +101,13 @@ class GenerationComparisonTests(unittest.TestCase):
                        lambda r: r["generated_token_comparisons"][0].update(outcome="PASS", tokens_equal=True, first_difference_zero_based=900),
                        lambda r: r.update(generation_comparison_policy="ignore")):
             r = self.fixture(); mutate(r)
-            self.assertTrue(policy_errors(r, "record"))
+            self.assertTrue(radix_generation_comparison.policy_errors(r, "record"))
         self.assertTrue(report_errors({"schema": 1}, "record"))
-        self.assertTrue(policy_errors(self.fixture(), "anything"))
+        self.assertTrue(radix_generation_comparison.policy_errors(self.fixture(), "anything"))
 
     def test_cancel_prefix_longer_than_donor_is_a_difference(self):
         r = self.fixture(); r["cancelled"]["token_ids"] = r["cancel_donor"]["token_ids"] + [99]
-        c = next(c for c in comparison_records(r) if c["left"]["path"] == "cancel_donor" and c["right"]["path"] == "cancelled")
+        c = next(c for c in radix_generation_comparison.comparison_records(r) if c["left"]["path"] == "cancel_donor" and c["right"]["path"] == "cancelled")
         self.assertFalse(c["tokens_equal"])
         self.assertEqual(c["first_difference_zero_based"], len(r["cancel_donor"]["token_ids"]))
 

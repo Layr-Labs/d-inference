@@ -36,7 +36,7 @@ def terminate(process):
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
-            pass
+            pass  # The owned group exited after timeout; still reap its child.
         process.wait(timeout=5)
 
 

@@ -242,12 +242,14 @@ def artifact_facts(model_id: str, snapshot: Path) -> dict[str, Any]:
     config_size = config.stat().st_size
     if config_size > 4 * 1024 * 1024:
         raise ValueError("config.json exceeds the 4 MiB launch-side cap")
-    config_digest = sha256_file(config)
     # Independently parse the coverage-relevant metadata from the SAME bytes
     # that were hashed, so the supervisor's coverage gates do not depend
     # solely on the Swift inspector's transcription of these fields.
     with open(config, "rb") as handle:
-        parsed = json.loads(read_bounded(handle.fileno(), 4 * 1024 * 1024))
+        config_bytes = read_bounded(handle.fileno(), 4 * 1024 * 1024)
+    config_size = len(config_bytes)
+    config_digest = hashlib.sha256(config_bytes).hexdigest()
+    parsed = json.loads(config_bytes)
     if not isinstance(parsed, dict):
         raise ValueError("config.json root is not an object")
     # Mirrors MTPBenchmarkModelFacts.swift: "quantization" falls back to the HF "quantization_config" key.

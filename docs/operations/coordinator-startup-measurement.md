@@ -1,6 +1,6 @@
 # Measure coordinator startup after the old process stops
 
-> Last updated: 2026-09-08 · commit `501320342`
+> Last updated: 2026-09-12 · commit `04fec721a`
 
 Use `scripts/measure-coordinator-startup.py` to observe the interval after the
 old coordinator stops. The preceding drain is outside this measurement. The
@@ -95,6 +95,8 @@ The probe sends one fixed synthetic prompt, with at most three attempts per
 model and at most one request per second across all models. It only runs after
 candidate readiness and that model's capacity gate. It requires HTTP 200, a
 matching response model, non-empty content and a terminal `stop`/`length` reason.
+Malformed terminal reasons count as unavailable observations, preserving the
+bounded retry/report flow (`scripts/startup_measurement/http_probe.py`, `TestProbe.run`).
 It records completion time, not streaming TTFT. Later models' probe times
 include the observer's one-request-per-second scheduling delay; the report records
 probe start and elapsed time since first observed model capacity. Use

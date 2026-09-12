@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-10 · commit `4f29957d2`
+> Last updated: 2026-09-12 · commit `04fec721a`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -414,6 +414,13 @@ the default MicroMDM entrypoint script; see the
 The [startup measurement tool](../operations/coordinator-startup-measurement.md)
 requires Python 3.10+ and no third-party packages or build step. Its tests use
 local stub servers; its default observation mode sends only public GETs.
+
+The load-driver fixtures also need only Python 3.10+ and the standard library;
+they stub HTTP clients, worker completion and clocks
+(`scripts/test_load_measurements.py`, `SoakTests`, `LightBenchmarkTests`).
+Live `scripts/benchmark-light.py` (`worker`) and `scripts/benchmark-models.py`
+(`call_model`) require `aiohttp` and an authorized API key. Running these live
+scripts sends inference traffic; building or testing their fixtures does not.
 
 ## `make` targets
 

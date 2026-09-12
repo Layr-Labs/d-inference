@@ -187,6 +187,36 @@ class HTTPProbeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_base_url(origin)
 
+    def test_malformed_config_is_refused_before_output_or_network(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "test.json"
+            output = root / "report.json"
+            origin = "http://127.0.0.1:9000"
+            for field in ("base_url", "api_key_env"):
+                for value in (None, 7, [], {}):
+                    with self.subTest(field=field, value=value):
+                        data = {"environment": "disposable-test", "base_url": origin,
+                                "api_key_env": "SYNTHETIC_KEY", field: value}
+                        config.write_text(json.dumps(data))
+                        with patch("urllib.request.OpenerDirector.open") as request, redirect_stderr(io.StringIO()):
+                            with self.assertRaises(SystemExit) as error:
+                                main(self.arguments(origin, output) + ["--allow-test-inference", "--test-inference-config", str(config)])
+                        self.assertEqual(2, error.exception.code)
+                        self.assertFalse(output.exists())
+                        request.assert_not_called()
+
+    def test_malformed_terminal_reason_remains_an_unavailable_observation(self):
+        for reason in ([], {}, None, True, 1, "tool_calls"):
+            with self.subTest(reason=reason):
+                body = {"model": "m1", "choices": [{"finish_reason": reason,
+                        "message": {"content": "private-response"}}]}
+                with patch.object(Client, "request", return_value=Result(200, "json", body)):
+                    result = TestProbe("key-secret").run(Client("http://127.0.0.1:9000"), "m1", 1)
+                self.assertFalse(result["availability_success"])
+                self.assertIsNone(result["synthetic_answer_matches"])
+                self.assertNotIn("private-response", json.dumps(result))
+
 
 if __name__ == "__main__":
     unittest.main()

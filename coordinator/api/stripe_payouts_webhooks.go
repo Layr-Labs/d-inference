@@ -172,8 +172,10 @@ func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, connectedAcct
 	// This applies to "paid" rows too: Stripe documents payout.failed arriving
 	// AFTER payout.paid for the same payout when the bank later bounces it.
 	// Because this row was looked up BY the event's payout ID, the failure is
-	// provably about the row's own in-flight payout — not a stale one — so we
-	// reopen the row for the sweep to retry. Stale failures from an older
+	// about the observed in-flight payout. The store rechecks that ownership
+	// before applying the transition: a concurrent failure may detach it and a
+	// newer sweep may complete the row after this lookup. For a match, we
+	// reopen the row for the sweep to retry. Later failures from an older
 	// payout can never reach this path: processing a failure detaches the
 	// payout ID from the row (below), so a redelivered or out-of-order event
 	// for that payout misses the lookup and falls into
@@ -221,14 +223,14 @@ func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, connectedAcct
 	// overwrite the refund back to a sweep-eligible state.
 	reason := "payout_failed " + pe.FailureCode + ": " + pe.FailureReason +
 		" (payout " + pe.ID + "; auto-payout will retry)"
-	applied, err := s.billing.Store().ReopenStripeWithdrawalAfterPayoutFailure(wd.ID, reason, wd.FeeRefunded)
+	applied, err := s.billing.Store().ReopenStripeWithdrawalAfterPayoutFailure(wd.ID, pe.ID, reason, wd.FeeRefunded)
 	if err != nil {
 		s.logger.Error("stripe connect webhook: persist payout failure failed",
 			"error", err, "withdrawal_id", wd.ID)
 		return err
 	}
 	if !applied {
-		s.logger.Warn("stripe connect webhook: payout failure not applied — row terminalized concurrently (reversal wins)",
+		s.logger.Warn("stripe connect webhook: payout failure not applied — row terminalized or payout ownership changed concurrently",
 			"withdrawal_id", wd.ID, "payout_id", pe.ID)
 		return nil
 	}

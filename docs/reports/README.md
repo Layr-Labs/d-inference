@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-11 · commit `6938e8547`
+> Last updated: 2026-09-11 · commit `bbb46b21f`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -11,6 +11,7 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
 
+- [Codebase operation boundaries and refactor decisions](2026-09-11-codebase-refactor.md) — provider, coordinator, console and testbed responsibilities, selected simplifications and validation scope.
 - [GPT-OSS 20B default SSD prefix-cache qualification](2026-09-11-gptoss-default-prefix-cache.md) — authenticated reconstruction, mixed suffixes and B1/B2/B4 task checks pass; 86–91% median warm-hit TTFT reductions, with standalone transport and ephemeral-key limits retained.
 - [0.9.2 provider-only rollout review](2026-09-10-provider-092-rollout-review.md) — verified 0.9.1 coordinator compatibility, shared inference interactions and remaining fleet-release gates.
 - [Final cache routing checks](2026-09-07-final-cache-routing.md) — twenty cache-off/SSD cases pass with two isolated providers, including holder selection, tenant isolation, cancellation and cold fallback.

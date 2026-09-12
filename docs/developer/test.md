@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-11 · commit `d22ad0cf3`
+> Last updated: 2026-09-11 · commit `bbb46b21f`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1012,6 +1012,18 @@ a coordinator from the current tree, and one or more **real** `darkbloom`
 provider processes serving MLX checkpoints, then drives the OpenAI-compatible
 API. It is a Go test binary; run it from the repo root with `-p=1` (suites
 share GPU/ports).
+
+Testbed startup is organized by the operation it owns: `suite.go` sequences
+startup and cleanup, `coordinator.go` creates the isolated store/users/server,
+`suite_providers.go` launches providers with private credentials, and
+`suite_registration.go` admits registered providers before backend verification.
+`provider_capabilities.go` checks original signed claims before the harness
+grants synthetic test trust. Run its refusal and privacy-snapshot tests without
+a model or provider process:
+
+```bash
+go test -race -short ./e2e/testbed/...
+```
 
 ```bash
 # Blocking lane as CI runs it (paged KV @ 8, engine-reported backend asserted):

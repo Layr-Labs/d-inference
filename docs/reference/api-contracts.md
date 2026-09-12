@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-12 · commit `932037b7c`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -466,7 +466,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | Inference body | 16 MiB (`maxInferenceBodyBytes`) → 413 `invalid_request_error`; sealed bodies are read with the same cap (400 `invalid_request_error` when exceeded) | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), `sealedTransport` (`coordinator/api/sender_encryption.go`) |
 | Control-plane bodies | 64 KiB (`maxControlPlaneBodyBytes`) for enroll, device token, admin auth | `coordinator/api/server.go` |
 | MDM webhook body | 1 MiB (`maxMDMWebhookBodyBytes`) | `HandleMDMWebhook` (`coordinator/api/server.go`) |
-| `n` | Must be 1 | `handleChatCompletions` |
+| `n` | Chat/Responses reject integer values greater than 1. Generic endpoints return 400 `invalid_request_error` with `param: "n"` when the positive per-choice output bound times `n` exceeds the supported integer range. | `handleChatCompletions`; `validateRequestedMaxTokens`, `estimateRequestedMaxTokens` (`coordinator/api/request_introspection.go`) |
 | `max_tokens` | `max_completion_tokens` → `max_tokens`; an explicit value is not clamped, a missing one is filled from the [output bound](pricing-model.md#formulas) | `ensureMaxTokensBound` |
 | Prompt size at admission | 413 `payload_too_large` when the estimated prompt exceeds what the model's providers can accept | `runInferenceAdmission` (`coordinator/api/inference_admission.go`) |
 | Catalog membership | Model resolved but absent from the routable catalog → 404 `model_not_found`, after the balance reservation is released | `handleChatCompletions` |
@@ -478,6 +478,12 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | Inference-enforced `tool_choice` + images | `required` or a named `tool_choice` (modes that need provider-side constraint enforcement) together with image content → 400, `param: tool_choice`. `response_format` is not validated by the coordinator | `handleChatCompletions` |
 | Token rate limits | Per-account input and output tokens per minute → 429 with `Retry-After` | `applyTokenRateLimitWithAdmission`, `writeTokenRateLimited` |
 | Model shedding | A model currently rejecting → 429 with `Retry-After` from `estimateRetryAfter` | `shedIfModelRejected` |
+
+Output-estimate overflow is rejected before token admission, balance reservation
+or capacity routing, including when token quotas are full or unlimited. The
+coordinator never substitutes a maximum-integer token count for this invalid
+product. Representable estimates retain the existing one-burst admission policy
+and provider-bound output limits.
 
 ## Timeouts and constants
 

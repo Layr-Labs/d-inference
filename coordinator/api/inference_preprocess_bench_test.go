@@ -257,8 +257,8 @@ func benchPreprocess(b *testing.B, srv *Server, body []byte) {
 	}
 	estimatedPromptTokens := shape.routingPromptTokens(parsed)
 	billingPromptTokens := shape.billingPromptTokens(parsed)
-	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
-	if estimatedPromptTokens <= 0 || billingPromptTokens <= 0 || requestedMaxTokens <= 0 {
+	requestedMaxTokens, valid := estimateRequestedMaxTokens(parsed)
+	if !valid || estimatedPromptTokens <= 0 || billingPromptTokens <= 0 || requestedMaxTokens <= 0 {
 		b.Fatal("estimates must be positive")
 	}
 

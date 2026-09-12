@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-09-12 · commit `932037b7c`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -43,6 +43,13 @@ content beyond that. See [`data-flow.md`](data-flow.md) and
 ## Mechanism
 
 ### Entry points
+
+Before token quotas, balance reservation or routing, the API validates that the
+selected per-choice output bound times `n` fits in its integer estimate
+(`validateRequestedMaxTokens`, `coordinator/api/request_introspection.go`).
+An overflowing product returns 400 `invalid_request_error`; it never enters
+downstream cost or capacity calculations as a saturated token count. See the
+[request limits](../reference/api-contracts.md#limits-and-validation).
 
 `ReserveProviderWithPlan` (`coordinator/registry/scheduler.go`) is the
 dispatch-time entry point. It scans the fleet

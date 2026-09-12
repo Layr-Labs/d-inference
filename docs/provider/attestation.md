@@ -1,6 +1,6 @@
 # Reaching and keeping `hardware` trust
 
-> Last updated: 2026-09-07 · commit `efcde6334`
+> Last updated: 2026-09-12 · commit `f1ccb8d43`
 
 How to take a provider Mac from `self_signed` to `hardware` trust and keep it
 there, so the coordinator routes public inference to it. For operators; the
@@ -161,6 +161,7 @@ what the provider can and cannot see is in
 | `trust_status` reason `posture-mismatch` / status `untrusted` | MDM says SIP or Secure Boot differs from your blob | Fix the posture in Recovery (`csrutil enable`, Full Security), reboot, restart the provider |
 | `code_attested` never passes | No Aqua session / no APNs token / pushes throttled | Log in at the console, enable automatic login, disable auto-logout; check `darkbloom doctor`; a reconnect soon after a proof uses the resume path instead of a push ([Flag — APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity)) |
 | Derouted after missed challenges | Sleep or network blip | Recovers on the next passing challenge; prevent sleep |
+| `runtime_status` reports a mismatch | The installed runtime is outside the coordinator’s accepted release policy | Run a released build with `darkbloom update`; see [runtime policy](../architecture/security/attestation.md#runtime-manifest) for accepted hashes and recovery |
 | Binary hash drift warning | Running a build not in the coordinator's release record | `darkbloom update` |
 | `darkbloom enroll` says the Mac is managed by another MDM | Another MDM profile is installed | Remove it (System Settings → General → Device Management) or use another Mac; `hardware` is unavailable while it is present |
 | Every flag lost after an update or reinstall | The Secure Enclave key fell back to ephemeral (warning in `darkbloom logs`) | Reinstall a signed release build so the `keychain-access-groups` entitlement is present |

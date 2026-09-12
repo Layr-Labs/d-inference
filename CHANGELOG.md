@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Keep runtime-hash verification and manifest responses consistent during concurrent release-policy updates. Publish owned immutable hash sets, preserve the active-release union, and serialize fallback merges with live-provider revalidation.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

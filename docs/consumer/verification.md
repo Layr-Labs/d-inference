@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-07 · commit `efcde6334`
+> Last updated: 2026-09-12 · commit `f1ccb8d43`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -57,7 +57,7 @@ gate routing ([Flag — Apple Managed Device Attestation](../architecture/securi
 Public routing applies the coordinator's trust floor (`MinTrustLevel`, set by
 [`EIGENINFERENCE_MIN_TRUST`](../reference/configuration.md#routing-admission-and-ttft))
 plus every privacy gate (encrypted response chunks, coordinator-verified SIP,
-required privacy capabilities, code identity once enforced), so a request you
+required privacy capabilities, an [approved runtime manifest](../architecture/security/attestation.md#runtime-manifest), and code identity once enforced), so a request you
 send without self-routing is served only by a provider that passes all of them
 ([`../architecture/security/attestation.md`](../architecture/security/attestation.md#routing-gate)).
 

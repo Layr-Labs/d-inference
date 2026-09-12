@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Coordinator
+
+- Fill warm-pool load allowances from remaining eligible providers when models share preferred machines or a reservation loses a race. Observe-only planning also assigns each machine to at most one model per tick.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

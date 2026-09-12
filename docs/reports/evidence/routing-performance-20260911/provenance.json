@@ -1,0 +1,33 @@
+{
+  "captured_at": "2026-09-11T23:30:22.327591Z",
+  "deployed_commit": "ef7b5a9aa69e62374c83d8f2baddb2957e38c9a8",
+  "analysis_base": "7c394fa2b51e4ee0626e3b103458f5350988a937",
+  "sampling": "FNV1a32(coord_request_id)/2^32 < 0.1, including all retained attempts of sampled requests",
+  "replica": "connection timed out; no direct SQL analysis completed",
+  "raw_artifacts": [
+    {
+      "file": "production-capture.json",
+      "bytes": 432840680,
+      "sha256": "0dd1de87255887a04c0fcd885edd6975602ef1e7e71555556aedb0bae23f6805",
+      "access": "operator-local; request/provider identifiers excluded from committed aggregates"
+    },
+    {
+      "file": "gpt-profiles-complete.json",
+      "bytes": 324507603,
+      "sha256": "eb63541a6b510cdb30d5bf3554ca36456bd2c32b463108afbd7002e4021227d6",
+      "access": "operator-local; request/provider identifiers excluded from committed aggregates"
+    },
+    {
+      "file": "dd-outcomes.json",
+      "bytes": 327006,
+      "sha256": "fd4c5583c62810954ddf0eccee1c1ab57007deb9311251ec9a1707bfea3f2fcf",
+      "access": "operator-local; request/provider identifiers excluded from committed aggregates"
+    },
+    {
+      "file": "dd-attempts.json",
+      "bytes": 357515,
+      "sha256": "6172f253d1e5d02cdd0b94a2666963b38b5a317726f5ef2b99a10d80a8faeb7d",
+      "access": "operator-local; request/provider identifiers excluded from committed aggregates"
+    }
+  ]
+}

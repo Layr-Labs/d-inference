@@ -1,0 +1,979 @@
+{
+  "at": "2026-09-11T23:30:22.327591+00:00",
+  "since": "2026-09-11T23:13:00+00:00",
+  "until": "2026-09-11T23:28:00+00:00",
+  "sample_rate": 0.1,
+  "models": [
+    {
+      "id": "gpt-oss-20b",
+      "export_count": 88809,
+      "truncated": false,
+      "sampled_attempts": 5668,
+      "sampled_logical_requests": 894,
+      "sampled_winners": 789,
+      "attempt_status": {
+        "success:": 765,
+        "partial_success:client_gone_after_commit_provider_completed": 24,
+        "error:deadline_unreachable": 2580,
+        "error:provider_error": 8,
+        "rejected:provider_error": 2178,
+        "timeout:first_chunk_timeout": 110,
+        "cancelled:speculative_loser": 3
+      },
+      "idle_alternative": 2161,
+      "faster_estimated_idle": 2971,
+      "selected_cost_above_best": 420,
+      "selected_extra_cost_ms": {
+        "n": 420,
+        "p50": 1686.0840526498214,
+        "p95": 2901.4223239194835,
+        "p99": 2973.2111003428,
+        "mean": 1635.1184623222648
+      },
+      "selection_paths": {
+        "unique_min": 2420,
+        "random": 311,
+        "tie_queue": 319,
+        "none": 2598,
+        "tie_pending": 20
+      },
+      "timings_ms": {
+        "client_first_content": {
+          "n": 789,
+          "p50": 3345.098,
+          "p95": 10349.727,
+          "p99": 19887.0,
+          "mean": 4276.433457541191
+        },
+        "predicted_ttft": {
+          "n": 789,
+          "p50": 3360.6782148698053,
+          "p95": 50415.5632151066,
+          "p99": 79307.55993462699,
+          "mean": 11444.220836931874
+        },
+        "prompt_tokens": {
+          "n": 789,
+          "p50": 1510,
+          "p95": 10498,
+          "p99": 29089,
+          "mean": 3264.4283903675537
+        },
+        "route_lock": {
+          "n": 789,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "mean": 2.4081115335868188e-05
+        },
+        "route_scan": {
+          "n": 789,
+          "p50": 1.207,
+          "p95": 1.933,
+          "p99": 2.453,
+          "mean": 1.1764778200253485
+        },
+        "before_attempt": {
+          "n": 789,
+          "p50": 7.39,
+          "p95": 3547.846,
+          "p99": 6553.085,
+          "mean": 606.108124207858
+        },
+        "routing": {
+          "n": 789,
+          "p50": 1.834,
+          "p95": 3.334,
+          "p99": 5.025,
+          "mean": 1.8520506970849178
+        },
+        "socket_write": {
+          "n": 789,
+          "p50": 0.084,
+          "p95": 0.198,
+          "p99": 0.454,
+          "mean": 0.10222813688212928
+        },
+        "dispatch_to_first_content": {
+          "n": 789,
+          "p50": 3060.83,
+          "p95": 8288.072,
+          "p99": 19285.905,
+          "mean": 3668.077771863118
+        },
+        "queue": {
+          "n": 0
+        },
+        "provider_prepare": {
+          "n": 789,
+          "p50": 2.036,
+          "p95": 10.867,
+          "p99": 18.586,
+          "mean": 5.9614917617237015
+        }
+      },
+      "gates": {
+        "free_memory": 480860,
+        "private_text": 129158,
+        "untrusted": 128636,
+        "trust_floor": 86601,
+        "no_headroom": 44856,
+        "excluded": 28598,
+        "capacity_cooldown": 12636,
+        "model_too_large": 3069,
+        "thermal_critical": 3069,
+        "allowlist": 1617,
+        "dispatch_load_cooldown": 1085,
+        "ejection": 689,
+        "error_cooldown": 666,
+        "breaker": 255,
+        "slot_crashed": 114,
+        "offline": 2,
+        "state_restoring": 1
+      }
+    },
+    {
+      "id": "Qwen3.5-9B",
+      "export_count": 1420,
+      "truncated": false,
+      "sampled_attempts": 93,
+      "sampled_logical_requests": 26,
+      "sampled_winners": 26,
+      "attempt_status": {
+        "success:": 25,
+        "error:deadline_unreachable": 38,
+        "rejected:provider_error": 29,
+        "partial_success:client_gone_after_commit_provider_completed": 1
+      },
+      "idle_alternative": 27,
+      "faster_estimated_idle": 45,
+      "selected_cost_above_best": 16,
+      "selected_extra_cost_ms": {
+        "n": 16,
+        "p50": 2226.4685734671657,
+        "p95": 2561.4026190843433,
+        "p99": 2561.4026190843433,
+        "mean": 1838.750305582911
+      },
+      "selection_paths": {
+        "none": 38,
+        "unique_min": 32,
+        "random": 15,
+        "tie_queue": 8
+      },
+      "timings_ms": {
+        "client_first_content": {
+          "n": 26,
+          "p50": 1383.306,
+          "p95": 4001.775,
+          "p99": 4434.354,
+          "mean": 1583.7692307692307
+        },
+        "predicted_ttft": {
+          "n": 26,
+          "p50": 737.0752396950895,
+          "p95": 3255.335887016823,
+          "p99": 3585.5217735636215,
+          "mean": 1479.243527984935
+        },
+        "prompt_tokens": {
+          "n": 26,
+          "p50": 961,
+          "p95": 2205,
+          "p99": 4068,
+          "mean": 1157.0384615384614
+        },
+        "route_lock": {
+          "n": 26,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "mean": 0.0
+        },
+        "route_scan": {
+          "n": 26,
+          "p50": 0.246,
+          "p95": 0.41,
+          "p99": 0.414,
+          "mean": 0.2346923076923077
+        },
+        "before_attempt": {
+          "n": 26,
+          "p50": 4.924,
+          "p95": 2096.974,
+          "p99": 3068.634,
+          "mean": 452.9981153846154
+        },
+        "routing": {
+          "n": 26,
+          "p50": 0.32,
+          "p95": 0.491,
+          "p99": 0.522,
+          "mean": 0.3048076923076923
+        },
+        "socket_write": {
+          "n": 26,
+          "p50": 0.077,
+          "p95": 0.114,
+          "p99": 0.116,
+          "mean": 0.08053846153846153
+        },
+        "dispatch_to_first_content": {
+          "n": 26,
+          "p50": 1169.296,
+          "p95": 1915.383,
+          "p99": 2372.743,
+          "mean": 1130.1116153846156
+        },
+        "queue": {
+          "n": 0
+        },
+        "provider_prepare": {
+          "n": 26,
+          "p50": 2.845,
+          "p95": 3.574,
+          "p99": 3.755,
+          "mean": 2.375423076923077
+        }
+      },
+      "gates": {
+        "untrusted": 1827,
+        "free_memory": 555,
+        "private_text": 374,
+        "excluded": 274,
+        "no_headroom": 171,
+        "trust_floor": 131,
+        "ejection": 53
+      }
+    },
+    {
+      "id": "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+      "export_count": 2341,
+      "truncated": false,
+      "sampled_attempts": 264,
+      "sampled_logical_requests": 152,
+      "sampled_winners": 129,
+      "attempt_status": {
+        "success:": 129,
+        "error:provider_error": 59,
+        "rejected:provider_error": 32,
+        "timeout:first_chunk_timeout": 5,
+        "error:deadline_unreachable": 37,
+        "cancelled:speculative_loser": 2
+      },
+      "idle_alternative": 37,
+      "faster_estimated_idle": 168,
+      "selected_cost_above_best": 55,
+      "selected_extra_cost_ms": {
+        "n": 55,
+        "p50": 1952.5007233483484,
+        "p95": 2775.7624139871914,
+        "p99": 2910.8342204784512,
+        "mean": 1610.8523191889894
+      },
+      "selection_paths": {
+        "unique_min": 101,
+        "random": 56,
+        "none": 80,
+        "tie_queue": 13,
+        "tie_pending": 14
+      },
+      "timings_ms": {
+        "client_first_content": {
+          "n": 129,
+          "p50": 3127.859,
+          "p95": 8929.457,
+          "p99": 11658.715,
+          "mean": 3897.209899224806
+        },
+        "predicted_ttft": {
+          "n": 129,
+          "p50": 3575.4903810689743,
+          "p95": 13495.673585642795,
+          "p99": 16357.623581398131,
+          "mean": 4994.7178899338105
+        },
+        "prompt_tokens": {
+          "n": 129,
+          "p50": 3442,
+          "p95": 14262,
+          "p99": 16117,
+          "mean": 5477.007751937985
+        },
+        "route_lock": {
+          "n": 129,
+          "p50": 0.02,
+          "p95": 0.115,
+          "p99": 0.144,
+          "mean": 0.03534108527131783
+        },
+        "route_scan": {
+          "n": 129,
+          "p50": 1.983,
+          "p95": 2.839,
+          "p99": 3.04,
+          "mean": 1.869046511627907
+        },
+        "before_attempt": {
+          "n": 129,
+          "p50": 29.117,
+          "p95": 1500.186,
+          "p99": 2539.499,
+          "mean": 243.31817829457364
+        },
+        "routing": {
+          "n": 129,
+          "p50": 2.214,
+          "p95": 4.063,
+          "p99": 4.357,
+          "mean": 2.2691860465116283
+        },
+        "socket_write": {
+          "n": 129,
+          "p50": 0.114,
+          "p95": 2.492,
+          "p99": 6.911,
+          "mean": 0.5070387596899225
+        },
+        "dispatch_to_first_content": {
+          "n": 129,
+          "p50": 3051.599,
+          "p95": 8724.711,
+          "p99": 11629.246,
+          "mean": 3650.379441860465
+        },
+        "queue": {
+          "n": 0
+        },
+        "provider_prepare": {
+          "n": 129,
+          "p50": 3.942,
+          "p95": 70.083,
+          "p99": 135.087,
+          "mean": 18.319240310077518
+        }
+      },
+      "gates": {
+        "free_memory": 56901,
+        "untrusted": 9698,
+        "private_text": 7349,
+        "trust_floor": 5776,
+        "capacity_cooldown": 1201,
+        "dispatch_load_cooldown": 494,
+        "ejection": 330,
+        "excluded": 278,
+        "thermal_critical": 184,
+        "no_headroom": 94
+      }
+    },
+    {
+      "id": "qwen3-vl-30b-a3b-instruct",
+      "export_count": 0,
+      "truncated": false,
+      "sampled_attempts": 0,
+      "sampled_logical_requests": 0,
+      "sampled_winners": 0,
+      "attempt_status": {},
+      "idle_alternative": 0,
+      "faster_estimated_idle": 0,
+      "selected_cost_above_best": 0,
+      "selected_extra_cost_ms": {
+        "n": 0
+      },
+      "selection_paths": {},
+      "timings_ms": {
+        "client_first_content": {
+          "n": 0
+        },
+        "predicted_ttft": {
+          "n": 0
+        },
+        "prompt_tokens": {
+          "n": 0
+        },
+        "route_lock": {
+          "n": 0
+        },
+        "route_scan": {
+          "n": 0
+        },
+        "before_attempt": {
+          "n": 0
+        },
+        "routing": {
+          "n": 0
+        },
+        "socket_write": {
+          "n": 0
+        },
+        "dispatch_to_first_content": {
+          "n": 0
+        },
+        "queue": {
+          "n": 0
+        },
+        "provider_prepare": {
+          "n": 0
+        }
+      },
+      "gates": {}
+    },
+    {
+      "id": "EigenLabs/Qwen3.8-27B-4bit-mtp",
+      "export_count": 1113,
+      "truncated": false,
+      "sampled_attempts": 185,
+      "sampled_logical_requests": 36,
+      "sampled_winners": 30,
+      "attempt_status": {
+        "success:": 28,
+        "rejected:provider_error": 67,
+        "error:deadline_unreachable": 82,
+        "timeout:first_chunk_timeout": 6,
+        "partial_success:client_gone_after_commit_provider_completed": 2
+      },
+      "idle_alternative": 8,
+      "faster_estimated_idle": 99,
+      "selected_cost_above_best": 18,
+      "selected_extra_cost_ms": {
+        "n": 18,
+        "p50": 1136.297704143828,
+        "p95": 2829.3816482670372,
+        "p99": 2829.3816482670372,
+        "mean": 1464.2270429181492
+      },
+      "selection_paths": {
+        "unique_min": 69,
+        "none": 82,
+        "random": 27,
+        "tie_queue": 3,
+        "tie_pending": 4
+      },
+      "timings_ms": {
+        "client_first_content": {
+          "n": 30,
+          "p50": 2058.655,
+          "p95": 7864.794,
+          "p99": 9969.263,
+          "mean": 3371.7362333333335
+        },
+        "predicted_ttft": {
+          "n": 30,
+          "p50": 2260.354086331346,
+          "p95": 9344.971980681155,
+          "p99": 9492.376403349546,
+          "mean": 3697.5363440643514
+        },
+        "prompt_tokens": {
+          "n": 30,
+          "p50": 1133,
+          "p95": 5027,
+          "p99": 5067,
+          "mean": 1709.0666666666666
+        },
+        "route_lock": {
+          "n": 30,
+          "p50": 0.0,
+          "p95": 0.038,
+          "p99": 0.043,
+          "mean": 0.011266666666666666
+        },
+        "route_scan": {
+          "n": 30,
+          "p50": 0.339,
+          "p95": 0.394,
+          "p99": 0.398,
+          "mean": 0.3015333333333333
+        },
+        "before_attempt": {
+          "n": 30,
+          "p50": 24.467,
+          "p95": 561.81,
+          "p99": 1459.859,
+          "mean": 280.8831666666667
+        },
+        "routing": {
+          "n": 30,
+          "p50": 0.418,
+          "p95": 0.565,
+          "p99": 0.625,
+          "mean": 0.3762666666666667
+        },
+        "socket_write": {
+          "n": 30,
+          "p50": 0.077,
+          "p95": 1.447,
+          "p99": 6.241,
+          "mean": 0.7913
+        },
+        "dispatch_to_first_content": {
+          "n": 30,
+          "p50": 2025.483,
+          "p95": 6633.009,
+          "p99": 7099.291,
+          "mean": 3088.7519666666662
+        },
+        "queue": {
+          "n": 0
+        },
+        "provider_prepare": {
+          "n": 30,
+          "p50": 2.245,
+          "p95": 53.444,
+          "p99": 87.972,
+          "mean": 14.086966666666665
+        }
+      },
+      "gates": {
+        "not_serving_model": 947,
+        "excluded": 654,
+        "free_memory": 603
+      }
+    },
+    {
+      "id": "gemma-4-26b",
+      "export_count": 2,
+      "truncated": false,
+      "sampled_attempts": 0,
+      "sampled_logical_requests": 0,
+      "sampled_winners": 0,
+      "attempt_status": {},
+      "idle_alternative": 0,
+      "faster_estimated_idle": 0,
+      "selected_cost_above_best": 0,
+      "selected_extra_cost_ms": {
+        "n": 0
+      },
+      "selection_paths": {},
+      "timings_ms": {
+        "client_first_content": {
+          "n": 0
+        },
+        "predicted_ttft": {
+          "n": 0
+        },
+        "prompt_tokens": {
+          "n": 0
+        },
+        "route_lock": {
+          "n": 0
+        },
+        "route_scan": {
+          "n": 0
+        },
+        "before_attempt": {
+          "n": 0
+        },
+        "routing": {
+          "n": 0
+        },
+        "socket_write": {
+          "n": 0
+        },
+        "dispatch_to_first_content": {
+          "n": 0
+        },
+        "queue": {
+          "n": 0
+        },
+        "provider_prepare": {
+          "n": 0
+        }
+      },
+      "gates": {}
+    },
+    {
+      "id": "gemma-4-26b-qat-4bit",
+      "export_count": 30548,
+      "truncated": false,
+      "sampled_attempts": 4391,
+      "sampled_logical_requests": 2321,
+      "sampled_winners": 2301,
+      "attempt_status": {
+        "success:": 2298,
+        "error:deadline_unreachable": 1267,
+        "partial_success:client_gone_after_commit_provider_completed": 3,
+        "cancelled:speculative_loser": 10,
+        "rejected:provider_error": 791,
+        "timeout:first_chunk_timeout": 22
+      },
+      "idle_alternative": 915,
+      "faster_estimated_idle": 3101,
+      "selected_cost_above_best": 1630,
+      "selected_extra_cost_ms": {
+        "n": 1630,
+        "p50": 2064.5906908126562,
+        "p95": 2939.3872579197596,
+        "p99": 2984.8523997526645,
+        "mean": 1873.4845372284062
+      },
+      "selection_paths": {
+        "unique_min": 993,
+        "random": 1523,
+        "tie_queue": 573,
+        "none": 1279,
+        "tie_pending": 23
+      },
+      "timings_ms": {
+        "client_first_content": {
+          "n": 2301,
+          "p50": 3667.465,
+          "p95": 7664.568,
+          "p99": 10109.828,
+          "mean": 3890.3052885701873
+        },
+        "predicted_ttft": {
+          "n": 2301,
+          "p50": 3372.313519351916,
+          "p95": 8136.722274428716,
+          "p99": 12106.919815767122,
+          "mean": 3702.543880858266
+        },
+        "prompt_tokens": {
+          "n": 2301,
+          "p50": 3659,
+          "p95": 6840,
+          "p99": 8871,
+          "mean": 3623.6875271621034
+        },
+        "route_lock": {
+          "n": 2301,
+          "p50": 0.037,
+          "p95": 0.083,
+          "p99": 0.189,
+          "mean": 0.04557322903085615
+        },
+        "route_scan": {
+          "n": 2301,
+          "p50": 1.401,
+          "p95": 2.23,
+          "p99": 3.333,
+          "mean": 1.4149169926119078
+        },
+        "before_attempt": {
+          "n": 2301,
+          "p50": 25.945,
+          "p95": 2958.888,
+          "p99": 5741.263,
+          "mean": 418.2990317253368
+        },
+        "routing": {
+          "n": 2301,
+          "p50": 1.681,
+          "p95": 3.524,
+          "p99": 4.965,
+          "mean": 1.8377522816166882
+        },
+        "socket_write": {
+          "n": 2301,
+          "p50": 0.102,
+          "p95": 0.174,
+          "p99": 0.785,
+          "mean": 0.17558843980877878
+        },
+        "dispatch_to_first_content": {
+          "n": 2301,
+          "p50": 3316.667,
+          "p95": 6583.518,
+          "p99": 8495.808,
+          "mean": 3469.6157070838763
+        },
+        "queue": {
+          "n": 0
+        },
+        "provider_prepare": {
+          "n": 2276,
+          "p50": 3.425,
+          "p95": 8.274,
+          "p99": 127.878,
+          "mean": 9.248400702987698
+        }
+      },
+      "gates": {
+        "private_text": 129108,
+        "untrusted": 125675,
+        "free_memory": 124894,
+        "trust_floor": 59198,
+        "no_headroom": 34076,
+        "model_too_large": 16286,
+        "excluded": 6236,
+        "capacity_cooldown": 1019,
+        "allowlist": 535,
+        "error_cooldown": 138,
+        "slot_crashed": 24
+      }
+    },
+    {
+      "id": "qwen3.5-35b-a3b",
+      "export_count": 95,
+      "truncated": false,
+      "sampled_attempts": 38,
+      "sampled_logical_requests": 38,
+      "sampled_winners": 38,
+      "attempt_status": {
+        "success:": 38
+      },
+      "idle_alternative": 0,
+      "faster_estimated_idle": 32,
+      "selected_cost_above_best": 25,
+      "selected_extra_cost_ms": {
+        "n": 25,
+        "p50": 1706.488016948827,
+        "p95": 2772.4971100180815,
+        "p99": 2904.1523254325184,
+        "mean": 1643.8083819554834
+      },
+      "selection_paths": {
+        "random": 33,
+        "unique_min": 5
+      },
+      "timings_ms": {
+        "client_first_content": {
+          "n": 38,
+          "p50": 1092.995,
+          "p95": 2534.779,
+          "p99": 3290.192,
+          "mean": 1495.8027368421053
+        },
+        "predicted_ttft": {
+          "n": 38,
+          "p50": 996.1299002548586,
+          "p95": 4276.078166521018,
+          "p99": 5209.062226806658,
+          "mean": 1498.4305448284715
+        },
+        "prompt_tokens": {
+          "n": 38,
+          "p50": 1392,
+          "p95": 8099,
+          "p99": 8110,
+          "mean": 2824.342105263158
+        },
+        "route_lock": {
+          "n": 38,
+          "p50": 0.023,
+          "p95": 0.089,
+          "p99": 0.125,
+          "mean": 0.03647368421052631
+        },
+        "route_scan": {
+          "n": 38,
+          "p50": 0.932,
+          "p95": 1.243,
+          "p99": 1.348,
+          "mean": 0.9595263157894738
+        },
+        "before_attempt": {
+          "n": 38,
+          "p50": 15.047,
+          "p95": 232.612,
+          "p99": 242.314,
+          "mean": 52.44244736842106
+        },
+        "routing": {
+          "n": 38,
+          "p50": 1.03,
+          "p95": 1.431,
+          "p99": 1.445,
+          "mean": 1.0540526315789474
+        },
+        "socket_write": {
+          "n": 38,
+          "p50": 0.104,
+          "p95": 0.628,
+          "p99": 1.017,
+          "mean": 0.3267631578947368
+        },
+        "dispatch_to_first_content": {
+          "n": 38,
+          "p50": 1077.172,
+          "p95": 2508.917,
+          "p99": 3158.361,
+          "mean": 1441.4487894736842
+        },
+        "queue": {
+          "n": 0
+        },
+        "provider_prepare": {
+          "n": 38,
+          "p50": 3.427,
+          "p95": 40.806,
+          "p99": 84.782,
+          "mean": 12.13515789473684
+        }
+      },
+      "gates": {
+        "untrusted": 1082,
+        "free_memory": 681,
+        "private_text": 480,
+        "trust_floor": 32,
+        "no_headroom": 29
+      }
+    },
+    {
+      "id": "nvidia-nemotron-3.5-lightning",
+      "export_count": 502,
+      "truncated": false,
+      "sampled_attempts": 48,
+      "sampled_logical_requests": 13,
+      "sampled_winners": 8,
+      "attempt_status": {
+        "success:": 8,
+        "timeout:first_chunk_timeout": 6,
+        "error:deadline_unreachable": 21,
+        "rejected:provider_error": 12,
+        "error:provider_error": 1
+      },
+      "idle_alternative": 11,
+      "faster_estimated_idle": 10,
+      "selected_cost_above_best": 1,
+      "selected_extra_cost_ms": {
+        "n": 1,
+        "p50": 2270.636835274403,
+        "p95": 2270.636835274403,
+        "p99": 2270.636835274403,
+        "mean": 2270.636835274403
+      },
+      "selection_paths": {
+        "unique_min": 24,
+        "none": 23,
+        "random": 1
+      },
+      "timings_ms": {
+        "client_first_content": {
+          "n": 8,
+          "p50": 1500.928,
+          "p95": 2205.686,
+          "p99": 2205.686,
+          "mean": 1614.048875
+        },
+        "predicted_ttft": {
+          "n": 8,
+          "p50": 806.5323272229389,
+          "p95": 3474.421755676967,
+          "p99": 3474.421755676967,
+          "mean": 1811.7875249393562
+        },
+        "prompt_tokens": {
+          "n": 8,
+          "p50": 201,
+          "p95": 2536,
+          "p99": 2536,
+          "mean": 1080.0
+        },
+        "route_lock": {
+          "n": 8,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "mean": 0.0
+        },
+        "route_scan": {
+          "n": 8,
+          "p50": 0.166,
+          "p95": 0.203,
+          "p99": 0.203,
+          "mean": 0.344125
+        },
+        "before_attempt": {
+          "n": 8,
+          "p50": 11.757,
+          "p95": 906.216,
+          "p99": 906.216,
+          "mean": 287.4095
+        },
+        "routing": {
+          "n": 8,
+          "p50": 0.218,
+          "p95": 0.244,
+          "p99": 0.244,
+          "mean": 0.385625
+        },
+        "socket_write": {
+          "n": 8,
+          "p50": 0.058,
+          "p95": 0.105,
+          "p99": 0.105,
+          "mean": 0.07425
+        },
+        "dispatch_to_first_content": {
+          "n": 8,
+          "p50": 502.025,
+          "p95": 2193.213,
+          "p99": 2193.213,
+          "mean": 1325.890625
+        },
+        "queue": {
+          "n": 0
+        },
+        "provider_prepare": {
+          "n": 8,
+          "p50": 0.812,
+          "p95": 3.647,
+          "p99": 3.647,
+          "mean": 1.901375
+        }
+      },
+      "gates": {
+        "free_memory": 262,
+        "private_text": 125,
+        "no_headroom": 97,
+        "excluded": 78,
+        "untrusted": 77,
+        "trust_floor": 2
+      }
+    },
+    {
+      "id": "gemma-4-26b-8bit",
+      "export_count": 0,
+      "truncated": false,
+      "sampled_attempts": 0,
+      "sampled_logical_requests": 0,
+      "sampled_winners": 0,
+      "attempt_status": {},
+      "idle_alternative": 0,
+      "faster_estimated_idle": 0,
+      "selected_cost_above_best": 0,
+      "selected_extra_cost_ms": {
+        "n": 0
+      },
+      "selection_paths": {},
+      "timings_ms": {
+        "client_first_content": {
+          "n": 0
+        },
+        "predicted_ttft": {
+          "n": 0
+        },
+        "prompt_tokens": {
+          "n": 0
+        },
+        "route_lock": {
+          "n": 0
+        },
+        "route_scan": {
+          "n": 0
+        },
+        "before_attempt": {
+          "n": 0
+        },
+        "routing": {
+          "n": 0
+        },
+        "socket_write": {
+          "n": 0
+        },
+        "dispatch_to_first_content": {
+          "n": 0
+        },
+        "queue": {
+          "n": 0
+        },
+        "provider_prepare": {
+          "n": 0
+        }
+      },
+      "gates": {}
+    }
+  ]
+}

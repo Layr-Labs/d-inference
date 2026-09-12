@@ -60,19 +60,23 @@ ts() { date '+%Y-%m-%dT%H:%M:%S'; }
 # Debug level is needed for the per-file store/write markers; the failure and
 # eviction markers are info/warning. --style compact keeps lines greppable.
 echo "$(ts) monitor: starting log stream (subsystem=$SUBSYSTEM) -> $RAW_LOG" | tee -a "$EVENTS_LOG"
-: > "$RAW_LOG"
+: > "$RAW_LOG" || exit 1
+exec 3< "$RAW_LOG" || exit 1
 log stream \
   --predicate "subsystem == \"$SUBSYSTEM\"" \
   --level debug \
-  --style compact >> "$RAW_LOG" 2>&1 &
+  --style compact >> "$RAW_LOG" 2>&1 3<&- &
 LOG_PID=$!
 
 cleanup() {
   echo "$(ts) monitor: stopping (log stream pid=$LOG_PID)" | tee -a "$EVENTS_LOG"
   kill "$LOG_PID" 2>/dev/null
   wait "$LOG_PID" 2>/dev/null
+  exec 3<&-
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ---- marker patterns (extended regex) -----------------------------------------
 # Each maps to a CSV column counting NEW occurrences in the window. Keep these
@@ -100,8 +104,9 @@ if [ ! -s "$OUT_CSV" ]; then
   echo "ts,elapsed_s,disk_kb,file_count,rss_kb,cpu_speed_limit,active,store,sweep,evict,ram_evict,decrypt_fail,mb1_drop,hash_mismatch,disabled,ephemeral,hit_rate" > "$OUT_CSV"
 fi
 
-# byte offset into RAW_LOG already consumed
-RAW_OFFSET=0
+# File descriptor 3 owns the read position. Keep an unfinished log line until
+# its newline arrives, so a marker split across writes belongs to one window.
+RAW_PARTIAL=""
 # latest cumulative hit rate seen in a "prefix cache stats: ... hitRate=NN.N%"
 # line (logged every DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS, default 120s).
 # Persisted across ticks since the stats line is sparser than the sample tick.
@@ -156,15 +161,13 @@ while true; do
   CPU_SPEED_LIMIT=$(pmset -g therm 2>/dev/null | awk -F'= ' '/CPU_Speed_Limit/{print $2; exit}')
   [ -z "$CPU_SPEED_LIMIT" ] && CPU_SPEED_LIMIT=NA
 
-  # --- new log bytes since last tick ---
-  RAW_SIZE=$(wc -c < "$RAW_LOG" 2>/dev/null | tr -d ' ')
-  [ -z "$RAW_SIZE" ] && RAW_SIZE=0
-  if [ "$RAW_SIZE" -gt "$RAW_OFFSET" ]; then
-    WINDOW=$(tail -c +$(( RAW_OFFSET + 1 )) "$RAW_LOG" 2>/dev/null)
-    RAW_OFFSET=$RAW_SIZE
-  else
-    WINDOW=""
-  fi
+  # --- complete new log lines since last tick ---
+  WINDOW=""
+  while IFS= read -r LINE <&3; do
+    WINDOW="${WINDOW}${RAW_PARTIAL}${LINE}"$'\n'
+    RAW_PARTIAL=""
+  done
+  RAW_PARTIAL="${RAW_PARTIAL}${LINE}"
 
   C_ACTIVE=$(count_new_markers "$RE_ACTIVE")
   C_STORE=$(count_new_markers "$RE_STORE")

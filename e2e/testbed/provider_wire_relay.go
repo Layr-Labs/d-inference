@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -30,9 +31,9 @@ type ProviderWireEvent struct {
 }
 
 // ProviderWireRelay is a bounded, transparent test-only loopback hop. One pump
-// per direction preserves WS frame order; other HTTP requests reach the real
-// coordinator without recording. Neither authentication nor payload encryption
-// is replaced, and no provider frame is synthesized.
+// per direction preserves WS frame order; provider catalog and manifest reads
+// reach the real coordinator without recording. Neither authentication nor
+// payload encryption is replaced, and no provider frame is synthesized.
 type ProviderWireRelay struct {
 	mu          sync.Mutex
 	events      []ProviderWireEvent
@@ -56,6 +57,16 @@ func (r *ProviderWireRelay) Start(coordinatorURL string) string {
 	upstream := "ws" + strings.TrimPrefix(coordinatorURL, "http") + "/ws/provider"
 	r.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path != "/ws/provider" {
+			const manifestPrefix = "/v1/models/catalog/manifest/"
+			requestPath := req.URL.Path
+			catalog := requestPath == "/v1/models/catalog"
+			manifest := strings.HasPrefix(requestPath, manifestPrefix) && len(requestPath) > len(manifestPrefix)
+			// Owned-host tunnels expose this listener to the provider host;
+			// only the provider's read-only catalog client may cross it.
+			if req.Method != http.MethodGet || (!catalog && !manifest) || path.Clean(requestPath) != requestPath {
+				http.NotFound(w, req)
+				return
+			}
 			proxy.ServeHTTP(w, req)
 			return
 		}

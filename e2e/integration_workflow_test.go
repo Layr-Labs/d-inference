@@ -59,3 +59,33 @@ func TestIntegrationWorkflowBackendLaneIsolation(t *testing.T) {
 	require.Equal(t, 1, defaults)
 	require.Equal(t, 1, exact)
 }
+
+func TestIntegrationWorkflowIncludesTestbedCPUChecks(t *testing.T) {
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Run             string `yaml:"run"`
+				ContinueOnError bool   `yaml:"continue-on-error"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	raw, err := os.ReadFile("../.github/workflows/ci.yml")
+	require.NoError(t, err)
+	require.NoError(t, yaml.Unmarshal(raw, &workflow))
+	job, ok := workflow.Jobs["test-coordinator"]
+	require.True(t, ok)
+	var testbedChecks, policyChecks int
+	for _, step := range job.Steps {
+		if strings.Contains(step.Run, "go test -race ./e2e/testbed/...") {
+			testbedChecks++
+			require.False(t, step.ContinueOnError)
+			require.NotContains(t, step.Run, "-run", "the full testbed package must run, including relay regressions")
+		}
+		if strings.Contains(step.Run, "go test -race ./e2e/ -run '^Test(Qwen38|IntegrationWorkflow)'") {
+			policyChecks++
+			require.False(t, step.ContinueOnError)
+		}
+	}
+	require.Equal(t, 1, testbedChecks, "root ./e2e/ commands never execute the testbed package")
+	require.Equal(t, 1, policyChecks, "CPU CI must execute the Qwen and workflow policy checks")
+}

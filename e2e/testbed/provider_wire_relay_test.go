@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ func TestProviderWireRelayPreservesCoordinatorHTTP(t *testing.T) {
 	}{
 		{"/v1/models/catalog?model=gemma-4-26b-qat-4bit", http.StatusOK, `{"metadata":{"spec_dec":{"revision":"pinned-assistant"}}}`},
 		{"/v1/models/catalog", http.StatusServiceUnavailable, `{"error":"catalog unavailable"}`},
+		{"/v1/models/catalog/manifest/EigenLabs%2Fmodel", http.StatusOK, `{"files":[]}`},
 	} {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
 			seen := make(chan *http.Request, 1)
@@ -65,6 +67,39 @@ func TestProviderWireRelayPreservesCoordinatorHTTP(t *testing.T) {
 			require.Zero(t, dropped)
 		})
 	}
+}
+
+func TestProviderWireRelayRejectsOtherHTTPRoutes(t *testing.T) {
+	var requests atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+	relay := &ProviderWireRelay{}
+	url := relay.Start(backend.URL)
+	defer relay.Close()
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/v1/admin/models"},
+		{http.MethodPost, "/v1/admin/credits"},
+		{http.MethodGet, "/v1/models/catalogue"},
+		{http.MethodPost, "/v1/models/catalog"},
+		{http.MethodPost, "/v1/models/catalog/manifest/model"},
+		{http.MethodGet, "/v1/models/catalog/manifest/../../admin/models"},
+	} {
+		t.Run(tc.method+tc.path, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, tc.method, url+tc.path, nil)
+			require.NoError(t, err)
+			req.Header.Set("Authorization", "Bearer testbed-admin-key")
+			response, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			response.Body.Close()
+			require.Equal(t, http.StatusNotFound, response.StatusCode)
+		})
+	}
+	require.Zero(t, requests.Load(), "blocked requests must never reach the coordinator")
 }
 
 func TestProviderWireRelayCloseCancelsCoordinatorHTTP(t *testing.T) {

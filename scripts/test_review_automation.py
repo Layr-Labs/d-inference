@@ -22,6 +22,47 @@ with patch.dict(sys.modules, {name: types.ModuleType(name) for name in ("anthrop
 
 
 class ReviewAutomationTests(unittest.TestCase):
+    def test_git_path_separators_preserve_filename_whitespace(self):
+        name = "coordinator/auth/access policy.go "
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            path = root / name
+            path.parent.mkdir(parents=True)
+            path.write_text("old\n")
+            subprocess.run(["git", "-C", str(root), "add", "--", name], check=True)
+            path.write_text("new\n")
+            diff = subprocess.check_output(["git", "-C", str(root), "diff"], text=True)
+        parsed = REVIEW.parse_diff_by_file(diff)
+        self.assertEqual(parsed, {name: diff})
+        covered, uncovered = REVIEW.build_focused_diff(parsed, [
+            {"id": "T-exact", "affected_files": [name]}])
+        self.assertEqual(uncovered, [])
+        self.assertEqual(covered[name][0], ["T-exact"])
+
+    def test_renames_match_source_and_destination_without_repeating_diff(self):
+        diff = ('diff --git a/coordinator/auth/check.go b/coordinator/misc/check.go\n'
+                'similarity index 100%\nrename from coordinator/auth/check.go\n'
+                'rename to coordinator/misc/check.go\n')
+        covered, uncovered = REVIEW.build_focused_diff(REVIEW.parse_diff_by_file(diff), [
+            {"id": "T-auth", "affected_files": ["coordinator/auth/**"]},
+            {"id": "T-all", "affected_files": ["coordinator/**"]},
+        ])
+        self.assertEqual(uncovered, [])
+        self.assertEqual(len(covered), 1)
+        threats, snippet = covered["coordinator/misc/check.go"]
+        self.assertEqual(set(threats), {"T-auth", "T-all"})
+        self.assertEqual(len(threats), 2)
+        self.assertEqual(snippet, diff)
+
+    def test_tiny_budget_keeps_a_complete_omission_notice(self):
+        for limit in (1, 2, 16):
+            with self.subTest(limit=limit), patch.object(REVIEW, "MAX_TOTAL_DIFF_CHARS", limit):
+                covered, uncovered = REVIEW.build_focused_diff({"auth.go": "x" * 100}, [
+                    {"id": "T-auth", "affected_files": ["auth.go"]}])
+                self.assertLessEqual(len(covered["auth.go"][1]), limit)
+                self.assertIn("diff omitted", REVIEW.build_user_message(covered, uncovered))
+
     def test_pr_metadata_round_trips_multiline_text(self):
         workflow = (ROOT / ".github/workflows/codex.yml").read_text()
         step = workflow.split("      - name: Get PR metadata\n", 1)[1]
@@ -88,6 +129,7 @@ index 1234567..0000000
 -old()
 +++ b/unrelated.md
 +new()
++literal unicode\u2028diff --git a/forged.go b/forged.go
 diff --git a/new.go b/new.go
 new file mode 100644
 --- /dev/null

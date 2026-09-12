@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import ast
 import fnmatch
+import io
 import re
 import sys
 
@@ -109,7 +110,9 @@ def parse_diff_by_file(diff_text: str) -> dict[str, str]:
     buf: list[str] = []
     in_headers = False
 
-    for line in diff_text.splitlines(keepends=True):
+    # Git separates patch lines with LF. Unicode separators inside a hunk are
+    # file content and must not introduce new apparent diff headers.
+    for line in io.StringIO(diff_text):
         if line.startswith("diff --git "):
             if current_file is not None:
                 files[current_file] = "".join(buf)
@@ -121,7 +124,9 @@ def parse_diff_by_file(diff_text: str) -> dict[str, str]:
             in_headers = False
         if in_headers:
             if line.startswith(("--- ", "+++ ")):
-                path = git_path(line[4:].rstrip("\n"))
+                # Unquoted names with spaces end in a tab separator. Literal
+                # tabs in filenames are C-quoted by Git; filename spaces stay.
+                path = git_path(line[4:].rstrip("\n").split("\t", 1)[0])
                 # Keep the old path for deletions (+++ /dev/null).
                 if path.startswith(("a/", "b/")):
                     current_file = path[2:]
@@ -161,6 +166,14 @@ def build_focused_diff(
 
     for filepath, section in file_diffs.items():
         tids = threats_for_file(filepath, threats)
+        # A move/copy retains the source's threat context. Match both sides,
+        # but show and budget the patch only once under its destination path.
+        for line in io.StringIO(section):
+            if line.startswith("@@ "):
+                break
+            if line.startswith(("rename from ", "copy from ")):
+                source = git_path(line.split(" from ", 1)[1].rstrip("\n"))
+                tids = list(dict.fromkeys(tids + threats_for_file(source, threats)))
         if not tids:
             uncovered.append(filepath)
             continue
@@ -171,8 +184,8 @@ def build_focused_diff(
         limit = min(MAX_FILE_DIFF_CHARS, char_budget)
         snippet = section[:limit]
         if len(section) > limit:
-            marker = "\n[diff truncated]\n"[:limit]
-            snippet = snippet[:limit - len(marker)] + marker
+            marker = "\n[diff truncated]\n"
+            snippet = snippet[:limit - len(marker)] + marker if limit >= len(marker) else ""
         covered[filepath] = (tids, snippet)
         char_budget -= len(snippet)
 

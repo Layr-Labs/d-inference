@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-12 · commit `3914674ba`
+> Last updated: 2026-09-13 · commit `3399dd7d2`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1019,7 +1019,7 @@ no provider build or model weights:
 
 ```bash
 go test -race ./e2e/testbed/... -count=1
-go test -race ./e2e/ -run '^Test(Qwen38|IntegrationWorkflow)' -count=1
+go test -race ./e2e/ -run '^Test(Qwen38|IntegrationWorkflow|ExactCacheRoutingFixture|ReleaseDefault|ReleaseCapability)' -count=1
 ```
 
 ```bash
@@ -1310,7 +1310,20 @@ selection. Gemma QAT requires active automatic MTP with its catalog-declared
 assistant available; a cache-disabled historical input now fails validation. The report retains the actual
 generated provider configuration. This smoke does not establish raw token-ID
 parity, concurrent widths, cancellation, restart, or selection between providers;
-run the corresponding native and connected gates separately. CPU helper checks:
+run the corresponding native and connected gates separately.
+
+Before the first request, `e2e/release_defaults_readiness_test.go`
+(`waitForReleaseDefaultReadiness`) waits for fresh daemon evidence of active MTP
+when the artifact requires it. The existing `capacity_probe` control exchange
+then checks current admission, and the coordinator must consume idle capacity
+at least as new as the successful quote. These checks perform no inference and
+leave the cold prefix untouched. The wait permits up to ten minutes for normal
+assistant download, preparation, rollout jitter and swap, capped at one minute
+before the test deadline for cleanup. A timeout retains the last readiness failure.
+This is a readiness prerequisite, not a measurement of download availability or
+fleet rollout behavior.
+
+CPU helper checks:
 
 ```bash
 go test -short ./e2e ./e2e/testbed \

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-12 · commit `3914674ba`
+> Last updated: 2026-09-13 · commit `3399dd7d2`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -420,7 +420,11 @@ a provider build or model weights. They check catalog/manifest forwarding,
 rejection of other HTTP routes, upstream errors, shutdown cancellation and bounded
 WS recording before the real-model gates.
 The `test-coordinator` job in `.github/workflows/ci.yml` runs all testbed unit
-packages and the Qwen/workflow fixture-policy checks as blocking CPU steps.
+packages and the Qwen, workflow, exact-cache and release-policy checks as
+blocking CPU steps.
+Rebuild the Go test binary after changing the release-default readiness helper
+or its capacity-quote relay observations; see the
+[release-default procedure](test.md#connected-coordinatorprovider-http-cache-gate).
 
 ## `make` targets
 

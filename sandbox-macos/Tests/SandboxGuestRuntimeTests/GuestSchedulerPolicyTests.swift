@@ -5,6 +5,36 @@ import SandboxRuntime
 import XCTest
 
 final class GuestSchedulerPolicyTests: XCTestCase {
+    func testDaemonOwnedSystemSpoolCanBeInspectedWithoutChangingIt() throws {
+        let path = URL(fileURLWithPath: "/private/var/at")
+        var before = stat(), after = stat()
+        XCTAssertEqual(lstat(path.path, &before), 0)
+        let descriptor = try GuestSchedulerFiles.openInitialDirectory(at: path, ownerUID: 0, initialOwnerUID: 1)
+        defer { close(descriptor) }
+        XCTAssertEqual(lstat(path.path, &after), 0)
+        let opened = try SandboxAuthorityFileSystem.fileMetadata(descriptor)
+        XCTAssertTrue(SandboxAuthorityFileSystem.sameIdentity(before, opened))
+        XCTAssertEqual(before.st_uid, after.st_uid)
+        XCTAssertEqual(before.st_mode, after.st_mode)
+    }
+
+    func testInitialOwnerExceptionIsLeafScopedAndCannotFollowSymlinks() throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("target")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false,
+                                               attributes: [.posixPermissions: 0o750])
+        let alias = root.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: target)
+        XCTAssertThrowsError(try GuestSchedulerFiles.provision(in: alias, ownerUID: geteuid(), initialOwnerUID: geteuid()))
+        var metadata = stat()
+        XCTAssertEqual(lstat(target.path, &metadata), 0)
+        XCTAssertEqual(metadata.st_mode & 0o777, 0o750)
+        if geteuid() != 0 && geteuid() != 1 {
+            XCTAssertThrowsError(try GuestSchedulerFiles.openInitialDirectory(at: target, ownerUID: 0, initialOwnerUID: 1))
+        }
+    }
+
     func testMissingEnabledAmbiguousAndLookalikeServiceOverridesAreRejected() {
         let valid = "\t\"com.vix.cron\" => disabled\n\t\"com.apple.atrun\" => disabled\n"
         XCTAssertTrue(GuestSchedulerPolicy.explicitlyDisabled(valid))

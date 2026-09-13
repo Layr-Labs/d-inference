@@ -84,11 +84,11 @@ public struct GuestTenantExecutor: GuestCommandExecuting {
         // cannot redirect a reused PID to a host/guest-root process.
         for _ in 0..<5 {
             do {
-                try await GuestTenantDomains.remove()
+                let domains = try await GuestTenantDomains.remove()
                 _ = try await SandboxProcessRunner().run(executable: executable,
                     arguments: ["tenant-cleanup"], timeoutSeconds: 3, maximumOutputBytes: 1024)
                 if try activeTenantProcesses() == 0 {
-                    try await GuestTenantDomains.verifyAbsent()
+                    try await GuestTenantDomains.verifyQuiescent(after: domains)
                     return true
                 }
             } catch { return false }

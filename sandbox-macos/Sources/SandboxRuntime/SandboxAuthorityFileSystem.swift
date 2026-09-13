@@ -402,7 +402,7 @@ package enum SandboxAuthorityFileSystem {
         }
         let original = url.path
         let standardized = url.standardizedFileURL.path
-        let standardizedAlias = ["/tmp", "/var"].contains(where: {
+        let standardizedAlias = ["/tmp", "/var", "/etc"].contains(where: {
             standardized == $0 || standardized.hasPrefix($0 + "/")
         })
         guard standardized == original
@@ -422,7 +422,7 @@ package enum SandboxAuthorityFileSystem {
         return nil
     }
 
-    /// Foundation shortens these two OS-owned aliases even when the caller
+    /// Foundation shortens these OS-owned aliases even when the caller
     /// supplied their physical spelling. Parent traversal below still resolves
     /// only those aliases and opens every remaining component with O_NOFOLLOW.
     private static func hasCanonicalCreationSpelling(_ url: URL) -> Bool {
@@ -431,7 +431,7 @@ package enum SandboxAuthorityFileSystem {
         let original = url.path
         let normalized = url.standardizedFileURL.path
         if original == normalized { return true }
-        return original == "/private" + normalized && ["/tmp", "/var"].contains {
+        return original == "/private" + normalized && ["/tmp", "/var", "/etc"].contains {
             normalized == $0 || normalized.hasPrefix($0 + "/")
         }
     }

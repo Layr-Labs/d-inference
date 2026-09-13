@@ -11,9 +11,11 @@ public enum GuestBootstrapInstallation {
     /// macOS synthesizes this empty root mountpoint at the next boot. No
     /// writable-root assumption or privileged mount is needed during install.
     public static func provisionWorkspaceMountpoint() throws {
-        try GuestConfiguration.requireVirtualizedRoot()
-        _ = try GuestConfiguration.signedExecutable()
-        try GuestSyntheticMountpoint.provision(in: URL(fileURLWithPath: "/private/etc"), ownerUID: 0)
+        try GuestBootstrapDiagnostic.run(.virtualizedRoot) { try GuestConfiguration.requireVirtualizedRoot() }
+        _ = try GuestBootstrapDiagnostic.run(.guestIdentity) { try GuestConfiguration.signedExecutable() }
+        try GuestBootstrapDiagnostic.run(.workspaceMountpoint) {
+            try GuestSyntheticMountpoint.provision(in: URL(fileURLWithPath: "/private/etc"), ownerUID: 0)
+        }
     }
 }
 

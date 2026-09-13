@@ -1,8 +1,22 @@
+import Darwin
 import Foundation
 import SandboxRuntime
 import XCTest
 
 final class SandboxAuthorityFileSystemTests: XCTestCase {
+    func testEtcAliasOpensSameReadOnlyDirectoryAsPhysicalSpelling() throws {
+        let alias = try SandboxAuthorityFileSystem.openExistingDirectory(at: URL(fileURLWithPath: "/etc"))
+        defer { close(alias) }
+        let physical = try SandboxAuthorityFileSystem.openExistingDirectory(at: URL(fileURLWithPath: "/private/etc"))
+        defer { close(physical) }
+        let first = try SandboxAuthorityFileSystem.fileMetadata(alias)
+        let second = try SandboxAuthorityFileSystem.fileMetadata(physical)
+        XCTAssertEqual(first.st_uid, 0)
+        XCTAssertTrue(SandboxAuthorityFileSystem.sameIdentity(first, second))
+        XCTAssertEqual(SandboxAuthorityFileSystem.canonicalPath(for: URL(fileURLWithPath: "/private/etc")), "/private/etc")
+        XCTAssertEqual(SandboxAuthorityFileSystem.canonicalPath(for: URL(fileURLWithPath: "/etc")), "/private/etc")
+    }
+
     func testCanonicalPathAcceptsTemporaryAliasAndPrivateCanonicalPath() throws {
         let name = "darkbloom-authority-\(UUID().uuidString)"
         let aliasPath = "/tmp/\(name)"

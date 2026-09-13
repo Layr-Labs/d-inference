@@ -24,7 +24,7 @@ public struct GuestConfiguration: Codable, Sendable {
         guard geteuid() == 0, getuid() == 0 else { throw GuestProtocolError.invalidConfiguration }
         let executable = try signedExecutable()
         _ = executable
-        let canonical = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        let canonical = try canonicalRootAuthorityPath(path)
         let parent = URL(fileURLWithPath: canonical).deletingLastPathComponent().path
         try requireRootAuthority(parent, directory: true)
         let descriptor = open(canonical, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
@@ -56,7 +56,7 @@ public struct GuestConfiguration: Codable, Sendable {
     }
 
     public static func signedExecutable() throws -> URL {
-        let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        let executable = URL(fileURLWithPath: try canonicalRootAuthorityPath(CommandLine.arguments[0]))
         try requireRootAuthority(executable.path, directory: false)
         var code: SecStaticCode?
         var requirement: SecRequirement?
@@ -67,6 +67,15 @@ public struct GuestConfiguration: Codable, Sendable {
               SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSStrictValidate), requirement) == errSecSuccess
         else { throw GuestProtocolError.invalidConfiguration }
         return executable
+    }
+
+    /// Foundation renders resolved /private/var paths as /var again. Use the
+    /// authority layer's physical POSIX spelling before nofollow validation.
+    static func canonicalRootAuthorityPath(_ path: String) throws -> String {
+        guard let canonical = SandboxAuthorityFileSystem.canonicalPath(for: URL(fileURLWithPath: path)) else {
+            throw GuestProtocolError.invalidConfiguration
+        }
+        return canonical
     }
 
     private static func requireRootAuthority(_ path: String, directory: Bool) throws {

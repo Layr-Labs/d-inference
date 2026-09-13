@@ -6,25 +6,35 @@ import SandboxRuntime
 /// fixed tenant domains are addressed; cleanup never targets system or root.
 enum GuestTenantDomains {
     static let domains = ["gui/2001", "user/2001"]
+    struct Removal: Sendable { let userDomainBootedOut: Bool }
 
-    static func remove() async throws {
+    static func remove() async throws -> Removal {
+        var userDomainBootedOut = false
         for domain in domains {
             let status = try await command(["print", domain])
             if absent(status, domain: domain) { continue }
             guard status.exitCode == 0 else { throw GuestProtocolError.cleanupUncertain }
             let removed = try await command(["bootout", domain])
+            if domain == "user/2001", removed.exitCode == 0 { userDomainBootedOut = true }
             if removed.exitCode != 0 {
                 guard absent(try await command(["print", domain]), domain: domain)
                 else { throw GuestProtocolError.cleanupUncertain }
             }
         }
+        return Removal(userDomainBootedOut: userDomainBootedOut)
     }
 
-    static func verifyAbsent() async throws {
+    static func verifyQuiescent(after removal: Removal) async throws {
         for domain in domains {
-            guard absent(try await command(["print", domain]), domain: domain)
+            let result = try await command(["print", domain])
+            guard quiescent(result, domain: domain, after: removal)
             else { throw GuestProtocolError.cleanupUncertain }
         }
+    }
+
+    static func quiescent(_ result: SandboxProcessResult, domain: String, after removal: Removal) -> Bool {
+        if absent(result, domain: domain) { return true }
+        return domain == "user/2001" && removal.userDomainBootedOut && GuestEmptyUserDomain.matches(result)
     }
 
     static func absent(_ result: SandboxProcessResult, domain: String) -> Bool {

@@ -61,10 +61,18 @@ and provisions root-owned `cron.allow` and `at.allow` containing only `root`.
 The guest verifies both allowlists, the explicit launchd disabled overrides,
 and absent scheduler services before admitting commands. Tenant cleanup removes
 only `gui/2001` (the login-domain alias) and `user/2001`, then kills tenant UID
-processes and rechecks domain absence. Unknown launchctl diagnostics fail closed;
+processes and verifies quiescence. The GUI domain must be absent. macOS lazily
+recreates an empty user domain when queried: only after successful user-domain
+bootout and zero tenant processes, a strictly parsed `user/2001` domain with
+empty services, unmanaged-process and endpoint blocks is also accepted. Unknown,
+truncated, malformed or nonempty launchctl output fails closed;
 this output format and a submitted-job respawn probe require qualification on
 each supported guest OS. No physical-host scheduler configuration is changed.
 There is no Python, package manager, or Xcode dependency inside the guest.
+Native installation helpers report fixed `guest_bootstrap.<stage>.<reason>`
+diagnostics, with a numeric errno for filesystem failures. They never print
+configuration contents. `/etc`, `/var` and `/tmp` use only their known physical
+`/private` aliases, followed by descriptor traversal that rejects other symlinks.
 
 Bootstrap uses native macOS tools. It requires exactly one read-only APFS volume
 named `DBCONTROL` and one separate writable APFS volume named `DBWORK`.

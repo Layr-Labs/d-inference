@@ -8,7 +8,7 @@ enum GuestSchedulerFiles {
     private static let contents = Data("root\n".utf8)
 
     static func provision(in directory: URL, ownerUID: uid_t, initialOwnerUID: uid_t) throws {
-        let root = try SandboxAuthorityFileSystem.openExistingDirectory(at: directory)
+        let root = try openInitialDirectory(at: directory, ownerUID: ownerUID, initialOwnerUID: initialOwnerUID)
         defer { close(root) }
         let metadata = try SandboxAuthorityFileSystem.fileMetadata(root)
         guard metadata.st_mode & S_IFMT == S_IFDIR,
@@ -32,6 +32,37 @@ enum GuestSchedulerFiles {
         }
         try SandboxAuthorityFileSystem.synchronize(root)
         try validate(in: directory, ownerUID: ownerUID)
+    }
+
+    /// The generic opener correctly rejects daemon-owned authority. During the
+    /// one-time bootstrap handoff only this leaf may still belong to daemon;
+    /// its parent and every ancestor retain the ordinary authority policy.
+    static func openInitialDirectory(at directory: URL, ownerUID: uid_t, initialOwnerUID: uid_t) throws -> Int32 {
+        guard let path = SandboxAuthorityFileSystem.canonicalPath(for: directory) else {
+            throw GuestProtocolError.invalidConfiguration
+        }
+        let canonical = URL(fileURLWithPath: path)
+        let parent = try SandboxAuthorityFileSystem.openExistingDirectory(at: canonical.deletingLastPathComponent())
+        defer { close(parent) }
+        let root = openat(parent, canonical.lastPathComponent, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard root >= 0 else { throw SandboxAuthorityFileSystemError.io(errno) }
+        do {
+            let metadata = try SandboxAuthorityFileSystem.fileMetadata(root)
+            let parentMetadata = try SandboxAuthorityFileSystem.fileMetadata(parent)
+            guard metadata.st_mode & S_IFMT == S_IFDIR, metadata.st_dev == parentMetadata.st_dev,
+                  metadata.st_uid == ownerUID || metadata.st_uid == initialOwnerUID,
+                  metadata.st_mode & 0o022 == 0 else { throw GuestProtocolError.invalidConfiguration }
+            try SandboxAuthorityFileSystem.requireNoExtendedACL(root)
+            var named = stat()
+            guard fstatat(parent, canonical.lastPathComponent, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  SandboxAuthorityFileSystem.sameIdentity(named, metadata) else {
+                throw GuestProtocolError.invalidConfiguration
+            }
+            return root
+        } catch {
+            close(root)
+            throw error
+        }
     }
 
     static func validate(in directory: URL, ownerUID: uid_t) throws {

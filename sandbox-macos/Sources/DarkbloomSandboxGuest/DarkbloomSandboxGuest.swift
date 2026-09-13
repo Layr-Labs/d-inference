@@ -4,8 +4,8 @@ import SandboxGuestRuntime
 @main
 enum DarkbloomSandboxGuest {
     static func main() async {
+        let arguments = Array(CommandLine.arguments.dropFirst())
         do {
-            let arguments = Array(CommandLine.arguments.dropFirst())
             if arguments == ["disable-persistent-schedulers"] {
                 try await GuestBootstrapInstallation.disablePersistentSchedulers()
                 return
@@ -28,7 +28,9 @@ enum DarkbloomSandboxGuest {
             let configuration = try GuestConfiguration.loadProduction(from: arguments[2])
             try await GuestSocketServer.serve(configuration: configuration)
         } catch {
-            FileHandle.standardError.write(Data("darkbloom-sandbox-guest: startup or control channel unavailable\n".utf8))
+            let bootstrap = arguments == ["provision-workspace-mountpoint"] || arguments == ["disable-persistent-schedulers"]
+            let message = bootstrap ? (error as? GuestBootstrapDiagnostic)?.code : nil
+            FileHandle.standardError.write(Data("darkbloom-sandbox-guest: \(message ?? "startup or control channel unavailable")\n".utf8))
             exit(78)
         }
     }

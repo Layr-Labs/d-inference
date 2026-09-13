@@ -10,18 +10,24 @@ enum GuestSchedulerPolicy {
     static let directory = URL(fileURLWithPath: "/private/var/at")
 
     static func provision() async throws {
-        try GuestConfiguration.requireVirtualizedRoot()
-        _ = try GuestConfiguration.signedExecutable()
-        try requireSystemAlias()
-        try GuestSchedulerFiles.provision(in: directory, ownerUID: 0, initialOwnerUID: 1)
+        try GuestBootstrapDiagnostic.run(.virtualizedRoot) { try GuestConfiguration.requireVirtualizedRoot() }
+        _ = try GuestBootstrapDiagnostic.run(.guestIdentity) { try GuestConfiguration.signedExecutable() }
+        try GuestBootstrapDiagnostic.run(.schedulerAlias) { try requireSystemAlias() }
+        try GuestBootstrapDiagnostic.run(.schedulerSpool) {
+            try GuestSchedulerFiles.provision(in: directory, ownerUID: 0, initialOwnerUID: 1)
+        }
         for label in labels {
-            let disabled = try await launchctl(["disable", "system/" + label])
-            guard disabled.exitCode == 0 else { throw GuestProtocolError.invalidConfiguration }
+            try await GuestBootstrapDiagnostic.runAsync(label == "com.vix.cron" ? .disableCron : .disableAt) {
+                let disabled = try await launchctl(["disable", "system/" + label])
+                guard disabled.exitCode == 0 else { throw GuestProtocolError.invalidConfiguration }
+            }
             // An absent service is already stopped. Verify absence separately,
             // never infer it from bootout's version-dependent failure code.
-            _ = try await launchctl(["bootout", "system/" + label])
+            _ = try await GuestBootstrapDiagnostic.runAsync(label == "com.vix.cron" ? .unloadCron : .unloadAt) {
+                try await launchctl(["bootout", "system/" + label])
+            }
         }
-        try await validate()
+        try await GuestBootstrapDiagnostic.runAsync(.schedulerValidation) { try await validate() }
     }
 
     static func validate() async throws {

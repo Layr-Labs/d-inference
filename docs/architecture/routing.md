@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-08 · commit `0c162cdae`
+> Last updated: 2026-09-13 · commit `d66a38b77`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -83,7 +83,7 @@ flowchart TD
     C -->|ttft_ceiling| X5[tallyGate]
     C --> D[applyCacheRoutingCost]
     D --> P[pool narrowing: prefer owner, avoid version, min decode TPS]
-    P --> SEL[selectRoutingCandidate: unique_min / tie_queue / tie_pending / random]
+    P --> SEL[selectRoutingCandidateWithAffinity: unique_min / tie_queue / tie_pending / random / prefix_affinity]
     SEL --> PLAN[dispatch plan: winner + alternates]
     PLAN --> DISP[dispatch to winner]
     DISP -->|no first content by speculativeAt| H[runSpeculative: hedge governor + backup]
@@ -292,7 +292,7 @@ leaves at least one candidate (`scanCandidatesLocked`):
    `0` disables it.
 
 `preferRoutingCandidates` compacts the request-local pool in place.
-`selectRoutingCandidate` ranks it without allocating intermediate lists
+`selectRoutingCandidateWithAffinity` ranks it without allocating intermediate candidate lists
 (`coordinator/registry/candidate_selection.go`):
 
 1. **Best cost.** The minimum `costMs`.
@@ -302,13 +302,17 @@ leaves at least one candidate (`scanCandidatesLocked`):
    spreading. Among the retained candidates choose the lowest `effectiveQueue`,
    then the lowest `totalPending`.
 3. **Equivalents.** More than one candidate sharing the retained cost range,
-   queue and pending count resolves uniformly by `random`.
+   queue and pending count normally resolves uniformly by `random`. With active
+   cache routing, observed repeat demand and no cache cost adjustment in the
+   pool, a stable keyed ranking prefers a matching, non-quarantined cache
+   capability (`prefix_affinity`). See [cache affinity](cache-aware-routing.md#observed-demand-and-soft-prefix-affinity).
 4. **Path label**: `unique_min` when only one candidate is retained;
    `tie_pending` when pending count decides between equal queue depths;
-   otherwise `tie_queue`. Exact equivalent choices use `random`.
+   otherwise `tie_queue`. Equivalent choices use `random` or `prefix_affinity`
+   under the conditions above; an empty pool uses `none`.
 
 `SelectionPath` values (`coordinator/registry/gate_reason.go`): `none`,
-`unique_min`, `tie_queue`, `tie_pending`, `random`. Historical profiler rows may
+`unique_min`, `tie_queue`, `tie_pending`, `random`, `prefix_affinity`. Historical profiler rows may
 still contain the retired `cache_tiebreak` string. The
 runner-up (the lowest-cost candidate other than the winner) is recorded for telemetry
 and as the first alternate in the dispatch plan.

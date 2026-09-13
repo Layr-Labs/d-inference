@@ -78,6 +78,22 @@ func TestCheckpointSSDStageCostCompetesWithColdCapacityAndLoad(t *testing.T) {
 				t.Fatalf("restore/load/capacity ranking selected %v, want %s: %+v", selected, tc.want, decision)
 			}
 			t.Cleanup(func() { selected.RemovePending(request.RequestID); r.SetProviderIdle(selected.ID) })
+			if !request.CacheOpportunity.Evaluated || request.CacheOpportunity.MatchingHolders != 1 || request.CacheOpportunity.ValidHolders != 1 {
+				t.Fatalf("reservation lost opportunity evidence: %+v", request.CacheOpportunity)
+			}
+			wantReason := "selected"
+			switch {
+			case tc.full || tc.maxTTFT > 0:
+				wantReason = "holder_unavailable"
+			case tc.onlyHolder || tc.name == "expensive_stage_loses":
+				wantReason = "holder_no_positive_credit"
+			case tc.want == "cold":
+				wantReason = "holder_not_selected"
+			}
+			if got := request.CacheOpportunityReason(); got != wantReason {
+				t.Fatalf("opportunity reason=%s want=%s: %+v", got, wantReason, request.CacheOpportunity)
+			}
+
 			sum := decision.StateMs + decision.QueueMs + decision.PendingMs + decision.BacklogMs + decision.ThisReqMs + decision.HealthMs + decision.CapacityRateMs - decision.CacheDiscountMs
 			if math.Abs(sum-decision.CostMs) > 1e-8 {
 				t.Fatalf("decision cost breakdown lost net stage cost: %+v", decision)

@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-08 · commit `eba352122`
+> Last updated: 2026-09-13 · commit `1f52a71fb`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -120,6 +120,19 @@ The coordinator's Secure Boot signal is MDM `SecurityInfo.SecureBootLevel`
 | Failure accounting | `RecordChallengeFailure(providerID, transient)`; `transient` = reason `timeout` / `no response`. A hard failure clears `LastChallengeVerified` and `ChallengeVerifiedSIP` at once (unroutable immediately); at `MaxFailedChallenges` = 3 consecutive failures the provider is `MarkUntrusted` (hard) or `MarkUntrustedTransient` (transient); at `MaxConsecutiveChallengeTimeoutsBeforeReconnect` = 6 transient timeouts the WebSocket is closed with `StatusPolicyViolation` to force a clean re-registration | `coordinator/api/provider.go` (`handleChallengeFailure`, `handleTransientChallengeFailure`); `coordinator/registry/attestation_policy.go` (`RecordChallengeFailure`); `coordinator/registry/provider.go` (`MaxFailedChallenges`) |
 | Freshness for routing | `now − LastChallengeVerified ≤ challengeFreshnessMaxAge` ([routing](../routing.md#challenge-freshness)), else the scheduler skips the provider (`GateChallengeStale`) | `coordinator/registry/scheduler.go` (`challengeFreshnessMaxAge`); `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`) |
 | Stop | `ChallengeShouldStop` when hard-untrusted or gone | `coordinator/registry/provider_evidence.go` (`ChallengeShouldStop`) |
+
+`provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift`
+(`StatusCanonical.build`) encodes a typed payload with `JSONEncoder.sortedKeys`,
+including keys inside `model_hashes` and `template_hashes`. The resulting UTF-8
+key order matches `BuildStatusCanonical`; Unicode U+2028 and U+2029 are escaped
+as `\u2028` and `\u2029` to match Go's JSON encoder. Literal backslash escape
+text remains distinct. Nil optional fields, empty hash strings and empty maps
+are omitted; explicit `false` values remain signed. Matching Swift and Go
+golden vectors cover these byte rules; signature verification still rejects
+changed fields (`provider-swift/Tests/ProviderCoreTests/StatusCanonicalTests.swift`,
+`statusCanonicalMatchesCoordinatorNestedMapVectors`;
+`coordinator/attestation/status_canonical_mixed_case_test.go`,
+`TestBuildStatusCanonicalNestedMapVectors`, `TestVerifyStatusSignatureBindsMixedCaseNestedMaps`).
 
 ### Runtime manifest
 

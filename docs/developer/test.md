@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-12 · commit `618641ddd`
+> Last updated: 2026-09-13 · commit `a3e59b161`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -958,8 +958,10 @@ make tooling-test     # also bootstraps the environment if needed
 
 The environment is reused until `scripts/benchmarks/attention_packet/requirements.txt`
 changes; ordinary test invocations do not run pip or access the package index.
-Set `TOOLING_VENV` to choose another isolated directory. To rebuild a damaged
-environment, remove that directory and run `make tooling-install` again.
+When requirements change, the environment is cleared and recreated so removed
+packages cannot remain importable. Set `TOOLING_VENV` to choose another dedicated
+environment directory. To rebuild a damaged environment, remove that directory
+and run `make tooling-install` again.
 `scripts/test_make_tooling.py`
 (`test_outer_make_override_does_not_change_stub_environment`) checks an actual
 outer make override while isolating the fixture's temporary Makefile defaults.
@@ -1053,9 +1055,11 @@ This prevents task scheduling from silently changing admission order. Sources: `
 
 Link existence and orphan detection share one Python parsing pass over all
 selected files. The parser handles reference definitions, percent-encoded spaces,
-and escaped brackets in link labels; unused definitions and image targets do not
-hide orphan pages. `scripts/test_docs_check.py` checks these cases and verifies
-that adding pages does not launch an interpreter per page.
+escaped brackets, and soft line breaks inside rendered link labels. Blank lines,
+headings, thematic breaks, list starts, quotes, fences, and HTML block starts keep
+those labels apart; inline HTML remains label text. Unused definitions and image
+targets do not hide orphan pages. `scripts/test_docs_check.py` checks these cases
+and verifies that adding pages does not launch an interpreter per page.
 
 ```bash
 make docs-check          # scripts/docs-check.sh — stamps, relative links, cited paths, orphans

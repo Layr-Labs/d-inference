@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `e8510dbf7`
+> Last updated: 2026-09-13 · commit `36f9ab80a`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1066,14 +1066,17 @@ inline destinations follow the renderer's 32-level parenthesis limit; angle-wrap
 and reference destinations retain deeper nesting, and escaped parentheses do not
 consume the limit. Reference
 definitions must lead a paragraph, including inside lists and quotes; their
-continuation titles remain hidden. Blank lines,
+continuation titles remain hidden. Wrapped links remain visible within the same
+list or quote paragraph, with tabs in inline text preserved. Blank lines,
 headings, thematic breaks, list starts, quotes, fences, and HTML block starts keep
 those labels apart. Invalid backtick-fence info strings remain ordinary Markdown.
 Fences inside lists and quotes end with their containers, preserving links after
 the code block. Brackets and parentheses inside quoted link titles stay literal.
 Comments, HTML blocks, tag attributes and code examples do not create navigation,
 including inside nested lists and quotes. Markdown around inline tags remains
-visible. Empty inline
+visible. HTML declarations follow GitHub GFM's uppercase rules for block openers
+and inline names; the fixtures run offline with expectations checked against
+GitHub's rendering API. Empty inline
 destinations stay empty, and backslash pairs preserve link/image meaning.
 Indented code is excluded while paragraph continuations and list navigation
 remain visible. Inner links take precedence over enclosing link syntax;

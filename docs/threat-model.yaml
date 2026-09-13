@@ -10,6 +10,9 @@ created: "2026-05-14"
 # default available-disk/2 without a fixed ceiling, 20 GiB unknown-space
 # budget fallback, and a fixed 20 GiB pre-write reserve including the pending
 # donation payload. This does not re-verify the surrounding cache threat claims.
+# Status-signature canonicalization in TB-009 re-verified 2026-09-13 against
+# commit 1f52a71fb: provider byte compatibility, with signature/trust policy
+# unchanged. This does not re-verify the remaining threat entries.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -750,13 +753,25 @@ trust_boundaries:
       and the next fully passing challenge restores it to online (RecordChallengeSuccess).
       Signature/SIP/hash failures are never auto-recovered and still require a reconnect.
 
-      Status signature (attestation.go): an extended canonical JSON payload
-      covering nonce, timestamp, and all security status fields is signed separately.
-      VerifyStatusSignature() checks this signature. If the status_signature field is
-      absent, ErrStatusSignatureMissing is returned; the caller treats this as advisory
-      (not a failure) for compatibility with providers older than v0.3.11. Negative
-      status reports (SIP=false) are always acted on immediately regardless of whether
-      the status_signature is present.
+      Status signature: nonce, timestamp and the reported fields in
+      StatusCanonicalInput are signed separately. StatusCanonical.build in
+      provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift uses a
+      typed JSONEncoder payload with sorted keys, including mixed-case keys inside
+      model_hashes and template_hashes, to match BuildStatusCanonical in
+      coordinator/attestation/attestation.go byte-for-byte. Actual U+2028/U+2029
+      scalars are escaped as \u2028/\u2029; literal backslash-u text stays distinct.
+      Nonce and timestamp remain present; absent optional flags, empty optional hash
+      strings and empty maps are omitted, while explicit false remains signed.
+
+      VerifyStatusSignature in coordinator/attestation/attestation.go checks the
+      P-256 DER signature over SHA-256 of those canonical bytes. Byte compatibility
+      fixes false signature failures without changing the signed field set or trust
+      policy. Malformed or mismatching signatures remain challenge failures in
+      coordinator/api/provider.go (verifyChallengeResponse). If status_signature is
+      absent, ErrStatusSignatureMissing is returned; the caller treats the fields as
+      advisory for compatibility with providers older than v0.3.11. Negative status
+      reports (SIP=false) are still acted on regardless of whether the status_signature
+      is present. Canonical mechanism: docs/architecture/security/attestation.md.
     current_limitations:
       - "status_signature is optional for pre-v0.3.11 providers. A compromised provider
         running OS-level code can report a valid (nonce, timestamp) signature from the

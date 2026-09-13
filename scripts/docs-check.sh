@@ -10,8 +10,8 @@
 #      tolerated; globs and placeholders are skipped). Historical directories
 #      (docs/reports/, docs/releases/, docs/design/) are exempt from this check
 #      because they legitimately describe code that has since moved.
-#   4. a docs/ Markdown file that no other doc links to (orphan) — every page
-#      must be reachable from an index. Exempt: docs/README.md, docs/AGENTS.md.
+#   4. a docs/ page unreachable from docs/README.md, docs/AGENTS.md or root docs.
+#      docs/.private/* pages are exempt; self-links and disconnected cycles fail.
 #
 # Usage:
 #   scripts/docs-check.sh            # check git-tracked docs (what CI runs)
@@ -91,6 +91,7 @@ LINK_CACHE=$(mktemp -d) || exit 1
 trap 'rm -rf "$LINK_CACHE"' EXIT
 if ! python3 - "$LINK_CACHE" "${LINK_FILES[@]}" <<'PY_LINKS'
 from pathlib import Path
+from string import punctuation
 import re
 import sys
 
@@ -98,9 +99,6 @@ def label(value):
     return " ".join(value.split()).casefold()
 
 
-# An escaped bracket is label text, including inside a clickable image. Keep
-# backslashes out of the ordinary branch so backtracking cannot close early.
-definition_pattern = re.compile(r"^ {0,3}\[((?:\\.|[^\]\\\n])+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))")
 # Labels may wrap within a paragraph, but not across blank lines or another
 # block. Only ordered lists starting at 1 interrupt an existing paragraph.
 block_start = r" {0,3}(?:#{1,6}(?:[ \t]|\n|$)|>|(?:[-+*]|1[.)])[ \t]+)"
@@ -177,29 +175,96 @@ def inline_literal_end(text, offset):
     return unmatched_end
 
 
-def collect_definitions(body):
-    # Defer collection until inline literals are known. A definition-shaped
-    # line inside a multiline HTML comment is not a reference definition.
-    text = "\n".join(body)
-    definitions, targets = {}, []
-    cursor, offset = 0, 0
-    for index, line in enumerate(body):
-        definition = definition_pattern.match(line)
-        if definition:
-            while cursor < offset:
-                if text[cursor] == "\\":
-                    cursor += 2
-                else:
-                    cursor = inline_literal_end(text, cursor) or cursor + 1
-            if cursor <= offset:
-                target = definition[2] or definition[3]
-                definitions.setdefault(label(definition[1]), target)
-                targets.append(target)
-                body[index] = None
-                cursor = offset + len(line) + 1
-        offset += len(line) + 1
-    body[:] = [line for line in body if line is not None]
-    return definitions, targets
+def definition_lines(lines, start, first, containers):
+    """Project continuation text from the definition's existing containers."""
+    yield start, first
+    for index in range(start + 1, len(lines)):
+        content = lines[index].expandtabs(4)
+        for container in containers:
+            if container is None:
+                quote = re.match(r"^ {0,3}> ?", content)
+                if not quote:
+                    break
+                content = content[quote.end():]
+            elif len(content) - len(content.lstrip(" ")) >= container:
+                content = content[container:]
+            else:
+                break
+        # Missing container prefixes can be lazy paragraph continuations, but
+        # blank lines and new blocks cannot be part of a label or title.
+        if not content.strip() or re.match(
+            rf"(?:{block_start}|{marker_line}|{html_start}| {{0,3}}(?:`{{3,}}(?![^\n]*`)|~{{3,}}))", content
+        ):
+            return
+        yield index, content
+
+
+definition_space = re.compile(r"[ \t]*")
+
+
+def read_definition(lines, start, first, containers):
+    """Consume a complete paragraph-leading definition, including its title."""
+    opener = re.match(r"^ {0,3}\[", first)
+    if opener is None:
+        return None
+    continuation = iter(definition_lines(lines, start, first, containers))
+    line_index, text = next(continuation)
+
+    def extend():
+        nonlocal line_index, text
+        following = next(continuation, None)
+        if following is None:
+            return False
+        line_index, line = following
+        text += "\n" + line
+        return True
+
+    offset, label_start = opener.end(), opener.end()
+    while True:
+        if offset >= len(text):
+            if not extend():
+                return None
+        char = text[offset]
+        if offset - label_start > 999 or char == "[":
+            return None
+        if char == "]":
+            break
+        offset += 2 if char == "\\" and text[offset + 1:offset + 2] in ("[", "]", "\\") else 1
+    identifier = label(text[label_start:offset])
+    if not identifier or text[offset + 1:offset + 2] != ":":
+        return None
+    offset += 2
+    offset = definition_space.match(text, offset).end()
+    if offset == len(text):
+        if not extend():
+            return None
+        offset = definition_space.match(text, offset + 1).end()
+    destination = link_destination(text, offset)
+    if destination is None or not destination[0] and text[offset:offset + 1] != "<":
+        return None
+    target, end = destination
+    spaced = definition_space.match(text, end).end()
+    # A failed title on a later line leaves a valid destination-only
+    # definition. A malformed suffix on the destination line invalidates it.
+    destination_only = (identifier, target, line_index) if spaced == len(text) else None
+    if spaced == len(text):
+        if not extend():
+            return destination_only
+        spaced = definition_space.match(text, spaced + 1).end()
+    marker = text[spaced:spaced + 1]
+    if spaced == end or marker not in ('"', "'", "("):
+        return destination_only
+    delimiter = ")" if marker == "(" else marker
+    offset = spaced + 1
+    while True:
+        if offset >= len(text):
+            if not extend():
+                return destination_only
+        char = text[offset]
+        if char == delimiter:
+            trailing = text[offset + 1:]
+            return (identifier, target, line_index) if not trailing.strip(" \t") else destination_only
+        offset += 2 if char == "\\" and text[offset + 1:offset + 2] in (delimiter, "\\") else 1
 
 
 soft_break = rf"\n(?![ \t]*\n|{block_start}|{marker_line}|{html_start})"
@@ -208,15 +273,47 @@ soft_break_pattern = re.compile(soft_break)
 # permit escaped brackets. Keep destination matching separate from that stack.
 reference_unit = rf"(?:\\.|[^\[\]\\\n]|{soft_break})"
 reference_suffix = re.compile(rf"\[(?P<reference>{reference_unit}*)\]")
-inline_destination = re.compile(r"\(\s*(?:<(?P<angle>[^>\n]*)>|(?P<bare>[^\s)]*))")
 link_space = re.compile(r"\s*")
 
 
+def link_destination(text, offset):
+    """Read an angle-wrapped or balanced bare destination and its end offset."""
+    enclosed = text[offset:offset + 1] == "<"
+    end, depth, target = offset + int(enclosed), 0, []
+    while end < len(text):
+        char = text[end]
+        if char == "\\" and end + 1 < len(text) and text[end + 1] in punctuation:
+            target.append(text[end + 1])
+            end += 2
+            continue
+        if enclosed:
+            if char == ">":
+                return "".join(target), end + 1
+            if char in "<\r\n":
+                return None
+        else:
+            if char in " \t\r\n" or char == ")" and depth == 0:
+                break
+            if ord(char) < 32 or ord(char) == 127:
+                return None
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+        target.append(char)
+        end += 1
+    if enclosed or depth:
+        return None
+    return "".join(target), end
+
+
 def inline_link(text, offset):
-    destination = inline_destination.match(text, offset)
+    if text[offset:offset + 1] != "(":
+        return None
+    destination = link_destination(text, link_space.match(text, offset + 1).end())
     if destination is None:
         return None
-    end = destination.end()
+    target, end = destination
     spaced = link_space.match(text, end).end()
     marker = text[spaced:spaced + 1]
     if spaced > end and marker in ('"', "'", "("):
@@ -241,7 +338,6 @@ def inline_link(text, offset):
     for newline in re.finditer("\n", text[offset:end + 1]):
         if not soft_break_pattern.match(text, offset + newline.start()):
             return None
-    target = destination["angle"] if destination["angle"] is not None else destination["bare"]
     return target, end + 1
 
 
@@ -305,15 +401,21 @@ def rendered_targets(text, definitions):
 
 
 def parse(source):
-    body, navigation = [], []
+    body, navigation, all_targets = [], [], []
+    definitions = {}
     fence = None
     fence_containers = []
     fence_parent = None
     html_end, html_depth, html_indent = None, 0, 0
     paragraph_open, quote_depth, list_indents = False, 0, []
+    paragraph_containers = None
     empty_item = False
     list_item = re.compile(r"^ {0,3}(?P<marker>[-+*]|[0-9]{1,9}[.)])(?P<padding> +|$)")
-    for line in source.read_text().splitlines():
+    lines = source.read_text().splitlines()
+    skip_through = -1
+    for line_index, line in enumerate(lines):
+        if line_index <= skip_through:
+            continue
         content = line.expandtabs(4)
         if fence is not None:
             # Consume only the containers that opened this fence. Additional
@@ -376,6 +478,7 @@ def parse(source):
             empty_item = False
             body.append("")
             paragraph_open = False
+            paragraph_containers = None
             if html_end is html_until_blank:
                 html_end = None
             continue
@@ -388,12 +491,13 @@ def parse(source):
                     html_end = None
                 body.append("")
                 paragraph_open = False
+                paragraph_containers = None
                 continue
             html_end = None
         was_in_list = bool(list_indents)
         while list_indents and indent < list_indents[-1]:
             if paragraph_open and not (
-                list_item.match(content) or definition_pattern.match(content)
+                list_item.match(content)
                 or re.match(rf"(?:{block_start}|{marker_line}|{html_start})", content)
             ):
                 break  # A lazy paragraph continuation need not repeat indentation.
@@ -401,6 +505,7 @@ def parse(source):
         base = list_indents[-1] if list_indents and indent >= list_indents[-1] else 0
         relative = content[base:]
         empty_item = False
+        new_item = False
         while (item := list_item.match(relative)) and not (
             re.match(thematic_line, relative) or paragraph_open and re.match(setext_line, relative)
         ):
@@ -414,9 +519,11 @@ def parse(source):
             list_indents.append(base)
             relative = content[base:]
             paragraph_open = False
+            new_item = True
             empty_item = not relative.strip()
         if not paragraph_open and len(relative) - len(relative.lstrip(" ")) >= 4:
             body.append("")
+            paragraph_containers = None
             continue
         # Lists may themselves contain quotes (and further lists). Record
         # those prefixes without treating code inside them as new containers.
@@ -429,18 +536,21 @@ def parse(source):
                 width = item.start("padding") + (padding if 1 <= padding <= 4 else 1)
                 nested_containers.append(width)
                 fenced_content = fenced_content[width:]
+                new_item = True
+        containers = quote_containers + ([base] if base else []) + nested_containers
         marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", fenced_content)
         # Backtick fence info strings cannot contain backticks, even escaped
         # ones. An invalid opener remains ordinary Markdown.
         if marker and (marker[1][0] != "`" or "`" not in marker[2]):
             fence = marker[1]
             # None records a quote prefix; an integer records list indentation.
-            fence_containers = quote_containers + ([base] if base else []) + nested_containers
+            fence_containers = containers
             # Retain the surrounding list when a later fence starts in the
             # same indented quote after this fence closes.
             fence_parent = quote_parent
             body.append("")
             paragraph_open = False
+            paragraph_containers = None
             empty_item = False
             while list_indents and base < list_indents[-1]:
                 list_indents.pop()
@@ -452,21 +562,35 @@ def parse(source):
                 html_end = None
             body.append("")
             paragraph_open = False
+            paragraph_containers = None
             continue
-        body.append(line)
-        if not definition_pattern.match(line):
-            heading = re.match(r"^ {0,3}#{1,6}(?:[ \t]|$)", relative)
-            ends_paragraph = (heading or re.match(thematic_line, relative)
-                              or paragraph_open and re.match(setext_line, relative)
-                              or re.match(html_start, relative))
-            paragraph_open = bool(relative.strip()) and not ends_paragraph
-            if heading:
-                # An ATX heading ends on its own line even without a blank.
+        # A list-then-quote prefix can be projected as quote-then-list on its
+        # next line. Retain the actual container chain across that projection
+        # so an existing paragraph cannot become a definition position.
+        continuing_paragraph = paragraph_containers == containers and not new_item
+        if not paragraph_open and not continuing_paragraph:
+            definition = read_definition(lines, line_index, fenced_content, containers)
+            if definition is not None:
+                identifier, target, skip_through = definition
+                definitions.setdefault(identifier, target)
+                all_targets.append(target)
                 body.append("")
+                paragraph_open = False
+                paragraph_containers = None
+                continue
+        body.append(line)
+        heading = re.match(r"^ {0,3}#{1,6}(?:[ \t]|$)", relative)
+        ends_paragraph = (heading or re.match(thematic_line, relative)
+                          or paragraph_open and re.match(setext_line, relative)
+                          or re.match(html_start, relative))
+        paragraph_open = bool(relative.strip()) and not ends_paragraph
+        paragraph_containers = containers if paragraph_open else None
+        if heading:
+            # An ATX heading ends on its own line even without a blank.
+            body.append("")
 
     # Inline code and HTML are skipped during scanning, preserving their raw
     # bytes inside an enclosing label instead of joining unrelated syntax.
-    definitions, all_targets = collect_definitions(body)
     text = "\n".join(body)
     for target, navigates in rendered_targets(text, definitions):
         all_targets.append(target)
@@ -571,12 +695,18 @@ for f in "${FILES[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# 4. Orphans — every docs page must be linked from somewhere in docs/ or the
-#    root README/CONTRIBUTING/AGENTS.
+# 4. Orphans — every docs page needs a navigation path from docs/README.md,
+#    docs/AGENTS.md, or the root README/CONTRIBUTING/AGENTS.
 # ---------------------------------------------------------------------------
 if [ "$ORPHAN_CHECK" -eq 1 ]; then
-    # Build the set of link targets, normalised to repo-relative paths.
-    LINKED="$LINK_CACHE/linked"
+    NAVIGATION_ROOTS="$LINK_CACHE/roots"
+    for f in docs/README.md docs/AGENTS.md "${EXTRA_LINK_FILES[@]}"; do
+        [ -f "$f" ] && printf '%s\n' "$f"
+    done > "$NAVIGATION_ROOTS"
+
+    # Keep source/target pairs on separate lines so spaces in filenames need
+    # no encoding. Only the parsed navigation view contributes graph edges.
+    NAVIGATION_EDGES="$LINK_CACHE/edges"
     for index in "${!LINK_FILES[@]}"; do
         f=${LINK_FILES[$index]}
         [ -f "$f" ] || continue
@@ -588,16 +718,42 @@ if [ "$ORPHAN_CHECK" -eq 1 ]; then
                 *)  path="$dir/$target" ;;
             esac
             [ -e "$path" ] || continue
+            printf '%s\n' "$f"
             normpath "$path"
         done
-    done | sort -u > "$LINKED"
+    done > "$NAVIGATION_EDGES"
+
+    # Visit each reachable page once. Self-links and disconnected cycles do
+    # not create entry points; nested indexes need a path like any other page.
+    REACHABLE="$LINK_CACHE/reachable"
+    if ! awk '
+        FILENAME == ARGV[1] {
+            if (!seen[$0]++) queue[++tail] = $0
+            next
+        }
+        FNR % 2 { source = $0; next }
+        { edges[source, ++count[source]] = $0 }
+        END {
+            for (head = 1; head <= tail; head++) {
+                source = queue[head]
+                print source
+                for (edge = 1; edge <= count[source]; edge++) {
+                    target = edges[source, edge]
+                    if (!seen[target]++) queue[++tail] = target
+                }
+            }
+        }
+    ' "$NAVIGATION_ROOTS" "$NAVIGATION_EDGES" > "$REACHABLE"; then
+        fail "unable to traverse documentation navigation"
+        exit 1
+    fi
 
     for f in "${FILES[@]}"; do
         case "$f" in
             docs/README.md|docs/AGENTS.md|docs/.private/*) continue ;;
         esac
-        if ! grep -qxF "$f" "$LINKED"; then
-            fail "$f: orphan (no doc links to it — add it to the nearest README index)"
+        if ! grep -qxF "$f" "$REACHABLE"; then
+            fail "$f: orphan (no navigation path from a documentation entry point — add it to a reachable README index)"
         fi
     done
 fi

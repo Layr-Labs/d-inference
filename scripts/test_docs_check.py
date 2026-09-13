@@ -55,9 +55,9 @@ class DocsCheckTests(unittest.TestCase):
             r"[Guide \] details](Page.md)",
             r"[Guide \[ details](Page.md)",
             r"[Guide \\](Page.md)",
-            r"[Guide \] details][guide]" + "\n[guide]: Page.md",
-            r"[guide\]][]" + "\n" + r"[guide\]]: Page.md",
-            r"[guide\]]" + "\n" + r"[guide\]]: Page.md",
+            r"[Guide \] details][guide]" + "\n\n[guide]: Page.md",
+            r"[guide\]][]" + "\n\n" + r"[guide\]]: Page.md",
+            r"[guide\]]" + "\n\n" + r"[guide\]]: Page.md",
         ):
             with self.subTest(usage=usage):
                 result = self.check(usage + "\n")
@@ -173,7 +173,7 @@ class DocsCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_unused_definition_does_not_hide_an_orphan(self):
-        result = self.check("[unused]: Page.md\n")
+        result = self.check("\n[unused]: Page.md\n")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Page.md: orphan", result.stderr)
 
@@ -187,12 +187,110 @@ class DocsCheckTests(unittest.TestCase):
         result = self.check("[Read][Some   Guide]\n\n[some guide]: Page.md\n")
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_container_definitions_resolve_links_and_check_unused_targets(self):
+        for container in (
+            "> {}", "- {}", "1. {}", "> - {}", "- > {}", "- - {}", "> > {}",
+            "- Parent\n\n  {}", "> - Parent\n>\n>   {}",
+            "- > Paragraph text\n  >\n  > {}", "> - > Paragraph text\n>   >\n>   > {}",
+            "- > Paragraph text\n  > - {}",
+        ):
+            with self.subTest(container=container):
+                result = self.check("\n" + container.format("[guide]: Page.md") + "\n\n[guide]\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                result = self.check("\n[Page](Page.md)\n\n" + container.format("[unused]: Missing.md") + "\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("broken link -> Missing.md", result.stderr)
+                self.assertNotIn("orphan", result.stderr)
+
+    def test_definition_continuation_titles_are_not_visible_links(self):
+        for definition in (
+            '[guide]: Page.md\n  "title [fake](Missing.md)"',
+            "[guide]: Page.md\n  'title [fake](Missing.md)'",
+            '[guide]: Page.md\n  (title [fake][missing])',
+            '[guide]: Page.md "title\n [fake](Missing.md)\nend"',
+            '[guide]: Page.md\n    "title [fake](Missing.md)"',
+            r'[guide]: Page.md "escaped \" [fake](Missing.md)"',
+            '> [guide]: Page.md\n> "title [fake](Missing.md)"',
+            '- [guide]: Page.md\n  "title [fake](Missing.md)"',
+            '- > [guide]: Page.md\n  > "title [fake](Missing.md)"',
+            '> [guide]: Page.md\n"lazy title [fake](Missing.md)"',
+        ):
+            with self.subTest(definition=definition):
+                result = self.check("\n" + definition + "\n\n[guide]\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.check('\n[unused]: https://example.com\n  "title [fake](Page.md)"\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Page.md: orphan", result.stderr)
+        self.assertNotIn("broken link", result.stderr)
+
+    def test_definition_labels_and_destinations_can_continue(self):
+        for definition, usage in (
+            ("[guide]:\n  Page.md", "[guide]"),
+            ("[guide]:\n    Page.md", "[guide]"),
+            ('[guide]:\n  <Page.md>\n  "title"', "[guide]"),
+            ("[some\n guide]: Page.md", "[some guide]"),
+            ("> [some\n> guide]:\n> Page.md", "[some guide]"),
+            ("- [guide]:\n  Page.md", "[guide]"),
+            ("> [guide]:\nPage.md", "[guide]"),
+            ("- [guide]:\nPage.md", "[guide]"),
+        ):
+            with self.subTest(definition=definition):
+                result = self.check("\n" + definition + "\n\n" + usage + "\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_definition_shaped_paragraph_text_does_not_define_a_link(self):
+        for paragraph in (
+            "Paragraph text\n[guide]: Page.md",
+            "> Paragraph text\n> [guide]: Page.md",
+            "> Paragraph text\n[guide]: Page.md",
+            "- Paragraph text\n  [guide]: Page.md",
+            "- Paragraph text\n[guide]: Page.md",
+            "- > Paragraph text\n  > [guide]: Page.md",
+            "> - > Paragraph text\n>   > [guide]: Page.md",
+            "[incomplete\n[guide]: Page.md",
+        ):
+            with self.subTest(paragraph=paragraph):
+                result = self.check("\n" + paragraph + "\n\n[guide]\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Page.md: orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+        result = self.check("\n[Page](Page.md)\n[not-a-definition]: Missing.md\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_definition_blocks_stop_before_visible_paragraph_content(self):
+        for block in (
+            '[unused]: https://example.com\n\n"visible [Page](Page.md)"',
+            '[unused]: https://example.com\n"visible [Page](Page.md)" suffix',
+            '[unused]: https://example.com\n"unterminated [Page](Page.md)',
+            '[unused]: https://example.com\n- "visible [Page](Page.md)"',
+            '> [unused]: https://example.com\n> > "visible [Page](Page.md)"',
+            '[unused]: https://example.com\n[Page](Page.md)',
+        ):
+            with self.subTest(block=block):
+                result = self.check("\n" + block + "\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_malformed_definition_suffixes_remain_paragraph_text(self):
+        for definition in (
+            "[guide]: Page.md suffix",
+            '[guide]: Page.md "title" suffix',
+            '[guide]: Page.md "unterminated',
+            '[guide]: Page.md "title\n\nend"',
+            '[guide]: Page.md "title\n# Heading"',
+            "[guide]:\n\nPage.md",
+        ):
+            with self.subTest(definition=definition):
+                result = self.check("\n" + definition + "\n\n[guide]\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Page.md: orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+
     def test_code_examples_do_not_create_navigation_edges(self):
         examples = (
             "```markdown\n[Page](Page.md)\n```\n",
             "~~~markdown\n[Page][guide]\n~~~\n[guide]: Page.md\n",
             "````markdown\n```\n[Page](Page.md)\n````\n",
-            "`[guide]`\n[guide]: Page.md\n",
+            "`[guide]`\n\n[guide]: Page.md\n",
         )
         for example in examples:
             with self.subTest(example=example):
@@ -381,7 +479,7 @@ class DocsCheckTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_inline_link_and_reference_targets_stay_independent(self):
-        result = self.check("[guide](Page.md)\n[guide]: Missing.md\n")
+        result = self.check("[guide](Page.md)\n\n[guide]: Missing.md\n")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("broken link -> Missing.md", result.stderr)
         self.assertNotIn("orphan", result.stderr)
@@ -419,6 +517,52 @@ class DocsCheckTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("broken link -> Missing.md", result.stderr)
         self.assertNotIn("orphan", result.stderr)
+
+    def test_parenthesized_destinations_preserve_navigation(self):
+        (self.root / "docs/Image(old).svg").write_text("<svg/>")
+        for usage, target in (
+            ("[guide](Page(old).md)", "Page(old).md"),
+            ("[guide](<Page(old).md>)", "Page(old).md"),
+            (r"[guide](Page\(old\).md)", "Page(old).md"),
+            ('[guide](Page(old).md "title ) [fake]")', "Page(old).md"),
+            ("[guide](Page(one(two)).md)", "Page(one(two)).md"),
+            ("[guide](Page" + "(" * 16 + "old" + ")" * 16 + ".md)",
+             "Page" + "(" * 16 + "old" + ")" * 16 + ".md"),
+            ("[![plot](Image(old).svg)](Page(old).md)", "Page(old).md"),
+        ):
+            with self.subTest(usage=usage):
+                result = self.check("\n" + usage + "\n", page=target)
+                # Each case owns one Markdown page; do not let a prior target
+                # become an unrelated orphan when the filename changes.
+                (self.root / "docs" / target).unlink()
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_parenthesized_destinations_check_complete_missing_targets(self):
+        for usage, target in (
+            ("[missing](Missing(old).md)", "Missing(old).md"),
+            ("[missing](<Missing(old).md>)", "Missing(old).md"),
+            (r"[missing](Missing\(old\).md)", "Missing(old).md"),
+            ('[missing](Missing(one(two)).md "title")', "Missing(one(two)).md"),
+            ("![plot](Missing(old).svg)", "Missing(old).svg"),
+            ("[missing](Missing(old).md))", "Missing(old).md"),
+        ):
+            with self.subTest(usage=usage):
+                result = self.check("\n[Page](Page.md)\n" + usage + "\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"broken link -> {target}", result.stderr)
+                self.assertNotIn("orphan", result.stderr)
+
+    def test_unbalanced_destinations_do_not_invent_links(self):
+        for usage in (
+            "[fake](Missing(open.md)",
+            "[fake](Missing(open).md",
+            "[fake](Missing(open) suffix)",
+            r"[fake](Missing(open\).md)",
+            "[fake](<Missing(old).md)",
+        ):
+            with self.subTest(usage=usage):
+                result = self.check("\n[Page](Page.md)\n" + usage + "\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_empty_inline_destinations_do_not_use_reference_definitions(self):
         for destination in ("", " ", " \n ", "<>", '<> "title"'):
@@ -491,7 +635,7 @@ class DocsCheckTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_missing_reference_target_is_reported(self):
-        result = self.check("[Page](Page.md)\n[broken]: Missing.md\n")
+        result = self.check("[Page](Page.md)\n\n[broken]: Missing.md\n")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("broken link -> Missing.md", result.stderr)
 
@@ -503,19 +647,19 @@ class DocsCheckTests(unittest.TestCase):
     def test_images_do_not_create_navigation_edges(self):
         for usage in ("![diagram][guide]", "![guide][]", "![guide]", "![diagram](Page.md)"):
             with self.subTest(usage=usage):
-                result = self.check(usage + "\n[guide]: Page.md\n")
+                result = self.check(usage + "\n\n[guide]: Page.md\n")
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Page.md: orphan", result.stderr)
                 self.assertNotIn("broken link", result.stderr)
 
     def test_broken_reference_images_are_still_checked(self):
-        result = self.check("[Page](Page.md)\n![diagram][image]\n[image]: Missing.svg\n")
+        result = self.check("[Page](Page.md)\n![diagram][image]\n\n[image]: Missing.svg\n")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("broken link -> Missing.svg", result.stderr)
         self.assertNotIn("orphan", result.stderr)
 
     def test_escaped_bang_before_reference_is_a_link(self):
-        result = self.check(r"\![guide]" + "\n[guide]: Page.md\n")
+        result = self.check(r"\![guide]" + "\n\n[guide]: Page.md\n")
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_clickable_images_preserve_outer_navigation(self):
@@ -523,8 +667,8 @@ class DocsCheckTests(unittest.TestCase):
         for usage in (
             "[![diagram](asset.svg)](Page.md)",
             "[![diagram\n label](asset.svg)](Page.md)",
-            "[![diagram][image]][guide]\n[image]: asset.svg\n[guide]: Page.md",
-            "[![image][]][guide]\n[image]: asset.svg\n[guide]: Page.md",
+            "[![diagram][image]][guide]\n\n[image]: asset.svg\n[guide]: Page.md",
+            "[![image][]][guide]\n\n[image]: asset.svg\n[guide]: Page.md",
         ):
             with self.subTest(usage=usage):
                 result = self.check(usage + "\n")
@@ -541,6 +685,104 @@ class DocsCheckTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("broken link -> Missing.svg", result.stderr)
         self.assertNotIn("orphan", result.stderr)
+
+    def test_reachability_rejects_self_links_and_disconnected_cycles(self):
+        for pages in (
+            {"Page.md": "[Self](Page.md)\n"},
+            {"Page.md": "[Other](Other.md)\n", "Other.md": "[Back](Page.md)\n"},
+        ):
+            with self.subTest(pages=pages):
+                for filename, content in pages.items():
+                    (self.root / "docs" / filename).write_text(STAMP + content)
+                result = self.check("", content=pages["Page.md"])
+                self.assertNotEqual(result.returncode, 0)
+                for filename in pages:
+                    self.assertIn(f"docs/{filename}: orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+
+    def test_reachability_follows_transitive_navigation_and_cycles(self):
+        # Reverse alphabetical traversal makes one pass over git's file list
+        # insufficient; the return edge also requires cycle termination.
+        for filename, target in (("Z.md", "M.md"), ("M.md", "A.md"), ("A.md", "Page.md")):
+            (self.root / "docs" / filename).write_text(STAMP + f"[Next]({target})\n")
+        result = self.check("[Start](Z.md)\n", content="[Back](M.md)\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_reachability_preserves_documentation_entry_points(self):
+        for entry in ("README.md", "CONTRIBUTING.md", "AGENTS.md", "docs/AGENTS.md"):
+            with self.subTest(entry=entry):
+                target = "Page.md" if entry.startswith("docs/") else "docs/Page.md"
+                path = self.root / entry
+                path.write_text(STAMP + f"[Page]({target})\n")
+                try:
+                    result = self.check("")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                finally:
+                    path.unlink()
+                    subprocess.run(["git", "add", "-u"], cwd=self.root, check=True)
+
+    def test_reachability_requires_a_route_to_nested_indexes(self):
+        (self.root / "docs/guide").mkdir()
+        (self.root / "docs/guide/README.md").write_text(STAMP + "[Page](../Page.md)\n")
+        for index, reachable in (("", False), ("[Guide](guide/README.md)\n", True)):
+            with self.subTest(reachable=reachable):
+                result = self.check(index, content="[Self](Page.md)\n")
+                if reachable:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("docs/Page.md: orphan", result.stderr)
+                    self.assertIn("docs/guide/README.md: orphan", result.stderr)
+                    self.assertNotIn("broken link", result.stderr)
+
+    def test_reachability_private_pages_are_exempt_without_becoming_roots(self):
+        (self.root / "docs/.private").mkdir()
+        (self.root / "docs/.private/notes.md").write_text("[Page](../Page.md)\n")
+        for index, reachable in (("", False), ("[Notes](.private/notes.md)\n", True)):
+            with self.subTest(reachable=reachable):
+                result = self.check(index)
+                if reachable:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("docs/Page.md: orphan", result.stderr)
+                    self.assertNotIn("docs/.private/notes.md:", result.stderr)
+
+    def test_reachability_uses_only_rendered_navigation_edges(self):
+        (self.root / "docs/Other.md").write_text(STAMP + "[Back](Page.md)\n")
+        (self.root / "docs/asset.svg").write_text("<svg/>")
+        for index, reachable in (
+            ("![Page](Page.md)\n", False),
+            ("[unused]: Page.md\n", False),
+            ("[Guide][page]\n\n[page]: Page.md\n", True),
+            ("[![Diagram](asset.svg)](Page.md)\n", True),
+        ):
+            with self.subTest(index=index):
+                result = self.check("\n" + index, content="[Other](Other.md)\n")
+                if reachable:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("docs/Page.md: orphan", result.stderr)
+                    self.assertIn("docs/Other.md: orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+
+    def test_reachability_preserves_normalized_paths_and_untracked_mode(self):
+        (self.root / "docs/Z Guides").mkdir()
+        (self.root / "docs/Z Guides/README.md").write_text(
+            STAMP + "[Next](../A%20Page.md?view=full#topic)\n")
+        (self.root / "docs/A Page.md").write_text(STAMP + "[Next](./Page.md)\n")
+        for tracked in (False, True):
+            with self.subTest(tracked=tracked):
+                result = self.check("[Start](Z%20Guides/README.md)\n",
+                                    content="[Back](/docs/Z%20Guides/README.md#back)\n", tracked=tracked)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_explicit_file_mode_still_skips_graph_reachability(self):
+        (self.root / "docs/Page.md").write_text(STAMP + "[Self](Page.md)\n")
+        result = subprocess.run(["bash", "scripts/docs-check.sh", "docs/Page.md"],
+                                cwd=self.root, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_orphans_and_missing_citations_are_independent_errors(self):
         result = self.check("", content="`coordinator/missing.go`\n")

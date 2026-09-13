@@ -1,4 +1,5 @@
 import Foundation
+import ProviderAppAttest
 
 public enum PrefixCacheStatusBackend: String, Codable, Sendable, Equatable, CaseIterable {
     case contiguous
@@ -178,6 +179,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case inferenceError(InferenceError)
     case attestationResponse(AttestationResponse)
     case codeAttestationResponse(CodeAttestationResponse)
+    case appAttestShadow(AppAttestShadowPayload)
     case loadModelStatus(LoadModelStatus)
     case prefetchModelStatus(PrefetchModelStatus)
     case modelsUpdate(ModelsUpdate)
@@ -212,6 +214,7 @@ public enum ProviderMessage: Sendable, Equatable {
         /// to. Mirrors RegisterMessage.APNsDeviceToken/APNsEnvironment (Go).
         public var apnsDeviceToken: String?
         public var apnsEnvironment: String?
+        public var appAttestProtocol: Int?
         /// Provider-confirmed prefix-cache protocol version. Omitted by legacy
         /// providers; only version 2 carries exact, provider-proven ownership.
         public var prefixCacheProtocol: Int?
@@ -250,7 +253,8 @@ public enum ProviderMessage: Sendable, Equatable {
             prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
             prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
             toolConstraintProtocol: Int? = nil,
-            toolConstraintModels: [String]? = nil
+            toolConstraintModels: [String]? = nil,
+            appAttestProtocol: Int? = nil
         ) {
             self.hardware = hardware
             self.models = models
@@ -271,6 +275,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.privateOnly = privateOnly
             self.apnsDeviceToken = apnsDeviceToken
             self.apnsEnvironment = apnsEnvironment
+            self.appAttestProtocol = appAttestProtocol
             self.prefixCacheProtocol = prefixCacheProtocol
             self.prefixCacheV2Models = prefixCacheV2Models
             self.prefixCacheMemoryModels = prefixCacheMemoryModels
@@ -850,6 +855,7 @@ extension ProviderMessage: Codable {
         case inferenceError = "inference_error"
         case attestationResponse = "attestation_response"
         case codeAttestationResponse = "code_attestation_response"
+        case appAttestShadow = "app_attest_shadow"
         case loadModelStatus = "load_model_status"
         case prefetchModelStatus = "prefetch_model_status"
         case modelsUpdate = "models_update"
@@ -879,6 +885,8 @@ extension ProviderMessage: Codable {
         case privateOnly = "private_only"
         case apnsDeviceToken = "apns_device_token"
         case apnsEnvironment = "apns_environment"
+        case appAttestProtocol = "app_attest_protocol"
+        case payload
         case prefixCacheProtocol = "prefix_cache_protocol"
         case prefixCacheV2Models = "prefix_cache_v2_models"
         case prefixCacheMemoryModels = "prefix_cache_memory_models"
@@ -990,6 +998,7 @@ extension ProviderMessage: Codable {
             }
             try container.encodeIfPresent(r.apnsDeviceToken, forKey: .apnsDeviceToken)
             try container.encodeIfPresent(r.apnsEnvironment, forKey: .apnsEnvironment)
+            try container.encodeIfPresent(r.appAttestProtocol, forKey: .appAttestProtocol)
             if let version = r.prefixCacheProtocol, version != 0 {
                 try container.encode(version, forKey: .prefixCacheProtocol)
             }
@@ -1102,6 +1111,10 @@ extension ProviderMessage: Codable {
             if !a.modelHashes.isEmpty {
                 try container.encode(a.modelHashes, forKey: .modelHashes)
             }
+
+        case .appAttestShadow(let p):
+            try container.encode(TypeValue.appAttestShadow, forKey: .type)
+            try container.encode(p, forKey: .payload)
 
         case .codeAttestationResponse(let c):
             try container.encode(TypeValue.codeAttestationResponse, forKey: .type)
@@ -1250,7 +1263,8 @@ extension ProviderMessage: Codable {
                 toolConstraintProtocol: try container.decodeIfPresent(
                     Int.self, forKey: .toolConstraintProtocol),
                 toolConstraintModels: try container.decodeIfPresent(
-                    [String].self, forKey: .toolConstraintModels)
+                    [String].self, forKey: .toolConstraintModels),
+                appAttestProtocol: try container.decodeIfPresent(Int.self, forKey: .appAttestProtocol)
             ))
 
         case .heartbeat:
@@ -1348,6 +1362,9 @@ extension ProviderMessage: Codable {
                 templateHashes: try container.decodeIfPresent([String: String].self, forKey: .templateHashes) ?? [:],
                 modelHashes: try container.decodeIfPresent([String: String].self, forKey: .modelHashes) ?? [:]
             ))
+
+        case .appAttestShadow:
+            self = .appAttestShadow(try container.decode(AppAttestShadowPayload.self, forKey: .payload))
 
         case .codeAttestationResponse:
             self = .codeAttestationResponse(CodeAttestationResponse(
@@ -1486,6 +1503,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
     case cancel(Cancel)
     case attestationChallenge(AttestationChallenge)
     case codeAttestationResumeChallenge(CodeAttestationResumeChallenge)
+    case appAttestShadow(AppAttestShadowPayload)
     case runtimeStatus(RuntimeStatus)
     case loadModel(LoadModel)
     case prefetchModel(PrefetchModel)
@@ -1676,6 +1694,7 @@ extension CoordinatorMessage: Codable {
         case cancel
         case attestationChallenge = "attestation_challenge"
         case codeAttestationResumeChallenge = "code_attestation_resume_challenge"
+        case appAttestShadow = "app_attest_shadow"
         case runtimeStatus = "runtime_status"
         case loadModel = "load_model"
         case prefetchModel = "prefetch_model"
@@ -1697,6 +1716,7 @@ extension CoordinatorMessage: Codable {
         case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
         case nonce, timestamp
         case codeChallenge = "code_challenge"
+        case payload
         case verified, mismatches
         case modelId = "model_id"
         case priority
@@ -1741,6 +1761,10 @@ extension CoordinatorMessage: Codable {
             try container.encode(TypeValue.attestationChallenge, forKey: .type)
             try container.encode(a.nonce, forKey: .nonce)
             try container.encode(a.timestamp, forKey: .timestamp)
+
+        case .appAttestShadow(let p):
+            try container.encode(TypeValue.appAttestShadow, forKey: .type)
+            try container.encode(p, forKey: .payload)
 
         case .codeAttestationResumeChallenge(let challenge):
             try container.encode(
@@ -1843,6 +1867,9 @@ extension CoordinatorMessage: Codable {
                 nonce: try container.decode(String.self, forKey: .nonce),
                 timestamp: try container.decode(String.self, forKey: .timestamp)
             ))
+
+        case .appAttestShadow:
+            self = .appAttestShadow(try container.decode(AppAttestShadowPayload.self, forKey: .payload))
 
         case .codeAttestationResumeChallenge:
             self = .codeAttestationResumeChallenge(

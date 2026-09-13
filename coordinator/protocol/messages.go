@@ -217,6 +217,7 @@ type PrefixCacheDonationOutcomeCount struct {
 
 // RegisterMessage is sent when a provider first connects.
 type RegisterMessage struct {
+	AppAttestProtocol           int                                `json:"app_attest_protocol,omitempty"`
 	Type                        string                             `json:"type"`
 	Hardware                    Hardware                           `json:"hardware"`
 	Models                      []ModelInfo                        `json:"models"`
@@ -1005,6 +1006,16 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg RegisterMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal register: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeAppAttestShadow:
+		var msg AppAttestShadowMessage
+		if len(data) > 48*1024 {
+			return fmt.Errorf("protocol: oversized app attest shadow")
+		}
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: malformed app attest shadow")
 		}
 		pm.Payload = &msg
 

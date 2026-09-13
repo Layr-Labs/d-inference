@@ -1,11 +1,13 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-07 · commit `efcde6334`
+> Last updated: 2026-09-12 · commit `7c394fa2b`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
 computed by the coordinator; consumers receive its result, never the
 identity-bearing evidence behind it.
+
+[App Attest shadow measurements](../reference/app-attest-shadow.md) are not part of this public trust verdict and do not establish an additional privacy guarantee.
 
 ## Public attestation endpoint
 

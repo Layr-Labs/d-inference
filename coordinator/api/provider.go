@@ -233,6 +233,7 @@ func (s *Server) closeSessionWithReason(providerID, reason string) {
 // them. It runs until the connection closes or the context is cancelled.
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
 	var provider *registry.Provider
+	var appAttestShadow *appAttestShadowSession
 	tracker := newChallengeTracker()
 	var schedulerSEKey string
 	var schedulerGeneration uint64
@@ -590,6 +591,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				saferun.Go(s.logger, "codeAttest", func() {
 					s.codeAttestLoop(loopCtx, providerID, provider)
 				})
+			}
+
+			appAttestShadow = s.startAppAttestShadow(loopCtx, provider, regMsg)
+
+		case protocol.TypeAppAttestShadow:
+			if appAttestShadow != nil {
+				appAttestShadow.offer(msg.Payload.(*protocol.AppAttestShadowMessage).Payload)
 			}
 
 		case protocol.TypeHeartbeat:

@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-09 · commit `4c77fc285`
+> Last updated: 2026-09-12 · commit `7c394fa2b`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -17,6 +17,8 @@ the existing model read-through cache; [artifact schema](../reference/model-regi
 Attempt decision fields are additive columns and existing provider JSONB;
 [prediction telemetry](../reference/prediction-decision-telemetry.md#storage-and-rollout)
 defines migration, historical NULLs and the separately applied waterfall view.
+
+The separate [App Attest shadow key table](../reference/app-attest-shadow.md#storage) persists verified keys and counters for observation only. It neither restores routing trust nor replaces provider accounting identity.
 
 ## Context
 

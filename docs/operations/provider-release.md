@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-10 · commit `5f021ba4d`
+> Last updated: 2026-09-12 · commit `7c394fa2b`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -45,6 +45,8 @@ and actual inference separately. `/health` should retain the previous
 coordinator `build_commit`; its build `version` can remain 0.9.1 while
 `/v1/releases/latest` returns 0.9.2. Registration exposes the release to
 provider auto-update; it is not a limited canary rollout by itself.
+
+For App Attest coexistence, both signing workflows prepare optional profile-authorized grants while retaining APNs. Follow the [shadow packaging contract](../reference/app-attest-shadow.md#packaging-and-live-acceptance); a missing grant is an explicit coverage gap, not permission to remove existing verification.
 
 ## Environment-free signing validation
 

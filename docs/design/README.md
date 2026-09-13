@@ -1,6 +1,6 @@
 # Design records — what was decided, and whether it shipped
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-12 · commit `7c394fa2b`
 
 Plans, proposals, and architecture decision records. Each file is frozen at the
 moment it was written except for its **Status** line, which says whether the
@@ -27,6 +27,7 @@ below repeats the vocabulary word only; the file's line 5 carries the evidence.
 
 | Record | Status | Date | One line |
 |---|---|---|---|
+| [app-attest-migration.md](app-attest-migration.md) | In progress | 2026-09-12 | App Attest shadow rollout with APNs/MDM authoritative, coverage evidence, and later retirement |
 | [apns-code-attestation.md](apns-code-attestation.md) | Implemented | 2026-06-14 | Why code identity is proven through an APNs-delivered challenge; as built in [`../architecture/security/attestation.md`](../architecture/security/attestation.md) |
 
 ## Inference engine and memory

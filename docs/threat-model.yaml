@@ -10,6 +10,10 @@ created: "2026-05-14"
 # default available-disk/2 without a fixed ceiling, 20 GiB unknown-space
 # budget fallback, and a fixed 20 GiB pre-write reserve including the pending
 # donation payload. This does not re-verify the surrounding cache threat claims.
+# App Attest coexistence added 2026-09-12: observation only; no trust/routing
+# mutation. The app-owned X25519 endpoint is bound into a fresh shadow transcript;
+# Apple API failures and malformed proofs are bounded and do not replace APNs/MDM.
+# Physical macOS 27 acceptance and downgrade resistance remain unverified.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -31,6 +35,7 @@ scope:
     - Optional provider → privileged fan-helper XPC boundary and AppleSMC writes
     - Coordinator → Stripe payment network
     - Apple attestation trust chain (cross-cutting)
+    - Optional App Attest shadow evidence exchange (observation only; APNs/MDM still authoritative)
   out_of_scope:
     - Dev / staging environment (api.dev.darkbloom.xyz)
     - GitHub Actions / R2 release supply chain

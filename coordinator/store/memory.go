@@ -50,6 +50,9 @@ type MemoryStore struct {
 	ledgerEntries []LedgerEntry
 	ledgerSeq     int64 // auto-increment ID
 
+	// Observation-only keys; independent from provider/rewards identity.
+	appAttestShadowKeys map[string]AppAttestShadowKey
+
 	// Referral system
 	referrersByCode    map[string]*Referrer // code → referrer
 	referrersByAccount map[string]*Referrer // accountID → referrer

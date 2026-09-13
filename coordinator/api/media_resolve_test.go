@@ -587,7 +587,7 @@ func TestChatCompletionsRemoteMediaRequiresMediaAwareBalanceBeforeFetch(t *testi
 	cfg.AllowNonStandardPorts = true
 	srv.mediaResolver = mediafetch.NewResolver(cfg, srv.logger)
 	// Make the prompt-token difference visible above the universal minimum fee.
-	if err := st.SetModelPrice("platform", "test", 1_000_000, 0); err != nil {
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: "test", InputPrice: 1_000_000, OutputPrice: 0}); err != nil {
 		t.Fatal(err)
 	}
 

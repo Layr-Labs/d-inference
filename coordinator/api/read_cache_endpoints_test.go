@@ -104,7 +104,7 @@ func (h *cachedEndpointHarness) seedCatalogModel(t *testing.T, modelID string) {
 		t.Fatal(err)
 	}
 	h.srv.SyncModelCatalog()
-	if err := h.mem.SetModelPrice("platform", modelID, 50_000, 200_000); err != nil {
+	if err := h.mem.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: modelID, InputPrice: 50_000, OutputPrice: 200_000}); err != nil {
 		t.Fatal(err)
 	}
 }

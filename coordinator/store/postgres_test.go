@@ -520,16 +520,16 @@ func TestPostgresWalletPriceCleanupPreservesPlatform(t *testing.T) {
 	if err := s.CreateUser(&User{AccountID: "acct-real", PrivyUserID: "did:privy:real"}); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	if err := s.SetModelPrice("acct-real", "gemma-4-26b", 65_000, 200_000); err != nil {
+	if err := s.SetModelPrice(ModelPrice{AccountID: "acct-real", Model: "gemma-4-26b", InputPrice: 65_000, OutputPrice: 200_000}); err != nil {
 		t.Fatalf("set user price: %v", err)
 	}
 	// Platform-default pricing (the bug under test — must survive).
-	if err := s.SetModelPrice("platform", "gpt-oss-20b", 50_000, 200_000); err != nil {
+	if err := s.SetModelPrice(ModelPrice{AccountID: "platform", Model: "gpt-oss-20b", InputPrice: 50_000, OutputPrice: 200_000}); err != nil {
 		t.Fatalf("set platform price: %v", err)
 	}
 	// An orphan wallet-keyed price whose account is NOT in users (exactly what
 	// the cleanup is meant to remove).
-	if err := s.SetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b", 1, 2); err != nil {
+	if err := s.SetModelPrice(ModelPrice{AccountID: "So1anaWa11etAddre55NotAUser", Model: "gemma-4-26b", InputPrice: 1, OutputPrice: 2}); err != nil {
 		t.Fatalf("set orphan wallet price: %v", err)
 	}
 
@@ -539,13 +539,13 @@ func TestPostgresWalletPriceCleanupPreservesPlatform(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	if in, out, ok := s.GetModelPrice("platform", "gpt-oss-20b"); !ok || in != 50_000 || out != 200_000 {
-		t.Errorf("platform price = (%d, %d, %v), want (50000, 200000, true) — platform pricing must never be wiped", in, out, ok)
+	if mp, ok := s.GetModelPrice("platform", "gpt-oss-20b"); !ok || mp.InputPrice != 50_000 || mp.OutputPrice != 200_000 {
+		t.Errorf("platform price = (%+v, %v), want (50000, 200000, true) — platform pricing must never be wiped", mp, ok)
 	}
-	if in, out, ok := s.GetModelPrice("acct-real", "gemma-4-26b"); !ok || in != 65_000 || out != 200_000 {
-		t.Errorf("user price = (%d, %d, %v), want (65000, 200000, true)", in, out, ok)
+	if mp, ok := s.GetModelPrice("acct-real", "gemma-4-26b"); !ok || mp.InputPrice != 65_000 || mp.OutputPrice != 200_000 {
+		t.Errorf("user price = (%+v, %v), want (65000, 200000, true)", mp, ok)
 	}
-	if _, _, ok := s.GetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b"); ok {
+	if _, ok := s.GetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b"); ok {
 		t.Error("orphan wallet-keyed price should be removed by the cleanup")
 	}
 
@@ -579,7 +579,7 @@ func TestPostgresWalletPriceCleanupRunsOnce(t *testing.T) {
 
 	// An orphan wallet-keyed row added after the marker is set must survive,
 	// because the guarded cleanup is skipped on subsequent boots.
-	if err := s.SetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b", 1, 2); err != nil {
+	if err := s.SetModelPrice(ModelPrice{AccountID: "So1anaWa11etAddre55NotAUser", Model: "gemma-4-26b", InputPrice: 1, OutputPrice: 2}); err != nil {
 		t.Fatalf("set orphan wallet price: %v", err)
 	}
 
@@ -587,7 +587,7 @@ func TestPostgresWalletPriceCleanupRunsOnce(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	if _, _, ok := s.GetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b"); !ok {
+	if _, ok := s.GetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b"); !ok {
 		t.Error("orphan row should survive when the cleanup marker is already set (run-once)")
 	}
 }

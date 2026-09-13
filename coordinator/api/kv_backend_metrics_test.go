@@ -58,7 +58,7 @@ func registerHeartbeatedProvider(t *testing.T, srv *Server, id, model string, ba
 // and registers it on the provider so handleComplete settles it normally.
 func completedPendingRequest(t *testing.T, srv *Server, p *registry.Provider, reqID, model string, usage protocol.UsageInfo) *registry.PendingRequest {
 	t.Helper()
-	cost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
+	cost := payments.DefaultRates().CostWithMinimum(billableUsage(usage))
 	if err := srv.ledger.Charge(testConsumerID, cost, "reserve:"+reqID); err != nil {
 		t.Fatalf("reserve balance for %s: %v", reqID, err)
 	}

@@ -66,7 +66,7 @@ func TestListModelsOpenRouterFields(t *testing.T) {
 	srv.SyncModelCatalog()
 
 	// Platform pricing: $0.05 / $0.20 per 1M tokens (micro-USD).
-	if err := st.SetModelPrice("platform", modelID, 50_000, 200_000); err != nil {
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: modelID, InputPrice: 50_000, OutputPrice: 200_000}); err != nil {
 		t.Fatal(err)
 	}
 

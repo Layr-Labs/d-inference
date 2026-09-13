@@ -242,11 +242,12 @@ v0.8.1's construction refusal and now overestimates v2 provider supply.
 - **Pricing**: market converged on ~0.1× cache reads (Anthropic, OpenAI
   GPT-5.6+, Gemini 90% off; DeepSeek's disk tier ~1/30–1/50×; DashScope
   implicit 0.2×/explicit 0.1×). OpenAI's `prompt_cache_key` is the precedent
-  for exposing affinity to clients. **Today our billing pays full prompt
-  tokens on a hit** — nothing in `coordinator/billing/` references cache
-  fields. That's provider-favorable (they get paid for skipped work) and
-  consumer-neutral (latency only). A pricing decision is a product question
-  to schedule, not a blocker.
+  for exposing affinity to clients. **Status (2026-09-10): cached-input pricing
+  landed** — `payments.Rates.CacheRead` bills the validated `cached_tokens`
+  at a per-model `cache_read_price`, defaulting to 0.5× the input price
+  (`DefaultCacheReadDiscountPercent = 50`), and the OpenRouter feed advertises
+  it as `input_cache_read` ([billing.md, invariant 5](../architecture/billing.md#invariants)).
+  Moving the default toward the market's ~0.1× is a per-model admin decision.
 - **Verifying hits**: no public mechanism proves a provider truly held cache.
   Composition that fits us: our existing chain-hash proof receipts (already
   stronger than anything public) + TTFT-distribution plausibility + (future)
@@ -311,7 +312,7 @@ on main (Qwen3VL.swift:1899), so the default-derived capability can't lie.
 | MTP active on adopted request | MTP-safe-on-paged work exists; verify under adoption in canary | Qwen sidecar phase must cover the capture-verify tape |
 | Provider fakes a hit | Must recompute anyway to answer correctly (pays the cost); proof receipts + quarantine catch hash lies | Stale-state fraud on hybrids is the real class — bit-exact gate + future activation commitments |
 | Cache hit vs TTFT reputation/deadlines | Excluded from calibration; prediction discarded | Already handled |
-| Billing on hit | Full prompt-token payment, no discount | Product decision; market is ~0.1× reads |
+| Billing on hit | Cached tokens at `cache_read_price` (default 0.5× input), see [billing.md](../architecture/billing.md#invariants) | Landed 2026-09-10; market is ~0.1× reads, tune per model |
 
 ## Part 7 — Recommended plan
 
@@ -351,9 +352,10 @@ anchor co-persist for the 3.6-VL variant); build on the WS-4.2 format; ship as
 opt-in per-model; canary same doctrine. This is the biggest TTFT win in the
 program and leapfrogs the public stacks on exactness.
 
-**Phase 4 — product surface.** Pricing for cache reads (market: ~0.1×),
-optional client affinity key (OpenAI `prompt_cache_key` precedent), TTL as a
-paid knob (Anthropic 5 min vs 1 h precedent).
+**Phase 4 — product surface.** Pricing for cache reads (landed at 0.5×
+input by default; market: ~0.1×), optional client affinity key (OpenAI
+`prompt_cache_key` precedent), TTL as a paid knob (Anthropic 5 min vs 1 h
+precedent).
 
 ## Open questions
 
@@ -362,6 +364,7 @@ paid knob (Anthropic 5 min vs 1 h precedent).
 2. Which production model carries the dynamic-time contract (cold-only today).
 3. Fate of the 2026-08-24 Qwen branch — abandoned or pending?
 4. Paged headroom model design — the real unlock for fleet-wide `.auto=paged`.
-5. Billing/pricing posture for hits (nothing in code ties cache to payment).
+5. ~~Billing/pricing posture for hits~~ — resolved: `payments.Rates.CacheRead`
+   (see Part 5 status note); the remaining question is the default ratio.
 6. Root cause of the contiguous SSD-tier divergence (worth knowing even if we
    standardize on paged: it is checkpoint-dependent and was never explained).

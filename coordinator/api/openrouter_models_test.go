@@ -3,6 +3,8 @@ package api
 import (
 	"reflect"
 	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/payments"
 )
 
 func TestMapQuantizationToOpenRouter(t *testing.T) {
@@ -111,18 +113,49 @@ func TestDefaultSamplingParameters(t *testing.T) {
 }
 
 func TestBuildModelPricing(t *testing.T) {
-	p := buildModelPricing(DefaultInputPricePerMillionForTest(), 200_000)
+	// Default rates: $0.05 input, $0.20 output, and the derived 50% cache-read
+	// discount ($0.025) per 1M tokens, rendered as OpenRouter per-token USD.
+	p := buildModelPricing(payments.DefaultRates())
 	if p.Prompt != "0.00000005" {
 		t.Errorf("prompt = %q, want 0.00000005", p.Prompt)
 	}
 	if p.Completion != "0.0000002" {
 		t.Errorf("completion = %q, want 0.0000002", p.Completion)
 	}
-	if p.Image != "0" || p.Request != "0" || p.InputCacheRead != "0" {
-		t.Errorf("image/request/input_cache_read should default to \"0\", got %q/%q/%q", p.Image, p.Request, p.InputCacheRead)
+	if p.InputCacheRead != "0.000000025" {
+		t.Errorf("input_cache_read = %q, want 0.000000025 (half the prompt rate)", p.InputCacheRead)
+	}
+	if p.Image != "0" || p.Request != "0" {
+		t.Errorf("image/request should be \"0\", got %q/%q", p.Image, p.Request)
+	}
+
+	// An explicit cache-read rate is advertised verbatim; zero is a genuinely
+	// free SKU and renders as "0".
+	free := buildModelPricing(payments.Rates{Input: 50_000, Output: 200_000, CacheRead: 0})
+	if free.InputCacheRead != "0" {
+		t.Errorf("free cache read = %q, want 0", free.InputCacheRead)
+	}
+	explicit := buildModelPricing(payments.Rates{Input: 300_000, Output: 1_200_000, CacheRead: 30_000})
+	if explicit.InputCacheRead != "0.00000003" {
+		t.Errorf("explicit cache read = %q, want 0.00000003", explicit.InputCacheRead)
 	}
 }
 
-// DefaultInputPricePerMillionForTest mirrors the payments default so the test
-// stays readable without importing the constant directly here.
-func DefaultInputPricePerMillionForTest() int64 { return 50_000 }
+// The feed's pricing block must be a pure function of the settlement rates so
+// the advertised prices and the debit can never drift apart.
+func TestBuildModelPricingMirrorsSettlementRates(t *testing.T) {
+	rates := payments.Rates{Input: 123_456, Output: 654_321, CacheRead: 12_345}
+	p := buildModelPricing(rates)
+	for name, tc := range map[string]struct {
+		got  string
+		rate int64
+	}{
+		"prompt":           {p.Prompt, rates.Input},
+		"completion":       {p.Completion, rates.Output},
+		"input_cache_read": {p.InputCacheRead, rates.CacheRead},
+	} {
+		if want := payments.FormatPerTokenUSD(tc.rate); tc.got != want {
+			t.Errorf("%s = %q, want %q", name, tc.got, want)
+		}
+	}
+}

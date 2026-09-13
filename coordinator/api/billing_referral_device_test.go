@@ -86,7 +86,7 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Calculate expected amounts.
-	totalCost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
+	totalCost := payments.DefaultRates().CostWithMinimum(billableUsage(usage))
 	expectedProviderPayout := payments.ProviderPayout(totalCost) // provider payout at the default fee
 	expectedPlatformFee := payments.PlatformFee(totalCost)       // platform fee at the default rate (0% during alpha)
 
@@ -250,7 +250,7 @@ func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Step 7: Verify earnings went to the linked account.
-	expectedPayout := payments.ProviderPayout(payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens))
+	expectedPayout := payments.ProviderPayout(payments.DefaultRates().CostWithMinimum(billableUsage(usage)))
 
 	accountBalance := st.GetBalance(accountID)
 	if accountBalance != expectedPayout {
@@ -376,8 +376,8 @@ func TestIntegration_MultiNodeSameAccount(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Verify the SAME account got credited twice.
-	expectedPayout1 := payments.ProviderPayout(payments.CalculateCost(model1, usage1.PromptTokens, usage1.CompletionTokens))
-	expectedPayout2 := payments.ProviderPayout(payments.CalculateCost(model2, usage2.PromptTokens, usage2.CompletionTokens))
+	expectedPayout1 := payments.ProviderPayout(payments.DefaultRates().CostWithMinimum(billableUsage(usage1)))
+	expectedPayout2 := payments.ProviderPayout(payments.DefaultRates().CostWithMinimum(billableUsage(usage2)))
 	expectedTotalBalance := expectedPayout1 + expectedPayout2
 
 	actualBalance := st.GetBalance(accountID)

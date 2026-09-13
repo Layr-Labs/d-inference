@@ -1552,9 +1552,19 @@ func explicitMaxTokens(parsed map[string]any) int {
 // undercharge. Provider-specific custom prices are not known until dispatch
 // commits to a provider, so a provider that sets a custom price above the
 // platform rate accepts revenue capped at the reservation.
+//
+// Prefix-cache hits are unknown until the provider reports them and only ever
+// lower the bill, so the reservation prices every prompt token at the full
+// input rate; settlement refunds the cache-read discount.
 func (s *Server) reservationCost(model string, promptTokens, maxTokens int) int64 {
-	customIn, customOut, hasCustom := s.store.GetModelPrice("platform", model)
-	return payments.CalculateCostWithOverrides(model, promptTokens, maxTokens, customIn, customOut, hasCustom)
+	return payments.RatesFor(s.store.GetModelPrice("platform", model)).CostWithMinimum(
+		reservationUsage(promptTokens, maxTokens))
+}
+
+// reservationUsage is the worst-case billable usage of a request: the full
+// prompt prefilled (no cache hit) and the whole output bound generated.
+func reservationUsage(promptTokens, maxTokens int) payments.Usage {
+	return payments.Usage{PromptTokens: promptTokens, CompletionTokens: maxTokens}
 }
 
 func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference string) bool {
@@ -1695,11 +1705,9 @@ func providerPricingKeys(provider *registry.Provider) string {
 }
 
 func (s *Server) providerReservationCost(provider *registry.Provider, model string, promptTokens, maxTokens int) int64 {
-	accountID := providerPricingKeys(provider)
-	if accountID != "" {
-		customIn, customOut, hasCustom := s.store.GetModelPrice(accountID, model)
-		if hasCustom {
-			return payments.CalculateCostWithOverrides(model, promptTokens, maxTokens, customIn, customOut, true)
+	if accountID := providerPricingKeys(provider); accountID != "" {
+		if price, ok := s.store.GetModelPrice(accountID, model); ok {
+			return payments.RatesFor(price, true).CostWithMinimum(reservationUsage(promptTokens, maxTokens))
 		}
 	}
 	return s.reservationCost(model, promptTokens, maxTokens)
@@ -2545,6 +2553,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 				JobID:            jobID,
 				Model:            model,
 				PromptTokens:     u.PromptTokens,
+				CachedTokens:     u.CachedTokens,
 				CompletionTokens: u.CompletionTokens,
 				CostMicroUSD:     u.CostMicroUSD,
 				Timestamp:        u.CreatedAt,

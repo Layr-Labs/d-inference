@@ -89,24 +89,13 @@ type APIKeyStore interface {
 // UsageStore records inference usage events and settled payments and serves the
 // usage/stats aggregations (totals, time series, geo, leaderboards).
 type UsageStore interface {
-	// RecordUsage logs an inference usage event.
-	RecordUsage(providerID, consumerKey, model string, promptTokens, completionTokens int)
-
-	// RecordUsageWithCost logs an inference usage event including request ID and cost.
-	RecordUsageWithCost(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64)
-
-	// RecordUsageWithCostAndLocation logs an inference usage event with an
-	// approximate request-origin location. Raw IP addresses are not stored.
-	RecordUsageWithCostAndLocation(providerID, consumerKey, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation)
-
-	// RecordUsageFull logs an inference usage event with full attribution
-	// including the originating API key ID (for per-key usage and spend
-	// tracking). keyID may be empty for legacy/account-scoped attribution.
-	RecordUsageFull(providerID, consumerKey, keyID, model, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation)
-
-	// RecordUsageFullWithPublicModel logs the concrete billing/statistics model
-	// plus the optional consumer-facing model name returned by usage history.
-	RecordUsageFullWithPublicModel(providerID, consumerKey, keyID, model, publicModel, requestID string, promptTokens, completionTokens int, costMicroUSD int64, requestLocation *ProviderLocation)
+	// RecordUsage logs one settled inference usage event: the concrete billing
+	// model plus the optional consumer-facing PublicModel, the token breakdown
+	// (prompt, cached, completion), the settled cost, the originating API key
+	// (KeyID may be empty for account-scoped attribution) and the approximate
+	// request-origin location (raw IP addresses are not stored). The store
+	// assigns the timestamp.
+	RecordUsage(rec UsageRecord)
 
 	// RecordPayment records a settled payment between consumer and provider.
 	RecordPayment(txHash, consumerAddr, providerAddr, amountUSD, model string, promptTokens, completionTokens int, memo string) error
@@ -330,13 +319,14 @@ type BillingStore interface {
 
 	// --- Custom Pricing ---
 
-	// SetModelPrice sets a custom price override for a model on an account.
-	// Input and output prices are in micro-USD per 1M tokens.
-	SetModelPrice(accountID, model string, inputPrice, outputPrice int64) error
+	// SetModelPrice upserts the price override keyed by price.AccountID and
+	// price.Model. All prices are micro-USD per 1M tokens; a nil CacheReadPrice
+	// is stored as unset (billing derives it from the input price).
+	SetModelPrice(price ModelPrice) error
 
-	// GetModelPrice returns the custom price for a model on an account.
-	// Returns (0, 0, false) if no custom price is set.
-	GetModelPrice(accountID, model string) (inputPrice, outputPrice int64, ok bool)
+	// GetModelPrice returns the custom price for a model on an account, or
+	// ok=false when none is set.
+	GetModelPrice(accountID, model string) (price ModelPrice, ok bool)
 
 	// ListModelPrices returns all custom price overrides for an account.
 	ListModelPrices(accountID string) []ModelPrice

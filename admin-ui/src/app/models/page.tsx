@@ -1,10 +1,5 @@
-import {
-  listModels,
-  countModels,
-  type ModelRow,
-  DEFAULT_INPUT_PRICE_MICRO,
-  DEFAULT_OUTPUT_PRICE_MICRO,
-} from "@/lib/queries/models";
+import { listModels, countModels, type ModelRow } from "@/lib/queries/models";
+import { DEFAULT_INPUT_PRICE_MICRO, DEFAULT_OUTPUT_PRICE_MICRO, derivedCacheReadMicro } from "@/lib/pricing";
 import { DataTable, type Column } from "@/components/DataTable";
 import { formatNumber, formatUSDFromMicro } from "@/lib/format";
 
@@ -26,6 +21,21 @@ function PriceCell({ micro, fallback }: { micro: string | null; fallback: number
   return (
     <span className="text-[var(--text-faint)]">
       {formatUSDFromMicro(fallback)} (default)
+    </span>
+  );
+}
+
+// Cache-read rate for prompt tokens a provider serves from its prefix cache.
+// An unset row bills the coordinator's derived discount off the effective
+// input price — show that figure tagged "(derived)" so it reads as computed,
+// not configured.
+function CacheReadPriceCell({ m }: { m: ModelRow }) {
+  if (m.cache_read_price_micro != null && m.cache_read_price_micro !== "") {
+    return <>{formatUSDFromMicro(m.cache_read_price_micro)}</>;
+  }
+  return (
+    <span className="text-[var(--text-faint)]">
+      {formatUSDFromMicro(derivedCacheReadMicro(m.input_price_micro))} (derived)
     </span>
   );
 }
@@ -82,6 +92,12 @@ const COLUMNS: Column<ModelRow>[] = [
     align: "right",
     render: (m) => <PriceCell micro={m.output_price_micro} fallback={DEFAULT_OUTPUT_PRICE_MICRO} />,
   },
+  {
+    key: "cache_read_price_micro",
+    header: "Cached in $/1M",
+    align: "right",
+    render: (m) => <CacheReadPriceCell m={m} />,
+  },
 ];
 
 export default async function ModelsPage() {
@@ -94,7 +110,9 @@ export default async function ModelsPage() {
       <p className="text-sm text-[var(--text-dim)]">
         All registered models, ordered by name. Active version and size come from the
         currently-promoted version (if any). Prices are the platform rate per 1M tokens;
-        models without an explicit price use the coordinator default.
+        models without an explicit price use the coordinator default. &ldquo;Cached in&rdquo; is
+        what prompt tokens served from a provider&apos;s prefix cache cost; unset rows derive
+        it as half the input rate.
       </p>
       <DataTable columns={COLUMNS} rows={rows} empty="No models." />
     </div>

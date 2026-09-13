@@ -203,7 +203,7 @@ func TestQwen38RegistrySurfaceFixture(t *testing.T) {
 	if err := st.PromoteModelVersion(qwen38ConcreteModel, version); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetModelPrice("platform", qwen38ConcreteModel, 50_000, 200_000); err != nil {
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: qwen38ConcreteModel, InputPrice: 50_000, OutputPrice: 200_000}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.UpsertModelAlias(&store.ModelAlias{

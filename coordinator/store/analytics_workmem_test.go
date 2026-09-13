@@ -176,7 +176,7 @@ func TestUsageAnalyticsRunInWorkMemTransaction(t *testing.T) {
 		t.Fatalf("upsert provider: %v", err)
 	}
 	for i := 0; i < 3; i++ {
-		s.RecordUsageWithCostAndLocation(providerID, "consumer", "model", uniqueID("req"), 10, 20, 0, loc)
+		s.RecordUsage(UsageRecord{ProviderID: providerID, ConsumerKey: "consumer", Model: "model", RequestID: uniqueID("req"), PromptTokens: 10, CompletionTokens: 20, RequestLocation: loc})
 	}
 	since := time.Now().Add(-24 * time.Hour)
 

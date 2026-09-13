@@ -159,26 +159,27 @@ func defaultSamplingParameters() []string {
 	}
 }
 
-// buildModelPricing resolves the per-token USD pricing block for a model from
-// micro-USD-per-million-token rates.
-func buildModelPricing(inputPerMillion, outputPerMillion int64) *types.ModelPricing {
+// buildModelPricing renders the settlement rates as the OpenRouter per-token
+// USD pricing block. input_cache_read is the rate cached prompt tokens
+// actually settle at (payments.Rates.CacheRead) — the same figure
+// handleCompleteAt bills — so OpenRouter's cost for a request with
+// prompt_tokens_details.cached_tokens equals the debit. Caching is
+// provider-initiated and unbilled as a write, so no input_cache_write SKU is
+// declared (OpenRouter: omit SKUs you don't bill).
+func buildModelPricing(rates payments.Rates) *types.ModelPricing {
 	return &types.ModelPricing{
-		Prompt:         payments.FormatPerTokenUSD(inputPerMillion),
-		Completion:     payments.FormatPerTokenUSD(outputPerMillion),
+		Prompt:         payments.FormatPerTokenUSD(rates.Input),
+		Completion:     payments.FormatPerTokenUSD(rates.Output),
 		Image:          "0",
 		Request:        "0",
-		InputCacheRead: "0",
+		InputCacheRead: payments.FormatPerTokenUSD(rates.CacheRead),
 	}
 }
 
-// resolvePlatformPricing returns the platform-level input/output micro-USD
-// per-million rates for a model, falling back to the global defaults when no
-// override is configured.
-func (s *Server) resolvePlatformPricing(model string) (inputPerMillion, outputPerMillion int64) {
-	if in, out, ok := s.store.GetModelPrice("platform", model); ok {
-		return in, out
-	}
-	return payments.DefaultInputPricePerMillion, payments.DefaultOutputPricePerMillion
+// resolvePlatformPricing returns the platform-level settlement rates for a
+// model, falling back to the global defaults when no price row is configured.
+func (s *Server) resolvePlatformPricing(model string) payments.Rates {
+	return payments.RatesFor(s.store.GetModelPrice("platform", model))
 }
 
 // activeCatalogLookups builds the two lookups that the model-listing endpoints
@@ -229,10 +230,9 @@ type openRouterModelFields struct {
 // values when hasReg is false (a model present in routing but without a
 // registry record).
 func (s *Server) openRouterModelFieldsFor(modelID, rawQuantization string, reg store.ModelRegistryEntry, hasReg bool) openRouterModelFields {
-	inPM, outPM := s.resolvePlatformPricing(modelID)
 	f := openRouterModelFields{
 		Quantization:                mapQuantizationToOpenRouter(rawQuantization),
-		Pricing:                     buildModelPricing(inPM, outPM),
+		Pricing:                     buildModelPricing(s.resolvePlatformPricing(modelID)),
 		SupportedSamplingParameters: defaultSamplingParameters(),
 	}
 	if hasReg {

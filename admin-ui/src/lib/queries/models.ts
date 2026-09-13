@@ -18,21 +18,23 @@ export interface ModelRow {
   file_count: number | null;
   aggregate_sha256: string | null;
   // Platform pricing, micro-USD per 1M tokens (null = uses the coordinator
-  // default fallback). BIGINT → string from pg.
+  // default fallback). BIGINT → string from pg. cache_read_price_micro is the
+  // rate for prompt tokens served from a provider's prefix cache; null means
+  // the row sets none and the coordinator derives it from the input price.
   input_price_micro: string | null;
   output_price_micro: string | null;
+  cache_read_price_micro: string | null;
   created_at: string;
   updated_at: string;
 }
 
-// Coordinator fallback when a model has no platform price row
-// (payments.DefaultInputPricePerMillion / DefaultOutputPricePerMillion).
-export const DEFAULT_INPUT_PRICE_MICRO = 50_000;
-export const DEFAULT_OUTPUT_PRICE_MICRO = 200_000;
 
 // All registered models, joined to their active version + that version's size.
 // LEFT JOINs so models without an active/ready version still show (size "—").
 // capabilities (TEXT[]) comes back from pg as a JS string array.
+// cache_read_price is read through to_jsonb so the query still succeeds against
+// a replica the coordinator has not migrated yet (the key is simply absent →
+// NULL → shown as the derived rate) instead of failing the whole page.
 export async function listModels(limit = 200): Promise<ModelRow[]> {
   const rows = await query<
     Omit<ModelRow, "min_ram_gb" | "file_count" | "capabilities"> & {
@@ -58,6 +60,7 @@ export async function listModels(limit = 200): Promise<ModelRow[]> {
             mv.aggregate_sha256,
             mp.input_price       AS input_price_micro,
             mp.output_price      AS output_price_micro,
+            (to_jsonb(mp) ->> 'cache_read_price')::bigint AS cache_read_price_micro,
             mr.created_at,
             mr.updated_at
        FROM model_registry mr

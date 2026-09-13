@@ -101,8 +101,8 @@ func TestStatsIncludesExactLast24hUsageTotals(t *testing.T) {
 	st := store.NewMemory(store.Config{})
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 
-	st.RecordUsageWithCostAndLocation("provider-a", "consumer", "model", "one", 10, 20, 0, nil)
-	st.RecordUsageWithCostAndLocation("provider-b", "consumer", "model", "two", 30, 40, 0, nil)
+	st.RecordUsage(store.UsageRecord{ProviderID: "provider-a", ConsumerKey: "consumer", Model: "model", RequestID: "one", PromptTokens: 10, CompletionTokens: 20})
+	st.RecordUsage(store.UsageRecord{ProviderID: "provider-b", ConsumerKey: "consumer", Model: "model", RequestID: "two", PromptTokens: 30, CompletionTokens: 40})
 
 	rr := httptest.NewRecorder()
 	srv.refreshStatsGeography()
@@ -160,12 +160,12 @@ func TestStatsAggregatesRequestLocationsWithPrivacyFloor(t *testing.T) {
 		if i%2 == 1 {
 			providerID = "provider-b"
 		}
-		st.RecordUsageWithCostAndLocation(providerID, "consumer", "model", "sf", 10, 20, 0, sf)
+		st.RecordUsage(store.UsageRecord{ProviderID: providerID, ConsumerKey: "consumer", Model: "model", RequestID: "sf", PromptTokens: 10, CompletionTokens: 20, RequestLocation: sf})
 	}
 	for i := 0; i < minRequestsPerCityBucket-1; i++ {
-		st.RecordUsageWithCostAndLocation("provider-c", "consumer", "model", "nyc", 5, 10, 0, nyc)
+		st.RecordUsage(store.UsageRecord{ProviderID: "provider-c", ConsumerKey: "consumer", Model: "model", RequestID: "nyc", PromptTokens: 5, CompletionTokens: 10, RequestLocation: nyc})
 	}
-	st.RecordUsageWithCostAndLocation("provider-d", "consumer", "model", "unknown", 1, 2, 0, nil)
+	st.RecordUsage(store.UsageRecord{ProviderID: "provider-d", ConsumerKey: "consumer", Model: "model", RequestID: "unknown", PromptTokens: 1, CompletionTokens: 2})
 
 	rr := httptest.NewRecorder()
 	srv.refreshStatsGeography()
@@ -233,7 +233,7 @@ func TestStatsAggregatesRequestFlowsToProviderLocations(t *testing.T) {
 	}
 	addProviderForStats(t, reg, "provider-sf", "hardware", providerLoc)
 	for i := 0; i < 5; i++ {
-		st.RecordUsageWithCostAndLocation("provider-sf", "consumer", "model", "flow", 10, 20, 0, consumerLoc)
+		st.RecordUsage(store.UsageRecord{ProviderID: "provider-sf", ConsumerKey: "consumer", Model: "model", RequestID: "flow", PromptTokens: 10, CompletionTokens: 20, RequestLocation: consumerLoc})
 	}
 
 	rr := httptest.NewRecorder()

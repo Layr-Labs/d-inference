@@ -134,7 +134,7 @@ func TestChatCompletionsRemoteMediaTopsUpReservationAfterInlining(t *testing.T) 
 	makeVisionRoutableProvider(t, srv.registry, "vision-topup", "test")
 	srv.mediaResolver = mediafetch.NewResolver(loopbackMediaConfig(), srv.logger)
 	// Non-zero input price so the prompt-token delta shows up in the reservation.
-	if err := st.SetModelPrice("platform", "test", 1_000_000, 0); err != nil {
+	if err := st.SetModelPrice(store.ModelPrice{AccountID: "platform", Model: "test", InputPrice: 1_000_000, OutputPrice: 0}); err != nil {
 		t.Fatal(err)
 	}
 

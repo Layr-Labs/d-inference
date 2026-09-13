@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-09 · commit `af7a74126`
+> Last updated: 2026-09-13 · commit `453b37667`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -18,6 +18,14 @@ JSON keys are snake_case and identical in the Go tags and the Swift
 Terminal `profile` objects can include optional schema-1
 [`deadline_decision`](prediction-decision-telemetry.md#provider-fields).
 This does not add a message type or change the public error code.
+
+The dedicated sandbox host connection uses a separate versioned protocol. Its
+[file operation and result schema](sandbox-files.md#host-wire-schema) includes
+account-authorized workspace transfer metadata and bounded bytes; its lifecycle
+contract, including fenced `sandbox_start` and its `supports_start` capability,
+is described in [sandbox-api.md](sandbox-api.md#start-host-wire-contract). The Go/Swift sources
+are `coordinator/protocol/sandbox_files.go` and
+`sandbox-macos/Sources/SandboxCore/SandboxFileProtocol.swift`.
 
 ## Envelope and the single-parse rule
 

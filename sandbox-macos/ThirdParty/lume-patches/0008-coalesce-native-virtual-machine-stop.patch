@@ -1,0 +1,260 @@
+diff --git a/libs/lume/src/Virtualization/VMStopCoordinator.swift b/libs/lume/src/Virtualization/VMStopCoordinator.swift
+new file mode 100644
+index 000000000..b1c041a1d
+--- /dev/null
++++ b/libs/lume/src/Virtualization/VMStopCoordinator.swift
+@@ -0,0 +1,100 @@
++import Foundation
++
++enum VMStopError: Error, Equatable {
++    case callbackTimedOut
++    case terminalStateUnproven
++}
++
++/// All callers await one native operation. Cancelling a caller cannot cancel
++/// the stop or authorize another framework transition while it is in flight.
++@MainActor
++final class VMStopCoordinator {
++    private let timeoutSeconds: TimeInterval
++    private var attempt: VMStopAttempt?
++
++    init(timeoutSeconds: TimeInterval = 15) {
++        self.timeoutSeconds = timeoutSeconds
++    }
++
++    func stop(
++        operation: (@escaping @Sendable (Result<Void, Error>) -> Void) -> Void
++    ) async throws {
++        let current: VMStopAttempt
++        if let existing = attempt, !existing.nativeFailed {
++            current = existing
++        } else {
++            current = VMStopAttempt(timeoutSeconds: timeoutSeconds)
++            attempt = current
++            operation { current.complete($0) }
++        }
++        do {
++            try await current.wait()
++        } catch {
++            // An expired waiter is not a completed native stop. Keep its
++            // attempt so retries cannot issue another overlapping VZ.stop.
++            if current.nativeFailed, attempt === current { attempt = nil }
++            throw error
++        }
++    }
++}
++
++private final class VMStopAttempt: @unchecked Sendable {
++    private let lock = NSLock()
++    private var nativeResult: Result<Void, Error>?
++    private var expired = false
++    private var waiters: [CheckedContinuation<Void, Error>] = []
++    private var deadline: DispatchWorkItem?
++
++    init(timeoutSeconds: TimeInterval) {
++        let deadline = DispatchWorkItem { [weak self] in self?.expire() }
++        self.deadline = deadline
++        DispatchQueue.global(qos: .userInitiated).asyncAfter(
++            deadline: .now() + timeoutSeconds, execute: deadline)
++    }
++
++    var nativeFailed: Bool {
++        lock.lock()
++        defer { lock.unlock() }
++        if case .failure = nativeResult { return true }
++        return false
++    }
++
++    func wait() async throws {
++        // No cancellation handler: stopping the VM is required even after
++        // every original caller has been cancelled.
++        try await withCheckedThrowingContinuation { continuation in
++            lock.lock()
++            let result = nativeResult ?? (expired ? .failure(VMStopError.callbackTimedOut) : nil)
++            if let result {
++                lock.unlock()
++                continuation.resume(with: result)
++            } else {
++                waiters.append(continuation)
++                lock.unlock()
++            }
++        }
++    }
++
++    func complete(_ result: Result<Void, Error>) {
++        lock.lock()
++        guard nativeResult == nil else { lock.unlock(); return }
++        nativeResult = result
++        let pending = waiters
++        waiters.removeAll()
++        let deadline = self.deadline
++        self.deadline = nil
++        lock.unlock()
++        deadline?.cancel()
++        pending.forEach { $0.resume(with: result) }
++    }
++
++    private func expire() {
++        lock.lock()
++        guard nativeResult == nil, !expired else { lock.unlock(); return }
++        expired = true
++        let pending = waiters
++        waiters.removeAll()
++        lock.unlock()
++        pending.forEach { $0.resume(throwing: VMStopError.callbackTimedOut) }
++    }
++}
+diff --git a/libs/lume/src/Virtualization/VMVirtualizationService.swift b/libs/lume/src/Virtualization/VMVirtualizationService.swift
+index e2f5ae1c3..eb87a8b4d 100644
+--- a/libs/lume/src/Virtualization/VMVirtualizationService.swift
++++ b/libs/lume/src/Virtualization/VMVirtualizationService.swift
+@@ -52,6 +52,7 @@ class BaseVirtualizationService: VMVirtualizationService {
+     private let lifecycleMonitor: VMVirtualMachineLifecycleMonitor
+     private var guestBridge: DarkbloomGuestBridge?
+     private var stopping = false
++    private let stopCoordinator = VMStopCoordinator()
+ 
+     var state: VZVirtualMachine.State {
+         let handle = virtualMachineHandle
+@@ -128,15 +129,21 @@ class BaseVirtualizationService: VMVirtualizationService {
+         guestBridge = nil
+         let handle = virtualMachineHandle
+         let monitor = lifecycleMonitor
+-        try await withCheckedThrowingContinuation {
+-            (continuation: CheckedContinuation<Void, Error>) in
++        try await stopCoordinator.stop { completion in
+             handle.queue.async {
++                if handle.machine.state == .stopped {
++                    monitor.stoppedByHost()
++                    completion(.success(()))
++                    return
++                }
+                 handle.machine.stop { error in
+                     if let error = error {
+-                        continuation.resume(throwing: error)
++                        completion(.failure(error))
++                    } else if handle.machine.state != .stopped {
++                        completion(.failure(VMStopError.terminalStateUnproven))
+                     } else {
+                         monitor.stoppedByHost()
+-                        continuation.resume()
++                        completion(.success(()))
+                     }
+                 }
+             }
+diff --git a/libs/lume/tests/VMStopCoordinatorTests.swift b/libs/lume/tests/VMStopCoordinatorTests.swift
+new file mode 100644
+index 000000000..8b8bff354
+--- /dev/null
++++ b/libs/lume/tests/VMStopCoordinatorTests.swift
+@@ -0,0 +1,110 @@
++import Foundation
++import Testing
++@testable import lume
++
++@Suite("Coalesced native VM stop")
++@MainActor
++struct VMStopCoordinatorTests {
++    @Test func concurrentAndCancelledCallersShareOneNativeStop() async throws {
++        let coordinator = VMStopCoordinator(), backend = StopBackend()
++        let first = Task { try await coordinator.stop(operation: backend.begin) }
++        await backend.waitForStarts(1)
++        first.cancel()
++        var joined = false
++        let second = Task {
++            joined = true
++            try await coordinator.stop(operation: backend.begin)
++        }
++        while !joined { await Task.yield() }
++        #expect(backend.starts == 1)
++        backend.finish(.success(()))
++        try await first.value
++        try await second.value
++        try await coordinator.stop(operation: backend.begin)
++        #expect(backend.starts == 1, "a proven stopped service is idempotent")
++    }
++
++    @Test func actualCallbackFailurePermitsOneNewAttempt() async throws {
++        let coordinator = VMStopCoordinator(), backend = StopBackend()
++        let first = Task { try await coordinator.stop(operation: backend.begin) }
++        await backend.waitForStarts(1)
++        var joined = false
++        let second = Task {
++            joined = true
++            try await coordinator.stop(operation: backend.begin)
++        }
++        while !joined { await Task.yield() }
++        backend.finish(.failure(StopBackend.Failure.native))
++        for task in [first, second] {
++            do { try await task.value; Issue.record("failed native callback must fail every waiter") }
++            catch { #expect(error as? StopBackend.Failure == .native) }
++        }
++        #expect(backend.starts == 1)
++        let retry = Task { try await coordinator.stop(operation: backend.begin) }
++        await backend.waitForStarts(2)
++        backend.finish(.success(()))
++        try await retry.value
++        #expect(backend.starts == 2)
++    }
++
++    @Test func timedOutCallbackRetainsItsAttemptAndCannotIssueAnotherStop() async throws {
++        let coordinator = VMStopCoordinator(timeoutSeconds: 0.03), backend = StopBackend()
++        let first = Task { try await coordinator.stop(operation: backend.begin) }
++        await backend.waitForStarts(1)
++        first.cancel()
++        do { try await first.value; Issue.record("missing callback must time out") }
++        catch { #expect(error as? VMStopError == .callbackTimedOut) }
++        do { try await coordinator.stop(operation: backend.begin); Issue.record("unresolved stop must stay failed closed") }
++        catch { #expect(error as? VMStopError == .callbackTimedOut) }
++        #expect(backend.starts == 1)
++        // Only a real callback failure permits retry after the deadline.
++        backend.finish(.failure(StopBackend.Failure.native))
++        let retry = Task { try await coordinator.stop(operation: backend.begin) }
++        await backend.waitForStarts(2)
++        backend.finish(.success(()))
++        try await retry.value
++    }
++
++    @Test func lateSuccessfulCallbackProvidesTerminalProofWithoutSecondNativeStop() async throws {
++        let coordinator = VMStopCoordinator(timeoutSeconds: 0.03), backend = StopBackend()
++        let first = Task { try await coordinator.stop(operation: backend.begin) }
++        await backend.waitForStarts(1)
++        do { try await first.value; Issue.record("terminal state is not proven before the callback") }
++        catch { #expect(error as? VMStopError == .callbackTimedOut) }
++        backend.finish(.success(()))
++        try await coordinator.stop(operation: backend.begin)
++        #expect(backend.starts == 1)
++    }
++
++    @Test func unprovenTerminalStateIsNotCachedAsSuccess() async throws {
++        let coordinator = VMStopCoordinator(), backend = StopBackend()
++        let first = Task { try await coordinator.stop(operation: backend.begin) }
++        await backend.waitForStarts(1)
++        backend.finish(.failure(VMStopError.terminalStateUnproven))
++        do { try await first.value; Issue.record("nonterminal state must fail") }
++        catch { #expect(error as? VMStopError == .terminalStateUnproven) }
++        let retry = Task { try await coordinator.stop(operation: backend.begin) }
++        await backend.waitForStarts(2)
++        backend.finish(.success(()))
++        try await retry.value
++    }
++}
++
++@MainActor
++private final class StopBackend {
++    enum Failure: Error { case native }
++    private(set) var starts = 0
++    private var completion: (@Sendable (Result<Void, Error>) -> Void)?
++    func begin(_ completion: @escaping @Sendable (Result<Void, Error>) -> Void) {
++        starts += 1
++        self.completion = completion
++    }
++    func finish(_ result: Result<Void, Error>) {
++        let completion = self.completion
++        self.completion = nil
++        completion?(result)
++    }
++    func waitForStarts(_ count: Int) async {
++        while starts < count { await Task.yield() }
++    }
++}

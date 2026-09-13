@@ -221,6 +221,13 @@ func sandboxSchemaMigrations() []string {
 		)`,
 		`ALTER TABLE sandbox_commands
 			ADD COLUMN IF NOT EXISTS dispatch_attempts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sandbox_commands ADD COLUMN IF NOT EXISTS request_digest TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sandbox_commands ADD COLUMN IF NOT EXISTS payload_expired BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE sandbox_commands ADD COLUMN IF NOT EXISTS payload_expired_at TIMESTAMPTZ`,
+		`CREATE INDEX IF NOT EXISTS idx_sandbox_commands_payload_retention
+			ON sandbox_commands(completed_at, id)
+			WHERE NOT payload_expired AND NOT cancellation_pending
+			  AND state IN ('succeeded', 'failed', 'timed_out', 'cancelled', 'lost')`,
 		`ALTER TABLE sandbox_commands
 			ADD COLUMN IF NOT EXISTS last_dispatched_at TIMESTAMPTZ`,
 		`ALTER TABLE sandbox_commands

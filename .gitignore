@@ -95,3 +95,6 @@ docs/RUNBOOK.md
 
 # Local performance binaries and raw diagnostic captures
 /artifacts/
+
+# Local sandbox VM images, signed runtime builds, and physical test assets.
+/.sandbox-lab/

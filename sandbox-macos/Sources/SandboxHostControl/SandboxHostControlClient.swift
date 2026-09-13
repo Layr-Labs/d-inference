@@ -118,6 +118,7 @@ public enum SandboxHostControlResponse: Sendable {
     case none
     case operation(SandboxWireOperationStatus)
     case command(SandboxWireCommandStatus)
+    case file(SandboxWireFileResult)
     case failure(SandboxWireHostFailure)
 }
 

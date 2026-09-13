@@ -26,6 +26,9 @@ func (c *Controller) Execute(
 	if request.TimeoutSeconds == 0 {
 		request.TimeoutSeconds = CommandTimeoutSeconds
 	}
+	if request.WorkingDirectory == "" {
+		request.WorkingDirectory = "/workspace"
+	}
 	if len(request.Environment) == 0 {
 		request.Environment = nil
 	}

@@ -21,7 +21,8 @@ const (
 )
 
 func (s *Server) handleSandboxHostWS(w http.ResponseWriter, r *http.Request) {
-	if s.sandboxHostAuth == nil || !s.sandboxHostAuth.Enabled() {
+	if !s.sandboxService.Enabled || s.sandboxes == nil ||
+		s.sandboxHostAuth == nil || !s.sandboxHostAuth.Enabled() {
 		http.Error(w, "sandbox host service unavailable", http.StatusServiceUnavailable)
 		return
 	}

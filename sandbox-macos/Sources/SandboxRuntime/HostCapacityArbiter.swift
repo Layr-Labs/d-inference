@@ -9,6 +9,14 @@ public struct SandboxHostCapacityArbiter: Sendable {
     private let availableStorageBytes: @Sendable () throws -> UInt64
     private let storageIdentity: SandboxStorageVolumeIdentity
 
+    public static func openExisting(stateDirectory: URL, storageDirectory: URL) throws -> Self {
+        let identity = try SandboxStorageVolumeInspector().inspect(path: storageDirectory).identity
+        let store = try SandboxCapacityStateStore(stateDirectory: stateDirectory, storageIdentity: identity)
+        let current = try store.read()
+        return try Self(stateDirectory: stateDirectory, storageDirectory: storageDirectory,
+                        policy: current.effectivePolicy)
+    }
+
     public init(
         stateDirectory: URL,
         storageDirectory: URL,
@@ -161,12 +169,14 @@ public struct SandboxHostCapacityArbiter: Sendable {
                     throw SandboxCapacityError.leaseResourceMismatch
                 }
             }
-            if operation.requiresActiveLease {
+            if operation.requiresDedicatedHost {
                 guard state.mode == .sandboxDedicated else {
                     throw SandboxCapacityError.hostNotAcceptingSandboxes(
                         state.mode
                     )
                 }
+            }
+            if operation.requiresActiveLease {
                 guard lease.expiresAt > now else {
                     throw SandboxCapacityError.leaseExpired
                 }
@@ -340,17 +350,38 @@ public struct SandboxHostCapacityArbiter: Sendable {
         )
     }
 
+    /// Rotate authority before resuming a stopped VM. A previously queued stop
+    /// carries the older token and cannot act on the resumed machine.
+    public func resume(
+        scope: SandboxOperationScope,
+        fencingToken: SandboxFencingToken,
+        expiresAt: Date
+    ) throws -> SandboxCapacityLease {
+        try renew(scope: scope, requestedFencingToken: fencingToken,
+                  expiresAt: expiresAt, resuming: true)
+    }
+
     private func renew(
         scope: SandboxOperationScope,
         requestedFencingToken: SandboxFencingToken?,
-        expiresAt: Date
+        expiresAt: Date,
+        resuming: Bool = false
     ) throws -> SandboxCapacityLease {
-        try requireCurrentScope(scope)
+        if resuming {
+            let state = try store.read()
+            let index = try Self.leaseIndex(for: scope, in: state.leases)
+            let token = state.leases[index].scope.fencingToken
+            guard let requestedFencingToken, requestedFencingToken > scope.fencingToken,
+                  token == scope.fencingToken || token == requestedFencingToken
+            else { throw SandboxCapacityError.staleFencingToken }
+        } else {
+            try requireCurrentScope(scope)
+        }
         let operationLock = try store.acquireLeaseOperationLock(
             sandboxID: scope.sandboxID
         )
         defer { withExtendedLifetime(operationLock) {} }
-        return try store.update { state in
+        return try store.update(forcePublication: resuming) { state in
             let now = currentDate()
             guard state.mode == .sandboxDedicated else {
                 throw SandboxCapacityError.hostNotAcceptingSandboxes(state.mode)
@@ -362,6 +393,19 @@ public struct SandboxHostCapacityArbiter: Sendable {
             )
             let index = try Self.leaseIndex(for: scope, in: state.leases)
             let existing = state.leases[index]
+            if resuming {
+                guard expiresAt == existing.expiresAt else {
+                    throw SandboxCapacityError.invalidLeaseDeadline
+                }
+                guard existing.expiresAt > now else {
+                    throw SandboxCapacityError.leaseExpired
+                }
+                if existing.scope.fencingToken == requestedFencingToken {
+                    // update republishes this state durably before replay can
+                    // acknowledge a rotation whose first response was lost.
+                    return existing
+                }
+            }
             guard existing.scope.fencingToken == scope.fencingToken else {
                 throw SandboxCapacityError.staleFencingToken
             }
@@ -490,17 +534,40 @@ public struct SandboxHostCapacityArbiter: Sendable {
         scope: SandboxOperationScope,
         virtualMachineName: String
     ) throws -> Bool {
+        try store.confirmDurably { state in
+            Self.releasedDeletionScope(in: state, matching: scope,
+                virtualMachineName: virtualMachineName) == scope
+        }
+    }
+
+    /// Recovery may have fenced an expired lease after recording the stopped
+    /// intent. Resolve only the release receipt for that exact generation/name.
+    package func releasedDeletionScope(
+        matching scope: SandboxOperationScope,
+        virtualMachineName: String
+    ) throws -> SandboxOperationScope? {
         let state = try store.read()
+        return Self.releasedDeletionScope(in: state, matching: scope,
+            virtualMachineName: virtualMachineName)
+    }
+
+    private static func releasedDeletionScope(
+        in state: SandboxCapacityState,
+        matching scope: SandboxOperationScope,
+        virtualMachineName: String
+    ) -> SandboxOperationScope? {
         guard !state.leases.contains(where: {
             $0.scope.sandboxID == scope.sandboxID
         }), let watermark = state.generationHighWatermarks.first(where: {
             $0.sandboxID == scope.sandboxID
         }) else {
-            return false
+            return nil
         }
-        return watermark.generation == scope.generation
-            && watermark.releasedFencingToken == scope.fencingToken
-            && watermark.releasedVirtualMachineName == virtualMachineName
+        guard watermark.generation == scope.generation,
+              let token = watermark.releasedFencingToken, token >= scope.fencingToken,
+              watermark.releasedVirtualMachineName == virtualMachineName else { return nil }
+        return SandboxOperationScope(sandboxID: scope.sandboxID,
+            generation: scope.generation, fencingToken: token)
     }
 
     public func expiredLeases() throws -> [SandboxCapacityLease] {

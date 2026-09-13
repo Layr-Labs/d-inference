@@ -33,6 +33,8 @@ enum DarkbloomSandboxDaemon {
             )
         case "serve":
             try await ServeCommand.run(Array(arguments.dropFirst()))
+        case "host-mode":
+            try HostModeCommand.run(Array(arguments.dropFirst()))
         case "version":
             print("darkbloom-sandboxd 0.1.0")
         case "help", "--help", "-h":
@@ -103,7 +105,7 @@ enum DarkbloomSandboxDaemon {
               darkbloom-sandboxd restore-image latest [--json]
               darkbloom-sandboxd prepare-base --lume PATH --storage DIR
                 --ipsw FILE --name NAME [--cpu N] [--memory-gib N]
-                [--disk-gib N] [--json]
+                [--disk-gib N] [--guest-release PATH] [--json]
               darkbloom-sandboxd reconcile-expired --lume PATH --storage DIR
                 --capacity-dir DIR --max-cpu N --max-memory-gib N
                 [--max-growth-gib N] [--storage-headroom-gib N] [--json]
@@ -112,7 +114,9 @@ enum DarkbloomSandboxDaemon {
                 --base-images ID[,ID...] --max-cpu N --max-memory-gib N
                 [--max-growth-gib N]
                 [--storage-headroom-gib N] [--development-ad-hoc-lume]
-                [--allow-insecure-loopback]
+                [--allow-insecure-loopback] [--guest-release PATH]
+              darkbloom-sandboxd host-mode --storage DIR --capacity-dir DIR
+                [--mode draining|sandbox_dedicated|inference]
               darkbloom-sandboxd version
             """
         )

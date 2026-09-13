@@ -282,6 +282,13 @@ func TestRuntimeCleanupCancellationIsAtomicAcrossStores(t *testing.T) {
 				!failed.CancellationPending {
 				t.Fatalf("persist cleanup failure: command=%+v error=%v", failed, err)
 			}
+			contradictory, err := backend.ApplySandboxCommandUpdate(ctx, SandboxCommandUpdate{
+				CommandID: command.ID, SandboxID: command.SandboxID, Generation: command.Generation, FencingToken: command.FencingToken,
+				State: SandboxCommandCancelled, ErrorCode: "runtime_cleanup_failed", RequestCancellation: true, UpdatedAt: now.Add(4 * time.Second),
+			})
+			if err != nil || !contradictory.CancellationPending {
+				t.Fatalf("contradictory cancelled cleanup failure released authority: %+v error=%v", contradictory, err)
+			}
 
 			next := *command
 			next.ID = "70000000-0000-0000-0000-000000000537"

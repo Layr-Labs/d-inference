@@ -1191,7 +1191,7 @@ final class HostCapacityArbiterTests: XCTestCase {
         )
 
         _ = try arbiter.setMode(.draining)
-        assertCapacityError(.hostNotAcceptingSandboxes(.draining)) {
+        assertCapacityError(.leaseExpired) {
             _ = try arbiter.authorize(
                 scope: lease.scope,
                 virtualMachineName: lease.virtualMachineName,
@@ -1207,6 +1207,33 @@ final class HostCapacityArbiterTests: XCTestCase {
             lease,
             "draining hosts must retain cleanup authority"
         )
+    }
+
+    func testDrainingHostAllowsActiveOwnerInspectionButRejectsExpiredAndStaleReads() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000), clock = TestWallClock(now)
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory, clock: clock)
+        try initializeDedicated(arbiter)
+        let lease = try arbiter.reserve(sandboxID: SandboxID(), generation: generation(1),
+            virtualMachineName: "drain-read", resources: makeResources(), expiresAt: now.addingTimeInterval(120))
+        _ = try arbiter.setMode(.draining)
+        XCTAssertEqual(try arbiter.authorize(scope: lease.scope, virtualMachineName: lease.virtualMachineName, operation: .inspect), lease)
+        for operation in [SandboxLeaseOperation.create, .start, .execute] {
+            assertCapacityError(.hostNotAcceptingSandboxes(.draining)) {
+                _ = try arbiter.authorize(scope: lease.scope, virtualMachineName: lease.virtualMachineName, operation: operation)
+            }
+        }
+        let stale = SandboxOperationScope(sandboxID: lease.scope.sandboxID, generation: lease.scope.generation,
+            fencingToken: try fencingToken(UInt64.max))
+        assertCapacityError(.staleFencingToken) {
+            _ = try arbiter.authorize(scope: stale, virtualMachineName: lease.virtualMachineName, operation: .inspect)
+        }
+        clock.set(lease.expiresAt)
+        assertCapacityError(.leaseExpired) {
+            _ = try arbiter.authorize(scope: lease.scope, virtualMachineName: lease.virtualMachineName, operation: .inspect)
+        }
+        XCTAssertEqual(try arbiter.authorize(scope: lease.scope, virtualMachineName: lease.virtualMachineName, operation: .delete), lease)
     }
 
     func testConcurrentReservationsCannotOverbookHost() async throws {

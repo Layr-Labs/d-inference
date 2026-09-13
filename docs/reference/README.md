@@ -1,6 +1,6 @@
 # Reference — exact shapes and values
 
-> Last updated: 2026-09-07 · commit `53646bc9b`
+> Last updated: 2026-09-13 · commit `453b37667`
 
 Tables and schemas for Darkbloom's public interfaces, wire protocol,
 configuration, and formats. Consult these; do not read them front to back.
@@ -12,6 +12,8 @@ Every row cites the code that defines it. For how and why things work, use
 | Page | Content |
 |---|---|
 | [api-contracts.md](api-contracts.md) | Every coordinator HTTP route: method, path, auth, request and response shapes, headers, status codes, SSE framing |
+| [sandbox-api.md](sandbox-api.md) | Private-alpha sandbox access, lifecycle, command cancellation, history and cleanup semantics |
+| [sandbox-files.md](sandbox-files.md) | Bounded workspace uploads, download chunks, transfer metadata, integrity and host wire schema |
 | [protocol-messages.md](protocol-messages.md) | Every WebSocket message between coordinator and provider, field by field, with the Go and Swift types |
 
 ## Configuration and schemas

@@ -16,7 +16,7 @@ package enum SandboxAuthorityFileSystem {
         let parent = url.deletingLastPathComponent()
         let name = url.lastPathComponent
         guard isSafeComponent(name),
-              url.standardizedFileURL.path == url.path
+              hasCanonicalCreationSpelling(url)
         else {
             throw SandboxAuthorityFileSystemError.unsafePath
         }
@@ -420,6 +420,20 @@ package enum SandboxAuthorityFileSystem {
             return resolved == "/private" + original ? resolved : nil
         }
         return nil
+    }
+
+    /// Foundation shortens these two OS-owned aliases even when the caller
+    /// supplied their physical spelling. Parent traversal below still resolves
+    /// only those aliases and opens every remaining component with O_NOFOLLOW.
+    private static func hasCanonicalCreationSpelling(_ url: URL) -> Bool {
+        guard url.isFileURL, url.baseURL == nil, url.path.hasPrefix("/"),
+              !url.path.contains("\0") else { return false }
+        let original = url.path
+        let normalized = url.standardizedFileURL.path
+        if original == normalized { return true }
+        return original == "/private" + normalized && ["/tmp", "/var"].contains {
+            normalized == $0 || normalized.hasPrefix($0 + "/")
+        }
     }
 
     private static func isSafeComponent(_ component: String) -> Bool {

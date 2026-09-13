@@ -220,6 +220,13 @@ public enum SandboxLeaseOperation: String, Codable, CaseIterable, Sendable {
             false
         }
     }
+
+    var requiresDedicatedHost: Bool {
+        switch self {
+        case .create, .start, .execute: true
+        case .inspect, .stop, .delete: false
+        }
+    }
 }
 
 package struct SandboxLeaseMutationAuthorization: @unchecked Sendable {

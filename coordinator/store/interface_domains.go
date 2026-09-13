@@ -802,6 +802,16 @@ type ProviderStore interface {
 // methods fence every write by sandbox generation and fencing token so a late
 // host response cannot change a newer sandbox incarnation.
 type SandboxStore interface {
+	// RedactSandboxCommandPayloads removes expired terminal payloads in one
+	// bounded batch, preserving a request commitment and all lifecycle metadata.
+	// Active and cancellation-pending commands are never eligible.
+	RedactSandboxCommandPayloads(ctx context.Context, completedBefore, redactedAt time.Time, limit int) (int, error)
+
+	// ListSandboxCommands returns bounded metadata newest first, without
+	// retaining command input or output in the listing. Unknown and non-owned
+	// sandboxes both return ErrNotFound.
+	ListSandboxCommands(ctx context.Context, accountID, sandboxID string, limit int) ([]SandboxCommandSummary, error)
+
 	// CreateSandbox atomically creates the sandbox and its prepare operation.
 	CreateSandbox(
 		ctx context.Context,
@@ -913,6 +923,9 @@ type SandboxStore interface {
 		idempotencyKey string,
 		at time.Time,
 	) (*SandboxRecord, error)
+	// ObserveSandboxStopped accepts an exact host lease observation only from
+	// ready and with no pending lifecycle operation. Command cleanup is retained.
+	ObserveSandboxStopped(ctx context.Context, observation SandboxStoppedObservation) (bool, error)
 
 	// ApplySandboxOperationUpdate applies a host lifecycle result and its
 	// resulting fence. Unknown, terminal, stale, or invalid transitions fail

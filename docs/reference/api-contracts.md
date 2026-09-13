@@ -1,8 +1,8 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-13 · commit `453b37667`
 
-The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
+The complete public HTTP surface of the coordinator, derived from `routes()` (`coordinator/api/server.go`) and its route registrars, including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
@@ -13,6 +13,8 @@ provider downloads; the admin registration accepts the same object. See the
 Admin request-profile records expose additive
 [prediction decision fields](prediction-decision-telemetry.md). Public inference
 responses and error codes are unchanged.
+
+The separate [sandbox API reference](sandbox-api.md) lists private-alpha sandbox lifecycle, command, history and cancellation routes registered by `coordinator/api/sandbox_routes.go` (`registerSandboxRoutes`). Admission defaults off; read and cleanup access remains available while sandbox admission is paused.
 
 ## Conventions used in the route tables
 

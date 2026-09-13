@@ -6,6 +6,7 @@
 
 import CryptoKit
 import Foundation
+import HostRuntimeCoordination
 import MLX
 import MLXLLM
 import MLXLMCommon
@@ -219,6 +220,11 @@ extension ProviderLoop {
         if modelSlots[modelId] != nil {
             return
         }
+        // An uncancellable shard load may outlive the serve loop's bounded
+        // shutdown wait. Its own shared lease survives until load unwind ends.
+        // Warm requests already hold the serving lease and avoid this extra I/O.
+        let loadOwnership = try HostRuntimeAuthority.system.acquireInferenceIfInstalled()
+        defer { withExtendedLifetime(loadOwnership) {} }
 
         if modelsLoading.contains(modelId) {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
@@ -440,6 +446,7 @@ extension ProviderLoop {
             // bind `borrow()` to a long-lived local — that would keep the
             // weights alive past `release()`.
             let newcomer = EngineV2NewcomerBox(try await loadModelContainer(from: modelPath))
+            defer { newcomer.release() }
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
@@ -711,6 +718,15 @@ extension ProviderLoop {
             let loadMs = Double(loadElapsed.components.seconds) * 1000.0
                 + Double(loadElapsed.components.attoseconds) / 1e15
             await engineV2Bridge.recordModelLoadTime(ms: Int64(max(0, loadMs.rounded())))
+
+            // Shutdown can win during the final engine/metrics actor hops.
+            // Retire the completed build rather than publishing it after drain.
+            if isShuttingDown || Task.isCancelled {
+                await unwindBuiltSlotAndRegrow(
+                    modelId: modelId, bundle: engineBundle, newcomer: newcomer)
+                releaseResliceGate()
+                throw CancellationError()
+            }
 
             guard let installContainer = newcomer.container else {
                 // Unreachable (the box is drained only on failure paths) —

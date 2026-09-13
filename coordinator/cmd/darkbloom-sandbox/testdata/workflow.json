@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "image": "macos-tahoe-v1",
+  "command": ["/usr/bin/printf", "a value with spaces", "$HOME"],
+  "file": {
+    "path": "src/hello.txt",
+    "text": "offline sandbox fixture\n",
+    "repeat": 40000
+  }
+}

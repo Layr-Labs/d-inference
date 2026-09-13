@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-11 · commit `ef7b5a9aa`
+> Last updated: 2026-09-13 · commit `453b37667`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -8,6 +8,22 @@ the code that reads it, and its effect. Defaults are the fallbacks at the cited
 symbol; a production or dev host may pin a different value in its environment
 file. Secrets are named, never valued. Unless a row says *live*, the variable is
 read once at process start and a restart applies a change.
+
+## Sandbox private alpha
+
+The sandbox service and new-work admission are separate startup settings; keep
+service enabled while admission is paused so cleanup acknowledgements continue.
+See the [sandbox API contract](sandbox-api.md#access-and-service-modes).
+
+| Variable | Values / type | Default | Read in | Effect |
+|---|---|---|---|---|
+| `EIGENINFERENCE_SANDBOX_SERVICE_ENABLED` | boolean | `false` | `coordinator/api/sandbox_config.go` (`readSandboxServiceConfig`) | Starts the sandbox controller and sweeper and permits authenticated host connections. |
+| `EIGENINFERENCE_SANDBOX_ADMISSION_ENABLED` | boolean | `false` | `coordinator/api/sandbox_config.go` (`readSandboxServiceConfig`) | Allows enrolled accounts to create, execute and renew. Requires the service and a nonempty account allowlist. |
+| `EIGENINFERENCE_SANDBOX_ALLOWED_ACCOUNT_IDS` | comma-separated account IDs | unset | `coordinator/api/sandbox_config.go` (`readSandboxServiceConfig`, `SandboxServiceConfig.Check`) | Exact account identities; wildcards, duplicates and whitespace within IDs are rejected. Removed owners retain read/cleanup access to existing resources. |
+| `EIGENINFERENCE_SANDBOX_HOST_TOKEN_SHA256_JSON` | JSON object from host UUID to 64-character hexadecimal SHA-256 | unset | `coordinator/api/server_config.go` (`ReadServerConfig`), `coordinator/sandboxhost/auth.go` (`NewAuthenticator`) | Dedicated host bearer credential hashes; empty configuration disables host connection admission. |
+| `EIGENINFERENCE_SANDBOX_COMMAND_PAYLOAD_RETENTION` | positive Go duration, at most `720h` | `24h` | `coordinator/api/sandbox_config.go` (`readSandboxServiceConfig`), `coordinator/sandboxcontrol/payload_retention.go` (`DefaultCommandPayloadRetention`) | Makes completed command payloads eligible for bounded redaction; active and cancellation-pending commands are excluded. `0`, negative, malformed and excessive values reject startup. |
+| `DARKBLOOM_API_URL` | HTTPS origin | `https://api.darkbloom.dev` | `coordinator/cmd/darkbloom-sandbox/config.go` (`parseConfig`) | Standalone sandbox client endpoint; `--api-url` overrides it. HTTP requires explicit `--allow-insecure-localhost` and a loopback origin. |
+| `DARKBLOOM_API_KEY` | account bearer credential (secret) | unset; required | `coordinator/cmd/darkbloom-sandbox/config.go` (`parseConfig`) | Standalone sandbox client authentication; never accepted as a command-line argument or forwarded into job environments. |
 
 ## Where values are set
 

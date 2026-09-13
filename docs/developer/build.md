@@ -47,6 +47,9 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 | `coordinator/cmd/coordinator/` | Go | The coordinator binary (`main.go`). |
 | `coordinator/promptsidecar/` | Rust | Crate `promptsidecar`, edition 2024, `Cargo.lock` committed; built with `--locked`. |
 | `provider-swift/` | SwiftPM | Products: `darkbloom` (CLI), `darkbloom-enclave`, `darkbloom-fan-helper`, `darkbloom-publish`; libraries `ProviderCore`, `ProviderCoreFoundation`, `DarkbloomFan*`. Platform `macOS 14+`. |
+| `sandbox-macos/` | SwiftPM | Standalone `darkbloom-sandboxd` and `darkbloom-sandbox-guest`; pinned Lume build and signed artifact tooling under `Scripts/`. |
+| `host-runtime/` | SwiftPM | Shared machine-ownership library used by inference and sandbox VM processes. |
+| `coordinator/cmd/darkbloom-sandbox/` | Go | Standalone consumer CLI; `make sandbox-client-build` writes `build/darkbloom-sandbox`. |
 | `console-ui/` | Next.js 16 / React 19 | `npm`; tests with Vitest. |
 | `admin-ui/` | Next.js 16 / React 19 | `npm`; dev/start on port `4001`. |
 | `landing/` | static HTML/JS | No build step; `earn-calculator-core.test.js` runs with `node --test`. |

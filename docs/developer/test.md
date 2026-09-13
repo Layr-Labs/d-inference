@@ -66,6 +66,15 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 
 ### 2. Coordinator (Go)
 
+`make sandbox-test` runs the shared machine-ownership tests, sandbox host/guest
+tests, and release-tool contracts. `make sandbox-client-test` exercises the
+consumer workflow against an isolated HTTP fixture, including upload replay,
+version-pinned downloads and cancellation. These checks do not boot a VM or
+establish physical isolation. The `macOS Sandbox Tests` CI job separately builds
+and tests the exact pinned Lume patches and builds release host/guest products.
+See the [sandbox CLI workflow](../consumer/sandbox-cli.md) and
+[sandbox API contract](../reference/sandbox-api.md).
+
 Run prediction telemetry checks from the repository root:
 
 ```bash

@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import HostRuntimeCoordination
 import SandboxCore
 import SandboxHostControl
 import SandboxRuntime
@@ -9,6 +10,8 @@ import SandboxRuntimeVZ
 enum ServeCommand {
     static func run(_ arguments: [String]) async throws {
         let options = try Options(arguments)
+        let hostRuntimeLease = try HostRuntimeAuthority.system.acquireSandbox()
+        defer { withExtendedLifetime(hostRuntimeLease) {} }
         let report = SandboxHostInspector().inspect(
             policy: SandboxHostInspectionPolicy(
                 requireVirtualizationEntitlement:
@@ -35,7 +38,15 @@ enum ServeCommand {
             storageDirectory: options.storageDirectory,
             policy: policy
         )
-        let initial = try capacity.initialize()
+        _ = try capacity.initialize()
+        let guestMaterials = try options.guestRelease.map {
+            try LumeGuestMaterialConfiguration(releaseDirectory: $0,
+                developmentAdHoc: options.developmentAdHocLume)
+        }
+        if let guestMaterials {
+            try guestMaterials.validate()
+            try await SandboxStorageEncryption.requireEncryptedAPFS(at: options.storageDirectory)
+        }
         let runtime = try LumeLeaseFencedVirtualMachineRuntime(
             configuration: try LumeRuntimeConfiguration(
                 executable: options.lumeExecutable,
@@ -44,7 +55,9 @@ enum ServeCommand {
                 createTimeoutSeconds: 7_200,
                 trustPolicy: options.developmentAdHocLume
                     ? .developmentAdHoc
-                    : .production
+                    : .production,
+                isolatedGuest: guestMaterials,
+                hostRuntimeLease: hostRuntimeLease
             ),
             capacityArbiter: capacity
         )
@@ -57,17 +70,14 @@ enum ServeCommand {
         }) else {
             throw DaemonCLIError.reconciliationIncomplete
         }
-        if initial.mode == .inference {
-            _ = try capacity.setMode(.draining)
-        }
-        if try capacity.snapshot().mode == .draining {
-            _ = try capacity.setMode(.sandboxDedicated)
-        }
+        // Starting the service never grants workload ownership or clears an
+        // operator drain. Activation is a separate, explicit host operation.
 
         let adapter = SandboxHostProductionAdapter(
             capacity: capacity,
             runtime: runtime,
-            isolationReadiness: .unavailable
+            isolationReadiness: guestMaterials == nil ? .unavailable : .init(
+                signedGuestControl: true, networkPolicy: true, workspaceQuota: true)
         )
         let capabilities = SandboxWireHostCapabilities(
             daemonVersion: "0.1.0",
@@ -86,7 +96,9 @@ enum ServeCommand {
                 50 * SandboxResourcePolicy.gibibyte,
             ],
             baseImageIDs: options.baseImageIDs,
-            supportsGPU: false
+            supportsGPU: false,
+            supportsFiles: guestMaterials != nil,
+            supportsStart: guestMaterials != nil
         )
         let client = SandboxHostControlClient(
             configuration: try SandboxHostControlConfiguration(
@@ -99,7 +111,27 @@ enum ServeCommand {
             heartbeatSource: adapter,
             messageHandler: adapter
         )
-        try await client.run()
+        let maintenance = SandboxHostLeaseMaintenance(
+            snapshot: { try capacity.snapshot().leases },
+            cancelCommands: { await adapter.cancelCommandsForExpiredLeases($0) },
+            reconcile: { try await runtime.reconcileExpiredLeases() })
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask { try await client.run() }
+                group.addTask { try await maintenance.run() }
+                defer { group.cancelAll() }
+                _ = try await group.next()
+            }
+        } catch {
+            // Cancellation must not interrupt the final stop proof. Each VM
+            // also holds an inherited EX descriptor through a broker crash.
+            let cleanup = Task.detached { try await runtime.stopAllForShutdown() }
+            do { try await cleanup.value }
+            catch { throw SandboxRuntimeError.cleanupFailed(operation: "sandbox service shutdown",
+                primary: "control connection ended", cleanup: String(describing: error)) }
+            throw error
+        }
+        try await runtime.stopAllForShutdown()
     }
 
     private static func sysctlString(_ name: String) -> String? {
@@ -126,6 +158,7 @@ enum ServeCommand {
         let maximumGrowthBytes: UInt64
         let storageHeadroomBytes: UInt64
         let baseImageIDs: [String]
+        let guestRelease: URL?
         let developmentAdHocLume: Bool
         let allowInsecureLoopback: Bool
 
@@ -224,6 +257,14 @@ enum ServeCommand {
                 throw DaemonCLIError.invalidArguments("serve")
             }
             self.baseImageIDs = baseImageIDs
+            if let path = values["--guest-release"] {
+                guard path.hasPrefix("/"), URL(fileURLWithPath: path).standardizedFileURL.path == path else {
+                    throw DaemonCLIError.invalidArguments("serve")
+                }
+                self.guestRelease = URL(fileURLWithPath: path)
+            } else {
+                self.guestRelease = nil
+            }
             self.developmentAdHocLume = developmentAdHocLume
             self.allowInsecureLoopback = allowInsecureLoopback
         }
@@ -250,6 +291,7 @@ enum ServeCommand {
             "--max-memory-gib",
             "--max-growth-gib",
             "--storage-headroom-gib",
+            "--guest-release",
         ]
     }
 }

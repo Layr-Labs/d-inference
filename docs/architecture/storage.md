@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-09 · commit `4c77fc285`
+> Last updated: 2026-09-13 · commit `453b37667`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -33,9 +33,9 @@ Keychain. Nothing prompt-derived is stored on either side.
 
 ### The store interface
 
-`Store` (`coordinator/store/interface.go`) is the union of thirteen domain
+`Store` (`coordinator/store/interface.go`) is the union of fourteen domain
 interfaces declared in `coordinator/store/interface_domains.go`. Callers depend
-on the narrow slice they need; both implementations satisfy all thirteen.
+on the narrow slice they need; both implementations satisfy all fourteen.
 
 | Sub-interface | Owns |
 |---|---|
@@ -52,6 +52,7 @@ on the narrow slice they need; both implementations satisfy all thirteen.
 | `InviteStore` | Invite codes and redemptions. |
 | `ProviderEarningsStore` | Per-node earnings, payouts and the base-rewards settlement rows. |
 | `ProviderStore` | Provider records and sessions, reputation, the APNs code-identity and trust-reuse caches, verification jobs and log reports. |
+| `SandboxStore` | Account-owned sandbox allocations, host operations, command records and durable cancellation delivery; see the [sandbox API contract](../reference/sandbox-api.md). |
 
 Telemetry *events* are not in the store at all: `TelemetryEventRecord` goes to
 Datadog only (see [`telemetry.md`](telemetry.md)).
@@ -105,6 +106,13 @@ table and kept the coordinator from binding its port) and
 behind a long query's lock). `coordinator/deploy/start.sh` does not touch the
 database; it only prepares the persistent disk and MicroMDM before `exec
 coordinator`.
+
+The complete startup migration sequence holds a database-wide advisory lock.
+`withMigrationLock` (`coordinator/store/postgres.go`) uses a separate direct
+connection and closes it on every return, so schema and data phases can borrow
+from even a one-connection pool without lock-induced starvation. Lock acquisition
+polls `pg_try_advisory_lock` between transactions; it does not hold an open
+waiting transaction that could block the owner's concurrent index creation.
 
 The earnings-summary backfill pins a `REPEATABLE READ` snapshot before publishing
 its attempted-plan marker on a separate, bounded database connection. Missing
@@ -210,7 +218,16 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 | Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots`, `request_outcomes` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter kept by `migrateUsageTotals`. |
 | Provider fleet and trust | `providers`, `provider_reputation`, `provider_sessions`, `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets`, `provider_log_reports` | Trust reuse and code attestations are durable. `code_attestations.continuous_coverage_until` is compare-and-updated only for the exact original proof tuple; it never refreshes `attested_at` or inserts proof. This allows bounded same-process resume after a redeploy; see [`security/attestation.md`](security/attestation.md). `provider_log_reports.serial_number` is kept empty by trigger. |
 | Models and releases | `model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `releases` | The catalog the registry syncs at boot; see [`model-registry.md`](model-registry.md). |
+| Sandbox control | `sandboxes`, `sandbox_host_operations`, `sandbox_commands`, `sandbox_host_fencing_sequences` | Account-scoped lifecycle and command input/output, retained fencing authority, and cancellation outbox; stopped runtime observations acquire the allocation row lock and preserve pending command cleanup (`coordinator/store/postgres_sandbox_observation.go`, `ObserveSandboxStopped`); `coordinator/store/postgres_sandbox_schema.go` (`sandboxSchemaMigrations`). Payload-free metadata lists use `coordinator/store/sandbox_command_summary.go` (`SandboxCommandSummary`). |
 | Bookkeeping | `schema_migrations`, `earnings_summary_backfill_pending` | Completion/plan markers and resumable per-key historical deltas. |
+
+Sandbox command payloads have a separate [retention contract](../reference/sandbox-api.md#command-payload-retention).
+`sandbox_commands.request_digest` preserves an internal commitment before argv,
+environment, working directory and output are cleared; `payload_expired` and
+`payload_expired_at` distinguish unavailable content from genuinely empty output.
+The partial `idx_sandbox_commands_payload_retention` index supports bounded
+terminal-row cleanup. These writes do not touch user/model caches or money
+tables (`coordinator/store/postgres_sandbox_payloads.go`, `RedactSandboxCommandPayloads`).
 
 ### Global Payouts state
 

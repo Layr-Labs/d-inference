@@ -300,6 +300,8 @@ func writeSandboxAPIError(w http.ResponseWriter, err error) {
 			http.StatusTooManyRequests,
 			errorResponse("sandbox_capacity_exhausted", "no sandbox host has capacity"),
 		)
+	case errors.Is(err, sandboxcontrol.ErrStartUnavailable):
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("sandbox_start_unavailable", "sandbox host does not support start"))
 	case errors.Is(err, sandboxcontrol.ErrHostUnavailable):
 		writeJSON(
 			w,

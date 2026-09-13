@@ -476,7 +476,10 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
             let process = try await SandboxProcessRunner().run(
                 executable: URL(fileURLWithPath: "/bin/zsh"),
                 arguments: ["-c", encodedCommand],
-                timeoutSeconds: 5,
+                // This outer budget includes shell/launchd startup and cleanup
+                // under CI load. The guest deadline remains one second and is
+                // independently asserted by the terminal envelope below.
+                timeoutSeconds: 15,
                 maximumOutputBytes:
                     LumeGuestCommandEnvelope.maximumEnvelopeBytes
             )

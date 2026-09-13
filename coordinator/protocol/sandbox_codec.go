@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"reflect"
 	"regexp"
 	"strings"
@@ -19,7 +18,7 @@ import (
 const (
 	maxSandboxFrameBytes         = 2 * 1024 * 1024
 	maxSandboxOutputBytes        = 1024 * 1024
-	maxSandboxCommandInputBytes  = 1024 * 1024
+	maxSandboxCommandInputBytes  = 64 * 1024
 	maxSandboxCommandArguments   = 256
 	maxSandboxEnvironmentEntries = 128
 )
@@ -69,6 +68,8 @@ func DecodeSandboxHostMessage(data []byte) (SandboxDecodedMessage, error) {
 		payload = &SandboxCommandStatePayload{}
 	case SandboxTypeHostFailure:
 		payload = &SandboxHostFailurePayload{}
+	case SandboxTypeFileResult:
+		payload = &SandboxFileResultPayload{}
 	default:
 		return SandboxDecodedMessage{}, fmt.Errorf(
 			"unsupported sandbox host message type %q",
@@ -95,6 +96,8 @@ func DecodeSandboxCoordinatorMessage(data []byte) (SandboxDecodedMessage, error)
 		payload = &SandboxPreparePayload{}
 	case SandboxTypeLeaseRenew:
 		payload = &SandboxLeaseRenewPayload{}
+	case SandboxTypeStart:
+		payload = &SandboxStartPayload{}
 	case SandboxTypeCommand:
 		payload = &SandboxCommandPayload{}
 	case SandboxTypeCancelCommand:
@@ -103,6 +106,8 @@ func DecodeSandboxCoordinatorMessage(data []byte) (SandboxDecodedMessage, error)
 		payload = &SandboxOperationPayload{}
 	case SandboxTypeDrain:
 		payload = &SandboxDrainPayload{}
+	case SandboxTypeFileOperation:
+		payload = &SandboxFileOperationPayload{}
 	default:
 		return SandboxDecodedMessage{}, fmt.Errorf(
 			"unsupported sandbox coordinator message type %q",
@@ -417,6 +422,8 @@ func sandboxHexCodeUnit(data []byte, start int) (uint16, bool) {
 
 func validateSandboxHostPayload(messageType string, payload any) error {
 	switch value := payload.(type) {
+	case *SandboxFileResultPayload:
+		return ValidateSandboxFileResult(value)
 	case *SandboxHostRegisterPayload:
 		capabilities := value.Capabilities
 		if !sandboxIdentifierPattern.MatchString(capabilities.DaemonVersion) ||
@@ -494,6 +501,8 @@ func validateSandboxHostPayload(messageType string, payload any) error {
 
 func validateSandboxCoordinatorPayload(messageType string, payload any) error {
 	switch value := payload.(type) {
+	case *SandboxFileOperationPayload:
+		return ValidateSandboxFileOperation(value)
 	case *SandboxPreparePayload:
 		if !validCanonicalSandboxUUID(value.OperationID) ||
 			validateSandboxScope(value.Scope) != nil ||
@@ -509,6 +518,12 @@ func validateSandboxCoordinatorPayload(messageType string, payload any) error {
 			value.RequestedFencingToken > sandboxMaximumFence ||
 			validateSandboxTimestamp(value.LeaseExpiresAt) != nil {
 			return errors.New("sandbox lease renewal is invalid")
+		}
+	case *SandboxStartPayload:
+		if !validCanonicalSandboxUUID(value.OperationID) || validateSandboxScope(value.Scope) != nil ||
+			value.RequestedFencingToken <= value.Scope.FencingToken || value.RequestedFencingToken > sandboxMaximumFence ||
+			validateSandboxTimestamp(value.LeaseExpiresAt) != nil {
+			return errors.New("sandbox start is invalid")
 		}
 	case *SandboxCommandPayload:
 		if err := validateSandboxCommand(value); err != nil {
@@ -604,24 +619,28 @@ func validateSandboxCommand(command *SandboxCommandPayload) error {
 		return errors.New("sandbox command payload is invalid")
 	}
 	totalBytes := 0
+	if !strings.HasPrefix(command.Arguments[0], "/") || len(command.Arguments[0]) > 4096 {
+		return errors.New("sandbox command executable must be an absolute path")
+	}
 	for _, argument := range command.Arguments {
-		if strings.ContainsRune(argument, '\x00') {
+		if strings.ContainsRune(argument, '\x00') || len(argument) > 16384 {
 			return errors.New("sandbox command argument contains NUL")
 		}
 		totalBytes += len(argument)
 	}
 	for key, value := range command.Environment {
 		if !sandboxEnvironmentPattern.MatchString(key) ||
-			strings.ContainsRune(value, '\x00') {
+			strings.ContainsRune(value, '\x00') || len(value) > 16384 ||
+			reservedSandboxEnvironment(key) {
 			return errors.New("sandbox command environment is invalid")
 		}
 		totalBytes += len(key) + len(value)
 	}
 	if command.WorkingDirectory != nil {
 		workingDirectory := *command.WorkingDirectory
-		if !path.IsAbs(workingDirectory) ||
-			path.Clean(workingDirectory) != workingDirectory ||
-			strings.ContainsRune(workingDirectory, '\x00') {
+		if workingDirectory != "/workspace" &&
+			(!strings.HasPrefix(workingDirectory, "/workspace/") ||
+				!ValidSandboxWorkspacePath(strings.TrimPrefix(workingDirectory, "/workspace/"))) {
 			return errors.New("sandbox command working directory is invalid")
 		}
 		totalBytes += len(workingDirectory)
@@ -630,6 +649,17 @@ func validateSandboxCommand(command *SandboxCommandPayload) error {
 		return errors.New("sandbox command input is too large")
 	}
 	return nil
+}
+
+func reservedSandboxEnvironment(key string) bool {
+	if strings.HasPrefix(key, "DYLD_") || strings.HasPrefix(key, "DARKBLOOM_") {
+		return true
+	}
+	switch key {
+	case "HOME", "PATH", "TMPDIR", "SHELL", "ENV", "BASH_ENV", "ZDOTDIR":
+		return true
+	}
+	return false
 }
 
 func validWorkspaceSizes(sizes []uint64) bool {
@@ -687,7 +717,7 @@ func optionalSandboxStringBytes(value *string) int {
 
 func knownSandboxOperation(value string) bool {
 	switch value {
-	case "prepare", "renew", "stop", "delete":
+	case "prepare", "renew", "start", "stop", "delete":
 		return true
 	default:
 		return false

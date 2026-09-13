@@ -31,6 +31,17 @@ func (c *Controller) dispatchOperation(
 		FencingToken: operation.FencingToken,
 	}
 	switch operation.Kind {
+	case store.SandboxOperationKindStart:
+		if !session.Snapshot().Capabilities.SupportsStart {
+			// A previous start may have rotated authority before its response
+			// was lost. A downgraded connection cannot prove its outcome; retain
+			// the original intent and reserved fence for a qualified reconnect.
+			return c.recordOperationDispatch(operation.ID, ErrStartUnavailable)
+		}
+		return c.sendOperation(session, operation, protocol.SandboxTypeStart, protocol.SandboxStartPayload{
+			OperationID: operation.ID, Scope: scope, RequestedFencingToken: operation.RequestedFencingToken,
+			LeaseExpiresAt: operation.RequestedLeaseExpiresAt.Format(time.RFC3339Nano),
+		})
 	case store.SandboxOperationKindPrepare:
 		return c.sendOperation(
 			session,

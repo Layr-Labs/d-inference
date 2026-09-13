@@ -172,6 +172,7 @@ public enum SandboxRuntimeError: Error, Equatable, Sendable, CustomStringConvert
     case executableNotFound(String)
     case operationTimedOut(String)
     case operationInProgress(name: String, operation: String)
+    case commandLimitReached
     case commandFailed(command: String, exitCode: Int32, stderr: String)
     case cleanupFailed(operation: String, primary: String, cleanup: String)
     case malformedOutput(String)
@@ -196,6 +197,8 @@ public enum SandboxRuntimeError: Error, Equatable, Sendable, CustomStringConvert
             return "runtime operation timed out: \(operation)"
         case .operationInProgress(let name, let operation):
             return "VM \(name) already has an active \(operation) operation"
+        case .commandLimitReached:
+            return "sandbox command limit reached; accepted commands remain replayable until the sandbox is deleted"
         case .commandFailed(let command, let exitCode, let stderr):
             return "runtime command failed (\(exitCode)): \(command): \(stderr)"
         case .cleanupFailed(let operation, let primary, let cleanup):

@@ -21,6 +21,8 @@ enum PrepareBaseCommand {
             ),
             diskBytes: try gibibytes(parsed.diskGiB)
         )
+        let guestRelease = try parsed.guestRelease.map { try BaseGuestRelease(directory: $0) }
+        let staging = try guestRelease?.stage(in: parsed.storageDirectory)
         let runtime = LumeVirtualMachineRuntime(configuration: try LumeRuntimeConfiguration(
             executable: parsed.lumeExecutable,
             storageDirectory: parsed.storageDirectory,
@@ -29,11 +31,17 @@ enum PrepareBaseCommand {
             trustPolicy: parsed.developmentAdHocLume
                 ? .developmentAdHoc
                 : .production,
-            guestCommandPolicy: .baseImagePreparationAndDevelopment
+            guestCommandPolicy: .baseImagePreparationAndDevelopment,
+            baseImageSharedDirectory: staging?.directory
         ))
-        let report = try await MacOSBaseImagePreparer(runtime: runtime).prepare(
-            specification: specification
-        )
+        let report: MacOSBaseImagePreparationReport
+        if let guestRelease, let staging {
+            report = try await BaseGuestPreparer(runtime: runtime).prepare(
+                specification: specification, storage: parsed.storageDirectory,
+                release: guestRelease, staging: staging)
+        } else {
+            report = try await MacOSBaseImagePreparer(runtime: runtime).prepare(specification: specification)
+        }
         if parsed.json {
             try printJSON(report)
         } else {
@@ -43,6 +51,7 @@ enum PrepareBaseCommand {
             print("CPU: \(report.cpuCount)")
             print("Memory bytes: \(report.memoryBytes)")
             print("Disk bytes: \(report.diskBytes)")
+            if guestRelease != nil { print("Signed guest installed; bootstrap account retired; template receipt verified.") }
         }
     }
 
@@ -76,6 +85,7 @@ enum PrepareBaseCommand {
         let diskGiB: UInt64
         let json: Bool
         let developmentAdHocLume: Bool
+        let guestRelease: URL?
 
         init(_ arguments: [String]) throws {
             var values: [String: String] = [:]
@@ -134,6 +144,12 @@ enum PrepareBaseCommand {
             self.diskGiB = disk
             self.json = json
             self.developmentAdHocLume = developmentAdHocLume
+            if let release = values["--guest-release"] {
+                guard release.hasPrefix("/"), !release.contains("\0") else {
+                    throw DaemonCLIError.invalidArguments("prepare-base")
+                }
+                self.guestRelease = URL(fileURLWithPath: release, isDirectory: true)
+            } else { self.guestRelease = nil }
         }
 
         private static let valueOptions: Set<String> = [
@@ -144,6 +160,7 @@ enum PrepareBaseCommand {
             "--cpu",
             "--memory-gib",
             "--disk-gib",
+            "--guest-release",
         ]
     }
 }

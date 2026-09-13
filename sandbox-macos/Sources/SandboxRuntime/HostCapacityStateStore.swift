@@ -320,6 +320,18 @@ struct SandboxCapacityStateStore: Sendable {
         }
     }
 
+    /// A successful read after a publication error proves visibility only.
+    /// Republish the unchanged state under the lock to confirm both file and
+    /// directory durability before callers discard their recovery record.
+    func confirmDurably(_ condition: (SandboxCapacityState) -> Bool) throws -> Bool {
+        try withLockedDirectory { directoryDescriptor in
+            let state = try readState(from: directoryDescriptor)
+            guard condition(state) else { return false }
+            try writeState(state, to: directoryDescriptor)
+            return true
+        }
+    }
+
     func acquireLeaseOperationLock(
         sandboxID: SandboxID,
         wait: Bool = true
@@ -424,6 +436,7 @@ struct SandboxCapacityStateStore: Sendable {
     }
 
     func update<T>(
+        forcePublication: Bool = false,
         _ operation: (inout SandboxCapacityState) throws -> T
     ) throws -> T {
         try withLockedDirectory { directoryDescriptor in
@@ -431,7 +444,7 @@ struct SandboxCapacityStateStore: Sendable {
             let original = state
             let result = try operation(&state)
             try validate(state)
-            if state != original {
+            if forcePublication || state != original {
                 try writeState(state, to: directoryDescriptor)
             }
             return result

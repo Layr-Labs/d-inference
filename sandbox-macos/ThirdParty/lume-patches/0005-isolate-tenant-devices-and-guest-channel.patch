@@ -1,0 +1,909 @@
+diff --git a/libs/lume/src/Commands/Run.swift b/libs/lume/src/Commands/Run.swift
+index b5376f5c0..7f91fc81a 100644
+--- a/libs/lume/src/Commands/Run.swift
++++ b/libs/lume/src/Commands/Run.swift
+@@ -190,6 +190,13 @@ struct Run: AsyncParsableCommand {
+     @MainActor
+     func run() async throws {
+         let brokerLifecycle = try BrokerLifecycleCapability.inherited()
++        try DarkbloomDevicePolicy.validateInvocation(
++            hasBrokerLifecycle: brokerLifecycle != nil, detached: detach,
++            displayDisabled: DisplayMode.resolve(requested: display, noDisplay: noDisplay) == .none,
++            vncDisabled: vnc == .disabled, clipboard: clipboard, recovery: recoveryMode,
++            sharedDirectoryCount: sharedDirectories.count, usbCount: usbStorageDevices.count,
++            networkOverride: network != nil, control: mount.map { Path($0) },
++            disks: parsedAdditionalDisks)
+         if detach {
+             guard brokerLifecycle == nil else {
+                 throw ValidationError(
+diff --git a/libs/lume/src/LumeController.swift b/libs/lume/src/LumeController.swift
+index 9a7c60235..e1726dde4 100644
+--- a/libs/lume/src/LumeController.swift
++++ b/libs/lume/src/LumeController.swift
+@@ -1129,6 +1129,13 @@ final class LumeController {
+     ) async throws {
+         let normalizedName = normalizeVMName(name: name)
+         let effectiveDisplayMode = displayMode ?? (noDisplay ? .none : .vnc)
++        try DarkbloomDevicePolicy.validateInvocation(
++            hasBrokerLifecycle: brokerLifecycle != nil, detached: false,
++            displayDisabled: effectiveDisplayMode == .none, vncDisabled: vncPolicy == .disabled,
++            clipboard: clipboard, recovery: recoveryMode,
++            sharedDirectoryCount: sharedDirectories.count, usbCount: usbMassStoragePaths?.count ?? 0,
++            networkOverride: networkMode != nil, control: mount, disks: additionalDiskPaths)
++
+         if let option = VNCPolicy.conflictingOption(
+             policy: vncPolicy,
+             displayMode: effectiveDisplayMode,
+@@ -1778,7 +1785,10 @@ final class LumeController {
+         let vmConfig = try vmDir.loadConfig()
+         switch vmConfig.os.lowercased() {
+         case "macos":
+-            if mount != nil {
++            if try DarkbloomDevicePolicy.isIsolated() {
++                try DarkbloomDevicePolicy.validateStorage(boot: primaryDiskPath,
++                    control: mount, disks: additionalDiskPaths)
++            } else if mount != nil {
+                 throw ValidationError(
+                     "Mounting disk images is not supported for macOS VMs. If you are looking to mount a IPSW, please use the --ipsw option in the create command."
+                 )
+diff --git a/libs/lume/src/Virtualization/DarkbloomDevicePolicy.swift b/libs/lume/src/Virtualization/DarkbloomDevicePolicy.swift
+new file mode 100644
+index 000000000..6e68f1175
+--- /dev/null
++++ b/libs/lume/src/Virtualization/DarkbloomDevicePolicy.swift
+@@ -0,0 +1,94 @@
++import Darwin
++import Foundation
++import Virtualization
++
++/// The isolated profile is selected only by the broker. It has no IP network
++/// or host peripherals; ordinary image preparation keeps upstream behavior.
++enum DarkbloomDevicePolicyError: Error { case invalidConfiguration(String) }
++
++enum DarkbloomDevicePolicy {
++    static let environmentKey = "DARKBLOOM_VM_PROFILE"
++    static let isolatedProfile = "isolated-v1"
++
++    static func isIsolated(environment: [String: String] = ProcessInfo.processInfo.environment) throws -> Bool {
++        guard let profile = environment[environmentKey] else { return false }
++        guard profile == isolatedProfile else { throw invalid("unknown Darkbloom device profile") }
++        return true
++    }
++
++    static func validateInvocation(hasBrokerLifecycle: Bool, detached: Bool,
++                                   displayDisabled: Bool, vncDisabled: Bool,
++                                   clipboard: Bool, recovery: Bool,
++                                   sharedDirectoryCount: Int, usbCount: Int,
++                                   networkOverride: Bool, control: Path?, disks: [Path]?,
++                                   environment: [String: String] = ProcessInfo.processInfo.environment) throws {
++        guard try isIsolated(environment: environment) else { return }
++        guard hasBrokerLifecycle, !detached, displayDisabled, vncDisabled,
++              !clipboard, !recovery, sharedDirectoryCount == 0, usbCount == 0,
++              !networkOverride, control != nil, disks?.count == 1 else {
++            throw invalid("isolated VMs require broker lifecycle, disabled display/VNC, one read-only control disk and one workspace; host shares, networking, USB, recovery and clipboard are forbidden")
++        }
++    }
++
++    static func validateStorage(boot: Path, control: Path?, disks: [Path]?) throws {
++        guard let control, let disks, disks.count == 1 else { throw invalid("missing isolated storage") }
++        let workspace = disks[0]
++        let directory = control.url.deletingLastPathComponent()
++        guard control.url.lastPathComponent == "control.cdr",
++              workspace.url.lastPathComponent == "workspace.cdr",
++              directory.lastPathComponent == ".darkbloom-guest",
++              workspace.url.deletingLastPathComponent() == directory,
++              directory.deletingLastPathComponent() == boot.url.deletingLastPathComponent()
++        else { throw invalid("isolated disks must belong to the VM private guest directory") }
++        try DarkbloomPrivatePath.openDirectory(directory.path).withDescriptor { _ in }
++        var identities = Swift.Set<String>()
++        for (path, mode) in [(boot, Optional<mode_t>.none), (control, mode_t(0o400)), (workspace, mode_t(0o600))] {
++            guard path.url.standardizedFileURL.resolvingSymlinksInPath().path == path.path else {
++                throw invalid("isolated disk path must be canonical")
++            }
++            let descriptor = open(path.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
++            guard descriptor >= 0 else { throw invalid("isolated disk unavailable") }
++            defer { close(descriptor) }
++            var metadata = stat()
++            guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG,
++                  metadata.st_uid == geteuid(), metadata.st_nlink == 1,
++                  metadata.st_mode & 0o022 == 0,
++                  mode.map({ metadata.st_mode & 0o777 == $0 }) ?? true,
++                  metadata.st_size > 0, metadata.st_size % 512 == 0,
++                  identities.insert("\(metadata.st_dev):\(metadata.st_ino)").inserted
++            else { throw invalid("invalid or aliased isolated disk") }
++            try DarkbloomPrivatePath.requireNoACL(descriptor)
++        }
++    }
++
++    @MainActor
++    static func apply(to configuration: VZVirtualMachineConfiguration,
++                      context: VMVirtualizationServiceContext,
++                      environment: [String: String] = ProcessInfo.processInfo.environment) throws {
++        guard try isIsolated(environment: environment) else { return }
++        guard context.sharedDirectories?.isEmpty != false,
++              context.usbMassStoragePaths?.isEmpty != false, !context.recoveryMode,
++              context.networkMode == .nat else { throw invalid("forbidden isolated device configuration") }
++        try validateStorage(boot: context.diskPath, control: context.mount, disks: context.additionalDiskPaths)
++        guard configuration.storageDevices.count == 3 else { throw invalid("isolated VM requires exactly three block devices") }
++        let expected = [(context.diskPath, false), (context.mount!, true), (context.additionalDiskPaths![0], false)]
++        for (device, requirement) in zip(configuration.storageDevices, expected) {
++            guard let block = device as? VZVirtioBlockDeviceConfiguration,
++                  let attachment = block.attachment as? VZDiskImageStorageDeviceAttachment,
++                  attachment.url == requirement.0.url, attachment.isReadOnly == requirement.1 else {
++                throw invalid("isolated block device permissions or identity differ")
++            }
++        }
++        configuration.networkDevices = []
++        configuration.audioDevices = []
++        configuration.consoleDevices = []
++        configuration.serialPorts = []
++        configuration.directorySharingDevices = []
++        configuration.keyboards = []
++        configuration.pointingDevices = []
++        if #available(macOS 15.0, *) { configuration.usbControllers = [] }
++        configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
++    }
++
++    private static func invalid(_ message: String) -> DarkbloomDevicePolicyError { .invalidConfiguration(message) }
++}
+diff --git a/libs/lume/src/Virtualization/DarkbloomGuestBridge.swift b/libs/lume/src/Virtualization/DarkbloomGuestBridge.swift
+new file mode 100644
+index 000000000..90e3ba8d9
+--- /dev/null
++++ b/libs/lume/src/Virtualization/DarkbloomGuestBridge.swift
+@@ -0,0 +1,128 @@
++import Darwin
++import Foundation
++import Virtualization
++
++/// Private broker socket to one fixed guest-control port. The byte stream is
++/// authenticated by the guest protocol; this bridge owns no tenant credentials.
++final class DarkbloomGuestBridge: @unchecked Sendable {
++    static let socketEnvironmentKey = "DARKBLOOM_GUEST_SOCKET"
++    typealias Connector = @Sendable (@escaping @Sendable (Result<DarkbloomGuestEndpoint, Error>) -> Void) -> Void
++    private let lock = NSLock()
++    private var stopped = false
++    private var listenerOpen = true
++    private var clients: [UUID: DarkbloomGuestClient] = [:]
++    private let listener: Int32
++    private let parent: Int32
++    private let name: String
++    private let pathIdentity: stat
++    private let connect: Connector
++    private let slots = DispatchSemaphore(value: 4)
++
++    convenience init(path: String, handle: BaseVirtualizationService.VirtualMachineHandle) throws {
++        try self.init(path: path) { completion in
++            handle.queue.async {
++                guard let device = handle.machine.socketDevices.first as? VZVirtioSocketDevice else {
++                    completion(.failure(DarkbloomDevicePolicyError.invalidConfiguration("missing guest socket device")))
++                    return
++                }
++                device.connect(toPort: 7777) { result in completion(result.map(DarkbloomGuestEndpoint.init)) }
++            }
++        }
++    }
++
++    init(path: String, connect: @escaping Connector) throws {
++        guard path.hasPrefix("/"), path.utf8.count < 104, !path.contains("\0") else { throw POSIXError(.EINVAL) }
++        let url = URL(fileURLWithPath: path)
++        let directory = try DarkbloomPrivatePath.openDirectory(url.deletingLastPathComponent().path)
++        let parent = directory.descriptor
++        var successful = false
++        defer { if !successful { close(parent) } }
++        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
++        guard fd >= 0 else { throw POSIXError(.ENFILE) }
++        defer { if !successful { close(fd) } }
++        guard fcntl(fd, F_SETFD, FD_CLOEXEC) == 0,
++              fcntl(fd, F_SETFL, O_NONBLOCK) == 0 else { throw POSIXError(.EIO) }
++        var address = sockaddr_un()
++        address.sun_family = sa_family_t(AF_UNIX)
++        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
++        withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: Array(path.utf8) + [0]) }
++        let bound = withUnsafePointer(to: &address) {
++            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
++                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
++            }
++        }
++        guard bound == 0 else { throw POSIXError(.EADDRINUSE) }
++        var metadata = stat()
++        guard fstatat(parent, url.lastPathComponent, &metadata, AT_SYMLINK_NOFOLLOW) == 0,
++              metadata.st_mode & S_IFMT == S_IFSOCK, metadata.st_uid == geteuid(), metadata.st_nlink == 1 else {
++            throw POSIXError(.EIO)
++        }
++        let identity = metadata
++        defer {
++            if !successful {
++                Self.unlinkOwned(parent: parent, name: url.lastPathComponent, identity: identity)
++            }
++        }
++        guard fchmodat(parent, url.lastPathComponent, 0o600, AT_SYMLINK_NOFOLLOW) == 0,
++              listen(fd, 4) == 0 else { throw POSIXError(.EIO) }
++        self.listener = fd; self.parent = parent; self.name = url.lastPathComponent
++        self.pathIdentity = identity; self.connect = connect
++        successful = true
++        DispatchQueue(label: "io.darkbloom.guest.accept").async { [self] in acceptConnections() }
++    }
++
++    func stop() {
++        let pending = lock.withLock {
++            stopped = true
++            if listenerOpen { _ = shutdown(listener, SHUT_RDWR) }
++            return Array(clients.values)
++        }
++        pending.forEach { $0.stop() }
++    }
++
++    private func acceptConnections() {
++        defer {
++            lock.withLock { listenerOpen = false; close(listener) }
++            Self.unlinkOwned(parent: parent, name: name, identity: pathIdentity)
++            close(parent)
++        }
++        while !lock.withLock({ stopped }) {
++            var event = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
++            let ready = poll(&event, 1, 100)
++            if ready < 0 { if errno == EINTR { continue }; stop(); return }
++            if ready == 0 { continue }
++            guard event.revents & Int16(POLLIN) != 0 else { stop(); return }
++            let descriptor = accept(listener, nil, nil)
++            if descriptor < 0 { continue }
++            var peerUID: uid_t = 0, peerGID: gid_t = 0
++            guard fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0,
++                  getpeereid(descriptor, &peerUID, &peerGID) == 0, peerUID == geteuid(),
++                  slots.wait(timeout: .now()) == .success else { close(descriptor); continue }
++            let id = UUID(), slots = slots
++            let client = DarkbloomGuestClient(descriptor: descriptor) { [weak self] in
++                self?.lock.withLock { _ = self?.clients.removeValue(forKey: id) }
++                slots.signal()
++            }
++            let accepted = lock.withLock {
++                guard !stopped else { return false }
++                clients[id] = client
++                return true
++            }
++            guard accepted else { client.stop(); return }
++            connect { result in client.connected(result) }
++            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10) { [weak self, weak client] in
++                // Stop accepting after a wedged framework callback. Releasing
++                // slots and continually retrying could retain unbounded callbacks.
++                if client?.isConnecting == true { self?.stop() }
++            }
++        }
++    }
++
++    private static func unlinkOwned(parent: Int32, name: String, identity: stat) {
++        var current = stat()
++        if fstatat(parent, name, &current, AT_SYMLINK_NOFOLLOW) == 0,
++           current.st_dev == identity.st_dev, current.st_ino == identity.st_ino {
++            _ = unlinkat(parent, name, 0)
++        }
++    }
++}
+diff --git a/libs/lume/src/Virtualization/DarkbloomGuestClient.swift b/libs/lume/src/Virtualization/DarkbloomGuestClient.swift
+new file mode 100644
+index 000000000..66c7e1dc0
+--- /dev/null
++++ b/libs/lume/src/Virtualization/DarkbloomGuestClient.swift
+@@ -0,0 +1,78 @@
++import Darwin
++import Foundation
++import Virtualization
++
++/// VZ owns its descriptor. Tests use the same lifetime wrapper with a socketpair
++/// owner; this type never closes a descriptor owned by Virtualization.framework.
++final class DarkbloomGuestEndpoint: @unchecked Sendable {
++    let descriptor: Int32
++    private let owner: AnyObject
++    init(descriptor: Int32, owner: AnyObject) { self.descriptor = descriptor; self.owner = owner }
++    convenience init(_ connection: VZVirtioSocketConnection) {
++        self.init(descriptor: connection.fileDescriptor, owner: connection)
++    }
++}
++
++/// One accepted descriptor and exactly one capacity slot. Pending-connect
++/// cancellation closes immediately; an active relay owns close until it exits.
++/// A late VZ callback cannot operate on an already-reused client descriptor.
++final class DarkbloomGuestClient: @unchecked Sendable {
++    enum Phase { case connecting, relaying, closed }
++    private let lock = NSLock()
++    private var phase = Phase.connecting
++    private var stopping = false
++    private var endpoint: DarkbloomGuestEndpoint?
++    private let descriptor: Int32
++    private let onFinish: @Sendable () -> Void
++
++    init(descriptor: Int32, onFinish: @escaping @Sendable () -> Void) {
++        self.descriptor = descriptor; self.onFinish = onFinish
++    }
++
++    var isConnecting: Bool { lock.withLock { phase == .connecting } }
++    var isStopping: Bool { lock.withLock { stopping } }
++
++    func stop() {
++        let finished = lock.withLock {
++            stopping = true
++            switch phase {
++            case .connecting:
++                phase = .closed
++                close(descriptor)
++                return true
++            case .relaying:
++                _ = shutdown(descriptor, SHUT_RDWR)
++                if let endpoint { _ = shutdown(endpoint.descriptor, SHUT_RDWR) }
++                return false
++            case .closed: return false
++            }
++        }
++        if finished { onFinish() }
++    }
++
++    func connected(_ result: Result<DarkbloomGuestEndpoint, Error>) {
++        guard case .success(let connection) = result else { stop(); return }
++        let accepted = lock.withLock {
++            guard phase == .connecting, !stopping else { return false }
++            phase = .relaying
++            endpoint = connection
++            return true
++        }
++        guard accepted else { return }
++        DispatchQueue.global(qos: .utility).async { [self] in
++            DarkbloomGuestRelay.run(client: descriptor, guest: connection.descriptor,
++                                   shouldStop: { self.isStopping })
++            finishRelay()
++            withExtendedLifetime(connection) {}
++        }
++    }
++
++    private func finishRelay() {
++        lock.withLock {
++            phase = .closed
++            close(descriptor)
++            endpoint = nil
++        }
++        onFinish()
++    }
++}
+diff --git a/libs/lume/src/Virtualization/DarkbloomGuestRelay.swift b/libs/lume/src/Virtualization/DarkbloomGuestRelay.swift
+new file mode 100644
+index 000000000..fd4791d4b
+--- /dev/null
++++ b/libs/lume/src/Virtualization/DarkbloomGuestRelay.swift
+@@ -0,0 +1,70 @@
++import Darwin
++import Foundation
++
++/// A bounded full-duplex byte relay. EOF is directional: bytes already read are
++/// flushed before forwarding FIN. POLLHUP never discards a buffered last frame.
++enum DarkbloomGuestRelay {
++    static func run(client: Int32, guest: Int32, timeoutNanoseconds: UInt64 = 960_000_000_000,
++                    shouldStop: @Sendable () -> Bool = { false }) {
++        var noSignal: Int32 = 1
++        for fd in [client, guest] {
++            let flags = fcntl(fd, F_GETFL)
++            guard flags >= 0,
++                  setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size)) == 0,
++                  fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else { return }
++        }
++        var toClient = Data(), toGuest = Data()
++        var clientEOF = false, guestEOF = false
++        var clientFinished = false, guestFinished = false
++        let started = DispatchTime.now().uptimeNanoseconds
++        var bytes = [UInt8](repeating: 0, count: 65_536)
++        while !shouldStop(), DispatchTime.now().uptimeNanoseconds - started < timeoutNanoseconds {
++            if clientEOF && toGuest.isEmpty && !guestFinished {
++                _ = shutdown(guest, SHUT_WR)
++                guestFinished = true
++            }
++            if guestEOF && toClient.isEmpty && !clientFinished {
++                _ = shutdown(client, SHUT_WR)
++                clientFinished = true
++            }
++            if clientFinished && guestFinished { return }
++            let clientInterest = (!clientEOF && toGuest.isEmpty ? Int16(POLLIN) : 0)
++                | (!toClient.isEmpty ? Int16(POLLOUT) : 0)
++            let guestInterest = (!guestEOF && toClient.isEmpty ? Int16(POLLIN) : 0)
++                | (!toGuest.isEmpty ? Int16(POLLOUT) : 0)
++            var events = [
++                pollfd(fd: clientInterest == 0 ? -1 : client, events: clientInterest, revents: 0),
++                pollfd(fd: guestInterest == 0 ? -1 : guest, events: guestInterest, revents: 0),
++            ]
++            let count = poll(&events, 2, 100)
++            if count < 0 { if errno == EINTR { continue }; return }
++            if shouldStop() { return }
++            for index in 0...1 {
++                let event = events[index]
++                guard event.fd >= 0 else { continue }
++                if event.revents & Int16(POLLNVAL | POLLERR) != 0 { return }
++                // A hung-up reader can still contain bytes. Read through EOF,
++                // including when poll reports HUP without the IN bit.
++                if event.events & Int16(POLLIN) != 0,
++                   event.revents & Int16(POLLIN | POLLHUP) != 0 {
++                    let size = read(event.fd, &bytes, bytes.count)
++                    if size == 0 {
++                        if index == 0 { clientEOF = true } else { guestEOF = true }
++                    } else if size < 0 {
++                        if errno != EAGAIN && errno != EINTR { return }
++                    } else if index == 0 { toGuest = Data(bytes.prefix(size)) }
++                    else { toClient = Data(bytes.prefix(size)) }
++                }
++                if event.revents & Int16(POLLOUT) != 0 {
++                    let pending = index == 0 ? toClient : toGuest
++                    let size = pending.withUnsafeBytes { write(event.fd, $0.baseAddress, $0.count) }
++                    if size < 0 {
++                        if errno != EAGAIN && errno != EINTR { return }
++                    } else if size == 0 { return }
++                    else if index == 0 { toClient.removeFirst(size) }
++                    else { toGuest.removeFirst(size) }
++                }
++            }
++        }
++    }
++}
+diff --git a/libs/lume/src/Virtualization/DarkbloomPrivatePath.swift b/libs/lume/src/Virtualization/DarkbloomPrivatePath.swift
+new file mode 100644
+index 000000000..cb3fe0369
+--- /dev/null
++++ b/libs/lume/src/Virtualization/DarkbloomPrivatePath.swift
+@@ -0,0 +1,42 @@
++import Darwin
++import Foundation
++
++struct DarkbloomPrivateDirectory {
++    let descriptor: Int32
++    func withDescriptor<T>(_ body: (Int32) throws -> T) rethrows -> T {
++        defer { close(descriptor) }
++        return try body(descriptor)
++    }
++}
++
++enum DarkbloomPrivatePath {
++    static func openDirectory(_ path: String) throws -> DarkbloomPrivateDirectory {
++        let url = URL(fileURLWithPath: path)
++        guard path.hasPrefix("/"), !path.contains("\0"),
++              url.standardizedFileURL.resolvingSymlinksInPath().path == path else {
++            throw DarkbloomDevicePolicyError.invalidConfiguration("noncanonical private directory")
++        }
++        let descriptor = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
++        guard descriptor >= 0 else { throw POSIXError(.ENOENT) }
++        var valid = false
++        defer { if !valid { close(descriptor) } }
++        var metadata = stat()
++        guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFDIR,
++              metadata.st_uid == geteuid(), metadata.st_mode & 0o777 == 0o700 else {
++            throw DarkbloomDevicePolicyError.invalidConfiguration("unsafe private directory")
++        }
++        try requireNoACL(descriptor)
++        valid = true
++        return DarkbloomPrivateDirectory(descriptor: descriptor)
++    }
++
++    static func requireNoACL(_ descriptor: Int32) throws {
++        errno = 0
++        guard let acl = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else {
++            if errno == ENOENT { return }
++            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
++        }
++        acl_free(UnsafeMutableRawPointer(acl))
++        throw DarkbloomDevicePolicyError.invalidConfiguration("extended ACL on private authority")
++    }
++}
+diff --git a/libs/lume/src/Virtualization/VMVirtualizationService.swift b/libs/lume/src/Virtualization/VMVirtualizationService.swift
+index 17ee07c33..e2f5ae1c3 100644
+--- a/libs/lume/src/Virtualization/VMVirtualizationService.swift
++++ b/libs/lume/src/Virtualization/VMVirtualizationService.swift
+@@ -50,6 +50,8 @@ class BaseVirtualizationService: VMVirtualizationService {
+     var virtualMachine: VZVirtualMachine { virtualMachineHandle.machine }
+     let recoveryMode: Bool  // Store whether we should start in recovery mode
+     private let lifecycleMonitor: VMVirtualMachineLifecycleMonitor
++    private var guestBridge: DarkbloomGuestBridge?
++    private var stopping = false
+ 
+     var state: VZVirtualMachine.State {
+         let handle = virtualMachineHandle
+@@ -75,7 +77,10 @@ class BaseVirtualizationService: VMVirtualizationService {
+         }
+     }
+ 
++    deinit { guestBridge?.stop() }
++
+     func start() async throws {
++        guard !stopping else { throw DarkbloomDevicePolicyError.invalidConfiguration("VM service is stopping") }
+         let handle = virtualMachineHandle
+         let recoveryMode = recoveryMode
+         try await withCheckedThrowingContinuation {
+@@ -107,9 +112,20 @@ class BaseVirtualizationService: VMVirtualizationService {
+                 }
+             }
+         }
++        guard !stopping else { throw DarkbloomDevicePolicyError.invalidConfiguration("VM stopped during startup") }
++        if try DarkbloomDevicePolicy.isIsolated() {
++            guard let path = ProcessInfo.processInfo.environment[DarkbloomGuestBridge.socketEnvironmentKey] else {
++                throw DarkbloomDevicePolicyError.invalidConfiguration("missing broker guest socket")
++            }
++            guestBridge = try DarkbloomGuestBridge(path: path, handle: handle)
++        }
+     }
+ 
+     func stop() async throws {
++        // Cut off new commands even if the framework stop later fails.
++        stopping = true
++        guestBridge?.stop()
++        guestBridge = nil
+         let handle = virtualMachineHandle
+         let monitor = lifecycleMonitor
+         try await withCheckedThrowingContinuation {
+@@ -125,6 +141,8 @@ class BaseVirtualizationService: VMVirtualizationService {
+                 }
+             }
+         }
++        guestBridge?.stop()
++        guestBridge = nil
+     }
+ 
+     func pause() async throws {
+@@ -185,6 +203,7 @@ class BaseVirtualizationService: VMVirtualizationService {
+     }
+ 
+     func waitForStop() async throws {
++        defer { guestBridge?.stop(); guestBridge = nil }
+         try await lifecycleMonitor.waitForStop()
+     }
+ 
+@@ -431,7 +450,8 @@ final class DarwinVirtualizationService: BaseVirtualizationService {
+         // at a writable path, attach a virtio serial port whose output is written
+         // there. Useful for observing early boot / recoveryOS behaviour that has
+         // no other headless channel.
+-        if let serialLogPath = ProcessInfo.processInfo.environment["LUME_SERIAL_CONSOLE"],
++        if try !DarkbloomDevicePolicy.isIsolated(),
++           let serialLogPath = ProcessInfo.processInfo.environment["LUME_SERIAL_CONSOLE"],
+             !serialLogPath.isEmpty
+         {
+             if !FileManager.default.fileExists(atPath: serialLogPath) {
+@@ -486,6 +506,7 @@ final class DarwinVirtualizationService: BaseVirtualizationService {
+             vzConfig.usbControllers = [usbControllerConfiguration]
+         }
+ 
++        try DarkbloomDevicePolicy.apply(to: vzConfig, context: config)
+         try vzConfig.validate()
+         return vzConfig
+     }
+@@ -680,6 +701,7 @@ final class LinuxVirtualizationService: BaseVirtualizationService {
+             vzConfig.usbControllers = [usbControllerConfiguration]
+         }
+ 
++        try DarkbloomDevicePolicy.apply(to: vzConfig, context: config)
+         try vzConfig.validate()
+         return vzConfig
+     }
+diff --git a/libs/lume/tests/DarkbloomDevicePolicyTests.swift b/libs/lume/tests/DarkbloomDevicePolicyTests.swift
+new file mode 100644
+index 000000000..f608f1add
+--- /dev/null
++++ b/libs/lume/tests/DarkbloomDevicePolicyTests.swift
+@@ -0,0 +1,118 @@
++import Darwin
++import Foundation
++import Testing
++import Virtualization
++@testable import lume
++
++@Suite("Darkbloom isolated device policy")
++@MainActor
++struct DarkbloomDevicePolicyTests {
++    private let environment = [DarkbloomDevicePolicy.environmentKey: DarkbloomDevicePolicy.isolatedProfile]
++
++    private final class Fixture {
++        let root: URL
++        let boot: Path
++        let control: Path
++        let workspace: Path
++        init() throws {
++            root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".db-device-\(UUID().uuidString)")
++            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
++            let guest = root.appendingPathComponent(".darkbloom-guest")
++            try FileManager.default.createDirectory(at: guest, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
++            boot = Path(root.appendingPathComponent("disk.img").path)
++            control = Path(guest.appendingPathComponent("control.cdr").path)
++            workspace = Path(guest.appendingPathComponent("workspace.cdr").path)
++            for (path, mode) in [(boot, 0o600), (control, 0o400), (workspace, 0o600)] {
++                FileManager.default.createFile(atPath: path.path, contents: Data(repeating: 0, count: 512), attributes: [.posixPermissions: mode])
++            }
++        }
++        deinit { try? FileManager.default.removeItem(at: root) }
++        func context(shared: [SharedDirectory]? = nil, recovery: Bool = false, usb: [Path]? = nil) -> VMVirtualizationServiceContext {
++            VMVirtualizationServiceContext(cpuCount: 2, memorySize: 4 << 30,
++                display: "1024x768", sharedDirectories: shared, mount: control,
++                hardwareModel: nil, machineIdentifier: nil, macAddress: "02:00:00:00:00:01",
++                diskPath: boot, nvramPath: Path(root.appendingPathComponent("nvram.bin").path),
++                recoveryMode: recovery, usbMassStoragePaths: usb, additionalDiskPaths: [workspace], networkMode: .nat)
++        }
++        func storage() throws -> [VZStorageDeviceConfiguration] {
++            try [(boot, false), (control, true), (workspace, false)].map {
++                VZVirtioBlockDeviceConfiguration(attachment: try VZDiskImageStorageDeviceAttachment(url: $0.0.url, readOnly: $0.1))
++            }
++        }
++    }
++
++    @Test func stripsHostDevicesAndPreservesExactReadOnlyControlDisk() throws {
++        let fixture = try Fixture(), config = VZVirtualMachineConfiguration()
++        config.storageDevices = try fixture.storage()
++        config.networkDevices = [VZVirtioNetworkDeviceConfiguration()]
++        config.audioDevices = [VZVirtioSoundDeviceConfiguration()]
++        config.consoleDevices = [VZVirtioConsoleDeviceConfiguration()]
++        config.keyboards = [VZUSBKeyboardConfiguration()]
++        config.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
++        config.directorySharingDevices = [VZVirtioFileSystemDeviceConfiguration(tag: "test")]
++        try DarkbloomDevicePolicy.apply(to: config, context: fixture.context(), environment: environment)
++        #expect(config.networkDevices.isEmpty && config.audioDevices.isEmpty)
++        #expect(config.consoleDevices.isEmpty && config.serialPorts.isEmpty)
++        #expect(config.directorySharingDevices.isEmpty && config.keyboards.isEmpty && config.pointingDevices.isEmpty)
++        #expect(config.socketDevices.count == 1)
++        #expect(config.socketDevices.first is VZVirtioSocketDeviceConfiguration)
++        #expect(config.storageDevices.count == 3)
++        let control = (config.storageDevices[1] as? VZVirtioBlockDeviceConfiguration)?.attachment as? VZDiskImageStorageDeviceAttachment
++        #expect(control?.isReadOnly == true)
++    }
++
++    @Test func rejectsUnsafeControlModeAndExtraDevices() throws {
++        let fixture = try Fixture(), config = VZVirtualMachineConfiguration()
++        config.storageDevices = try fixture.storage()
++        #expect(chmod(fixture.control.path, 0o600) == 0)
++        #expect(throws: DarkbloomDevicePolicyError.self) {
++            try DarkbloomDevicePolicy.apply(to: config, context: fixture.context(), environment: environment)
++        }
++        #expect(chmod(fixture.control.path, 0o400) == 0)
++        config.storageDevices.append(config.storageDevices[0])
++        #expect(throws: DarkbloomDevicePolicyError.self) {
++            try DarkbloomDevicePolicy.apply(to: config, context: fixture.context(), environment: environment)
++        }
++    }
++
++    @Test func rejectsSharedDirectoriesUSBRecoveryAndStorageAliases() throws {
++        let fixture = try Fixture(), config = VZVirtualMachineConfiguration()
++        config.storageDevices = try fixture.storage()
++        let shared = SharedDirectory(hostPath: fixture.root.path, tag: "leak", readOnly: true)
++        for context in [fixture.context(shared: [shared]), fixture.context(recovery: true), fixture.context(usb: [fixture.control])] {
++            #expect(throws: DarkbloomDevicePolicyError.self) {
++                try DarkbloomDevicePolicy.apply(to: config, context: context, environment: environment)
++            }
++        }
++        #expect(throws: DarkbloomDevicePolicyError.self) {
++            try DarkbloomDevicePolicy.validateStorage(boot: fixture.boot, control: fixture.control, disks: [fixture.control])
++        }
++    }
++
++    @Test func requiresBrokerAndRefusesNetworkClipboardOrDetach() throws {
++        let fixture = try Fixture()
++        for violation in 0..<5 {
++            #expect(throws: DarkbloomDevicePolicyError.self) {
++                try DarkbloomDevicePolicy.validateInvocation(hasBrokerLifecycle: violation != 0,
++                    detached: violation == 1, displayDisabled: true, vncDisabled: true,
++                    clipboard: violation == 2, recovery: false, sharedDirectoryCount: 0, usbCount: 0,
++                    networkOverride: violation == 3, control: violation == 4 ? nil : fixture.control,
++                    disks: [fixture.workspace], environment: environment)
++            }
++        }
++    }
++
++    @Test func unknownProfileFailsClosed() {
++        #expect(throws: DarkbloomDevicePolicyError.self) {
++            try DarkbloomDevicePolicy.isIsolated(environment: [DarkbloomDevicePolicy.environmentKey: "typo"])
++        }
++    }
++
++    @Test func ordinaryBaseImageBootRetainsItsConfiguration() throws {
++        let fixture = try Fixture(), config = VZVirtualMachineConfiguration()
++        config.networkDevices = [VZVirtioNetworkDeviceConfiguration()]
++        try DarkbloomDevicePolicy.apply(to: config, context: fixture.context(), environment: [:])
++        #expect(config.networkDevices.count == 1)
++        #expect(config.socketDevices.isEmpty)
++    }
++}
+diff --git a/libs/lume/tests/DarkbloomGuestBridgeTests.swift b/libs/lume/tests/DarkbloomGuestBridgeTests.swift
+new file mode 100644
+index 000000000..d0ea2538c
+--- /dev/null
++++ b/libs/lume/tests/DarkbloomGuestBridgeTests.swift
+@@ -0,0 +1,65 @@
++import Darwin
++import Foundation
++import Testing
++@testable import lume
++
++@Suite("Darkbloom private guest bridge")
++struct DarkbloomGuestBridgeTests {
++    @Test func rejectsPublicParentAndPreservesExistingSocketPath() throws {
++        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".dbg-\(UUID())")
++        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o755])
++        defer { try? FileManager.default.removeItem(at: root) }
++        let path = root.appendingPathComponent("s").path
++        #expect(throws: (any Error).self) { _ = try DarkbloomGuestBridge(path: path, connect: { _ in }) }
++        #expect(chmod(root.path, 0o700) == 0)
++        try Data("preserve".utf8).write(to: URL(fileURLWithPath: path))
++        #expect(throws: (any Error).self) { _ = try DarkbloomGuestBridge(path: path, connect: { _ in }) }
++        #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == Data("preserve".utf8))
++    }
++
++    @Test func pendingConnectStopsAndLateCallbackDoesNotRetainAnOpenClient() throws {
++        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".dbg-\(UUID())")
++        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
++        defer { try? FileManager.default.removeItem(at: root) }
++        let path = root.appendingPathComponent("s").path, delayed = DelayedConnect()
++        let bridge = try DarkbloomGuestBridge(path: path) { delayed.capture($0) }
++        defer { bridge.stop() }
++        var metadata = stat()
++        #expect(lstat(path, &metadata) == 0 && metadata.st_mode & 0o777 == 0o600)
++        let client = socket(AF_UNIX, SOCK_STREAM, 0)
++        #expect(client >= 0)
++        defer { close(client) }
++        var address = sockaddr_un()
++        address.sun_family = sa_family_t(AF_UNIX)
++        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
++        withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: Array(path.utf8) + [0]) }
++        let status = withUnsafePointer(to: &address) {
++            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(client, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
++        }
++        #expect(status == 0)
++        #expect(delayed.started.wait(timeout: .now() + 2) == .success)
++        bridge.stop()
++        delayed.take()?(.failure(POSIXError(.ECONNRESET)))
++        var timeout = timeval(tv_sec: 2, tv_usec: 0), byte: UInt8 = 0
++        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
++        #expect(read(client, &byte, 1) == 0)
++        for _ in 0..<100 {
++            if !FileManager.default.fileExists(atPath: path) { break }
++            usleep(10_000)
++        }
++        #expect(!FileManager.default.fileExists(atPath: path))
++        bridge.stop()
++    }
++
++    private final class DelayedConnect: @unchecked Sendable {
++        let started = DispatchSemaphore(value: 0)
++        private let lock = NSLock()
++        private var callback: (@Sendable (Result<DarkbloomGuestEndpoint, Error>) -> Void)?
++        func capture(_ callback: @escaping @Sendable (Result<DarkbloomGuestEndpoint, Error>) -> Void) {
++            lock.withLock { self.callback = callback }; started.signal()
++        }
++        func take() -> (@Sendable (Result<DarkbloomGuestEndpoint, Error>) -> Void)? {
++            lock.withLock { defer { callback = nil }; return callback }
++        }
++    }
++}
+diff --git a/libs/lume/tests/DarkbloomGuestRelayTests.swift b/libs/lume/tests/DarkbloomGuestRelayTests.swift
+new file mode 100644
+index 000000000..14bdfc39a
+--- /dev/null
++++ b/libs/lume/tests/DarkbloomGuestRelayTests.swift
+@@ -0,0 +1,130 @@
++import Darwin
++import Foundation
++import Testing
++@testable import lume
++
++private final class RelaySocketPair: @unchecked Sendable {
++    let first: Int32
++    let second: Int32
++    private let lock = NSLock()
++    private var secondOpen = true
++    init() throws {
++        var descriptors: [Int32] = [-1, -1]
++        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else { throw POSIXError(.EIO) }
++        first = descriptors[0]; second = descriptors[1]
++        for fd in descriptors {
++            var timeout = timeval(tv_sec: 5, tv_usec: 0)
++            var noSignal: Int32 = 1
++            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
++            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
++            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
++        }
++    }
++    func closeSecond() { lock.withLock { if secondOpen { close(second); secondOpen = false } } }
++    deinit { close(first); if secondOpen { close(second) } }
++}
++
++@Suite("Darkbloom guest relay")
++struct DarkbloomGuestRelayTests {
++    @Test func flushesLargeLastFrameBeforeFINAndKeepsReverseDirectionAlive() throws {
++        let client = try RelaySocketPair(), guest = try RelaySocketPair()
++        let relay = DispatchGroup(), writer = DispatchGroup()
++        relay.enter()
++        DispatchQueue.global().async {
++            DarkbloomGuestRelay.run(client: client.first, guest: guest.first, timeoutNanoseconds: 5_000_000_000)
++            relay.leave()
++        }
++        let payload = Data(repeating: 0x81, count: 512 * 1024)
++        writer.enter()
++        DispatchQueue.global().async {
++            try? Self.writeAll(guest.second, payload)
++            shutdown(guest.second, SHUT_WR)
++            writer.leave()
++        }
++        #expect(try Self.readToEOF(client.second) == payload)
++        #expect(writer.wait(timeout: .now() + 5) == .success)
++        let acknowledgement = Data("last response received".utf8)
++        try Self.writeAll(client.second, acknowledgement)
++        shutdown(client.second, SHUT_WR)
++        #expect(try Self.readToEOF(guest.second) == acknowledgement)
++        #expect(relay.wait(timeout: .now() + 5) == .success)
++    }
++
++    @Test func fullPeerHangupDoesNotDiscardTheLastBufferedResponse() throws {
++        let client = try RelaySocketPair(), guest = try RelaySocketPair(), relay = DispatchGroup()
++        relay.enter()
++        DispatchQueue.global().async {
++            DarkbloomGuestRelay.run(client: client.first, guest: guest.first, timeoutNanoseconds: 5_000_000_000)
++            relay.leave()
++        }
++        let payload = Data(repeating: 0x44, count: 16384)
++        try Self.writeAll(guest.second, payload)
++        guest.closeSecond()
++        #expect(try Self.readToEOF(client.second) == payload)
++        shutdown(client.second, SHUT_WR)
++        #expect(relay.wait(timeout: .now() + 5) == .success)
++    }
++
++    @Test func cancellationStopsRelayWithoutClosingCallerOwnedDescriptors() throws {
++        let client = try RelaySocketPair(), guest = try RelaySocketPair(), signal = Flag()
++        let complete = DispatchGroup()
++        complete.enter()
++        DispatchQueue.global().async {
++            DarkbloomGuestRelay.run(client: client.first, guest: guest.first, shouldStop: { signal.value })
++            complete.leave()
++        }
++        signal.set()
++        #expect(complete.wait(timeout: .now() + 2) == .success)
++        #expect(fcntl(client.first, F_GETFD) >= 0 && fcntl(guest.first, F_GETFD) >= 0)
++    }
++
++    @Test func lateConnectAfterStopCannotCloseReusedDescriptorOrFinishTwice() throws {
++        let sockets = try RelaySocketPair(), guest = try RelaySocketPair(), finish = Counter()
++        // Give the client its own duplicate; the socketpair retains its originals.
++        let owned = dup(sockets.first)
++        #expect(owned >= 0)
++        let client = DarkbloomGuestClient(descriptor: owned) { finish.increment() }
++        client.stop()
++        #expect(finish.value == 1)
++        let replacement = dup(sockets.first)
++        defer { close(replacement) }
++        #expect(replacement == owned)
++        client.connected(.success(DarkbloomGuestEndpoint(descriptor: guest.first, owner: guest)))
++        client.stop()
++        #expect(finish.value == 1)
++        #expect(fcntl(replacement, F_GETFD) >= 0)
++        var byte: UInt8 = 7
++        #expect(write(replacement, &byte, 1) == 1)
++        #expect(read(sockets.second, &byte, 1) == 1)
++    }
++
++    private final class Flag: @unchecked Sendable {
++        private let lock = NSLock(); private var flag = false
++        var value: Bool { lock.withLock { flag } }
++        func set() { lock.withLock { flag = true } }
++    }
++    private final class Counter: @unchecked Sendable {
++        private let lock = NSLock(); private var count = 0
++        var value: Int { lock.withLock { count } }
++        func increment() { lock.withLock { count += 1 } }
++    }
++    private static func writeAll(_ fd: Int32, _ data: Data) throws {
++        try data.withUnsafeBytes { raw in
++            var offset = 0
++            while offset < raw.count {
++                let written = write(fd, raw.baseAddress!.advanced(by: offset), raw.count - offset)
++                guard written > 0 else { throw POSIXError(.EIO) }
++                offset += written
++            }
++        }
++    }
++    private static func readToEOF(_ fd: Int32) throws -> Data {
++        var result = Data(), bytes = [UInt8](repeating: 0, count: 8192)
++        while true {
++            let count = read(fd, &bytes, bytes.count)
++            if count == 0 { return result }
++            guard count > 0 else { throw POSIXError(.EIO) }
++            result.append(contentsOf: bytes.prefix(count))
++        }
++    }
++}

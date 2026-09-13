@@ -3,7 +3,7 @@
         coordinator-test coordinator-build coordinator-build-linux coordinator \
         prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
         provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
-        sandbox-build sandbox-test sandbox \
+        sandbox-build sandbox-test sandbox sandbox-client-build sandbox-client-test \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
         docs-check docs-stamp \
@@ -83,9 +83,20 @@ sandbox-build: ## Build the isolated macOS sandbox host runtime
 	swift build --package-path sandbox-macos
 
 sandbox-test: ## Run macOS sandbox host runtime tests
+	swift test --package-path host-runtime
 	swift test --package-path sandbox-macos
+	python3 sandbox-macos/Scripts/test-sandbox-release-tools.py
+	python3 sandbox-macos/Scripts/test-sandbox-benchmarks.py
+	python3 sandbox-macos/Scripts/test-sandbox-live-tools.py
 
-sandbox: sandbox-build sandbox-test ## Build + test macOS sandbox host runtime
+sandbox-client-build: ## Build the standalone sandbox consumer CLI
+	mkdir -p build
+	go build -o build/darkbloom-sandbox ./coordinator/cmd/darkbloom-sandbox
+
+sandbox-client-test: ## Test the sandbox consumer workflow without a VM
+	go test ./coordinator/cmd/darkbloom-sandbox
+
+sandbox: sandbox-build sandbox-test sandbox-client-build sandbox-client-test ## Build + test the sandbox host and consumer
 
 benchmark-wrapper-test: ## Unit-test the Gemma benchmark wrapper (no GPU or weights)
 	cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .
@@ -132,7 +143,7 @@ docs-stamp: ## Refresh the freshness stamp on changed docs (FILES=... to target 
 
 test: coordinator-test prompt-sidecar-test provider-test sandbox-test ui-test benchmark-wrapper-test docs-check ## Run all unit tests + docs lint
 
-build: coordinator-build prompt-sidecar-build provider-build sandbox-build ui-build ## Build all components
+build: coordinator-build prompt-sidecar-build provider-build sandbox-build sandbox-client-build ui-build ## Build all components
 
 all: test build ## Test + build everything
 

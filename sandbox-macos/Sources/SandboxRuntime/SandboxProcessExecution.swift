@@ -11,6 +11,7 @@ final class ProcessExecution: @unchecked Sendable {
     private let standardOutput: BoundedProcessOutput
     private let standardError: BoundedProcessOutput
     private let cooperativeControl: ProcessControlChannel?
+    private let runtimeAuthorityDescriptor: Int32?
     private let testHooks: ProcessExecutionTestHooks
     private let lock = NSLock()
     private var started = false
@@ -27,6 +28,7 @@ final class ProcessExecution: @unchecked Sendable {
         maximumOutputBytes: Int,
         cooperativeControl configuration:
             SandboxCooperativeProcessControl? = nil,
+        runtimeAuthorityDescriptor: Int32? = nil,
         testHooks: ProcessExecutionTestHooks = .none
     ) throws {
         let standardOutput = try BoundedProcessOutput(
@@ -52,6 +54,19 @@ final class ProcessExecution: @unchecked Sendable {
             throw error
         }
         var childEnvironment = environment
+        if let runtimeAuthorityDescriptor {
+            guard runtimeAuthorityDescriptor >= 64,
+                  fcntl(runtimeAuthorityDescriptor, F_GETFD) >= 0 else {
+                _ = standardOutput.finish()
+                _ = standardError.finish()
+                cooperativeControl?.closeParentEndpoint()
+                cooperativeControl?.closeChildSourceEndpoint()
+                throw SandboxRuntimeError.unsupported("invalid borrowed host ownership descriptor")
+            }
+            childEnvironment["DARKBLOOM_HOST_RUNTIME_FD"] = "4"
+        } else {
+            childEnvironment.removeValue(forKey: "DARKBLOOM_HOST_RUNTIME_FD")
+        }
         if let configuration {
             childEnvironment[configuration.environmentVariable] =
                 String(ProcessControlChannel.childDescriptor)
@@ -59,6 +74,7 @@ final class ProcessExecution: @unchecked Sendable {
         self.standardOutput = standardOutput
         self.standardError = standardError
         self.cooperativeControl = cooperativeControl
+        self.runtimeAuthorityDescriptor = runtimeAuthorityDescriptor
         self.executable = executable
         self.arguments = arguments
         self.environment = childEnvironment
@@ -341,6 +357,14 @@ final class ProcessExecution: @unchecked Sendable {
                 throw SandboxRuntimeError.unsupported(
                     "failed to inherit cooperative process control channel"
                 )
+            }
+        }
+        // Do this last: stream cleanup and the control-channel source may have
+        // occupied descriptor4 before their own child-only close actions.
+        if let runtimeAuthorityDescriptor {
+            guard posix_spawn_file_actions_adddup2(&actions, runtimeAuthorityDescriptor, 4) == 0,
+                  posix_spawn_file_actions_addclose(&actions, runtimeAuthorityDescriptor) == 0 else {
+                throw SandboxRuntimeError.unsupported("failed to inherit host ownership")
             }
         }
     }

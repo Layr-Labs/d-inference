@@ -230,7 +230,7 @@ func (s *MemoryStore) BeginSandboxOperation(
 		sandbox.State != operation.PreviousSandboxState ||
 		sandbox.Terminal() ||
 		(sandbox.TerminationRequested &&
-			!isSandboxTerminationOperation(operation, sandbox)) {
+			!isSandboxTerminationOperation(operation, sandbox)) || !sandboxStartMatchesLease(sandbox, operation) {
 		return nil, nil, false, ErrSandboxConflict
 	}
 	if _, exists := s.sandboxOperations[operation.ID]; exists {
@@ -265,7 +265,7 @@ func (s *MemoryStore) BeginSandboxOperation(
 			true,
 			nil
 	}
-	if storedOperation.Kind == SandboxOperationKindRenew {
+	if storedOperation.Kind == SandboxOperationKindRenew || storedOperation.Kind == SandboxOperationKindStart {
 		fencingToken, err := s.allocateSandboxFencingTokenLocked(
 			sandbox.HostID,
 			storedOperation.RequestedFencingToken,
@@ -485,6 +485,8 @@ func (s *MemoryStore) CreateSandboxCommand(
 	if err := validateSandboxCommandCreate(command); err != nil {
 		return nil, false, err
 	}
+	command = cloneSandboxCommand(command)
+	command.RequestDigest = sandboxCommandRequestDigest(command)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sandbox := s.sandboxes[command.SandboxID]
@@ -868,6 +870,11 @@ func validateSandboxOperationStart(
 		return ErrSandboxInvalidTransition
 	}
 	switch operation.Kind {
+	case SandboxOperationKindStart:
+		if targetState != SandboxStatePreparing || operation.PreviousSandboxState != SandboxStateStopped ||
+			operation.RequestedFencingToken <= operation.FencingToken || operation.RequestedLeaseExpiresAt.IsZero() || operation.DeleteAfterStop {
+			return ErrSandboxInvalidTransition
+		}
 	case SandboxOperationKindRenew:
 		if targetState != operation.PreviousSandboxState ||
 			operation.RequestedLeaseExpiresAt.IsZero() ||
@@ -918,6 +925,7 @@ func validateSandboxCommandCreate(command *SandboxCommand) error {
 		command.LastCancelDispatchError != "" ||
 		command.StartedAt != nil ||
 		command.CompletedAt != nil ||
+		command.PayloadExpired || command.PayloadExpiredAt != nil ||
 		command.CreatedAt.IsZero() ||
 		command.UpdatedAt.IsZero() {
 		return ErrSandboxInvalidTransition

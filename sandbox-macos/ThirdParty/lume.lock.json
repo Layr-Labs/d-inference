@@ -19,6 +19,22 @@
     {
       "path": "ThirdParty/lume-patches/0004-broker-lifecycle-capability.patch",
       "sha256": "622b7ccee3a2d842e8aad83fe26ce4e1ab4027bd585a10ffddc40d416e288026"
+    },
+    {
+      "path": "ThirdParty/lume-patches/0005-isolate-tenant-devices-and-guest-channel.patch",
+      "sha256": "4fba4b7ec0fa7554ce47e84163b46e12cdf98bb6ece60fb83baf3940cbe165c9"
+    },
+    {
+      "path": "ThirdParty/lume-patches/0006-retain-machine-ownership-and-canonical-paths.patch",
+      "sha256": "49f918683d2b69f8213cedfa2c7482e9bda655c156976023c95a9d8dfd0af834"
+    },
+    {
+      "path": "ThirdParty/lume-patches/0007-report-owner-fail-stop-without-buffering.patch",
+      "sha256": "175352985a63ba818926c36604d79dc89e5e457cd369292365544c83657e66a5"
+    },
+    {
+      "path": "ThirdParty/lume-patches/0008-coalesce-native-virtual-machine-stop.patch",
+      "sha256": "28896292d17137e6e20d17f0d86413dcd31c2b93365042af09be4d3a45887096"
     }
   ],
   "license": "MIT",

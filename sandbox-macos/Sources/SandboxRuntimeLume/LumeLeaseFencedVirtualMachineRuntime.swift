@@ -1,6 +1,7 @@
 import Foundation
 import SandboxCore
 import SandboxRuntime
+import SandboxGuestProtocol
 
 public actor LumeLeaseFencedVirtualMachineRuntime {
     private let capacityArbiter: SandboxHostCapacityArbiter
@@ -70,6 +71,11 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
         try await runtime.stop(name: name, scope: scope)
     }
 
+    package func file(scope: SandboxOperationScope, name: String,
+                      request: GuestRequest) async throws -> GuestResponse {
+        try await runtime.file(scope: scope, name: name, request: request)
+    }
+
     package func delete(
         scope: SandboxOperationScope,
         name: String
@@ -88,26 +94,41 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
         scope: SandboxOperationScope,
         name: String
     ) async throws {
-        try await runtime.stopAndRelease(name: name, scope: scope)
+        try await teardown(name: name, scope: scope)
+    }
+
+    private func teardown(name: String, scope: SandboxOperationScope) async throws {
+        if try LumeVirtualMachineDeletionIntent.load(
+            workspace: LumeRuntimeWorkspace(storageDirectory: storageDirectory), name: name) == nil,
+           try !capacityArbiter.deletionConfirmed(scope: scope, virtualMachineName: name) {
+            // Without a durable stopped deletion intent, missing/unknown VM
+            // state must retain capacity rather than being treated as cleanup.
+            try await runtime.stop(name: name, scope: scope)
+        }
+        try await runtime.deleteAndRelease(name: name, scope: scope)
     }
 
     public func reconcileExpiredLeases() async throws
         -> [LumeExpiredLeaseReconciliationResult]
     {
         try capacityArbiter.requireStorageDirectory(storageDirectory)
+        try await reconcileReleasedDeletionIntents()
         let expired = try capacityArbiter.expiredLeases()
+        let pending = try capacityArbiter.snapshot().leases.filter { lease in
+            try LumeVirtualMachineDeletionIntent.load(
+                workspace: LumeRuntimeWorkspace(storageDirectory: storageDirectory),
+                name: lease.virtualMachineName) != nil
+        }
+        let candidates = pending + expired.filter { expired in !pending.contains { $0.scope.sandboxID == expired.scope.sandboxID } }
         var results: [LumeExpiredLeaseReconciliationResult] = []
-        results.reserveCapacity(expired.count)
-        for observed in expired {
+        results.reserveCapacity(candidates.count)
+        for observed in candidates {
             var lease = observed
             do {
-                lease = try capacityArbiter.fenceExpiredLease(
-                    scope: observed.scope
-                )
-                try await runtime.stopAndRelease(
-                    name: lease.virtualMachineName,
-                    scope: lease.scope
-                )
+                if expired.contains(where: { $0.scope == observed.scope }) {
+                    lease = try capacityArbiter.fenceExpiredLease(scope: observed.scope)
+                }
+                try await teardown(name: lease.virtualMachineName, scope: lease.scope)
                 results.append(.init(lease: lease, outcome: .released))
             } catch SandboxCapacityError.leaseNotFound {
                 results.append(
@@ -123,5 +144,31 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
             }
         }
         return results
+    }
+
+    private func reconcileReleasedDeletionIntents() async throws {
+        let workspace = LumeRuntimeWorkspace(storageDirectory: storageDirectory)
+        for intent in try LumeVirtualMachineDeletionIntent.pending(workspace: workspace) {
+            guard let original = intent.scope,
+                  let released = try capacityArbiter.releasedDeletionScope(
+                    matching: original, virtualMachineName: intent.name) else { continue }
+            // deleteAndRelease rechecks the exact release receipt durably under
+            // the VM operation lock before clearing the original intent.
+            try await runtime.deleteAndRelease(name: intent.name, scope: released)
+        }
+    }
+
+    public func stopAllForShutdown() async throws {
+        var failures: [String] = []
+        for lease in try capacityArbiter.snapshot().leases {
+            do {
+                try await runtime.stop(name: lease.virtualMachineName, scope: lease.scope)
+            } catch {
+                failures.append("\(lease.virtualMachineName): \(error)")
+            }
+        }
+        guard failures.isEmpty else {
+            throw SandboxRuntimeError.unsupported("VM shutdown remains unproven: " + failures.joined(separator: "; "))
+        }
     }
 }

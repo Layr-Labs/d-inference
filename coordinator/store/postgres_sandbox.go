@@ -30,7 +30,8 @@ const sandboxCommandSelectColumns = `
 	state, exit_code, stdout, stderr, output_truncated, error_code,
 	dispatch_attempts, last_dispatched_at, last_dispatch_error,
 	cancellation_pending, cancel_dispatch_attempts, last_cancel_dispatched_at,
-	last_cancel_dispatch_error, created_at, started_at, completed_at, updated_at`
+	last_cancel_dispatch_error, created_at, started_at, completed_at, updated_at,
+	request_digest, payload_expired, payload_expired_at`
 
 func (s *PostgresStore) CreateSandbox(
 	ctx context.Context,
@@ -396,7 +397,7 @@ func (s *PostgresStore) BeginSandboxOperation(
 		sandbox.State != operation.PreviousSandboxState ||
 		sandbox.Terminal() ||
 		(sandbox.TerminationRequested &&
-			!isSandboxTerminationOperation(operation, sandbox)) {
+			!isSandboxTerminationOperation(operation, sandbox)) || !sandboxStartMatchesLease(sandbox, operation) {
 		return nil, nil, false, ErrSandboxConflict
 	}
 	var activeOperation, activeCommand bool
@@ -454,7 +455,7 @@ func (s *PostgresStore) BeginSandboxOperation(
 			)
 		}
 	}
-	if operation.Kind == SandboxOperationKindRenew {
+	if operation.Kind == SandboxOperationKindRenew || operation.Kind == SandboxOperationKindStart {
 		fencingToken, err := allocateSandboxFencingToken(
 			ctx,
 			tx,
@@ -842,6 +843,8 @@ func (s *PostgresStore) CreateSandboxCommand(
 	if err := validateSandboxCommandCreate(command); err != nil {
 		return nil, false, err
 	}
+	command = cloneSandboxCommand(command)
+	command.RequestDigest = sandboxCommandRequestDigest(command)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("begin sandbox command: %w", err)
@@ -932,10 +935,10 @@ func (s *PostgresStore) CreateSandboxCommand(
 			fencing_token, arguments, environment, working_directory,
 			timeout_seconds, state, exit_code, stdout, stderr,
 			output_truncated, error_code, created_at, started_at,
-			completed_at, updated_at
+			completed_at, updated_at, request_digest
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-			$14, $15, $16, $17, $18, $19, $20
+			$14, $15, $16, $17, $18, $19, $20, $21
 		)`,
 		command.ID,
 		command.SandboxID,
@@ -957,6 +960,7 @@ func (s *PostgresStore) CreateSandboxCommand(
 		command.StartedAt,
 		command.CompletedAt,
 		command.UpdatedAt,
+		command.RequestDigest,
 	); err != nil {
 		return nil, false, sandboxPostgresError(
 			"insert sandbox command",
@@ -1620,6 +1624,9 @@ func scanSandboxCommand(row rowScanner) (*SandboxCommand, error) {
 		&command.StartedAt,
 		&command.CompletedAt,
 		&command.UpdatedAt,
+		&command.RequestDigest,
+		&command.PayloadExpired,
+		&command.PayloadExpiredAt,
 	); err != nil {
 		return nil, err
 	}

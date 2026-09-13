@@ -751,7 +751,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
             results[0].lease.scope.fencingToken,
             lease.scope.fencingToken
         )
-        try await fixture.waitForState("stopped")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.virtualMachineDirectory.path))
         XCTAssertTrue(try arbiter.snapshot().leases.isEmpty)
         let retryResults = try await runtime.reconcileExpiredLeases()
         XCTAssertTrue(retryResults.isEmpty)
@@ -881,7 +881,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
             results[0].lease.scope.fencingToken,
             fenced.scope.fencingToken
         )
-        try await fixture.waitForState("stopped")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.virtualMachineDirectory.path))
         XCTAssertTrue(try reopenedArbiter.snapshot().leases.isEmpty)
     }
 
@@ -947,7 +947,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
             name: fixture.virtualMachineName
         )
 
-        try await fixture.waitForState("stopped")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.virtualMachineDirectory.path))
         XCTAssertTrue(try arbiter.snapshot().leases.isEmpty)
     }
 
@@ -1181,7 +1181,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
         } catch let error as SandboxCapacityError {
             XCTAssertEqual(error, .leaseNotFound)
         }
-        try await fixture.waitForState("stopped")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.virtualMachineDirectory.path))
         XCTAssertTrue(try arbiter.snapshot().leases.isEmpty)
     }
 
@@ -1792,8 +1792,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
         let state = try await runtime.inspect(
             name: fixture.virtualMachineName
         )?.state
-        XCTAssertEqual(state, .running)
-        try await runtime.stop(name: fixture.virtualMachineName)
+        XCTAssertEqual(state, .stopped)
     }
 
     func testCredentialedReadinessDeadlineStopsNewlyStartedVirtualMachine()
@@ -2563,27 +2562,12 @@ final class LumeRuntimeFailureTests: XCTestCase {
         )
     }
 
-    func testDeleteFailsClosedWhenVirtualMachineRemainsListed() async throws {
+    func testDeleteCompletesExactStoppedTreeWhenBackendDeleteIsANoop() async throws {
         let fixture = try FakeLumeFixture(behavior: "delete-noop")
         defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime()
-
-        do {
-            try await runtime.delete(name: fixture.virtualMachineName)
-            XCTFail("delete must verify the VM disappeared")
-        } catch let error as SandboxRuntimeError {
-            XCTAssertEqual(
-                error,
-                .malformedOutput(
-                    "Lume delete completed but VM still exists"
-                )
-            )
-        }
-        XCTAssertTrue(
-            FileManager.default.fileExists(
-                atPath: fixture.virtualMachineDirectory.path
-            )
-        )
+        try await runtime.delete(name: fixture.virtualMachineName)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.virtualMachineDirectory.path))
     }
 
     func testSeparateRuntimesCannotCreateSameVirtualMachine() async throws {

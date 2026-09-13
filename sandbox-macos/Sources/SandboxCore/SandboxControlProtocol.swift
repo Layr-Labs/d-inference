@@ -9,12 +9,15 @@ public enum SandboxControlMessageType: String, Codable, CaseIterable, Sendable {
     case commandState = "sandbox_command_state"
     case hostFailure = "sandbox_host_failure"
     case prepare = "sandbox_prepare"
+    case start = "sandbox_start"
     case leaseRenew = "sandbox_lease_renew"
     case command = "sandbox_command"
     case cancelCommand = "sandbox_cancel_command"
     case stop = "sandbox_stop"
     case delete = "sandbox_delete"
     case drain = "sandbox_drain"
+    case fileOperation = "sandbox_file_operation"
+    case fileResult = "sandbox_file_result"
 }
 
 public enum SandboxWireOperationState: String, Codable, CaseIterable, Sendable {
@@ -85,6 +88,8 @@ public struct SandboxWireHostCapabilities: Codable, Equatable, Sendable {
     public let workspaceSizesBytes: [UInt64]
     public let baseImageIDs: [String]
     public let supportsGPU: Bool
+    public let supportsFiles: Bool?
+    public let supportsStart: Bool?
 
     public init(
         daemonVersion: String,
@@ -97,7 +102,9 @@ public struct SandboxWireHostCapabilities: Codable, Equatable, Sendable {
         maximumSandboxes: UInt16,
         workspaceSizesBytes: [UInt64],
         baseImageIDs: [String],
-        supportsGPU: Bool
+        supportsGPU: Bool,
+        supportsFiles: Bool? = nil,
+        supportsStart: Bool? = nil
     ) {
         self.daemonVersion = daemonVersion
         self.operatingSystem = operatingSystem
@@ -110,6 +117,8 @@ public struct SandboxWireHostCapabilities: Codable, Equatable, Sendable {
         self.workspaceSizesBytes = workspaceSizesBytes
         self.baseImageIDs = baseImageIDs
         self.supportsGPU = supportsGPU
+        self.supportsFiles = supportsFiles
+        self.supportsStart = supportsStart
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -124,6 +133,8 @@ public struct SandboxWireHostCapabilities: Codable, Equatable, Sendable {
         case workspaceSizesBytes = "workspace_sizes_bytes"
         case baseImageIDs = "base_image_ids"
         case supportsGPU = "supports_gpu"
+        case supportsFiles = "supports_files"
+        case supportsStart = "supports_start"
     }
 }
 
@@ -417,6 +428,32 @@ public struct SandboxWirePrepare: Codable, Equatable, Sendable {
 }
 
 public struct SandboxWireLeaseRenew: Codable, Equatable, Sendable {
+    public let operationID: UUID
+    public let scope: SandboxWireScope
+    public let requestedFencingToken: SandboxFencingToken
+    public let leaseExpiresAt: String
+
+    public init(
+        operationID: UUID,
+        scope: SandboxWireScope,
+        requestedFencingToken: SandboxFencingToken,
+        leaseExpiresAt: String
+    ) {
+        self.operationID = operationID
+        self.scope = scope
+        self.requestedFencingToken = requestedFencingToken
+        self.leaseExpiresAt = leaseExpiresAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case operationID = "operation_id"
+        case scope
+        case requestedFencingToken = "requested_fencing_token"
+        case leaseExpiresAt = "lease_expires_at"
+    }
+}
+
+public struct SandboxWireStart: Codable, Equatable, Sendable {
     public let operationID: UUID
     public let scope: SandboxWireScope
     public let requestedFencingToken: SandboxFencingToken

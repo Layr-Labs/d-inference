@@ -160,6 +160,17 @@ func TestRuntimeCleanupFailureRequiresCancellationProof(t *testing.T) {
 			if frames := transport.frames(); len(frames) != 1 {
 				t.Fatalf("initial cancellation frames = %d, want 1", len(frames))
 			}
+			contradictoryCode := runtimeCleanupFailedErrorCode
+			if err := controller.handleCommandState(ctx, session, &protocol.SandboxCommandStatePayload{
+				CommandID: command.ID, Scope: protocol.SandboxScope{SandboxID: command.SandboxID, Generation: command.Generation, FencingToken: command.FencingToken},
+				State: store.SandboxCommandCancelled, ErrorCode: &contradictoryCode,
+			}); err != nil {
+				t.Fatalf("record contradictory cleanup failure: %v", err)
+			}
+			contradictory, err := backend.GetSandboxCommand(ctx, command.AccountID, command.SandboxID, command.ID)
+			if err != nil || !contradictory.CancellationPending {
+				t.Fatalf("cancelled plus cleanup failure cleared pending proof: %+v error=%v", contradictory, err)
+			}
 
 			next := *command
 			next.ID = "d0000000-0000-0000-0000-000000000524"

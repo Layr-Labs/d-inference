@@ -11,6 +11,8 @@ package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
     var validatedRuntime: ValidatedLumeRuntime?
     var activeOperations: [String: String] = [:]
     var runningProcesses: [String: SandboxManagedProcess] = [:]
+    var isolatedGuests: [String: LumeGuestMaterials] = [:]
+    var guestEndpoints: [String: LumeGuestEndpoint] = [:]
 
     package init(
         configuration: LumeRuntimeConfiguration,
@@ -98,6 +100,7 @@ package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
         resources: SandboxResourceSpecification? = nil,
         bootDiskBytes: UInt64? = nil
     ) throws -> SandboxLeaseMutationAuthorization? {
+        try configuration.hostRuntimeLease?.validate()
         if let capacityArbiter {
             try capacityArbiter.requireStorageDirectory(
                 configuration.storageDirectory
@@ -108,13 +111,15 @@ package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
                 )
             }
             do {
-                return try capacityArbiter.authorizeMutation(
+                let authorization = try capacityArbiter.authorizeMutation(
                     scope: scope,
                     virtualMachineName: virtualMachineName,
                     operation: operation,
                     resources: resources,
                     bootDiskBytes: bootDiskBytes
                 )
+                try requireNoDeletionIntent(operation: operation, name: virtualMachineName)
+                return authorization
             } catch SandboxCapacityError.leaseOperationInProgress {
                 throw SandboxRuntimeError.operationInProgress(
                     name: virtualMachineName,
@@ -127,6 +132,7 @@ package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
                 "unfenced Lume runtime cannot accept an operation scope"
             )
         }
+        try requireNoDeletionIntent(operation: operation, name: virtualMachineName)
         return nil
     }
 
@@ -137,6 +143,7 @@ package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
         resources: SandboxResourceSpecification? = nil,
         bootDiskBytes: UInt64? = nil
     ) throws {
+        try configuration.hostRuntimeLease?.validate()
         if let capacityArbiter {
             try capacityArbiter.requireStorageDirectory(
                 configuration.storageDirectory
@@ -153,12 +160,23 @@ package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
                 resources: resources,
                 bootDiskBytes: bootDiskBytes
             )
+            try requireNoDeletionIntent(operation: operation, name: virtualMachineName)
             return
         }
         if scope != nil {
             throw SandboxRuntimeError.unsupported(
                 "unfenced Lume runtime cannot accept an operation scope"
             )
+        }
+        try requireNoDeletionIntent(operation: operation, name: virtualMachineName)
+    }
+
+    private func requireNoDeletionIntent(operation: SandboxLeaseOperation, name: String) throws {
+        switch operation {
+        case .create, .start, .execute:
+            try LumeVirtualMachineDeletionIntent.requireAbsent(workspace: workspace, name: name)
+        case .inspect, .stop, .delete:
+            break
         }
     }
 
@@ -179,10 +197,7 @@ package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
             timeoutSeconds: timeoutSeconds
         )
         guard result.exitCode == 0 else {
-            let standardError = String(
-                decoding: result.standardError,
-                as: UTF8.self
-            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            let standardError = LumeControlDiagnostic.failure(result)
             throw SandboxRuntimeError.commandFailed(
                 command: "lume \(operation)",
                 exitCode: result.exitCode,

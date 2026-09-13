@@ -3,6 +3,7 @@ package sandboxcontrol
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -61,23 +62,48 @@ type Controller struct {
 	hostNextFence   map[string]uint64
 	reconciledEpoch map[string]string
 
-	cancel context.CancelFunc
-	done   chan struct{}
+	cancel                  context.CancelFunc
+	done                    chan struct{}
+	logger                  *slog.Logger
+	sweepFailures           map[string]time.Time
+	fileMu                  sync.Mutex
+	pendingFileRequests     map[string]*pendingSandboxFileRequest
+	commandPayloadRetention time.Duration
+	nextPayloadSweep        time.Time
+}
+
+type Option func(*Controller)
+
+// WithLogger routes bounded sweep failure and recovery events to the service
+// logger. Command input and output are never logged by the controller.
+func WithLogger(logger *slog.Logger) Option {
+	return func(c *Controller) {
+		if logger != nil {
+			c.logger = logger
+		}
+	}
 }
 
 func New(
 	sandboxStore store.SandboxStore,
 	hosts *sandboxhost.Registry,
+	options ...Option,
 ) *Controller {
 	runContext, cancel := context.WithCancel(context.Background())
 	controller := &Controller{
-		store:           sandboxStore,
-		hosts:           hosts,
-		now:             time.Now,
-		hostNextFence:   make(map[string]uint64),
-		reconciledEpoch: make(map[string]string),
-		cancel:          cancel,
-		done:            make(chan struct{}),
+		store:                   sandboxStore,
+		hosts:                   hosts,
+		now:                     time.Now,
+		hostNextFence:           make(map[string]uint64),
+		reconciledEpoch:         make(map[string]string),
+		cancel:                  cancel,
+		done:                    make(chan struct{}),
+		logger:                  slog.Default(),
+		sweepFailures:           make(map[string]time.Time),
+		commandPayloadRetention: DefaultCommandPayloadRetention,
+	}
+	for _, option := range options {
+		option(controller)
 	}
 	hosts.SetHandler(controller.HandleHostMessage)
 	go controller.runLeaseSweeper(runContext)

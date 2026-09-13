@@ -16,9 +16,26 @@ struct LumeGuestCommandJournal {
     private static let commitmentByteCount = SHA256.byteCount * 2
 
     private let workspace: LumeRuntimeWorkspace
+    private let ownedVirtualMachineDirectory: URL?
 
-    init(workspace: LumeRuntimeWorkspace) {
+    init(workspace: LumeRuntimeWorkspace, ownedVirtualMachineDirectory: URL? = nil) {
         self.workspace = workspace
+        self.ownedVirtualMachineDirectory = ownedVirtualMachineDirectory
+    }
+
+    private func prepareRoot() throws -> URL {
+        guard let ownedVirtualMachineDirectory else {
+            try workspace.prepare()
+            return workspace.commandJournalDirectory
+        }
+        // Never recreate a deleted VM in order to answer an idempotency query.
+        let owner = try SandboxAuthorityFileSystem.openPrivateDirectory(at: ownedVirtualMachineDirectory,
+            createIfMissing: false)
+        defer { close(owner) }
+        let journal = try SandboxAuthorityFileSystem.openPrivateChildDirectory(parentDescriptor: owner,
+            name: ".darkbloom-command-journal", createIfMissing: true)
+        close(journal)
+        return ownedVirtualMachineDirectory.appendingPathComponent(".darkbloom-command-journal")
     }
 
     func replay(
@@ -57,9 +74,9 @@ struct LumeGuestCommandJournal {
         installationID: UUID,
         request: SandboxGuestCommandRequest
     ) throws -> StoredReplay {
-        try workspace.prepare()
+        let root = try prepareRoot()
         let rootDescriptor = try LumeGuestCommandJournalIO.openPrivateDirectory(
-            workspace.commandJournalDirectory
+            root
         )
         defer { close(rootDescriptor) }
         let installationName = installationID.uuidString.lowercased()
@@ -113,9 +130,9 @@ struct LumeGuestCommandJournal {
         installationID: UUID,
         request: SandboxGuestCommandRequest
     ) throws -> LumeGuestCommandClaim {
-        try workspace.prepare()
+        let root = try prepareRoot()
         let rootDescriptor = try LumeGuestCommandJournalIO.openPrivateDirectory(
-            workspace.commandJournalDirectory
+            root
         )
         defer { close(rootDescriptor) }
         let installationDescriptor =
@@ -127,6 +144,13 @@ struct LumeGuestCommandJournal {
         let commandName = LumeGuestCommandIdentity.identifier(
             for: request.idempotencyKey
         )
+        if let existing = try LumeGuestCommandJournalIO.openDirectoryIfPresent(
+            parentDescriptor: installationDescriptor, name: commandName) {
+            defer { close(existing) }
+            try Self.requireMatchingCommitment(request, commandDescriptor: existing)
+            throw Self.outcomeUnavailable()
+        }
+        try LumeGuestCommandJournalBudget.requireRoom(in: installationDescriptor)
         guard mkdirat(installationDescriptor, commandName, 0o700) == 0 else {
             if errno == EEXIST {
                 let commandDescriptor =

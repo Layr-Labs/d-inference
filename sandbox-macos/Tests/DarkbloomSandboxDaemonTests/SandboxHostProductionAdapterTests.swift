@@ -6,6 +6,152 @@ import SandboxRuntime
 import XCTest
 
 final class SandboxHostProductionAdapterTests: XCTestCase {
+    func testStartPreservesWorkspaceLeaseAndSupportsReplayAfterAdapterRestart() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let prepare = try fixture.preparePayload(fencingToken: 51)
+        _ = try await fixture.adapter.handle(.prepare(fixture.envelope(payload: prepare, type: .prepare)))
+        let stop = SandboxWireOperation(operationID: UUID(), scope: prepare.scope)
+        _ = try await fixture.adapter.handle(.stop(fixture.envelope(payload: stop, type: .stop)))
+        let operation = SandboxWireStart(operationID: UUID(), scope: prepare.scope,
+            requestedFencingToken: try XCTUnwrap(SandboxFencingToken(rawValue: 52)),
+            leaseExpiresAt: prepare.leaseExpiresAt)
+        let before = try fixture.capacity.snapshot()
+        let restarted = fixture.restartedAdapter()
+        let admission = try await restarted.admit(.start(fixture.envelope(payload: operation, type: .start)))
+        let duringStart = try await restarted.heartbeat()
+        XCTAssertEqual(duringStart.leases.first?.state, .booting)
+        guard case .operation(let result) = try await admission.complete() else {
+            return XCTFail("expected start response")
+        }
+        XCTAssertEqual(result.operation, "start")
+        XCTAssertEqual(result.operationID, operation.operationID)
+        XCTAssertEqual(result.scope.sandboxID, operation.scope.sandboxID)
+        XCTAssertEqual(result.scope.generation, operation.scope.generation)
+        XCTAssertEqual(result.scope.fencingToken, operation.requestedFencingToken)
+        XCTAssertEqual(result.state, .ready)
+        let afterStart = try fixture.capacity.snapshot()
+        XCTAssertEqual(afterStart.leases.count, before.leases.count)
+        XCTAssertEqual(afterStart.leases.first?.expiresAt, before.leases.first?.expiresAt)
+        XCTAssertEqual(afterStart.leases.first?.issuedAt, before.leases.first?.issuedAt)
+        XCTAssertEqual(afterStart.leases.first?.reservedGrowthBytes, before.leases.first?.reservedGrowthBytes)
+        XCTAssertEqual(afterStart.leases.first?.cpuCount, before.leases.first?.cpuCount)
+        XCTAssertEqual(afterStart.leases.first?.memoryBytes, before.leases.first?.memoryBytes)
+        XCTAssertEqual(afterStart.nextFencingToken, 53)
+        XCTAssertThrowsError(try fixture.capacity.authorize(
+            scope: stop.scope.operationScope,
+            virtualMachineName: Fixture.virtualMachineName(for: stop.scope), operation: .stop
+        )) { XCTAssertEqual($0 as? SandboxCapacityError, .staleFencingToken) }
+        guard case .operation(let replay) = try await fixture.restartedAdapter().handle(
+            .start(fixture.envelope(payload: operation, type: .start))
+        ) else { return XCTFail("expected replay response") }
+        XCTAssertEqual(replay, result)
+        XCTAssertEqual(try fixture.capacity.snapshot(), afterStart)
+        let events = await fixture.runtime.events()
+        XCTAssertEqual(events.filter { $0.hasPrefix("create:") }.count, 1)
+    }
+
+    func testStartRejectsDrainedOrStaleAuthorityBeforeRuntimeSideEffects() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let prepare = try fixture.preparePayload(fencingToken: 61)
+        _ = try await fixture.adapter.handle(.prepare(fixture.envelope(payload: prepare, type: .prepare)))
+        let before = await fixture.runtime.events()
+        let stale = SandboxWireStart(operationID: UUID(), scope: Fixture.scope(fencingToken: 60),
+            requestedFencingToken: try XCTUnwrap(SandboxFencingToken(rawValue: 62)),
+            leaseExpiresAt: prepare.leaseExpiresAt)
+        guard case .operation(let rejected) = try await fixture.adapter.handle(
+            .start(fixture.envelope(payload: stale, type: .start))
+        ) else { return XCTFail("expected stale rejection") }
+        XCTAssertEqual(rejected.errorCode, "stale_authority")
+        _ = try fixture.capacity.setMode(.draining)
+        let current = SandboxWireStart(operationID: UUID(), scope: prepare.scope,
+            requestedFencingToken: try XCTUnwrap(SandboxFencingToken(rawValue: 62)),
+            leaseExpiresAt: prepare.leaseExpiresAt)
+        guard case .operation(let drained) = try await fixture.adapter.handle(
+            .start(fixture.envelope(payload: current, type: .start))
+        ) else { return XCTFail("expected drain rejection") }
+        XCTAssertEqual(drained.errorCode, "host_draining")
+        let after = await fixture.runtime.events()
+        XCTAssertEqual(after, before)
+    }
+
+    func testStartCannotExtendLeaseAndReplayCannotOverrideLaterFence() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let prepare = try fixture.preparePayload(fencingToken: 71)
+        _ = try await fixture.adapter.handle(.prepare(fixture.envelope(payload: prepare, type: .prepare)))
+        let before = try fixture.capacity.snapshot()
+        let extended = SandboxWireStart(operationID: UUID(), scope: prepare.scope,
+            requestedFencingToken: try XCTUnwrap(SandboxFencingToken(rawValue: 72)),
+            leaseExpiresAt: Fixture.timestamp(fixture.now.addingTimeInterval(180)))
+        guard case .operation(let rejected) = try await fixture.adapter.handle(
+            .start(fixture.envelope(payload: extended, type: .start))
+        ) else { return XCTFail("expected expiry rejection") }
+        XCTAssertEqual(rejected.state, .failed)
+        XCTAssertEqual(try fixture.capacity.snapshot(), before)
+        let first = SandboxWireStart(operationID: UUID(), scope: prepare.scope,
+            requestedFencingToken: extended.requestedFencingToken, leaseExpiresAt: prepare.leaseExpiresAt)
+        guard case .operation(let resumed) = try await fixture.adapter.handle(
+            .start(fixture.envelope(payload: first, type: .start))
+        ) else { return XCTFail("expected start") }
+        _ = try fixture.capacity.renew(scope: resumed.scope.operationScope,
+            fencingToken: try XCTUnwrap(SandboxFencingToken(rawValue: 73)),
+            expiresAt: fixture.now.addingTimeInterval(180))
+        let events = await fixture.runtime.events()
+        guard case .operation(let stale) = try await fixture.adapter.handle(
+            .start(fixture.envelope(payload: first, type: .start))
+        ) else { return XCTFail("expected stale replay rejection") }
+        XCTAssertEqual(stale.errorCode, "stale_authority")
+        let after = await fixture.runtime.events()
+        XCTAssertEqual(after, events)
+        XCTAssertEqual(try fixture.capacity.snapshot().leases.first?.scope.fencingToken.rawValue, 73)
+    }
+
+    func testRejectedStartReplayStopsPossiblyRunningVMBeforeReportingFailure() async throws {
+        for stopFails in [false, true] {
+            let fixture = try Fixture()
+            defer { fixture.remove() }
+            let prepare = try fixture.preparePayload(fencingToken: 81)
+            _ = try await fixture.adapter.handle(.prepare(fixture.envelope(payload: prepare, type: .prepare)))
+            let start = SandboxWireStart(operationID: UUID(), scope: prepare.scope,
+                requestedFencingToken: try XCTUnwrap(SandboxFencingToken(rawValue: 82)),
+                leaseExpiresAt: prepare.leaseExpiresAt)
+            _ = try await fixture.adapter.handle(.start(fixture.envelope(payload: start, type: .start)))
+            _ = try fixture.capacity.setMode(.draining)
+            if stopFails {
+                await fixture.runtime.failStops(with: .operationTimedOut("test stop"))
+            }
+            guard case .operation(let result) = try await fixture.restartedAdapter().handle(
+                .start(fixture.envelope(payload: start, type: .start))
+            ) else { return XCTFail("expected failed replay") }
+            XCTAssertEqual(result.state, .failed)
+            XCTAssertEqual(result.scope.fencingToken, start.requestedFencingToken)
+            XCTAssertEqual(result.errorCode, stopFails ? "runtime_cleanup_failed" : "host_draining")
+            let record = await fixture.runtime.record(name: Fixture.virtualMachineName(for: start.scope))
+            XCTAssertEqual(record?.state, stopFails ? .running : .stopped)
+            XCTAssertEqual(try fixture.capacity.snapshot().leases.count, 1)
+        }
+    }
+
+    func testStartFailureAfterAdmissionStillRequiresStoppedProof() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let prepare = try fixture.preparePayload(fencingToken: 91)
+        _ = try await fixture.adapter.handle(.prepare(fixture.envelope(payload: prepare, type: .prepare)))
+        let start = SandboxWireStart(operationID: UUID(), scope: prepare.scope,
+            requestedFencingToken: try XCTUnwrap(SandboxFencingToken(rawValue: 92)),
+            leaseExpiresAt: prepare.leaseExpiresAt)
+        let admission = try await fixture.adapter.admit(.start(fixture.envelope(payload: start, type: .start)))
+        await fixture.runtime.failStartsAfterRunning(with: .unsupported("authority changed before runtime start"))
+        guard case .operation(let result) = try await admission.complete() else {
+            return XCTFail("expected failed start")
+        }
+        XCTAssertEqual(result.state, .failed)
+        let record = await fixture.runtime.record(name: Fixture.virtualMachineName(for: start.scope))
+        XCTAssertEqual(record?.state, .stopped)
+    }
+
     func testPrepareAdoptsCoordinatorFenceAndReportsDurableHighWatermark()
         async throws
     {
@@ -281,6 +427,25 @@ final class SandboxHostProductionAdapterTests: XCTestCase {
         )
     }
 
+    func testCommandLimitProducesStableWireErrorWithoutReleasingLease() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let before = try fixture.capacity.snapshot()
+        await fixture.runtime.failCommands(with: .commandLimitReached)
+        let command = SandboxWireCommand(commandID: UUID(), idempotencyKey: UUID().uuidString.lowercased(),
+            scope: Fixture.scope(fencingToken: 7), arguments: ["/usr/bin/true"], timeoutSeconds: 30)
+        guard case .command(let result) = try await fixture.adapter.handle(
+            .command(fixture.envelope(payload: command, type: .command))) else {
+            return XCTFail("expected command response")
+        }
+        XCTAssertEqual(result.commandID, command.commandID)
+        XCTAssertEqual(result.state, .failed)
+        XCTAssertEqual(result.errorCode, "command_limit_reached")
+        XCTAssertEqual(try fixture.capacity.snapshot(), before)
+        let events = await fixture.runtime.events()
+        XCTAssertFalse(events.contains { $0.hasPrefix("stop:") || $0.hasPrefix("delete:") })
+    }
+
     func testCommandCancellationInterruptsRuntimeWork() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -316,6 +481,28 @@ final class SandboxHostProductionAdapterTests: XCTestCase {
             return XCTFail("expected original command response")
         }
         XCTAssertEqual(original.state, .cancelled)
+    }
+
+    func testExpiryCancelsStartedCommandAfterRenewalRotatesItsFence() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        await fixture.runtime.blockCommands()
+        let scope = Fixture.scope(fencingToken: 7)
+        let command = SandboxWireCommand(commandID: UUID(), idempotencyKey: UUID().uuidString,
+            scope: scope, arguments: ["/usr/bin/true"], timeoutSeconds: 900)
+        let running = Task {
+            try await fixture.adapter.handle(.command(fixture.envelope(payload: command, type: .command)))
+        }
+        await fixture.runtime.waitUntilCommandStarted()
+        let renewed = Fixture.scope(fencingToken: 8)
+        let lease = SandboxCapacityLease(scope: renewed.operationScope,
+            virtualMachineName: Fixture.virtualMachineName(for: renewed), cpuCount: 4,
+            memoryBytes: 8 << 30, workspaceBytes: 25 << 30, bootDiskBytes: 100 << 30,
+            reservedGrowthBytes: 126 << 30, issuedAt: fixture.now,
+            expiresAt: fixture.now.addingTimeInterval(60))
+        await fixture.adapter.cancelCommandsForExpiredLeases([lease])
+        guard case .command(let result) = try await running.value else { return XCTFail("expected command result") }
+        XCTAssertEqual(result.state, .cancelled)
     }
 
     func testRestartedAdapterDoesNotReportUnknownCommandLost() async throws {
@@ -566,6 +753,7 @@ private actor RecordingSandboxRuntime: SandboxHostVirtualMachineControlling {
     private var blockedCommand:
         CheckedContinuation<SandboxGuestCommandResult, Error>?
     private var commandCancellationError: SandboxRuntimeError?
+    private var commandError: SandboxRuntimeError?
     private var commandStarted = false
     private var commandStartedWaiter: CheckedContinuation<Void, Never>?
     private var stopError: SandboxRuntimeError?
@@ -627,6 +815,7 @@ private actor RecordingSandboxRuntime: SandboxHostVirtualMachineControlling {
         name _: String,
         request _: SandboxGuestCommandRequest
     ) async throws -> SandboxGuestCommandResult {
+        if let commandError { throw commandError }
         if shouldBlockCommands {
             return try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation {
@@ -723,6 +912,10 @@ private actor RecordingSandboxRuntime: SandboxHostVirtualMachineControlling {
 
     func failStops(with error: SandboxRuntimeError) {
         stopError = error
+    }
+
+    func failCommands(with error: SandboxRuntimeError) {
+        commandError = error
     }
 
     func failStartsAfterRunning(with error: SandboxRuntimeError) {

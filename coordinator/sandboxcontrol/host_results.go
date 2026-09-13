@@ -11,7 +11,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-const runtimeCleanupFailedErrorCode = "runtime_cleanup_failed"
+const runtimeCleanupFailedErrorCode = store.SandboxRuntimeCleanupFailed
 
 func (c *Controller) HandleHostMessage(
 	ctx context.Context,
@@ -19,6 +19,8 @@ func (c *Controller) HandleHostMessage(
 	message protocol.SandboxDecodedMessage,
 ) error {
 	switch payload := message.Payload.(type) {
+	case *protocol.SandboxFileResultPayload:
+		return c.handleFileResult(session, payload)
 	case *protocol.SandboxHostHeartbeatPayload:
 		return c.handleHeartbeat(ctx, session, payload)
 	case *protocol.SandboxOperationStatePayload:
@@ -46,6 +48,9 @@ func (c *Controller) handleHeartbeat(
 	c.scheduleMu.Unlock()
 
 	if err := c.reconcileHost(ctx, session, heartbeat); err != nil {
+		return err
+	}
+	if err := c.observeStoppedLeases(ctx, session, heartbeat); err != nil {
 		return err
 	}
 	sandboxes, err := c.store.ListActiveSandboxesByHost(
@@ -88,8 +93,8 @@ func (c *Controller) handleOperationState(
 		return staleHostResultError(store.ErrSandboxConflict)
 	}
 	var leaseExpiresAt *time.Time
-	if operation.Kind == store.SandboxOperationKindRenew &&
-		payload.State != protocol.SandboxOperationFailed {
+	if operation.Kind == store.SandboxOperationKindStart ||
+		(operation.Kind == store.SandboxOperationKindRenew && payload.State != protocol.SandboxOperationFailed) {
 		expiresAt := operation.RequestedLeaseExpiresAt
 		leaseExpiresAt = &expiresAt
 	}
@@ -278,8 +283,8 @@ func (c *Controller) authorizeHostScope(
 		return nil, staleHostResultError(store.ErrSandboxConflict)
 	}
 	if scope.FencingToken != sandbox.FencingToken {
-		// A renewal response is the sole legitimate authority advance. Its
-		// operation transition performs the monotonic-token check.
+		// Renewal and start can advance authority. Their operation transitions
+		// check the exact reserved token before applying a new scope.
 		operationAdvance := scope.FencingToken > sandbox.FencingToken
 		if !operationAdvance {
 			return nil, staleHostResultError(store.ErrSandboxConflict)

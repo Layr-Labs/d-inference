@@ -273,6 +273,8 @@ extension LumeVirtualMachineRuntime {
             observedState: .stopped,
             in: configuration.storageDirectory
         )
+        guestEndpoints.removeValue(forKey: name)
+        isolatedGuests.removeValue(forKey: name)
     }
 
     private func missingLeasedVirtualMachine(

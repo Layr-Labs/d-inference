@@ -133,24 +133,28 @@ func TestSandboxHostWebSocketRequiresRegistrationIdentity(t *testing.T) {
 	}
 }
 
-func newSandboxHostTestServer(t *testing.T) *Server {
+func newSandboxHostTestServer(t *testing.T, options ...func(*ServerConfig)) *Server {
 	t.Helper()
 	tokenHash := sha256.Sum256([]byte(testSandboxHostToken))
 	logger := slog.New(
 		slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}),
 	)
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	server := NewServer(
-		registry.New(logger),
-		st,
-		ServerConfig{
-			SandboxHostAuth: sandboxhost.AuthConfig{
-				TokenSHA256JSON: `{"` + testSandboxHostID + `":"` +
-					hex.EncodeToString(tokenHash[:]) + `"}`,
-			},
+	config := ServerConfig{
+		SandboxService: SandboxServiceConfig{
+			Enabled:           true,
+			AdmissionEnabled:  true,
+			AllowedAccountIDs: []string{store.LegacyAccountID("test-key")},
 		},
-		logger,
-	)
+		SandboxHostAuth: sandboxhost.AuthConfig{
+			TokenSHA256JSON: `{"` + testSandboxHostID + `":"` +
+				hex.EncodeToString(tokenHash[:]) + `"}`,
+		},
+	}
+	for _, option := range options {
+		option(&config)
+	}
+	server := NewServer(registry.New(logger), st, config, logger)
 	t.Cleanup(server.Close)
 	return server
 }

@@ -5,6 +5,16 @@
 - Prevent large process lists from blocking `doctor` and `verify`. Capture contention and sleep-probe output without pipe backpressure and apply an execution deadline; preserve diagnostic output and failure handling.
 - Match the coordinator's canonical status bytes for mixed-case model IDs and template names, including Unicode separators. Preserve signed fields, omission rules and signature verification.
 
+## Unreleased — sandbox private-alpha control
+
+- Resume stopped workspaces with durable start operations and CLI support; rotate fencing authority without changing capacity, lease expiry or prior command idempotency. Cancel blocked host writes on disconnect and require consistent proof before clearing pending command cleanup.
+
+- Default the sandbox service and admission off; require explicit account enrollment for new work. Keep owner status, cancellation, stop and delete available while admission drains.
+- Add durable consumer command cancellation and bounded command-history metadata. Retain capacity until host cleanup acknowledges cancellation; report background cleanup failures with bounded logs.
+- Add bounded workspace upload, status, commit, abort and download APIs over a typed host relay. Check account, host connection and lease scope; keep file bytes out of coordinator command records. Default commands to `/workspace` and reject unsafe working directories and privileged environment overrides.
+- Add the standalone macOS/Linux `darkbloom-sandbox` consumer CLI with exact-argument jobs, durable cancellation, resumable verified uploads, and revision-bound downloads published locally without overwriting existing files.
+- Expire terminal sandbox command payloads after a configurable retention period (24h default) while preserving request commitments, status and idempotency. Skip active/cancellation-pending rows, bound indexed cleanup, and expose payload expiry to API and CLI consumers.
+
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
 
 Source changes since `v0.9.1`. Provider changes require a new signed bundle.

@@ -13,6 +13,7 @@ const (
 	// Coordinator → sandbox host.
 	SandboxTypePrepare       = "sandbox_prepare"
 	SandboxTypeLeaseRenew    = "sandbox_lease_renew"
+	SandboxTypeStart         = "sandbox_start"
 	SandboxTypeCommand       = "sandbox_command"
 	SandboxTypeCancelCommand = "sandbox_cancel_command"
 	SandboxTypeStop          = "sandbox_stop"
@@ -78,6 +79,8 @@ type SandboxHostCapabilities struct {
 	WorkspaceSizesBytes []uint64 `json:"workspace_sizes_bytes"`
 	BaseImageIDs        []string `json:"base_image_ids"`
 	SupportsGPU         bool     `json:"supports_gpu"`
+	SupportsFiles       bool     `json:"supports_files,omitempty"`
+	SupportsStart       bool     `json:"supports_start,omitempty"`
 }
 
 type SandboxHostRegisterPayload struct {
@@ -148,6 +151,16 @@ type SandboxPreparePayload struct {
 }
 
 type SandboxLeaseRenewPayload struct {
+	OperationID           string       `json:"operation_id"`
+	Scope                 SandboxScope `json:"scope"`
+	RequestedFencingToken uint64       `json:"requested_fencing_token"`
+	LeaseExpiresAt        string       `json:"lease_expires_at"`
+}
+
+// Starting a stopped VM rotates authority without extending the allocation.
+// Scope is the old authority; the host must atomically accept the reserved new
+// token with exactly the existing expiry before any start side effect.
+type SandboxStartPayload struct {
 	OperationID           string       `json:"operation_id"`
 	Scope                 SandboxScope `json:"scope"`
 	RequestedFencingToken uint64       `json:"requested_fencing_token"`

@@ -35,6 +35,8 @@ actor SandboxHostOutboundWriter {
             try await send(type: .operationState, payload: payload)
         case .command(let payload):
             try await sendCommand(payload)
+        case .file(let payload):
+            try await send(type: .fileResult, payload: payload)
         case .failure(let payload):
             try await send(type: .hostFailure, payload: payload)
         }
@@ -320,7 +322,11 @@ private extension SandboxCoordinatorControlMessage {
             makeIdentity(envelope)
         case .command(let envelope):
             makeIdentity(envelope)
+        case .fileOperation(let envelope):
+            makeIdentity(envelope)
         case .cancelCommand(let envelope):
+            makeIdentity(envelope)
+        case .start(let envelope):
             makeIdentity(envelope)
         case .stop(let envelope):
             makeIdentity(envelope)

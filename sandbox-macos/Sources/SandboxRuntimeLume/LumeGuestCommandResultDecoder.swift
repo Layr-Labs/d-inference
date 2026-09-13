@@ -10,6 +10,23 @@ enum LumeGuestCommandEnvelope {
 }
 
 enum LumeGuestCommandResultDecoder {
+    static func encode(_ result: SandboxGuestCommandResult) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(Envelope(
+            magic: LumeGuestCommandEnvelope.magic,
+            schemaVersion: LumeGuestCommandEnvelope.schemaVersion,
+            exitCode: result.exitCode,
+            standardOutputLength: result.standardOutput.count,
+            standardErrorLength: result.standardError.count,
+            standardOutputTruncated: result.standardOutputTruncated,
+            standardErrorTruncated: result.standardErrorTruncated,
+            timedOut: result.timedOut,
+            standardOutput: result.standardOutput,
+            standardError: result.standardError))
+        _ = try decode(data)
+        return data
+    }
     static func decode(_ data: Data) throws -> SandboxGuestCommandResult {
         guard data.count <= LumeGuestCommandEnvelope.maximumEnvelopeBytes else {
             throw malformed()
@@ -47,7 +64,7 @@ enum LumeGuestCommandResultDecoder {
         .malformedOutput("Lume guest-command result envelope is invalid")
     }
 
-    private struct Envelope: Decodable {
+    private struct Envelope: Codable {
         let magic: String
         let schemaVersion: UInt16
         let exitCode: Int32

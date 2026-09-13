@@ -61,7 +61,7 @@ type Session struct {
 	transport Transport
 
 	mu               sync.RWMutex
-	sendMu           sync.Mutex
+	sendGate         chan struct{}
 	hostID           string
 	connectionEpoch  string
 	capabilities     protocol.SandboxHostCapabilities
@@ -98,6 +98,7 @@ func (r *Registry) Register(
 	session := &Session{
 		registry:         r,
 		transport:        transport,
+		sendGate:         make(chan struct{}, 1),
 		hostID:           hostID,
 		connectionEpoch:  connectionEpoch,
 		capabilities:     cloneCapabilities(payload.Capabilities),
@@ -230,8 +231,20 @@ func (s *Session) Send(
 	messageType string,
 	payload any,
 ) error {
-	s.sendMu.Lock()
-	defer s.sendMu.Unlock()
+	// A busy writer must not make bounded file relays wait indefinitely before
+	// they reach the transport's own deadline. Preserve one writer and sequence
+	// ordering, but allow queued sends to retire with their request or session.
+	select {
+	case s.sendGate <- struct{}{}:
+		defer func() { <-s.sendGate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.authorityContext.Done():
+		return ErrSessionClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	if s.closed {
@@ -254,8 +267,22 @@ func (s *Session) Send(
 	if err != nil {
 		return fmt.Errorf("encode sandbox host message: %w", err)
 	}
-	if err := s.transport.Write(ctx, encoded); err != nil {
-		return fmt.Errorf("write sandbox host message: %w", err)
+	writeContext, cancelWrite := context.WithCancel(ctx)
+	stopAuthorityWatch := context.AfterFunc(s.authorityContext, cancelWrite)
+	defer stopAuthorityWatch()
+	defer cancelWrite()
+	writeErr := s.transport.Write(writeContext, encoded)
+	// Custom parent-context cancellation can propagate to a derived context
+	// asynchronously. A transport success racing cancellation is uncertain,
+	// so check the original authorities before reporting delivery.
+	if s.authorityContext.Err() != nil {
+		return ErrSessionClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if writeErr != nil {
+		return fmt.Errorf("write sandbox host message: %w", writeErr)
 	}
 	return nil
 }

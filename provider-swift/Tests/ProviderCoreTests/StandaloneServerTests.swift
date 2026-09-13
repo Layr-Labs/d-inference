@@ -738,6 +738,49 @@ private func makeStandaloneFakeHFSnapshot(modelId: String) throws -> URL {
     #expect(await server.debugOutstandingKVReservationBytes() == 0)
 }
 
+@Test func standaloneShutdownFencesAnUncancelledDelayedWeightLoad() async throws {
+    let modelId = "darkbloom-tests/standalone-shutdown-\(UUID().uuidString.prefix(8))"
+    let fakeDir = try makeStandaloneFakeHFSnapshot(modelId: modelId)
+    defer { try? FileManager.default.removeItem(at: fakeDir) }
+    let server = StandaloneServer(config: .init(port: 0, mtpMode: .off), models: [
+        ModelInfo(id: modelId, modelType: "gemma4", quantization: "4bit",
+                  sizeBytes: 1, estimatedMemoryGb: 0.25)
+    ])
+    let gate = StandaloneShutdownGate()
+    await server.setV2TestHooksForTesting(.init(
+        beforeWeightLoad: { _ in await gate.enterAndWait() },
+        makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+    try await server.start()
+    let load = Task { try await server.ensureModelLoaded(modelId) }
+    await gate.waitUntilEntered()
+    await server.stop()
+    // Deliberately leave the load task uncancelled, as shard I/O may not
+    // cooperate with a caller's bounded shutdown timeout.
+    await gate.release()
+    do {
+        try await load.value
+        Issue.record("shutdown must fence a delayed load before it opens weights")
+    } catch is CancellationError {
+    } catch {
+        Issue.record("expected generation cancellation before weight loading, got \(error)")
+    }
+    #expect(await server.loadedModelIds().isEmpty)
+    #expect(await server.debugOutstandingKVReservationBytes() == 0)
+}
+
+@Test func standaloneStoppedServiceRejectsNewLoadTasks() async throws {
+    let server = StandaloneServer(config: .init(port: 0, mtpMode: .off))
+    try await server.start()
+    await server.stop()
+    do {
+        try await server.ensureModelLoaded("not-a-model")
+        Issue.record("stopped service must refuse a new load task")
+    } catch is CancellationError {
+    } catch {
+        Issue.record("expected stopped-service cancellation, got \(error)")
+    }
+}
+
 @Test func standaloneAcquireReturnsV2Entry() async throws {
     let server = standaloneTestServer(models: [
         ModelInfo(

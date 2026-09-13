@@ -1250,22 +1250,19 @@ func (s *PostgresStore) withMigrationLock(
 	ctx context.Context,
 	run func() error,
 ) error {
-	conn, err := s.pool.Acquire(ctx)
+	// Startup phases borrow from the pool themselves. Holding a pooled
+	// connection for the outer lock would deadlock a one-connection pool and
+	// can starve a small pool when several migration callers wait for the lock.
+	// Keep one bounded direct session instead; closing it always releases its
+	// advisory lock, including failed unlocks after cancellation.
+	conn, err := pgx.ConnectConfig(ctx, s.pool.Config().ConnConfig)
 	if err != nil {
 		return fmt.Errorf("acquire migration lock connection: %w", err)
 	}
-	unlocked := false
 	defer func() {
-		if !unlocked {
-			unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_, _ = conn.Exec(
-				unlockCtx,
-				`SELECT pg_advisory_unlock($1)`,
-				postgresMigrationAdvisoryLockID,
-			)
-		}
-		conn.Release()
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = conn.Close(closeCtx)
 	}()
 
 	if err := acquirePostgresMigrationLock(ctx, conn); err != nil {
@@ -1286,13 +1283,14 @@ func (s *PostgresStore) withMigrationLock(
 	if !released {
 		return errors.New("release migration advisory lock: lock was not held")
 	}
-	unlocked = true
 	return nil
 }
 
 func acquirePostgresMigrationLock(
 	ctx context.Context,
-	conn *pgxpool.Conn,
+	conn interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	},
 ) error {
 	retry := time.NewTicker(postgresMigrationAdvisoryLockRetryInterval)
 	defer retry.Stop()

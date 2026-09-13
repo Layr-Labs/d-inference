@@ -1,5 +1,6 @@
 import Foundation
 import SandboxRuntime
+import HostRuntimeCoordination
 
 public enum LumeRuntimeTrustPolicy: Sendable {
     case production
@@ -9,6 +10,7 @@ public enum LumeRuntimeTrustPolicy: Sendable {
 package enum LumeGuestCommandPolicy: Sendable {
     case disabled
     case baseImagePreparationAndDevelopment
+    case isolatedAgent
 }
 
 public struct LumeRuntimeConfiguration: Sendable {
@@ -32,11 +34,28 @@ public struct LumeRuntimeConfiguration: Sendable {
         "ThirdParty/lume-patches/0004-broker-lifecycle-capability.patch"
     public static let pinnedBrokerLifecyclePatchSHA256 =
         "622b7ccee3a2d842e8aad83fe26ce4e1ab4027bd585a10ffddc40d416e288026"
+    public static let pinnedIsolationPatchPath =
+        "ThirdParty/lume-patches/0005-isolate-tenant-devices-and-guest-channel.patch"
+    public static let pinnedIsolationPatchSHA256 =
+        "4fba4b7ec0fa7554ce47e84163b46e12cdf98bb6ece60fb83baf3940cbe165c9"
+    public static let pinnedRuntimeOwnershipPatchPath =
+        "ThirdParty/lume-patches/0006-retain-machine-ownership-and-canonical-paths.patch"
+    public static let pinnedRuntimeOwnershipPatchSHA256 =
+        "49f918683d2b69f8213cedfa2c7482e9bda655c156976023c95a9d8dfd0af834"
+    public static let pinnedFailureDiagnosticPatchPath = "ThirdParty/lume-patches/0007-report-owner-fail-stop-without-buffering.patch"
+    public static let pinnedFailureDiagnosticPatchSHA256 = "175352985a63ba818926c36604d79dc89e5e457cd369292365544c83657e66a5"
+    public static let pinnedStopCoalescingPatchPath = "ThirdParty/lume-patches/0008-coalesce-native-virtual-machine-stop.patch"
+    public static let pinnedStopCoalescingPatchSHA256 = "28896292d17137e6e20d17f0d86413dcd31c2b93365042af09be4d3a45887096"
+
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,
         pinnedRunLockIdentityPatchPath: pinnedRunLockIdentityPatchSHA256,
         pinnedBrokerLifecyclePatchPath: pinnedBrokerLifecyclePatchSHA256,
+        pinnedIsolationPatchPath: pinnedIsolationPatchSHA256,
+        pinnedRuntimeOwnershipPatchPath: pinnedRuntimeOwnershipPatchSHA256,
+        pinnedFailureDiagnosticPatchPath: pinnedFailureDiagnosticPatchSHA256,
+        pinnedStopCoalescingPatchPath: pinnedStopCoalescingPatchSHA256,
     ]
 
     public let executable: URL
@@ -44,14 +63,19 @@ public struct LumeRuntimeConfiguration: Sendable {
     public let commandTimeoutSeconds: UInt32
     public let createTimeoutSeconds: UInt32
     public let trustPolicy: LumeRuntimeTrustPolicy
+    public let isolatedGuest: LumeGuestMaterialConfiguration?
+    public let hostRuntimeLease: HostRuntimeLease?
     package let guestCommandPolicy: LumeGuestCommandPolicy
+    package let baseImageSharedDirectory: URL?
 
     public init(
         executable: URL,
         storageDirectory: URL,
         commandTimeoutSeconds: UInt32 = 60,
         createTimeoutSeconds: UInt32 = 7_200,
-        trustPolicy: LumeRuntimeTrustPolicy = .production
+        trustPolicy: LumeRuntimeTrustPolicy = .production,
+        isolatedGuest: LumeGuestMaterialConfiguration? = nil,
+        hostRuntimeLease: HostRuntimeLease? = nil
     ) throws {
         try self.init(
             executable: executable,
@@ -59,7 +83,9 @@ public struct LumeRuntimeConfiguration: Sendable {
             commandTimeoutSeconds: commandTimeoutSeconds,
             createTimeoutSeconds: createTimeoutSeconds,
             trustPolicy: trustPolicy,
-            guestCommandPolicy: .disabled
+            guestCommandPolicy: isolatedGuest == nil ? .disabled : .isolatedAgent,
+            isolatedGuest: isolatedGuest,
+            hostRuntimeLease: hostRuntimeLease
         )
     }
 
@@ -69,7 +95,10 @@ public struct LumeRuntimeConfiguration: Sendable {
         commandTimeoutSeconds: UInt32 = 60,
         createTimeoutSeconds: UInt32 = 7_200,
         trustPolicy: LumeRuntimeTrustPolicy = .production,
-        guestCommandPolicy: LumeGuestCommandPolicy
+        guestCommandPolicy: LumeGuestCommandPolicy,
+        isolatedGuest: LumeGuestMaterialConfiguration? = nil,
+        baseImageSharedDirectory: URL? = nil,
+        hostRuntimeLease: HostRuntimeLease? = nil
     ) throws {
         guard executable.isFileURL,
               executable.baseURL == nil,
@@ -91,5 +120,17 @@ public struct LumeRuntimeConfiguration: Sendable {
         self.createTimeoutSeconds = createTimeoutSeconds
         self.trustPolicy = trustPolicy
         self.guestCommandPolicy = guestCommandPolicy
+        self.isolatedGuest = isolatedGuest
+        self.hostRuntimeLease = hostRuntimeLease
+        if let directory = baseImageSharedDirectory {
+            guard guestCommandPolicy == .baseImagePreparationAndDevelopment,
+                  isolatedGuest == nil, directory.isFileURL, directory.baseURL == nil,
+                  directory.path.hasPrefix("/"), !directory.path.contains(":"),
+                  !directory.path.contains("\0"),
+                  directory.standardizedFileURL.resolvingSymlinksInPath().path == directory.path else {
+                throw SandboxRuntimeError.unsupported("invalid base-image bootstrap share")
+            }
+        }
+        self.baseImageSharedDirectory = baseImageSharedDirectory
     }
 }

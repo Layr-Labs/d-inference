@@ -91,7 +91,8 @@ public struct SandboxProcessRunner: Sendable {
         environment: [String: String] = [:],
         currentDirectory: URL? = nil,
         maximumOutputBytes: Int = defaultMaximumOutputBytes,
-        cooperativeControl: SandboxCooperativeProcessControl? = nil
+        cooperativeControl: SandboxCooperativeProcessControl? = nil,
+        runtimeAuthorityDescriptor: Int32? = nil
     ) throws -> SandboxManagedProcess {
         try validate(
             executable: executable,
@@ -110,7 +111,8 @@ public struct SandboxProcessRunner: Sendable {
             environment: Self.environment(overrides: environment),
             currentDirectory: currentDirectory,
             maximumOutputBytes: maximumOutputBytes,
-            cooperativeControl: cooperativeControl
+            cooperativeControl: cooperativeControl,
+            runtimeAuthorityDescriptor: runtimeAuthorityDescriptor
         )
         do {
             try execution.start()

@@ -36,12 +36,14 @@ public enum SandboxControlCodecError:
 
 public enum SandboxCoordinatorControlMessage: Equatable, Sendable {
     case prepare(SandboxControlEnvelope<SandboxWirePrepare>)
+    case start(SandboxControlEnvelope<SandboxWireStart>)
     case leaseRenew(SandboxControlEnvelope<SandboxWireLeaseRenew>)
     case command(SandboxControlEnvelope<SandboxWireCommand>)
     case cancelCommand(SandboxControlEnvelope<SandboxWireCommandControl>)
     case stop(SandboxControlEnvelope<SandboxWireOperation>)
     case delete(SandboxControlEnvelope<SandboxWireOperation>)
     case drain(SandboxControlEnvelope<SandboxWireDrain>)
+    case fileOperation(SandboxControlEnvelope<SandboxWireFileOperation>)
 }
 
 public enum SandboxControlCodec {
@@ -92,6 +94,21 @@ public enum SandboxControlCodec {
         }
 
         switch messageType {
+        case .fileOperation:
+            try requireFields(payload,
+                required: ["request_id", "scope", "operation"],
+                optional: ["transfer_id", "path", "offset", "size", "sha256", "data", "version"])
+            try requireScopeFields(payload)
+            if let encoded = payload["data"] as? String {
+                guard let decoded = Data(base64Encoded: encoded), decoded.base64EncodedString() == encoded else {
+                    throw SandboxControlCodecError.invalidPayload
+                }
+            }
+            let envelope: SandboxControlEnvelope<SandboxWireFileOperation> = try decode(data, expectedType: .fileOperation)
+            guard SandboxFileWireValidation.validate(envelope.payload) else {
+                throw SandboxControlCodecError.invalidPayload
+            }
+            return .fileOperation(envelope)
         case .prepare:
             try requireFields(
                 payload,
@@ -156,6 +173,18 @@ public enum SandboxControlCodec {
             let envelope: SandboxControlEnvelope<SandboxWireCommandControl> =
                 try decode(data, expectedType: .cancelCommand)
             return .cancelCommand(envelope)
+        case .start:
+            try requireFields(payload, required: [
+                "operation_id", "scope", "requested_fencing_token", "lease_expires_at",
+            ])
+            try requireScopeFields(payload)
+            let envelope: SandboxControlEnvelope<SandboxWireStart> =
+                try decode(data, expectedType: .start)
+            guard envelope.payload.requestedFencingToken > envelope.payload.scope.fencingToken,
+                  !envelope.payload.leaseExpiresAt.isEmpty,
+                  envelope.payload.leaseExpiresAt.utf8.count <= 64
+            else { throw SandboxControlCodecError.invalidPayload }
+            return .start(envelope)
         case .stop:
             try requireFields(
                 payload,
@@ -193,7 +222,8 @@ public enum SandboxControlCodec {
              .hostHeartbeat,
              .operationState,
              .commandState,
-             .hostFailure:
+             .hostFailure,
+             .fileResult:
             throw SandboxControlCodecError.unsupportedMessageType(typeName)
         }
     }
@@ -251,31 +281,33 @@ public enum SandboxControlCodec {
             return false
         }
         var totalBytes = 0
+        guard payload.arguments[0].hasPrefix("/"), payload.arguments[0].utf8.count <= 4096 else { return false }
         for argument in payload.arguments {
-            guard !argument.contains("\0") else {
+            guard !argument.contains("\0"), argument.utf8.count <= 16384 else {
                 return false
             }
             totalBytes += argument.utf8.count
         }
         for (key, value) in payload.environment ?? [:] {
+            let reserved: Set<String> = ["HOME", "PATH", "TMPDIR", "SHELL", "ENV", "BASH_ENV", "ZDOTDIR"]
             guard validEnvironmentKey(key),
-                  !value.contains("\0")
+                  !value.contains("\0"), value.utf8.count <= 16384,
+                  !reserved.contains(key), !key.hasPrefix("DYLD_"), !key.hasPrefix("DARKBLOOM_")
             else {
                 return false
             }
             totalBytes += key.utf8.count + value.utf8.count
         }
         if let workingDirectory = payload.workingDirectory {
-            guard workingDirectory.hasPrefix("/"),
-                  !workingDirectory.contains("\0"),
-                  (workingDirectory as NSString).standardizingPath
-                    == workingDirectory
+            guard workingDirectory == "/workspace" ||
+                    (workingDirectory.hasPrefix("/workspace/") &&
+                        SandboxFileWireValidation.validPath(String(workingDirectory.dropFirst("/workspace/".count))))
             else {
                 return false
             }
             totalBytes += workingDirectory.utf8.count
         }
-        return totalBytes <= 1_024 * 1_024
+        return totalBytes <= 64 * 1_024
     }
 
     private static func validResources(

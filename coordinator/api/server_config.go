@@ -24,6 +24,7 @@ type ServerConfig struct {
 	ReleaseKey          string
 	ServiceReservations bool
 	SandboxHostAuth     sandboxhost.AuthConfig
+	SandboxService      SandboxServiceConfig
 	// DurableTrustReuse enables the fsync-backed local hard-untrust journal.
 	// Production enables it when the coordinator uses its durable Postgres store.
 	DurableTrustReuse     bool
@@ -70,6 +71,9 @@ type BaseRewardsConfig struct {
 }
 
 func (c ServerConfig) Check() error {
+	if err := c.SandboxService.Check(); err != nil {
+		return err
+	}
 	return c.SandboxHostAuth.Check()
 }
 
@@ -93,6 +97,7 @@ func ReadServerConfig() ServerConfig {
 				env.EnvPrefix + "_SANDBOX_HOST_TOKEN_SHA256_JSON",
 			),
 		},
+		SandboxService: readSandboxServiceConfig(),
 		BaseRewards: BaseRewardsConfig{
 			Enabled:        env.EnvBool(env.EnvPrefix+"_BASE_REWARDS", false),
 			ReductionK:     env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_K", 0), // 0 = additive base income (full floor on top of earnings)

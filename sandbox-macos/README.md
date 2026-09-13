@@ -1,32 +1,67 @@
 # Darkbloom macOS sandbox runtime
 
-This package is the isolated macOS host substrate for Darkbloom sandboxes. It
-does not link the inference provider or MLX. The current executable slice:
+This package implements Darkbloom's opt-in macOS CPU sandbox service. The
+coordinator owns account access, durable leases, idempotent operations and
+command history. A separate signed host daemon owns VM admission and cleanup;
+it does not link MLX or the inference engine. Tenant programs run as a fixed
+non-admin guest user inside a dedicated macOS VM.
 
-- validates Apple Silicon, Virtualization.framework, capacity, Aqua-session,
-  Secure Enclave, and code-signing prerequisites;
-- resolves the latest host-supported macOS restore image through Apple's
-  Virtualization.framework API;
-- invokes an audited, exact-commit Lume build behind a narrow runtime adapter
-  for the macOS 26 unattended-install proof;
-- defines fenced sandbox identities, resource limits, lifecycle transitions,
-  and a runtime boundary for VM implementations;
-- persists host mode and at most two resource leases behind a process-safe
-  lock, monotonic fencing tokens, and atomic durable state;
-- provides chunked authenticated encryption for large VM artifacts; and
-- wraps data-encryption keys with a distinct Secure Enclave identity.
+```mermaid
+flowchart LR
+    Client[Consumer CLI or HTTPS API] --> Coordinator[Coordinator: auth, leases, jobs]
+    Coordinator <--> DB[(Postgres)]
+    Coordinator <-->|Authenticated host WebSocket| Broker[Sandbox host daemon]
+    Broker <-->|Private Unix socket and HMAC session| Lume[Pinned Lume VM owner]
+    Lume <-->|Virtio socket| Guest[Signed root guest supervisor]
+    Guest --> Tenant[Unprivileged UID 2001 process]
+    Tenant --> Workspace[Bounded APFS workspace]
+    Authority[Machine ownership lock] --> Broker
+    Authority --> Lume
+    Authority --> Provider[Inference provider shared ownership]
+```
 
-The guest agent, packet gateway, and coordinator lease protocol will sit behind
-the interfaces in this package. Lume's temporary unattended guest uses its
-known `lume` / `lume` bootstrap credentials, so this slice is restricted to the
-approved no-secrets alpha. Until randomized bootstrap credentials, guest
-control, and egress enforcement pass their live tests, this package is a
-host-substrate proof, not a multi-tenant service. The public lease-fenced
-runtime does not expose guest-command execution. Only the package-scoped
-`baseImagePreparationAndDevelopment` policy and package-scoped `execute` path
-enable execution for base-image preparation and live tests; they are not a
-production security boundary because OpenSSH startup files, launchd metadata,
-and command-monitor files remain writable by the same guest identity.
+The current supported profile is `isolated-v1`: CPU jobs, exact argv execution,
+bounded stdout/stderr, cancellation, fixed 25/50 GiB workspaces, resumable uploads
+and revision-bound downloads. Each VM has its own boot disk and credential.
+The device profile has no IP network interface, shared host folders, clipboard,
+audio or input devices. Dependency installation therefore uses uploaded files;
+there is no package-download gateway or GPU capability in this profile.
+
+The guest root supervisor authenticates the host session over Virtio sockets,
+drops user/group privileges irreversibly for tenant commands, and verifies
+cleanup before admitting further work. Uncertain command/file termination stops
+the VM while retaining its lease and workspace. Explicit `start` rotates the
+fencing token and verifies authenticated guest readiness before reporting ready;
+it preserves the lease deadline and storage. A queued stop from the previous
+run cannot stop the resumed VM. Deletion first persists an identity-bound intent,
+then stops the VM, removes its private files and command journal, durably releases
+capacity, and clears the intent. Startup/expiry reconciliation resumes incomplete
+cleanup, including a crash after capacity release.
+
+Service enablement and admission are separate coordinator switches, both off by
+default. Account allowlisting and a qualified host are required for new work.
+Closing admission keeps owner inspection, cancellation, stop and deletion
+available while the service remains enabled. The host starts in durable draining
+mode and never silently clears an operator's drain. Inference holds shared
+machine ownership through engine cleanup; the sandbox daemon and actual VM
+process retain exclusive ownership, including when the daemon dies.
+
+Transport uses HTTPS/WSS and an authenticated private host/guest channel.
+The coordinator and host process command contents and file bytes. This sandbox
+service does not inherit inference's confidential-computing privacy claim.
+Raw VM/control/workspace files require verified FileVault-encrypted APFS backing.
+The separate artifact encryption library below is not integrated into VM
+snapshots, restore, or per-VM cryptographic erasure.
+
+**Readiness remains conditional on physical acceptance.** Unit tests and signed
+builds do not prove guest boot, actual device isolation, quota exhaustion,
+post-crash cleanup or two-VM performance. The signed guest installation replaces
+the known `lume` bootstrap identity before a base receives its qualification
+receipt. Development SSH execution is restricted to base-image preparation and
+opt-in tests; it is never the tenant execution channel. See
+[release and physical validation](Resources/RELEASE_VALIDATION.md),
+[consumer CLI](../docs/consumer/sandbox-cli.md), and
+[API contract](../docs/reference/sandbox-api.md).
 
 The development bootstrap executor captures stdout and stderr independently,
 drains both streams without retaining unbounded data, and returns at most 1 MiB
@@ -153,12 +188,11 @@ create, start, inspect, stop, and release carry the complete operation scope.
 The OpenSSH-backed `execute` path and its enabling base-image/development
 bootstrap policy are package-scoped; public configuration always disables
 guest commands.
-Release stops and verifies the owned VM before its package-internal capacity
+Release stops and verifies the owned VM, durably records its deletion intent,
+and removes the exact owned directory before its package-internal capacity
 release. The VM-operation and lease-operation locks remain held through the
-capacity-state commit, so a concurrent start cannot run between stop and
-release; callers cannot remove capacity directly. Physical deletion remains
-package-internal until deletion intent has its own durable crash-recovery state,
-so a crash cannot strand a running or missing VM behind released capacity. The
+capacity-state commit. A pending deletion blocks new execution even after a
+crash; callers cannot remove capacity directly. The
 underlying Lume actor is package-only, validates the scope before creating a
 per-VM operation lock and again while holding it, and binds create
 authorization to the reserved CPU, memory, workspace, and boot-disk bytes.
@@ -171,8 +205,14 @@ lease-lock slots, so attacker-selected identifiers cannot grow authority
 storage without bound. Inspection authorizes immediately before and after its
 VM-locked Lume observation, so renewal and release do not wait on external I/O
 and any observation made under a rotated or released token is discarded.
-Expired or draining leases may only stop or delete their own VM; they cannot
-start additional work.
+Host drain blocks create, start, execute, and renewal. Existing owners may still
+inspect their VM, download files, inspect uploads, or abort uploads until the
+lease expires; expired or stale scopes cannot read. Stop and delete retain
+cleanup authority after expiry. Public release and expiry stop and destroy the
+ephemeral VM, including its isolated command journal, before releasing capacity.
+Deletion first persists the stopped installation and directory identity outside
+the VM tree, so an interrupted recursive deletion can resume without allowing
+new commands or erasing a replacement directory.
 Each workload VM also carries a fail-closed ownership marker binding its
 installation to the sandbox ID and generation plus its CPU, memory, disk, and
 image source. Renewed fencing tokens retain access to that same generation, but
@@ -290,13 +330,28 @@ output. Moving the pin requires source review plus the opt-in real-binary and VM
 lifecycle tests.
 
 Guest-command idempotency is enforced on the host, outside the guest's trust
-boundary. Before SSH launch, the runtime durably commits the VM installation ID,
-idempotency key, and a canonical request digest under the private runtime
-directory. A completed bounded result is replayed without a second guest
-execution. Reusing a key for different input, or retrying a claim whose outcome
-was not durably recorded, fails closed. Journal entries are namespaced by VM
-installation and retained; their bytes are part of the host's cached-sandbox
-storage footprint.
+boundary. Before launching a command, the runtime durably commits its VM
+installation ID, idempotency key, and canonical request digest. Isolated journals
+live inside the owned VM directory and are destroyed with that VM. A completed
+result is replayed without a second execution. Reusing a key for different input,
+or retrying a claim whose outcome was not durably recorded, fails closed.
+
+Each VM installation admits at most 256 distinct command IDs across broker
+restarts, VM stops/starts, and lease renewals. A new ID at that limit fails with
+`command_limit_reached` before guest execution; the VM and lease remain usable
+for files, cleanup, and historical command replay. Every accepted ID remains
+reserved even when its command failed or its outcome is unavailable. Existing
+journals above the limit still replay accepted results and reject new IDs. No
+entry is evicted to make room; use a new sandbox for additional commands.
+
+The storage bound uses the maximum permitted serialized result (2,797,232 bytes,
+including base64 expansion), plus 64 KiB per command for allocation and metadata.
+All 256 claims account for 732,868,608 bytes. Adding the 128 MiB control disk and
+128 MiB safety allowance totals 1,001,304,064 bytes, within the existing 1 GiB
+per-sandbox overhead reservation. The limit derives from those constants and
+cannot exceed 256. Admission enumerates at most 256 existing entries under the
+VM lock; incomplete claims consume slots, and recovery never trusts a separate
+cached counter.
 
 The default build is ad-hoc signed for local testing. A production build must
 have the Darkbloom Developer ID identity installed and select it explicitly:

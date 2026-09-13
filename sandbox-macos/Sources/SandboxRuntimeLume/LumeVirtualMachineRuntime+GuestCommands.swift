@@ -22,9 +22,10 @@ extension LumeVirtualMachineRuntime {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
-        guard case .baseImagePreparationAndDevelopment =
-            configuration.guestCommandPolicy
-        else {
+        guard configuration.isolatedGuest != nil || {
+            if case .baseImagePreparationAndDevelopment = configuration.guestCommandPolicy { return true }
+            return false
+        }() else {
             throw SandboxRuntimeError.unsupported(
                 "guest commands are disabled until the signed guest-control agent is available"
             )
@@ -55,7 +56,9 @@ extension LumeVirtualMachineRuntime {
                 in: configuration.storageDirectory
             )
         let identity = ownership.identity
-        let commandJournal = LumeGuestCommandJournal(workspace: workspace)
+        let commandJournal = LumeGuestCommandJournal(workspace: workspace,
+            ownedVirtualMachineDirectory: configuration.isolatedGuest == nil ? nil
+                : configuration.storageDirectory.appendingPathComponent(name))
         var guestCommandMayBeRunning = false
         var requiresVMStop = false
         do {
@@ -115,58 +118,66 @@ extension LumeVirtualMachineRuntime {
                     "guest commands require a running VM"
                 )
             }
-            let encodedCommand = try LumeGuestCommandEncoder.encode(request)
             requiresVMStop = true
             let commandClaim = try commandJournal.claim(
                 installationID: identity.installationID,
                 request: request
             )
-            let sshTimeoutSeconds = request.timeoutSeconds + 5
             guestCommandMayBeRunning = true
-            let result = try await Self.runGuestSSH(
-                runner: processRunner,
-                executable: configuration.executable,
-                storagePath: configuration.storageDirectory.path,
-                environment: workspace.environment,
-                name: name,
-                encodedCommand: encodedCommand,
-                lumeTimeoutSeconds: sshTimeoutSeconds,
-                hostTimeoutSeconds: request.timeoutSeconds + 10,
-                maximumOutputBytes: LumeGuestCommandEnvelope.maximumEnvelopeBytes
-            )
-            guard !result.standardOutputTruncated,
-                  !result.standardErrorTruncated
-            else {
-                throw SandboxRuntimeError.malformedOutput(
-                    "Lume guest-command output exceeded the capture limit"
+            let envelope: Data
+            if configuration.isolatedGuest != nil {
+                envelope = try await runIsolatedGuestCommand(name: name, request: request)
+            } else {
+                let encodedCommand = try LumeGuestCommandEncoder.encode(request)
+                let sshTimeoutSeconds = request.timeoutSeconds + 5
+                let result = try await Self.runGuestSSH(
+                    runner: processRunner,
+                    executable: configuration.executable,
+                    storagePath: configuration.storageDirectory.path,
+                    environment: workspace.environment,
+                    name: name,
+                    encodedCommand: encodedCommand,
+                    lumeTimeoutSeconds: sshTimeoutSeconds,
+                    hostTimeoutSeconds: request.timeoutSeconds + 10,
+                    maximumOutputBytes: LumeGuestCommandEnvelope.maximumEnvelopeBytes
                 )
+                guard !result.standardOutputTruncated,
+                      !result.standardErrorTruncated
+                else {
+                    throw SandboxRuntimeError.malformedOutput(
+                        "Lume guest-command output exceeded the capture limit"
+                    )
+                }
+                guard result.exitCode == 0 else {
+                    let standardError = String(
+                        decoding: result.standardError,
+                        as: UTF8.self
+                    ).trimmingCharacters(in: .whitespacesAndNewlines)
+                    throw SandboxRuntimeError.commandFailed(
+                        command: "lume ssh",
+                        exitCode: result.exitCode,
+                        stderr: standardError
+                    )
+                }
+                envelope = result.standardOutput
             }
-            guard result.exitCode == 0 else {
-                let standardError = String(
-                    decoding: result.standardError,
-                    as: UTF8.self
-                ).trimmingCharacters(in: .whitespacesAndNewlines)
-                throw SandboxRuntimeError.commandFailed(
-                    command: "lume ssh",
-                    exitCode: result.exitCode,
-                    stderr: standardError
-                )
-            }
-            let decoded = try LumeGuestCommandResultDecoder.decode(
-                result.standardOutput
-            )
-            try commandClaim.complete(envelope: result.standardOutput)
+            let decoded = try LumeGuestCommandResultDecoder.decode(envelope)
+            try commandClaim.complete(envelope: envelope)
             if decoded.timedOut {
                 throw SandboxRuntimeError.operationTimedOut(
                     "\(name) guest command"
                 )
             }
             return decoded
+        } catch let error as SandboxRuntimeError where error == .commandLimitReached && !guestCommandMayBeRunning {
+            // Admission was denied before any guest execution. Preserve the
+            // healthy VM and all earlier command outcomes.
+            throw error
         } catch {
             let executionWasCancelled =
                 Task.isCancelled || error is CancellationError
             var cancellationFailure: Error?
-            if guestCommandMayBeRunning {
+            if guestCommandMayBeRunning && configuration.isolatedGuest == nil {
                 do {
                     try await cancelGuestCommandIgnoringCancellation(
                         name: name,

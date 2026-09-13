@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-07 · commit `5ce1d0cd0`
+> Last updated: 2026-09-13 · commit `453b37667`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -74,6 +74,8 @@
 ## Consumer how-tos
 
 - [`consumer/quickstart.md`](consumer/quickstart.md): first request, streaming, SDK base-URL swap.
+- [`consumer/sandbox-commands.md`](consumer/sandbox-commands.md): allocate a private-alpha sandbox, run/cancel commands, retrieve results and delete it.
+- [`consumer/sandbox-cli.md`](consumer/sandbox-cli.md): use the standalone macOS/Linux client for resumable uploads, exact commands and verified downloads.
 - [`consumer/authentication.md`](consumer/authentication.md): create and manage API keys, sign in with Privy, run the device-code flow for the CLI; auth failures and fixes.
 - [`consumer/models.md`](consumer/models.md): the model catalog, aliases, capabilities, and how to query it.
 - [`consumer/billing.md`](consumer/billing.md): funding a balance, reading usage, what a 402 means.

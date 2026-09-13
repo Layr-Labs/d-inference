@@ -231,6 +231,19 @@ func (c *Controller) applyHeartbeatOperationObservation(
 		return false, nil
 	}
 	switch operation.Kind {
+	case store.SandboxOperationKindStart:
+		if observation.Scope.FencingToken != operation.RequestedFencingToken {
+			return false, nil
+		}
+		// Ready requires an explicit replay of start's guest-readiness proof;
+		// a lease heartbeat alone must not promote a stopped or unhealthy guest.
+		if observation.State == protocol.SandboxOperationPreparing || observation.State == protocol.SandboxOperationBooting {
+			return c.applyHeartbeatOperationUpdate(ctx, store.SandboxOperationUpdate{
+				OperationID: operation.ID, SandboxID: operation.SandboxID, Generation: operation.Generation,
+				FencingToken: observation.Scope.FencingToken, State: observation.State,
+				LeaseExpiresAt: &observedExpiry, UpdatedAt: c.now().UTC(),
+			})
+		}
 	case store.SandboxOperationKindPrepare:
 		if observation.Scope.FencingToken != operation.FencingToken {
 			return false, nil

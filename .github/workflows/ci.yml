@@ -137,8 +137,16 @@ jobs:
           echo "DARKBLOOM_SANDBOX_LUME_PATH=$install_root/lume" >> "$GITHUB_ENV"
       - name: Build isolated sandbox host runtime
         run: swift build --package-path sandbox-macos
+      - name: Test machine ownership and sandbox release tooling
+        run: |
+          swift test --package-path host-runtime
+          python3 sandbox-macos/Scripts/test-sandbox-release-tools.py
+          python3 sandbox-macos/Scripts/test-sandbox-benchmarks.py
+          python3 sandbox-macos/Scripts/test-sandbox-live-tools.py
       - name: Run sandbox host unit and contract tests
         run: swift test --package-path sandbox-macos
+      - name: Build release host and guest products
+        run: swift build --package-path sandbox-macos -c release
 
   test-provider:
     name: Provider Tests

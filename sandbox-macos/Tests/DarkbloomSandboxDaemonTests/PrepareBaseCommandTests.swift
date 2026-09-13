@@ -9,6 +9,7 @@ final class PrepareBaseCommandTests: XCTestCase {
             "--ipsw", "/var/lib/darkbloom/images/tahoe.ipsw",
             "--name", "phase0-base",
             "--development-ad-hoc-lume",
+            "--guest-release", "/opt/darkbloom/sandbox-release",
             "--json",
         ])
 
@@ -24,9 +25,14 @@ final class PrepareBaseCommandTests: XCTestCase {
         XCTAssertEqual(options.diskGiB, 100)
         XCTAssertTrue(options.json)
         XCTAssertTrue(options.developmentAdHocLume)
+        XCTAssertEqual(options.guestRelease?.path, "/opt/darkbloom/sandbox-release")
     }
 
     func testRejectsRelativeMissingDuplicateAndUnknownOptions() {
+        XCTAssertThrowsError(try PrepareBaseCommand.Options([
+            "--lume", "/lume", "--storage", "/vms", "--ipsw", "/image.ipsw",
+            "--name", "base", "--guest-release", "relative/release",
+        ]))
         XCTAssertThrowsError(try PrepareBaseCommand.Options([
             "--lume", "relative/lume",
             "--storage", "/vms",

@@ -14,18 +14,12 @@ func (c *Controller) runLeaseSweeper(ctx context.Context) {
 	ticker := time.NewTicker(leaseSweepInterval)
 	defer ticker.Stop()
 	for {
-		if err := c.sweepExpiredCommands(ctx); err != nil &&
-			!errors.Is(err, context.Canceled) {
-			// The next bounded sweep retries durable rows.
-		}
-		if err := c.sweepPendingCommandCancellations(ctx); err != nil &&
-			!errors.Is(err, context.Canceled) {
-			// The next bounded sweep or host reconnect retries durable rows.
-		}
-		if err := c.sweepExpiredLeases(ctx); err != nil &&
-			!errors.Is(err, context.Canceled) {
-			// The next bounded sweep retries durable rows. Individual failures
-			// never terminate lease enforcement for the rest of the process.
+		c.recordSweepResult("command_expiry", c.sweepExpiredCommands(ctx))
+		c.recordSweepResult("command_cancellation", c.sweepPendingCommandCancellations(ctx))
+		c.recordSweepResult("lease_expiry", c.sweepExpiredLeases(ctx))
+		if now := c.now().UTC(); !now.Before(c.nextPayloadSweep) {
+			c.nextPayloadSweep = now.Add(commandPayloadSweepInterval)
+			c.recordSweepResult("payload_retention", c.sweepCommandPayloads(ctx))
 		}
 		select {
 		case <-ctx.Done():

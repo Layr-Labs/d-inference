@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,6 +45,7 @@ const (
 
 	SandboxOperationKindPrepare = "prepare"
 	SandboxOperationKindRenew   = "renew"
+	SandboxOperationKindStart   = "start"
 	SandboxOperationKindStop    = "stop"
 	SandboxOperationKindDelete  = "delete"
 )
@@ -212,6 +212,9 @@ type SandboxCommand struct {
 	StartedAt               *time.Time        `json:"started_at,omitempty"`
 	CompletedAt             *time.Time        `json:"completed_at,omitempty"`
 	UpdatedAt               time.Time         `json:"updated_at"`
+	RequestDigest           string            `json:"-"`
+	PayloadExpired          bool              `json:"payload_expired"`
+	PayloadExpiredAt        *time.Time        `json:"payload_expired_at,omitempty"`
 }
 
 func (c SandboxCommand) Terminal() bool {
@@ -232,16 +235,7 @@ func (c SandboxCommand) Active() bool {
 }
 
 func (c SandboxCommand) SameRequest(other *SandboxCommand) bool {
-	if other == nil {
-		return false
-	}
-	return c.SandboxID == other.SandboxID &&
-		c.AccountID == other.AccountID &&
-		c.IdempotencyKey == other.IdempotencyKey &&
-		c.TimeoutSeconds == other.TimeoutSeconds &&
-		c.WorkingDirectory == other.WorkingDirectory &&
-		reflect.DeepEqual(c.Arguments, other.Arguments) &&
-		reflect.DeepEqual(c.Environment, other.Environment)
+	return sameSandboxCommandRequest(&c, other)
 }
 
 func (c SandboxCommand) Deadline() time.Time {
@@ -309,6 +303,10 @@ func cloneSandboxCommand(command *SandboxCommand) *SandboxCommand {
 	}
 	cloned := *command
 	cloned.Arguments = append([]string(nil), command.Arguments...)
+	if command.PayloadExpired {
+		cloned.Arguments = []string{}
+	}
+	cloned.PayloadExpiredAt = cloneTimePtr(command.PayloadExpiredAt)
 	if command.Environment != nil {
 		cloned.Environment = make(map[string]string, len(command.Environment))
 		for key, value := range command.Environment {
@@ -369,7 +367,8 @@ func applySandboxOperationTransition(
 		}
 		return ErrSandboxConflict
 	}
-	if operation.FencingToken != sandbox.FencingToken {
+	if operation.FencingToken != sandbox.FencingToken &&
+		!(operation.Kind == SandboxOperationKindStart && operation.RequestedFencingToken == sandbox.FencingToken) {
 		return ErrSandboxConflict
 	}
 	if update.UpdatedAt.IsZero() {
@@ -384,6 +383,12 @@ func applySandboxOperationTransition(
 	}
 
 	switch operation.Kind {
+	case SandboxOperationKindStart:
+		if err := applySandboxStartAuthority(sandbox, operation, update); err != nil {
+			return err
+		}
+		sandbox.State = sandboxStartResultState(operation, update)
+		sandbox.ErrorCode = update.ErrorCode
 	case SandboxOperationKindRenew:
 		if update.State == SandboxOperationFailed {
 			if update.FencingToken != sandbox.FencingToken {
@@ -455,7 +460,7 @@ func validSandboxOperationTransition(kind, from, to string) bool {
 		return true
 	}
 	switch kind {
-	case SandboxOperationKindPrepare:
+	case SandboxOperationKindPrepare, SandboxOperationKindStart:
 		switch from {
 		case SandboxOperationPending:
 			return to == SandboxOperationPreparing ||
@@ -510,7 +515,7 @@ func sandboxStateForOperationUpdate(
 		return operation.PreviousSandboxState
 	}
 	switch operation.Kind {
-	case SandboxOperationKindPrepare:
+	case SandboxOperationKindPrepare, SandboxOperationKindStart:
 		switch state {
 		case SandboxOperationReady:
 			return SandboxStateReady
@@ -548,7 +553,7 @@ func applySandboxCommandTransition(
 	if command.Terminal() {
 		if command.CancellationPending &&
 			isTerminalSandboxCommandState(update.State) {
-			if update.State == SandboxCommandCancelled {
+			if update.State == SandboxCommandCancelled && !update.RequestCancellation {
 				command.CancellationPending = false
 			}
 			command.UpdatedAt = update.UpdatedAt

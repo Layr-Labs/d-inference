@@ -13,9 +13,18 @@ let package = Package(
         .library(name: "SandboxRuntimeLume", targets: ["SandboxRuntimeLume"]),
         .library(name: "SandboxRuntimeVZ", targets: ["SandboxRuntimeVZ"]),
         .library(name: "SandboxHostControl", targets: ["SandboxHostControl"]),
+        .library(name: "SandboxGuestProtocol", targets: ["SandboxGuestProtocol"]),
+        .library(name: "SandboxGuestRuntime", targets: ["SandboxGuestRuntime"]),
+        .executable(name: "darkbloom-sandbox-guest", targets: ["DarkbloomSandboxGuest"]),
         .executable(name: "darkbloom-sandboxd", targets: ["DarkbloomSandboxDaemon"]),
     ],
+    dependencies: [.package(path: "../host-runtime")],
     targets: [
+        .target(name: "SandboxGuestProtocol"),
+        .target(name: "SandboxGuestRuntime", dependencies: ["SandboxGuestProtocol", "SandboxRuntime"], linkerSettings: [.linkedFramework("Security")]),
+        .executableTarget(name: "DarkbloomSandboxGuest", dependencies: ["SandboxGuestRuntime"]),
+        .testTarget(name: "SandboxGuestProtocolTests", dependencies: ["SandboxGuestProtocol"]),
+        .testTarget(name: "SandboxGuestRuntimeTests", dependencies: ["SandboxGuestRuntime", "SandboxGuestProtocol"]),
         .target(
             name: "SandboxCore",
             path: "Sources/SandboxCore"
@@ -38,7 +47,7 @@ let package = Package(
         ),
         .target(
             name: "SandboxRuntimeLume",
-            dependencies: ["SandboxCore", "SandboxRuntime"],
+            dependencies: [.product(name: "HostRuntimeCoordination", package: "host-runtime"), "SandboxCore", "SandboxRuntime", "SandboxGuestProtocol"],
             path: "Sources/SandboxRuntimeLume",
             linkerSettings: [.linkedFramework("Security")]
         ),
@@ -60,6 +69,7 @@ let package = Package(
         .executableTarget(
             name: "DarkbloomSandboxDaemon",
             dependencies: [
+                .product(name: "HostRuntimeCoordination", package: "host-runtime"),
                 "SandboxCore",
                 "SandboxRuntime",
                 "SandboxRuntimeLume",

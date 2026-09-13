@@ -1,0 +1,227 @@
+import CryptoKit
+import Darwin
+import Foundation
+import SandboxCore
+import SandboxRuntime
+@testable import DarkbloomSandboxDaemon
+import XCTest
+
+final class BaseGuestPreparationTests: XCTestCase, @unchecked Sendable {
+    private func fixture() throws -> Fixture {
+        let fixture = try Fixture()
+        addTeardownBlock { try? FileManager.default.removeItem(at: fixture.root) }
+        return fixture
+    }
+
+    func testReleaseRejectsChangedPayloadAdditionalEntryAndInvalidSignature() throws {
+        let f = try fixture()
+        XCTAssertNoThrow(try f.release())
+        XCTAssertThrowsError(try BaseGuestRelease(directory: f.releaseDirectory, verifySignature: { _, _ in
+            throw BaseGuestPreparationError.invalidRelease
+        }))
+        let executable = f.releaseDirectory.appendingPathComponent("guest/darkbloom-sandbox-guest")
+        try Data("modified".utf8).write(to: executable)
+        XCTAssertThrowsError(try f.release())
+        let second = try fixture()
+        try Data().write(to: second.releaseDirectory.appendingPathComponent("guest/unexpected"))
+        XCTAssertThrowsError(try second.release())
+    }
+
+    func testProductionSignatureValidationWhenReleaseProvided() throws {
+        guard let path = ProcessInfo.processInfo.environment["DARKBLOOM_SANDBOX_TEST_GUEST_RELEASE"] else {
+            throw XCTSkip("Set DARKBLOOM_SANDBOX_TEST_GUEST_RELEASE to validate a real signed package")
+        }
+        let release = try BaseGuestRelease(directory: URL(fileURLWithPath: path))
+        XCTAssertEqual(release.hashes.count, 4)
+    }
+
+    func testBootstrapUsesFixedShellAndPositionalArgumentsWithinCommandBounds() throws {
+        let f = try fixture(), release = try f.release(), staging = try release.stage(in: f.storage)
+        let request = try BaseGuestInstallation.request(staging: staging, release: release)
+        XCTAssertEqual(request.executable, "/usr/bin/sudo")
+        XCTAssertEqual(Array(request.arguments.prefix(4)), ["-n", "/bin/zsh", "-f", "-c"])
+        XCTAssertEqual(request.arguments[4], BaseGuestInstallation.script)
+        XCTAssertFalse(request.arguments[4].contains(f.releaseDirectory.path))
+        XCTAssertEqual(request.timeoutSeconds, 300)
+        XCTAssertLessThan(request.arguments.reduce(0) { $0 + $1.utf8.count }, 65536)
+        try staging.removeAfterStopped()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.directory.path))
+    }
+
+    func testInstallsThenPublishesStoppedTemplateAndReplaysWithoutAnotherExecution() async throws {
+        let f = try fixture(), release = try f.release()
+        let runtime = FakeBaseGuestVM(result: try JSONEncoder().encode(f.receipt(release: release)))
+        let staging = try release.stage(in: f.storage)
+        let preparer = BaseGuestPreparer(runtime: runtime)
+        _ = try await preparer.prepare(specification: f.specification(), storage: f.storage,
+                                      release: release, staging: staging)
+        let store = BaseGuestTemplateStore(directory: f.storage.appendingPathComponent("base"))
+        let record = try XCTUnwrap(store.matching(name: "base", release: release))
+        XCTAssertTrue(record.bootstrapRetired && record.stoppedVerified)
+        XCTAssertEqual(record.installationID, f.installationID)
+        let events = await runtime.events
+        XCTAssertEqual(events.filter { ["start", "execute", "stop"].contains($0) }, ["start", "execute", "stop"])
+        let again = try release.stage(in: f.storage)
+        _ = try await preparer.prepare(specification: f.specification(), storage: f.storage,
+                                      release: release, staging: again)
+        let repeatedEvents = await runtime.events
+        XCTAssertEqual(repeatedEvents.filter { $0 == "execute" }.count, 1)
+    }
+
+    func testInvalidGuestProofStopsVMAndCannotPublishTemplate() async throws {
+        let f = try fixture(), release = try f.release(), staging = try release.stage(in: f.storage)
+        let runtime = FakeBaseGuestVM(result: Data("{}".utf8))
+        do {
+            _ = try await BaseGuestPreparer(runtime: runtime).prepare(specification: f.specification(),
+                storage: f.storage, release: release, staging: staging)
+            XCTFail("invalid proof must not publish a template")
+        } catch {}
+        let events = await runtime.events
+        XCTAssertEqual(events.filter { $0 == "stop" }.count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.storage.appendingPathComponent("base/.darkbloom-template.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staging.directory.path))
+    }
+
+    func testStoredTemplateRejectsChangedOwnership() async throws {
+        let f = try fixture(), release = try f.release()
+        let store = BaseGuestTemplateStore(directory: f.storage.appendingPathComponent("base"))
+        try store.publish(SandboxGuestTemplateReceipt(name: "base", installationID: f.installationID,
+            release: release, receipt: f.receipt(release: release)))
+        try f.writeOwnership(id: UUID())
+        XCTAssertThrowsError(try store.matching(name: "base", release: release))
+    }
+
+    func testHostOnlyUpgradeReplaysPreparationAndPreservesOriginalProvenance() async throws {
+        let f = try fixture(), original = try f.release()
+        let runtime = FakeBaseGuestVM(result: try JSONEncoder().encode(f.receipt(release: original)))
+        let preparer = BaseGuestPreparer(runtime: runtime)
+        _ = try await preparer.prepare(specification: f.specification(), storage: f.storage,
+            release: original, staging: original.stage(in: f.storage))
+        let manifest = f.releaseDirectory.appendingPathComponent("release-manifest.json")
+        var value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any])
+        value["version"] = "host-only-upgrade"
+        try JSONSerialization.data(withJSONObject: value).write(to: manifest)
+        let upgraded = try f.release()
+        XCTAssertNotEqual(upgraded.manifestSHA256, original.manifestSHA256)
+        _ = try await preparer.prepare(specification: f.specification(), storage: f.storage,
+            release: upgraded, staging: upgraded.stage(in: f.storage))
+        let events = await runtime.events
+        XCTAssertEqual(events.filter { $0 == "start" }.count, 1)
+        XCTAssertEqual(events.filter { $0 == "execute" }.count, 1)
+        let store = BaseGuestTemplateStore(directory: f.storage.appendingPathComponent("base"))
+        let retained = try XCTUnwrap(store.matching(name: "base", release: upgraded))
+        XCTAssertEqual(retained.releaseManifestSHA256, original.manifestSHA256)
+    }
+
+    func testChangedGuestPayloadCannotReuseStoredTemplate() throws {
+        for name in BaseGuestRelease.files {
+            let f = try fixture(), original = try f.release()
+            let store = BaseGuestTemplateStore(directory: f.storage.appendingPathComponent("base"))
+            try store.publish(SandboxGuestTemplateReceipt(name: "base", installationID: f.installationID,
+                release: original, receipt: f.receipt(release: original)))
+            let changed = Data("new guest payload".utf8)
+            try changed.write(to: f.releaseDirectory.appendingPathComponent("guest/" + name))
+            let manifest = f.releaseDirectory.appendingPathComponent("release-manifest.json")
+            var value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any])
+            var files = try XCTUnwrap(value["files"] as? [String: String])
+            files["guest/" + name] = BaseGuestRelease.digest(changed)
+            value["files"] = files
+            try JSONSerialization.data(withJSONObject: value).write(to: manifest)
+            XCTAssertThrowsError(try store.matching(name: "base", release: f.release()), name)
+        }
+    }
+
+    func testConcurrentPreparationCannotAcquireTheSameBase() throws {
+        let f = try fixture(), directory = f.storage.appendingPathComponent("base")
+        var first: BaseGuestPreparationLock? = try BaseGuestPreparationLock(directory: directory)
+        XCTAssertThrowsError(try BaseGuestPreparationLock(directory: directory))
+        withExtendedLifetime(first) {}
+        first = nil
+        XCTAssertNoThrow(try BaseGuestPreparationLock(directory: directory))
+    }
+
+    func testStopFailureCannotPublishReadyTemplate() async throws {
+        let f = try fixture(), release = try f.release(), staging = try release.stage(in: f.storage)
+        let runtime = FakeBaseGuestVM(result: try JSONEncoder().encode(f.receipt(release: release)), stopFails: true)
+        do {
+            _ = try await BaseGuestPreparer(runtime: runtime).prepare(specification: f.specification(),
+                storage: f.storage, release: release, staging: staging)
+            XCTFail("unproven stop must prevent template publication")
+        } catch {}
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.storage.appendingPathComponent("base/.darkbloom-template.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staging.directory.path))
+    }
+
+    private struct Fixture: Sendable {
+        let root: URL
+        let releaseDirectory: URL
+        let storage: URL
+        let installationID = UUID()
+        init() throws {
+            root = FileManager.default.temporaryDirectory.appendingPathComponent("db-bootstrap-test-\(UUID())")
+            releaseDirectory = root.appendingPathComponent("release")
+            storage = root.appendingPathComponent("vms")
+            for path in [root, releaseDirectory, releaseDirectory.appendingPathComponent("guest"), storage, storage.appendingPathComponent("base")] {
+                try FileManager.default.createDirectory(at: path, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            }
+            var hashes: [String: String] = [:]
+            for name in BaseGuestRelease.files {
+                let data = Data(name.utf8)
+                try data.write(to: releaseDirectory.appendingPathComponent("guest/" + name))
+                hashes["guest/" + name] = BaseGuestRelease.digest(data)
+            }
+            let manifest: [String: Any] = ["schema_version": 1, "signing_mode": "developer_id", "files": hashes]
+            try JSONSerialization.data(withJSONObject: manifest).write(to: releaseDirectory.appendingPathComponent("release-manifest.json"))
+            try writeOwnership(id: installationID)
+        }
+        func release() throws -> BaseGuestRelease {
+            try BaseGuestRelease(directory: releaseDirectory, verifySignature: { _, _ in })
+        }
+        func writeOwnership(id: UUID) throws {
+            let owner: [String: Any] = ["schemaVersion": 2, "installationID": id.uuidString,
+                                       "ownerKind": "base_template", "name": "base"]
+            let path = storage.appendingPathComponent("base/.darkbloom-ownership.json")
+            try JSONSerialization.data(withJSONObject: owner).write(to: path)
+            _ = chmod(path.path, 0o600)
+        }
+        func receipt(release: BaseGuestRelease) -> BaseGuestInstallationReceipt {
+            BaseGuestInstallationReceipt(schemaVersion: 1,
+                guestSHA256: release.hashes["darkbloom-sandbox-guest"]!,
+                bootstrapSHA256: release.hashes["darkbloom-sandbox-bootstrap.sh"]!,
+                launchdSHA256: release.hashes["io.darkbloom.sandbox.guest.plist"]!,
+                installerSHA256: release.hashes["install-sandbox-guest.sh"]!,
+                guestOperatingSystemVersion: "26.0", guestArchitecture: "arm64", bootstrapRetired: true)
+        }
+        func specification() throws -> SandboxVirtualMachineSpecification {
+            try SandboxVirtualMachineSpecification(name: "base", resources: SandboxResourceSpecification(
+                cpuCount: 4, memoryBytes: 8 * 1_073_741_824, workspaceBytes: 25 * 1_073_741_824, commandTimeoutSeconds: 900),
+                imageSource: .restoreImage(url: URL(fileURLWithPath: "/image.ipsw"), unattendedPreset: "tahoe"),
+                diskBytes: 100 * 1_073_741_824)
+        }
+    }
+}
+
+private actor FakeBaseGuestVM: BaseGuestVirtualMachine {
+    let result: Data
+    let stopFails: Bool
+    var events: [String] = []
+    var state = SandboxVirtualMachineState.stopped
+    init(result: Data, stopFails: Bool = false) { self.result = result; self.stopFails = stopFails }
+    func capabilities() -> SandboxRuntimeCapabilities {
+        SandboxRuntimeCapabilities(runtime: "lume", version: "0.5.3", supportsMacOS: true, supportsPause: false, supportsSnapshots: false)
+    }
+    func create(_ specification: SandboxVirtualMachineSpecification) { events.append("create") }
+    func start(name: String) { events.append("start"); state = .running }
+    func stop(name: String) throws {
+        events.append("stop")
+        guard !stopFails else { throw BaseGuestPreparationError.unsafeTemplate }
+        state = .stopped
+    }
+    func inspect(name: String) -> SandboxVirtualMachineRecord? {
+        SandboxVirtualMachineRecord(name: name, state: state, cpuCount: 4, memoryBytes: 8 * 1_073_741_824, diskBytes: 100 * 1_073_741_824)
+    }
+    func execute(name: String, request: SandboxGuestCommandRequest) -> SandboxGuestCommandResult {
+        events.append("execute")
+        return SandboxGuestCommandResult(exitCode: 0, standardOutput: result, standardError: Data())
+    }
+}

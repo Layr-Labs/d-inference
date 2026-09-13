@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-09 · commit `884d97862`
+> Last updated: 2026-09-11 · commit `db30ab83c`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -143,7 +143,7 @@ Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../ar
 | POST | `/v1/referral/apply` | `handleReferralApply` (`coordinator/api/billing_handlers.go`) | `user` | `fin` | 400 `referral_error` |
 | GET | `/v1/referral/stats` | `handleReferralStats` (`coordinator/api/billing_handlers.go`) | `key` | — | 404 `referral_error` when no referral record exists |
 | GET | `/v1/referral/info` | `handleReferralInfo` (`coordinator/api/billing_handlers.go`) | `key` | — | 404 `referral_error` when no referral record exists |
-| POST | `/v1/invite/redeem` | `handleRedeemInviteCode` (`coordinator/api/invite_handlers.go`) | `key` | `fin` | Redeem an invite code |
+| POST | `/v1/invite/redeem` | `handleRedeemInviteCode` (`coordinator/api/invite_handlers.go`) | `key` | `fin` | Redeem an invite code; claim, use count and non-withdrawable credit commit together. A credit failure returns 500 and leaves the claim available for retry |
 | GET | `/v1/providers/attestation` | `handleProviderAttestation` (`coordinator/api/provider.go`) | `—` | — | Public attestation roster; see [`../architecture/security/attestation.md`](../architecture/security/attestation.md) |
 
 ### Public stats and health (5)

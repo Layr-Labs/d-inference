@@ -2720,6 +2720,7 @@ func (s *MemoryStore) RedeemInviteCode(code string, accountID string) error {
 		s.accountRedemptions[accountID] = make(map[string]bool)
 	}
 	s.accountRedemptions[accountID][code] = true
+	s.creditLocked(accountID, ic.AmountMicroUSD, LedgerInviteCredit, "invite:"+code, time.Now())
 	return nil
 }
 

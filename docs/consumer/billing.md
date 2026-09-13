@@ -1,6 +1,6 @@
 # Billing: fund an account and keep spend under control
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-11 · commit `db30ab83c`
 
 How to add credit, read your balance and usage, cap what a key can spend,
 redeem an invite code, and act on a `402`. Why the coordinator behaves this
@@ -170,7 +170,9 @@ curl -X POST https://api.darkbloom.dev/v1/invite/redeem \
 Invite codes are created by Darkbloom staff and carry a fixed amount. A
 successful redemption returns `credited_usd` and `balance_usd`; the credit is
 spendable but not withdrawable, and each account can redeem a given code once
-(`coordinator/api/invite_handlers.go` `handleRedeemInviteCode`).
+(`coordinator/api/invite_handlers.go` `handleRedeemInviteCode`). If redemption
+returns 500 with `failed to credit balance`, retry the same code: its claim
+and use count were rolled back with the failed credit.
 
 ### 8. High-volume integrations: service accounts
 

@@ -3918,6 +3918,11 @@ func (s *PostgresStore) RedeemInviteCode(code string, accountID string) error {
 		return fmt.Errorf("store: update invite code: %w", err)
 	}
 
+	// The claim, use count, non-withdrawable balance and ledger entry commit
+	// together. A failed credit leaves the invite available for retry.
+	if err := creditBalance(ctx, tx, accountID, ic.AmountMicroUSD, LedgerInviteCredit, "invite:"+code, time.Time{}); err != nil {
+		return errors.Join(ErrInviteCredit, err)
+	}
 	return tx.Commit(ctx)
 }
 

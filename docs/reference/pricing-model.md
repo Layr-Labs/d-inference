@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-06 · commit `8c22f0cdb`
+> Last updated: 2026-09-11 · commit `db30ab83c`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -104,7 +104,7 @@ type is in [billing.md](../architecture/billing.md#ledger).
 | `referral_reward` | `LedgerReferralReward` | referrer's share of a platform fee | yes |
 | `stripe_deposit` | `LedgerStripeDeposit` | Stripe Checkout deposit, reference `stripe:<checkout_session_id>` | no |
 | `stripe_payout` | `LedgerStripePayout` | Stripe Connect withdrawal debit, reference `stripe_withdraw:<id>` | debit (both columns) |
-| `invite_credit` | `LedgerInviteCredit` | invite code redemption, reference `invite:<code>` | no |
+| `invite_credit` | `LedgerInviteCredit` | invite claim, use count, balance and ledger commit together; reference `invite:<code>` (`coordinator/store/postgres.go`, `RedeemInviteCode`) | no |
 | `refund` | `LedgerRefund` | reservation/settlement refund; withdrawal principal and fee refunds | reservation/settlement: no; withdrawal refunds: yes |
 | `admin_credit` | `LedgerAdminCredit` | `POST /v1/admin/credit` | no |
 | `admin_reward` | `LedgerAdminReward` | `POST /v1/admin/reward` | yes |

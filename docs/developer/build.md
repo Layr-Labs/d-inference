@@ -1,11 +1,15 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `d4bab49a9`
+> Last updated: 2026-09-13 · commit `ec73023e4`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
 source-matched `mlx.metallib`), and the two Next.js UIs. `make build` does all
 of it; the per-component steps below explain what each target runs.
+
+Docs Lint needs Git history to validate moved source links in frozen records;
+its checkout uses `fetch-depth: 0` (`.github/workflows/ci.yml`, `docs` job).
+See [historical source references](historical-references.md) for local setup.
 
 Model publishing can pass `HUGGING_FACE_ARTIFACT_JSON` through
 `scripts/publish-model.sh` to registration. See the

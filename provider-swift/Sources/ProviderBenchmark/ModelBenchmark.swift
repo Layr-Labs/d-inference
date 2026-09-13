@@ -203,7 +203,7 @@ public struct ModelBenchmark: Sendable {
 
         var promptTokens = 0
         var completionTokens = 0
-        var prefillLatencyMs: Double = 0
+        var infoPromptTimeSeconds: Double = 0
         var firstTokenTime: ContinuousClock.Instant?
 
         for await generation in generationStream {
@@ -211,17 +211,12 @@ public struct ModelBenchmark: Sendable {
             case .chunk:
                 if firstTokenTime == nil {
                     firstTokenTime = .now
-                    let elapsed = firstTokenTime! - iterationStart
-                    prefillLatencyMs = Double(elapsed.components.attoseconds) / 1e15
                 }
 
             case .info(let info):
                 promptTokens = info.promptTokenCount
                 completionTokens = info.generationTokenCount
-                // Use the info's own timing if we didn't capture first token
-                if prefillLatencyMs == 0 {
-                    prefillLatencyMs = info.promptTime * 1000
-                }
+                infoPromptTimeSeconds = info.promptTime
 
             case .toolCall:
                 break
@@ -229,10 +224,36 @@ public struct ModelBenchmark: Sendable {
         }
 
         let totalElapsed = ContinuousClock.now - iterationStart
-        let totalTimeMs = Double(totalElapsed.components.attoseconds) / 1e15
 
-        // Calculate decode TPS from the generation info's timing when available,
-        // otherwise approximate from wall-clock
+        return iterationResult(
+            iteration: iteration,
+            promptTokens: promptTokens,
+            completionTokens: completionTokens,
+            prefillElapsed: firstTokenTime.map { $0 - iterationStart },
+            infoPromptTimeSeconds: infoPromptTimeSeconds,
+            totalElapsed: totalElapsed
+        )
+    }
+
+    /// Derive an iteration's reported timings from its raw clock measurements.
+    ///
+    /// Split out of `runIteration` so the arithmetic is reachable in tests
+    /// without a live MLX `ModelContainer`.
+    static func iterationResult(
+        iteration: Int,
+        promptTokens: Int,
+        completionTokens: Int,
+        prefillElapsed: Duration?,
+        infoPromptTimeSeconds: Double,
+        totalElapsed: Duration
+    ) -> BenchmarkIterationResult {
+        // Fall back to the generation info's own prompt timing only when no
+        // chunk ever arrived to time.
+        let prefillLatencyMs =
+            prefillElapsed.map { MTPBenchmarkRunner.milliseconds($0) }
+            ?? infoPromptTimeSeconds * 1000
+        let totalTimeMs = MTPBenchmarkRunner.milliseconds(totalElapsed)
+
         let decodeTimeMs = totalTimeMs - prefillLatencyMs
         let decodeTokensPerSecond: Double
         if completionTokens > 0 && decodeTimeMs > 0 {

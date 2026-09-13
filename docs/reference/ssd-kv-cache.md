@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-09-13 · commit `d66a38b77`
+> Last updated: 2026-09-13 · commit `69454529a`
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -292,4 +292,4 @@ Three observable surfaces exist; there is no dedicated CLI verifier.
 - [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md) — coordinator side
 - [`../architecture/security/encryption.md`](../architecture/security/encryption.md) — key hierarchy
 - [`../design/ssd-kv-cache.md`](../design/ssd-kv-cache.md), [`../design/ssd-kv-cache-v1-design.md`](../design/ssd-kv-cache-v1-design.md) — superseded design records
-- Tests: `provider-swift/Tests/ProviderCoreTests/SSDPrefixCacheTests.swift`
+- Tests: `provider-swift/Tests/ProviderCoreTests/KVCacheSSD/SSDPrefixCacheTests.swift`

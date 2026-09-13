@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-13 · commit `69454529a`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -51,6 +51,10 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 | `admin-ui/` | Next.js 16 / React 19 | `npm`; dev/start on port `4001`. |
 | `landing/` | static HTML/JS | No build step; `earn-calculator-core.test.js` runs with `node --test`. |
 | `Makefile` | — | Every target below; `make help` lists them. |
+
+Provider tests are grouped by subsystem inside their existing SwiftPM targets.
+See [finding provider tests](test.md#finding-provider-tests) for the folder map;
+`provider-swift/Package.swift` (`package`) retains recursive source discovery.
 
 ## Steps
 

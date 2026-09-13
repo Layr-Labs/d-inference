@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-13 · commit `3cf03209a`
+> Last updated: 2026-09-13 · commit `69454529a`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -281,7 +281,7 @@ and the `inference.timing.*` histograms are built from the same
    from source and compared by `TestTelemetryAllowlistThreeWayParity`
    (`coordinator/api/telemetry_allowlist_parity_test.go`); the enums and JSON
    encoding by `coordinator/protocol/telemetry_symmetry_test.go` and
-   `provider-swift/Tests/ProviderCoreTests/TelemetrySymmetryTests.swift`. The
+   `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift`. The
    five shipped gaps are enumerated in `telemetryKnownMirrorGaps` and a stale
    entry fails the build.
 3. **Telemetry never changes control flow.** Nil emitter, nil Datadog client,
@@ -344,7 +344,7 @@ for populations, labels and reset semantics (`coordinator/api/cache_model_teleme
 | Sinks | `coordinator/api/telemetry_sink.go`, `coordinator/api/profiler_sink.go`, `coordinator/api/profiler_fleet.go` |
 | Disconnect classification | `coordinator/registry/disconnect_classify.go` |
 | Provider side | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift` (`buildHeartbeatJSON`), `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`, `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Capacity.swift`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` (no-op facade) |
-| Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/TelemetrySymmetryTests.swift` |
+| Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/Telemetry/TelemetrySymmetryTests.swift` |
 
 ## Related
 

@@ -288,6 +288,6 @@ git config core.hooksPath .githooks
 
 | Component | Check | Manual fix |
 |-----------|-------|------------|
-| Go (`coordinator/`) | `gofmt -l` | `gofmt -w <file>` |
+| Go (`coordinator/`, `e2e/`) | `gofmt -d` on staged contents | `gofmt -w <file>`, then stage formatted changes |
 | Swift (`provider-swift/`) | no enforced formatter | `cd provider-swift && swift test` |
 | TypeScript (`console-ui/`) | `npx eslint src/` | `cd console-ui && npx eslint src/ --fix` |

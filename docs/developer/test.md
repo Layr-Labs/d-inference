@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `382b40ee9`
+> Last updated: 2026-09-13 · commit `2b66b05ed`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1061,7 +1061,8 @@ Link existence and orphan detection share one Python parsing pass over all
 selected files. The parser handles reference definitions, percent-encoded spaces,
 balanced nested labels, escaped brackets, and soft line breaks. Blank lines,
 headings, thematic breaks, list starts, quotes, fences, and HTML block starts keep
-those labels apart. Comments, HTML blocks, tag attributes and code examples do
+those labels apart. Invalid backtick-fence info strings remain ordinary Markdown.
+Comments, HTML blocks, tag attributes and code examples do
 not create navigation; Markdown around inline tags remains visible. Empty inline
 destinations stay empty, and backslash pairs preserve link/image meaning.
 Indented code is excluded while paragraph continuations and list navigation

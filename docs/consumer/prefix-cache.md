@@ -1,6 +1,6 @@
 # Make repeated text requests cache-friendly
 
-> Last updated: 2026-09-12 · commit `06518dc93`
+> Last updated: 2026-09-13 · commit `3cf03209a`
 
 This how-to helps API consumers preserve identical prefixes across related text
 requests. Reuse depends on the model, a valid checkpoint, provider capacity and
@@ -14,7 +14,7 @@ setup. See the [cache architecture](../architecture/prefix-cache.md) for current
 model support and the [routing explanation](../architecture/cache-aware-routing.md)
 for scope and proof requirements.
 
-## Structure the requests
+## Steps
 
 1. Keep repeated system instructions and reference material byte-for-byte
    consistent where their meaning is unchanged. Reuse the same tool definitions
@@ -57,10 +57,17 @@ proof rejection reasons and donation outcomes described in
 [cache-aware routing](../architecture/cache-aware-routing.md#observed-demand-and-soft-prefix-affinity).
 Repeated-prefix demand is advisory telemetry and does not count as a hit.
 
-## Troubleshoot
+## Troubleshooting
 
 - A changing early prefix prevents reuse of everything after that change.
 - An identical prefix can miss after expiry, eviction, proof rejection, or
   routing to a different available machine.
 - A cached-token count measures reused prompt work, not a measured number of
   seconds saved or guaranteed end-to-end delivery.
+
+## Related
+
+- [API quickstart](quickstart.md) — authenticate and send requests.
+- [Prefix-cache architecture](../architecture/prefix-cache.md) — supported models and reuse mechanics.
+- [SSD cache reference](../reference/ssd-kv-cache.md) — retention and resource limits.
+- [Cache-aware routing](../architecture/cache-aware-routing.md) — evidence, routing and diagnostics.

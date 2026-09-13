@@ -56,8 +56,8 @@ func TestPrefixCacheTelemetryEnumCasingIsPinned(t *testing.T) {
 
 func TestDonationOutcomeForwardVersionHeadroomPreservesKnownCounters(t *testing.T) {
 	knownOutcomes := PrefixCacheDonationOutcomes()
-	if len(knownOutcomes) != 21 {
-		t.Fatalf("known outcome buckets=%d, want 21", len(knownOutcomes))
+	if len(knownOutcomes) != 22 {
+		t.Fatalf("known outcome buckets=%d, want 22", len(knownOutcomes))
 	}
 	knownCounters := func(offset uint64) []protocol.PrefixCacheDonationOutcomeCount {
 		result := make(

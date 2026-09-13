@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 
 /// Release information returned by the coordinator.
 public struct ReleaseInfo: Sendable {
@@ -341,9 +340,7 @@ public struct SelfUpdater: Sendable {
             }
 
             // Verify SHA-256
-            let fileData = try Data(contentsOf: tempFileURL)
-            let digest = SHA256.hash(data: fileData)
-            let computedHash = digest.map { String(format: "%02x", $0) }.joined()
+            let computedHash = try UpdateAtomicFilesystem.sha256(file: tempFileURL)
 
             guard computedHash == release.bundleHash.lowercased() else {
                 try? FileManager.default.removeItem(at: tempFileURL)
@@ -1035,8 +1032,8 @@ public struct SelfUpdater: Sendable {
                 }
 
             case .success(let tempFile):
+                defer { try? FileManager.default.removeItem(at: tempFile) }
                 guard beforeInstall() else {
-                    try? FileManager.default.removeItem(at: tempFile)
                     return .cancelled(
                         reason: "provider was intentionally stopped before install")
                 }
@@ -1045,8 +1042,6 @@ public struct SelfUpdater: Sendable {
                     release: release,
                     session: session
                 )
-                // Clean up the downloaded tarball regardless of install outcome.
-                try? FileManager.default.removeItem(at: tempFile)
                 switch replaceResult {
                 case .success:
                     return .updated(from: current, to: release.version)
@@ -1067,8 +1062,8 @@ public struct SelfUpdater: Sendable {
 
     /// Compare semver-style version strings. Returns true if `latest` is newer than `current`.
     ///
-    /// Handles versions like "0.4.0-swift", "0.4.1", etc. The suffix after '-' is
-    /// stripped for comparison (pre-release suffixes are ignored for ordering).
+    /// Prerelease identifiers participate in SemVer precedence; build metadata
+    /// does not affect ordering.
     internal static func isNewer(latest: String, current: String) -> Bool {
         guard let latest = SemanticVersion(latest),
               let current = SemanticVersion(current)
@@ -1094,9 +1089,7 @@ public struct SelfUpdater: Sendable {
     }
 
     private func verifyHash(file: URL, expected: String, label: String) throws {
-        let data = try Data(contentsOf: file)
-        let digest = SHA256.hash(data: data)
-        let got = digest.map { String(format: "%02x", $0) }.joined()
+        let got = try UpdateAtomicFilesystem.sha256(file: file)
         guard got == expected.lowercased() else {
             throw UpdateError.hashMismatch(expected: expected, got: "\(label): \(got)")
         }

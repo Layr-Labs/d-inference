@@ -2,7 +2,7 @@
 ///
 /// v0.7.5 ONE-ENGINE: every model slot serves through a v2 bridge — there
 /// is no selection gate and no legacy fallback. At model-load time
-/// `ensureModelLoaded` calls `resliceAndBuildEngineV2Slot`, which:
+/// `ensureModelLoaded` calls `resliceAndBuildEngineV2Bundle`, which:
 ///
 ///   1. snapshots every existing slot's CURRENT engine KV grant,
 ///   2. computes fair-share grants for existing + newcomer against the
@@ -530,33 +530,6 @@ extension ProviderLoop {
     /// On success the bridge is registered with `engineV2Runtime` BEFORE the
     /// caller installs the slot, so a request routed the instant the slot
     /// appears already has working capacity/cancel fan-out.
-    internal func makeEngineV2BridgeForSlot(
-        modelId: String,
-        modelType: String?,
-        isVLM: Bool = false,
-        modelDirectory: URL? = nil,
-        container: ModelContainer,
-        tokenizer: TokenizerHandle,
-        sizing: SlotSizingSnapshot,
-        kvBytesCapacity: Int,
-        cacheEligibleWeightHash: String? = nil
-    ) async throws -> EngineV2Bridge {
-        try await makeEngineV2BundleForSlot(
-            modelId: modelId,
-            modelType: modelType,
-            isVLM: isVLM,
-            modelDirectory: modelDirectory,
-            container: container,
-            tokenizer: tokenizer,
-            sizing: sizing,
-            kvBytesCapacity: kvBytesCapacity,
-            specDecPreparation: SpecDecPreparation(
-                artifact: nil,
-                status: .disabled(.configDisabled, configured: false)),
-            preparedModel: nil
-        ).bridge
-    }
-
     internal func makeEngineV2BundleForSlot(
         modelId: String,
         modelType: String?,

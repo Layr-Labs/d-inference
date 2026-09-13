@@ -408,29 +408,15 @@ extension ProviderLoop {
         // pythonRuntimeLocked + dangerousModulesBlocked: report false. There
         //   is no Python runtime to lock anymore. Coordinator's Swift-runtime
         //   trust path (registry.BackendUsesSwiftRuntime) doesn't read these.
-        if let posture = securityPosture {
-            return PrivacyCapabilities(
-                textBackendInprocess: true,
-                textProxyDisabled: true,
-                pythonRuntimeLocked: false,
-                dangerousModulesBlocked: false,
-                sipEnabled: posture.sipEnabled,
-                antiDebugEnabled: posture.antiDebugEnabled,
-                coreDumpsDisabled: posture.coreDumpsDisabled,
-                envScrubbed: posture.envScrubbed
-            )
-        }
-
-        // Pre-hardening fallback (DEBUG builds, or hardening failed).
         return PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
             pythonRuntimeLocked: false,
             dangerousModulesBlocked: false,
-            sipEnabled: SecurityChecks.isSIPEnabled(),
-            antiDebugEnabled: false,
-            coreDumpsDisabled: false,
-            envScrubbed: false
+            sipEnabled: securityPosture?.sipEnabled ?? SecurityChecks.isSIPEnabled(),
+            antiDebugEnabled: securityPosture?.antiDebugEnabled ?? false,
+            coreDumpsDisabled: securityPosture?.coreDumpsDisabled ?? false,
+            envScrubbed: securityPosture?.envScrubbed ?? false
         )
     }
 

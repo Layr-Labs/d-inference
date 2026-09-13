@@ -110,13 +110,19 @@ extension ProviderLoop {
         else {
             return false
         }
+        await finishAcceptedRequestWithoutTask(requestId: requestId)
+        return true
+    }
+
+    /// Admission owns the model pin and cancellation registration until the
+    /// streaming task takes over. Early exits unwind them in the same order.
+    private func finishAcceptedRequestWithoutTask(requestId: String) async {
         if requestToModel.removeValue(forKey: requestId) != nil {
             powerAssertion.release()
             syncWarmModelState()
             await updateAggregateCapacity()
         }
         await cancellationRegistry.finish(requestId: requestId)
-        return true
     }
 
     /// Local-endpoint admission: throws a 503-equivalent when new local work
@@ -214,6 +220,15 @@ extension ProviderLoop {
         }
         let lookupReceiptFinalizer = PrefixCacheLookupReceiptFinalizer(
             callback: receiptCallbacks.lookup)
+        func rejectInvalidRequest() {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+                    profile: profile),
+                fallbackFailure: .policy,
+                send: send)
+        }
         var receiptTransferredToTask = false
         defer {
             if !receiptTransferredToTask {
@@ -261,13 +276,7 @@ extension ProviderLoop {
         // so we hand the raw bytes straight to NodeKeyPair.decrypt.
         guard let senderKey = senderPublicKey, senderKey.count == 32 else {
             logger.error("[\(requestId)] missing or malformed sender public key")
-            lookupReceiptFinalizer.sendTerminal(
-                .inferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile),
-                fallbackFailure: .policy,
-                send: send)
+            rejectInvalidRequest()
             return
         }
 
@@ -279,13 +288,7 @@ extension ProviderLoop {
             )
         } catch {
             logger.error("[\(requestId)] request decryption failed")
-            lookupReceiptFinalizer.sendTerminal(
-                .inferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile),
-                fallbackFailure: .policy,
-                send: send)
+            rejectInvalidRequest()
             return
         }
         profile.mark(.decrypted)
@@ -304,13 +307,7 @@ extension ProviderLoop {
         {
             logger.warning(
                 "[\(requestId)] rejecting unauthenticated internal tool-schema metadata")
-            lookupReceiptFinalizer.sendTerminal(
-                .inferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile),
-                fallbackFailure: .policy,
-                send: send)
+            rejectInvalidRequest()
             return
         }
 
@@ -343,13 +340,7 @@ extension ProviderLoop {
             // the raw error could resurface a prompt fragment in coordinator logs
             // (defense-in-depth for the "coordinator never sees plaintext" invariant).
             logger.error("[\(requestId)] failed to parse chat request")
-            lookupReceiptFinalizer.sendTerminal(
-                .inferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
-                    profile: profile),
-                fallbackFailure: .policy,
-                send: send)
+            rejectInvalidRequest()
             return
         }
         profile.mark(.parsed)
@@ -509,12 +500,7 @@ extension ProviderLoop {
             // be misfiled as memory_cap instead of slot_state.
             let rejectedByRetirement = isRefusedByRetirement(modelId)
             profile.mark(.loadWaitEnd)
-            if requestToModel.removeValue(forKey: requestId) != nil {
-                powerAssertion.release()
-                syncWarmModelState()
-                await updateAggregateCapacity()
-            }
-            await cancellationRegistry.finish(requestId: requestId)
+            await finishAcceptedRequestWithoutTask(requestId: requestId)
             logger.error("[\(requestId)] model load failed")
             let failure = CapacityRejectionEnrichment.enrich(
                 Self.loadInferenceFailure(for: error),
@@ -550,12 +536,7 @@ extension ProviderLoop {
         }
 
         guard let slot = modelSlots[modelId] else {
-            if requestToModel.removeValue(forKey: requestId) != nil {
-                powerAssertion.release()
-                syncWarmModelState()
-                await updateAggregateCapacity()
-            }
-            await cancellationRegistry.finish(requestId: requestId)
+            await finishAcceptedRequestWithoutTask(requestId: requestId)
             logger.error("[\(requestId)] requested model disappeared after load")
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
@@ -1357,9 +1338,7 @@ extension ProviderLoop {
                 }
                 // Surface to `doctor` — but not for a cancel, where a missing
                 // final chunk is expected, not an upstream anomaly.
-                if !cancelledMidStream {
-                    providerStats.incrementUsageGaps()
-                }
+                providerStats.incrementUsageGaps()
                 usageRecovered = true
             }
 

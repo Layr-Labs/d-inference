@@ -244,6 +244,26 @@ struct Qwen35TemplateFixesTests {
         #expect(floor == 3)
     }
 
+    @Test func admissionForecastRequiresRepresentableTokenEnvelope() {
+        var request = OpenAIChatCompletionRequest(
+            model: "opaque-model",
+            messages: [.init(role: .system, content: .text("policy"))])
+        let tokenizer = TokenizerHandle(QwenSystemFirstTokenizer())
+        func envelope() -> Int64? {
+            ProviderLoop.admissionTokenEnvelope(
+                request: request, tokenizer: tokenizer,
+                modelType: "qwen3_5_moe", templateControls: .init())
+        }
+        request.maxTokens = Int.max
+        #expect(envelope() == nil)
+        request.maxTokens = Int.max - 3
+        #expect(envelope() == Int64.max)
+        request.maxTokens = -1
+        #expect(envelope() == 3)
+        request.maxTokens = 5
+        #expect(envelope() == 8)
+    }
+
     // MARK: - Qwen3-VL multi-system regression (OpenRouter failure case)
     //
     // Qwen3-VL's chat template consumes a system message only at

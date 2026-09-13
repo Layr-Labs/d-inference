@@ -150,7 +150,7 @@ struct CoordinatorIntegrationTests {
             for await event in events {
                 switch event {
                 case .inferenceRequest(
-                    let rid, let ciphertext, let senderKey, let nonce, let scope, _, _,
+                    let rid, let ciphertext, let senderKey, let nonce, let scope, _, _, _,
                     let firstContentDeadline, _, _
                 ):
                     #expect(rid == requestId)

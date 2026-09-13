@@ -1,6 +1,6 @@
 # Reference — exact shapes and values
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-07 · commit `53646bc9b`
 
 Tables and schemas for Darkbloom's public interfaces, wire protocol,
 configuration, and formats. Consult these; do not read them front to back.
@@ -19,6 +19,7 @@ Every row cites the code that defines it. For how and why things work, use
 | Page | Content |
 |---|---|
 | [configuration.md](configuration.md) | Every environment variable of the coordinator, provider CLI, console UI, and admin UI: default, where read, effect |
+| [prediction-decision-telemetry.md](prediction-decision-telemetry.md) | Coordinator policy and encoded budget, provider prediction/verdict, observation boundaries and compatibility |
 | [telemetry-schema.md](telemetry-schema.md) | Telemetry event types, field allowlist, optional-field and casing rules pinned by the symmetry tests |
 | [telemetry-inventory.md](telemetry-inventory.md) | Every telemetry datum collected — producer, sink, cadence, retention — and the Datadog metric-name inventory with tags and emitting file |
 | [pricing-model.md](pricing-model.md) | Micro-USD units, price resolution order, formulas, every billing constant (single home for money constants), routes, service accounts |

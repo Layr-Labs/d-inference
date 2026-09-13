@@ -707,7 +707,12 @@ func TestMDMSchedulerReconnectDuringInflightRefreshesReleasedClaim(t *testing.T)
 	started := make(chan struct{}, 1)
 	finishOld := make(chan struct{})
 	execute := func(ctx context.Context, _ mdmLiveBinding, _ store.VerificationTaskKind, _ string) mdmSchedulerAttemptResult {
-		started <- struct{}{}
+		// Only the first start is observed. A rebound attempt must never
+		// block on this test notification or prevent Close from cancelling it.
+		select {
+		case started <- struct{}{}:
+		default:
+		}
 		select {
 		case <-finishOld:
 			return mdmSchedulerAttemptResult{

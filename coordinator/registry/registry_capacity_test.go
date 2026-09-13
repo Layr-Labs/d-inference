@@ -26,7 +26,7 @@ func TestMaxConcurrencyWithCapacity(t *testing.T) {
 		expected int
 	}{
 		// Phase 2 tier values (lowered from 4/8/16/24/32). See
-		// maxConcurrency() in registry.go for the rationale.
+		// maxConcurrency() in provider.go for the rationale.
 		{16, 2},
 		{24, 2},
 		{36, 4},

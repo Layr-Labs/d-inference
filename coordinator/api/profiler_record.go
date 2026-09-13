@@ -36,17 +36,6 @@ func foldChipFamily(raw string) string {
 	return profileOther
 }
 
-// foldThermalState maps to {nominal,fair,serious,critical,other}.
-func foldThermalState(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "nominal", "fair", "serious", "critical":
-		return strings.ToLower(strings.TrimSpace(raw))
-	case "":
-		return ""
-	}
-	return profileOther
-}
-
 // foldProviderVersion accepts semver-shaped versions only. The fold lives in
 // the registry (registry.ProviderVersionFold) because the fleet sampler
 // persists the same bounded value on fleet_snapshots.provider_version.
@@ -228,6 +217,13 @@ func (s *Server) buildProfileRecord(rp *registry.RequestProfile, ap *registry.At
 	}
 	rec.FailedAttempts, rec.FailedAttemptsUS = rp.FailedAttempts()
 
+	mode, bypass, ceiling, budget := ap.PredictionObservation()
+	if mode != "" {
+		rec.AdmissionMode = mode
+	}
+	rec.PredictiveBypass = string(bypass)
+	rec.ReservationTTFTCeilingMs = ceiling
+	rec.DispatchBudgetMs = budget
 	if ap.DecisionSet {
 		d := ap.Decision
 		rec.CandidateSetSize = d.CandidateSetSize

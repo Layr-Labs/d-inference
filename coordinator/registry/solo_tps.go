@@ -33,7 +33,7 @@ func chipClassKey(hw protocol.Hardware) string {
 // RecordSolo adds a solo (uncontended-box) decode TPS sample for the given
 // model and chip CLASS (chipClassKey — family+tier, not family alone). Callers
 // must pre-gate on soloSampleEligible AND on the slot having an actual running
-// decode (NumRunning > 0, see the heartbeat ingest in registry.go) so a
+// decode (NumRunning > 0, see the heartbeat ingest in heartbeat.go) so a
 // purely-queued box's retained EWMA is not sampled — this method itself only
 // validates the sample value, mirroring Record. The tpsKey.ChipFamily field
 // carries the chip-class string for solo entries.

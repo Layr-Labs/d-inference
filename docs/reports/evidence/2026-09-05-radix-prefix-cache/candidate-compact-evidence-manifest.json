@@ -1,0 +1,46 @@
+{
+  "scope": "Immutable compact build4 source and long normal-MTP run; predates auxiliary-admission follow-up",
+  "artifact_directory": "candidate-compact-build4",
+  "files": [
+    {
+      "path": "candidate-compact-mtp-long-report.json.gz",
+      "sha256": "2078a99ce190309b4960730e0ac72d2eac573025455473627b210c7120b61c3e"
+    },
+    {
+      "path": "candidate-compact-mtp-long-telemetry.jsonl.gz",
+      "sha256": "ced7146b8311d6069e1e76dd5c72982022ed9a252f69bbfb13ca29d622e6f630"
+    },
+    {
+      "path": "candidate-compact-mtp-long-engine.log.gz",
+      "sha256": "2d43d096f0faed8d6c2a732cad5885214094d79a680a98fd39e394db885e3169"
+    },
+    {
+      "path": "candidate-compact-mtp-long-metadata.json",
+      "sha256": "f41a7297613db0ac37771d2a83cf6ab7e33a8c358ca7981acba10301ba07383c"
+    },
+    {
+      "path": "candidate-compact-mtp-long-verdict.json",
+      "sha256": "58f47392233bd823957b8965bcbfce1610c5d2eb337cafb91c7cc3bcbd9d3ba7"
+    },
+    {
+      "path": "candidate-compact-provider-artifact.json",
+      "sha256": "7b32ee43b0f96dd45ac925deed700879c21c5d42fdd7929e609595fc3dafbf03"
+    },
+    {
+      "path": "candidate-compact-artifact.json.gz",
+      "sha256": "8466a9ba7fbeed6ed5ecc53d6b6e89a5785a60176e152c4d29ff4bcd2acd76d6"
+    },
+    {
+      "path": "candidate-compact-source-manifest.json.gz",
+      "sha256": "fca5c9bd339f913ae441a7e2962f86b8f022b6e4c64df0af21bab896389a6fae"
+    },
+    {
+      "path": "candidate-compact-darkbloom-hybrid-compact-fallback.patch.gz",
+      "sha256": "2fd42cb7eba010b4abf9dfaa6fc70e39254f93a0973c6f2aae02482dd0a766cf"
+    },
+    {
+      "path": "candidate-compact-darkbloom-hybrid-compact-fallback.json.gz",
+      "sha256": "5bb6b41fc587c0bd258e73974a841f8c9447d8d168ddd76d6013c372ee95b293"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "status": "REPORT_AND_CAPSULE_REVIEW_PASSED",
+  "reviewer": "release_policy",
+  "reviewed_unix": 1788742415.89034,
+  "archive_sha256": "cabff833c5437c44074f9a28906fded73071f3f33636190f22d4c2d93653f4f8",
+  "archive_members_verified": 43,
+  "selected_original_members_bound_to_original_manifest": 38,
+  "original_manifest_file_count": 448,
+  "response_rows_recomputed": 36,
+  "finish_counts": {
+    "length": 24,
+    "stop": 12
+  },
+  "manual_review_response_hashes_checked": 36,
+  "selected_completed_prefix_gate_reports_verified": 9,
+  "final_selected_scope_accepted": true,
+  "semantic_verdict_in_process_report_is_null": true,
+  "control_rows_recomputed": 63,
+  "matched_code_rows": 16,
+  "matched_code_exact_token_rows": 8,
+  "semantic_summary_supported": {
+    "arithmetic_complete_correct": 12,
+    "gpt_fraction_failures": 2,
+    "gpt_other_inconclusive": 6,
+    "capped_contiguous_code_baselines": 16
+  },
+  "no_semantic_pass_inferred_from_exit": true,
+  "model_and_runtime_artifacts_not_modified": true,
+  "report_sha256": "d474a530680698137b3c68480c7a1362dbee0489da6cf4d29243dd1b5aa2bbe3",
+  "limitation": "Full448-original-byte verification attributed to existing root collection; this review independently verifies all43 capsule members and their selected original/review hashes, raw response counts, completed-prefix structural verdicts and manual-review correspondence. Does not claim complete release qualification."
+}

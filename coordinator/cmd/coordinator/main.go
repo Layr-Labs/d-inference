@@ -72,6 +72,14 @@ func main() {
 	logger := slog.New(slogHandler)
 	slog.SetDefault(logger)
 
+	if len(os.Args) > 1 {
+		if err := runMaintenanceCommand(os.Args[1:]); err != nil {
+			logger.Error("coordinator maintenance command failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Read all configuration from environment variables.
 	cfg := config.ReadAppConfig()
 	if err := cfg.Check(); err != nil {
@@ -218,6 +226,8 @@ func main() {
 	cacheRoutingCfg := reg.CacheRoutingConfigSnapshot()
 	logger.Info("provider-confirmed cache routing configured",
 		"mode", cacheRoutingCfg.Mode,
+		"artifact_allowlist_configured", cacheRoutingCfg.AllowedArtifacts != nil,
+		"artifact_allowlist_count", len(cacheRoutingCfg.AllowedArtifacts),
 		"activation_percent", cacheRoutingCfg.ActivationPct,
 		"max_plan_qps", cacheRoutingCfg.MaxPlanQPS,
 		"ttl", cacheRoutingCfg.TTL.String(),
@@ -892,6 +902,7 @@ func main() {
 	// manual payout schedule and alerts on withdrawals stuck in "transferred".
 	// No-op when Stripe Connect isn't configured. Spawns its own panic-safe loop.
 	srv.StartStripePayoutReconciler(ctx)
+	srv.StartGlobalPayoutReconciler(ctx)
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{

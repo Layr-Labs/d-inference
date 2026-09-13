@@ -65,6 +65,7 @@ type rejectionInfo struct {
 // request path when the caller did not already do so. Best-effort: it never
 // blocks or fails the request.
 func (s *Server) recordRejection(info rejectionInfo) {
+	annotateOutcomeRejection(info)
 	if s == nil || s.store == nil {
 		return
 	}

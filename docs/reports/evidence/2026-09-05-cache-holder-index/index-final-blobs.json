@@ -1,0 +1,80 @@
+[
+  {
+    "path": "coordinator/registry/cache_route_keys.go",
+    "blob": "ceaeefccf98ac1a0c006f91453eb552614a0b96e",
+    "mode": "100644",
+    "sha256": "eeea7787fb7964e06269775775c5be7ad27f98aaac60aa019ae12e0927fecf14"
+  },
+  {
+    "path": "coordinator/registry/cache_tiers.go",
+    "blob": "9af1dd242790a0147d6a688be4182eda155f4dec",
+    "mode": "100644",
+    "sha256": "cfbf4553a7c69fffd15f542900299b45ac1053717a99c14f16a18ae1bd48c840"
+  },
+  {
+    "path": "coordinator/registry/cache_receipts_v2.go",
+    "blob": "80176db422d0eed435b150ab04411fa29ba888c8",
+    "mode": "100644",
+    "sha256": "acf02a952e84c41b91a2c0f3e4909f67739f68ee1bcf0ad7dbfddfa00ae34408"
+  },
+  {
+    "path": "coordinator/registry/cache_routing_hints.go",
+    "blob": "5586b2ec0a238c97722a0ae50ad6abc1fe6976f5",
+    "mode": "100644",
+    "sha256": "f5d0b45e5a3a4834484b0bd75718227231257e40f663bada7883bd1177d3f87e"
+  },
+  {
+    "path": "coordinator/registry/cache_routing_exact_test.go",
+    "blob": "aa507d053c0caf34f38fdf6246da899429a7bf80",
+    "mode": "100644",
+    "sha256": "c90cd8c06c224194c0026238bf7c0bb6117a1129d823166f79f61f4c923d6143"
+  },
+  {
+    "path": "coordinator/registry/model_index.go",
+    "blob": "25120a442a6e6bd051e5b2f6d3ea312e2b85f5ed",
+    "mode": "100644",
+    "sha256": "5e7a506cc60266039fbdc5e447b5fe55dc87c233c1568808ced4efa54d4717a4"
+  },
+  {
+    "path": "coordinator/registry/model_index_test.go",
+    "blob": "177882e957be91029ab682f44ad168152c3f9fce",
+    "mode": "100644",
+    "sha256": "b5d44d267434f8eb07ef29b5b739fc123881090e6adbbc0e0e0e4161ed097e4f"
+  },
+  {
+    "path": "coordinator/registry/cache_routing_hint_skip_test.go",
+    "blob": "288909e115a6936fc6ecf7b28d0dded85a02bdb0",
+    "mode": "100644",
+    "sha256": "53d2034bbbd8570d1d47f6813344acd3174839fbfa50bc52fc6b2e837099d05c"
+  },
+  {
+    "path": "coordinator/registry/scheduler.go",
+    "blob": "4e16812b348f7c520db87f1888232274ac18ae99",
+    "mode": "100644",
+    "sha256": "5ab31411fcf661929da8ba3bfa46c9eef7fbcb6384a925d69984d9812226bf1e"
+  },
+  {
+    "path": "coordinator/registry/cache_memory_test.go",
+    "blob": "a98200a2d52a7f48d93eae346fef6db3a785b1d2",
+    "mode": "100644",
+    "sha256": "58d5630ab71dddd43fb6f43ea3c9f72bfce22128e729b663ea048f0722760069"
+  },
+  {
+    "path": "coordinator/registry/cache_holder_index_test.go",
+    "blob": "3b1cadc83d0c994d1f10d457eed848be98675650",
+    "mode": "100644",
+    "sha256": "00d261a54d5cc45bf5111132cfb8051c857cfa9876a9c8ed58d7ac57b85ece6c"
+  },
+  {
+    "path": "coordinator/registry/cache_holder_index_benchmark_test.go",
+    "blob": "232c2151c5a5118fd88eff312368eca7ccdafd6c",
+    "mode": "100644",
+    "sha256": "2fe301bbaf5d33cbf0733efdc8c82a3a310f4ea290700792514dd29b6f1dcdac"
+  },
+  {
+    "path": "docs/architecture/cache-aware-routing.md",
+    "blob": "763bd7b74703817b94b137ca45d5f497e6c25bf0",
+    "mode": "100644",
+    "sha256": "a44a14aed9a73b7125fec5b0c4c9850f601ab3bea772033d618daa81d20660f7"
+  }
+]

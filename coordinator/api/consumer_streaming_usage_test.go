@@ -72,7 +72,7 @@ func TestStreamingChatReasoningTokensInUsage(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
+	srv.handleStreamingResponseWithFirstChunkAndError(rec, req, pr, nil, nil)
 
 	body := rec.Body.String()
 	if !strings.Contains(body, `"reasoning_tokens":8`) {
@@ -110,7 +110,7 @@ func TestStreamingFramesCannotForwardUnvalidatedCachedTokens(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
+	srv.handleStreamingResponseWithFirstChunkAndError(rec, req, pr, nil, nil)
 	body := rec.Body.String()
 	for _, untrusted := range []string{"999", "888", "777"} {
 		if strings.Contains(body, untrusted) {
@@ -197,7 +197,7 @@ func TestStreamingChatUsageOnlyFirstChunk(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, []string{firstChunk})
+	srv.handleStreamingResponseWithFirstChunkAndError(rec, req, pr, []string{firstChunk}, nil)
 
 	body := rec.Body.String()
 	if !strings.Contains(body, `"reasoning_tokens":8`) {
@@ -240,7 +240,7 @@ func TestStreamingChatSingleDoneSignatureBeforeIt(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
+	srv.handleStreamingResponseWithFirstChunkAndError(rec, req, pr, nil, nil)
 
 	body := rec.Body.String()
 	if got := strings.Count(body, "data: [DONE]"); got != 1 {
@@ -300,7 +300,7 @@ func TestStreamingChatSignatureRidesUsageChunk(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
+	srv.handleStreamingResponseWithFirstChunkAndError(rec, req, pr, nil, nil)
 
 	body := rec.Body.String()
 	if got := strings.Count(body, "data: [DONE]"); got != 1 {

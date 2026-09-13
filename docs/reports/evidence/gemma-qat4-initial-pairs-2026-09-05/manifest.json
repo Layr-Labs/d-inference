@@ -1,0 +1,1315 @@
+{
+  "scope": "Exact production Gemma QAT4bit target-only KV observer and initial normal-MTP paged B1 cache pairs at caps32/128. No backend/repeated-performance/HTTP/restart/default acceptance.",
+  "source_commit": "12e941bb128bf3450c6c040d920382a525f33274",
+  "native_commit": "a932d38cee0beca41ca1a0e71c1e867913a65353",
+  "probe_sha256": "1b0df2f9ba18bf6738ae529adaf4e1ad9d7dc43f20dba54c244de71f517cbba3",
+  "target_aggregate_sha256": "2468a0cb3049a871f42052f4d9f9380bf12a0792f64c7a29f768559fc7d28785",
+  "original_frozen_manifests": {
+    "32": "0b5c3e2dc7bc87091924896733fd9b8c934ee9d8d9e0c924f89be892ab0fb6c5",
+    "128": "9e2d704b3528c93313440edff39e425a8e15b66804c852de250bd8d6bbe89b4a"
+  },
+  "original_payloads_verified": 252,
+  "archive": {
+    "path": "payloads.tar.gz",
+    "bytes": 381660,
+    "sha256": "eda7c6738e64f3be8aaa7004be034d7ef4990cfe58638556f5e2d92203db1ef2"
+  },
+  "payload_count": 256,
+  "payload_bytes": 5181943,
+  "omitted": [
+    {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/assets/cube-hero.png",
+      "sha256": "f9f9fbf8c0a05fbac1081db94dff3688cdcb3ee3425e2c18e51cbe90f3c5cb33",
+      "bytes": 1485871,
+      "reason": "Unexercised vision asset; identity retained in original manifest."
+    },
+    {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/assets/cube-hero.png",
+      "sha256": "f9f9fbf8c0a05fbac1081db94dff3688cdcb3ee3425e2c18e51cbe90f3c5cb33",
+      "bytes": 1485871,
+      "reason": "Unexercised vision asset; identity retained in original manifest."
+    }
+  ],
+  "files": {
+    "archive-builder.py": {
+      "source": "/tmp/darkbloom-gemma-qat-doc-evidence1-build.py",
+      "bytes": 4574,
+      "sha256": "ea507ee70fb6389b19bb169791c7811e6f1f960ec0c2650268939b19c5defe26"
+    },
+    "archive-preparation.json": {
+      "source": "generated from verified original manifests",
+      "bytes": 1143,
+      "sha256": "54450b52c92583b27b5f1a4e583154ec9525ee43168cf542ebb9b723dd924d85"
+    },
+    "output128/analysis.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/analysis.json",
+      "bytes": 3382,
+      "sha256": "c6ccc948a6f2ca53e731ca6ab5eb24e1203ddc30ab5e2579ca9eca1a6557b271"
+    },
+    "output128/binding/binding.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/binding.json",
+      "bytes": 9148,
+      "sha256": "fd5e580268ae1fe564122da0f74a500e43184b421a298087a88f144044c0ecc9"
+    },
+    "output128/binding/package-manifest.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/package-manifest.json",
+      "bytes": 9558,
+      "sha256": "28564409d6d3a9ec92304adb5d0218814f47569ea279adbf63b3327479e08793"
+    },
+    "output128/binding/plan/README.md": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/README.md",
+      "bytes": 3350,
+      "sha256": "140b9e123fac12ec078b168dd947047f050cf4a5f8bac10802545c38881bd7cf"
+    },
+    "output128/binding/plan/bundle-plan.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/bundle-plan.json",
+      "bytes": 520,
+      "sha256": "4dd412dba3cbb08d50223c25f538f0e3e9a606375924fea795ced69da2be790b"
+    },
+    "output128/binding/plan/commands.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/commands.json",
+      "bytes": 728,
+      "sha256": "10670fea329a7b9b7e1242aca81d96475ea818a919a0cf58d1a7396c95610aa9"
+    },
+    "output128/binding/plan/cpu-http-plan.stderr": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/cpu-http-plan.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/binding/plan/cpu-http-plan.stdout": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/cpu-http-plan.stdout",
+      "bytes": 899,
+      "sha256": "61ebcae621ccf3d0a7ae642b46287f3f884a4bcd25231cb4a933507fae246db8"
+    },
+    "output128/binding/plan/cpu-requests/native-output128-plan.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/cpu-requests/native-output128-plan.json",
+      "bytes": 2915,
+      "sha256": "705f3edaee7dafff53d8056c4432428442096304b1092c68db795c4c9e4c2a8f"
+    },
+    "output128/binding/plan/cpu-requests/native-output128.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/cpu-requests/native-output128.json",
+      "bytes": 35660,
+      "sha256": "72d7263bd279fc54401ad119e7deca2597d368812c88b202217f81f1e5ff7830"
+    },
+    "output128/binding/plan/cpu-requests/native-output32-plan.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/cpu-requests/native-output32-plan.json",
+      "bytes": 2915,
+      "sha256": "705f3edaee7dafff53d8056c4432428442096304b1092c68db795c4c9e4c2a8f"
+    },
+    "output128/binding/plan/cpu-requests/native-output32.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/cpu-requests/native-output32.json",
+      "bytes": 35659,
+      "sha256": "b82fb1b023ee63c6d4e7a55b1279f167efc978078b4916fe2ce70f02cabc6242"
+    },
+    "output128/binding/plan/cpu-requests/tools-auto512-plan.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/cpu-requests/tools-auto512-plan.json",
+      "bytes": 149,
+      "sha256": "0a0f9b3004611bf1e0fe39ddbf57acd41a03d354feae5059d1024b873880add8"
+    },
+    "output128/binding/plan/cpu-requests/tools-auto512.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/cpu-requests/tools-auto512.json",
+      "bytes": 999,
+      "sha256": "9974700d89c96f0cac96b9477708f1f7824bef898b227f710e7b77b8b34b8573"
+    },
+    "output128/binding/plan/cpu-requests/tools-named-cpu-normalization-only-plan.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/cpu-requests/tools-named-cpu-normalization-only-plan.json",
+      "bytes": 150,
+      "sha256": "5aa4d1b5c1fb39be1fa9bed203d1549009c1d49aeca8a395800aaaf3e9480542"
+    },
+    "output128/binding/plan/cpu-requests/tools-named-cpu-normalization-only.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/cpu-requests/tools-named-cpu-normalization-only.json",
+      "bytes": 1107,
+      "sha256": "2c659b23d63eb6f390c22c20c01abe192b0c766ad69d79d440fd083096e58997"
+    },
+    "output128/binding/plan/cpu-supplemental-plan.stderr": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/cpu-supplemental-plan.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/binding/plan/cpu-supplemental-plan.stdout": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/cpu-supplemental-plan.stdout",
+      "bytes": 1931,
+      "sha256": "dc74a703ca00a57785de1c9b26b302c16ec6513b964abebd3bb8ab7671a33236"
+    },
+    "output128/binding/plan/http-inputs/gemma-qat4-paged-off-b1.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/http-inputs/gemma-qat4-paged-off-b1.json",
+      "bytes": 43625,
+      "sha256": "3109fa376c8e2b0cdf93af8a4b29475afeece8e9d0a8054ad537a6bb9fdfa986"
+    },
+    "output128/binding/plan/http-inputs/gemma-qat4-paged-ssd-b1.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/http-inputs/gemma-qat4-paged-ssd-b1.json",
+      "bytes": 43625,
+      "sha256": "acb4f518d886983221c46028360cb6caea62f6739099bdee5ddf6fae71f0ea27"
+    },
+    "output128/binding/plan/inputs/gemma-qat4-paged-off-b1-output128.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/inputs/gemma-qat4-paged-off-b1-output128.json",
+      "bytes": 72541,
+      "sha256": "c050107412cb36445721a58e15b3031b27566d89077617360461720b90beab29"
+    },
+    "output128/binding/plan/inputs/gemma-qat4-paged-off-b1-output32.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/inputs/gemma-qat4-paged-off-b1-output32.json",
+      "bytes": 72537,
+      "sha256": "bba0c50ff32a12f04848bd627dc050af1c8a449642e1d7db086029de2fb6171e"
+    },
+    "output128/binding/plan/inputs/gemma-qat4-paged-ssd-b1-output128.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/inputs/gemma-qat4-paged-ssd-b1-output128.json",
+      "bytes": 72541,
+      "sha256": "c050107412cb36445721a58e15b3031b27566d89077617360461720b90beab29"
+    },
+    "output128/binding/plan/inputs/gemma-qat4-paged-ssd-b1-output32.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/inputs/gemma-qat4-paged-ssd-b1-output32.json",
+      "bytes": 72537,
+      "sha256": "bba0c50ff32a12f04848bd627dc050af1c8a449642e1d7db086029de2fb6171e"
+    },
+    "output128/binding/plan/manifest.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/manifest.json",
+      "bytes": 8750,
+      "sha256": "2556a53323297b475828f8b5e25e78dfbd893cdc5faef8276006b6be6f3ab767"
+    },
+    "output128/binding/plan/manifests/gemma-qat4.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/manifests/gemma-qat4.json",
+      "bytes": 1822,
+      "sha256": "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd"
+    },
+    "output128/binding/plan/native-kv-observation-plan.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/native-kv-observation-plan.json",
+      "bytes": 1381,
+      "sha256": "deb83b637e00f32957d4f5ce8866ecfe08f766c65b21742fa9d27e6b1753a95e"
+    },
+    "output128/binding/plan/native-plan.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/native-plan.json",
+      "bytes": 6598,
+      "sha256": "e4db8d3ba083c07b2dc0f5ce42ba92d04332605485fb3df8b90356ea85065a94"
+    },
+    "output128/binding/plan/prompt-contract-verification.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/prompt-contract-verification.json",
+      "bytes": 451,
+      "sha256": "a6843757c7d16ac1b8386e044f53762021ba6e357e0e4aa8a81d9c26b4552500"
+    },
+    "output128/binding/plan/source-inputs/assistant-manifest.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source-inputs/assistant-manifest.json",
+      "bytes": 859,
+      "sha256": "8b7c00b7f131345156f5f20fa9c94a895c5340f16d9331bafb9e59628bf45bf2"
+    },
+    "output128/binding/plan/source-inputs/bundle2-freeze.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source-inputs/bundle2-freeze.json",
+      "bytes": 1392,
+      "sha256": "5046a83a732a26cd59f042521df1638e1ce44f48c452ed61446705ed42cf1171"
+    },
+    "output128/binding/plan/source-inputs/local-target-evidence-manifest.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source-inputs/local-target-evidence-manifest.json",
+      "bytes": 4277,
+      "sha256": "215f7e2e6115a9012e46f3ea35bc9225c92753b5beb3de64ec1101471ac0ae1c"
+    },
+    "output128/binding/plan/source-inputs/local-target-verification.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source-inputs/local-target-verification.json",
+      "bytes": 2945,
+      "sha256": "85346e313a58f4a5d56a6aca396e1f63f30c2c54ad60c18264bde9138715f547"
+    },
+    "output128/binding/plan/source-inputs/m5-target-hash-proof.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source-inputs/m5-target-hash-proof.json",
+      "bytes": 1887,
+      "sha256": "4df57606fec3e87ae85a6f1aa68a256a75a12d2f3035fdd23893291c080bd0ad"
+    },
+    "output128/binding/plan/source-inputs/native-input-source.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source-inputs/native-input-source.json",
+      "bytes": 72647,
+      "sha256": "7c4aa3ad84257523175883e18bba4fa7be4cf805d0716b55df4a19ea05fb743c"
+    },
+    "output128/binding/plan/source-inputs/prompt-contract.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source-inputs/prompt-contract.json",
+      "bytes": 1448,
+      "sha256": "11a6f037aa2bf2768c9de797f91af466a4ec6c0ea672b40d957b684b066c2846"
+    },
+    "output128/binding/plan/source-inputs/target-catalog-source.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source-inputs/target-catalog-source.json",
+      "bytes": 13384,
+      "sha256": "72dc4f9c5ff51a959ff94ceab082a2ac32b8cf81aa30ecf84e9e802ff02db153"
+    },
+    "output128/binding/plan/source-inputs/target-manifest.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source-inputs/target-manifest.json",
+      "bytes": 1822,
+      "sha256": "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd"
+    },
+    "output128/binding/plan/source-provenance.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source-provenance.json",
+      "bytes": 1953,
+      "sha256": "025e131baa5de8564e1e0960d6680c5e12260e5c28a7112c96085557bba24024"
+    },
+    "output128/binding/plan/source/e2e/connected_cache_http_test.go": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source/e2e/connected_cache_http_test.go",
+      "bytes": 14320,
+      "sha256": "46768a05d9da3081522a53a8a34185676c3c646b25d739945719157aa5782a61"
+    },
+    "output128/binding/plan/source/e2e/connected_cache_input_test.go": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source/e2e/connected_cache_input_test.go",
+      "bytes": 10535,
+      "sha256": "535ad34c962cb583a2f13169e0bb99f3daffabdd1e160010317aeafd4b9d7f35"
+    },
+    "output128/binding/plan/source/provider-swift/Sources/ProviderCore/Inference/Gemma4TemplateFixes.swift": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source/provider-swift/Sources/ProviderCore/Inference/Gemma4TemplateFixes.swift",
+      "bytes": 2108,
+      "sha256": "651a92ef6b6dfe38633b11adc9335c8fa7091e24b0bf2ccd914b8da49dee97f6"
+    },
+    "output128/binding/plan/source/provider-swift/Sources/ProviderCore/Inference/Gemma4ToolConstraintContract.swift": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source/provider-swift/Sources/ProviderCore/Inference/Gemma4ToolConstraintContract.swift",
+      "bytes": 1124,
+      "sha256": "5bbfc919b57afa13d812317973f5fbe07b9e6bc3cb9e79a2d94575943f41b649"
+    },
+    "output128/binding/plan/source/provider-swift/Sources/ProviderCore/Inference/ToolChoiceEnforcementPolicy.swift": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source/provider-swift/Sources/ProviderCore/Inference/ToolChoiceEnforcementPolicy.swift",
+      "bytes": 2609,
+      "sha256": "881c84adc243636e2c0b7c193b0cd38c91ec2e44d0f1394a37fa5be71c7e936f"
+    },
+    "output128/binding/plan/source/provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source/provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift",
+      "bytes": 10192,
+      "sha256": "2d0fedc8617a5ad8c08348193180fb218be55a545057fa7e64f109e6b870f62c"
+    },
+    "output128/binding/plan/source/provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source/provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift",
+      "bytes": 5876,
+      "sha256": "f3d14a2f79338866513e48001351584c41edee487a5f4791a7ffccb451efe381"
+    },
+    "output128/binding/plan/source/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkNativeKVProbe.swift": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkNativeKVProbe.swift",
+      "bytes": 4786,
+      "sha256": "1bfa1ce5bdb26125901e3a41712ab37012ac33112c9ae5c434d67dc96ff79c6d"
+    },
+    "output128/binding/plan/source/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkOptions.swift": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkOptions.swift",
+      "bytes": 4439,
+      "sha256": "6295e2c316f2026ee6af4b16bd55f389db3f408c8814a1a0236d993c1065b638"
+    },
+    "output128/binding/plan/source/scripts/benchmarks/run_radix_engine.py": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/source/scripts/benchmarks/run_radix_engine.py",
+      "bytes": 11663,
+      "sha256": "b5166c413e72f871ff8ebe17493b4628a8f0479e9eba376b0090eb65e3db29a1"
+    },
+    "output128/binding/plan/supplemental-tokenizer-plan.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/supplemental-tokenizer-plan.json",
+      "bytes": 1931,
+      "sha256": "dc74a703ca00a57785de1c9b26b302c16ec6513b964abebd3bb8ab7671a33236"
+    },
+    "output128/binding/plan/supplemental-tokenizer-plan.log": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/supplemental-tokenizer-plan.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/binding/plan/tokenizer-plan.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/tokenizer-plan.json",
+      "bytes": 899,
+      "sha256": "61ebcae621ccf3d0a7ae642b46287f3f884a4bcd25231cb4a933507fae246db8"
+    },
+    "output128/binding/plan/tokenizer-plan.log": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/tokenizer-plan.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/binding/plan/tool-capability-review.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/tool-capability-review.json",
+      "bytes": 974,
+      "sha256": "2206641fdd8f7b2e8e28bd661d044b7570112af29a1f17ed3d54ae0946bcfe59"
+    },
+    "output128/binding/plan/verify_prompt_counts.py": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/verify_prompt_counts.py",
+      "bytes": 4241,
+      "sha256": "b384100b8424cc3a8645f38f3d89fb4f1cae55ab48214ef995940874c10c4cf5"
+    },
+    "output128/binding/plan/verify_supplemental_prompts.py": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/plan/verify_supplemental_prompts.py",
+      "bytes": 4593,
+      "sha256": "7b43ecc23689e21657c07098616f375ca88fcace14436704adbfce921ad127f5"
+    },
+    "output128/binding/root-input-review.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/root-input-review.json",
+      "bytes": 1430,
+      "sha256": "25d91181e705af6b3f68bdeb6f35a85140b601ad607922d3aaacca7c923fe558"
+    },
+    "output128/binding/root-runtime-review.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/binding/root-runtime-review.json",
+      "bytes": 764,
+      "sha256": "690dd8ef3dd80f1038f2c78c464ea4ddce5d08a57b2290f9bfdc781116147418"
+    },
+    "output128/comparison/command.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/comparison/command.json",
+      "bytes": 311,
+      "sha256": "9cb27b6bb4b3bb3646b36765a3f50a0450cb48a04b2ab6f1617b778775cbc2e1"
+    },
+    "output128/comparison/compare_radix_engine.py": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/comparison/compare_radix_engine.py",
+      "bytes": 13154,
+      "sha256": "b33922deda8f21128873a8b71b639a0626005d449e3cc603cb35e2d660a253cc"
+    },
+    "output128/comparison/radix_engine_evidence.py": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/comparison/radix_engine_evidence.py",
+      "bytes": 15658,
+      "sha256": "e0f57723d4be3f1a00068b9870f70a6bc9a0174b76fdea285d33f0f4eb658e4e"
+    },
+    "output128/comparison/stderr.log": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/comparison/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/comparison/stdout.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/comparison/stdout.json",
+      "bytes": 886,
+      "sha256": "a3b80d3c36512910c35ed9760f1d0d028dd6368928fc5a188f62cfc6ea7eb862"
+    },
+    "output128/driver.py": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/driver.py",
+      "bytes": 6620,
+      "sha256": "2a69ee24605239b76a2e725ac12a32c76f652a96ce4c9e5e7d20dfb4398a5f71"
+    },
+    "output128/freeze-driver.py": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/freeze-driver.py",
+      "bytes": 3605,
+      "sha256": "a9edd3eceb28db8f2d09387344759b8da84aff7a99714c5381b039a0da9874a5"
+    },
+    "output128/manifest.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/manifest.json",
+      "bytes": 18719,
+      "sha256": "9e2d704b3528c93313440edff39e425a8e15b66804c852de250bd8d6bbe89b4a"
+    },
+    "output128/postcheck-driver.py": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/postcheck-driver.py",
+      "bytes": 3048,
+      "sha256": "51f544af118d6e2d0a95e10f2ad57b2ac83c4c264398999c75cfbd6fa453d2f5"
+    },
+    "output128/postcheck/idle-preflight.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/postcheck/idle-preflight.json",
+      "bytes": 200,
+      "sha256": "82bf10e43ac86fb9f61d1246e928020563cb2157637316196f93ce3e9c8b5ee7"
+    },
+    "output128/postcheck/idle-preflight.log": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/postcheck/idle-preflight.log",
+      "bytes": 201,
+      "sha256": "e9dbffe67c84c59f5597f97a4813bcdfaca160bbb3859eca0d5473da392cc981"
+    },
+    "output128/postcheck/postcheck.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/postcheck/postcheck.json",
+      "bytes": 5442,
+      "sha256": "79f42cdeb7b67cb471c14f48f9765993c1708f92655d5147070fbf697d20b441"
+    },
+    "output128/postcheck/postcheck.stderr": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/postcheck/postcheck.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/provenance/build6-artifact-manifest.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/provenance/build6-artifact-manifest.json",
+      "bytes": 1540,
+      "sha256": "5b700968b7b49a40103ede50149a073570182c8c73d69893dc044b41079a85b4"
+    },
+    "output128/provenance/build6-manifest.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/provenance/build6-manifest.json",
+      "bytes": 5643,
+      "sha256": "802f51029f30a4e7d7fcdc3dc898aac83bb0edb55939dd88468ab81a6baf8817"
+    },
+    "output128/provenance/build6-root-review.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/provenance/build6-root-review.json",
+      "bytes": 764,
+      "sha256": "690dd8ef3dd80f1038f2c78c464ea4ddce5d08a57b2290f9bfdc781116147418"
+    },
+    "output128/provenance/qat-original-m5-hash.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/provenance/qat-original-m5-hash.json",
+      "bytes": 1887,
+      "sha256": "4df57606fec3e87ae85a6f1aa68a256a75a12d2f3035fdd23893291c080bd0ad"
+    },
+    "output128/provenance/qat-source-root-review.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/provenance/qat-source-root-review.json",
+      "bytes": 1430,
+      "sha256": "25d91181e705af6b3f68bdeb6f35a85140b601ad607922d3aaacca7c923fe558"
+    },
+    "output128/raw/off/command.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/command.json",
+      "bytes": 1376,
+      "sha256": "33b1b0338d5d5560efe10edd137b7aefd1e3961aaf6f95472922563a43f2f0ea"
+    },
+    "output128/raw/off/driver-execution.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/driver-execution.json",
+      "bytes": 54,
+      "sha256": "acedeb5f042d9694ad9b48f0bd34030dcbf5a134f402b5034cc07c33c424c183"
+    },
+    "output128/raw/off/engine.log": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/engine.log",
+      "bytes": 752,
+      "sha256": "2d4e9f39ae7bb611e511b04a04f0e87704ffda9cf6eda2cd80f2d818515874e4"
+    },
+    "output128/raw/off/external-postflight.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/external-postflight.json",
+      "bytes": 199,
+      "sha256": "3439e555b4805a3a9401c8cf89c4998d93bd59d6c1ba69caf05bca4a7a3b184c"
+    },
+    "output128/raw/off/external-postflight.log": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/external-postflight.log",
+      "bytes": 200,
+      "sha256": "0fce9a1ec15349735766b5ab4028bba0cb0b576f25c6edbc19a2a5ee9289de46"
+    },
+    "output128/raw/off/external-preflight.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/external-preflight.json",
+      "bytes": 199,
+      "sha256": "6a803e02e14e67ec3097be1df78cd0857dbd8269a410bf6808703394e7b159bb"
+    },
+    "output128/raw/off/external-preflight.log": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/external-preflight.log",
+      "bytes": 200,
+      "sha256": "17086907f109af486ede3c5f7fe1bab222fa3c440ed45d24288d6d66f9de4852"
+    },
+    "output128/raw/off/input.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/input.json",
+      "bytes": 72541,
+      "sha256": "979456ea7653164f2844e575aeed360dc41efe10f119de49ef98f183d2eb4653"
+    },
+    "output128/raw/off/manifest.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/manifest.json",
+      "bytes": 2286,
+      "sha256": "69b7a6761fabf895b359c9427c5e9efa483e05b6c54daa2295c3f98f09eac907"
+    },
+    "output128/raw/off/metadata.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/metadata.json",
+      "bytes": 2592,
+      "sha256": "60ac1a4c38264ff534b836eee8d92fcd49f683f00dc864ff00d9778759a349c8"
+    },
+    "output128/raw/off/remote-inventory.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/remote-inventory.json",
+      "bytes": 705,
+      "sha256": "1b24e44f2d613ff8e95b7770b0f80d3c3a5a33af04d99b4ee4716d9b33bb7a2f"
+    },
+    "output128/raw/off/report.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/report.json",
+      "bytes": 715415,
+      "sha256": "d67dce5d87c150de11174a28547edc239efeb8d2db1dbfa1e9aba6899180546d"
+    },
+    "output128/raw/off/runtime-precheck.stderr": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/runtime-precheck.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/raw/off/runtime-precheck.stdout": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/runtime-precheck.stdout",
+      "bytes": 1681,
+      "sha256": "a4bd10aac5fbb5999736d544311b8cc9c92cbab5eac96fafcc41387032e14404"
+    },
+    "output128/raw/off/ssh-run.log": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/raw/off/summary.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/summary.json",
+      "bytes": 594,
+      "sha256": "cf2575153a68ec940455fa9503003abef0a52ecc974abaa8f53f9b14d64f6bc4"
+    },
+    "output128/raw/off/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/off/telemetry.jsonl",
+      "bytes": 95545,
+      "sha256": "09be1ff5f8b0b3762ace98484826132016388ec1f7fbe7e5564d4edee39a1fc8"
+    },
+    "output128/raw/ssd/command.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/command.json",
+      "bytes": 1375,
+      "sha256": "6d9135178865afaf420f0a3846ed05bd9fae1f05077e1fe78c0fae84ea2d9354"
+    },
+    "output128/raw/ssd/driver-execution.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/driver-execution.json",
+      "bytes": 53,
+      "sha256": "f67dd4a335d87d43439da512a546969ec15ab765e225810182b21cbc7152c240"
+    },
+    "output128/raw/ssd/engine.log": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/engine.log",
+      "bytes": 743,
+      "sha256": "58bf01b1d505ec47208df97b0d2919f836804594241678823d3d0b87cc5eafc4"
+    },
+    "output128/raw/ssd/external-postflight.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/external-postflight.json",
+      "bytes": 199,
+      "sha256": "53bdf37d316307e0489868823cef93ae5edd9269817cdc9d3ed2c7f53cf86481"
+    },
+    "output128/raw/ssd/external-postflight.log": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/external-postflight.log",
+      "bytes": 200,
+      "sha256": "805a093b68f9c9ab5b23c91d005cfd7c353bbab3165eb9051e522ab21113ef4d"
+    },
+    "output128/raw/ssd/external-preflight.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/external-preflight.json",
+      "bytes": 199,
+      "sha256": "2829aa31d86a78e72ea62eda90e21cb16fe7ec249bb6f9b93e193ac26eded327"
+    },
+    "output128/raw/ssd/external-preflight.log": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/external-preflight.log",
+      "bytes": 200,
+      "sha256": "fcb592d6f5839f4962e7967efbc75005afa6d1b61c6d3b01e47530bf83d2b443"
+    },
+    "output128/raw/ssd/input.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/input.json",
+      "bytes": 72541,
+      "sha256": "979456ea7653164f2844e575aeed360dc41efe10f119de49ef98f183d2eb4653"
+    },
+    "output128/raw/ssd/manifest.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/manifest.json",
+      "bytes": 2286,
+      "sha256": "db3d8954fd7d5ff0ae3266da2a8ecf06c2aba4cb0cfbd918af0d12354f91d945"
+    },
+    "output128/raw/ssd/metadata.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/metadata.json",
+      "bytes": 2590,
+      "sha256": "bf3847f491c60ceb68b3b8cde5004bb0015595cac34c80c5d920b2ebf218a9ea"
+    },
+    "output128/raw/ssd/remote-inventory.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/remote-inventory.json",
+      "bytes": 705,
+      "sha256": "661eb93dc26c123f6b499d56c477498aae31a95e921112e30cc1bae5f0104c3a"
+    },
+    "output128/raw/ssd/report.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/report.json",
+      "bytes": 731989,
+      "sha256": "9517f9288d59ee8b6121bca8070fcc90f266ed819f53f2521733134b0c44c1f7"
+    },
+    "output128/raw/ssd/runtime-precheck.stderr": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/runtime-precheck.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/raw/ssd/runtime-precheck.stdout": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/runtime-precheck.stdout",
+      "bytes": 1681,
+      "sha256": "c45bc5b4cdd195c3d61ee8f494e44a317baba0f34f0c446dcdf0e23bb49a12ec"
+    },
+    "output128/raw/ssd/ssh-run.log": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/raw/ssd/summary.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/summary.json",
+      "bytes": 585,
+      "sha256": "311cc3ee85ae2a7645b941684d7d98352d07f529c92a7fce5aee97e0142e4b2d"
+    },
+    "output128/raw/ssd/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/raw/ssd/telemetry.jsonl",
+      "bytes": 86292,
+      "sha256": "acceca38ac83f9dcd973de231aedcb55f308556807bff5f67f8e73182fe3fb05"
+    },
+    "output128/staging/create.stderr": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/staging/create.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/staging/create.stdout": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/staging/create.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/staging/manifest.json": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/staging/manifest.json",
+      "bytes": 1039,
+      "sha256": "ed5d7dee7d23efb041a91d434a53571c26818f61f064b3e32bad7c48d11ab214"
+    },
+    "output128/staging/scp.stderr": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/staging/scp.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/staging/scp.stdout": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/staging/scp.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/staging/verify.stderr": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/staging/verify.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output128/staging/verify.stdout": {
+      "source": "/tmp/darkbloom-qat-output128-pair-freeze1/staging/verify.stdout",
+      "bytes": 8673,
+      "sha256": "e769c27d8fe819ca4b1fc3265b3a37d17c7ac5c684da6d75acbfa8519bd666c2"
+    },
+    "output32/analysis.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/analysis.json",
+      "bytes": 3383,
+      "sha256": "1cfaae6b9e530a263de919159ccfe04dd2aa5820cad98bcf087fd691d87fb612"
+    },
+    "output32/binding/binding.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/binding.json",
+      "bytes": 9148,
+      "sha256": "fd5e580268ae1fe564122da0f74a500e43184b421a298087a88f144044c0ecc9"
+    },
+    "output32/binding/package-manifest.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/package-manifest.json",
+      "bytes": 9558,
+      "sha256": "28564409d6d3a9ec92304adb5d0218814f47569ea279adbf63b3327479e08793"
+    },
+    "output32/binding/plan/README.md": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/README.md",
+      "bytes": 3350,
+      "sha256": "140b9e123fac12ec078b168dd947047f050cf4a5f8bac10802545c38881bd7cf"
+    },
+    "output32/binding/plan/bundle-plan.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/bundle-plan.json",
+      "bytes": 520,
+      "sha256": "4dd412dba3cbb08d50223c25f538f0e3e9a606375924fea795ced69da2be790b"
+    },
+    "output32/binding/plan/commands.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/commands.json",
+      "bytes": 728,
+      "sha256": "10670fea329a7b9b7e1242aca81d96475ea818a919a0cf58d1a7396c95610aa9"
+    },
+    "output32/binding/plan/cpu-http-plan.stderr": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/cpu-http-plan.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/binding/plan/cpu-http-plan.stdout": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/cpu-http-plan.stdout",
+      "bytes": 899,
+      "sha256": "61ebcae621ccf3d0a7ae642b46287f3f884a4bcd25231cb4a933507fae246db8"
+    },
+    "output32/binding/plan/cpu-requests/native-output128-plan.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/cpu-requests/native-output128-plan.json",
+      "bytes": 2915,
+      "sha256": "705f3edaee7dafff53d8056c4432428442096304b1092c68db795c4c9e4c2a8f"
+    },
+    "output32/binding/plan/cpu-requests/native-output128.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/cpu-requests/native-output128.json",
+      "bytes": 35660,
+      "sha256": "72d7263bd279fc54401ad119e7deca2597d368812c88b202217f81f1e5ff7830"
+    },
+    "output32/binding/plan/cpu-requests/native-output32-plan.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/cpu-requests/native-output32-plan.json",
+      "bytes": 2915,
+      "sha256": "705f3edaee7dafff53d8056c4432428442096304b1092c68db795c4c9e4c2a8f"
+    },
+    "output32/binding/plan/cpu-requests/native-output32.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/cpu-requests/native-output32.json",
+      "bytes": 35659,
+      "sha256": "b82fb1b023ee63c6d4e7a55b1279f167efc978078b4916fe2ce70f02cabc6242"
+    },
+    "output32/binding/plan/cpu-requests/tools-auto512-plan.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/cpu-requests/tools-auto512-plan.json",
+      "bytes": 149,
+      "sha256": "0a0f9b3004611bf1e0fe39ddbf57acd41a03d354feae5059d1024b873880add8"
+    },
+    "output32/binding/plan/cpu-requests/tools-auto512.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/cpu-requests/tools-auto512.json",
+      "bytes": 999,
+      "sha256": "9974700d89c96f0cac96b9477708f1f7824bef898b227f710e7b77b8b34b8573"
+    },
+    "output32/binding/plan/cpu-requests/tools-named-cpu-normalization-only-plan.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/cpu-requests/tools-named-cpu-normalization-only-plan.json",
+      "bytes": 150,
+      "sha256": "5aa4d1b5c1fb39be1fa9bed203d1549009c1d49aeca8a395800aaaf3e9480542"
+    },
+    "output32/binding/plan/cpu-requests/tools-named-cpu-normalization-only.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/cpu-requests/tools-named-cpu-normalization-only.json",
+      "bytes": 1107,
+      "sha256": "2c659b23d63eb6f390c22c20c01abe192b0c766ad69d79d440fd083096e58997"
+    },
+    "output32/binding/plan/cpu-supplemental-plan.stderr": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/cpu-supplemental-plan.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/binding/plan/cpu-supplemental-plan.stdout": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/cpu-supplemental-plan.stdout",
+      "bytes": 1931,
+      "sha256": "dc74a703ca00a57785de1c9b26b302c16ec6513b964abebd3bb8ab7671a33236"
+    },
+    "output32/binding/plan/http-inputs/gemma-qat4-paged-off-b1.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/http-inputs/gemma-qat4-paged-off-b1.json",
+      "bytes": 43625,
+      "sha256": "3109fa376c8e2b0cdf93af8a4b29475afeece8e9d0a8054ad537a6bb9fdfa986"
+    },
+    "output32/binding/plan/http-inputs/gemma-qat4-paged-ssd-b1.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/http-inputs/gemma-qat4-paged-ssd-b1.json",
+      "bytes": 43625,
+      "sha256": "acb4f518d886983221c46028360cb6caea62f6739099bdee5ddf6fae71f0ea27"
+    },
+    "output32/binding/plan/inputs/gemma-qat4-paged-off-b1-output128.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/inputs/gemma-qat4-paged-off-b1-output128.json",
+      "bytes": 72541,
+      "sha256": "c050107412cb36445721a58e15b3031b27566d89077617360461720b90beab29"
+    },
+    "output32/binding/plan/inputs/gemma-qat4-paged-off-b1-output32.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/inputs/gemma-qat4-paged-off-b1-output32.json",
+      "bytes": 72537,
+      "sha256": "bba0c50ff32a12f04848bd627dc050af1c8a449642e1d7db086029de2fb6171e"
+    },
+    "output32/binding/plan/inputs/gemma-qat4-paged-ssd-b1-output128.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/inputs/gemma-qat4-paged-ssd-b1-output128.json",
+      "bytes": 72541,
+      "sha256": "c050107412cb36445721a58e15b3031b27566d89077617360461720b90beab29"
+    },
+    "output32/binding/plan/inputs/gemma-qat4-paged-ssd-b1-output32.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/inputs/gemma-qat4-paged-ssd-b1-output32.json",
+      "bytes": 72537,
+      "sha256": "bba0c50ff32a12f04848bd627dc050af1c8a449642e1d7db086029de2fb6171e"
+    },
+    "output32/binding/plan/manifest.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/manifest.json",
+      "bytes": 8750,
+      "sha256": "2556a53323297b475828f8b5e25e78dfbd893cdc5faef8276006b6be6f3ab767"
+    },
+    "output32/binding/plan/manifests/gemma-qat4.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/manifests/gemma-qat4.json",
+      "bytes": 1822,
+      "sha256": "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd"
+    },
+    "output32/binding/plan/native-kv-observation-plan.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/native-kv-observation-plan.json",
+      "bytes": 1381,
+      "sha256": "deb83b637e00f32957d4f5ce8866ecfe08f766c65b21742fa9d27e6b1753a95e"
+    },
+    "output32/binding/plan/native-plan.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/native-plan.json",
+      "bytes": 6598,
+      "sha256": "e4db8d3ba083c07b2dc0f5ce42ba92d04332605485fb3df8b90356ea85065a94"
+    },
+    "output32/binding/plan/prompt-contract-verification.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/prompt-contract-verification.json",
+      "bytes": 451,
+      "sha256": "a6843757c7d16ac1b8386e044f53762021ba6e357e0e4aa8a81d9c26b4552500"
+    },
+    "output32/binding/plan/source-inputs/assistant-manifest.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source-inputs/assistant-manifest.json",
+      "bytes": 859,
+      "sha256": "8b7c00b7f131345156f5f20fa9c94a895c5340f16d9331bafb9e59628bf45bf2"
+    },
+    "output32/binding/plan/source-inputs/bundle2-freeze.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source-inputs/bundle2-freeze.json",
+      "bytes": 1392,
+      "sha256": "5046a83a732a26cd59f042521df1638e1ce44f48c452ed61446705ed42cf1171"
+    },
+    "output32/binding/plan/source-inputs/local-target-evidence-manifest.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source-inputs/local-target-evidence-manifest.json",
+      "bytes": 4277,
+      "sha256": "215f7e2e6115a9012e46f3ea35bc9225c92753b5beb3de64ec1101471ac0ae1c"
+    },
+    "output32/binding/plan/source-inputs/local-target-verification.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source-inputs/local-target-verification.json",
+      "bytes": 2945,
+      "sha256": "85346e313a58f4a5d56a6aca396e1f63f30c2c54ad60c18264bde9138715f547"
+    },
+    "output32/binding/plan/source-inputs/m5-target-hash-proof.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source-inputs/m5-target-hash-proof.json",
+      "bytes": 1887,
+      "sha256": "4df57606fec3e87ae85a6f1aa68a256a75a12d2f3035fdd23893291c080bd0ad"
+    },
+    "output32/binding/plan/source-inputs/native-input-source.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source-inputs/native-input-source.json",
+      "bytes": 72647,
+      "sha256": "7c4aa3ad84257523175883e18bba4fa7be4cf805d0716b55df4a19ea05fb743c"
+    },
+    "output32/binding/plan/source-inputs/prompt-contract.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source-inputs/prompt-contract.json",
+      "bytes": 1448,
+      "sha256": "11a6f037aa2bf2768c9de797f91af466a4ec6c0ea672b40d957b684b066c2846"
+    },
+    "output32/binding/plan/source-inputs/target-catalog-source.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source-inputs/target-catalog-source.json",
+      "bytes": 13384,
+      "sha256": "72dc4f9c5ff51a959ff94ceab082a2ac32b8cf81aa30ecf84e9e802ff02db153"
+    },
+    "output32/binding/plan/source-inputs/target-manifest.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source-inputs/target-manifest.json",
+      "bytes": 1822,
+      "sha256": "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd"
+    },
+    "output32/binding/plan/source-provenance.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source-provenance.json",
+      "bytes": 1953,
+      "sha256": "025e131baa5de8564e1e0960d6680c5e12260e5c28a7112c96085557bba24024"
+    },
+    "output32/binding/plan/source/e2e/connected_cache_http_test.go": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source/e2e/connected_cache_http_test.go",
+      "bytes": 14320,
+      "sha256": "46768a05d9da3081522a53a8a34185676c3c646b25d739945719157aa5782a61"
+    },
+    "output32/binding/plan/source/e2e/connected_cache_input_test.go": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source/e2e/connected_cache_input_test.go",
+      "bytes": 10535,
+      "sha256": "535ad34c962cb583a2f13169e0bb99f3daffabdd1e160010317aeafd4b9d7f35"
+    },
+    "output32/binding/plan/source/provider-swift/Sources/ProviderCore/Inference/Gemma4TemplateFixes.swift": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source/provider-swift/Sources/ProviderCore/Inference/Gemma4TemplateFixes.swift",
+      "bytes": 2108,
+      "sha256": "651a92ef6b6dfe38633b11adc9335c8fa7091e24b0bf2ccd914b8da49dee97f6"
+    },
+    "output32/binding/plan/source/provider-swift/Sources/ProviderCore/Inference/Gemma4ToolConstraintContract.swift": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source/provider-swift/Sources/ProviderCore/Inference/Gemma4ToolConstraintContract.swift",
+      "bytes": 1124,
+      "sha256": "5bbfc919b57afa13d812317973f5fbe07b9e6bc3cb9e79a2d94575943f41b649"
+    },
+    "output32/binding/plan/source/provider-swift/Sources/ProviderCore/Inference/ToolChoiceEnforcementPolicy.swift": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source/provider-swift/Sources/ProviderCore/Inference/ToolChoiceEnforcementPolicy.swift",
+      "bytes": 2609,
+      "sha256": "881c84adc243636e2c0b7c193b0cd38c91ec2e44d0f1394a37fa5be71c7e936f"
+    },
+    "output32/binding/plan/source/provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source/provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift",
+      "bytes": 10192,
+      "sha256": "2d0fedc8617a5ad8c08348193180fb218be55a545057fa7e64f109e6b870f62c"
+    },
+    "output32/binding/plan/source/provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source/provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift",
+      "bytes": 5876,
+      "sha256": "f3d14a2f79338866513e48001351584c41edee487a5f4791a7ffccb451efe381"
+    },
+    "output32/binding/plan/source/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkNativeKVProbe.swift": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkNativeKVProbe.swift",
+      "bytes": 4786,
+      "sha256": "1bfa1ce5bdb26125901e3a41712ab37012ac33112c9ae5c434d67dc96ff79c6d"
+    },
+    "output32/binding/plan/source/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkOptions.swift": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkOptions.swift",
+      "bytes": 4439,
+      "sha256": "6295e2c316f2026ee6af4b16bd55f389db3f408c8814a1a0236d993c1065b638"
+    },
+    "output32/binding/plan/source/scripts/benchmarks/run_radix_engine.py": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/source/scripts/benchmarks/run_radix_engine.py",
+      "bytes": 11663,
+      "sha256": "b5166c413e72f871ff8ebe17493b4628a8f0479e9eba376b0090eb65e3db29a1"
+    },
+    "output32/binding/plan/supplemental-tokenizer-plan.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/supplemental-tokenizer-plan.json",
+      "bytes": 1931,
+      "sha256": "dc74a703ca00a57785de1c9b26b302c16ec6513b964abebd3bb8ab7671a33236"
+    },
+    "output32/binding/plan/supplemental-tokenizer-plan.log": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/supplemental-tokenizer-plan.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/binding/plan/tokenizer-plan.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/tokenizer-plan.json",
+      "bytes": 899,
+      "sha256": "61ebcae621ccf3d0a7ae642b46287f3f884a4bcd25231cb4a933507fae246db8"
+    },
+    "output32/binding/plan/tokenizer-plan.log": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/tokenizer-plan.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/binding/plan/tool-capability-review.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/tool-capability-review.json",
+      "bytes": 974,
+      "sha256": "2206641fdd8f7b2e8e28bd661d044b7570112af29a1f17ed3d54ae0946bcfe59"
+    },
+    "output32/binding/plan/verify_prompt_counts.py": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/verify_prompt_counts.py",
+      "bytes": 4241,
+      "sha256": "b384100b8424cc3a8645f38f3d89fb4f1cae55ab48214ef995940874c10c4cf5"
+    },
+    "output32/binding/plan/verify_supplemental_prompts.py": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/plan/verify_supplemental_prompts.py",
+      "bytes": 4593,
+      "sha256": "7b43ecc23689e21657c07098616f375ca88fcace14436704adbfce921ad127f5"
+    },
+    "output32/binding/root-input-review.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/root-input-review.json",
+      "bytes": 1430,
+      "sha256": "25d91181e705af6b3f68bdeb6f35a85140b601ad607922d3aaacca7c923fe558"
+    },
+    "output32/binding/root-runtime-review.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/binding/root-runtime-review.json",
+      "bytes": 764,
+      "sha256": "690dd8ef3dd80f1038f2c78c464ea4ddce5d08a57b2290f9bfdc781116147418"
+    },
+    "output32/comparison/command.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/comparison/command.json",
+      "bytes": 308,
+      "sha256": "5109d87bceb3fcb92493fbeb547d9550c25df8e476059772b206984fc99b809a"
+    },
+    "output32/comparison/compare_radix_engine.py": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/comparison/compare_radix_engine.py",
+      "bytes": 13154,
+      "sha256": "b33922deda8f21128873a8b71b639a0626005d449e3cc603cb35e2d660a253cc"
+    },
+    "output32/comparison/radix_engine_evidence.py": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/comparison/radix_engine_evidence.py",
+      "bytes": 15658,
+      "sha256": "e0f57723d4be3f1a00068b9870f70a6bc9a0174b76fdea285d33f0f4eb658e4e"
+    },
+    "output32/comparison/stderr.log": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/comparison/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/comparison/stdout.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/comparison/stdout.json",
+      "bytes": 886,
+      "sha256": "36a03d6ddbadd38f55777f98bb40ae4479f180d3a4b27443767a41fcdf31e379"
+    },
+    "output32/driver.py": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/driver.py",
+      "bytes": 6620,
+      "sha256": "2a69ee24605239b76a2e725ac12a32c76f652a96ce4c9e5e7d20dfb4398a5f71"
+    },
+    "output32/freeze-driver.py": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/freeze-driver.py",
+      "bytes": 3605,
+      "sha256": "a9edd3eceb28db8f2d09387344759b8da84aff7a99714c5381b039a0da9874a5"
+    },
+    "output32/manifest.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/manifest.json",
+      "bytes": 21536,
+      "sha256": "0b5c3e2dc7bc87091924896733fd9b8c934ee9d8d9e0c924f89be892ab0fb6c5"
+    },
+    "output32/native-observer/evaluation.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/evaluation.json",
+      "bytes": 507,
+      "sha256": "711110340a6b9563715e35f466d94ed326e3d00210ce6021282bb3fddfe40efa"
+    },
+    "output32/native-observer/raw/command.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/command.json",
+      "bytes": 754,
+      "sha256": "d8fa0c0e9ff17da759d086e1cc7adcfdac7d4b7709d58aa3f246c2dce5d7aec8"
+    },
+    "output32/native-observer/raw/driver-execution.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/driver-execution.json",
+      "bytes": 53,
+      "sha256": "5f55d3bc866b3cb78e13e02e3db3fe93c4b3665788e3f4a3a5501f3a916b8061"
+    },
+    "output32/native-observer/raw/execution.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/execution.json",
+      "bytes": 83,
+      "sha256": "73fe0565ab32e2bac26092f78b3bfcdbe6cb6bd36a2a5aa309d8ad133c599af2"
+    },
+    "output32/native-observer/raw/external-postflight.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/external-postflight.json",
+      "bytes": 194,
+      "sha256": "69f4a78772c31ccd25770060d0c09c1aa6f30c15ce1b81c19ec0c2ebea9d80d4"
+    },
+    "output32/native-observer/raw/external-postflight.log": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/external-postflight.log",
+      "bytes": 195,
+      "sha256": "e669548079e807afb3b5523eb4508ed16c76300f6ed5e269ac8eab5387bd56ae"
+    },
+    "output32/native-observer/raw/external-preflight.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/external-preflight.json",
+      "bytes": 197,
+      "sha256": "89700bb3fda0b19f632a7c0a500d1a170378f8be9217667c4343190b6d077b78"
+    },
+    "output32/native-observer/raw/external-preflight.log": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/external-preflight.log",
+      "bytes": 198,
+      "sha256": "6c3bffcd5710e7501bfedcaead10aa42749c2a1b9ba190e2941886836f750a0d"
+    },
+    "output32/native-observer/raw/launch.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/launch.json",
+      "bytes": 762,
+      "sha256": "fc9bf9c4ddfe80732564ef15193bfe391ba81c7b91c88c5531d7d3867ea568e6"
+    },
+    "output32/native-observer/raw/manifest.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/manifest.json",
+      "bytes": 2252,
+      "sha256": "7cc30ba40e22f209a06dabad4beba45b183de9f3f58a36fd09a9670eaa6ce8f3"
+    },
+    "output32/native-observer/raw/native.stderr": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/native.stderr",
+      "bytes": 548,
+      "sha256": "c13b827ffd2b6daf1ca5ef5969597073a01c3b53dac8bae6c8022d8ee0f2aa63"
+    },
+    "output32/native-observer/raw/native.stdout": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/native.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/native-observer/raw/remote-inventory.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/remote-inventory.json",
+      "bytes": 699,
+      "sha256": "533bc474fc5b03d6147aa3b9c6bfd0d9e2295d466444d1f15ef4ba9d22fbb7fd"
+    },
+    "output32/native-observer/raw/report.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/report.json",
+      "bytes": 20916,
+      "sha256": "bd7b357696be3471d4ef60df1b1136693d420904d2f8c00eb3e0ed5b8cc3431c"
+    },
+    "output32/native-observer/raw/runtime-precheck.stderr": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/runtime-precheck.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/native-observer/raw/runtime-precheck.stdout": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/runtime-precheck.stdout",
+      "bytes": 1681,
+      "sha256": "843d42aa6430908440cbc21d8942ec8514d33ccd4a2fde8d44c767e88810d6fa"
+    },
+    "output32/native-observer/raw/ssh-run.log": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/ssh-run.log",
+      "bytes": 42,
+      "sha256": "bb640814946da1c64c4bc035457b150999332391c5aa561c1144e47500169e24"
+    },
+    "output32/native-observer/raw/summary.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/native-observer/raw/summary.json",
+      "bytes": 122,
+      "sha256": "43984f17e6f2b0c2e065e9b1afa06566ed0e0387d343026b70661bf47d61d0d3"
+    },
+    "output32/postcheck-driver.py": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/postcheck-driver.py",
+      "bytes": 3048,
+      "sha256": "51f544af118d6e2d0a95e10f2ad57b2ac83c4c264398999c75cfbd6fa453d2f5"
+    },
+    "output32/postcheck/idle-preflight.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/postcheck/idle-preflight.json",
+      "bytes": 197,
+      "sha256": "b342889675fb76ef0e9e4c10f0c411b9d73c8ab0eedb741ad7355ff93a131cd4"
+    },
+    "output32/postcheck/idle-preflight.log": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/postcheck/idle-preflight.log",
+      "bytes": 198,
+      "sha256": "dd55b989a9dfc8ad52817e533cba46a45d06feca0739bd8128b363afc11f29cb"
+    },
+    "output32/postcheck/postcheck.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/postcheck/postcheck.json",
+      "bytes": 4979,
+      "sha256": "76103e2817fc87d0419936133aadaa037454c3f1042103fe8533c34a856fa6a5"
+    },
+    "output32/postcheck/postcheck.stderr": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/postcheck/postcheck.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/provenance/build6-artifact-manifest.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/provenance/build6-artifact-manifest.json",
+      "bytes": 1540,
+      "sha256": "5b700968b7b49a40103ede50149a073570182c8c73d69893dc044b41079a85b4"
+    },
+    "output32/provenance/build6-manifest.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/provenance/build6-manifest.json",
+      "bytes": 5643,
+      "sha256": "802f51029f30a4e7d7fcdc3dc898aac83bb0edb55939dd88468ab81a6baf8817"
+    },
+    "output32/provenance/build6-root-review.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/provenance/build6-root-review.json",
+      "bytes": 764,
+      "sha256": "690dd8ef3dd80f1038f2c78c464ea4ddce5d08a57b2290f9bfdc781116147418"
+    },
+    "output32/provenance/qat-original-m5-hash.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/provenance/qat-original-m5-hash.json",
+      "bytes": 1887,
+      "sha256": "4df57606fec3e87ae85a6f1aa68a256a75a12d2f3035fdd23893291c080bd0ad"
+    },
+    "output32/provenance/qat-source-root-review.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/provenance/qat-source-root-review.json",
+      "bytes": 1430,
+      "sha256": "25d91181e705af6b3f68bdeb6f35a85140b601ad607922d3aaacca7c923fe558"
+    },
+    "output32/raw/off/command.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/command.json",
+      "bytes": 1374,
+      "sha256": "b7e8aabcd3797a517c2ce88700bd62be53b7de68956147564556b2afdeae9f75"
+    },
+    "output32/raw/off/driver-execution.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/driver-execution.json",
+      "bytes": 53,
+      "sha256": "54f8377330d25154b0df5081806e96ced3576511b6429ec2c48e906c2cdda74b"
+    },
+    "output32/raw/off/engine.log": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/engine.log",
+      "bytes": 749,
+      "sha256": "3f0d0d174cd0ba513d800df1e58821464e29fb1d06893fc245efa9238fbd6397"
+    },
+    "output32/raw/off/external-postflight.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/external-postflight.json",
+      "bytes": 199,
+      "sha256": "9b4562fe6fdf433070f41afee8956e303967e469cae1c8604a4f1447ffc63e46"
+    },
+    "output32/raw/off/external-postflight.log": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/external-postflight.log",
+      "bytes": 200,
+      "sha256": "e31391f5ac4357a035075c2c99aa29401ed688a5e5ce4481352f6895c347542e"
+    },
+    "output32/raw/off/external-preflight.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/external-preflight.json",
+      "bytes": 185,
+      "sha256": "5c603ab529716a12eab372cbb300739e300fdfcaea622cfe42a5862b896b2abc"
+    },
+    "output32/raw/off/external-preflight.log": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/external-preflight.log",
+      "bytes": 186,
+      "sha256": "2f40655ff813b2af4ced8fef405777844ac09886d197c8d6df23b5c6d49653f3"
+    },
+    "output32/raw/off/input.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/input.json",
+      "bytes": 72537,
+      "sha256": "410cb799ec03081d27edb7218b00f56329d78a943b2e4ed76357c04254c1f40a"
+    },
+    "output32/raw/off/manifest.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/manifest.json",
+      "bytes": 2286,
+      "sha256": "094ead87638c0e6fa1c2329a5cd1e957a6c18549732506d8c03a47551ab40c74"
+    },
+    "output32/raw/off/metadata.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/metadata.json",
+      "bytes": 2588,
+      "sha256": "73438fafe707e7d82a0a550eacb19662fcbd62f19a1ed75662f59fc06b703bef"
+    },
+    "output32/raw/off/remote-inventory.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/remote-inventory.json",
+      "bytes": 705,
+      "sha256": "52ab0cdcf349ab625cd9563b9d6c22a3c798b0a347cfe8265355dd39de213b66"
+    },
+    "output32/raw/off/report.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/report.json",
+      "bytes": 711297,
+      "sha256": "6876d070278875776bcb9d896fa0b2b4db950893911f6c11ee3337040892406b"
+    },
+    "output32/raw/off/runtime-precheck.stderr": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/runtime-precheck.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/raw/off/runtime-precheck.stdout": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/runtime-precheck.stdout",
+      "bytes": 1681,
+      "sha256": "fa84c41fe35d7b7d3a241d5056083c963b89aea49f7f4fd33eabed563e0319fc"
+    },
+    "output32/raw/off/ssh-run.log": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/raw/off/summary.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/summary.json",
+      "bytes": 597,
+      "sha256": "db19b85679620b710f45b9903cb77ed2ed896b649deed5909b5bda1cb9be242f"
+    },
+    "output32/raw/off/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/off/telemetry.jsonl",
+      "bytes": 92383,
+      "sha256": "fe9560098d023a9654dc5646b7c62f0079243c8f07d227abc12b97c911997d2c"
+    },
+    "output32/raw/ssd/command.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/command.json",
+      "bytes": 1373,
+      "sha256": "4605d8947232785581c4548fdf613f7626b6121a5bc697106c00d983b219edc2"
+    },
+    "output32/raw/ssd/driver-execution.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/driver-execution.json",
+      "bytes": 53,
+      "sha256": "573ab5c9255a811a4bae105679bdf9f2076d93cd2eb3d5dbe135819f92e38318"
+    },
+    "output32/raw/ssd/engine.log": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/engine.log",
+      "bytes": 745,
+      "sha256": "b2789fb307c24bceb806c5927b02ba8dfafedb7385a08cb341db1259c8a2dd36"
+    },
+    "output32/raw/ssd/external-postflight.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/external-postflight.json",
+      "bytes": 198,
+      "sha256": "b2c579d206f34fc356ed47e4b956ae99dbbd0902805c4197b123144dec7e5a7d"
+    },
+    "output32/raw/ssd/external-postflight.log": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/external-postflight.log",
+      "bytes": 199,
+      "sha256": "9bea0c8fd68c28fcc11fb9f03bd95eaf44db6e0384e77086312b1eb6d48b48ce"
+    },
+    "output32/raw/ssd/external-preflight.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/external-preflight.json",
+      "bytes": 199,
+      "sha256": "80ec7fa1c47f6a72830a9e58eaf588145fe65b5760cbe78ca5f8d8ff55f65608"
+    },
+    "output32/raw/ssd/external-preflight.log": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/external-preflight.log",
+      "bytes": 200,
+      "sha256": "320a71bcd6bcb496bc15fdad8550fd8072a4e0f6ce4437d6ef601ed017acea77"
+    },
+    "output32/raw/ssd/input.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/input.json",
+      "bytes": 72537,
+      "sha256": "410cb799ec03081d27edb7218b00f56329d78a943b2e4ed76357c04254c1f40a"
+    },
+    "output32/raw/ssd/manifest.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/manifest.json",
+      "bytes": 2286,
+      "sha256": "b082a6782c82861033ed74a71fada2fc0547bb9ec0a83bda4c48d6b071c66737"
+    },
+    "output32/raw/ssd/metadata.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/metadata.json",
+      "bytes": 2585,
+      "sha256": "b0544b27d516c88d9a032819f6c1447c1a3a09bcde24eb24b739ecd34a92dbe1"
+    },
+    "output32/raw/ssd/remote-inventory.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/remote-inventory.json",
+      "bytes": 705,
+      "sha256": "600a79ecfdd3ba008bb2fa2139c7130f1e7ad6694f411276dc5096fd2ed6b32d"
+    },
+    "output32/raw/ssd/report.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/report.json",
+      "bytes": 727960,
+      "sha256": "1822451027eb2c96e674f32e54d2ad7898b794f99eb82a4f75f2beb1f3af35de"
+    },
+    "output32/raw/ssd/runtime-precheck.stderr": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/runtime-precheck.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/raw/ssd/runtime-precheck.stdout": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/runtime-precheck.stdout",
+      "bytes": 1681,
+      "sha256": "f0706ccdc19a0b22ace0a4684afbfd95a84b299cb68fbcca66e99c9a6cc0e5ca"
+    },
+    "output32/raw/ssd/ssh-run.log": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/raw/ssd/summary.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/summary.json",
+      "bytes": 588,
+      "sha256": "25e566e04d565cae789e2ae733d3bf5a6f7674cd218665892fe471aaa90a6399"
+    },
+    "output32/raw/ssd/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/raw/ssd/telemetry.jsonl",
+      "bytes": 86772,
+      "sha256": "497cad6199a1f62267c008660804552d8fc89e893c8cba46136486d6d1d98030"
+    },
+    "output32/staging/create.stderr": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/staging/create.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/staging/create.stdout": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/staging/create.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/staging/manifest.json": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/staging/manifest.json",
+      "bytes": 1039,
+      "sha256": "ed5d7dee7d23efb041a91d434a53571c26818f61f064b3e32bad7c48d11ab214"
+    },
+    "output32/staging/scp.stderr": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/staging/scp.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/staging/scp.stdout": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/staging/scp.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/staging/verify.stderr": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/staging/verify.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "output32/staging/verify.stdout": {
+      "source": "/tmp/darkbloom-qat-output32-pair-freeze1/staging/verify.stdout",
+      "bytes": 8673,
+      "sha256": "e769c27d8fe819ca4b1fc3265b3a37d17c7ac5c684da6d75acbfa8519bd666c2"
+    },
+    "review/darkbloom-gemma-qat-native-observer-root-review.json": {
+      "source": "/tmp/darkbloom-gemma-qat-native-observer-root-review.json",
+      "bytes": 865,
+      "sha256": "0e6378b58acc3aa79bda61233218377176413409d59996cc65e485a4b7ab6072"
+    },
+    "review/darkbloom-gemma-qat-pairs-root-review.json": {
+      "source": "/tmp/darkbloom-gemma-qat-pairs-root-review.json",
+      "bytes": 3942,
+      "sha256": "d969d966c399115586c879fb498df6f099e23c77abf3ebe674f7279d84dba308"
+    }
+  }
+}

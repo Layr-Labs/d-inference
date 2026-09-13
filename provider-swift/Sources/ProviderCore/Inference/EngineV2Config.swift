@@ -163,6 +163,8 @@ public enum EngineV2Factory {
         auxiliaryTokenAllocationPadding: Int = 0,
         kvBudget: GlobalKVCacheBudget? = nil,
         ssdPrefixCache: SSDPrefixCache? = nil,
+        ssdHybridCheckpointStore: SSDHybridCheckpointStore? = nil,
+        residentPrefixCacheEvidence: ResidentPrefixCacheEvidence? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngine: () throws -> EngineV2Factory.ProductionBuild
@@ -202,6 +204,8 @@ public enum EngineV2Factory {
                 // pre-submit staging hook + release backstops + shutdown
                 // over the SAME instance the engine holds as its cache.
                 ssdPrefixCache: ssdPrefixCache,
+                ssdHybridCheckpointStore: ssdHybridCheckpointStore,
+                residentPrefixCacheEvidence: residentPrefixCacheEvidence,
                 prefixCacheStatus: prefixCacheStatus,
                 kvBackendKind: build.kvBackendKind,
                 // Same value the INFO event below reports, but on a channel
@@ -215,6 +219,7 @@ public enum EngineV2Factory {
             // tasks/registration (the refusal unloads the slot — there is
             // no engine left to drive the tier's shutdown).
             ssdPrefixCache?.close()
+            ssdHybridCheckpointStore?.close()
             emitRefusalTelemetry(
                 modelId: modelId,
                 reason: EngineV2RefusalReason.classify(error),

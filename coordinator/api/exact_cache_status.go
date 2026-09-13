@@ -11,15 +11,23 @@ import (
 const exactCacheStatusCacheTTL = time.Second
 
 type ExactCacheStatus struct {
-	RoutingMode     string                                `json:"routing_mode"`
-	Activation      registry.CacheRoutingActivationStatus `json:"activation"`
-	Sidecar         ExactCacheSidecarStatus               `json:"sidecar"`
-	Preload         ExactCachePreloadStatus               `json:"preload"`
-	PromptArtifacts ExactCachePromptArtifactStatus        `json:"prompt_artifacts"`
-	Providers       registry.PrefixCacheProtocolStatus    `json:"providers"`
-	Lifecycle       registry.CacheRoutingLifecycleStatus  `json:"lifecycle"`
-	Holders         int                                   `json:"holders"`
-	Attempts        int                                   `json:"attempts"`
+	ArtifactAllowlist ExactCacheArtifactAllowlistStatus     `json:"artifact_allowlist"`
+	RoutingMode       string                                `json:"routing_mode"`
+	Activation        registry.CacheRoutingActivationStatus `json:"activation"`
+	Sidecar           ExactCacheSidecarStatus               `json:"sidecar"`
+	Preload           ExactCachePreloadStatus               `json:"preload"`
+	PromptArtifacts   ExactCachePromptArtifactStatus        `json:"prompt_artifacts"`
+	Providers         registry.PrefixCacheProtocolStatus    `json:"providers"`
+	Lifecycle         registry.CacheRoutingLifecycleStatus  `json:"lifecycle"`
+	Holders           int                                   `json:"holders"`
+	Attempts          int                                   `json:"attempts"`
+}
+
+// ExactCacheArtifactAllowlistStatus distinguishes unrestricted from configured-empty
+// without exposing model IDs or artifact hashes. Count is the number of exact tuples.
+type ExactCacheArtifactAllowlistStatus struct {
+	Configured bool `json:"configured"`
+	Count      int  `json:"count"`
 }
 
 type ExactCacheSidecarStatus struct {
@@ -64,11 +72,15 @@ func (s *Server) SetPromptSupervisor(supervisor *promptcontract.Supervisor) {
 // includes models, providers, accounts, scopes, route keys, prompt material, or
 // token-chain hashes.
 func (s *Server) ExactCacheStatusSnapshot() ExactCacheStatus {
-	routingMode := s.registry.CacheRoutingConfigSnapshot().Mode
+	config := s.registry.CacheRoutingConfigSnapshot()
+	routingMode := config.Mode
 	if routingMode != registry.CacheRoutingOn {
 		routingMode = registry.CacheRoutingOff
 	}
 	status := ExactCacheStatus{
+		ArtifactAllowlist: ExactCacheArtifactAllowlistStatus{
+			Configured: config.AllowedArtifacts != nil, Count: len(config.AllowedArtifacts),
+		},
 		RoutingMode: routingMode,
 		Activation:  s.registry.CacheRoutingActivationStatus(),
 		Providers:   s.registry.PrefixCacheProtocolStatus(),

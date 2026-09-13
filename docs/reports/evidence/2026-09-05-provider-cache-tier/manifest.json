@@ -1,0 +1,33 @@
+{
+  "scope": "Two-file provider tier-advertisement prerequisite. Actual fixture with an accepted complete SSD store and explicit resident bank proves resident evidence is suppressed. Shared provider build6 includes separately evolving native paged memory accounting and renderer2.3.6 work; this is not a clean two-file-only build or real-model performance proof.",
+  "parent": "e3f3fd160745143aa5edbd9fec182a84e71d3373",
+  "validation": {
+    "result": "pass",
+    "functions": 40,
+    "suites": 4,
+    "seconds": 0.199,
+    "skips": 0,
+    "command": "swift test --package-path provider-swift --skip-build --filter QwenVLMTargetExtractionTests|SwiftJinjaLoopContextTests|Gemma4ToolCallArgumentsTests|GPTOSSHarmonyTemplateFixesTests"
+  },
+  "files": [
+    {
+      "path": "source-paths.json",
+      "sha256": "a3db4c114e3e62e66c74db75a6383c76a45d6cfbd394389e913415a1048159f3",
+      "bytes": 290
+    },
+    {
+      "path": "build6-source-manifest.json.gz",
+      "sha256": "8f458f38fc68fbda6d732f5e3bd00e6c61b40c45f3d908d7cb4af1f2472e49f2",
+      "bytes": 56468,
+      "raw_sha256": "cfcb04ed3e4091d49c721aef857299a20e341288a3d8f6afd6047f367c5d4acf",
+      "raw_bytes": 160759
+    },
+    {
+      "path": "focused-prerequisites.log.gz",
+      "sha256": "e07ed26980b23e58558416c8a08d7cae4dbb0df3c682c61551276e3247c89a73",
+      "bytes": 2498,
+      "raw_sha256": "406e24c76522c1f9b0bcca203ab51dfb05c3554ae8a144968edc1bfee64eae73",
+      "raw_bytes": 11166
+    }
+  ]
+}

@@ -50,8 +50,8 @@ func exactTestRegistry(t *testing.T) (*Registry, *Provider, protocol.PrefixCache
 		ActivationPct:   100,
 		TTL:             time.Minute,
 		MaxHolders:      8,
-		MaxDiscountMs:   1_000,
-		MaxCostFraction: .35,
+		MaxDiscountMs:   f64(1_000),
+		MaxCostFraction: f64(.35),
 		MasterKey: base64.RawURLEncoding.EncodeToString(
 			[]byte("0123456789abcdef0123456789abcdef")),
 	})
@@ -68,6 +68,31 @@ func exactTestRegistry(t *testing.T) (*Registry, *Provider, protocol.PrefixCache
 	return r, provider, capability
 }
 
+// Receipt tests provide synthetic sidecar plans. Bind their provenance explicitly
+// without adding an unbound-plan compatibility path to production Prepare.
+func boundTestCachePlan(r *Registry, plan CachePlan) CachePlan {
+	r.mu.RLock()
+	plan.generation = r.cacheRouting.generation
+	r.mu.RUnlock()
+	return plan
+}
+
+func prepareBoundTestCacheAttempt(r *Registry, pr *PendingRequest, provider *Provider) error {
+	if pr.CachePlan.generation == nil {
+		pr.CachePlan = boundTestCachePlan(r, pr.CachePlan)
+	}
+	return r.PrepareCacheAttempt(pr, provider)
+}
+
+func preparedTestCacheMetadata(pr *PendingRequest) protocol.InferenceRequestMessage {
+	owner := pr.CacheAttemptSnapshot().owner
+	if owner == nil {
+		return protocol.InferenceRequestMessage{}
+	}
+	return protocol.InferenceRequestMessage{CacheReceiptNonce: owner.nonce, CacheScope: owner.scope,
+		PrefixCacheProtocol: 2, CacheReceiptBoundaryMode: owner.boundaryMode}
+}
+
 func TestExactRoutingHintRevalidatesCapabilityBeforeDiscount(t *testing.T) {
 	r, provider, capability := exactTestRegistry(t)
 	provider.mu.Lock()
@@ -78,7 +103,7 @@ func TestExactRoutingHintRevalidatesCapabilityBeforeDiscount(t *testing.T) {
 	revision := provider.prefixCacheRevision
 	provider.mu.Unlock()
 	hint := cacheRoutingHint{
-		Provider: provider, Capability: capability, CapabilityRevision: revision,
+		generation: r.cacheRouting.generation, Provider: provider, Capability: capability, CapabilityRevision: revision,
 		PrefillTokensSaved: int(promptcontract.BlockSize),
 		CachedTokens:       int(promptcontract.BlockSize),
 		StageMs:            1,
@@ -101,7 +126,7 @@ func TestExactRoutingHintRevalidatesCapabilityBeforeDiscount(t *testing.T) {
 	rotatedRevision := provider.prefixCacheRevision
 	provider.mu.Unlock()
 	rotatedHint := cacheRoutingHint{
-		Provider: provider, Capability: rotated, CapabilityRevision: rotatedRevision,
+		generation: r.cacheRouting.generation, Provider: provider, Capability: rotated, CapabilityRevision: rotatedRevision,
 		PrefillTokensSaved: int(promptcontract.BlockSize),
 		CachedTokens:       int(promptcontract.BlockSize),
 		StageMs:            1,
@@ -109,12 +134,12 @@ func TestExactRoutingHintRevalidatesCapabilityBeforeDiscount(t *testing.T) {
 	if !rotatedHint.currentForProvider(provider, "model") {
 		t.Fatal("rotated capability did not admit a fresh hint")
 	}
-	r.disablePrefixCacheV2Model(provider.ID, "model")
+	r.disablePrefixCacheV2Model(provider.ID, "model", "ssd", provider, r.cacheRouting, rotated)
 	if rotatedHint.currentForProvider(provider, "model") {
 		t.Fatal("pre-quarantine hint survived a proof failure")
 	}
-	if capabilities := r.prefixCacheV2CapabilitiesForModel("model"); len(capabilities) != 0 {
-		t.Fatal("proof failure allowed a fresh capability snapshot during quarantine")
+	if !r.cacheRouting.capabilityRejected(provider.ID, "model", "ssd", rotated) {
+		t.Fatal("proof failure did not quarantine the advertised capability")
 	}
 }
 
@@ -126,14 +151,14 @@ func TestExactV2ReadyCreatesLongestPrefixHolderAndMissInvalidates(t *testing.T) 
 	a4 := exactTestAnchor(4, "f")
 	initial := exactTestPlan(a1, a2)
 	pr := &PendingRequest{RequestID: "request-1", Model: "model", CachePlan: initial}
-	if err := r.PrepareCacheAttempt(pr, provider); err != nil {
+	if err := prepareBoundTestCacheAttempt(r, pr, provider); err != nil {
 		t.Fatal(err)
 	}
-	if pr.CacheReceiptNonce == "" || !pr.CacheRoutingParticipates() {
+	if preparedTestCacheMetadata(pr).CacheReceiptNonce == "" || !pr.CacheRoutingParticipates() {
 		t.Fatal("protocol-v2 attempt was not activated")
 	}
 	lookup := &protocol.PrefixCacheLookupV2Message{
-		RequestID: pr.RequestID, CacheReceiptNonce: pr.CacheReceiptNonce,
+		RequestID: pr.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(pr).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
 		PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch,
 		CacheSeq: 1, PromptAnchor: a2, Outcome: "miss_absent", Tier: "ssd", StageMs: 1,
@@ -142,7 +167,7 @@ func TestExactV2ReadyCreatesLongestPrefixHolderAndMissInvalidates(t *testing.T) 
 		t.Fatal("valid lookup proof was rejected")
 	}
 	ready := &protocol.PrefixCacheReadyV2Message{
-		RequestID: pr.RequestID, CacheReceiptNonce: pr.CacheReceiptNonce,
+		RequestID: pr.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(pr).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
 		PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch,
 		CacheSeq: 2, Outcome: "ready", Tier: "ssd", ReadyAnchors: []protocol.PrefixCacheAnchor{a2, a3},
@@ -201,11 +226,11 @@ func TestExactV2ReadyCreatesLongestPrefixHolderAndMissInvalidates(t *testing.T) 
 	}
 
 	missPR := &PendingRequest{RequestID: "request-2", Model: "model", CachePlan: future}
-	if err := r.PrepareCacheAttempt(missPR, provider); err != nil {
+	if err := prepareBoundTestCacheAttempt(r, missPR, provider); err != nil {
 		t.Fatal(err)
 	}
 	miss := &protocol.PrefixCacheLookupV2Message{
-		RequestID: missPR.RequestID, CacheReceiptNonce: missPR.CacheReceiptNonce,
+		RequestID: missPR.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(missPR).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
 		PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch,
 		CacheSeq: 3, PromptAnchor: a4, Outcome: "miss_absent", Tier: "ssd", StageMs: 1,
@@ -237,11 +262,11 @@ func TestExactV2CoordinatorRestartDropsEphemeralRoutingState(t *testing.T) {
 	final := exactTestAnchor(3, "d")
 	plan := exactTestPlan(exactTestAnchor(1, "b"), prompt)
 	pr := &PendingRequest{RequestID: "request-before-restart", Model: "model", CachePlan: plan}
-	if err := r.PrepareCacheAttempt(pr, provider); err != nil {
+	if err := prepareBoundTestCacheAttempt(r, pr, provider); err != nil {
 		t.Fatal(err)
 	}
 	lookup := &protocol.PrefixCacheLookupV2Message{
-		RequestID: pr.RequestID, CacheReceiptNonce: pr.CacheReceiptNonce,
+		RequestID: pr.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(pr).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
 		PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch,
 		CacheSeq: 1, PromptAnchor: prompt, Outcome: "miss_absent", Tier: "ssd", StageMs: 1,
@@ -250,7 +275,7 @@ func TestExactV2CoordinatorRestartDropsEphemeralRoutingState(t *testing.T) {
 		t.Fatal("valid lookup proof was rejected")
 	}
 	ready := &protocol.PrefixCacheReadyV2Message{
-		RequestID: pr.RequestID, CacheReceiptNonce: pr.CacheReceiptNonce,
+		RequestID: pr.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(pr).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
 		PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch,
 		CacheSeq: 2, Outcome: "ready", Tier: "ssd",
@@ -302,24 +327,24 @@ func TestExactV2SpeculativeAttemptsKeepWinnerAndLoserProofsIsolated(t *testing.T
 	plan := exactTestPlan(exactTestAnchor(1, "b"), prompt)
 	attemptA := &PendingRequest{RequestID: "speculative-request", Model: "model", CachePlan: plan}
 	attemptB := &PendingRequest{RequestID: "speculative-request", Model: "model", CachePlan: plan}
-	if err := r.PrepareCacheAttempt(attemptA, providerA); err != nil {
+	if err := prepareBoundTestCacheAttempt(r, attemptA, providerA); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.PrepareCacheAttempt(attemptB, providerB); err != nil {
+	if err := prepareBoundTestCacheAttempt(r, attemptB, providerB); err != nil {
 		t.Fatal(err)
 	}
-	if attemptA.CacheReceiptNonce == attemptB.CacheReceiptNonce {
+	if preparedTestCacheMetadata(attemptA).CacheReceiptNonce == preparedTestCacheMetadata(attemptB).CacheReceiptNonce {
 		t.Fatal("speculative attempts shared a receipt nonce")
 	}
 
 	lookupB := &protocol.PrefixCacheLookupV2Message{
-		RequestID: attemptB.RequestID, CacheReceiptNonce: attemptB.CacheReceiptNonce,
+		RequestID: attemptB.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(attemptB).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: capabilityB.ModelAggregateHash,
 		PromptContractID: capabilityB.PromptContractID, CacheEpoch: capabilityB.CacheEpoch,
 		CacheSeq: 1, PromptAnchor: prompt, Outcome: "miss_absent", Tier: "ssd", StageMs: 1,
 	}
 	spoofed := *lookupB
-	spoofed.CacheReceiptNonce = attemptA.CacheReceiptNonce
+	spoofed.CacheReceiptNonce = preparedTestCacheMetadata(attemptA).CacheReceiptNonce
 	if r.ApplyPrefixCacheLookupV2(providerB.ID, &spoofed) {
 		t.Fatal("backup provider claimed the primary attempt nonce")
 	}
@@ -327,7 +352,7 @@ func TestExactV2SpeculativeAttemptsKeepWinnerAndLoserProofsIsolated(t *testing.T
 		t.Fatal("valid winner lookup proof was rejected")
 	}
 	readyB := &protocol.PrefixCacheReadyV2Message{
-		RequestID: attemptB.RequestID, CacheReceiptNonce: attemptB.CacheReceiptNonce,
+		RequestID: attemptB.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(attemptB).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: capabilityB.ModelAggregateHash,
 		PromptContractID: capabilityB.PromptContractID, CacheEpoch: capabilityB.CacheEpoch,
 		CacheSeq: 2, Outcome: "ready", Tier: "ssd",
@@ -338,7 +363,7 @@ func TestExactV2SpeculativeAttemptsKeepWinnerAndLoserProofsIsolated(t *testing.T
 		t.Fatal("valid winner ready proof was rejected")
 	}
 
-	loserNonce := attemptA.CacheReceiptNonce
+	loserNonce := preparedTestCacheMetadata(attemptA).CacheReceiptNonce
 	r.ForgetCacheAttempt(attemptA)
 	lateLoser := &protocol.PrefixCacheLookupV2Message{
 		RequestID: attemptA.RequestID, CacheReceiptNonce: loserNonce,
@@ -377,11 +402,11 @@ func TestExactV2ProofMismatchQuarantinesOnlyCurrentCapability(t *testing.T) {
 		Model:     "model",
 		CachePlan: exactTestPlan(prompt),
 	}
-	if err := r.PrepareCacheAttempt(pr, provider); err != nil {
+	if err := prepareBoundTestCacheAttempt(r, pr, provider); err != nil {
 		t.Fatal(err)
 	}
 	mismatch := &protocol.PrefixCacheLookupV2Message{
-		RequestID: pr.RequestID, CacheReceiptNonce: pr.CacheReceiptNonce,
+		RequestID: pr.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(pr).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
 		PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch,
 		CacheSeq: 1, PromptAnchor: exactTestAnchor(1, "d"),
@@ -390,7 +415,7 @@ func TestExactV2ProofMismatchQuarantinesOnlyCurrentCapability(t *testing.T) {
 	if r.ApplyPrefixCacheLookupV2(provider.ID, mismatch) {
 		t.Fatal("accepted mismatched provider token proof")
 	}
-	if _, ok := r.currentPrefixCacheV2Capability(provider.ID, "model"); ok {
+	if _, ok := r.currentPrefixCacheV2Capability(provider.ID, "model", "ssd"); ok {
 		t.Fatal("mismatched capability remained routing-eligible")
 	}
 
@@ -399,7 +424,7 @@ func TestExactV2ProofMismatchQuarantinesOnlyCurrentCapability(t *testing.T) {
 	provider.mu.Lock()
 	provider.PrefixCacheV2Models["model"] = rotated
 	provider.mu.Unlock()
-	if got, ok := r.currentPrefixCacheV2Capability(provider.ID, "model"); !ok || got != rotated {
+	if got, ok := r.currentPrefixCacheV2Capability(provider.ID, "model", "ssd"); !ok || got != rotated {
 		t.Fatalf("new epoch did not clear quarantine: got=%+v ok=%t", got, ok)
 	}
 }
@@ -412,11 +437,11 @@ func TestExactV2IdentityMismatchQuarantinesCurrentCapability(t *testing.T) {
 		Model:     "model",
 		CachePlan: exactTestPlan(prompt),
 	}
-	if err := r.PrepareCacheAttempt(pr, provider); err != nil {
+	if err := prepareBoundTestCacheAttempt(r, pr, provider); err != nil {
 		t.Fatal(err)
 	}
 	mismatch := &protocol.PrefixCacheLookupV2Message{
-		RequestID: pr.RequestID, CacheReceiptNonce: pr.CacheReceiptNonce,
+		RequestID: pr.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(pr).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: strings.Repeat("f", 64),
 		PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch,
 		CacheSeq: 1, PromptAnchor: prompt,
@@ -425,7 +450,7 @@ func TestExactV2IdentityMismatchQuarantinesCurrentCapability(t *testing.T) {
 	if r.ApplyPrefixCacheLookupV2(provider.ID, mismatch) {
 		t.Fatal("accepted a proof for the wrong model build")
 	}
-	if _, ok := r.currentPrefixCacheV2Capability(provider.ID, "model"); ok {
+	if _, ok := r.currentPrefixCacheV2Capability(provider.ID, "model", "ssd"); ok {
 		t.Fatal("identity-mismatched capability remained routing-eligible")
 	}
 }
@@ -441,11 +466,11 @@ func TestExactRoutingV1ProviderRemainsColdBaseline(t *testing.T) {
 		Model:     "model",
 		CachePlan: exactTestPlan(exactTestAnchor(1, "c")),
 	}
-	if err := r.PrepareCacheAttempt(pr, provider); err != nil {
+	if err := prepareBoundTestCacheAttempt(r, pr, provider); err != nil {
 		t.Fatal(err)
 	}
-	if pr.CacheReceiptNonce != "" || pr.CacheScope != "" ||
-		pr.PrefixCacheProtocol != 0 || pr.CacheRoutingParticipates() {
+	if preparedTestCacheMetadata(pr).CacheReceiptNonce != "" || preparedTestCacheMetadata(pr).CacheScope != "" ||
+		preparedTestCacheMetadata(pr).PrefixCacheProtocol != 0 || pr.CacheRoutingParticipates() {
 		t.Fatalf("v1 provider received active routing metadata: %+v", pr)
 	}
 	if r.ApplyPrefixCacheLookup(provider.ID, &protocol.PrefixCacheLookupMessage{}) ||
@@ -479,11 +504,11 @@ func TestExactRoutingMixedV1V2FleetFallsBackToV1Inference(t *testing.T) {
 	if selected == nil || selected.ID != v1.ID {
 		t.Fatalf("mixed fleet did not fall back to v1: provider=%v decision=%+v", selected, decision)
 	}
-	if err := r.PrepareCacheAttempt(request, selected); err != nil {
+	if err := prepareBoundTestCacheAttempt(r, request, selected); err != nil {
 		t.Fatal(err)
 	}
-	if request.CacheReceiptNonce != "" || request.CacheScope != "" ||
-		request.PrefixCacheProtocol != 0 || request.CacheRoutingParticipates() {
+	if preparedTestCacheMetadata(request).CacheReceiptNonce != "" || preparedTestCacheMetadata(request).CacheScope != "" ||
+		preparedTestCacheMetadata(request).PrefixCacheProtocol != 0 || request.CacheRoutingParticipates() {
 		t.Fatalf("v1 fallback received exact-cache metadata: %+v", request)
 	}
 }
@@ -497,11 +522,11 @@ func TestExactRoutingAccountsMissDonationHitLifecycle(t *testing.T) {
 	miss := &PendingRequest{
 		RequestID: "lifecycle-miss", Model: "model", CachePlan: exactTestPlan(a1, a2),
 	}
-	if err := r.PrepareCacheAttempt(miss, provider); err != nil {
+	if err := prepareBoundTestCacheAttempt(r, miss, provider); err != nil {
 		t.Fatal(err)
 	}
 	if !r.ApplyPrefixCacheLookupV2(provider.ID, &protocol.PrefixCacheLookupV2Message{
-		RequestID: miss.RequestID, CacheReceiptNonce: miss.CacheReceiptNonce,
+		RequestID: miss.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(miss).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
 		PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch,
 		CacheSeq: 1, PromptAnchor: a2, Outcome: "miss_absent", Tier: "ssd", StageMs: 1,
@@ -509,7 +534,7 @@ func TestExactRoutingAccountsMissDonationHitLifecycle(t *testing.T) {
 		t.Fatal("miss receipt rejected")
 	}
 	if !r.ApplyPrefixCacheReadyV2(provider.ID, &protocol.PrefixCacheReadyV2Message{
-		RequestID: miss.RequestID, CacheReceiptNonce: miss.CacheReceiptNonce,
+		RequestID: miss.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(miss).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
 		PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch,
 		CacheSeq: 2, Outcome: "ready", Tier: "ssd",
@@ -523,11 +548,11 @@ func TestExactRoutingAccountsMissDonationHitLifecycle(t *testing.T) {
 	hit := &PendingRequest{
 		RequestID: "lifecycle-hit", Model: "model", CachePlan: exactTestPlan(a1, a2, a3),
 	}
-	if err := r.PrepareCacheAttempt(hit, provider); err != nil {
+	if err := prepareBoundTestCacheAttempt(r, hit, provider); err != nil {
 		t.Fatal(err)
 	}
 	if !r.ApplyPrefixCacheLookupV2(provider.ID, &protocol.PrefixCacheLookupV2Message{
-		RequestID: hit.RequestID, CacheReceiptNonce: hit.CacheReceiptNonce,
+		RequestID: hit.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(hit).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
 		PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch,
 		CacheSeq: 3, PromptAnchor: a3, Outcome: "hit", Tier: "ssd",
@@ -549,7 +574,7 @@ func TestLegacyCacheBustKeyLengthMatchesSizingContract(t *testing.T) {
 	provider.PrefixCacheProtocol = 0
 	provider.mu.Unlock()
 	pr := &PendingRequest{RequestID: "v0-sizing", Model: "model"}
-	if err := r.PrepareCacheAttempt(pr, provider); err != nil {
+	if err := prepareBoundTestCacheAttempt(r, pr, provider); err != nil {
 		t.Fatal(err)
 	}
 	if len(pr.LegacyCacheBustKey) != LegacyCacheBustKeyLength {
@@ -580,11 +605,11 @@ func TestExactV2LongestHolderChangesMultiProviderSelection(t *testing.T) {
 	pr := &PendingRequest{
 		RequestID: "seed-holder", Model: "model", CachePlan: exactTestPlan(a1, a2),
 	}
-	if err := r.PrepareCacheAttempt(pr, cached); err != nil {
+	if err := prepareBoundTestCacheAttempt(r, pr, cached); err != nil {
 		t.Fatal(err)
 	}
 	if !r.ApplyPrefixCacheLookupV2(cached.ID, &protocol.PrefixCacheLookupV2Message{
-		RequestID: pr.RequestID, CacheReceiptNonce: pr.CacheReceiptNonce,
+		RequestID: pr.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(pr).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
 		PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch,
 		CacheSeq: 1, PromptAnchor: a2, Outcome: "miss_absent", Tier: "ssd", StageMs: 1,
@@ -592,7 +617,7 @@ func TestExactV2LongestHolderChangesMultiProviderSelection(t *testing.T) {
 		t.Fatal("seed lookup failed")
 	}
 	if !r.ApplyPrefixCacheReadyV2(cached.ID, &protocol.PrefixCacheReadyV2Message{
-		RequestID: pr.RequestID, CacheReceiptNonce: pr.CacheReceiptNonce,
+		RequestID: pr.RequestID, CacheReceiptNonce: preparedTestCacheMetadata(pr).CacheReceiptNonce,
 		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
 		PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch,
 		CacheSeq: 2, Outcome: "ready", Tier: "ssd",
@@ -608,7 +633,7 @@ func TestExactV2LongestHolderChangesMultiProviderSelection(t *testing.T) {
 		Model:                 "model",
 		EstimatedPromptTokens: a4.TokenCount,
 		RequestedMaxTokens:    128,
-		CachePlan:             exactTestPlan(a1, a2, a3, a4),
+		CachePlan:             boundTestCachePlan(r, exactTestPlan(a1, a2, a3, a4)),
 	}
 	selected, decision := r.ReserveProviderEx("model", next)
 	if selected == nil {
@@ -631,7 +656,7 @@ func TestExactV2LongestHolderChangesMultiProviderSelection(t *testing.T) {
 		Model:                 "model",
 		EstimatedPromptTokens: a4.TokenCount,
 		RequestedMaxTokens:    128,
-		CachePlan:             exactTestPlan(a1, a2, a3, a4),
+		CachePlan:             boundTestCachePlan(r, exactTestPlan(a1, a2, a3, a4)),
 	}
 	selected, decision = r.ReserveProviderEx("model", busy)
 	if selected == nil || selected.ID != cold.ID {
@@ -649,10 +674,10 @@ func TestExactRoutingDisabledV2CapabilityRemainsColdBaseline(t *testing.T) {
 
 	plan := exactTestPlan(exactTestAnchor(1, "c"))
 	pr := &PendingRequest{RequestID: "disabled-v2", Model: "model", CachePlan: plan}
-	if err := r.PrepareCacheAttempt(pr, provider); err != nil {
+	if err := prepareBoundTestCacheAttempt(r, pr, provider); err != nil {
 		t.Fatal(err)
 	}
-	if pr.CacheReceiptNonce != "" || pr.CacheRoutingParticipates() {
+	if preparedTestCacheMetadata(pr).CacheReceiptNonce != "" || pr.CacheRoutingParticipates() {
 		t.Fatal("disabled v2 capability was allowed to participate")
 	}
 }
@@ -710,7 +735,7 @@ func TestExactRoutingExpiryAndDisconnectRemoveConnectionEvidence(t *testing.T) {
 	r, provider, capability := exactTestRegistry(t)
 	anchor := exactTestAnchor(1, "c")
 	plan := exactTestPlan(anchor)
-	key := cacheBoundaryKey(r.cacheRouteKeys.route, plan, capability.CacheEpoch, anchor)
+	key := cacheBoundaryKey(r.cacheRouteKeys.route, plan, anchor)
 	now := time.Now()
 	r.cacheRouting.mu.Lock()
 	r.cacheRouting.upsertHolderLocked(key, cacheHolder{
@@ -778,4 +803,31 @@ func TestExactRoutingHolderCapacityEvictionIsCounted(t *testing.T) {
 	if added != 2 || removed != 1 || count != 1 {
 		t.Fatalf("capacity lifecycle added=%d removed=%d holders=%d", added, removed, count)
 	}
+}
+
+// Direct receipt tests inject capability snapshots; production obtains them
+// only from live matching holders through Registry.cacheRoutingHints.
+func (t *cacheRoutingTracker) hints(plan CachePlan, capabilities map[string]cacheRoutingCapability,
+	routeKey []byte, mode string, now time.Time) map[string]cacheRoutingHint {
+	if plan.generation == nil {
+		plan.generation = t.generation
+	}
+	matches := t.matchingHolders(plan, routeKey, mode, now)
+	if matches == nil {
+		return nil
+	}
+	return cacheHintsForMatches(plan, matches, capabilities)
+}
+
+// currentForProvider closes the gap between the unlocked tracker snapshot and
+// the locked scheduler scan. Capability heartbeats and proof quarantine mutate
+// the revision under the same provider lock, so stale hints fail cold before
+// they can influence provider selection.
+func (hint cacheRoutingHint) currentForProvider(provider *Provider, model string) bool {
+	if provider == nil || hint.Provider != provider {
+		return false
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	return hint.currentForProviderLocked(provider, model)
 }

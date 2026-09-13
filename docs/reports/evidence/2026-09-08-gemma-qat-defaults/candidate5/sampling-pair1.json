@@ -1,0 +1,739 @@
+{
+  "off_status": "completed",
+  "on_status": "completed",
+  "rows": [
+    {
+      "id": "code-first",
+      "prompt_tokens_equal": true,
+      "generated_tokens_equal": false,
+      "off": {
+        "mtp_delta": {
+          "rounds": 0,
+          "proposed_tokens": 0,
+          "accepted_tokens": 0,
+          "emitted_tokens": 0,
+          "rectangular_rounds": 0,
+          "serial_rounds": 0,
+          "seed_steps": 0,
+          "depth_selections": {},
+          "controller_fallbacks": {},
+          "acceptance_rate": null
+        },
+        "completion_tokens": 1024,
+        "decode_tokens": 1023,
+        "decode_seconds": 9.244643875,
+        "decode_tps": 110.65867045094801,
+        "ttft_s": 2.473572792,
+        "elapsed_s": 11.873760959,
+        "finish": "length",
+        "cache_outcome": "miss",
+        "saved_tokens": 0,
+        "mtp": null
+      },
+      "on": {
+        "mtp_delta": {
+          "rounds": 396,
+          "proposed_tokens": 396,
+          "accepted_tokens": 345,
+          "emitted_tokens": 741,
+          "rectangular_rounds": 396,
+          "serial_rounds": 0,
+          "seed_steps": 10,
+          "depth_selections": {
+            "0": 272,
+            "1": 406
+          },
+          "controller_fallbacks": {
+            "explore_cost": 2,
+            "explore_deeper": 16,
+            "explore_window": 63,
+            "goodput": 42,
+            "goodput_window": 283,
+            "hysteresis": 203,
+            "synchronized_seed": 10,
+            "tail_depth": 0,
+            "unprofitable": 64,
+            "warmup_baseline": 0,
+            "warmup_chained_baseline": 5
+          },
+          "acceptance_rate": 0.8712121212121212
+        },
+        "completion_tokens": 1024,
+        "decode_tokens": 1023,
+        "decode_seconds": 8.6925035,
+        "decode_tps": 117.68761439095192,
+        "ttft_s": 1.80389775,
+        "elapsed_s": 10.671717625,
+        "finish": "length",
+        "cache_outcome": "miss",
+        "saved_tokens": 0,
+        "mtp": {
+          "accepted_tokens": 345,
+          "active": true,
+          "conditional_acceptance": [
+            0.8557920321864537
+          ],
+          "controller_fallbacks": {
+            "explore_cost": 4,
+            "explore_deeper": 16,
+            "explore_window": 63,
+            "goodput": 42,
+            "goodput_window": 283,
+            "hysteresis": 203,
+            "synchronized_seed": 10,
+            "tail_depth": 2,
+            "unprofitable": 64,
+            "warmup_baseline": 1,
+            "warmup_chained_baseline": 10
+          },
+          "cost_inputs": [
+            {
+              "decode_row_bucket": 1,
+              "depth": 0,
+              "ewma_wall_time_nanos": 9091148,
+              "samples": 252,
+              "total_wall_time_nanos": 2274073042
+            },
+            {
+              "decode_row_bucket": 1,
+              "depth": 1,
+              "ewma_nanos_per_committed_token": 8021336,
+              "ewma_wall_time_nanos": 123571333,
+              "samples": 49,
+              "total_wall_time_nanos": 6123206625
+            }
+          ],
+          "depth_selections": {
+            "0": 280,
+            "1": 406
+          },
+          "emitted_tokens": 741,
+          "max_rectangular_tokens": 8,
+          "proposed_tokens": 396,
+          "rectangular_rounds": 396,
+          "rounds": 396,
+          "seed_steps": 10,
+          "selected_depth": 1,
+          "serial_rounds": 0,
+          "skipped_rows": {},
+          "total_round_wall_time_nanos": 6214465792,
+          "verification_mode": "automatic"
+        }
+      },
+      "on_over_off_decode_ratio": 1.0635191432479723,
+      "substantial_exposure_both": true,
+      "manual_semantic_review_required": true
+    },
+    {
+      "id": "code-repeat",
+      "prompt_tokens_equal": true,
+      "generated_tokens_equal": false,
+      "off": {
+        "mtp_delta": {
+          "rounds": 0,
+          "proposed_tokens": 0,
+          "accepted_tokens": 0,
+          "emitted_tokens": 0,
+          "rectangular_rounds": 0,
+          "serial_rounds": 0,
+          "seed_steps": 0,
+          "depth_selections": {},
+          "controller_fallbacks": {},
+          "acceptance_rate": null
+        },
+        "completion_tokens": 1024,
+        "decode_tokens": 1023,
+        "decode_seconds": 9.258778083,
+        "decode_tps": 110.48974182439103,
+        "ttft_s": 0.206732542,
+        "elapsed_s": 9.467945125,
+        "finish": "length",
+        "cache_outcome": "hit",
+        "saved_tokens": 8192,
+        "mtp": null
+      },
+      "on": {
+        "mtp_delta": {
+          "rounds": 502,
+          "proposed_tokens": 502,
+          "accepted_tokens": 439,
+          "emitted_tokens": 941,
+          "rectangular_rounds": 502,
+          "serial_rounds": 0,
+          "seed_steps": 6,
+          "depth_selections": {
+            "0": 77,
+            "1": 508
+          },
+          "controller_fallbacks": {
+            "explore_cost": 2,
+            "explore_deeper": 9,
+            "explore_window": 42,
+            "goodput": 59,
+            "goodput_window": 398,
+            "hysteresis": 39,
+            "synchronized_seed": 6,
+            "tail_depth": 2,
+            "unprofitable": 31,
+            "warmup_baseline": 0,
+            "warmup_chained_baseline": 5
+          },
+          "acceptance_rate": 0.8745019920318725
+        },
+        "completion_tokens": 1024,
+        "decode_tokens": 1023,
+        "decode_seconds": 8.45757325,
+        "decode_tps": 120.95668222560178,
+        "ttft_s": 0.196420791,
+        "elapsed_s": 8.656410041,
+        "finish": "length",
+        "cache_outcome": "hit",
+        "saved_tokens": 8192,
+        "mtp": {
+          "accepted_tokens": 784,
+          "active": true,
+          "conditional_acceptance": [
+            0.8886268011637877
+          ],
+          "controller_fallbacks": {
+            "explore_cost": 6,
+            "explore_deeper": 25,
+            "explore_window": 105,
+            "goodput": 101,
+            "goodput_window": 681,
+            "hysteresis": 242,
+            "synchronized_seed": 16,
+            "tail_depth": 4,
+            "unprofitable": 95,
+            "warmup_baseline": 1,
+            "warmup_chained_baseline": 15
+          },
+          "cost_inputs": [
+            {
+              "decode_row_bucket": 1,
+              "depth": 0,
+              "ewma_wall_time_nanos": 9090847,
+              "samples": 63,
+              "total_wall_time_nanos": 572276666
+            },
+            {
+              "decode_row_bucket": 1,
+              "depth": 1,
+              "ewma_nanos_per_committed_token": 8443961,
+              "ewma_wall_time_nanos": 122826405,
+              "samples": 62,
+              "total_wall_time_nanos": 7651938042
+            }
+          ],
+          "depth_selections": {
+            "0": 357,
+            "1": 914
+          },
+          "emitted_tokens": 1682,
+          "max_rectangular_tokens": 8,
+          "proposed_tokens": 898,
+          "rectangular_rounds": 898,
+          "rounds": 898,
+          "seed_steps": 16,
+          "selected_depth": 0,
+          "serial_rounds": 0,
+          "skipped_rows": {},
+          "total_round_wall_time_nanos": 13958393292,
+          "verification_mode": "automatic"
+        }
+      },
+      "on_over_off_decode_ratio": 1.0947322369333308,
+      "substantial_exposure_both": true,
+      "manual_semantic_review_required": true
+    },
+    {
+      "id": "prose-first",
+      "prompt_tokens_equal": true,
+      "generated_tokens_equal": false,
+      "off": {
+        "mtp_delta": {
+          "rounds": 0,
+          "proposed_tokens": 0,
+          "accepted_tokens": 0,
+          "emitted_tokens": 0,
+          "rectangular_rounds": 0,
+          "serial_rounds": 0,
+          "seed_steps": 0,
+          "depth_selections": {},
+          "controller_fallbacks": {},
+          "acceptance_rate": null
+        },
+        "completion_tokens": 1024,
+        "decode_tokens": 1023,
+        "decode_seconds": 8.958404875,
+        "decode_tps": 114.19443687512505,
+        "ttft_s": 0.985927333,
+        "elapsed_s": 10.074225042,
+        "finish": "length",
+        "cache_outcome": "miss",
+        "saved_tokens": 0,
+        "mtp": null
+      },
+      "on": {
+        "mtp_delta": {
+          "rounds": 104,
+          "proposed_tokens": 104,
+          "accepted_tokens": 61,
+          "emitted_tokens": 165,
+          "rectangular_rounds": 104,
+          "serial_rounds": 0,
+          "seed_steps": 8,
+          "depth_selections": {
+            "0": 851,
+            "1": 112
+          },
+          "controller_fallbacks": {
+            "explore_cost": 2,
+            "explore_deeper": 14,
+            "explore_window": 56,
+            "goodput": 5,
+            "goodput_window": 35,
+            "hysteresis": 0,
+            "synchronized_seed": 8,
+            "tail_depth": 0,
+            "unprofitable": 846,
+            "warmup_baseline": 0,
+            "warmup_chained_baseline": 5
+          },
+          "acceptance_rate": 0.5865384615384616
+        },
+        "completion_tokens": 1024,
+        "decode_tokens": 1023,
+        "decode_seconds": 9.122861709,
+        "decode_tps": 112.13586620421717,
+        "ttft_s": 0.988660333,
+        "elapsed_s": 10.25089775,
+        "finish": "length",
+        "cache_outcome": "miss",
+        "saved_tokens": 0,
+        "mtp": {
+          "accepted_tokens": 845,
+          "active": true,
+          "conditional_acceptance": [
+            0.5918410205144075
+          ],
+          "controller_fallbacks": {
+            "explore_cost": 8,
+            "explore_deeper": 39,
+            "explore_window": 161,
+            "goodput": 106,
+            "goodput_window": 716,
+            "hysteresis": 242,
+            "synchronized_seed": 24,
+            "tail_depth": 4,
+            "unprofitable": 941,
+            "warmup_baseline": 1,
+            "warmup_chained_baseline": 20
+          },
+          "cost_inputs": [
+            {
+              "decode_row_bucket": 1,
+              "depth": 0,
+              "ewma_wall_time_nanos": 8781949,
+              "samples": 832,
+              "total_wall_time_nanos": 7313342458
+            },
+            {
+              "decode_row_bucket": 1,
+              "depth": 1,
+              "ewma_nanos_per_committed_token": 9639498,
+              "ewma_wall_time_nanos": 128820526,
+              "samples": 13,
+              "total_wall_time_nanos": 1623764666
+            }
+          ],
+          "depth_selections": {
+            "0": 1208,
+            "1": 1026
+          },
+          "emitted_tokens": 1847,
+          "max_rectangular_tokens": 8,
+          "proposed_tokens": 1002,
+          "rectangular_rounds": 1002,
+          "rounds": 1002,
+          "seed_steps": 24,
+          "selected_depth": 0,
+          "serial_rounds": 0,
+          "skipped_rows": {},
+          "total_round_wall_time_nanos": 15582157958,
+          "verification_mode": "automatic"
+        }
+      },
+      "on_over_off_decode_ratio": 0.9819731089601239,
+      "substantial_exposure_both": true,
+      "manual_semantic_review_required": true
+    },
+    {
+      "id": "prose-repeat",
+      "prompt_tokens_equal": true,
+      "generated_tokens_equal": false,
+      "off": {
+        "mtp_delta": {
+          "rounds": 0,
+          "proposed_tokens": 0,
+          "accepted_tokens": 0,
+          "emitted_tokens": 0,
+          "rectangular_rounds": 0,
+          "serial_rounds": 0,
+          "seed_steps": 0,
+          "depth_selections": {},
+          "controller_fallbacks": {},
+          "acceptance_rate": null
+        },
+        "completion_tokens": 1024,
+        "decode_tokens": 1023,
+        "decode_seconds": 8.960081459,
+        "decode_tps": 114.1730691491027,
+        "ttft_s": 0.258716083,
+        "elapsed_s": 9.221169917,
+        "finish": "length",
+        "cache_outcome": "hit",
+        "saved_tokens": 4096,
+        "mtp": null
+      },
+      "on": {
+        "mtp_delta": {
+          "rounds": 144,
+          "proposed_tokens": 144,
+          "accepted_tokens": 90,
+          "emitted_tokens": 234,
+          "rectangular_rounds": 144,
+          "serial_rounds": 0,
+          "seed_steps": 8,
+          "depth_selections": {
+            "0": 782,
+            "1": 152
+          },
+          "controller_fallbacks": {
+            "explore_cost": 2,
+            "explore_deeper": 15,
+            "explore_window": 63,
+            "goodput": 9,
+            "goodput_window": 63,
+            "hysteresis": 0,
+            "synchronized_seed": 8,
+            "tail_depth": 0,
+            "unprofitable": 777,
+            "warmup_baseline": 0,
+            "warmup_chained_baseline": 5
+          },
+          "acceptance_rate": 0.625
+        },
+        "completion_tokens": 1024,
+        "decode_tokens": 1023,
+        "decode_seconds": 9.078302,
+        "decode_tps": 112.68627106699027,
+        "ttft_s": 0.253850167,
+        "elapsed_s": 9.334523792,
+        "finish": "length",
+        "cache_outcome": "hit",
+        "saved_tokens": 4096,
+        "mtp": {
+          "accepted_tokens": 935,
+          "active": true,
+          "conditional_acceptance": [
+            0.5435071369701043
+          ],
+          "controller_fallbacks": {
+            "explore_cost": 10,
+            "explore_deeper": 54,
+            "explore_window": 224,
+            "goodput": 115,
+            "goodput_window": 779,
+            "hysteresis": 242,
+            "synchronized_seed": 32,
+            "tail_depth": 4,
+            "unprofitable": 1718,
+            "warmup_baseline": 1,
+            "warmup_chained_baseline": 25
+          },
+          "cost_inputs": [
+            {
+              "decode_row_bucket": 1,
+              "depth": 0,
+              "ewma_wall_time_nanos": 8823802,
+              "samples": 763,
+              "total_wall_time_nanos": 6713633209
+            },
+            {
+              "decode_row_bucket": 1,
+              "depth": 1,
+              "ewma_nanos_per_committed_token": 9448225,
+              "ewma_wall_time_nanos": 128053893,
+              "samples": 18,
+              "total_wall_time_nanos": 2187564083
+            }
+          ],
+          "depth_selections": {
+            "0": 1990,
+            "1": 1178
+          },
+          "emitted_tokens": 2081,
+          "max_rectangular_tokens": 8,
+          "proposed_tokens": 1146,
+          "rectangular_rounds": 1146,
+          "rounds": 1146,
+          "seed_steps": 32,
+          "selected_depth": 0,
+          "serial_rounds": 0,
+          "skipped_rows": {},
+          "total_round_wall_time_nanos": 17769722041,
+          "verification_mode": "automatic"
+        }
+      },
+      "on_over_off_decode_ratio": 0.9869776813990104,
+      "substantial_exposure_both": true,
+      "manual_semantic_review_required": true
+    },
+    {
+      "id": "extraction-first",
+      "prompt_tokens_equal": true,
+      "generated_tokens_equal": true,
+      "off": {
+        "mtp_delta": {
+          "rounds": 0,
+          "proposed_tokens": 0,
+          "accepted_tokens": 0,
+          "emitted_tokens": 0,
+          "rectangular_rounds": 0,
+          "serial_rounds": 0,
+          "seed_steps": 0,
+          "depth_selections": {},
+          "controller_fallbacks": {},
+          "acceptance_rate": null
+        },
+        "completion_tokens": 1024,
+        "decode_tokens": 1023,
+        "decode_seconds": 9.179653625,
+        "decode_tps": 111.442113372769,
+        "ttft_s": 1.345135208,
+        "elapsed_s": 10.664698042,
+        "finish": "length",
+        "cache_outcome": "miss",
+        "saved_tokens": 0,
+        "mtp": null
+      },
+      "on": {
+        "mtp_delta": {
+          "rounds": 511,
+          "proposed_tokens": 511,
+          "accepted_tokens": 506,
+          "emitted_tokens": 1017,
+          "rectangular_rounds": 511,
+          "serial_rounds": 0,
+          "seed_steps": 1,
+          "depth_selections": {
+            "0": 5,
+            "1": 512
+          },
+          "controller_fallbacks": {
+            "explore_cost": 2,
+            "explore_deeper": 0,
+            "explore_window": 7,
+            "goodput": 63,
+            "goodput_window": 440,
+            "hysteresis": 0,
+            "synchronized_seed": 1,
+            "tail_depth": 0,
+            "unprofitable": 0,
+            "warmup_baseline": 0,
+            "warmup_chained_baseline": 5
+          },
+          "acceptance_rate": 0.9902152641878669
+        },
+        "completion_tokens": 1024,
+        "decode_tokens": 1023,
+        "decode_seconds": 7.860261750000001,
+        "decode_tps": 130.14833761738277,
+        "ttft_s": 1.351020792,
+        "elapsed_s": 9.359527458,
+        "finish": "length",
+        "cache_outcome": "miss",
+        "saved_tokens": 0,
+        "mtp": {
+          "accepted_tokens": 1441,
+          "active": true,
+          "conditional_acceptance": [
+            0.9999571010483199
+          ],
+          "controller_fallbacks": {
+            "explore_cost": 12,
+            "explore_deeper": 54,
+            "explore_window": 231,
+            "goodput": 178,
+            "goodput_window": 1219,
+            "hysteresis": 242,
+            "synchronized_seed": 33,
+            "tail_depth": 4,
+            "unprofitable": 1718,
+            "warmup_baseline": 1,
+            "warmup_chained_baseline": 30
+          },
+          "cost_inputs": [
+            {
+              "decode_row_bucket": 1,
+              "depth": 0,
+              "ewma_wall_time_nanos": 9114374,
+              "samples": 3,
+              "total_wall_time_nanos": 27212750
+            },
+            {
+              "decode_row_bucket": 1,
+              "depth": 1,
+              "ewma_nanos_per_committed_token": 7678443,
+              "ewma_wall_time_nanos": 122629326,
+              "samples": 63,
+              "total_wall_time_nanos": 7713888917
+            }
+          ],
+          "depth_selections": {
+            "0": 1995,
+            "1": 1690
+          },
+          "emitted_tokens": 3098,
+          "max_rectangular_tokens": 8,
+          "proposed_tokens": 1657,
+          "rectangular_rounds": 1657,
+          "rounds": 1657,
+          "seed_steps": 33,
+          "selected_depth": 1,
+          "serial_rounds": 0,
+          "skipped_rows": {},
+          "total_round_wall_time_nanos": 25591491874,
+          "verification_mode": "automatic"
+        }
+      },
+      "on_over_off_decode_ratio": 1.1678559718447035,
+      "substantial_exposure_both": true,
+      "manual_semantic_review_required": true
+    },
+    {
+      "id": "extraction-repeat",
+      "prompt_tokens_equal": true,
+      "generated_tokens_equal": true,
+      "off": {
+        "mtp_delta": {
+          "rounds": 0,
+          "proposed_tokens": 0,
+          "accepted_tokens": 0,
+          "emitted_tokens": 0,
+          "rectangular_rounds": 0,
+          "serial_rounds": 0,
+          "seed_steps": 0,
+          "depth_selections": {},
+          "controller_fallbacks": {},
+          "acceptance_rate": null
+        },
+        "completion_tokens": 1024,
+        "decode_tokens": 1023,
+        "decode_seconds": 9.178371833,
+        "decode_tps": 111.4576766569749,
+        "ttft_s": 0.184910958,
+        "elapsed_s": 9.365721833,
+        "finish": "length",
+        "cache_outcome": "hit",
+        "saved_tokens": 6144,
+        "mtp": null
+      },
+      "on": {
+        "mtp_delta": {
+          "rounds": 511,
+          "proposed_tokens": 511,
+          "accepted_tokens": 506,
+          "emitted_tokens": 1017,
+          "rectangular_rounds": 511,
+          "serial_rounds": 0,
+          "seed_steps": 1,
+          "depth_selections": {
+            "0": 5,
+            "1": 512
+          },
+          "controller_fallbacks": {
+            "explore_cost": 2,
+            "explore_deeper": 0,
+            "explore_window": 7,
+            "goodput": 63,
+            "goodput_window": 440,
+            "hysteresis": 0,
+            "synchronized_seed": 1,
+            "tail_depth": 0,
+            "unprofitable": 0,
+            "warmup_baseline": 0,
+            "warmup_chained_baseline": 5
+          },
+          "acceptance_rate": 0.9902152641878669
+        },
+        "completion_tokens": 1024,
+        "decode_tokens": 1023,
+        "decode_seconds": 7.808098333,
+        "decode_tps": 131.01781719069956,
+        "ttft_s": 0.178393709,
+        "elapsed_s": 7.986819709,
+        "finish": "length",
+        "cache_outcome": "hit",
+        "saved_tokens": 6144,
+        "mtp": {
+          "accepted_tokens": 1947,
+          "active": true,
+          "conditional_acceptance": [
+            0.9999571010483199
+          ],
+          "controller_fallbacks": {
+            "explore_cost": 14,
+            "explore_deeper": 54,
+            "explore_window": 238,
+            "goodput": 241,
+            "goodput_window": 1659,
+            "hysteresis": 242,
+            "synchronized_seed": 34,
+            "tail_depth": 4,
+            "unprofitable": 1718,
+            "warmup_baseline": 1,
+            "warmup_chained_baseline": 35
+          },
+          "cost_inputs": [
+            {
+              "decode_row_bucket": 1,
+              "depth": 0,
+              "ewma_wall_time_nanos": 8937236,
+              "samples": 3,
+              "total_wall_time_nanos": 26826083
+            },
+            {
+              "decode_row_bucket": 1,
+              "depth": 1,
+              "ewma_nanos_per_committed_token": 7638120,
+              "ewma_wall_time_nanos": 121985332,
+              "samples": 63,
+              "total_wall_time_nanos": 7654175042
+            }
+          ],
+          "depth_selections": {
+            "0": 2000,
+            "1": 2202
+          },
+          "emitted_tokens": 4115,
+          "max_rectangular_tokens": 8,
+          "proposed_tokens": 2168,
+          "rectangular_rounds": 2168,
+          "rounds": 2168,
+          "seed_steps": 34,
+          "selected_depth": 1,
+          "serial_rounds": 0,
+          "skipped_rows": {},
+          "total_round_wall_time_nanos": 33352767291,
+          "verification_mode": "automatic"
+        }
+      },
+      "on_over_off_decode_ratio": 1.1754938836014273,
+      "substantial_exposure_both": true,
+      "manual_semantic_review_required": true
+    }
+  ],
+  "warning": "An initial speed ratio is descriptive only. Review semantic behavior and restored cache counters, then confirm promising gains in reversed run order before enabling defaults."
+}

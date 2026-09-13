@@ -1,0 +1,53 @@
+{
+  "review_id": "root-qwen-first-source-56fa39501",
+  "status": "QWEN_ONLY_SOURCE_REVIEWED",
+  "reviewed_at_utc": "2026-09-06T15:41:04.782557+00:00",
+  "runtime_source_manifest_sha256": "702b32ca11bffd0468d1ccb1767f97329c35263e8a626d6bc000b290b80115cf",
+  "enabled_artifacts": {
+    "qwen35": {
+      "aggregate_sha256": "95811153b3bb2ed78bf44b3248b07b52fce637706107de8b0fddf21796ade01c",
+      "manifest_sha256": "db0a8dd2902473c4b6dcd4eab9511212b52fe7bf9cb8e043aebfc47a900d21ff",
+      "model_id": "qwen3.5-35b-a3b"
+    },
+    "qwen36": {
+      "aggregate_sha256": "d932e96b00404b0575fff47e2dac8ed113056b3f22d0040c3c8d3f9ef25b09ed",
+      "manifest_sha256": "54ba4df3022077a69974cfd4de91196622c865b45ae361e1051c1cda405bc7cc",
+      "model_id": "qwen3.6-35b-a3b-vl-mtp-mxfp8"
+    },
+    "qwen38": {
+      "aggregate_sha256": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+      "manifest_sha256": "ec9001f5eabca1837c6688397c071c7d9da3a22a40c2130316d150882576a65d",
+      "model_id": "EigenLabs/Qwen3.8-27B-4bit-mtp"
+    }
+  },
+  "source": {
+    "c": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+    "core": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+    "native": "f2d79145e040bbc28c6e0e355a19bc8923a70434",
+    "parent": "56fa3950160bb9e58d6702e9b751f2b0747ae3de",
+    "swift": "9561227d55a07db29f70a78aadc5d6b5aaeb10bf",
+    "unused_top_level_mlx": "0a725e3000edabc4911cde345270ca950bfa152f"
+  },
+  "policy_scope": "Exact model IDs gate automatic backend eligibility; experiment manifests bind the listed weight artifacts. This is not a new production artifact-hash allowlist.",
+  "independent_review": {
+    "reviewer": "Kant",
+    "initial_finding": "Unused hybrid bank deducted from automatic paged grant",
+    "resolution": "Only actual contiguous preparation validates/reserves a hybrid bank, including fallback; radix lets the resolved backend select opt-in cache configuration.",
+    "re_review": "Blocker addressed; no additional finding in scoped re-review"
+  },
+  "invariants_reviewed": [
+    "non-Qwen and missing identities remain contiguous automatically",
+    "automatic selection is not converted to explicit paged",
+    "explicit selection, kill switch, crash guard and capability veto precedence remain",
+    "fallback metadata remains observable",
+    "SSD enabled and resident disabled defaults remain",
+    "production grants and benchmark model identity propagation remain"
+  ],
+  "runtime_review_complete": false,
+  "real_model_validation_complete": false,
+  "release_approved": false,
+  "known_remaining": [
+    "Qwen3.5/3.6 strict backend differences",
+    "Qwen real B2/B4 and broader release gates"
+  ]
+}

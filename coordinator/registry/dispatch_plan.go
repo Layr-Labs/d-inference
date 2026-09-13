@@ -408,8 +408,6 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 	tryReserve := func(entry planEntry) (*Provider, RoutingDecision, bool) {
 		id := entry.view.ProviderID
 		p := entry.provider
-		// One clock read per revalidated entry (snapshot, cost, admit, claim).
-		now := time.Now()
 		skip := func(reason PlanSkipReason) {
 			skips = append(skips, PlanSkip{ProviderID: id, Reason: reason})
 		}
@@ -430,6 +428,15 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 		// commit sequence as commitProviderReservation, so nothing can change
 		// the provider between the admit re-check and the debit.
 		p.mu.Lock()
+		// Registry/provider lock waits consume the same request clock as the
+		// dispatcher's earlier refresh. Recheck after both locks, before any
+		// admission debit, and tighten an enabled TTFT ceiling to what remains.
+		now := time.Now()
+		if !pr.RefreshFirstContentBudget(now) {
+			p.mu.Unlock()
+			skip(PlanSkipGateRejected)
+			return nil, RoutingDecision{}, false
+		}
 		var snap routingSnapshot
 		if ok, _ := r.snapshotProviderIntoPLockedEx(&snap, p, model, pr.Traits, relaxTrust, false, now); !ok {
 			p.mu.Unlock()

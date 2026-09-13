@@ -1,0 +1,162 @@
+{
+  "scope": "Connected HTTP validation harness and helper tests; no real-provider HTTP results",
+  "parent_base": "06af2f5853d7890404729647a698d37ac0479bef",
+  "source_manifest_sha256": "06cf8634acfc8c2f05f510e5c129dbd71bce21575f4947bb0d3a8788828a3a4c",
+  "validation": {
+    "go_race_helpers": {
+      "functions": 14,
+      "cases": 21,
+      "failures": 0
+    },
+    "go_race_shared_regressions": {
+      "functions": 11,
+      "cases": 11,
+      "failures": 0
+    },
+    "python_comparator": {
+      "tests": 4,
+      "failures": 0
+    },
+    "docs_check": {
+      "files": 168,
+      "failures": 0
+    },
+    "real_provider": false,
+    "swift_metal_gpu_or_model_runs": false
+  },
+  "archive": {
+    "path": "payloads.tar.gz",
+    "sha256": "54b800a767068d5c077a6412da5fb80d97663401cd9b39ad03308c723e5a74a3",
+    "bytes": 120014
+  },
+  "payloads": {
+    "before/docs/developer/test.md": {
+      "sha256": "7a9de7a4a65259ae4b26dcb36e4a60a520198ff488ff6314fd6b6686512f042b",
+      "bytes": 30194
+    },
+    "before/e2e/exact_cache_routing_test.go": {
+      "sha256": "3395ae23b603781087c05a706b0786e2ec4c84fe83d94eb12d0d1bfd4c03ce7b",
+      "bytes": 24565
+    },
+    "before/e2e/testbed/config.go": {
+      "sha256": "55044448a6fbff8bc79436695f5688c18a73ace51bd8fe3d5cd0217c32ace70f",
+      "bytes": 11929
+    },
+    "before/e2e/testbed/provider.go": {
+      "sha256": "2abaf2bc3ad10a2e84c9f25348e041fbb4e713d5fe243bf30792b659254110cb",
+      "bytes": 11031
+    },
+    "before/e2e/testbed/suite.go": {
+      "sha256": "708b6b57deab9d9b2ceb467529a625e2747e6431692831109ce9a246506f65cc",
+      "bytes": 26183
+    },
+    "docs.patch": {
+      "sha256": "95e074faca539dd108cb10038c19799b31b92f67631eff63e52a50bfda447a13",
+      "bytes": 5436
+    },
+    "manifest.json": {
+      "sha256": "06cf8634acfc8c2f05f510e5c129dbd71bce21575f4947bb0d3a8788828a3a4c",
+      "bytes": 5655
+    },
+    "root/darkbloom-connected-cache-http-root-integration.json": {
+      "sha256": "9c7f12baa584f7474b93bae8408c4771dae17be0af2f63501b0ed04665a70e18",
+      "bytes": 515
+    },
+    "root/darkbloom-connected-cache-http-root-review1.json": {
+      "sha256": "bcd42f626af7dd51a42b12de77782e0a0576c6fd78c955b24e19c3b98156ec21",
+      "bytes": 1155
+    },
+    "root/design.md": {
+      "sha256": "de0a4efc66dc3151510d2085405cc4d32d4d74c3716b37f363a51f1807939666",
+      "bytes": 6244
+    },
+    "source.patch": {
+      "sha256": "cba22123517438c965274af244d3be57d84dcb2ff5edcb79ead7578b77383454",
+      "bytes": 83715
+    },
+    "sources/docs/developer/test.md": {
+      "sha256": "bbdbaedaf0a3177e4033fe8a556c6c8eea24ecbc350699d24541ec5e7e1dda50",
+      "bytes": 34986
+    },
+    "sources/e2e/connected_cache_evidence_test.go": {
+      "sha256": "b8421bc5522255aaa328671bcc08042263066e8db9ac52db76fcb34ab612cafc",
+      "bytes": 5904
+    },
+    "sources/e2e/connected_cache_helpers_test.go": {
+      "sha256": "1b35149e5576ec0773ebdc03b5dac8f4b49183feb2e94130c29fc5459bef8c36",
+      "bytes": 7257
+    },
+    "sources/e2e/connected_cache_http_test.go": {
+      "sha256": "46768a05d9da3081522a53a8a34185676c3c646b25d739945719157aa5782a61",
+      "bytes": 14320
+    },
+    "sources/e2e/connected_cache_input_test.go": {
+      "sha256": "535ad34c962cb583a2f13169e0bb99f3daffabdd1e160010317aeafd4b9d7f35",
+      "bytes": 10535
+    },
+    "sources/e2e/connected_cache_report_test.go": {
+      "sha256": "0795acde2408bac4cdd47d4fbf9dee3a04c80f07c8472430bc3a0af30a5fa403",
+      "bytes": 4308
+    },
+    "sources/e2e/connected_cache_runtime_test.go": {
+      "sha256": "513ab13b93926b72644ff088c1d226206c2b413c8881236cc409aa20aae4c712",
+      "bytes": 1463
+    },
+    "sources/e2e/connected_cache_stream_test.go": {
+      "sha256": "a277517e675b180f3776c1c8085edbe4b5023303ea841977fe884c91f294655f",
+      "bytes": 4750
+    },
+    "sources/e2e/exact_cache_routing_test.go": {
+      "sha256": "6e8e2ce1f50e059a05b91387a1aa23d3105de43a8f277c557c4d3773a32cfa3a",
+      "bytes": 22182
+    },
+    "sources/e2e/exact_cache_sidecar_test.go": {
+      "sha256": "808b3cf6460ab492edd813dc3d43c5beae254263ed6a3808ceb4d82f8c48e1f3",
+      "bytes": 3298
+    },
+    "sources/e2e/testbed/config.go": {
+      "sha256": "a4aa6f456de78232a95b4ce0cbb82b7473e78f8e5c5bf334bf146b25525315ff",
+      "bytes": 12237
+    },
+    "sources/e2e/testbed/provider.go": {
+      "sha256": "8c21f5a17ca785789fef1bc45d18ee3d1f9ff459512104b621980c2ad6090825",
+      "bytes": 11253
+    },
+    "sources/e2e/testbed/provider_wire_relay.go": {
+      "sha256": "ec024dcda280552bf8f3f409ca057aeb07edfe2812f2a4adce10285dea353307",
+      "bytes": 6681
+    },
+    "sources/e2e/testbed/provider_wire_relay_test.go": {
+      "sha256": "69c8222371f137cd2c14f602c24665d1d0c864ae59131cdc41bbf05bdc1f1dbc",
+      "bytes": 4773
+    },
+    "sources/e2e/testbed/suite.go": {
+      "sha256": "48b50dc28f3b9341727cd59f5a1bda109e6350178f4cc62bed357a31ed081fa0",
+      "bytes": 26714
+    },
+    "sources/scripts/benchmarks/compare_connected_cache_http.py": {
+      "sha256": "6c5566cfda56c51987c504e39639dfef813e1e79b7ab311b4cbfc0b484696511",
+      "bytes": 4723
+    },
+    "sources/scripts/benchmarks/test_compare_connected_cache_http.py": {
+      "sha256": "b23043ebbec86c6beef68649fd026614cdacd636c7067c77b6edae3844083aa2",
+      "bytes": 3108
+    },
+    "validation/docs-check.log": {
+      "sha256": "9b55818c73bf2009d9ce1afff49f750332f3291379e9c4bcd9c065fbae753db4",
+      "bytes": 27
+    },
+    "validation/go-final.jsonl": {
+      "sha256": "7db354b207689cda5cdac2bdd8ef9fe9b3704f6dd164cd709df78c12ea3576d7",
+      "bytes": 20837
+    },
+    "validation/go-shared-regressions.jsonl": {
+      "sha256": "568fe7cf1503fd20a6202c189b93c481a578fad85464145c3089a705ab083d68",
+      "bytes": 11079
+    },
+    "validation/python-final.log": {
+      "sha256": "732aafaea9ffd191a88cc135025b1f4996de8c7e264ff70db1c8f8bda8242d32",
+      "bytes": 539
+    }
+  }
+}

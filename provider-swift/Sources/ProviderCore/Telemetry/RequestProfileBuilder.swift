@@ -11,10 +11,11 @@
 // `ContinuousClock` `receivedAt` that drives deadlines is untouched; it is
 // only read here to derive `slept_us` = continuous Δ − suspending Δ.
 //
-// HOT PATH (plan v2 P4). ≤ 30 lock acquisitions per request BY CONSTRUCTION:
+// HOT PATH. ≤ 32 lock acquisitions per request BY CONSTRUCTION:
 // every stamp site is a single `mark`/`update`, multi-field sites batch
 // their writes into one `update`, and NOTHING here is called per token — the
 // bridge pump keeps a local `lastDeltaAt` and writes it once at finish.
+// The deadline-decision extension adds two calls at engine submit/return.
 // `lockAcquisitions` is counted inside the lock so a test can assert the
 // budget over a scripted full lifecycle.
 //
@@ -107,6 +108,7 @@ public final class RequestProfileBuilder: @unchecked Sendable {
         public var cancelStage: CancelStage?
         /// Engine sub-object copied once at finish from `CBv2Usage.timing`.
         public var engine: EngineProfile?
+        public var deadlineDecision: DeadlineDecisionProfile?
         /// Cumulative-counter hook fired by the bridge when `tokens_after_cancel`
         /// is computed at finish. Installed at handler entry (same lock as the
         /// `dequeued` stamp) so the heartbeat counter lands even when the
@@ -461,6 +463,7 @@ public final class RequestProfileBuilder: @unchecked Sendable {
         p.thermalState = snapshot.thermalState
         p.cancelStage = snapshot.cancelStage
         p.engine = snapshot.engine
+        p.deadlineDecision = snapshot.deadlineDecision
         // Saturate at the coordinator's accepted ranges: a lifetime engine
         // step counter or a pathological duration must never invalidate the
         // whole record as `range`. `min` is monotone, so the order chain is

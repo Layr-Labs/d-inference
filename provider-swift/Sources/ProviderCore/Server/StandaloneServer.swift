@@ -81,12 +81,13 @@ public struct StandaloneServerConfig: Sendable {
     /// Per-model overrides (`engine_v2_kv_backend_by_model`).
     public let engineV2KVBackendByModel: [String: String]
     public let prefillDeadlineMode: PrefillDeadlineMode?
-    /// MTP policy inherited from provider config. Automatic mode enables only
-    /// inline Qwen 3.5/3.6 MoE MTP; Gemma remains explicitly opt-in.
+    /// MTP policy inherited from provider config, including exact Gemma QAT.
+    /// External assistants download asynchronously through the configured catalog.
     public let mtpMode: MTPMode
     /// Source-compatible view for callers that still inspect the old boolean.
     public var mtp: Bool { mtpMode == .on }
     public let mtpDrafterPath: String?
+    public let coordinatorURL: String
 
     public init(
         port: UInt16 = 8000,
@@ -102,7 +103,8 @@ public struct StandaloneServerConfig: Sendable {
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
         mtp: Bool? = nil,
         mtpMode: MTPMode = .auto,
-        mtpDrafterPath: String? = nil
+        mtpDrafterPath: String? = nil,
+        coordinatorURL: String = CoordinatorSettings().url
     ) {
         self.port = port
         self.host = host
@@ -117,10 +119,11 @@ public struct StandaloneServerConfig: Sendable {
         self.prefillDeadlineMode = prefillDeadlineMode
         self.mtpMode = mtp.map { $0 ? .on : .off } ?? mtpMode
         self.mtpDrafterPath = mtpDrafterPath
+        self.coordinatorURL = coordinatorURL
     }
 }
 
-private let standaloneLogger = Logger(
+let standaloneLogger = Logger(
     subsystem: "dev.darkbloom.provider",
     category: "StandaloneServer"
 )
@@ -138,6 +141,7 @@ public actor StandaloneServer {
         let modelType: String?
         let isVLM: Bool
         let sizing: SlotSizingSnapshot
+        let cacheEligibleWeightHash: String?
         var lastUsedAt: ContinuousClock.Instant
 
         init(
@@ -147,7 +151,8 @@ public actor StandaloneServer {
             modelType: String?,
             isVLM: Bool,
             sizing: SlotSizingSnapshot,
-            lastUsedAt: ContinuousClock.Instant
+            lastUsedAt: ContinuousClock.Instant,
+            cacheEligibleWeightHash: String? = nil
         ) {
             self.bundle = bundle
             self.container = container
@@ -156,6 +161,7 @@ public actor StandaloneServer {
             self.isVLM = isVLM
             self.sizing = sizing
             self.lastUsedAt = lastUsedAt
+            self.cacheEligibleWeightHash = cacheEligibleWeightHash
         }
 
         init(
@@ -215,8 +221,9 @@ public actor StandaloneServer {
     /// Internal access so the +HTTP extension can read host/port
     /// when constructing the Hummingbird application.
     let config: StandaloneServerConfig
-    private var slots: [String: CachedSlot] = [:]
+    var slots: [String: CachedSlot] = [:]
     private var modelsLoading: Set<String> = []
+    private var pendingLoadLeases: [String: PendingModelLoadLease] = [:]
     /// A `setModels` update that arrived while a load was in flight: the
     /// serving set is part of the activation-reserve basis, and that load
     /// passed its gate against the CURRENT floor, so the whole update waits
@@ -227,11 +234,11 @@ public actor StandaloneServer {
     /// FIFO, and a stale lower-floor push must never land after a newer one.
     private var activationReserveEpoch: UInt64 = 0
     private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
-    private var isLoadingAny: Bool = false
-    private var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
-    private var slotReservations: [String: Int] = [:]
-    private var evictingModels: Set<String> = []
-    private var models: [ModelInfo]
+    var isLoadingAny: Bool = false
+    var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
+    var slotReservations: [String: Int] = [:]
+    var evictingModels: Set<String> = []
+    var models: [ModelInfo]
     private var serverTask: Task<Void, Never>?
     private var shutdownTask: Task<Void, Never>?
     /// Periodic driver for the proactive MLX buffer-pool sweep. ProviderLoop
@@ -245,14 +252,19 @@ public actor StandaloneServer {
     /// rate-limits and threshold-gates, so this only bounds reaction
     /// latency. Tests lower it via `setKVSweepIntervalForTesting`.
     private var kvSweepInterval: Duration = .seconds(5)
-    private enum LifecycleState {
+    enum LifecycleState {
         case stopped
         case running
         case stopping
     }
-    private var lifecycleState: LifecycleState = .stopped
-    private let kvBudget: GlobalKVCacheBudget
+    var lifecycleState: LifecycleState = .stopped
+    let kvBudget: GlobalKVCacheBudget
     var specDecFunnel: SpecDecArtifactFunnel
+    var mtpStagingReservations = MTPStagingReservations()
+    var mtpAdmissionDrains = MTPAdmissionDrains()
+    var mtpUpgradeMonitorTask: Task<Void, Never>?
+    var mtpUpgradeTransitions: Set<String> = []
+    var mtpUpgradeWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     /// Phase 3: global disk accountant (process-wide, shared across models).
     /// Kept on the v2 path for its crash-sweep of stale on-disk KV from
     /// older (legacy-engine) versions; the v2 engine itself never persists.
@@ -288,7 +300,7 @@ public actor StandaloneServer {
                 modelIDs: served.map(\.id)))
         self.specDecFunnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(),
-            catalog: nil)
+            catalog: SpecDecCatalogLookup(coordinatorURL: config.coordinatorURL))
         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
         // EngineV2 SSD data lives under the separate `darkbloom/kv3` root.
         LegacyKVCacheSweeper.sweep()
@@ -426,7 +438,7 @@ public actor StandaloneServer {
     /// no load is in flight. Both completion paths of the load call this —
     /// the failure path too, where the restore-on-throw has just put the
     /// previous grants back and nothing else would re-size them.
-    private func applyDeferredModelsIfNeeded() async {
+    func applyDeferredModelsIfNeeded() async {
         guard let pending = pendingModelsUpdate, !isLoadingAny, modelsLoading.isEmpty
         else { return }
         pendingModelsUpdate = nil
@@ -465,6 +477,7 @@ public actor StandaloneServer {
             }
         }
         lifecycleState = .running
+        startMTPUpgradeMonitor()
     }
 
     /// Called by Hummingbird's onServerRunning once the socket is actually bound.
@@ -540,7 +553,11 @@ public actor StandaloneServer {
         kvSweepTask = nil
         serviceTask?.cancel()
         _ = await serviceTask?.value
+        let upgradeTask = mtpUpgradeMonitorTask
+        mtpUpgradeMonitorTask = nil
+        upgradeTask?.cancel()
         await specDecFunnel.shutdown()
+        await upgradeTask?.value
 
         // Retain only the bridges needed for their asynchronous drain. Keeping a
         // CachedSlot snapshot here would keep every model container alive until
@@ -597,8 +614,13 @@ public actor StandaloneServer {
         kvSweepInterval = interval
     }
 
-    func reservePendingLoadForTesting(requestID: String, bytes: UInt64) async {
-        await kvBudget.reservePendingLoad(requestID: requestID, bytes: bytes)
+    func reservePendingLoadForTesting(requestID: String, bytes: UInt64) async -> Bool {
+        guard requestID.hasPrefix("pending-load:"),
+            let lease = await kvBudget.claimPendingLoad(
+                requestID: requestID, weightBytes: bytes, minimumKVBytes: 0)
+        else { return false }
+        pendingLoadLeases[String(requestID.dropFirst("pending-load:".count))] = lease
+        return true
     }
 
     /// The resident slot's engine KV grant in bytes (re-slice assertions).
@@ -767,7 +789,7 @@ public actor StandaloneServer {
     /// Effective concurrent-request cap for a v2 engine slot: the
     /// per-model override when configured, else the box-wide value,
     /// clamped to [1, 8] — same policy as `ProviderLoop`.
-    private func engineV2MaxConcurrent(forModel modelId: String) -> Int {
+    func engineV2MaxConcurrent(forModel modelId: String) -> Int {
         let raw = config.engineV2MaxConcurrentByModel[modelId]
             ?? config.engineV2MaxConcurrent
         return ProviderLoop.clampEngineV2Concurrency(raw)
@@ -782,7 +804,7 @@ public actor StandaloneServer {
     private func fleetKVBudgetBytes(
         extraWeightBytes: Int, activationReserveBytes: UInt64? = nil
     ) -> UInt64 {
-        var totalWeights = UInt64(max(0, extraWeightBytes))
+        var totalWeights = MTPStagingReservations.adding(UInt64(max(0, extraWeightBytes)), mtpStagingBytes)
         for (_, slot) in slots {
             let (sum, overflow) = totalWeights
                 .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
@@ -818,7 +840,7 @@ public actor StandaloneServer {
     /// load gate, the KV budget, engine grants, and the post-load probes.
     /// Static in practice (only configured models load), so it matches the
     /// value the KV budget actor was initialized with.
-    private var resolvedActivationReserveBytes: UInt64 {
+    var resolvedActivationReserveBytes: UInt64 {
         UnifiedMemoryCap.resolvedActivationReserveBytes(
             modelIDs: models.map(\.id) + Array(slots.keys) + Array(modelsLoading))
     }
@@ -932,8 +954,9 @@ public actor StandaloneServer {
         // phantom bytes through the re-slice and engine build (mirrors
         // ProviderLoop.resliceAndBuildEngineV2Bundle).
         if prepared.assistant == nil, specDecPreparation.artifact != nil {
-            await kvBudget.replacePendingLoadReservation(
-                requestID: "pending-load:\(modelId)", bytes: 0)
+            if let pendingLoad = pendingLoadLeases[modelId] {
+                await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
+            }
         }
         var sizing = targetSizing.replacingAuxiliaryWeightBytes(
             prepared.assistantBytes)
@@ -958,8 +981,9 @@ public actor StandaloneServer {
             prepared.assistant?.release()
             prepared = prepared.fallingBack(.assistantResliceFloor)
             sizing = targetSizing.replacingAuxiliaryWeightBytes(0)
-            await kvBudget.replacePendingLoadReservation(
-                requestID: "pending-load:\(modelId)", bytes: 0)
+            if let pendingLoad = pendingLoadLeases[modelId] {
+                await kvBudget.reducePendingLoad(pendingLoad, remainingWeightBytes: 0)
+            }
             MLX.Memory.clearCache()
             fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
             targets = EngineV2KVSizing.resliceGrants(
@@ -1084,7 +1108,7 @@ public actor StandaloneServer {
     /// Grow the surviving slots back to their re-sliced shares after an
     /// eviction (a lone survivor gets the FULL fleet budget back). Called
     /// from the eviction path, i.e. inside `isLoadingAny`.
-    private func resliceGrowSurvivors() async {
+    func resliceGrowSurvivors() async {
         let survivors = await existingSlotGrants(excludingModelId: "")
         guard !survivors.isEmpty else { return }
         let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: 0)
@@ -1112,11 +1136,13 @@ public actor StandaloneServer {
         for entry in snapshot {
             guard slots[entry.key] != nil,
                   !evictingModels.contains(entry.key),
+                  !isMTPUpgradeTargetRetained(entry.key),
                   (slotReservations[entry.key] ?? 0) == 0 else { continue }
 
             let active = await entry.cached.bridge.activeRequestCount()
             guard slots[entry.key] != nil,
                   !evictingModels.contains(entry.key),
+                  !isMTPUpgradeTargetRetained(entry.key),
                   (slotReservations[entry.key] ?? 0) == 0,
                   active == 0 else { continue }
 
@@ -1129,6 +1155,7 @@ public actor StandaloneServer {
         guard let evictKey = lruKey,
               let evicted = slots[evictKey],
               !evictingModels.contains(evictKey),
+              !isMTPUpgradeTargetRetained(evictKey),
               (slotReservations[evictKey] ?? 0) == 0 else {
             return false
         }
@@ -1136,6 +1163,7 @@ public actor StandaloneServer {
         let active = await evicted.bridge.activeRequestCount()
         guard slots[evictKey]?.bridge === evicted.bridge,
               !evictingModels.contains(evictKey),
+              !isMTPUpgradeTargetRetained(evictKey),
               (slotReservations[evictKey] ?? 0) == 0,
               active == 0 else {
             return false
@@ -1196,18 +1224,7 @@ public actor StandaloneServer {
     /// already promised to in-flight requests (`kvBudget`). See
     /// `ModelLoadAdmission` for the rationale.
     private func availableMemoryGb() async -> Double {
-        let outstanding = await kvBudget.outstandingReservedBytes()
-        // Honor the 90% unified cap here too: with no configured reserve in
-        // standalone mode, the cap-implied reserve (physical − cap) is what holds
-        // memory back so a load can't push past the cap.
-        let reserve = UnifiedMemoryCap.loadReserveBytes(configReserveBytes: 0)
-        return ModelLoadAdmission.freeForLoadGb(
-            totalBytes: ProcessInfo.processInfo.physicalMemory,
-            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
-            gpuActiveBytes: UInt64(max(0, MLX.GPU.activeMemory)),
-            gpuCacheBytes: UInt64(max(0, MLX.GPU.cacheMemory)),
-            reserveBytes: reserve,
-            outstandingReservationBytes: outstanding)
+        kvBudget.availableForLoadGb()
     }
 
     /// Touch the cached slot's last-used timestamp on access.
@@ -1248,6 +1265,7 @@ public actor StandaloneServer {
     /// reservation if the lookup somehow fails so a partial-acquire
     /// doesn't pin a missing model forever.
     func acquireModel(_ modelId: String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel {
+        try throwIfMTPUpgradeDraining(modelId)
         do {
             try await ensureModelLoaded(modelId)
         } catch StandaloneServerError.modelNotFound {
@@ -1266,6 +1284,9 @@ public actor StandaloneServer {
                 "token_budget_exhausted: \(message)"
             )
         }
+        await waitForMTPUpgrade(modelId)
+        try Task.checkCancellation()
+        try throwIfMTPUpgradeDraining(modelId)
         reserveSlot(modelId)
         guard let slot = slots[modelId], !evictingModels.contains(modelId) else {
             // Roll the reservation back; the model is gone (evicted
@@ -1356,9 +1377,10 @@ public actor StandaloneServer {
         models.map { $0.id }.sorted()
     }
 
-    private func computeStandaloneWeightHash(
-        modelPath: URL, modelId: String
+    func computeStandaloneWeightHash(
+        modelPath: URL, modelId: String, required: Bool
     ) async -> String? {
+        guard required else { return nil }
         let override = v2TestHooks?.computeWeightHash
         return await Task.detached(priority: .utility) {
             let hash = override != nil
@@ -1372,6 +1394,7 @@ public actor StandaloneServer {
     /// applies LRU + memory-headroom eviction, then builds the v2 slot
     /// through the shared sizing → re-slice → bridge path.
     func ensureModelLoaded(_ modelId: String) async throws {
+        await waitForMTPUpgrade(modelId)
         try ModelRuntimeRequirements.requireEligible(
             modelID: modelId, available: config.runtimeCapabilities)
         try Task.checkCancellation()
@@ -1400,7 +1423,7 @@ public actor StandaloneServer {
         // Loud insurance behind the init/setModels filter: a model without
         // a CBv2 adapter must never reach engine construction (v0.7.5
         // fail-loud — there is no legacy engine to degrade onto).
-        guard EngineV2SupportedModels.isSupported(modelType: modelInfo.modelType) else {
+        guard EngineV2SupportedModels.isSupported(model: modelInfo) else {
             standaloneLogger.error(
                 "Model '\(modelId)' (model_type \(modelInfo.modelType ?? "unknown")) has no CBv2 adapter — refusing to load")
             throw StandaloneServerError.modelNotFound(modelId)
@@ -1452,6 +1475,7 @@ public actor StandaloneServer {
         }
 
         let pendingLoadID = "pending-load:\(modelId)"
+        var pendingLoad: PendingModelLoadLease?
         modelsLoading.insert(modelId)
         // The marker joins the reserve basis: push the (possibly raised)
         // floor to the KV budget actor BEFORE the gate and allocation, as
@@ -1492,59 +1516,43 @@ public actor StandaloneServer {
                         "mtp: model=\(modelId) fallback reason=\(MTPFallbackReason.assistantMemoryUnavailable.rawValue) assistant_bytes=\(artifact.residentBytes)")
                 }
             }
-            let extraWeightBytes = mtpPreparation.artifact?.additionalWeightBytes ?? 0
+            var extraWeightBytes = mtpPreparation.artifact?.additionalWeightBytes ?? 0
             try Task.checkCancellation()
 
-            // Keep incoming weights visible to the process-wide KV ledger while
-            // loadContainer is suspended. Existing-model requests continue to
-            // serve during this await and must not reserve the same headroom.
-            let pendingLoadBytes = ProviderLoop.pendingLoadReservationBytes(
+            var pendingLoadBytes = ProviderLoop.pendingLoadReservationBytes(
                 estimatedWeightsGb: modelInfo.estimatedMemoryGb,
                 extraWeightBytes: extraWeightBytes)
-            await kvBudget.reservePendingLoad(
-                requestID: pendingLoadID, bytes: pendingLoadBytes)
+            pendingLoad = await kvBudget.claimPendingLoad(
+                requestID: pendingLoadID, weightBytes: pendingLoadBytes)
+            if pendingLoad == nil, extraWeightBytes > 0 {
+                mtpPreparation = mtpPreparation.fallingBack(.assistantMemoryUnavailable)
+                extraWeightBytes = 0
+                pendingLoadBytes = ProviderLoop.pendingLoadReservationBytes(
+                    estimatedWeightsGb: modelInfo.estimatedMemoryGb, extraWeightBytes: 0)
+                pendingLoad = await kvBudget.claimPendingLoad(
+                    requestID: pendingLoadID, weightBytes: pendingLoadBytes)
+            }
+            guard let acceptedLoad = pendingLoad else {
+                throw StandaloneServerError.capacityUnavailable(
+                    "Insufficient memory for '\(modelId)' at final load admission")
+            }
+            pendingLoadLeases[modelId] = acceptedLoad
 
             try await v2TestHooks?.beforeWeightLoad?(modelId)
-            let reusableSSDRequested = PrefixCachePolicy.isEnabled()
-            let preLoadCacheHash = reusableSSDRequested
-                ? await computeStandaloneWeightHash(modelPath: modelPath, modelId: modelId)
-                : nil
+            let reusableSSDRequested = PrefixCachePolicy.requiresLoadHashBracket(
+                modelId: modelId, modelDirectory: modelPath)
+            let preLoadCacheHash = await computeStandaloneWeightHash(
+                modelPath: modelPath, modelId: modelId, required: reusableSSDRequested)
             // Hard-fail without Metal: CPU inference is not acceptable, and
             // with no legacy engine left this is a load failure, not a log
             // line (mirrors ProviderLoop.ensureModelLoaded).
             _ = try GPUEnforcement.requireMetal()
             let slotIsVLM = ProviderLoop.modelIsVLM(at: modelPath)
-            // Final authoritative gate after the LAST suspension before
-            // allocation (pending-load reservation, pre-load hook, weight
-            // hashing), mirroring ProviderLoop: the serving-set floor is
-            // serialized behind this load (`setModels` defers), so this is
-            // the backstop, not the primary defense. `availableMemoryGb()`
-            // nets out the shared ledger INCLUDING this load's own pending
-            // reservation, which `fitsAtAllocation` adds back.
-            do {
-                let availableNetOfLedgerGb = await availableMemoryGb()
-                let requiredAtAllocation = ModelLoadAdmission.requiredToLoadGb(
-                    weightsGb: ProviderLoop.loadGateWeightsGb(
-                        estimatedWeightsGb: modelInfo.estimatedMemoryGb,
-                        extraWeightBytes: extraWeightBytes),
-                    headroomGb: Double(
-                        UnifiedMemoryCap.loadHeadroomBytes(
-                            activationReserveBytes: resolvedActivationReserveBytes))
-                        / (1024.0 * 1024.0 * 1024.0))
-                if !ModelLoadAdmission.fitsAtAllocation(
-                    availableNetOfLedgerGb: availableNetOfLedgerGb,
-                    ownReservationBytes: pendingLoadBytes,
-                    requiredGb: requiredAtAllocation)
-                {
-                    let available = String(
-                        format: "%.1f",
-                        availableNetOfLedgerGb + Double(pendingLoadBytes) / 1_073_741_824.0)
-                    let required = String(format: "%.1f", requiredAtAllocation)
-                    throw StandaloneServerError.capacityUnavailable(
-                        "Insufficient memory (\(available) GB free, need \(required) GB) at allocation "
-                            + "for '\(modelId)': the serving-set activation floor moved during admission")
-                }
+            guard await kvBudget.recheckPendingLoad(acceptedLoad) else {
+                throw StandaloneServerError.capacityUnavailable(
+                    "Insufficient memory for '\(modelId)' at allocation: load headroom changed")
             }
+            try Task.checkCancellation()
             // Ownership box (Codex-review unwind ordering): every later
             // access to the loading container goes through this box so
             // failure paths can drop the LAST strong reference to the weights
@@ -1554,9 +1562,8 @@ public actor StandaloneServer {
             let newcomer = EngineV2NewcomerBox(
                 try await ModelContainerLoading.loadContainer(from: modelPath))
             try Task.checkCancellation()
-            let postLoadCacheHash = reusableSSDRequested
-                ? await computeStandaloneWeightHash(modelPath: modelPath, modelId: modelId)
-                : nil
+            let postLoadCacheHash = await computeStandaloneWeightHash(
+                modelPath: modelPath, modelId: modelId, required: reusableSSDRequested)
             let cacheEligibleWeightHash: String?
             if reusableSSDRequested {
                 switch ProviderLoop.reusableSSDWeightHashDecision(
@@ -1588,8 +1595,12 @@ public actor StandaloneServer {
                 fallbackDefaultMaxTokens: Self.slotDefaultMaxTokens)
             // The loaded weights are now reflected in MLX memory, so transfer
             // accounting from the pending estimate to the live memory snapshot.
-            await kvBudget.replacePendingLoadReservation(
-                requestID: pendingLoadID, bytes: extraWeightBytes)
+            guard await kvBudget.reducePendingLoad(
+                acceptedLoad, remainingWeightBytes: extraWeightBytes)
+            else {
+                newcomer.release()
+                throw StandaloneServerError.capacityUnavailable("Model load ownership changed during setup")
+            }
             let tokenizer: TokenizerHandle = try await newcomer.borrow().perform { ctx in
                 TokenizerHandle(
                     ctx.tokenizer,
@@ -1660,7 +1671,9 @@ public actor StandaloneServer {
                 throw StandaloneServerError.capacityUnavailable(
                     "Model '\(modelId)' loaded but its v2 engine construction failed: \(error) — unloaded")
             }
-            await kvBudget.release(requestID: pendingLoadID)
+            // Weight loading has ended, but keep the minimum-KV allowance
+            // through post-build checks and any target-only rebuild.
+            await kvBudget.reducePendingLoad(acceptedLoad, remainingWeightBytes: 0)
             var bundle = slotBuild.bundle
             var sizing = slotBuild.sizing
             var bridge = bundle.bridge
@@ -1746,7 +1759,14 @@ public actor StandaloneServer {
                 modelType: modelInfo.modelType,
                 isVLM: slotIsVLM,
                 sizing: sizing,
-                lastUsedAt: .now)
+                lastUsedAt: .now,
+                cacheEligibleWeightHash: cacheEligibleWeightHash)
+            if let pendingLoad {
+                await kvBudget.finishPendingLoad(pendingLoad)
+                if pendingLoadLeases[modelId]?.owner == pendingLoad.owner {
+                    pendingLoadLeases.removeValue(forKey: modelId)
+                }
+            }
             standaloneLogger.info("Lazy-loaded model: \(modelId) (engine_v2)")
 
             modelsLoading.remove(modelId)
@@ -1767,7 +1787,12 @@ public actor StandaloneServer {
             isLoadingAny = false
             // Idempotent when the reservation was never placed or was already
             // handed off to MLX's live-memory view after a successful load.
-            await kvBudget.release(requestID: pendingLoadID)
+            if let pendingLoad {
+                await kvBudget.finishPendingLoad(pendingLoad)
+                if pendingLoadLeases[modelId]?.owner == pendingLoad.owner {
+                    pendingLoadLeases.removeValue(forKey: modelId)
+                }
+            }
             // Release pool buffers a failed load left behind.
             MLX.Memory.clearCache()
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
@@ -1781,7 +1806,7 @@ public actor StandaloneServer {
         }
     }
 
-    private func releaseLoadGateWaiters() {
+    func releaseLoadGateWaiters() {
         let waiters = loadGateWaiters
         loadGateWaiters.removeAll()
         for waiter in waiters {

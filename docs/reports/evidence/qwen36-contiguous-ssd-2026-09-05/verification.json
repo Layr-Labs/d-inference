@@ -1,0 +1,131 @@
+{
+  "passed": true,
+  "comparisons": [
+    {
+      "id": "p8192-r0-first",
+      "equal": {
+        "id": true,
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "completion_tokens": true,
+        "finish": true,
+        "text": true
+      },
+      "output_tokens": 64,
+      "off_outcome": "disabled",
+      "on_outcome": "miss",
+      "saved_tokens": 0
+    },
+    {
+      "id": "p8192-r0-repeat",
+      "equal": {
+        "id": true,
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "completion_tokens": true,
+        "finish": true,
+        "text": true
+      },
+      "output_tokens": 64,
+      "off_outcome": "disabled",
+      "on_outcome": "hit",
+      "saved_tokens": 4096
+    },
+    {
+      "id": "decode-0",
+      "equal": {
+        "id": true,
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "completion_tokens": true,
+        "finish": true,
+        "text": true
+      },
+      "output_tokens": 256,
+      "off_outcome": "disabled",
+      "on_outcome": "miss",
+      "saved_tokens": 0
+    },
+    {
+      "id": "p8192-r0-first",
+      "equal": {
+        "id": true,
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "completion_tokens": true,
+        "finish": true,
+        "text": true
+      },
+      "output_tokens": 64,
+      "off_outcome": "disabled",
+      "on_outcome": "miss",
+      "saved_tokens": 0
+    },
+    {
+      "id": "p8192-r0-first",
+      "equal": {
+        "id": true,
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "completion_tokens": true,
+        "finish": true,
+        "text": true
+      },
+      "output_tokens": 64,
+      "off_outcome": "disabled",
+      "on_outcome": "hit",
+      "saved_tokens": 4096
+    },
+    {
+      "id": "p8192-r0-first",
+      "equal": {
+        "id": true,
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "completion_tokens": true,
+        "finish": true,
+        "text": true
+      },
+      "output_tokens": 64,
+      "off_outcome": "disabled",
+      "on_outcome": "miss",
+      "saved_tokens": 0
+    },
+    {
+      "id": "p8192-r0-first",
+      "equal": {
+        "id": true,
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "completion_tokens": true,
+        "finish": true,
+        "text": true
+      },
+      "output_tokens": 5,
+      "off_outcome": "disabled",
+      "on_outcome": "miss",
+      "saved_tokens": 0
+    },
+    {
+      "id": "p8192-r0-first",
+      "equal": {
+        "id": true,
+        "prompt_token_ids": true,
+        "token_ids": true,
+        "completion_tokens": true,
+        "finish": true,
+        "text": true
+      },
+      "output_tokens": 64,
+      "off_outcome": "disabled",
+      "on_outcome": "miss",
+      "saved_tokens": 0
+    }
+  ],
+  "generated_tokens_compared": 645,
+  "actual_backend": "contiguous",
+  "same_artifact": true,
+  "idle_staging_zero": true,
+  "repeat_additional_write_bytes": 0,
+  "scope": "One normal-MTP B1 ordered cache-off/ephemeral-SSD pair; no paged/HTTP/production-key process restart validation"
+}

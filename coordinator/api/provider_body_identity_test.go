@@ -5,8 +5,8 @@ package api
 // once; these tests drive real requests through httptest against a fake
 // provider and compare the RAW decrypted bytes the provider receives with an
 // oracle built independently (decode the original → apply the expected
-// rewrite → marshalForwardBody), or with the caller's exact input when no
-// rewrite applies.
+// rewrite → marshalForwardBody). The request-owned date now makes every input
+// a coordinator serialization, including requests with no other rewrite.
 
 import (
 	"bytes"
@@ -77,6 +77,25 @@ func postAndCapture(t *testing.T, ctx context.Context, ts *httptest.Server, fp *
 
 func assertProviderBytes(t *testing.T, got, want []byte) {
 	t.Helper()
+	actual, err := decodeInferenceJSONObject(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	date, ok := actual[promptcontract.RequestDateField].(string)
+	if _, err := time.Parse(time.DateOnly, date); !ok || err != nil {
+		t.Fatalf("provider body has no canonical request date: %q", date)
+	}
+	// Clock ownership is asserted by the endpoint/fallback tests. Bind this
+	// byte oracle to the observed date, leaving every other value independent.
+	expected, err := decodeInferenceJSONObject(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected[promptcontract.RequestDateField] = date
+	want, err = marshalForwardBody(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("provider body diverged:\n got %s\nwant %s", got, want)
 	}
@@ -171,10 +190,10 @@ func TestProviderBodyByteIdentity(t *testing.T) {
 
 	messages := `[{"role":"user","content":"hello <world> & \"friends\"\n"}]`
 
-	t.Run("verbatim passthrough", func(t *testing.T) {
+	t.Run("date capture preserves precise values", func(t *testing.T) {
 		// Raw build id, explicit max_tokens, no stop string, no catalog
-		// defaults, non-service key: nothing rewrites, so the caller's exact
-		// bytes — unsorted keys, whitespace, escapes and all — reach the provider.
+		// defaults, non-service key: only the request date is added. Exact
+		// number literals and decoded strings survive the serialization.
 		body := "{\n  \"stream\": false,\n  \"model\": \"" + plainBuild + "\",\n  \"max_tokens\": 16,\n" +
 			"  \"messages\": " + messages + ",\n  \"temperature\": 0.10000000000000001,\n  \"note\": \"\\u003c kept \\u0041\"\n}"
 		got := postAndCapture(t, ctx, ts, fp, "/v1/chat/completions", "test-key", body)
@@ -223,7 +242,7 @@ func TestProviderBodyByteIdentity(t *testing.T) {
 	})
 
 	t.Run("service reasoning policy off", func(t *testing.T) {
-		// Same body, non-service key: no rewrite at all, verbatim passthrough.
+		// Same body, non-service key: only the request date is added.
 		body := `{"model":"` + serviceReasoningOptInModel + `", "messages":` + messages + `, "max_tokens":16}`
 		got := postAndCapture(t, ctx, ts, fp, "/v1/chat/completions", "test-key", body)
 		assertProviderBytes(t, got, []byte(body))

@@ -85,7 +85,10 @@ func newPostgresWithPoolConfig(ctx context.Context, scfg Config, tune func(*pgxp
 	}
 
 	// Verify connectivity.
-	if err := pool.Ping(ctx); err != nil {
+	pingStarted := time.Now()
+	pingErr := pool.Ping(ctx)
+	logStartupMigration("connect", pingStarted, pingErr)
+	if err := pingErr; err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("store: ping postgres: %w", err)
 	}
@@ -147,6 +150,7 @@ END $$`
 // migrate runs the schema creation statements.
 func (s *PostgresStore) migrate(ctx context.Context) error {
 	migrations := []string{
+		globalPayoutSchema,
 		// schema_migrations records one-time data migrations that must run at most
 		// once rather than on every boot. Idempotent DDL (CREATE/ALTER ... IF [NOT]
 		// EXISTS) does not need this; it exists to gate destructive one-shot DML
@@ -448,6 +452,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			metadata JSONB NOT NULL DEFAULT '{}',
 			UNIQUE(model_id, version)
 		)`,
+		`ALTER TABLE model_versions ADD COLUMN IF NOT EXISTS hugging_face_artifact JSONB`,
 		`DO $$ BEGIN
 			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS max_context_length INTEGER NOT NULL DEFAULT 0;
 		EXCEPTION WHEN others THEN NULL;
@@ -671,23 +676,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			PRIMARY KEY (key, key_type)
 		)`,
 
-		// Backfill earnings_summary from existing provider_earnings rows.
-		// The INSERT ... ON CONFLICT DO NOTHING ensures this only runs once per key.
-		`INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		 SELECT account_id, 'account', COUNT(*), COALESCE(SUM(amount_micro_usd), 0),
-		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), NOW()
-		 FROM provider_earnings
-		 WHERE account_id != ''
-		 GROUP BY account_id
-		 ON CONFLICT (key, key_type) DO NOTHING`,
-
-		`INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		 SELECT provider_key, 'provider', COUNT(*), COALESCE(SUM(amount_micro_usd), 0),
-		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), NOW()
-		 FROM provider_earnings
-		 WHERE provider_key != ''
-		 GROUP BY provider_key
-		 ON CONFLICT (key, key_type) DO NOTHING`,
+		earningsSummaryBackfillPendingDDL,
 
 		// Provider payouts — wallet-based payout history for unlinked providers
 		`CREATE TABLE IF NOT EXISTS provider_payouts (
@@ -1008,6 +997,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// row's empty hash marks a legacy identity-less proof, which never
 		// authorizes a release-transition resume (real APNs challenge instead).
 		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS binary_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS continuous_coverage_until TIMESTAMPTZ`,
 		// Durable APNs admission state is deliberately separate from successful
 		// attestation evidence. Spending a push budget never creates trust.
 		`CREATE TABLE IF NOT EXISTS code_attest_push_budgets (
@@ -1155,6 +1145,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// index on these tables must be built CONCURRENTLY outside this loop
 		// (see ensureProviderEarningsJobIndex). The request_waterfall view is NOT
 		// here — it is applied by hand from store/migrations/request_waterfall.sql.
+		requestOutcomesTableDDL,
+		`CREATE INDEX IF NOT EXISTS idx_request_outcomes_received ON request_outcomes (received_at, coord_request_id)`,
 		requestProfilesTableDDL,
 		requestProfilesCreatedIndexDDL,
 		requestProfilesCoordIndexDDL,
@@ -1171,6 +1163,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS requested_max_tokens INT NOT NULL DEFAULT 0; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS requires_vision BOOL NOT NULL DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS has_tools BOOL NOT NULL DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS predictive_bypass TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS reservation_ttft_ceiling_ms DOUBLE PRECISION; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS dispatch_budget_ms BIGINT; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS provider_version TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		// free_for_load_gb became nullable (nil = provider did not report it); idempotent.
 		`ALTER TABLE fleet_snapshots ALTER COLUMN free_for_load_gb DROP NOT NULL`,
@@ -1179,10 +1174,20 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		fleetSnapshotsProviderIndexDDL,
 	}
 
-	for _, m := range migrations {
-		if _, err := s.pool.Exec(ctx, m); err != nil {
-			return fmt.Errorf("migration failed: %w", err)
+	for i, m := range migrations {
+		started := time.Now()
+		_, err := s.pool.Exec(ctx, m)
+		logStartupMigration(fmt.Sprintf("schema_statement_%03d", i), started, err)
+		if err != nil {
+			return fmt.Errorf("migration statement %d failed: %w", i, err)
 		}
+	}
+
+	if err := s.migrateEarningsSummary(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureProviderRestoreIndexes(ctx); err != nil {
+		return err
 	}
 
 	if err := s.migrateUsageTotals(ctx); err != nil {
@@ -3940,9 +3945,25 @@ func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
 	}
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at)
+		`WITH earning AS (INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		 ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING`,
+		 ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
+		 RETURNING account_id, provider_key, model, amount_micro_usd, prompt_tokens, completion_tokens
+		), summaries AS (
+		 SELECT account_id AS key, 'account' AS key_type, model, amount_micro_usd, prompt_tokens, completion_tokens FROM earning WHERE account_id <> ''
+		 UNION ALL
+		 SELECT provider_key, 'provider', model, amount_micro_usd, prompt_tokens, completion_tokens FROM earning WHERE provider_key <> ''
+		)
+		INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
+		SELECT key, key_type, CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
+		 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
+		 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM summaries
+		ON CONFLICT (key, key_type) DO UPDATE SET
+		 total_count = earnings_summary.total_count + EXCLUDED.total_count,
+		 total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
+		 total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
+		 total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
+		 updated_at = NOW()`,
 		earning.AccountID, earning.ProviderID, earning.ProviderKey, earning.JobID,
 		earning.Model, earning.AmountMicroUSD, earning.PromptTokens, earning.CompletionTokens,
 		createdAt,
@@ -4160,7 +4181,7 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 				account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
 			) VALUES ($1, $6, $7, $4, $8, $2, $9, $10, COALESCE($5::timestamptz, NOW()))
 			ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
-			RETURNING account_id, provider_key, amount_micro_usd, prompt_tokens, completion_tokens
+			RETURNING account_id, provider_key, model, amount_micro_usd, prompt_tokens, completion_tokens
 		), credit AS (
 			INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
 			SELECT account_id, amount_micro_usd, amount_micro_usd, NOW() FROM earning
@@ -4175,19 +4196,23 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 			FROM earning e CROSS JOIN credit c
 		), summary_account AS (
 			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT account_id, 'account', 1, amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
+			SELECT account_id, 'account', CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM earning
 			ON CONFLICT (key, key_type) DO UPDATE SET
-			  total_count = earnings_summary.total_count + 1,
+			  total_count = earnings_summary.total_count + EXCLUDED.total_count,
 			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
 			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
 			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
 			  updated_at = NOW()
 		), summary_provider AS (
 			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT provider_key, 'provider', 1, amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
+			SELECT provider_key, 'provider', CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM earning
 			WHERE provider_key <> ''
 			ON CONFLICT (key, key_type) DO UPDATE SET
-			  total_count = earnings_summary.total_count + 1,
+			  total_count = earnings_summary.total_count + EXCLUDED.total_count,
 			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
 			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
 			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
@@ -4286,7 +4311,11 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	return upsertProviderRecord(ctx, s.pool, p)
+}
+
+func upsertProviderRecord(ctx context.Context, db providerRecordDB, p ProviderRecord) error {
+	_, err := db.Exec(ctx,
 		`INSERT INTO providers (
 			id, hardware, models, backend, location, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
@@ -4473,10 +4502,13 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			&p.LifetimeStats, &p.LastSessionStats,
 			&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
 		); err != nil {
-			continue
+			return nil, fmt.Errorf("store: scan provider: %w", err)
 		}
 		p.Location = unmarshalProviderLocation(locationRaw)
 		records = append(records, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate providers: %w", err)
 	}
 	if records == nil {
 		return []ProviderRecord{}, nil
@@ -4683,7 +4715,11 @@ func (s *PostgresStore) UpsertReputation(ctx context.Context, providerID string,
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	return upsertReputationRecord(ctx, s.pool, providerID, rep)
+}
+
+func upsertReputationRecord(ctx context.Context, db providerRecordDB, providerID string, rep ReputationRecord) error {
+	_, err := db.Exec(ctx,
 		`INSERT INTO provider_reputation (
 			provider_id, total_jobs, successful_jobs, failed_jobs,
 			total_uptime_seconds, avg_response_time_ms,
@@ -4719,8 +4755,11 @@ func (s *PostgresStore) GetReputation(ctx context.Context, providerID string) (*
 		&rep.TotalUptimeSeconds, &rep.AvgResponseTimeMs,
 		&rep.ChallengesPassed, &rep.ChallengesFailed,
 	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("store: reputation not found: %w", ErrNotFound)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("store: reputation not found: %w", err)
+		return nil, fmt.Errorf("store: read reputation: %w", err)
 	}
 	return &rep, nil
 }
@@ -4732,7 +4771,7 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash FROM code_attestations`)
+		`SELECT se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash, continuous_coverage_until FROM code_attestations`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list code attestations: %w", err)
 	}
@@ -4743,7 +4782,7 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 		var rec CodeAttestation
 		if err := rows.Scan(
 			&rec.SEPubKey, &rec.Version, &rec.AttestedAt,
-			&rec.APNsToken, &rec.NodePublicKey, &rec.BinaryHash,
+			&rec.APNsToken, &rec.NodePublicKey, &rec.BinaryHash, &rec.ContinuousCoverageUntil,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan code attestation: %w", err)
 		}
@@ -4764,13 +4803,19 @@ func (s *PostgresStore) UpsertCodeAttestation(ctx context.Context, rec CodeAttes
 
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO code_attestations (
-			se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash
-		 ) VALUES ($1, $2, $3, $4, $5, $6)
+			se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash, continuous_coverage_until
+		 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 ON CONFLICT (se_pubkey) DO UPDATE SET
 			version = $2, attested_at = $3,
-			apns_token = $4, node_public_key = $5, binary_hash = $6`,
+			apns_token = $4, node_public_key = $5, binary_hash = $6,
+			continuous_coverage_until = CASE WHEN code_attestations.attested_at = EXCLUDED.attested_at
+             AND code_attestations.version = EXCLUDED.version AND code_attestations.apns_token = EXCLUDED.apns_token
+             AND code_attestations.node_public_key = EXCLUDED.node_public_key AND code_attestations.binary_hash = EXCLUDED.binary_hash
+             THEN GREATEST(code_attestations.continuous_coverage_until,EXCLUDED.continuous_coverage_until)
+             ELSE EXCLUDED.continuous_coverage_until END
+		 WHERE code_attestations.attested_at <= EXCLUDED.attested_at`,
 		rec.SEPubKey, rec.Version, rec.AttestedAt,
-		rec.APNsToken, rec.NodePublicKey, rec.BinaryHash,
+		rec.APNsToken, rec.NodePublicKey, rec.BinaryHash, rec.ContinuousCoverageUntil,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert code attestation: %w", err)
@@ -5644,6 +5689,9 @@ const (
 			client_gone_phase TEXT NOT NULL DEFAULT '',
 			first_content_budget_ms INT NOT NULL DEFAULT 0,
 			admission_mode TEXT NOT NULL DEFAULT '',
+			predictive_bypass TEXT NOT NULL DEFAULT '',
+			reservation_ttft_ceiling_ms DOUBLE PRECISION,
+			dispatch_budget_ms BIGINT,
 			estimated_prompt_tokens INT NOT NULL DEFAULT 0,
 			requested_max_tokens INT NOT NULL DEFAULT 0,
 			requires_vision BOOL NOT NULL DEFAULT FALSE,

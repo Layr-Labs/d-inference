@@ -1,0 +1,361 @@
+{
+  "scope": "127 original12-cell concurrencyattempt stoppedafter2Q36B2cacheoffcells",
+  "accepted": false,
+  "error": "completed_donor_repeat_output_mismatch",
+  "original_manifest_sha256": "19c3fb01825a84a5ccdc815cbeea29cc549ce345b4f6cfac772ad28d1691e665",
+  "all_original_files_verified": 319,
+  "before_after_full_audit_pairs_exact": 2,
+  "completed_cells": 2,
+  "unrun_cells": 10,
+  "cache_on_cells_executed": 0,
+  "source_manifest_sha256": "e7b769e2713e48c53fb62fbe74e449bb409c8fc1b7e5f036b14e808a7c3da3f5",
+  "paged_rows": [
+    {
+      "id": "long-first-b0",
+      "completion_tokens": 78,
+      "finish": "stop",
+      "prefill_chunks": 11,
+      "prefill_chunk_tokens_max": 512,
+      "saved_tokens": 0
+    },
+    {
+      "id": "long-first-b1",
+      "completion_tokens": 83,
+      "finish": "stop",
+      "prefill_chunks": 3,
+      "prefill_chunk_tokens_max": 2048,
+      "saved_tokens": 0
+    },
+    {
+      "id": "long-repeat-b0",
+      "completion_tokens": 83,
+      "finish": "stop",
+      "prefill_chunks": 3,
+      "prefill_chunk_tokens_max": 2048,
+      "saved_tokens": 0
+    },
+    {
+      "id": "long-repeat-b1",
+      "completion_tokens": 78,
+      "finish": "stop",
+      "prefill_chunks": 11,
+      "prefill_chunk_tokens_max": 512,
+      "saved_tokens": 0
+    }
+  ],
+  "paged_output_multisets_exact": true,
+  "all_prompt_tokens_exact": true,
+  "strict_perindex_repeat_pass": false,
+  "causality": "Observedperrequestoutputtracks512/2048prefillgeometry. Sourceconsistentwithschedulingdependence; not an isolatedkernel/cachedefect. Contiguousalsochangesoutputbygeometry butlabelsretainassignment inthisrun.",
+  "next_control": "131singleQ36B2pagedcacheoff, existingSOLO_PREFILL_STRIPE=0 only; allfour11chunks/max512required; strictrepeatunchanged. No productiondefaultchange.",
+  "selected_original_files": {
+    "detached-retirement.json": {
+      "bytes": 3098,
+      "ctime_ns": 1788736285091111313,
+      "device": 16777234,
+      "inode": 200422753,
+      "link": {
+        "bytes": 3098,
+        "ctime_ns": 1788736285091111313,
+        "device": 16777234,
+        "inode": 200422753,
+        "mode": 420,
+        "mtime_ns": 1788736285091111313
+      },
+      "mode": 420,
+      "mtime_ns": 1788736285091111313,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/detached-retirement.json",
+      "resolved_path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/detached-retirement.json",
+      "sha256": "b7a1abdf30ba3116d0ab1aa02de321b34d241209798412aefb0bdd613e27df13"
+    },
+    "foreground-retirement.json": {
+      "bytes": 3098,
+      "ctime_ns": 1788736285112305846,
+      "device": 16777234,
+      "inode": 200422756,
+      "link": {
+        "bytes": 3098,
+        "ctime_ns": 1788736285112305846,
+        "device": 16777234,
+        "inode": 200422756,
+        "mode": 420,
+        "mtime_ns": 1788736285112305846
+      },
+      "mode": 420,
+      "mtime_ns": 1788736285112305846,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/foreground-retirement.json",
+      "resolved_path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/foreground-retirement.json",
+      "sha256": "b7a1abdf30ba3116d0ab1aa02de321b34d241209798412aefb0bdd613e27df13"
+    },
+    "partial-verdict.json": {
+      "bytes": 568389,
+      "ctime_ns": 1788736284842104315,
+      "device": 16777234,
+      "inode": 200422751,
+      "link": {
+        "bytes": 568389,
+        "ctime_ns": 1788736284842104315,
+        "device": 16777234,
+        "inode": 200422751,
+        "mode": 420,
+        "mtime_ns": 1788736284842104315
+      },
+      "mode": 420,
+      "mtime_ns": 1788736284842104315,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/partial-verdict.json",
+      "resolved_path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/partial-verdict.json",
+      "sha256": "bd7441b03e29569be7c56326443920671a379e802e20db018a8b766512a2c3fa"
+    },
+    "results/qwen36-retained-b2-r1-contiguous-cache-off/input.json": {
+      "bytes": 72677,
+      "ctime_ns": 1788736147997296978,
+      "device": 16777234,
+      "inode": 200422598,
+      "link": {
+        "bytes": 72677,
+        "ctime_ns": 1788736147997296978,
+        "device": 16777234,
+        "inode": 200422598,
+        "mode": 420,
+        "mtime_ns": 1788736147997296978
+      },
+      "mode": 420,
+      "mtime_ns": 1788736147997296978,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/results/qwen36-retained-b2-r1-contiguous-cache-off/input.json",
+      "resolved_path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/results/qwen36-retained-b2-r1-contiguous-cache-off/input.json",
+      "sha256": "4fb1ebf2b8a4b9b29be3388da3613398c8c7b6f768ca8bac11636a8928dd570e"
+    },
+    "results/qwen36-retained-b2-r1-contiguous-cache-off/metadata.json": {
+      "bytes": 3560,
+      "ctime_ns": 1788736196144635858,
+      "device": 16777234,
+      "inode": 200422655,
+      "link": {
+        "bytes": 3560,
+        "ctime_ns": 1788736196144635858,
+        "device": 16777234,
+        "inode": 200422655,
+        "mode": 420,
+        "mtime_ns": 1788736196144635858
+      },
+      "mode": 420,
+      "mtime_ns": 1788736196144635858,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/results/qwen36-retained-b2-r1-contiguous-cache-off/metadata.json",
+      "resolved_path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/results/qwen36-retained-b2-r1-contiguous-cache-off/metadata.json",
+      "sha256": "cba06e05b05e3c5209b6d1cbdac565d53d660f662831374572d48c9fcea97f51"
+    },
+    "results/qwen36-retained-b2-r1-contiguous-cache-off/report.json": {
+      "bytes": 1069397,
+      "ctime_ns": 1788736195780144121,
+      "device": 16777234,
+      "inode": 200422653,
+      "link": {
+        "bytes": 1069397,
+        "ctime_ns": 1788736195780144121,
+        "device": 16777234,
+        "inode": 200422653,
+        "mode": 420,
+        "mtime_ns": 1788736195779895995
+      },
+      "mode": 420,
+      "mtime_ns": 1788736195779895995,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/results/qwen36-retained-b2-r1-contiguous-cache-off/report.json",
+      "resolved_path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/results/qwen36-retained-b2-r1-contiguous-cache-off/report.json",
+      "sha256": "6cf23fc15ae741029cc3330e6d31eb3ab67e2c2ef1511ca982acef3da363d9d5"
+    },
+    "results/qwen36-retained-b2-r1-paged-cache-off/input.json": {
+      "bytes": 72677,
+      "ctime_ns": 1788736225441080191,
+      "device": 16777234,
+      "inode": 200422683,
+      "link": {
+        "bytes": 72677,
+        "ctime_ns": 1788736225441080191,
+        "device": 16777234,
+        "inode": 200422683,
+        "mode": 420,
+        "mtime_ns": 1788736225441080191
+      },
+      "mode": 420,
+      "mtime_ns": 1788736225441080191,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/results/qwen36-retained-b2-r1-paged-cache-off/input.json",
+      "resolved_path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/results/qwen36-retained-b2-r1-paged-cache-off/input.json",
+      "sha256": "4fb1ebf2b8a4b9b29be3388da3613398c8c7b6f768ca8bac11636a8928dd570e"
+    },
+    "results/qwen36-retained-b2-r1-paged-cache-off/metadata.json": {
+      "bytes": 3527,
+      "ctime_ns": 1788736275653148308,
+      "device": 16777234,
+      "inode": 200422741,
+      "link": {
+        "bytes": 3527,
+        "ctime_ns": 1788736275653148308,
+        "device": 16777234,
+        "inode": 200422741,
+        "mode": 420,
+        "mtime_ns": 1788736275653148308
+      },
+      "mode": 420,
+      "mtime_ns": 1788736275653148308,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/results/qwen36-retained-b2-r1-paged-cache-off/metadata.json",
+      "resolved_path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/results/qwen36-retained-b2-r1-paged-cache-off/metadata.json",
+      "sha256": "9e64d1f5690daee6517bb9acd57f74ad10abdaae13bf09c9c17eb53db3ca5ad6"
+    },
+    "results/qwen36-retained-b2-r1-paged-cache-off/report.json": {
+      "bytes": 1133561,
+      "ctime_ns": 1788736274761399890,
+      "device": 16777234,
+      "inode": 200422738,
+      "link": {
+        "bytes": 1133561,
+        "ctime_ns": 1788736274761399890,
+        "device": 16777234,
+        "inode": 200422738,
+        "mode": 420,
+        "mtime_ns": 1788736274760903388
+      },
+      "mode": 420,
+      "mtime_ns": 1788736274760903388,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/results/qwen36-retained-b2-r1-paged-cache-off/report.json",
+      "resolved_path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/results/qwen36-retained-b2-r1-paged-cache-off/report.json",
+      "sha256": "05668c85f02a153f32e9e54cd1e550980ccf53f45653252cc2a522e0bcc12903"
+    },
+    "steps/2/verdict.json": {
+      "bytes": 559639,
+      "ctime_ns": 1788736284818406482,
+      "device": 16777234,
+      "inode": 200422749,
+      "link": {
+        "bytes": 559639,
+        "ctime_ns": 1788736284818406482,
+        "device": 16777234,
+        "inode": 200422749,
+        "mode": 420,
+        "mtime_ns": 1788736284818406482
+      },
+      "mode": 420,
+      "mtime_ns": 1788736284818406482,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/steps/2/verdict.json",
+      "resolved_path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/steps/2/verdict.json",
+      "sha256": "1cc045d3a8973da4289294ce851165965dee6d098e1d2d8e9368315b5c7147d1"
+    },
+    "supervisor-terminal.json": {
+      "bytes": 412,
+      "ctime_ns": 1788736285091591398,
+      "device": 16777234,
+      "inode": 200422754,
+      "link": {
+        "bytes": 412,
+        "ctime_ns": 1788736285091591398,
+        "device": 16777234,
+        "inode": 200422754,
+        "mode": 420,
+        "mtime_ns": 1788736285091591398
+      },
+      "mode": 420,
+      "mtime_ns": 1788736285091591398,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/supervisor-terminal.json",
+      "resolved_path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/supervisor-terminal.json",
+      "sha256": "ec93e257e7f07c3d9e0454cd619aea43738b462d05a2b53f0a598100dcac9fa5"
+    },
+    "terminal.json": {
+      "bytes": 516,
+      "ctime_ns": 1788736285548307250,
+      "device": 16777234,
+      "inode": 200422757,
+      "link": {
+        "bytes": 516,
+        "ctime_ns": 1788736285548307250,
+        "device": 16777234,
+        "inode": 200422757,
+        "mode": 420,
+        "mtime_ns": 1788736285548307250
+      },
+      "mode": 420,
+      "mtime_ns": 1788736285548307250,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/terminal.json",
+      "resolved_path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/terminal.json",
+      "sha256": "3e070af9a76c9f365d50eb674fb4255588d3e84237c75dee759f25948f24051f"
+    },
+    "worker-verdict.json": {
+      "bytes": 246,
+      "ctime_ns": 1788736284818598107,
+      "device": 16777234,
+      "inode": 200422750,
+      "link": {
+        "bytes": 246,
+        "ctime_ns": 1788736284818598107,
+        "device": 16777234,
+        "inode": 200422750,
+        "mode": 420,
+        "mtime_ns": 1788736284818598107
+      },
+      "mode": 420,
+      "mtime_ns": 1788736284818598107,
+      "path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/worker-verdict.json",
+      "resolved_path": "/Users/gaj/autoresearch/radix-prefix-cache/127-qwen-concurrency2/run/worker-verdict.json",
+      "sha256": "90a0a3680eae54ca6b43526ea0180868dbb2fa20ba6bea927e959be32ac90bb2"
+    }
+  },
+  "capsule_files": {
+    "detached-retirement.json": {
+      "sha256": "b7a1abdf30ba3116d0ab1aa02de321b34d241209798412aefb0bdd613e27df13",
+      "bytes": 3098
+    },
+    "foreground-retirement.json": {
+      "sha256": "b7a1abdf30ba3116d0ab1aa02de321b34d241209798412aefb0bdd613e27df13",
+      "bytes": 3098
+    },
+    "partial-verdict.json": {
+      "sha256": "bd7441b03e29569be7c56326443920671a379e802e20db018a8b766512a2c3fa",
+      "bytes": 568389
+    },
+    "results/qwen36-retained-b2-r1-contiguous-cache-off/input.json": {
+      "sha256": "4fb1ebf2b8a4b9b29be3388da3613398c8c7b6f768ca8bac11636a8928dd570e",
+      "bytes": 72677
+    },
+    "results/qwen36-retained-b2-r1-contiguous-cache-off/metadata.json": {
+      "sha256": "cba06e05b05e3c5209b6d1cbdac565d53d660f662831374572d48c9fcea97f51",
+      "bytes": 3560
+    },
+    "results/qwen36-retained-b2-r1-contiguous-cache-off/report.json": {
+      "sha256": "6cf23fc15ae741029cc3330e6d31eb3ab67e2c2ef1511ca982acef3da363d9d5",
+      "bytes": 1069397
+    },
+    "results/qwen36-retained-b2-r1-paged-cache-off/input.json": {
+      "sha256": "4fb1ebf2b8a4b9b29be3388da3613398c8c7b6f768ca8bac11636a8928dd570e",
+      "bytes": 72677
+    },
+    "results/qwen36-retained-b2-r1-paged-cache-off/metadata.json": {
+      "sha256": "9e64d1f5690daee6517bb9acd57f74ad10abdaae13bf09c9c17eb53db3ca5ad6",
+      "bytes": 3527
+    },
+    "results/qwen36-retained-b2-r1-paged-cache-off/report.json": {
+      "sha256": "05668c85f02a153f32e9e54cd1e550980ccf53f45653252cc2a522e0bcc12903",
+      "bytes": 1133561
+    },
+    "steps/2/verdict.json": {
+      "sha256": "1cc045d3a8973da4289294ce851165965dee6d098e1d2d8e9368315b5c7147d1",
+      "bytes": 559639
+    },
+    "supervisor-terminal.json": {
+      "sha256": "ec93e257e7f07c3d9e0454cd619aea43738b462d05a2b53f0a598100dcac9fa5",
+      "bytes": 412
+    },
+    "terminal.json": {
+      "sha256": "3e070af9a76c9f365d50eb674fb4255588d3e84237c75dee759f25948f24051f",
+      "bytes": 516
+    },
+    "worker-verdict.json": {
+      "sha256": "90a0a3680eae54ca6b43526ea0180868dbb2fa20ba6bea927e959be32ac90bb2",
+      "bytes": 246
+    },
+    "review/batch-geometry-diagnosis.json": {
+      "sha256": "606a8d1b6726a0e74191df0be19a851d950e39318a394d0618702b3e1156d011",
+      "bytes": 33021
+    }
+  },
+  "cleanup_complete": true,
+  "lane_release_sha256": "e0db5a5a41712d8174e85c741886cacb0b977abc53822527ac727c05bca3a9dc",
+  "release_ready": false
+}

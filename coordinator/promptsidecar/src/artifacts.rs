@@ -1,3 +1,4 @@
+use crate::artifact_cache::SingleflightLru;
 use crate::contract::{
     ContractMetadata, METADATA_FILE, compute_contract_id, is_prompt_role, validate_relative_path,
 };
@@ -10,6 +11,7 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path};
+use std::sync::Arc;
 use thiserror::Error;
 use tokenizers::Tokenizer;
 
@@ -20,7 +22,7 @@ const MAX_CONTRACT_BYTES: u64 = 512 << 20;
 
 pub struct LoadedArtifacts {
     pub metadata: ContractMetadata,
-    pub tokenizer: Tokenizer,
+    pub tokenizer: Arc<Tokenizer>,
     pub tokenizer_config: Map<String, Value>,
     pub model_config: Map<String, Value>,
     pub chat_template: Value,
@@ -46,7 +48,11 @@ pub enum ArtifactError {
     Io(#[from] io::Error),
 }
 
-pub fn load(root: &Path, contract_id: &str) -> Result<LoadedArtifacts, ArtifactError> {
+pub(crate) fn load(
+    root: &Path,
+    contract_id: &str,
+    tokenizers: &SingleflightLru<Tokenizer, ArtifactError>,
+) -> Result<LoadedArtifacts, ArtifactError> {
     validate_contract_id(contract_id)?;
     let root = open_directory_tree(root)?;
     let directory = open_directory_at(&root, contract_id)?;
@@ -87,7 +93,7 @@ pub fn load(root: &Path, contract_id: &str) -> Result<LoadedArtifacts, ArtifactE
             &artifact.sha256,
         )?;
         match artifact.path.as_str() {
-            "tokenizer.json" => tokenizer_bytes = Some(bytes),
+            "tokenizer.json" => tokenizer_bytes = Some((artifact.sha256.clone(), bytes)),
             "tokenizer_config.json" => tokenizer_config_bytes = Some(bytes),
             "config.json" => model_config_bytes = Some(bytes),
             "chat_template.jinja" => chat_template_jinja_bytes = Some(bytes),
@@ -96,7 +102,15 @@ pub fn load(root: &Path, contract_id: &str) -> Result<LoadedArtifacts, ArtifactE
         }
     }
 
-    let tokenizer = Tokenizer::from_bytes(tokenizer_bytes.ok_or(ArtifactError::Incomplete)?)
+    // Every declared artifact has been read and verified before reuse. Sharing
+    // a parsed tokenizer must never bypass this contract's file integrity.
+    // Only tokenizer.json configures this immutable object; rendering settings
+    // and model/template metadata below remain private to each contract.
+    let (tokenizer_digest, tokenizer_bytes) = tokenizer_bytes.ok_or(ArtifactError::Incomplete)?;
+    let (tokenizer, _) = tokenizers
+        .get_or_load(&tokenizer_digest, || {
+            Tokenizer::from_bytes(tokenizer_bytes).map_err(|_| ArtifactError::Tokenizer)
+        })
         .map_err(|_| ArtifactError::Tokenizer)?;
     let tokenizer_config = match tokenizer_config_bytes {
         Some(bytes) => parse_json_object(&bytes, MAX_CONFIG_BYTES)?,
@@ -288,57 +302,4 @@ fn open_at(directory: &File, name: &[u8], flags: libc::c_int) -> Result<File, Ar
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::os::unix::fs::symlink;
-
-    #[test]
-    fn rejects_symlinked_artifact() {
-        let temp = tempfile::tempdir().unwrap();
-        let target = temp.path().join("target");
-        let link = temp.path().join("link");
-        std::fs::write(&target, b"secret").unwrap();
-        symlink(&target, &link).unwrap();
-        let root = open_directory_tree(&std::fs::canonicalize(temp.path()).unwrap()).unwrap();
-        assert!(read_bounded_at(&root, "link", 1024).is_err());
-    }
-
-    #[test]
-    fn rejects_symlinked_ancestor() {
-        let temp = tempfile::tempdir().unwrap();
-        let target = temp.path().join("target");
-        let link = temp.path().join("link");
-        std::fs::create_dir(&target).unwrap();
-        std::fs::write(target.join("artifact"), b"secret").unwrap();
-        symlink(&target, &link).unwrap();
-        let root = open_directory_tree(&std::fs::canonicalize(temp.path()).unwrap()).unwrap();
-        assert!(read_bounded_at(&root, "link/artifact", 1024).is_err());
-    }
-
-    #[test]
-    fn matches_swift_chat_template_precedence() {
-        let config = Map::from_iter([(
-            "chat_template".into(),
-            Value::String("config-template".into()),
-        )]);
-
-        assert_eq!(
-            load_chat_template(
-                Some(b"jinja-template"),
-                Some(br#"{"chat_template":"json-template"}"#),
-                &config
-            )
-            .unwrap(),
-            Value::String("jinja-template".into())
-        );
-        assert_eq!(
-            load_chat_template(None, Some(br#"{"chat_template":"json-template"}"#), &config)
-                .unwrap(),
-            Value::String("json-template".into())
-        );
-        assert_eq!(
-            load_chat_template(None, None, &config).unwrap(),
-            Value::String("config-template".into())
-        );
-    }
-}
+mod tests;

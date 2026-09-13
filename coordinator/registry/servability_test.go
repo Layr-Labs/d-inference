@@ -698,11 +698,11 @@ func TestServabilityColdWeightsPerModel(t *testing.T) {
 	// binary and model — the load transient exceeds steady residency, so
 	// a measured-weights admit would over-admit loads that OOM mid-staging.
 	free := 12.0 // fits measured 11.5, NOT padded 13.53
-	if admit, reported := reportedFreeForLoadAdmits(12.1, &free, v, "gpt-oss-20b"); !reported || admit {
+	if admit, reported := reportedFreeForLoadAdmits(12.1, &free); !reported || admit {
 		t.Fatalf("admit gate = (%v, %v), want (false, true): padded transient figure must govern admits", admit, reported)
 	}
 	roomy := 14.0 // fits padded 13.53
-	if admit, reported := reportedFreeForLoadAdmits(12.1, &roomy, v, "gpt-oss-20b"); !reported || !admit {
+	if admit, reported := reportedFreeForLoadAdmits(12.1, &roomy); !reported || !admit {
 		t.Fatalf("admit gate = (%v, %v), want (true, true)", admit, reported)
 	}
 }

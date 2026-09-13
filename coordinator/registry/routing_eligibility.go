@@ -7,9 +7,9 @@ import "time"
 // overlapping subsets of these gates:
 //
 //   - providerPassesRoutingGatesLockedEx (scheduler.go) — dispatch hot path
-//   - providerCanRouteBuildLocked        (registry.go)  — alias routability
-//   - providerHasWarmModelLocked         (registry.go)  — warm detection
-//   - publiclyRoutableLocked             (registry.go)  — public capacity feeds
+//   - providerCanRouteBuildLocked        (model_aliases.go)  — alias routability
+//   - providerHasWarmModelLocked         (model_loading.go)  — warm detection
+//   - publiclyRoutableLocked             (model_capacity.go)  — public capacity feeds
 //   - warmPoolCandidateReasonLocked      (warm_pool_controller.go) — warming
 //
 // (plus modelLoadCandidatePendingLocked, the load planner). They share two
@@ -27,6 +27,7 @@ import "time"
 // every provider-eligibility decision, in this order:
 //
 //   - status is not offline/untrusted
+//   - verified identity's durable state restoration has completed
 //   - private-only admission (a private-only box is excluded unless allowPrivate)
 //   - hardware-trust floor (TrustLevel >= minTrust)
 //   - runtime verified
@@ -56,6 +57,9 @@ func (r *Registry) providerLivenessGateReasonLocked(p *Provider, minTrust TrustL
 	if p.Status == StatusUntrusted {
 		return false, GateUntrusted
 	}
+	if providerStateRestoreRequiredLocked(p) {
+		return false, GateStateRestoring
+	}
 	if p.PrivateOnly && !allowPrivate {
 		return false, GatePrivateOnly
 	}
@@ -72,6 +76,13 @@ func (r *Registry) providerLivenessGateReasonLocked(p *Provider, minTrust TrustL
 		return false, GateChallengeStale
 	}
 	return true, GateReasonCount
+}
+
+// Only a verified identity can have durable history restored. Preserve Open
+// Mode's existing behavior for providers without verified SE evidence; they
+// cannot publish reusable serial/SE identity while stateRestorePending is set.
+func providerStateRestoreRequiredLocked(p *Provider) bool {
+	return p.stateRestorePending && p.AttestationResult != nil && p.AttestationResult.Valid
 }
 
 // providerServesRoutableModelLocked reports whether the provider advertises a

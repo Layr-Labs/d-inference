@@ -28,7 +28,7 @@ function WorkspaceShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (pathname === "/link" || pathname === "/") return;
+    if (pathname === "/link") return;
     const shortcut = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
         event.preventDefault();
@@ -40,8 +40,6 @@ function WorkspaceShell({ children }: { children: React.ReactNode }) {
   }, [pathname]);
 
   if (pathname === "/link") return <>{children}</>;
-
-  if (pathname === "/") return <div className="min-h-dvh bg-bg-primary"><a href="#main-content" className="skip-link">Skip to content</a><main id="main-content" tabIndex={-1} className="outline-none">{children}</main><Toasts /></div>;
 
   return (
     <div className="flex h-dvh overflow-hidden bg-bg-primary">

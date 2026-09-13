@@ -41,7 +41,9 @@ func TestPrefixCacheTelemetryEnumCasingIsPinned(t *testing.T) {
 			got: PrefixCacheDonationOutcomes(),
 			want: "donated,below_effective_token_floor,no_complete_block,lossy_snapshot," +
 				"incomplete_layer_state,stage_size_exceeded,write_rate_limited,write_queue_full," +
-				"already_durable,already_queued,cache_closed,disk_unavailable,write_failed",
+				"already_durable,already_queued,cache_closed,disk_unavailable,write_failed," +
+				"host_memory_unavailable,cache_epoch_changed,cache_maintenance_busy," +
+				"disk_space_insufficient,unsafe_cache_root,write_io_failed,existing_cache_unreadable,cache_entry_evicted",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -54,8 +56,8 @@ func TestPrefixCacheTelemetryEnumCasingIsPinned(t *testing.T) {
 
 func TestDonationOutcomeForwardVersionHeadroomPreservesKnownCounters(t *testing.T) {
 	knownOutcomes := PrefixCacheDonationOutcomes()
-	if len(knownOutcomes) != 13 {
-		t.Fatalf("known outcome buckets=%d, want 13", len(knownOutcomes))
+	if len(knownOutcomes) != 21 {
+		t.Fatalf("known outcome buckets=%d, want 21", len(knownOutcomes))
 	}
 	knownCounters := func(offset uint64) []protocol.PrefixCacheDonationOutcomeCount {
 		result := make(
@@ -491,7 +493,7 @@ func TestPrefixCacheHeartbeatSnapshotReconcilesAtomically(t *testing.T) {
 		State: "pending", Reason: "scan_pending",
 	}}
 	if _, err := reg.UpdatePrefixCacheSnapshot(
-		provider.ID, false, 0, nil, &pending, nil); err != nil {
+		provider.ID, false, 0, nil, nil, &pending, nil); err != nil {
 		t.Fatal(err)
 	}
 	provider.mu.Lock()
@@ -504,7 +506,7 @@ func TestPrefixCacheHeartbeatSnapshotReconcilesAtomically(t *testing.T) {
 
 	restored := []protocol.PrefixCacheModelStatus{ready}
 	if _, err := reg.UpdatePrefixCacheSnapshot(
-		provider.ID, false, 0, nil, &restored, nil); err != nil {
+		provider.ID, false, 0, nil, nil, &restored, nil); err != nil {
 		t.Fatal(err)
 	}
 	provider.mu.Lock()
@@ -516,7 +518,7 @@ func TestPrefixCacheHeartbeatSnapshotReconcilesAtomically(t *testing.T) {
 
 	readyOnV1 := []protocol.PrefixCacheModelStatus{ready}
 	if _, err := reg.UpdatePrefixCacheSnapshot(
-		provider.ID, true, 1, nil, &readyOnV1, nil); err != nil {
+		provider.ID, true, 1, nil, nil, &readyOnV1, nil); err != nil {
 		t.Fatal(err)
 	}
 	provider.mu.Lock()

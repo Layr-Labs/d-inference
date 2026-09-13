@@ -2,6 +2,7 @@ package registry
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -9,7 +10,7 @@ import (
 // model_index.go — the per-model provider index.
 //
 // Every fleet walk that serves one request (the reservation scan, the
-// capacity preflight, the servability gate, the cache-capability snapshot and
+// capacity preflight, the servability gate and
 // the alias routability probe) used to iterate ALL of r.providers and take
 // p.mu on each, even though ~90% of a 1,260-provider fleet does not advertise
 // the requested model and fails the very first gate. The index maps an
@@ -166,4 +167,33 @@ func (r *Registry) providersForModelLocked(model string) []*Provider {
 		}
 	}
 	return live
+}
+
+// modelProviderInc increments the provider count for a model. Must be called
+// with r.mu held.
+func (r *Registry) modelProviderInc(model string) {
+	r.modelProvidersMu.Lock()
+	c, ok := r.modelProviders[model]
+	if !ok {
+		c = &atomic.Int64{}
+		r.modelProviders[model] = c
+	}
+	r.modelProvidersMu.Unlock()
+	c.Add(1)
+}
+
+// modelProviderDec decrements the provider count for a model. Must be called
+// with r.mu held.
+func (r *Registry) modelProviderDec(model string) {
+	r.modelProvidersMu.Lock()
+	c, ok := r.modelProviders[model]
+	r.modelProvidersMu.Unlock()
+	if ok {
+		v := c.Add(-1)
+		if v <= 0 {
+			r.modelProvidersMu.Lock()
+			delete(r.modelProviders, model)
+			r.modelProvidersMu.Unlock()
+		}
+	}
 }

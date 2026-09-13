@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCore
 
 /// Snapshot of non-Darkbloom inference that can steal unified memory / ports.
 /// Injectable for pure unit tests (see `DoctorChecksTests`).
@@ -54,11 +55,14 @@ struct LocalContentionSnapshot: Equatable, Sendable {
     /// stdout still holds `readDataToEndOfFile()` forever. Five seconds is the
     /// budget for a probe documented above as degrading to empty, so a slow
     /// `lsof` now costs a missing hint rather than a hung command.
-    static func runCapture(_ path: String, args: [String]) -> String? {
+    ///
+    /// The deadline stays a parameter so capture harnesses can tighten it;
+    /// the default preserves the 5s probe budget above.
+    static func runCapture(_ path: String, args: [String], timeout: TimeInterval = 5) -> String? {
         let result = FanProcessRunner.run(
             path,
             arguments: args,
-            timeout: 5,
+            timeout: timeout,
             discardStandardError: true,
             // The runner's 64 KiB default is sized for fan install logs. `ps`
             // was 78,689 bytes on the reporter's Mac, and a busy machine is

@@ -263,7 +263,10 @@ var (
 // holds locks or bloats WAL for long. It stops at the first error or when ctx
 // is done and returns the rows deleted so far.
 func (s *PostgresStore) PruneTelemetry(ctx context.Context, profilesBefore, snapshotsBefore time.Time, batch int) (int, error) {
-	total := 0
+	total, _, err := s.pruneTelemetryTable(ctx, telemetryTable{name: "request_outcomes", timeCol: "received_at"}, profilesBefore, batch)
+	if err != nil {
+		return total, err
+	}
 	n, _, err := s.pruneTelemetryTable(ctx, requestProfilesTable, profilesBefore, batch)
 	total += n
 	if err != nil {

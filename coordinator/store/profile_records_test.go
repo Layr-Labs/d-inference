@@ -62,7 +62,7 @@ func fullProfile(requestID string, attempt int, at time.Time) *RequestProfileRec
 		Model: "qwen3-30b", PublicModel: "qwen", ProviderID: "prov-a", ProviderVersion: "0.8.13",
 		ChipFamily: "m3", KVBackend: "paged", FinalStatus: "ok", ErrorReason: "", TerminalCause: "complete",
 		ClientOutcome: "done", ProviderOutcome: "complete", ClientGonePhase: "", FirstContentBudgetMs: 4000,
-		AdmissionMode: "deadline", EstimatedPromptTokens: 1500, RequestedMaxTokens: 512, RequiresVision: true, HasTools: true,
+		AdmissionMode: "hard", PredictiveBypass: "none", ReservationTTFTCeilingMs: ptrF64(3500.5), DispatchBudgetMs: i64p(3401), EstimatedPromptTokens: 1500, RequestedMaxTokens: 512, RequiresVision: true, HasTools: true,
 		ReceivedAt: at.Add(-time.Second),
 
 		AuthDoneUS: i64p(10), RatelimitDoneUS: i64p(20), SealedOpenUS: nil, HandlerEntryUS: i64p(0),
@@ -244,6 +244,8 @@ func TestRequestProfilesWriteOnceAndReadNewestFirst(t *testing.T) {
 			c := fullProfile(uniqueID("req-c"), 1, base.Add(-1*time.Second))
 			// Sparse record: nil pointers, zero counters, empty JSONB.
 			c.AuthDoneUS, c.HandlerEntryUS, c.DBUS, c.TransportEstUS = nil, nil, nil, nil
+			c.ReservationTTFTCeilingMs, c.DispatchBudgetMs = nil, nil
+			c.AdmissionMode, c.PredictiveBypass = "", ""
 			c.ShadowWouldShed, c.ProvLoadCold, c.ProviderProfileConsistent = nil, nil, nil
 			c.ProvRunningAtAdmit, c.ProvWaitingAtAdmit, c.EngPrefillChunks = nil, nil, nil
 			c.GateRejections, c.Candidates, c.ProviderProfile = nil, json.RawMessage{}, nil

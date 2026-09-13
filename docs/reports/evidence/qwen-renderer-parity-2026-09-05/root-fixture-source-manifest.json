@@ -1,0 +1,18 @@
+{
+  "scope": "ROOT-owned final v3 fixture/inventory hashes captured after unchanged successful fixture-sensitive Go test. Full Rust source hashes live in separate agent manifest.",
+  "files": {
+    "coordinator/cmd/promptsidecarloadproof/corpus.go": "cd3dda7e9fe935da746d622113b34171d04367a0bcae553dc866d233bf73d294",
+    "coordinator/cmd/promptsidecarloadproof/load_test.go": "f917631db462a1e7f90079132210c85f293a8d45dceb0d9c26ac5d0933e9794b",
+    "coordinator/promptcontract/contract.go": "8afe676d8dfdd68fb2f9b92d38ec6981bca3fc5ec9f5d4054062891052762a0a",
+    "fixtures/prompt-contract/v1/contract_vectors.json": "bfdd09b75376506d2865229224f8621bbe0c2aabc238d53131a5df3285382ddd",
+    "fixtures/prompt-contract/v1/corpus.json": "7f38f6ceed06f24714c01823bce5690824efa1c7e142e8c6d324579a4e474c0f",
+    "fixtures/prompt-contract/v1/production_vectors.json": "7bda5110dac22a0ab24d0b28a6502935de70d2571037a58dd77f3cad17cc0430",
+    "fixtures/prompt-contract/v1/manifests/0402fbf4954e2cff8dae9cf488e9cbb4253cd0fc69c554f94ab10a8701ac7fa3.json": "4e4e7df6aed1964ce70d9a3334e8114d2a18593a334c2fc3e5f2dce5ae65deed",
+    "fixtures/prompt-contract/v1/manifests/69619d858022727322ded90934928323b4be52d74f514934e70a32df6ceab29c.json": "c1fefb1fa593fa3ca83e72a1124fb3afca10a59eed272c7ac2ac4a57f8018dfd",
+    "fixtures/prompt-contract/v1/manifests/9e201d98f8d49aee5bc4dcfc1810a68ef50b5581748cace11a8b3388e826ea95.json": "4d36eeed9afe33805bdccf9f59b4d455193ada96a56b4b4e346727a5879b0c9b",
+    "fixtures/prompt-contract/v1/manifests/ca1fe4e9c1499d821397771bdaee427be3244b55371a3803b12152c46dc44a28.json": "a66dc823dd0cea6710be6bb7a84a8b9f78454a1893a76dcd7a9d4e5ba861a996",
+    "fixtures/prompt-contract/v1/manifests/qwen35-fleet.json": "db0a8dd2902473c4b6dcd4eab9511212b52fe7bf9cb8e043aebfc47a900d21ff",
+    "fixtures/prompt-contract/v1/manifests/qwen36-fleet.json": "54ba4df3022077a69974cfd4de91196622c865b45ae361e1051c1cda405bc7cc",
+    "fixtures/prompt-contract/v1/manifests/qwen38-fleet.json": "ec9001f5eabca1837c6688397c071c7d9da3a22a40c2130316d150882576a65d"
+  }
+}

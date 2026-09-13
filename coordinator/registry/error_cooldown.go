@@ -31,7 +31,7 @@ import (
 // threat-model colon-collision note (a model id containing ':' could alias a
 // different pair under the old concat key).
 //
-// Modeled on the dispatch-load cooldown (registry.go): per-identity gate
+// Modeled on the dispatch-load cooldown (model_loading.go): per-identity gate
 // state (gate_state.go), window-rebuild-on-write. Only sickness-shaped
 // status codes (500/502/504) count toward quarantine: 4xx are client-shape
 // failures (bad request, context too long) and 503 is the provider's

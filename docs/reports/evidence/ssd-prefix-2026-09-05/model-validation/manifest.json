@@ -1,0 +1,547 @@
+{
+  "schema": 1,
+  "scope": "Real-model SSD application-path validation; all successful cache-on runs use explicit ephemeral test keys with MEMORY unset.",
+  "caveats": [
+    "Corrected build3 persistent-key attempt failed persistentKeyUnavailable. No actual persistent-key fresh-process reuse was measured.",
+    "Build1 omitted normal metallib binding. Build2 failed quantized-model eligibility. Neither is a valid key-policy measurement.",
+    "GPT-OSS model template contains strftime_now and fails the existing deterministic prompt identity gate before requests.",
+    "HTTP runner used MTP-off expected decode text and exited1; retained requests/outputs pass the separately recorded correct MTP-on baseline comparison.",
+    "SSD reads may hit OS file cache. Provider staging reservations are not total process RSS or total slot peak.",
+    "One ordered group per run; no statistical speedup or decode improvement claim."
+  ],
+  "files": {
+    "ssd-build1-startup-binding-failure/metadata.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build1-startup-binding-failure/metadata.json",
+      "bytes": 773,
+      "sha256": "4d4d38f6db7a39a8963303a9029319024d1a66a20d6bbebc97b0099055dd1569",
+      "uncompressed_bytes": 773,
+      "uncompressed_sha256": "4d4d38f6db7a39a8963303a9029319024d1a66a20d6bbebc97b0099055dd1569"
+    },
+    "ssd-build1-startup-binding-failure/engine.log.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build1-startup-binding-failure/engine.log",
+      "bytes": 275,
+      "sha256": "47e3e04a4628d17c687c75ec0f5d778dc6571c7acfc3ea03aa991950c49bc954",
+      "uncompressed_bytes": 716,
+      "uncompressed_sha256": "70ceefdd2df3e8a6fad4820764aa5c73b7f1f2a9517784c5dbe54f569cfe60da"
+    },
+    "ssd-build1-startup-binding-failure/telemetry.jsonl.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build1-startup-binding-failure/telemetry.jsonl",
+      "bytes": 8196,
+      "sha256": "1d9a6505090d1cbf4e206277ebc24b1d27ad57f113908c29cc992b52ae21cfab",
+      "uncompressed_bytes": 59988,
+      "uncompressed_sha256": "142a5b88eccac76bc9e9cef836394770078139fcf5f937ee8a16e3731ed7da56"
+    },
+    "ssd-build2-persistent-eligibility-failure/metadata.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build2-persistent-eligibility-failure/metadata.json",
+      "bytes": 774,
+      "sha256": "b89a2f56a8739d178528f114b5b67273775e32a2b9fb2b112f1f5bad210f3be0",
+      "uncompressed_bytes": 774,
+      "uncompressed_sha256": "b89a2f56a8739d178528f114b5b67273775e32a2b9fb2b112f1f5bad210f3be0"
+    },
+    "ssd-build2-persistent-eligibility-failure/engine.log.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build2-persistent-eligibility-failure/engine.log",
+      "bytes": 330,
+      "sha256": "208bf1208d3392c221ecd5fc6b1237729e946a2edd0d9ce0b90907800ec15350",
+      "uncompressed_bytes": 797,
+      "uncompressed_sha256": "6534b327ad1897154bd62a27d3057fb79c481bbb4ba672281d5ea30284e0978c"
+    },
+    "ssd-build2-persistent-eligibility-failure/telemetry.jsonl.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build2-persistent-eligibility-failure/telemetry.jsonl",
+      "bytes": 8205,
+      "sha256": "13613e5bdee68a3a2d08ad116c2c6d46668a24316e739133df7b5886b86b8b6c",
+      "uncompressed_bytes": 59930,
+      "uncompressed_sha256": "4aae95203d1ea5875bb1c263fbf4464917b08c9832a05cead6a7e0ede864c043"
+    },
+    "ssd-build2-ephemeral-eligibility-failure/metadata.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build2-ephemeral-eligibility-failure/metadata.json",
+      "bytes": 767,
+      "sha256": "ec23569ea7b01f8e0860932ae0e1a3b3e840fcdd6a01f4a6e461b04f24c7de02",
+      "uncompressed_bytes": 767,
+      "uncompressed_sha256": "ec23569ea7b01f8e0860932ae0e1a3b3e840fcdd6a01f4a6e461b04f24c7de02"
+    },
+    "ssd-build2-ephemeral-eligibility-failure/engine.log.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build2-ephemeral-eligibility-failure/engine.log",
+      "bytes": 330,
+      "sha256": "59674987158c83ffa91d294f6dce0a0a78584f627b207ed4e234df7d55815f3c",
+      "uncompressed_bytes": 797,
+      "uncompressed_sha256": "99922fbc2daa03208fc8512a25bf98144032daed035bc4ff492fcf709801c97e"
+    },
+    "ssd-build2-ephemeral-eligibility-failure/telemetry.jsonl.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build2-ephemeral-eligibility-failure/telemetry.jsonl",
+      "bytes": 7654,
+      "sha256": "9900142f6a2dfe5cc9d3fd0698f5b6f6984adf462f5af4ec5e0e7cf5b615efff",
+      "uncompressed_bytes": 56670,
+      "uncompressed_sha256": "117db635fb07a4777b83e279db5f96cdc91715c1c12dc8c5e2c3ca93cdf41ba0"
+    },
+    "ssd-build3-persistent-attempt/metadata.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-persistent-attempt/metadata.json",
+      "bytes": 773,
+      "sha256": "4ee072a413bea536604118409c6b5e789c70d2aaada0f16b452d884062a91f6a",
+      "uncompressed_bytes": 773,
+      "uncompressed_sha256": "4ee072a413bea536604118409c6b5e789c70d2aaada0f16b452d884062a91f6a"
+    },
+    "ssd-build3-persistent-attempt/engine.log.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-persistent-attempt/engine.log",
+      "bytes": 339,
+      "sha256": "1a67057e45e4842b944293ab9d34a8b4d11a1492b9539627fb6295e11d24bb67",
+      "uncompressed_bytes": 807,
+      "uncompressed_sha256": "adb8531af5eff84b5db851c22bc410f10d7914c8e1913c13875e4a8fe6a1d727"
+    },
+    "ssd-build3-persistent-attempt/telemetry.jsonl.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-persistent-attempt/telemetry.jsonl",
+      "bytes": 8634,
+      "sha256": "3322ed5eac9c75e0ae1b6fc9fdafd9620ca8cb4570b7712ed430971318d43fa5",
+      "uncompressed_bytes": 62875,
+      "uncompressed_sha256": "930c679166480f2bc2037b68c32d5360e7012524d819573dedd1f57ffb0a30da"
+    },
+    "ssd-build3-ephemeral-gptoss/metadata.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-gptoss/metadata.json",
+      "bytes": 724,
+      "sha256": "ecc19ccb150b37f151507fe5f522292c37ff4da68aa87b7f5fb11c7424c23b47",
+      "uncompressed_bytes": 724,
+      "uncompressed_sha256": "ecc19ccb150b37f151507fe5f522292c37ff4da68aa87b7f5fb11c7424c23b47"
+    },
+    "ssd-build3-ephemeral-gptoss/engine.log.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-gptoss/engine.log",
+      "bytes": 314,
+      "sha256": "36ad85b1d938e6d65577298558b48b53065d3e5ab42089b869f548d5cba7dae6",
+      "uncompressed_bytes": 721,
+      "uncompressed_sha256": "ffbb083086f1dbc68ba291ff4053bac7654928fc04f2b20f15a4d2f180055256"
+    },
+    "ssd-build3-ephemeral-gptoss/telemetry.jsonl.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-gptoss/telemetry.jsonl",
+      "bytes": 6437,
+      "sha256": "d651576e60916814e61c7938947a2e6f31de426ea7af2322616cd4d6e4721f06",
+      "uncompressed_bytes": 44822,
+      "uncompressed_sha256": "cb577bc96b0a3d957c57f610737dcdb38985367c1c5dddca3ba11c1e94cb2242"
+    },
+    "ssd-build3-ephemeral-gptoss/eligibility-proof.json.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-gptoss/eligibility-proof.json",
+      "bytes": 370,
+      "sha256": "635984dd584237d7515acbc3839446262a827ea15817ed1803e4c8a806349217",
+      "uncompressed_bytes": 561,
+      "uncompressed_sha256": "078950532f1b645bfb4972e4fa54c20afde3e8e3497d0350adcbe5c9a500c4b2"
+    },
+    "ssd-build3-ephemeral-smoke/report.json.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-smoke/report.json",
+      "bytes": 22751,
+      "sha256": "3284ef36182206850f133d7e2fa275869da89e02f9ef8263bc28205b57ec8c53",
+      "uncompressed_bytes": 612701,
+      "uncompressed_sha256": "877eaca4dc93f4bfd8f6679dd722ab700c351ccd7c567964c9920c49ea9275d7"
+    },
+    "ssd-build3-ephemeral-smoke/metadata.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-smoke/metadata.json",
+      "bytes": 769,
+      "sha256": "28adcd8f0b3713cad5e638967ecf6f0471e8f3a0b55dcf8900ac120500f3a837",
+      "uncompressed_bytes": 769,
+      "uncompressed_sha256": "28adcd8f0b3713cad5e638967ecf6f0471e8f3a0b55dcf8900ac120500f3a837"
+    },
+    "ssd-build3-ephemeral-smoke/engine.log.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-smoke/engine.log",
+      "bytes": 338,
+      "sha256": "e821b94bb1b013277865d3b5280ca40a8485c9ca484b864fffaaedf96ead38b6",
+      "uncompressed_bytes": 840,
+      "uncompressed_sha256": "4707e547ebf1a34214717dce86d552c20971ccd879b6088d724ad186e1715f48"
+    },
+    "ssd-build3-ephemeral-smoke/telemetry.jsonl.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-smoke/telemetry.jsonl",
+      "bytes": 37040,
+      "sha256": "d1fee53f67872a649f0469e49e90bf80d6d87f37a701c8acf6804040625c0a6a",
+      "uncompressed_bytes": 212408,
+      "uncompressed_sha256": "2c54f49ea7eb023d19c6a3c8818b86261b0c1e93c13a35c9fe358604ec72aa64"
+    },
+    "ssd-build3-off-smoke/report.json.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-off-smoke/report.json",
+      "bytes": 20563,
+      "sha256": "722eb57f8e65e3e6ab433f63511823e92ad1639dcaa45c063d36f04bd484ecab",
+      "uncompressed_bytes": 600145,
+      "uncompressed_sha256": "e9852ba3b2c38d13b8fb9ffc66c3e3e202c9d432b1285a761bdeab00cc9f86a4"
+    },
+    "ssd-build3-off-smoke/metadata.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-off-smoke/metadata.json",
+      "bytes": 764,
+      "sha256": "32b41e4c23699c08a2c0752d3238a5c2c533dce6b6b30743201713534e4e0bd0",
+      "uncompressed_bytes": 764,
+      "uncompressed_sha256": "32b41e4c23699c08a2c0752d3238a5c2c533dce6b6b30743201713534e4e0bd0"
+    },
+    "ssd-build3-off-smoke/engine.log.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-off-smoke/engine.log",
+      "bytes": 332,
+      "sha256": "434833e45658f0d053c755be47e1db65ac510b9ffcd5a94749f182ca4095c67a",
+      "uncompressed_bytes": 850,
+      "uncompressed_sha256": "52a142728dc27585a5fa5a552209b521f3cd2b3a9fad7d262e91216c0f18fc7f"
+    },
+    "ssd-build3-off-smoke/telemetry.jsonl.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-off-smoke/telemetry.jsonl",
+      "bytes": 42433,
+      "sha256": "99d6a9ee3c0aa3386bec412f1a1ff6192c39f028c9c0d6979d9b2f6314f863cc",
+      "uncompressed_bytes": 240138,
+      "uncompressed_sha256": "f373b2d95f69026f19e41c00f6c8b4f718ba9a2febe144fc3930415b48031567"
+    },
+    "ssd-build3-ephemeral-expanded/report.json.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-expanded/report.json",
+      "bytes": 34241,
+      "sha256": "986d9405d968fb7e3028119b614c567548e4b9d3f94c376c90bd29e0a4bd984c",
+      "uncompressed_bytes": 969544,
+      "uncompressed_sha256": "1c81d744f4a792bb7948a1fb030ce1fe0cb3993ce65e614b8933a088f6825676"
+    },
+    "ssd-build3-ephemeral-expanded/metadata.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-expanded/metadata.json",
+      "bytes": 769,
+      "sha256": "715886a68bb50ea08a98a3fc98637512c3de2a341bec3ad63230f3e6ed20ad65",
+      "uncompressed_bytes": 769,
+      "uncompressed_sha256": "715886a68bb50ea08a98a3fc98637512c3de2a341bec3ad63230f3e6ed20ad65"
+    },
+    "ssd-build3-ephemeral-expanded/engine.log.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-expanded/engine.log",
+      "bytes": 389,
+      "sha256": "0c87362bdd092294b65695f859cf458422b82bff2e265a8ed741d41984318da0",
+      "uncompressed_bytes": 1072,
+      "uncompressed_sha256": "6457033ec1ee721a40099df150baa35f5676e92ba1603785375832002d9b10fe"
+    },
+    "ssd-build3-ephemeral-expanded/telemetry.jsonl.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-expanded/telemetry.jsonl",
+      "bytes": 44701,
+      "sha256": "ce1e869926b537a48df65bbe723c05fa7c7504e92bda1de0f4babb1be528debf",
+      "uncompressed_bytes": 253271,
+      "uncompressed_sha256": "7c8f98f457e7bb5f12c574bfbb4499a049276ce74d67795f1c2b29c899e8ecfc"
+    },
+    "ssd-build3-ephemeral-long/report.json.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-long/report.json",
+      "bytes": 25730,
+      "sha256": "416039d9f4f1b44f1403384eff366931130ef1ef7b13f68e4ce678a3f52e3fbe",
+      "uncompressed_bytes": 1387450,
+      "uncompressed_sha256": "cedaf51a2bcc8ef1386844c94acd9894aa34d0b8cf7f380064e483cf93e0cbb1"
+    },
+    "ssd-build3-ephemeral-long/metadata.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-long/metadata.json",
+      "bytes": 772,
+      "sha256": "d1a2cc5692969386e5d5fa6cf6e9eb4d0a8409928f3a952294f879f29cc1c7e9",
+      "uncompressed_bytes": 772,
+      "uncompressed_sha256": "d1a2cc5692969386e5d5fa6cf6e9eb4d0a8409928f3a952294f879f29cc1c7e9"
+    },
+    "ssd-build3-ephemeral-long/engine.log.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-long/engine.log",
+      "bytes": 339,
+      "sha256": "dd3e1b8b4988e339a6136c429d2ba25e6172b07ce51926254dc1a3f35ff94046",
+      "uncompressed_bytes": 843,
+      "uncompressed_sha256": "7b048fa8ea80e40b84a43c7d1ab5c689f6dadeeef7695a9c063c58473cdd3fe1"
+    },
+    "ssd-build3-ephemeral-long/telemetry.jsonl.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-ephemeral-long/telemetry.jsonl",
+      "bytes": 67055,
+      "sha256": "f1debd02e5381fd43a728a09c92ff0678029b070ca308be2bfea5c44632b609d",
+      "uncompressed_bytes": 375844,
+      "uncompressed_sha256": "b6a88740605ef1bb1684be204268e3d91a529af1ca6463eda1f570b97ef4281b"
+    },
+    "integrated-ssd-build1-ephemeral-smoke/report.json.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-build1-ephemeral-smoke/report.json",
+      "bytes": 22780,
+      "sha256": "233b1891e76343dae5600102378b3f232076e175b62706d5a7c8290a9bd1ca9b",
+      "uncompressed_bytes": 612621,
+      "uncompressed_sha256": "c37ae05fd026ff7805b842bb1bd82dfeb438f46eaee25555764e128927069311"
+    },
+    "integrated-ssd-build1-ephemeral-smoke/metadata.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-build1-ephemeral-smoke/metadata.json",
+      "bytes": 780,
+      "sha256": "d70f205688f623f339c266c2e761d7b6be685b729a9270a9f25288eb51da15a3",
+      "uncompressed_bytes": 780,
+      "uncompressed_sha256": "d70f205688f623f339c266c2e761d7b6be685b729a9270a9f25288eb51da15a3"
+    },
+    "integrated-ssd-build1-ephemeral-smoke/engine.log.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-build1-ephemeral-smoke/engine.log",
+      "bytes": 338,
+      "sha256": "7769ffdc7c8df553c0b431224f966e1d738ecc1e427339d292f4c34a27a3a41e",
+      "uncompressed_bytes": 839,
+      "uncompressed_sha256": "20e9ed473cc1d77126c6febca5a721a5a74685359c4ad7834aee6745d1a0038a"
+    },
+    "integrated-ssd-build1-ephemeral-smoke/telemetry.jsonl.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-build1-ephemeral-smoke/telemetry.jsonl",
+      "bytes": 38080,
+      "sha256": "b3a732ac2d7b12d13523f37094b93fd1c417530b3e6bdc8eb09e89fdba3aadf3",
+      "uncompressed_bytes": 217053,
+      "uncompressed_sha256": "4eebc7366cde3bef1db1bef9add57ba7a8c5f34312d00c2237ced37007fde79a"
+    },
+    "integrated-ssd-build1-ephemeral-http/metadata.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-build1-ephemeral-http/metadata.json",
+      "bytes": 1348,
+      "sha256": "bcd5e3f153258e78cb87bb5ff23feedd5e54ed7bc3b783256233148de308347b",
+      "uncompressed_bytes": 1348,
+      "uncompressed_sha256": "bcd5e3f153258e78cb87bb5ff23feedd5e54ed7bc3b783256233148de308347b"
+    },
+    "integrated-ssd-build1-ephemeral-http/server.log.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-build1-ephemeral-http/server.log",
+      "bytes": 248,
+      "sha256": "89fedd9582f4c25df9c0020fb7f7a37f6b55edf3ac662e028663aa18822b963f",
+      "uncompressed_bytes": 704,
+      "uncompressed_sha256": "17b657fa94575d72ce135f0d54b63da929e82802c22cd8cb660f35925894c863"
+    },
+    "integrated-ssd-build1-ephemeral-http/client.log.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-build1-ephemeral-http/client.log",
+      "bytes": 300,
+      "sha256": "e487ebaa66fd6eb89f28dc0d901946f80f74dbaa09b681f231caf2144c7af2d7",
+      "uncompressed_bytes": 801,
+      "uncompressed_sha256": "9ca3a5faccde07bacd1192f32bd7b2fa7dcf712274955bc6bc5c4233f8329c9e"
+    },
+    "integrated-ssd-build1-ephemeral-http/telemetry.jsonl.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-build1-ephemeral-http/telemetry.jsonl",
+      "bytes": 18687,
+      "sha256": "f45b49f1780d56454caeb5f4686c8a9ee07ffe52ed8ec6c1a141501184b2bc88",
+      "uncompressed_bytes": 117028,
+      "uncompressed_sha256": "f5440549837f4b6282c0c605bee3d5167fccf648d9dd6e56f6851f32a7edcb31"
+    },
+    "integrated-ssd-build1-ephemeral-http/provider.toml.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-build1-ephemeral-http/provider.toml",
+      "bytes": 335,
+      "sha256": "470a3e0c50e5918a77947a871608cabbfcbddaa2da20f7116a1816df62ff631d",
+      "uncompressed_bytes": 527,
+      "uncompressed_sha256": "dcd294f40d5334c791ef6303d8d22b5ba5e8065e6491ee920bc8f355dfdee6ad"
+    },
+    "integrated-ssd-build1-ephemeral-http/http/report.json.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-build1-ephemeral-http/http/report.json",
+      "bytes": 7336,
+      "sha256": "32ca999d289ecf230f95b5cdb5e8ad141fb140a9bb31ea59fab1d83f9f6ad86a",
+      "uncompressed_bytes": 197679,
+      "uncompressed_sha256": "924eaba021b49b81079eb6f9764dd861e2721afd8e74c17b68b4e5dfb15f8760"
+    },
+    "integrated-ssd-build1-ephemeral-http/http/cancellation.json.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-build1-ephemeral-http/http/cancellation.json",
+      "bytes": 761,
+      "sha256": "6a353f7b92d7b4efa31d0d968f78c3b7ea98175e3a06bea7d8b69bb8945d77a2",
+      "uncompressed_bytes": 3961,
+      "uncompressed_sha256": "8ecfef6a13b8f2c0c2a73a0be02bc6d03213faefcd77fdee09b95788251607d3"
+    },
+    "integrated-ssd-build1-ephemeral-http/http/warmup.json.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-build1-ephemeral-http/http/warmup.json",
+      "bytes": 570,
+      "sha256": "8e3b4d8fe381d65d301d79137f43ed8c334ff457285d980c3aa7f973f2de77c6",
+      "uncompressed_bytes": 2547,
+      "uncompressed_sha256": "4037f19ec1a78cba8fbb4f40c0f49174dcd5b6dc7c4a9f98ab5d8192a7e836cb"
+    },
+    "integrated-ssd-build1-ephemeral-http/http/metrics-before.txt.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-build1-ephemeral-http/http/metrics-before.txt",
+      "bytes": 279,
+      "sha256": "9aeef2f4dcc78e6267f20ed5842658dc07fd5c7761e36c5738637e0c1cbb2edf",
+      "uncompressed_bytes": 1006,
+      "uncompressed_sha256": "b5629de1d922cc055ee61f81a86cf95cef3edc4b0f73a53349e1276abcea0e23"
+    },
+    "integrated-ssd-build1-ephemeral-http/http/metrics-after.txt.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-build1-ephemeral-http/http/metrics-after.txt",
+      "bytes": 289,
+      "sha256": "4d78c0ebdefcae1b93acd2af7f56c3bf88739e636880f93c8f4b65861f0209da",
+      "uncompressed_bytes": 1017,
+      "uncompressed_sha256": "0ed15b6ba8869a99683c325a64cb66673bd79a8f792f6c2f47118097f96b6a3a"
+    },
+    "ssd-build3-smoke-verdict.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-smoke-verdict.json",
+      "bytes": 1217,
+      "sha256": "f380812b8f08ad1f9c9751c164b5bf5241b903784d7f5a14d3c89dee0c917ca7",
+      "uncompressed_bytes": 1217,
+      "uncompressed_sha256": "f380812b8f08ad1f9c9751c164b5bf5241b903784d7f5a14d3c89dee0c917ca7"
+    },
+    "ssd-build3-expanded-verdict.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-expanded-verdict.json",
+      "bytes": 2519,
+      "sha256": "330a1772c0e0c4e0acf56f4472a9276d10485603ac3d093c031d4e27616ad4cf",
+      "uncompressed_bytes": 2519,
+      "uncompressed_sha256": "330a1772c0e0c4e0acf56f4472a9276d10485603ac3d093c031d4e27616ad4cf"
+    },
+    "ssd-build3-long-verdict.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/ssd-build3-long-verdict.json",
+      "bytes": 1193,
+      "sha256": "cf7ad1f2de3e310aa5a7742f107b9f733261dc8ec2ce6dd71581d0637a86aa56",
+      "uncompressed_bytes": 1193,
+      "uncompressed_sha256": "cf7ad1f2de3e310aa5a7742f107b9f733261dc8ec2ce6dd71581d0637a86aa56"
+    },
+    "integrated-ssd-smoke-off-verdict.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-smoke-off-verdict.json",
+      "bytes": 1217,
+      "sha256": "62ccff8c43101798808d7db1b75c2e48ee7966bf222421c3d1a8b48dbd212f62",
+      "uncompressed_bytes": 1217,
+      "uncompressed_sha256": "62ccff8c43101798808d7db1b75c2e48ee7966bf222421c3d1a8b48dbd212f62"
+    },
+    "integrated-ssd-smoke-raw-verdict.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-smoke-raw-verdict.json",
+      "bytes": 1214,
+      "sha256": "5c40e1322f9f516d89529cfa125eb84b52a248da24eafc76caf35ffd49971b5d",
+      "uncompressed_bytes": 1214,
+      "uncompressed_sha256": "5c40e1322f9f516d89529cfa125eb84b52a248da24eafc76caf35ffd49971b5d"
+    },
+    "integrated-ssd-http-corrected-mtp-verdict.json": {
+      "source": "/tmp/radix-prefix-cache-evidence/integrated-ssd-http-corrected-mtp-verdict.json",
+      "bytes": 1458,
+      "sha256": "59f4f6cbeb56a05e3ef595c531a864185c5484579888596608be2582a9c6a07e",
+      "uncompressed_bytes": 1458,
+      "uncompressed_sha256": "59f4f6cbeb56a05e3ef595c531a864185c5484579888596608be2582a9c6a07e"
+    },
+    "inputs-and-host/serial-smoke-input.json.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/serial-smoke-input.json",
+      "bytes": 10440,
+      "sha256": "7a41634e4d9acd116a403f7b22e2a2f455f7693273ea6724364fd8bb4bf8d01d",
+      "uncompressed_bytes": 268462,
+      "uncompressed_sha256": "7f83b09d93d210e04a498a5d6c5b446cba3135441641fe55a3dcbe095d6f9ead"
+    },
+    "inputs-and-host/mtp-control-input.json.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/mtp-control-input.json",
+      "bytes": 20093,
+      "sha256": "8f2292a1895eafeb12f72af591b712bad66cb6b1a856bcf6ab1ff02cc2c7470b",
+      "uncompressed_bytes": 570870,
+      "uncompressed_sha256": "76ba61dd6025453a77ebc66a4ade8c3a85fa130e10b690b43ed834944b90ae0e"
+    },
+    "inputs-and-host/long-checkpoints-input.json.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/long-checkpoints-input.json",
+      "bytes": 2286,
+      "sha256": "453a552028ec07381918dc6572c120e3e1369716c98c8c45a65d1f237511a57d",
+      "uncompressed_bytes": 234393,
+      "uncompressed_sha256": "ee737348e987179fc9cad63c231dade77178e48191f2535a3002516adb1d2706"
+    },
+    "inputs-and-host/paged-attention-long-input.json.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/paged-attention-long-input.json",
+      "bytes": 3320,
+      "sha256": "694df64ea4bfcd69963e1c2955d41c9f8bda65cf2771493a542e7d621e3c4342",
+      "uncompressed_bytes": 285999,
+      "uncompressed_sha256": "7466684157b261d0f61b3c0b5842e10cb1869003c53a49c8db5e41374c58f24a"
+    },
+    "inputs-and-host/m5-model-manifest.json.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/m5-model-manifest.json",
+      "bytes": 1554,
+      "sha256": "bec6fc6e1ddcca930c4f93ced4741781737fb3f771da8abc453a26fbc2d83efb",
+      "uncompressed_bytes": 4561,
+      "uncompressed_sha256": "77664e402515eca004b3f214681de131a86df833ba07873fe0abfe347130995e"
+    },
+    "inputs-and-host/gpt-oss-model-manifest.json.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/gpt-oss-model-manifest.json",
+      "bytes": 743,
+      "sha256": "ba3fab8b0212ccd66b7f88a5355a86b102719959ea0b382fa8e970d8f4d0ef3a",
+      "uncompressed_bytes": 1742,
+      "uncompressed_sha256": "ea67de147063b7c8374b1bc52255b4fc74c4fb09ba18e31f1c0789888c7a8e22"
+    },
+    "inputs-and-host/local-codesigning-identities.txt.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/local-codesigning-identities.txt",
+      "bytes": 48,
+      "sha256": "d97036182d755a97a263620060afcdc728fccc7de5465ae4e96df495f1b6abfa",
+      "uncompressed_bytes": 30,
+      "uncompressed_sha256": "0ad30eb1563c325d77f4dc564c5d96851d5a39205307f5cdd7d762b59688f87a"
+    },
+    "inputs-and-host/m5-codesigning-identities.txt.gz": {
+      "source": "/tmp/radix-prefix-cache-evidence/m5-codesigning-identities.txt",
+      "bytes": 48,
+      "sha256": "d97036182d755a97a263620060afcdc728fccc7de5465ae4e96df495f1b6abfa",
+      "uncompressed_bytes": 30,
+      "uncompressed_sha256": "0ad30eb1563c325d77f4dc564c5d96851d5a39205307f5cdd7d762b59688f87a"
+    },
+    "artifacts/candidate-ssd-build1/artifact-manifest.json.gz": {
+      "source": "/tmp/radix-prefix-cache-artifacts/candidate-ssd-build1/artifact-manifest.json",
+      "bytes": 1025,
+      "sha256": "3a6defcbfebf8cc69d3a34bbf2cce8d4c26bf20643190d2597fa5536db44519d",
+      "uncompressed_bytes": 1797,
+      "uncompressed_sha256": "cc1d9a6fb907d98fe0a543fbda2f5a8714a2ce56fbe2dd56b1ad093d1bf91202"
+    },
+    "artifacts/candidate-ssd-build1/source-manifest.json.gz": {
+      "source": "/tmp/radix-prefix-cache-artifacts/candidate-ssd-build1/source-manifest.json",
+      "bytes": 53271,
+      "sha256": "e9250247384409afb3386a016078fb086d0c26ad9296270b7ece4730fe65a9f0",
+      "uncompressed_bytes": 152175,
+      "uncompressed_sha256": "24290b65fc9f02a892210bc5675fbb045cac6541ab3cf5598bcdb0be28ed9289"
+    },
+    "artifacts/candidate-ssd-build1/harness-source-manifest.json.gz": {
+      "source": "/tmp/radix-prefix-cache-artifacts/candidate-ssd-build1/harness-source-manifest.json",
+      "bytes": 342,
+      "sha256": "dc660e167b4f240dc236de473d0c434245f508591ee145a7f2f8d973f6eca1c6",
+      "uncompressed_bytes": 715,
+      "uncompressed_sha256": "29bae048f530005ad96ba4dde14632d7ef64f993e7b34ca1ffc07e89f1efad29"
+    },
+    "artifacts/candidate-ssd-build2/artifact-manifest.json.gz": {
+      "source": "/tmp/radix-prefix-cache-artifacts/candidate-ssd-build2/artifact-manifest.json",
+      "bytes": 1114,
+      "sha256": "492252259662023d351abe62bab5a1cac2ec5ab03fde3010f4b60fb69dfa9747",
+      "uncompressed_bytes": 1932,
+      "uncompressed_sha256": "91a1c93e74a857070bf755dd03991a7dcf546cd06fc4afef5dac05802d52f263"
+    },
+    "artifacts/candidate-ssd-build2/source-manifest.json.gz": {
+      "source": "/tmp/radix-prefix-cache-artifacts/candidate-ssd-build2/source-manifest.json",
+      "bytes": 53271,
+      "sha256": "e9250247384409afb3386a016078fb086d0c26ad9296270b7ece4730fe65a9f0",
+      "uncompressed_bytes": 152175,
+      "uncompressed_sha256": "24290b65fc9f02a892210bc5675fbb045cac6541ab3cf5598bcdb0be28ed9289"
+    },
+    "artifacts/candidate-ssd-build2/harness-source-manifest.json.gz": {
+      "source": "/tmp/radix-prefix-cache-artifacts/candidate-ssd-build2/harness-source-manifest.json",
+      "bytes": 339,
+      "sha256": "39dce2b119d94d1372d60edfe90176b3d2a8663612b7d178d1bdf36039888017",
+      "uncompressed_bytes": 715,
+      "uncompressed_sha256": "a85fd2f46e0dff961546f73dafb061d64db2e0456c115b7f98905fceb5306134"
+    },
+    "artifacts/candidate-ssd-build3/artifact-manifest.json.gz": {
+      "source": "/tmp/radix-prefix-cache-artifacts/candidate-ssd-build3/artifact-manifest.json",
+      "bytes": 920,
+      "sha256": "107d5066d3354482f864df40bed19088c4bb9c1a9247f048ca2e186d61d7e761",
+      "uncompressed_bytes": 1595,
+      "uncompressed_sha256": "4ae02a001a4b22183ca4f6e398b61a9e975bee1f21ea1d567886551bdab55ec3"
+    },
+    "artifacts/candidate-ssd-build3/source-manifest.json.gz": {
+      "source": "/tmp/radix-prefix-cache-artifacts/candidate-ssd-build3/source-manifest.json",
+      "bytes": 53269,
+      "sha256": "a0a605840942e2d6f70cb85080c7f653537a90e712ab6cb28df9782143783ca6",
+      "uncompressed_bytes": 152176,
+      "uncompressed_sha256": "e35341a548b7c5fd92118af997f62adc821f055fa9599b34f1121aac72465877"
+    },
+    "artifacts/candidate-ssd-build3/harness-source-manifest.json.gz": {
+      "source": "/tmp/radix-prefix-cache-artifacts/candidate-ssd-build3/harness-source-manifest.json",
+      "bytes": 339,
+      "sha256": "94acfeeb847932a8de4733be167d82cdc46770215ad755d76c973040573e2329",
+      "uncompressed_bytes": 715,
+      "uncompressed_sha256": "9dcf4159877ce58e1b955b250495fc0b8941283b5dd478da5dc8e2d3fc02f270"
+    },
+    "artifacts/candidate-ssd-build3/harness.patch.gz": {
+      "source": "/tmp/radix-prefix-cache-artifacts/candidate-ssd-build3/harness.patch.gz",
+      "bytes": 8443,
+      "sha256": "b0c7482d933999f61a12e3eb258b5ee1accea2fc114fb38eba37abde7b5636f5",
+      "uncompressed_bytes": 34422,
+      "uncompressed_sha256": "3146346b8ec087fb7851ef974c8753a6e982586d924adcb2af41ae3e75a0361e"
+    },
+    "artifacts/integrated-ssd-build1/artifact-manifest.json.gz": {
+      "source": "/tmp/radix-prefix-cache-artifacts/integrated-ssd-build1/artifact-manifest.json",
+      "bytes": 919,
+      "sha256": "3d1f440861895c615ddea963fd9a1b795cd8c62e7d71aac38993393f7c74c5c4",
+      "uncompressed_bytes": 1600,
+      "uncompressed_sha256": "e31c8e43cc148d24c4b7d1718ad9cfb0ffafdfb4f126eb30be3d9c0050c1a704"
+    },
+    "artifacts/integrated-ssd-build1/source-manifest.json.gz": {
+      "source": "/tmp/radix-prefix-cache-artifacts/integrated-ssd-build1/source-manifest.json",
+      "bytes": 53697,
+      "sha256": "06394f5e05f65df6d6eb107c3c1284d98c818bb7ebd49dffccf4e4d54e7fbfc5",
+      "uncompressed_bytes": 153475,
+      "uncompressed_sha256": "70684ccb90a48197e2e009e03f62ba3b00d1035b9107abe067916bc662d7775b"
+    },
+    "artifacts/integrated-ssd-build1/harness-source-manifest.json.gz": {
+      "source": "/tmp/radix-prefix-cache-artifacts/integrated-ssd-build1/harness-source-manifest.json",
+      "bytes": 339,
+      "sha256": "94acfeeb847932a8de4733be167d82cdc46770215ad755d76c973040573e2329",
+      "uncompressed_bytes": 715,
+      "uncompressed_sha256": "9dcf4159877ce58e1b955b250495fc0b8941283b5dd478da5dc8e2d3fc02f270"
+    },
+    "artifacts/integrated-ssd-build1/radix-integrated-ssd-final-cli-release.log.gz": {
+      "source": "/tmp/radix-integrated-ssd-final-cli-release.log",
+      "bytes": 9302,
+      "sha256": "56dd20e27f25b8d90ef55903a1f463cd549cf1716cff34aeeecad5818db6089c",
+      "uncompressed_bytes": 45557,
+      "uncompressed_sha256": "4b0adfe34439ddf07f23b938c3d20dce4560cc30015643cb01dcc550879704fc"
+    },
+    "artifacts/integrated-ssd-build1/radix-integrated-ssd-final-engine-release.log.gz": {
+      "source": "/tmp/radix-integrated-ssd-final-engine-release.log",
+      "bytes": 661,
+      "sha256": "4487c5020f81ee2bb265b0b169af5d048e092b73267fd8796077dd33d16da61b",
+      "uncompressed_bytes": 1532,
+      "uncompressed_sha256": "774e1b1fdf0685f933f9854fdb05aa1268677261bc548b3c7eb7d3cdb263ed98"
+    },
+    "thermal-summary.json": {
+      "bytes": 3531,
+      "sha256": "fe0f262b2384b8ceea80c77d113ae71833f0ca097414ab0b6943ad36bb4be615"
+    },
+    "artifact-verification.json": {
+      "bytes": 1626,
+      "sha256": "81e2d47f05aa6c7d1b25e4cab036bc9e981ed351ceddd9c6ec6349fc1eb09585"
+    }
+  }
+}

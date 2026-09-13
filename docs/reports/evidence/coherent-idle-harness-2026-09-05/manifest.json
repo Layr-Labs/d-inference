@@ -1,0 +1,293 @@
+{
+  "scope": "Seven-path benchmark-only coherent idle observation; eight Swift tests and standalone release pass. Includes original wrapper count failure/addendum; real model reruns pending. No compiled artifacts.",
+  "source_commit": "26204c759a2b99bdff7b2817fd6490745b4ed2fa",
+  "archive": {
+    "path": "payloads.tar.gz",
+    "bytes": 977412,
+    "sha256": "ee4facb9fad3333310aa3e321c810b1b1373c4640eaeabd063a0475fe9bdc24a"
+  },
+  "payload_count": 56,
+  "payload_bytes": 1977462,
+  "files": {
+    "build5/artifact-manifest.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/artifact-manifest.json",
+      "bytes": 1459,
+      "sha256": "74901f9397598dd62d9d227fa7b4c8fd3f09fc898610946970a41830d3a2b820"
+    },
+    "build5/canonical-owned-manifest.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/canonical-owned-manifest.json",
+      "bytes": 3883,
+      "sha256": "bc1648d5c7e6f4955df6c6b10493b0fdbb781cf2911766458f2aaf34b4b009f8"
+    },
+    "build5/compile-source-manifest.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/compile-source-manifest.json",
+      "bytes": 2134,
+      "sha256": "03f92dab2a263ed6ee5f59dabffcc34478ed3253842db417c90e6fedcfd9368e"
+    },
+    "build5/execution.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/execution.json",
+      "bytes": 843,
+      "sha256": "56c152177ee8c8e26627601fd6dea633a0cae355668a2412b456471b988f2627"
+    },
+    "build5/freeze.py": {
+      "source": "/tmp/darkbloom-final-serving-build5/freeze.py",
+      "bytes": 4649,
+      "sha256": "71e39f47fd2fad1b8bc9b29d9eb01f877ec0c99b353960fab79bf5aa4e92b698"
+    },
+    "build5/hardware.txt": {
+      "source": "/tmp/darkbloom-final-serving-build5/hardware.txt",
+      "bytes": 85,
+      "sha256": "6fd27675c501b5f00cfafe5efc0b98446a884b5780bd218df332c3406bd3c651"
+    },
+    "build5/idle-after-final-harness.patch": {
+      "source": "/tmp/darkbloom-final-serving-build5/idle-after-final-harness.patch",
+      "bytes": 23033,
+      "sha256": "58dd9167691ecd22c644ea05142cd1c771e1090b73a5819e02156f1c577e4710"
+    },
+    "build5/integration.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/integration.json",
+      "bytes": 975,
+      "sha256": "db9db86dcc641873ea05d68b4f81f2a943d84f213fbaa2b51af5fb7245688032"
+    },
+    "build5/manifest.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/manifest.json",
+      "bytes": 8089,
+      "sha256": "b8bdefc7667267305c694c597b7b2a439a0d1a001bce7fd1551765a05a0237e4"
+    },
+    "build5/owned/scripts/benchmarks/radix-engine/Package.swift": {
+      "source": "/tmp/darkbloom-final-serving-build5/owned/scripts/benchmarks/radix-engine/Package.swift",
+      "bytes": 1323,
+      "sha256": "f3c71a632e111556f4c4ec542deb7c6fc76007f0bf63053e3b4a7991660f1c30"
+    },
+    "build5/owned/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkBatches.swift": {
+      "source": "/tmp/darkbloom-final-serving-build5/owned/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkBatches.swift",
+      "bytes": 6637,
+      "sha256": "d59cb689a8130b6e6ace06c53a1ff7f785696bbf16df190ee4439fd8e9ffc247"
+    },
+    "build5/owned/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkGeneration.swift": {
+      "source": "/tmp/darkbloom-final-serving-build5/owned/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkGeneration.swift",
+      "bytes": 6550,
+      "sha256": "5bb129c7b5ff3b008eccf018cbac28ea4e7a348bb665d4895ca68ba5c0d2f473"
+    },
+    "build5/owned/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkIdleObservation.swift": {
+      "source": "/tmp/darkbloom-final-serving-build5/owned/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkIdleObservation.swift",
+      "bytes": 4204,
+      "sha256": "fabe0356e890a50d1fd3dcb71ac02cdecd80220d5003ec342a45999880c03e1e"
+    },
+    "build5/owned/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkMetrics.swift": {
+      "source": "/tmp/darkbloom-final-serving-build5/owned/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkMetrics.swift",
+      "bytes": 10689,
+      "sha256": "7d5e0edd7000558064e2b22f83c1e852c39200d6a6064f44dd4ca2e6c15d27e5"
+    },
+    "build5/owned/scripts/benchmarks/radix-engine/Sources/radix-engine/RadixBenchmark.swift": {
+      "source": "/tmp/darkbloom-final-serving-build5/owned/scripts/benchmarks/radix-engine/Sources/radix-engine/RadixBenchmark.swift",
+      "bytes": 15942,
+      "sha256": "da7b666ac3cb96cb2efdfa8c4e8cf42ec16db2ff34985ee26c4dd57931d57e5d"
+    },
+    "build5/owned/scripts/benchmarks/radix-engine/Tests/RadixEngineBenchmarkTests/BenchmarkIdleObservationTests.swift": {
+      "source": "/tmp/darkbloom-final-serving-build5/owned/scripts/benchmarks/radix-engine/Tests/RadixEngineBenchmarkTests/BenchmarkIdleObservationTests.swift",
+      "bytes": 6907,
+      "sha256": "8a071f3c4ed70d476106993137b1835e4d924f48ba82d825981edf58fbd82136"
+    },
+    "build5/provider-source-manifest.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/provider-source-manifest.json",
+      "bytes": 98976,
+      "sha256": "7d6179be5f808131e8331ca83ef7daed25edbe2efd0d98d9bf5fe62568dc2d32"
+    },
+    "build5/radix-engine-dylibs.txt": {
+      "source": "/tmp/darkbloom-final-serving-build5/radix-engine-dylibs.txt",
+      "bytes": 4996,
+      "sha256": "4d76d5d71d58b4b5ddf944571b2e6f59b062c49a79e50f99e764ac5f364ab0d4"
+    },
+    "build5/release-actual-source-proof.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/release-actual-source-proof.json",
+      "bytes": 2514,
+      "sha256": "b527467af45dfa7613b4379fbe1b6d134be0c0012ce8eb7e7f33ba4efb7b6916"
+    },
+    "build5/release-all-owned-graph-source-proof.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/release-all-owned-graph-source-proof.json",
+      "bytes": 394588,
+      "sha256": "64dfceecf96a2d23f51d59da2a148ab0b44db89f77dadf20efcdf713ffb447b9"
+    },
+    "build5/release-graph.yaml.gz": {
+      "source": "/tmp/darkbloom-final-serving-build5/release-graph.yaml.gz",
+      "bytes": 382660,
+      "sha256": "7de8825e15fd52f0c44f712a59c188a78d4e3db21b154756c39e56d3a69b954e"
+    },
+    "build5/release-package-state.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/release-package-state.json",
+      "bytes": 21160,
+      "sha256": "e5f257ec813de731b8bd6704ba43610110c21c9c912db04ef8ae2690169e3139"
+    },
+    "build5/release-source-verified-after.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/release-source-verified-after.json",
+      "bytes": 661,
+      "sha256": "48602b79a588e2919e42827f07407979417b5c4dd212a58a2c98dd51ec1da37d"
+    },
+    "build5/release-source-verified-before.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/release-source-verified-before.json",
+      "bytes": 661,
+      "sha256": "48602b79a588e2919e42827f07407979417b5c4dd212a58a2c98dd51ec1da37d"
+    },
+    "build5/release.log": {
+      "source": "/tmp/darkbloom-final-serving-build5/release.log",
+      "bytes": 31088,
+      "sha256": "530bdcd640fb0e28a5504c8300413831622260f9ca681dca73d7f653e3da9b70"
+    },
+    "build5/resume-release.py": {
+      "source": "/tmp/darkbloom-final-serving-build5/resume-release.py",
+      "bytes": 2755,
+      "sha256": "fc4efac200a2edb71004f861fb0dce28ec3b8cab1f6b23243a32ec2943c56452"
+    },
+    "build5/run.py": {
+      "source": "/tmp/darkbloom-final-serving-build5/run.py",
+      "bytes": 5448,
+      "sha256": "fa7d59c67e3cbd33106b25ec99ee22c8c7dbcc41362d2ef9579355fcb74c47f5"
+    },
+    "build5/source-verified-final.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/source-verified-final.json",
+      "bytes": 661,
+      "sha256": "48602b79a588e2919e42827f07407979417b5c4dd212a58a2c98dd51ec1da37d"
+    },
+    "build5/test-binary.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/test-binary.json",
+      "bytes": 274,
+      "sha256": "f757fe95200fc8a0b6fa7212f07e06a153ffc702e74f6e794ee82bba17c7dfb8"
+    },
+    "build5/test-runtime-resource-placement.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/test-runtime-resource-placement.json",
+      "bytes": 586,
+      "sha256": "eb900391d092ddea17249769b7d2b5dabc4e562ff4a9a63c57fecc1794da5cac"
+    },
+    "build5/test-verdict.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/test-verdict.json",
+      "bytes": 828,
+      "sha256": "d048407e21dbcb04a91fe2644ff98aff2d4e37e8b4b3ed8e10c5399e5d5a9d7c"
+    },
+    "build5/tests-actual-source-proof.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/tests-actual-source-proof.json",
+      "bytes": 2919,
+      "sha256": "8410a582d1ded21a025bda40d10cac08551e3f34bc9f16e27d3eba7948010790"
+    },
+    "build5/tests-all-owned-graph-source-proof.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/tests-all-owned-graph-source-proof.json",
+      "bytes": 394588,
+      "sha256": "64dfceecf96a2d23f51d59da2a148ab0b44db89f77dadf20efcdf713ffb447b9"
+    },
+    "build5/tests-execution-original.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/tests-execution-original.json",
+      "bytes": 429,
+      "sha256": "4a3f856c84a87817a47ecff51e9b3b67774d70f67b6b2066d8d82c4b15f5052d"
+    },
+    "build5/tests-graph.yaml.gz": {
+      "source": "/tmp/darkbloom-final-serving-build5/tests-graph.yaml.gz",
+      "bytes": 382729,
+      "sha256": "66ab95119db3488abf6f79e6dfdfddb4c3e368e31cd45d6a76736d7fe9d66437"
+    },
+    "build5/tests-package-state.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/tests-package-state.json",
+      "bytes": 21144,
+      "sha256": "a1a63be28f5aca5d3c5cb72206c851b2c2910a4f79d12eeae4695bb8ef5d1f49"
+    },
+    "build5/tests-source-verified-after.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/tests-source-verified-after.json",
+      "bytes": 661,
+      "sha256": "48602b79a588e2919e42827f07407979417b5c4dd212a58a2c98dd51ec1da37d"
+    },
+    "build5/tests-source-verified-before.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/tests-source-verified-before.json",
+      "bytes": 661,
+      "sha256": "48602b79a588e2919e42827f07407979417b5c4dd212a58a2c98dd51ec1da37d"
+    },
+    "build5/tests.log": {
+      "source": "/tmp/darkbloom-final-serving-build5/tests.log",
+      "bytes": 40066,
+      "sha256": "6ddee7d000ba2cf7fe13a2e7969ccfc3aeff24cb3217b7802e18aa01a2e5f20f"
+    },
+    "build5/toolchain.txt": {
+      "source": "/tmp/darkbloom-final-serving-build5/toolchain.txt",
+      "bytes": 239,
+      "sha256": "7afadba43a06434cc8631c3d4d7832142414d74c1b830fab491d2b0de03292a9"
+    },
+    "build5/verdict.json": {
+      "source": "/tmp/darkbloom-final-serving-build5/verdict.json",
+      "bytes": 1653,
+      "sha256": "7bd983865a6b137588471ec0e62cafe83ebaf08ddf09e03e9511d728e1a754ed"
+    },
+    "build5/wrapper-failure.txt": {
+      "source": "/tmp/darkbloom-final-serving-build5/wrapper-failure.txt",
+      "bytes": 825,
+      "sha256": "c9193f47a4d9dd8e525deb6dd76181bc372a90a929ebd2d1cfb2f633d61ef4a3"
+    },
+    "candidate/REVIEW.md": {
+      "source": "/tmp/darkbloom-benchmark-coherent-idle/freeze1/REVIEW.md",
+      "bytes": 4668,
+      "sha256": "6f45bfd6c580f250363a3fd7513d4dd5dea1066d6c6672c263cf79c9ba035a6e"
+    },
+    "candidate/diff-check.log": {
+      "source": "/tmp/darkbloom-benchmark-coherent-idle/freeze1/diff-check.log",
+      "bytes": 23,
+      "sha256": "75ebccfc18cc5b1a8b32589edccfa2e9f53d9f4dcde857010b3235519655e37f"
+    },
+    "candidate/files/scripts/benchmarks/radix-engine/Package.swift": {
+      "source": "/tmp/darkbloom-benchmark-coherent-idle/freeze1/files/scripts/benchmarks/radix-engine/Package.swift",
+      "bytes": 1323,
+      "sha256": "f3c71a632e111556f4c4ec542deb7c6fc76007f0bf63053e3b4a7991660f1c30"
+    },
+    "candidate/files/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkBatches.swift": {
+      "source": "/tmp/darkbloom-benchmark-coherent-idle/freeze1/files/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkBatches.swift",
+      "bytes": 6637,
+      "sha256": "d59cb689a8130b6e6ace06c53a1ff7f785696bbf16df190ee4439fd8e9ffc247"
+    },
+    "candidate/files/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkGeneration.swift": {
+      "source": "/tmp/darkbloom-benchmark-coherent-idle/freeze1/files/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkGeneration.swift",
+      "bytes": 6550,
+      "sha256": "5bb129c7b5ff3b008eccf018cbac28ea4e7a348bb665d4895ca68ba5c0d2f473"
+    },
+    "candidate/files/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkIdleObservation.swift": {
+      "source": "/tmp/darkbloom-benchmark-coherent-idle/freeze1/files/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkIdleObservation.swift",
+      "bytes": 4204,
+      "sha256": "fabe0356e890a50d1fd3dcb71ac02cdecd80220d5003ec342a45999880c03e1e"
+    },
+    "candidate/files/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkMetrics.swift": {
+      "source": "/tmp/darkbloom-benchmark-coherent-idle/freeze1/files/scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkMetrics.swift",
+      "bytes": 10689,
+      "sha256": "7d5e0edd7000558064e2b22f83c1e852c39200d6a6064f44dd4ca2e6c15d27e5"
+    },
+    "candidate/files/scripts/benchmarks/radix-engine/Sources/radix-engine/RadixBenchmark.swift": {
+      "source": "/tmp/darkbloom-benchmark-coherent-idle/freeze1/files/scripts/benchmarks/radix-engine/Sources/radix-engine/RadixBenchmark.swift",
+      "bytes": 15942,
+      "sha256": "da7b666ac3cb96cb2efdfa8c4e8cf42ec16db2ff34985ee26c4dd57931d57e5d"
+    },
+    "candidate/files/scripts/benchmarks/radix-engine/Tests/RadixEngineBenchmarkTests/BenchmarkIdleObservationTests.swift": {
+      "source": "/tmp/darkbloom-benchmark-coherent-idle/freeze1/files/scripts/benchmarks/radix-engine/Tests/RadixEngineBenchmarkTests/BenchmarkIdleObservationTests.swift",
+      "bytes": 6907,
+      "sha256": "8a071f3c4ed70d476106993137b1835e4d924f48ba82d825981edf58fbd82136"
+    },
+    "candidate/input-evidence.json": {
+      "source": "/tmp/darkbloom-benchmark-coherent-idle/freeze1/input-evidence.json",
+      "bytes": 454,
+      "sha256": "94283de2cccc5630c8e95ac685427b3b907d6eb9332655be413d3e4ca2cc85ce"
+    },
+    "candidate/manifest.json": {
+      "source": "/tmp/darkbloom-benchmark-coherent-idle/freeze1/manifest.json",
+      "bytes": 2944,
+      "sha256": "f94c5b67f69443ebbaef3e16c70a1ad9d7afda17f16d4fa55b2f60f8a2283af0"
+    },
+    "candidate/source-hashes.json": {
+      "source": "/tmp/darkbloom-benchmark-coherent-idle/freeze1/source-hashes.json",
+      "bytes": 1814,
+      "sha256": "0081f11247ed026931f3869e8a119b2518cfe27ec3426b49c7fe8983c38c57c0"
+    },
+    "candidate/source.patch": {
+      "source": "/tmp/darkbloom-benchmark-coherent-idle/freeze1/source.patch",
+      "bytes": 23033,
+      "sha256": "58dd9167691ecd22c644ea05142cd1c771e1090b73a5819e02156f1c577e4710"
+    },
+    "root-review.json": {
+      "source": "/tmp/darkbloom-coherent-idle-root-integration.json",
+      "bytes": 1102,
+      "sha256": "65f4816dc6ea24202dfb2d4f12f66cd59f2846464cb2132112a0576d5410fcf8"
+    }
+  }
+}

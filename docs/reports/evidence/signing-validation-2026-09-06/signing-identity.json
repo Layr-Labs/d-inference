@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "expected_team": "SLDQ2GJ6TL",
+  "status": "selected",
+  "valid_identities": [
+    {
+      "sha1": "95B67556E04653F56BA5411D20D33DD263EF6E2A",
+      "name": "Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)"
+    }
+  ],
+  "selected": {
+    "sha1": "95B67556E04653F56BA5411D20D33DD263EF6E2A",
+    "name": "Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)"
+  },
+  "signed_code_requirement": "anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"SLDQ2GJ6TL\"",
+  "identity_scope": "isolated imported keychain only"
+}

@@ -1,0 +1,356 @@
+{
+  "schema": 1,
+  "scope": "Reviewed source1, source2 and source3 with CPU validation; no runtime/model payloads",
+  "integration_base": "bc1819129f5def479909406ebc8d29f8a56a1d38",
+  "native_gitlink": "a317dde5d678e96cd85327d86cc49a99ca86805c",
+  "files": [
+    {
+      "path": "source1/REVIEW.md",
+      "sha256": "9c6dbb5cacae2869c8159585ae1d7a93d2e2eb537a699791f37bb4020cb2866d",
+      "bytes": 3945,
+      "mode": 420
+    },
+    {
+      "path": "source1/before/e2e/connected_cache_http_test.go",
+      "sha256": "46768a05d9da3081522a53a8a34185676c3c646b25d739945719157aa5782a61",
+      "bytes": 14320,
+      "mode": 420
+    },
+    {
+      "path": "source1/before/e2e/connected_cache_input_test.go",
+      "sha256": "535ad34c962cb583a2f13169e0bb99f3daffabdd1e160010317aeafd4b9d7f35",
+      "bytes": 10535,
+      "mode": 420
+    },
+    {
+      "path": "source1/before/e2e/connected_cache_report_test.go",
+      "sha256": "0795acde2408bac4cdd47d4fbf9dee3a04c80f07c8472430bc3a0af30a5fa403",
+      "bytes": 4308,
+      "mode": 420
+    },
+    {
+      "path": "source1/before/e2e/testbed/config.go",
+      "sha256": "a4aa6f456de78232a95b4ce0cbb82b7473e78f8e5c5bf334bf146b25525315ff",
+      "bytes": 12237,
+      "mode": 420
+    },
+    {
+      "path": "source1/before/e2e/testbed/suite.go",
+      "sha256": "48b50dc28f3b9341727cd59f5a1bda109e6350178f4cc62bed357a31ed081fa0",
+      "bytes": 26714,
+      "mode": 420
+    },
+    {
+      "path": "source1/environment.json",
+      "sha256": "e61d3eff43680563ed4c58760d25f2cc4f5a7d1c86747eb961cfa62c42334cea",
+      "bytes": 399,
+      "mode": 420
+    },
+    {
+      "path": "source1/go-race.log",
+      "sha256": "c8ba50ddf3123c5b4c7a86a881bc07c9600861bfaa567b95adc62ae7b8d11aaf",
+      "bytes": 54092,
+      "mode": 420
+    },
+    {
+      "path": "source1/initial-darwin-zombie-failure.stderr",
+      "sha256": "fe1e206a8ab73a4916fd969b78821af08992130a85f2e14a64ebfec8306ed3f1",
+      "bytes": 615,
+      "mode": 420
+    },
+    {
+      "path": "source1/manifest.json",
+      "sha256": "7bac5ba6f2c194a03610b34e79af5382b48f6e64bf20a7fcbd631e71e0fed077",
+      "bytes": 6118,
+      "mode": 420
+    },
+    {
+      "path": "source1/python.log",
+      "sha256": "64b5b673bddd8169fb91ae89dc0fbb9d9486a5d92c4458287eff540346e083c2",
+      "bytes": 1654,
+      "mode": 420
+    },
+    {
+      "path": "source1/run_validation.py",
+      "sha256": "b2976341bcbad2df3c4618ea3f63ed9f439171a7b1a59b37672ee40b59fbfaf2",
+      "bytes": 1130,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/connected_cache_hosts_test.go",
+      "sha256": "fef6f6c8b44d1c488448bd972e24bc3d38c9c1d38608621ceb55b05d81d9d585",
+      "bytes": 3139,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/connected_cache_hosts_validation_test.go",
+      "sha256": "a9bc05faaf4de65f45171337429fd33b461b2919b45f2814396ba1b584de3eed",
+      "bytes": 3236,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/connected_cache_http_test.go",
+      "sha256": "5495eee238e7ddd8ec2f0e704d5b5f40394a5f73bbb4e61777d7f01fd9c4c22b",
+      "bytes": 15588,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/connected_cache_input_test.go",
+      "sha256": "b96e81285e90eef94c3f482e57b20122467149f60d2e544c79d69d5531b5a9f5",
+      "bytes": 10687,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/connected_cache_report_test.go",
+      "sha256": "c0584bd3a94359b50ef217dbcf0da1d77c8cf696c4a91b84b34d48e74a8d4959",
+      "bytes": 4501,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/testbed/OWNED_HOSTS.md",
+      "sha256": "b13be1db504cebe19e2cb37b7cca524ffec0b55c00152fe1a723d78083632bad",
+      "bytes": 7075,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/testbed/config.go",
+      "sha256": "78e91d621b2f6ac83b3b18ba95d31d7e649d2a881fd35cd027654e45bf6dd6e2",
+      "bytes": 12501,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/testbed/provider_bindings.go",
+      "sha256": "40c832319242de4e7f69b65152d1ae5b9bae213b7b62d51a5de262e9b4d2bb37",
+      "bytes": 4326,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/testbed/provider_control.go",
+      "sha256": "6f9ad550cf379abdcafeed0096144b99994d7bb6c5637dacb9965a23f414bc59",
+      "bytes": 3106,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/testbed/provider_host.py",
+      "sha256": "722e358c6397d4224abd8dbd7e86941c27d1481349dfd8112891a66680ecdfd8",
+      "bytes": 17542,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/testbed/provider_launch.go",
+      "sha256": "9f6e00998529052a08ff08809bc2799c99e37e95bd0a87f1e1904da85c93dac7",
+      "bytes": 3835,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/testbed/provider_local.go",
+      "sha256": "45ba421e8419e2d1d2122b0357d3bd399af57621795f0d54321f922fb5e2774f",
+      "bytes": 4466,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/testbed/provider_owned.go",
+      "sha256": "d6589bca03689ea2b668f40d2ec708a939e21c4deca5b9d4b824e4209aff7cfa",
+      "bytes": 7480,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/testbed/provider_target.go",
+      "sha256": "fa831a0072f732a16789bd9ed629df1261fcea9794c164f277a9b5aeb494d000",
+      "bytes": 7224,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/testbed/provider_target_test.go",
+      "sha256": "500ea2e6b5114096dbf077b3c0c0772352554820a1ebb401b43c9f7f8d36062d",
+      "bytes": 11893,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/testbed/suite.go",
+      "sha256": "7b57490cf80e8be0cb31435be8799310a156a9c057c86bf79c149ad488193f05",
+      "bytes": 22753,
+      "mode": 420
+    },
+    {
+      "path": "source1/source/e2e/testbed/test_provider_host.py",
+      "sha256": "cfb26ceea83d2a0f2e5172a8072941301c9fc6b658a3b3b5025fb3539666d3fc",
+      "bytes": 15164,
+      "mode": 420
+    },
+    {
+      "path": "source1/source-before-tests.json",
+      "sha256": "3ac9a3686b201cd67b77c68bb93d2c074f4f967b47105fce62f19d81fb0cca2e",
+      "bytes": 3300,
+      "mode": 420
+    },
+    {
+      "path": "source1/source-map.json",
+      "sha256": "749b6d145102fdaad4624f438995f9b2eb62138c1a7f7ccc6c0f12ef888c74eb",
+      "bytes": 4086,
+      "mode": 420
+    },
+    {
+      "path": "source1/source.diff",
+      "sha256": "35538194776e0d95eb8eef57e31ad73a63a34781de78da7a79b094a0efbfc8a0",
+      "bytes": 112004,
+      "mode": 420
+    },
+    {
+      "path": "source1/validation.json",
+      "sha256": "e8771e24879026ed5aff6859e824bd110ce22ffc869e935966f15448f79c82da",
+      "bytes": 587,
+      "mode": 420
+    },
+    {
+      "path": "source1/verdict.json",
+      "sha256": "1be03eba1ee33b4bb2d0b7a5879639f11f704bf990483a66266460aff45523c7",
+      "bytes": 2027,
+      "mode": 420
+    },
+    {
+      "path": "source2/REVIEW.md",
+      "sha256": "99d87ebb2ae39500444ada3d5a189dc52accb51c24eb00f64de64a76a3a486f8",
+      "bytes": 1004,
+      "mode": 420
+    },
+    {
+      "path": "source2/before/e2e/testbed/provider_host.py",
+      "sha256": "722e358c6397d4224abd8dbd7e86941c27d1481349dfd8112891a66680ecdfd8",
+      "bytes": 17542,
+      "mode": 420
+    },
+    {
+      "path": "source2/before/e2e/testbed/test_provider_host.py",
+      "sha256": "cfb26ceea83d2a0f2e5172a8072941301c9fc6b658a3b3b5025fb3539666d3fc",
+      "bytes": 15164,
+      "mode": 420
+    },
+    {
+      "path": "source2/manifest.json",
+      "sha256": "d49966147ed1d24bd0c93583bb9ad22357c3a345e64cfbb6613f666a69453105",
+      "bytes": 1566,
+      "mode": 420
+    },
+    {
+      "path": "source2/python.log",
+      "sha256": "0d728a79ad8b73ebce6bb12fd5c072b1cfe7a15512ebce225e1cb26d482adb3e",
+      "bytes": 1760,
+      "mode": 420
+    },
+    {
+      "path": "source2/source/e2e/testbed/provider_host.py",
+      "sha256": "ffb58a80024695b51f7e4a14da245ede49d1ee6b15b398ec8ce3dbae7c421b53",
+      "bytes": 17542,
+      "mode": 420
+    },
+    {
+      "path": "source2/source/e2e/testbed/test_provider_host.py",
+      "sha256": "849fab032645882f0b9f7db7d277287f5601f3248c5c5529f063a04a55068894",
+      "bytes": 16169,
+      "mode": 420
+    },
+    {
+      "path": "source2/source.diff",
+      "sha256": "e04cf66b731b58d6fbde10bd1eec38d74195f54bb47232af3fd308547ca1d630",
+      "bytes": 1912,
+      "mode": 420
+    },
+    {
+      "path": "source2/validation.json",
+      "sha256": "3669316df934202f65a4f58ae50cf5fbfb3ba9acd78336b517a689885b614bce",
+      "bytes": 950,
+      "mode": 420
+    },
+    {
+      "path": "source3/REVIEW.md",
+      "sha256": "c79eaa4ec0091eb3a0ec555f1292797d2a437ea6ce13062ec681d95078483459",
+      "bytes": 844,
+      "mode": 420
+    },
+    {
+      "path": "source3/before/e2e/connected_cache_hosts_test.go",
+      "sha256": "fef6f6c8b44d1c488448bd972e24bc3d38c9c1d38608621ceb55b05d81d9d585",
+      "bytes": 3139,
+      "mode": 420
+    },
+    {
+      "path": "source3/before/e2e/connected_cache_hosts_validation_test.go",
+      "sha256": "a9bc05faaf4de65f45171337429fd33b461b2919b45f2814396ba1b584de3eed",
+      "bytes": 3236,
+      "mode": 420
+    },
+    {
+      "path": "source3/go-race.log",
+      "sha256": "587d82cf1d1b30b8237c02e26405b8d0a593e58251c70235e953187cc7136d70",
+      "bytes": 13142,
+      "mode": 420
+    },
+    {
+      "path": "source3/manifest.json",
+      "sha256": "eb34de3fb801c47184e7d8d81e9c4dbe57cb9192355a870b0508788ff54afad8",
+      "bytes": 1494,
+      "mode": 420
+    },
+    {
+      "path": "source3/source/e2e/connected_cache_hosts_test.go",
+      "sha256": "24da35ace1ecdd6f0364ecd3e595de66a736ed23b08e3be9d01b04fd60e7fc66",
+      "bytes": 3539,
+      "mode": 420
+    },
+    {
+      "path": "source3/source/e2e/connected_cache_hosts_validation_test.go",
+      "sha256": "d9509d1f404e1c4cf8df5531ee669eccd800108dace59426184ccf4595d55f85",
+      "bytes": 4154,
+      "mode": 420
+    },
+    {
+      "path": "source3/source.diff",
+      "sha256": "7f0061ab0912b77d093d1eb96b305c9e07dcc47cc38d1ea9375dca3218510c96",
+      "bytes": 2821,
+      "mode": 420
+    },
+    {
+      "path": "source3/validation.json",
+      "sha256": "6c7563b834e2cd0ce0fa6864a1d80d4d70279898fb7f3d983158346fd5bb61e0",
+      "bytes": 941,
+      "mode": 420
+    },
+    {
+      "path": "integration1/HANDOFF.md",
+      "sha256": "d79d8ef15cbe6beb6ab4f1333bf5855a54123d2de1bafa53bb89462c3fc309b8",
+      "bytes": 1319,
+      "mode": 420
+    },
+    {
+      "path": "integration1/git-status.txt",
+      "sha256": "0851a3d46187915c57c719ab040f6ff340495a824f8fe7104f6e565cb8f77376",
+      "bytes": 588,
+      "mode": 420
+    },
+    {
+      "path": "integration1/manifest.json",
+      "sha256": "3376174df94188cdcc6292a4346ede3f5f81b41ed04957b88c59ec063b8cc718",
+      "bytes": 702,
+      "mode": 420
+    },
+    {
+      "path": "integration1/source-map.json",
+      "sha256": "a3af92c13e9c52cb611b7699ca5f3ea94e3d58a36c5cf40fd5940bf7b79480e2",
+      "bytes": 6201,
+      "mode": 420
+    },
+    {
+      "path": "integration1/source.diff",
+      "sha256": "5081176bf23292b9b22d5b517188a85648da252844155782ecf575eec428777b",
+      "bytes": 113023,
+      "mode": 420
+    },
+    {
+      "path": "source-union.json",
+      "sha256": "378ad91f1308e229fa5c50ab8a173f0ad32bcb52f27aec1d2f27101c3f0b17e6",
+      "bytes": 4465,
+      "mode": 420
+    }
+  ]
+}

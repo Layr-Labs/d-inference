@@ -78,8 +78,8 @@ func runChatRewrites(t *testing.T, srv *Server, body string, service bool) (
 
 // Seeding the memo with the handler's own serialization is only valid if a
 // fresh candidateProviderBody for the resolved build produces the same bytes.
-// Every rewrite class must hold that invariant; a request that needed no
-// rewrite keeps the caller's verbatim bytes for dispatch and is not seeded.
+// Every rewrite class must hold that invariant, including a request whose
+// only added field is the coordinator-owned template date.
 func TestProviderBodyMemoSeedMatchesFreshBuild(t *testing.T) {
 	srv, _, _ := newBenchServer(t)
 	registerBuildsProvider(srv, "memo-provider", benchDesiredBuild, benchPreviousBuild)
@@ -89,46 +89,29 @@ func TestProviderBodyMemoSeedMatchesFreshBuild(t *testing.T) {
 		name    string
 		body    string
 		service bool
-		// verbatim: no rewrite applies, so the handler forwards the caller's
-		// bytes untouched and must not seed the memo with them.
-		verbatim bool
 	}{
-		{"alias + runtime defaults + injected max_tokens", `{"model":"` + benchAlias + `","messages":[{"role":"user","content":"hi"}]}`, false, false},
-		{"raw build, explicit max_completion_tokens alias field", `{"model":"` + benchDesiredBuild + `","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":7}`, false, false},
-		{"stop string normalized", `{"model":"` + benchDesiredBuild + `","messages":[{"role":"user","content":"hi"}],"stop":"END","max_tokens":3}`, false, false},
-		{"service reasoning injected", `{"model":"` + serviceReasoningOptInModel + `","messages":[{"role":"user","content":"hi"}],"max_tokens":3}`, true, false},
-		{"service reasoning explicit", `{"model":"` + serviceReasoningOptInModel + `","messages":[{"role":"user","content":"hi"}],"reasoning":{"enabled":true},"max_tokens":3}`, true, true},
-		{"non-service qwen untouched", `{"model":"` + serviceReasoningOptInModel + `", "messages":[{"role":"user","content":"hi"}], "max_tokens":3}`, false, true},
-		{"caller-provided parser default kept", `{"model":"` + benchAlias + `","messages":[{"role":"user","content":"hi"}],"tool_call_parser":"mine","max_tokens":3}`, false, false},
-		{"private routing field stripped", `{"model":"` + benchAlias + `","messages":[{"role":"user","content":"hi"}],"provider_serial":"C02XYZ","max_tokens":3}`, false, false},
-		{"responses lowered", `{"model":"` + benchAlias + `","input":"hello","max_output_tokens":5}`, false, false},
-		{"responses verbatim", `{"model":"` + serviceReasoningOptInModel + `","input":"hello","max_output_tokens":5}`, false, true},
-		{"tools normalized", `{"model":"` + benchAlias + `","messages":[{"role":"user","content":"hi"}],"max_tokens":3,"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"q":{"description":"x"}}}}}]}`, false, false},
+		{"alias + runtime defaults + injected max_tokens", `{"model":"` + benchAlias + `","messages":[{"role":"user","content":"hi"}]}`, false},
+		{"raw build, explicit max_completion_tokens alias field", `{"model":"` + benchDesiredBuild + `","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":7}`, false},
+		{"stop string normalized", `{"model":"` + benchDesiredBuild + `","messages":[{"role":"user","content":"hi"}],"stop":"END","max_tokens":3}`, false},
+		{"service reasoning injected", `{"model":"` + serviceReasoningOptInModel + `","messages":[{"role":"user","content":"hi"}],"max_tokens":3}`, true},
+		{"service reasoning explicit", `{"model":"` + serviceReasoningOptInModel + `","messages":[{"role":"user","content":"hi"}],"reasoning":{"enabled":true},"max_tokens":3}`, true},
+		{"non-service qwen date only", `{"model":"` + serviceReasoningOptInModel + `", "messages":[{"role":"user","content":"hi"}], "max_tokens":3}`, false},
+		{"caller-provided parser default kept", `{"model":"` + benchAlias + `","messages":[{"role":"user","content":"hi"}],"tool_call_parser":"mine","max_tokens":3}`, false},
+		{"private routing field stripped", `{"model":"` + benchAlias + `","messages":[{"role":"user","content":"hi"}],"provider_serial":"C02XYZ","max_tokens":3}`, false},
+		{"responses lowered", `{"model":"` + benchAlias + `","input":"hello","max_output_tokens":5}`, false},
+		{"responses date only", `{"model":"` + serviceReasoningOptInModel + `","input":"hello","max_output_tokens":5}`, false},
+		{"tools normalized", `{"model":"` + benchAlias + `","messages":[{"role":"user","content":"hi"}],"max_tokens":3,"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"q":{"description":"x"}}}}}]}`, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			providerBody, parsed, defaults, model, reasoningProvided, isResponsesAPI, serialized :=
 				runChatRewrites(t, srv, test.body, test.service)
-			if serialized == test.verbatim {
-				t.Fatalf("serialized = %v, want %v", serialized, !test.verbatim)
+			if !serialized {
+				t.Fatal("request date was not included in coordinator serialization")
 			}
 			fresh, err := srv.candidateProviderBody(parsed, defaults, model, test.service, reasoningProvided, isResponsesAPI)
 			if err != nil {
 				t.Fatal(err)
-			}
-			if test.verbatim {
-				if isResponsesAPI {
-					want, err := promptcontract.LowerProviderBody(promptcontract.EndpointResponses, []byte(test.body))
-					if err != nil {
-						t.Fatal(err)
-					}
-					if !bytes.Equal(providerBody, want) {
-						t.Fatalf("verbatim Responses body was not lowered from the caller's bytes:\n got %s\nwant %s", providerBody, want)
-					}
-				} else if string(providerBody) != test.body {
-					t.Fatalf("verbatim request was re-serialized:\n got %s\nwant %s", providerBody, test.body)
-				}
-				return
 			}
 			if !bytes.Equal(fresh, providerBody) {
 				t.Fatalf("fresh candidate body diverged from the handler's serialization:\n got %s\nwant %s", fresh, providerBody)

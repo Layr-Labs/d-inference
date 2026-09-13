@@ -1,0 +1,330 @@
+{
+  "M5_built": true,
+  "canonical_swiftpm_build": true,
+  "files": {
+    "darkbloom": {
+      "bytes": 87672056,
+      "mode": 493,
+      "sha256": "e18c11b3429c06156fd2d85e4ddb9334053f635087438733a5852ba31bb743b7"
+    },
+    "mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": {
+      "bytes": 24804,
+      "mode": 420,
+      "sha256": "4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149"
+    },
+    "mlx.metallib": {
+      "bytes": 182424064,
+      "mode": 420,
+      "sha256": "22497b094bbae98a07db9b088bddfe825ea1150d61fd77ac35592a29528abbaa"
+    },
+    "radix-engine": {
+      "bytes": 81646816,
+      "mode": 493,
+      "sha256": "f39e5f21db20f9fcc459222ecca9068f08fa90642c151f2e31bd5764b6885d05"
+    },
+    "swift-crypto_Crypto.bundle/PrivacyInfo.xcprivacy": {
+      "bytes": 398,
+      "mode": 420,
+      "sha256": "42fb8a30dd8d7ba0900e1bf17fe64ed8c12cfdb8a9c791ab6b4e1eceb0f299c0"
+    },
+    "swift-nio_NIOPosix.bundle/PrivacyInfo.xcprivacy": {
+      "bytes": 599,
+      "mode": 420,
+      "sha256": "982f20d820bc4460acc9d4116c3e6c8ec837f717dc82edbb7308f7400515c909"
+    },
+    "swift-transformers_Hub.bundle/gpt2_tokenizer_config.json": {
+      "bytes": 234,
+      "mode": 420,
+      "sha256": "551e26ec611d8d0c8edc3ef72e518a38418cb71f40de1347dd486a595e1557d7"
+    },
+    "swift-transformers_Hub.bundle/t5_tokenizer_config.json": {
+      "bytes": 20746,
+      "mode": 420,
+      "sha256": "e0aff0b1de9071e30d9a60a199303b6abe916a64a19932bd1c46992279b41a1f"
+    }
+  },
+  "manual_object_link": false,
+  "provider_tests": {
+    "BenchmarkSweepExitTests": {
+      "counts": [
+        0,
+        0,
+        10
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-BenchmarkSweepExitTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "DoctorClearBackendGuardTests": {
+      "counts": [
+        0,
+        0,
+        3
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-DoctorClearBackendGuardTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "EngineV2FP32PagedRateTests": {
+      "counts": [
+        0,
+        0,
+        4
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-EngineV2FP32PagedRateTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "EngineV2KVBackendFallbackHeartbeatTests": {
+      "counts": [
+        0,
+        0,
+        4
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-EngineV2KVBackendFallbackHeartbeatTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "EngineV2KVBackendGateTests": {
+      "counts": [
+        0,
+        0,
+        39
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-EngineV2KVBackendGateTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "EngineV2KVBackendPolicyTests": {
+      "counts": [
+        0,
+        0,
+        8
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-EngineV2KVBackendPolicyTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "EngineV2PagedPoolDTypeEnvTests": {
+      "counts": [
+        0,
+        0,
+        11
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-EngineV2PagedPoolDTypeEnvTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "EngineV2PrefixCacheUsageTests": {
+      "counts": [
+        0,
+        0,
+        6
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-EngineV2PrefixCacheUsageTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "EngineV2RequestRoutingTests": {
+      "counts": [
+        0,
+        0,
+        21
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-EngineV2RequestRoutingTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "EngineV2ResliceTests": {
+      "counts": [
+        0,
+        0,
+        8
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-EngineV2ResliceTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "EngineV2ResliceUnwindTests": {
+      "counts": [
+        0,
+        0,
+        2
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-EngineV2ResliceUnwindTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "EngineV2ReslicingWiringTests": {
+      "counts": [
+        0,
+        0,
+        8
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-EngineV2ReslicingWiringTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "EngineV2RuntimeGuardTests": {
+      "counts": [
+        0,
+        0,
+        7
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-EngineV2RuntimeGuardTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "EngineV2SlotBuildTests": {
+      "counts": [
+        0,
+        0,
+        8
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-EngineV2SlotBuildTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "KVBackendGuardDiagnosticsTests": {
+      "counts": [
+        0,
+        0,
+        9
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-KVBackendGuardDiagnosticsTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "KVBackendPostureTests": {
+      "counts": [
+        0,
+        0,
+        16
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-KVBackendPostureTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "MTPBenchmarkTests": {
+      "counts": [
+        0,
+        0,
+        32
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-MTPBenchmarkTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "PrefillDeadlineProductionConfigTests": {
+      "counts": [
+        0,
+        0,
+        5
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-PrefillDeadlineProductionConfigTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "PrefixCachePolicyTests": {
+      "counts": [
+        0,
+        0,
+        12
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-PrefixCachePolicyTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "SSDBlockStreamingTests": {
+      "counts": [
+        0,
+        0,
+        10
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-SSDBlockStreamingTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "SSDCheckpointFileCoordinatorPathTests": {
+      "counts": [
+        0,
+        0,
+        4
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-SSDCheckpointFileCoordinatorPathTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "SSDCheckpointFileCoordinatorTests": {
+      "counts": [
+        0,
+        0,
+        4
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-SSDCheckpointFileCoordinatorTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "SSDCheckpointLookupTests": {
+      "counts": [
+        0,
+        0,
+        2
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-SSDCheckpointLookupTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "SSDCheckpointRecencyCoordinationTests": {
+      "counts": [
+        0,
+        0,
+        3
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-SSDCheckpointRecencyCoordinationTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "SSDCheckpointStageReservationTests": {
+      "counts": [
+        0,
+        0,
+        2
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-SSDCheckpointStageReservationTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "SSDHybridCheckpointCoordinationTests": {
+      "counts": [
+        0,
+        0,
+        5
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-SSDHybridCheckpointCoordinationTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "SSDHybridCheckpointRecencyTests": {
+      "counts": [
+        0,
+        0,
+        1
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-SSDHybridCheckpointRecencyTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "SSDHybridCheckpointStoreTests": {
+      "counts": [
+        0,
+        0,
+        12
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-SSDHybridCheckpointStoreTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "SSDSharedProcessCheckpointTests": {
+      "counts": [
+        0,
+        0,
+        6
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-SSDSharedProcessCheckpointTests.log",
+      "nonempty_no_skips_guard_passed": true
+    },
+    "SegmentedProductionGrantTests": {
+      "counts": [
+        0,
+        0,
+        8
+      ],
+      "log": "/Users/gaj/autoresearch/radix-prefix-cache/100-qwen-checkpoint-coordination1/logs/test-SegmentedProductionGrantTests.log",
+      "nonempty_no_skips_guard_passed": true
+    }
+  },
+  "real_model_run": false,
+  "root_artifact_review_required": true,
+  "shader_reuse_proof": "shader-reuse-proof.json",
+  "source": {
+    "c": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+    "core": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+    "native": "f2d79145e040bbc28c6e0e355a19bc8923a70434",
+    "parent": "35fea6d0e3b05ff65d60d9675ab480159913ac62",
+    "swift": "9561227d55a07db29f70a78aadc5d6b5aaeb10bf",
+    "unused_top_level_mlx": "0a725e3000edabc4911cde345270ca950bfa152f"
+  }
+}

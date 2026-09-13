@@ -1,0 +1,31 @@
+{
+  "prepared_execution1": {
+    "files": 76,
+    "all_unchanged": true
+  },
+  "activated_package": {
+    "files": 51,
+    "all_unchanged": true
+  },
+  "frozen_corrected_controls": {
+    "files": 160,
+    "all_unchanged": true
+  },
+  "canonical_runtime": {
+    "files": 8,
+    "all_unchanged": true
+  },
+  "gemma-qat4-contiguous-automatic-logit30-b1-output128": {
+    "files": 12,
+    "all_unchanged": true
+  },
+  "gemma-qat4-contiguous-off-logit30-b1-output128": {
+    "files": 12,
+    "all_unchanged": true
+  },
+  "remote_runtime_and_retirement": {
+    "audit": "/tmp/darkbloom-gemma-contiguous-logit-execution2/m5-lane-release.json",
+    "sha256": "5a6cb1b817253977c51d1eda163ce73acb05ddd76d6ef59fc273b42dbe0c1505",
+    "verified_at_utc": "2026-09-06T10:18:37.919004+00:00"
+  }
+}

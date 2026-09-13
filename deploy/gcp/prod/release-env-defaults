@@ -1,12 +1,13 @@
-# Post-v0.7.12 safe rollout defaults. refresh-env preserves custom values and
+# Release defaults. refresh-env preserves custom values and
 # migrates only explicitly listed historical defaults.
 EIGENINFERENCE_CACHE_ROUTING_MODE=off
 EIGENINFERENCE_CACHE_ROUTING_PERCENT=1
 EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS=1
 EIGENINFERENCE_CACHE_ROUTING_TTL=10m
 EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS=4
-EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS=1000
-EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION=0.35
+# v0.9: blank optional limits price only avoidable prefill work. Mode stays off.
+EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS=
+EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION=
 EIGENINFERENCE_PROMPT_SIDECAR_ENABLED=true
 EIGENINFERENCE_PROMPT_SIDECAR_BINARY=/usr/local/bin/promptsidecar
 EIGENINFERENCE_PROMPT_SIDECAR_SOCKET=/run/darkbloom/promptsidecar.sock
@@ -37,9 +38,28 @@ EIGENINFERENCE_PROMPT_SIDECAR_MAX_TOKENS=1048576
 EIGENINFERENCE_PROMPT_SIDECAR_MEMORY_LIMIT_MIB=1024
 EIGENINFERENCE_MEDIA_FETCH_ENABLED=true
 
+# Next production release enables international bank withdrawals. The refresh
+# validates funding/webhook configuration first and preserves an explicit false.
+EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=true
+
 # v0.8.0 cold-start solo decode rates, chip-CLASS scoped (build-id[@Family|Tier]).
 # The TPS registry is in-memory and restart-wiped, so without this the quality
 # cap falls to the model-agnostic sqrt(memory_bandwidth) proxy on every restart.
 # It is also the upper bound on cross-class solo-median transfer. Keep the
 # unqualified entries conservative: they apply to every class not named here.
 EIGENINFERENCE_MODEL_SOLO_TPS_SEED=gemma-4-26b-qat-4bit=14,gemma-4-26b-qat-4bit@M4|Max=70,gpt-oss-20b=30,gpt-oss-20b@M4|Max=70
+
+# v0.9 proactive warm-pool headroom. These are in required-env-keys.txt, and an
+# existing production host's /etc/d-inference/env predates them, so they MUST ship
+# a release default: without one the pre-merge required-value check would fail on
+# every box that has not been hand-edited, and darkbloom-env-refresh.service is
+# ordered before Docker — a failed refresh blocks the coordinator from starting.
+# The checked-in deploy/environments/prod.env is a sanitized reference and is
+# never copied to the host, so it cannot bootstrap anything.
+#
+# Values match prod.env. HEADROOM_PROVIDERS is deliberately absent from both
+# manifests: it is an empty-by-default per-model override, and a required key
+# whose normal value is empty could never satisfy the non-empty check.
+EIGENINFERENCE_WARM_POOL_HEADROOM=true
+EIGENINFERENCE_WARM_POOL_HEADROOM_MAX_PROVIDERS=64
+EIGENINFERENCE_WARM_POOL_HEADROOM_LOAD_WINDOWS=1

@@ -141,7 +141,7 @@ enum DoctorRunner {
                 servingSetIsLive = false
                 let runtimeCapabilities = ProviderRuntimeCapabilityDetector.detectLive(hardware: hw)
                 let daemonBasis = ModelScanner.scanModels(hardwareInfo: hw)
-                    .filter { EngineV2SupportedModels.isSupported(modelType: $0.modelType) }
+                    .filter { EngineV2SupportedModels.isSupported(model: $0) }
                     .filter {
                         ModelRuntimeRequirements.isEligible(modelID: $0.id, available: runtimeCapabilities)
                     }

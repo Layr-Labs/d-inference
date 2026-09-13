@@ -4,6 +4,7 @@
 // construction is SSD-only and covered by SSDPrefixCacheTests.
 
 import Foundation
+import MLX
 import MLXLMCommon
 import Testing
 
@@ -265,13 +266,37 @@ private final class CapacityStubEngine: CBv2Engine, @unchecked Sendable {
     func shutdown() async {}
 }
 
-/// The fp32-page seam: `DARKBLOOM_CBV2_PAGED_KV_DTYPE=float32` doubles what a
-/// token costs in the pool, so the rate the slot hands `makeBridge` must
-/// double — and the heartbeat's advertised token budget must HALVE — or
-/// `BackendCapacity.Slots` being scheduler-authoritative lets the coordinator
-/// over-admit ~2x against a pool holding half the tokens.
+/// Constructed native page types must reach the process rate; a scalar
+/// request setting cannot describe a mixed pool. Retain fixed-pool arithmetic
+/// cases alongside the mixed-table comparison against native admission.
 @Suite("EngineV2 fp32 paged pages: KV rate wiring")
 struct EngineV2FP32PagedRateTests {
+
+    @Test("mixed native full-row rates reach the slot without widening window or shared rows")
+    func mixedNativeRateMatchesAdmission() {
+        let kinds = [
+            CBv2LayerKind(attention: .full, headDim: 64, kvHeads: 2, queryHeads: 4),
+            CBv2LayerKind(attention: .full, headDim: 128, kvHeads: 1, queryHeads: 4),
+            CBv2LayerKind(attention: .slidingWindow(512), headDim: 64, kvHeads: 2, queryHeads: 4),
+            CBv2LayerKind(attention: .full, sharesKVWithLayer: 0,
+                          headDim: 64, kvHeads: 2, queryHeads: 4),
+        ]
+        let types: [DType] = [.bfloat16, .float32, .float32, .bfloat16]
+        let admission = AdmissionV2(
+            layerKinds: kinds, bytesCapacity: 1 << 20,
+            config: .init(layerElementBytes: types.map(\.size)))
+        let rate = EngineV2SlotFactory.slotKVBytesPerToken(
+            resolvedKind: .paged, pagedPoolDType: "mixed", pagedLayerDTypes: types,
+            layerKinds: kinds, nominalFP16BytesPerToken: 1024,
+            servingModelIsGPTOSS: false)
+        #expect(rate == 1536)
+        #expect(rate == admission.fullKVBytesPerToken)
+        #expect(EngineV2Factory.nativeFullKVBytesPerToken(
+            layerKinds: kinds, dtypes: []) == Int.max)
+        #expect(EngineV2Factory.nativeFullKVBytesPerToken(
+            layerKinds: [.init(attention: .full, headDim: Int.max, kvHeads: 2, queryHeads: 4)],
+            dtypes: [.float32]) == Int.max)
+    }
 
     @Test("processKVBytesPerToken doubles on fp32 pages and only there")
     func processRateDoubling() {

@@ -1,0 +1,18 @@
+{
+  "scope": "Prepared representative inputs and CPU validation; no model result or quality pass",
+  "files": {
+    "root-loader-check.json": {
+      "bytes": 198,
+      "sha256": "1ff1b7002e10a90a52c163c0cc417a94ab52e638da68d7acac7500a8d45f7f42"
+    },
+    "cohort.tar.gz": {
+      "bytes": 4117480,
+      "sha256": "dd98653f0a0dc80141beb252d232a5d312c4060a6a0672c8b7c7c4370e766e93"
+    },
+    "preparation-receipt.json": {
+      "bytes": 1183,
+      "sha256": "e1bb5a04c37a1d60d7389f6153d609b054a7ad0ed3e5cfc8b830b634e99b255c"
+    }
+  },
+  "package_manifest_sha256": "684a951abc14840418e22b47d2c699a5632d9fcb5a71ca917b7a5ea047047f4f"
+}

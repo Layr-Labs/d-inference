@@ -19,12 +19,12 @@ const ACCOUNT_ITEMS: NavigationItem[] = [
 ];
 export function navigationGroups(mode: Workspace, account: ProviderAccount) {
   if (mode === "consumer") return CONSUMER_GROUPS;
-  const existing = account.status !== "new" && account.status !== "guest";
   return [
     { label: "Provider workspace", items: [
       { href: "/providers", icon: Server, label: "Your fleet" },
       { href: "/providers/setup", icon: Cpu, label: account.status === "linked" ? "Add a Mac" : "Set up a Mac" },
-      ...(existing ? [{ href: "/providers/earnings", icon: Coins, label: "Your earnings" }] : []),
+      // Earnings belong to the account, even after its last Mac is removed.
+      { href: "/providers/earnings", icon: Coins, label: "Your earnings" },
       { href: "/earn", icon: Coins, label: "Earnings calculator" },
     ] },
     { label: "Network", items: [

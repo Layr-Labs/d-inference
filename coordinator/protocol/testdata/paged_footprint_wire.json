@@ -1,0 +1,19 @@
+{
+  "kind": "segmented",
+  "generation": 7,
+  "sample_seq": 2,
+  "sample_age_ms": 3,
+  "grant_bytes": 1000,
+  "committed_bytes": 1100,
+  "reserved_page_bytes": 800,
+  "live_page_bytes": 400,
+  "poison_bytes": 100,
+  "slack_bytes": 150,
+  "over_grant_bytes": 100,
+  "segment_count": 2,
+  "address_pages": 16,
+  "allocator_padding_bytes": 50,
+  "last_allocation_allowance_bytes": 77,
+  "nominal_kv_bytes": 900,
+  "physical_floor_overhead_bytes": 200
+}

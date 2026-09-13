@@ -57,6 +57,9 @@ func TestRecordJobSuccessPersistsReputationThrottled(t *testing.T) {
 		Hardware: protocol.Hardware{ChipName: "Apple M4 Max", MemoryGB: 64},
 		Models:   []protocol.ModelInfo{{ID: "model"}},
 	})
+	// This fixture represents a provider that has finished registration/restore
+	// and can serve jobs; pending registrations deliberately skip reputation IO.
+	p.CompleteProviderStateRestore()
 	baseline := st.upserts.Load()
 
 	start := time.Now()

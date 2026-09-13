@@ -8,27 +8,13 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-// BASELINE (captured BEFORE the system-profiler routing-context changes, on
-// this branch's parent commit b66ee3065, Apple M-series, go1.25):
-//
-//	BenchmarkReserveProviderEx_350x2-16  ~220-240 µs/op  209728 B/op  855 allocs/op  (3 runs, identical allocs)
-//
-// AFTER (same machine, routing context + fleet sampler landed):
-//
-//	BenchmarkReserveProviderEx_350x2-16  ~220-224 µs/op  209640 B/op  847 allocs/op  (3 runs, identical allocs)
-//
-// The 8 allocs/op removed are the slog key/value boxing in logRoutingDecision,
-// which now checks Enabled(Debug) before the variadic call. The routing-context
-// work (gate-reason tallies, top-4 candidate summaries, runner-up / best-idle /
-// path, hbAgeMs, lock/scan/admit stamps) is REQUIRED to add ZERO heap
-// allocations under r.mu per reserve. reserveBenchMaxAllocs below pins the
-// pre-change baseline; TestReserveProviderExAllocBudget fails if allocs/op grows.
-
 // reserveBenchMaxAllocs is the allocs/op ceiling asserted by
-// TestReserveProviderExAllocBudget. Set to the measured pre-change baseline
-// (see the header comment); a regression that adds a single heap allocation
-// per reserve trips the test.
-const reserveBenchMaxAllocs = 850 // re-pinned after the two-phase reserve (scan under RLock + short commit) landed on master
+// TestReserveProviderExAllocBudget. Candidate arenas removed per-provider
+// allocations; selection and soft preferences now need no temporary lists.
+// Measured with Go 1.27.1 on darwin/arm64: 15 before, 13 after. Keep a small
+// allowance for toolchain escape-analysis differences, not the obsolete 850
+// allocation limit from before candidate arenas.
+const reserveBenchMaxAllocs = 20
 
 const (
 	reserveBenchProviders = 350
@@ -101,7 +87,7 @@ func reserveBenchRequest(i int) (string, *PendingRequest) {
 // BenchmarkReserveProviderEx_350x2 measures one ReserveProviderEx call (plus
 // the RemovePending that releases the reservation) against a 350-provider,
 // two-model warm fleet with 20% of providers derouted by breaker/cooldown.
-// Run with -benchmem; allocs/op must not grow versus the header baseline.
+// Run with -benchmem; TestReserveProviderExAllocBudget guards heap allocations.
 func BenchmarkReserveProviderEx_350x2(b *testing.B) {
 	reg := buildReserveBenchFleet(b)
 	b.ReportAllocs()
@@ -116,8 +102,28 @@ func BenchmarkReserveProviderEx_350x2(b *testing.B) {
 	}
 }
 
-// TestReserveProviderExAllocBudget asserts that a warm-fleet reserve does not
-// allocate more than the pre-change baseline (reserveBenchMaxAllocs).
+// Exercise all three soft preferences. The owner preference has no match and
+// must keep the public pool; version and decode preferences keep that pool.
+func BenchmarkReserveProviderExPreferences_350x2(b *testing.B) {
+	reg := buildReserveBenchFleet(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		model, pr := reserveBenchRequest(i)
+		pr.PreferOwner = true
+		pr.OwnerAccountID = "bench-owner"
+		pr.Traits.AvoidVersion = "not-in-fleet"
+		pr.MinDecodeTPS = 1
+		p, _ := reg.ReserveProviderEx(model, pr)
+		if p == nil {
+			b.Fatal("no provider selected")
+		}
+		p.RemovePending(pr.RequestID)
+	}
+}
+
+// TestReserveProviderExAllocBudget guards the bounded allocation count of a
+// warm-fleet reserve, including its routing diagnostics and reservation commit.
 func TestReserveProviderExAllocBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("alloc budget check skipped in -short mode")

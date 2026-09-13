@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-04 · commit `376b4868f`
+> Last updated: 2026-09-08 · commit `0c162cdae`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -12,6 +12,8 @@ edit the env file. Provider CLI releases are a separate runbook:
 
 For the remaining coordinator performance upgrade, also follow
 [the Tiers 2 and 3 rollout checks](coordinator-perf-tier23-rollout.md).
+
+For international payout configuration and validation, also follow [Global Payouts](global-payouts.md).
 
 ## When to use
 
@@ -138,6 +140,74 @@ sudo sh -c 'umask 077; awk -F= '\''$1 ~ /^EIGENINFERENCE_CACHE_ROUTING_/ || $1 =
   /etc/d-inference/env | LC_ALL=C sort | sha256sum | cut -d" " -f1 > /tmp/darkbloom-cache-env.before.sha256'
 ```
 
+### Optional: prepare compatible migrations before draining
+
+After reviewing the exact candidate's schema changes, a human-approved operator
+can run its database-only command while the current coordinator serves. This is
+a production database mutation and needs approval for that operation. Only
+backward-compatible migrations belong before cutover; `--migrate-only` executes
+all normal migrations and does not establish compatibility automatically.
+
+```bash
+sudo docker run --rm --network host --env-file /etc/d-inference/env \
+  --entrypoint /usr/local/bin/coordinator \
+  "${CANDIDATE_IMAGE%:*}@${CANDIDATE_DIGEST}" --migrate-only
+```
+
+The executable override is mandatory: the image's default `start.sh` starts
+MicroMDM and touches persistent MDM state. The database-only container needs no
+userdata mount, publishes no port, seeds no admin key, starts no workers and
+exits after migration success (with a 15-minute upper bound). Do not start a
+second ordinary coordinator container. Rerun the blocked-query/lock checks and
+verify current serving health after preparation; success is not approval to
+swap.
+
+The earnings-summary migration captures missing-key history once, commits a
+resumable plan, then adds each pending delta and removes it in a short transaction.
+Its repeatable-read snapshot is pinned before the attempted-plan marker commits,
+so settlement during marker creation cannot hide missing historical totals.
+Initial planning uses one additional short-lived database connection for that
+marker, even with a single-connection pool; budget for it before preparation.
+A failed or uncertain marker write aborts preparation.
+Existing `CreditProviderAccount` and `SettleProviderFloorDraw` writers can continue:
+their atomic earning/summary updates coexist with the captured deltas without a
+new writer-lock protocol. Quiesce any old record-only/import writer that lacks
+atomic summary updates. Already inconsistent counters at plan time need explicit
+reconciliation; this migration preserves existing totals rather than guessing.
+The final marker makes subsequent startup avoid the historical scan. If the attempt marker committed but the
+initial planning transaction fails, that marker makes subsequent
+startup fail closed rather than silently replan against newly created partial
+counters. Follow the recovery procedure below; a committed plan's per-key
+progress instead resumes automatically. New
+provider-recovery indexes are built concurrently and checked for validity. An
+interrupted build that leaves an invalid index fails closed with its index name;
+repair it under a separate approved operation. Ordinary startup still applies
+schema checks, and this preparation does not prove a five-second handoff.
+
+#### Recover an incomplete initial earnings-summary plan
+
+This recovery is an explicit production database/traffic operation and needs
+operator approval. A failed initial plan intentionally blocks readiness.
+
+1. Quiesce all earnings/summary writers and preserve the failure evidence,
+   `schema_migrations`, `earnings_summary`, `provider_earnings`, and
+   `earnings_summary_backfill_pending` in the team's normal backup process.
+2. Determine whether `prepare_earnings_summary_backfill_v1` committed. If it did,
+   retain the plan and pending rows and rerun the candidate migration command;
+   committed per-key updates are already protected from double application.
+3. If only `attempt_earnings_summary_backfill_v1` exists, diagnose the failed
+   snapshot and reconcile affected account/provider totals against authoritative
+   earning/ledger history and retained pre-migration evidence. Preserve money
+   while excluding base rewards from inference counts/tokens. History retention
+   can make a blind recomputation incorrect; insufficient evidence requires a
+   vetted backup or a separately reviewed accounting repair.
+4. Only after that reconciliation, with writers still quiesced, verify that no
+   final/ready-plan marker or pending plan rows exist. An approved operator may
+   reset the attempted-plan marker and rerun preparation. Do not merely delete
+   that marker while serving, and never discard committed pending deltas.
+5. Verify the final marker, empty pending queue and reconciled totals before
+   resuming writers or proceeding with the separately approved swap.
+
 ### 3. Refresh the env file and capture rollback inputs
 
 `refresh-env.sh --check` validates the live file against the required-key
@@ -147,12 +217,24 @@ only explicitly retired defaults, keeps a root-only timestamped backup, and
 renames atomically. It never touches secrets. It fails if `/etc/d-inference` is
 tmpfs.
 
+The v0.9 cache-cost migration replaces only the exact historical pair
+`EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS=1000` and
+`EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION=0.35` with blank optional limits.
+If either value differs, both remain unchanged; explicit zero still means no
+credit. The exact old pair is treated as a stock default, even if deliberately
+chosen, so review its two `MIGRATE` lines before applying. A customized numeric
+spelling, such as `1000.0`, remains an explicit override. The migration changes no
+routing mode/cohort/QPS setting and does not enable cache routing. New release
+defaults supply blank values; older binaries interpret blanks as their previous
+stock limits, while the backup preserves the exact pre-refresh file.
+
 ```bash
-# First time on a host only: install the reviewed inputs and the boot-time unit.
+# Every deploy: install the reviewed candidate's refresh script and manifests.
 sudo install -d -m 0755 /usr/local/lib/darkbloom-env
 sudo install -m 0755 deploy/gcp/prod/refresh-env.sh /usr/local/sbin/darkbloom-refresh-env
 sudo install -m 0644 deploy/gcp/prod/required-env-keys.txt /usr/local/lib/darkbloom-env/required-env-keys.txt
 sudo install -m 0644 deploy/gcp/prod/release-env-defaults  /usr/local/lib/darkbloom-env/release-env-defaults
+# First time on a host only: install the boot-time unit.
 sudo install -m 0644 deploy/gcp/prod/darkbloom-env-refresh.service /etc/systemd/system/darkbloom-env-refresh.service
 sudo systemctl daemon-reload && sudo systemctl enable darkbloom-env-refresh.service
 
@@ -211,6 +293,13 @@ does not answer after ~60 s, suspect a migration behind a DB lock: re-run the
 not restart the container again** — restarts stack migrations.
 
 ## Verification
+
+Measure the post-stop startup interval with the
+[startup observer](coordinator-startup-measurement.md). Supply authoritative old-stop
+and candidate-start timestamps and the exact candidate build. Its read-only mode
+separates candidate reachability/readiness and per-model capacity from actual
+inference, which remains unverified without a separately authorized test probe.
+
 
 ```bash
 HEALTH=$(curl -fsS localhost:8080/health); echo "$HEALTH"
@@ -340,8 +429,14 @@ to `MICROMDM_API_KEY`), `MIN_DECODE_TPS`, `MIN_PROVIDER_VERSION`,
 `EIGENINFERENCE_CACHE_ROUTING_{MODE,PERCENT,MAX_PLAN_QPS,TTL,MAX_HOLDERS,MAX_DISCOUNT_MS,MAX_COST_FRACTION}`,
 the `EIGENINFERENCE_PROMPT_SIDECAR_*` set (`ENABLED`, `BINARY`, `SOCKET`,
 `ARTIFACT_ROOT`, `ARTIFACT_BASE_URL`, timeouts, restart policy, resource
-bounds), `EIGENINFERENCE_MEDIA_FETCH_ENABLED`, and
-`EIGENINFERENCE_MODEL_SOLO_TPS_SEED`.
+bounds), `EIGENINFERENCE_MEDIA_FETCH_ENABLED`,
+`EIGENINFERENCE_MODEL_SOLO_TPS_SEED`, and
+`EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=true`.
+
+Global Payouts activation additionally requires the financial-account ID and
+separate webhook secret. The refresh validates them before replacing the env
+file; an explicit false flag is preserved. See [Global Payouts](global-payouts.md)
+for the required Stripe setup.
 
 **Operator-owned, never changed by a deploy:** every
 `EIGENINFERENCE_CACHE_ROUTING_*` value and `EIGENINFERENCE_CACHE_MASTER_KEY`

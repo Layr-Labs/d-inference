@@ -77,6 +77,10 @@ type MemoryStore struct {
 	usersByAccountID       map[string]*User // accountID → user
 	usersByStripeAccountID map[string]*User // stripeAccountID → user (subset of usersByAccountID)
 
+	// Global Payouts use the same balance lock as Connect withdrawals.
+	globalRecipients map[string]GlobalRecipient
+	globalPayouts    map[string]GlobalPayout
+
 	// Stripe Connect withdrawals
 	stripeWithdrawalsByID         map[string]*StripeWithdrawal
 	stripeWithdrawalsByTransferID map[string]string   // transferID → withdrawalID
@@ -146,6 +150,7 @@ type MemoryStore struct {
 	// System profiler: per-attempt request profiles (write-once per
 	// request_id/attempt, mirroring the Postgres UNIQUE + DO NOTHING) and
 	// per-tick fleet snapshots. Both are append-only and capped by Prune.
+	requestOutcomes    map[string]RequestOutcomeRecord
 	requestProfiles    []RequestProfileRecord
 	requestProfileKeys map[string]struct{} // request_id/attempt -> present
 	fleetSnapshots     []FleetSnapshotRow
@@ -1096,6 +1101,12 @@ func (s *MemoryStore) PruneTelemetry(ctx context.Context, profilesBefore, snapsh
 		return deleted, err
 	}
 	if !profilesBefore.IsZero() {
+		for id, r := range s.requestOutcomes {
+			if r.ReceivedAt.Before(profilesBefore) {
+				delete(s.requestOutcomes, id)
+				deleted++
+			}
+		}
 		kept := s.requestProfiles[:0:0]
 		for i := range s.requestProfiles {
 			if s.requestProfiles[i].CreatedAt.Before(profilesBefore) {
@@ -2025,6 +2036,7 @@ func cloneModelVersion(version *ModelVersion) ModelVersion {
 	}
 	cp := *version
 	cp.PromotedAt = cloneTimePtr(version.PromotedAt)
+	cp.HuggingFaceArtifact = cloneHuggingFaceArtifact(version.HuggingFaceArtifact)
 	cp.Metadata = cloneMetadata(version.Metadata)
 	return cp
 }
@@ -3020,6 +3032,11 @@ func (s *MemoryStore) UpsertProvider(_ context.Context, p ProviderRecord) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.upsertProviderRecordLocked(p)
+	return nil
+}
+
+func (s *MemoryStore) upsertProviderRecordLocked(p ProviderRecord) {
 	// Update serial index
 	if p.SerialNumber != "" {
 		// Remove old serial mapping if exists
@@ -3035,7 +3052,6 @@ func (s *MemoryStore) UpsertProvider(_ context.Context, p ProviderRecord) error 
 		cp.Location = &loc
 	}
 	s.providerRecords[p.ID] = &cp
-	return nil
 }
 
 func (s *MemoryStore) GetProviderRecord(_ context.Context, id string) (*ProviderRecord, error) {
@@ -3247,7 +3263,7 @@ func (s *MemoryStore) GetReputation(_ context.Context, providerID string) (*Repu
 
 	rep, ok := s.reputationRecords[providerID]
 	if !ok {
-		return nil, fmt.Errorf("reputation for provider %q not found", providerID)
+		return nil, fmt.Errorf("reputation for provider %q: %w", providerID, ErrNotFound)
 	}
 	cp := *rep
 	return &cp, nil
@@ -3261,7 +3277,7 @@ func (s *MemoryStore) ListCodeAttestations(_ context.Context) ([]CodeAttestation
 
 	out := make([]CodeAttestation, 0, len(s.codeAttestations))
 	for _, rec := range s.codeAttestations {
-		out = append(out, rec)
+		out = append(out, cloneCodeAttestation(rec))
 	}
 	return out, nil
 }
@@ -3273,7 +3289,12 @@ func (s *MemoryStore) UpsertCodeAttestation(_ context.Context, rec CodeAttestati
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.codeAttestations[rec.SEPubKey] = rec
+	if old, ok := s.codeAttestations[rec.SEPubKey]; !ok || !rec.AttestedAt.Before(old.AttestedAt) {
+		if ok && sameCodeProof(old, rec) && old.ContinuousCoverageUntil != nil && (rec.ContinuousCoverageUntil == nil || old.ContinuousCoverageUntil.After(*rec.ContinuousCoverageUntil)) {
+			rec.ContinuousCoverageUntil = old.ContinuousCoverageUntil
+		}
+		s.codeAttestations[rec.SEPubKey] = cloneCodeAttestation(rec)
+	}
 	return nil
 }
 

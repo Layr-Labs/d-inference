@@ -364,7 +364,7 @@ extension ProviderLoop {
         // whose family has no CBv2 adapter can never serve — advertising it
         // would invite requests that always refuse. Keep the previous build
         // serving; the catalog entry is the thing that needs fixing.
-        guard EngineV2SupportedModels.isSupported(modelType: info.modelType) else {
+        guard EngineV2SupportedModels.isSupported(model: info) else {
             desiredSwapDrop.removeValue(forKey: modelId)
             logger.error(
                 "Prefetch verified \(modelId) but model_type '\(info.modelType ?? "unknown")' "

@@ -1,6 +1,6 @@
 # Dev environment
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-06 · commit `f272f8641`
 
 Runbook for the Darkbloom dev environment on Google Cloud (project
 `sepolia-ai`): a GCE VM running the same coordinator container as production,
@@ -118,6 +118,12 @@ end-to-end; the fleet sees a ~10 s blip and reconnects.
 
 Every push to `master` auto-builds; preview branches also talk to the dev
 coordinator.
+
+The repository-root `vercel.json` and `console-ui/vercel.json` both exclude
+exactly `release/0.9.0-validation` from Git deployments. These cover a project
+configured at the repository root or at the documented console UI root. Other
+branches retain Vercel's default behavior; no project-wide settings or deployment
+environments are changed by this branch-specific rule.
 
 ### 6. Connect GitHub → Cloud Build
 

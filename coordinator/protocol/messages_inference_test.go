@@ -470,6 +470,38 @@ func TestInferenceCompleteMalformedProfileKeepsEnvelopeAlive(t *testing.T) {
 	}
 }
 
+func TestDeadlineDecisionMalformedKeepsTerminalEnvelopeAlive(t *testing.T) {
+	for _, terminal := range []string{
+		`"type":"inference_complete","request_id":"r","usage":{"prompt_tokens":1,"completion_tokens":2}`,
+		`"type":"inference_error","request_id":"r","error":"provider capacity unavailable","status_code":429`,
+	} {
+		in := []byte(`{` + terminal + `,"profile":{"schema":1,"deadline_decision":{"remaining_us":"bad"}}}`)
+		var pm ProviderMessage
+		if err := pm.UnmarshalJSON(in); err != nil {
+			t.Fatalf("diagnostic field cost the terminal: %v", err)
+		}
+		var raw json.RawMessage
+		switch p := pm.Payload.(type) {
+		case *InferenceCompleteMessage:
+			raw = p.Profile
+			if p.RequestID != "r" || p.Usage.CompletionTokens != 2 {
+				t.Fatalf("completion changed: %+v", p)
+			}
+		case *InferenceErrorMessage:
+			raw = p.Profile
+			if p.RequestID != "r" || p.StatusCode != 429 {
+				t.Fatalf("error changed: %+v", p)
+			}
+		default:
+			t.Fatalf("unexpected terminal %T", pm.Payload)
+		}
+		var profile InferenceProfile
+		if err := json.Unmarshal(raw, &profile); err == nil {
+			t.Fatal("invalid nested numeric survived typed decode")
+		}
+	}
+}
+
 // The oversize gate lives at ingress (registry.AttemptProfile.SetProviderProfileRaw)
 // and in api.decodeInferenceProfile; the wire layer must still carry the frame
 // so the terminal is never lost to a chatty profile.
@@ -492,10 +524,12 @@ func TestInferenceCompleteOversizeProfileStillDecodes(t *testing.T) {
 func TestProfilerWireFixtureProfiles(t *testing.T) {
 	frames := loadProfilerFixture(t)
 	for name, wantKeys := range map[string]bool{
-		"inference_complete_full":    true,
-		"inference_complete_omitted": false,
-		"inference_error_minimal":    true,
-		"inference_error_omitted":    false,
+		"inference_complete_full":          true,
+		"inference_complete_omitted":       false,
+		"inference_error_minimal":          true,
+		"inference_error_deadline":         true,
+		"inference_error_accepted_expired": true,
+		"inference_error_omitted":          false,
 	} {
 		t.Run(name, func(t *testing.T) {
 			frame, ok := frames[name]

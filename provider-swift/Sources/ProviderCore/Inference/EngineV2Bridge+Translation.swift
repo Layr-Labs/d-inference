@@ -161,16 +161,23 @@ enum EngineV2Translation {
     ) -> [SSETokenLogprob] {
         logprobs.map { entry in
             let token = decodeToken(entry.token)
+            let bytes = token.utf8.map(Int.init)
             return SSETokenLogprob(
                 token: token,
                 logprob: entry.logprob,
-                bytes: Array(token.utf8).map(Int.init),
+                bytes: bytes,
                 topLogprobs: entry.topLogprobs.map { alt in
+                    // The chosen token commonly also appears in top_logprobs.
+                    // Its text and bytes are identical; decode it only once.
+                    if alt.token == entry.token {
+                        return SSETokenLogprob.Top(
+                            token: token, logprob: alt.logprob, bytes: bytes)
+                    }
                     let altToken = decodeToken(alt.token)
                     return SSETokenLogprob.Top(
                         token: altToken,
                         logprob: alt.logprob,
-                        bytes: Array(altToken.utf8).map(Int.init)
+                        bytes: altToken.utf8.map(Int.init)
                     )
                 }
             )

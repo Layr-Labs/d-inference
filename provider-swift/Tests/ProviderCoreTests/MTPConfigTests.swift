@@ -30,7 +30,7 @@ struct MTPConfigKeyTests {
     }
 
 
-    @Test("absent mode defaults on for embedded Qwen3.5-family heads only")
+    @Test("absent mode enables embedded Qwen heads and exact Gemma QAT")
     func defaultsWhenAbsent() {
         let config = ConfigManager.parse(
             """
@@ -52,6 +52,9 @@ struct MTPConfigKeyTests {
             forModelType: "qwen3_5", embeddedArtifactDeclared: false))
         #expect(!config.backend.mtpMode.enablesMTP(
             forModelType: nil, embeddedArtifactDeclared: true))
+        #expect(config.backend.mtpMode.enablesMTP(
+            forModelType: "gemma4", embeddedArtifactDeclared: false,
+            modelID: "gemma-4-26b-qat-4bit"))
         #expect(config.backend.mtpDrafterPath == nil)
     }
 
@@ -116,13 +119,12 @@ struct MTPConfigKeyTests {
         #expect(modeWins.backend.mtpMode == .off)
     }
 
-    @Test("automatic mode requires an embedded head AND a Qwen3.5-family model type")
+    @Test("automatic embedded heads require a supported embedded model type")
     func targetPolicy() {
-        // Embedded (mtplx_mtp-declaring) checkpoints of the Qwen 3.5 family —
-        // dense (9B, 27B) and MoE (3.5/3.6 35B) — self-activate under `auto`.
-        // The family gate is hardcoded to Qwen for now and widens only when
-        // another family actually ships embedded artifacts.
-        let familyModelTypes = ["qwen3_5_moe", "qwen3_5"]
+        // Declared embedded heads in Qwen 3.5-family and Nemotron Lightning
+        // checkpoints self-activate under `auto`. Exact Gemma QAT uses
+        // its separately validated external assistant policy below.
+        let familyModelTypes = ["qwen3_5_moe", "qwen3_5", "nemotron_h"]
         let nonFamilyModelTypes: [String?] = [
             "gemma4",
             "gemma4_text",
@@ -164,6 +166,52 @@ struct MTPConfigKeyTests {
             forModelType: " QWEN3_5_MOE ", embeddedArtifactDeclared: true))
         #expect(MTPMode.auto.enablesMTP(
             forModelType: "Qwen3_5", embeddedArtifactDeclared: true))
+    }
+
+    @Test("automatic Gemma admission requires exact QAT identity and supported target type")
+    func automaticGemmaIsExact() {
+        for modelType in ["gemma4", " GEMMA4_TEXT "] {
+            for embedded in [true, false] {
+                #expect(MTPMode.auto.enablesMTP(
+                    forModelType: modelType, embeddedArtifactDeclared: embedded,
+                    modelID: "gemma-4-26b-qat-4bit"))
+                #expect(!MTPMode.off.enablesMTP(
+                    forModelType: modelType, embeddedArtifactDeclared: embedded,
+                    modelID: "gemma-4-26b-qat-4bit"))
+                for modelID in [nil, "gemma-4-26b-8bit", "gemma-4-26b-qat-4bit-copy",
+                    "GEMMA-4-26B-QAT-4BIT", " gemma-4-26b-qat-4bit "] as [String?]
+                {
+                    #expect(!MTPMode.auto.enablesMTP(
+                        forModelType: modelType, embeddedArtifactDeclared: embedded,
+                        modelID: modelID))
+                }
+            }
+        }
+        for modelType in [nil, "gemma4_assistant", "gemma4_text_assistant", "gpt_oss"] as [String?] {
+            #expect(!MTPMode.auto.enablesMTP(
+                forModelType: modelType, embeddedArtifactDeclared: true,
+                modelID: "gemma-4-26b-qat-4bit"))
+        }
+    }
+
+    @Test("catalog prewarm follows external assistant eligibility without warming embedded heads")
+    func catalogPrewarmPolicy() {
+        #expect(MTPMode.auto.requiresCatalogPrewarm(
+            forModelType: "gemma4", modelID: "gemma-4-26b-qat-4bit"))
+        for (modelType, modelID) in [
+            ("gemma4", "gemma-4-26b-8bit"),
+            ("qwen3_5_moe", "qwen3.6-35b-a3b-vl-mtp-mxfp8"),
+            ("nemotron_h", "nvidia-nemotron-3.5-lightning"),
+        ] {
+            #expect(!MTPMode.auto.requiresCatalogPrewarm(forModelType: modelType, modelID: modelID))
+            #expect(MTPMode.on.requiresCatalogPrewarm(forModelType: modelType, modelID: modelID))
+        }
+        for mode in [MTPMode.auto, .on, .off] {
+            #expect(!mode.requiresCatalogPrewarm(
+                forModelType: "gemma4_assistant", modelID: "gemma-4-26b-qat-4bit"))
+        }
+        #expect(!MTPMode.off.requiresCatalogPrewarm(
+            forModelType: "gemma4", modelID: "gemma-4-26b-qat-4bit"))
     }
 
     @Test("provider and standalone configs use the same target decision")

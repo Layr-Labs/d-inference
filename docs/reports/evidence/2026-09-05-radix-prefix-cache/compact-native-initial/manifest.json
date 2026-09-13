@@ -1,0 +1,42 @@
+{
+  "suites": [
+    {
+      "suite": "CBv2HybridPrefixCacheTests",
+      "xctest": 11,
+      "swift_testing": 0,
+      "log": "CBv2HybridPrefixCacheTests.txt.gz",
+      "uncompressed_sha256": "3229779eeb5f8812e437003353847b6be67af2e610a3317bbc4fb0d2f54d3702"
+    },
+    {
+      "suite": "CBv2RecurrentStateTests",
+      "xctest": 15,
+      "swift_testing": 0,
+      "log": "CBv2RecurrentStateTests.txt.gz",
+      "uncompressed_sha256": "ee3de208c0e4c515eca088513d3430c5e5f67c075b35a0def6d22bc8ba8dde18"
+    },
+    {
+      "suite": "CBv2QwenMTPIntegrationTests",
+      "xctest": 0,
+      "swift_testing": 29,
+      "log": "CBv2QwenMTPIntegrationTests.txt.gz",
+      "uncompressed_sha256": "f11f74e912b9351d52511e6d162f078d7a05a20bb2ee966417736ce6d949d53c"
+    },
+    {
+      "suite": "CBv2FirstTokenDeadlineEngineTests",
+      "xctest": 16,
+      "swift_testing": 0,
+      "log": "CBv2FirstTokenDeadlineEngineTests.txt.gz",
+      "uncompressed_sha256": "16aa75fb728e876309b78f23f58839d5b3110153e21ea66d05523b949d4c77d6"
+    },
+    {
+      "suite": "CBv2FrozenReplayPlanTests",
+      "xctest": 10,
+      "swift_testing": 0,
+      "log": "CBv2FrozenReplayPlanTests.txt.gz",
+      "uncompressed_sha256": "d530df3a0b8535db9eee429e6869df2334e8aa5b29f2f21f409c3ef80b535472"
+    }
+  ],
+  "xctest_total": 52,
+  "swift_testing_total": 29,
+  "source_manifest_sha256": "e1ed27b70f669d482cd2d515fda70d3d3ceb040d14298aef4b7c184914796d67"
+}

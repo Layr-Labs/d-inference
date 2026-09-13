@@ -1,0 +1,20 @@
+{
+  "status": "STRUCTURAL_GATES_PASS_SEMANTIC_FOLLOWUP_REQUIRED",
+  "jobs": 9,
+  "responses": 36,
+  "control_rows": 63,
+  "semantic_arithmetic_pass": 12,
+  "length_capped": 24,
+  "matched_contiguous_code_rows": 16,
+  "gpt_unresolved_rows": 8,
+  "all_original_bytes_verified": 448,
+  "archive_sha256": "cabff833c5437c44074f9a28906fded73071f3f33636190f22d4c2d93653f4f8",
+  "original_remote_archive_sha256": "cf29451cd98794085fd05e8ff492cf1f209cb8fea4b59bc53695ee77685ba7f4",
+  "runtime_review_sha256": "0294038647e97e98398c516bb6df6c52914c49c1897726a9fffd00064c2e86ee",
+  "source_manifest_sha256": "da88c7aabccd399e20544a73dc182775493a0d4b5db5568b34a8169ffae54bbf",
+  "artifact_manifest_sha256": "21a19a7143c5202850dfbf95040a5e6c7a25687b234e691cba7d10e07138f9aa",
+  "reviewed_unix": 1788742299.776673,
+  "local_projection_mode": "0600 intentionally; original hashes/sizes verified, no local-original mode equality claimed",
+  "originals_unchanged": true,
+  "independent_publication_review_sha256": "49753a629a2fc196725abb7d1a85ad75d4756e9e85b7852415b2b964c2bd3177"
+}

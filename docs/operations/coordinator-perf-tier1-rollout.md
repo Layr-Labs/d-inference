@@ -1,6 +1,6 @@
 # Coordinator Performance Tier 1 Rollout
 
-> Last updated: 2026-09-04 · commit `fcecc3675`
+> Last updated: 2026-09-04 · commit `7ae06021f`
 
 Operator companion to the `perf/coordinator-tier1-2026-09-03` branch (the
 code items 1.1, 1.3–1.8 of the 2026-09-03 coordinator performance proposal).
@@ -25,7 +25,7 @@ Canonical code (code wins over this doc; find declarations by symbol):
 | Dashboard rolling windows | `coordinator/store/postgres_dashboard.go` and `coordinator/store/memory_dashboard.go` (`AccountEarningsWindows`); `coordinator/api/me_summary_cache.go` (`accountEarningsWindows`) |
 | Batched reputation reads | `coordinator/store/postgres_dashboard.go` and `coordinator/store/memory_dashboard.go` (`GetReputations`); `coordinator/api/me_handlers.go` (`attachStoredReputations`) |
 | Capacity accept off the first-byte path | `coordinator/api/dispatch.go` (`commitFirstContent`); `coordinator/registry/capacity_cooldown.go` (`RecordCapacityAcceptObserved`) |
-| Throttled reputation persist | `coordinator/registry/registry.go` (`RecordJobSuccess`, `Disconnect`); `coordinator/registry/persistence.go` (`persistReputationThrottled`) |
+| Throttled reputation persist | `coordinator/registry/reputation.go` (`RecordJobSuccess`); `coordinator/registry/provider_lifecycle.go` (`Disconnect`); `coordinator/registry/persistence.go` (`persistReputationThrottled`) |
 | Single provider-frame decode | `coordinator/api/provider.go` (`providerReadLoop`) |
 | Cancel only when generation still needs stopping | `coordinator/api/dispatch.go` (`writeCommittedResponse`); `coordinator/api/provider.go` (`handleChunk`, synthesized-error cancellation) |
 | No shed-path fleet walk | `coordinator/api/inference_admission.go` (`runInferenceAdmission`, `skipServability`) |

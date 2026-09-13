@@ -14,6 +14,8 @@ import (
 
 // AttemptProfile holds the per-dispatch-attempt slice of the profile.
 type AttemptProfile struct {
+	GeneratedContentObserved atomic.Bool
+	ProviderCompleteObserved atomic.Bool // matched complete received; independent of terminal arbitration
 	// Identity (written once by the dispatch goroutine before sharing).
 	RequestID  string // attempt UUID (joins inference_routes.request_id)
 	Attempt    int
@@ -62,21 +64,25 @@ type AttemptProfile struct {
 	DecisionSet bool
 
 	// mu guards everything below (written by the read loop / settlement path).
-	mu                  sync.Mutex
-	finalStatus         string
-	errorReason         string
-	terminalCause       string
-	providerOutcome     string
-	clientOutcome       string
-	providerProfileRaw  []byte // bounded (≤ maxProviderProfileBytes) raw wire object; decoded off the hot path
-	providerProfileLate bool   // a profile arrived after finalize
-	providerProfileStat ProviderProfileStatus
-	terminalRecorded    bool
-	terminalClaimed     bool
-	handlerDone         bool
-	terminalPrompt      int
-	terminalCompletion  int
-	terminalUsageSet    bool
+	mu                       sync.Mutex
+	predictiveMode           string
+	predictiveBypass         PredictiveBypass
+	reservationTTFTCeilingMs *float64
+	dispatchBudgetMs         *int64
+	finalStatus              string
+	errorReason              string
+	terminalCause            string
+	providerOutcome          string
+	clientOutcome            string
+	providerProfileRaw       []byte // bounded (≤ maxProviderProfileBytes) raw wire object; decoded off the hot path
+	providerProfileLate      bool   // a profile arrived after finalize
+	providerProfileStat      ProviderProfileStatus
+	terminalRecorded         bool
+	terminalClaimed          bool
+	handlerDone              bool
+	terminalPrompt           int
+	terminalCompletion       int
+	terminalUsageSet         bool
 
 	parts    atomic.Int32
 	once     sync.Once

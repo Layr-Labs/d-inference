@@ -451,7 +451,7 @@ type soloModelTPS struct {
 // EWMA (EngineV2Bridge.observedDecodeTpsEwma) is 0 until updateDecodeTpsEwma
 // runs on a terminal event, `observed_decode_tps` is `omitempty`, and the
 // heartbeat ingest only calls RecordSolo when the reported value is > 0
-// (registry.go). So a fresh provider contributes NO solo sample, reaches (4)
+// (heartbeat.go). So a fresh provider contributes NO solo sample, reaches (4)
 // or (5), and is never capped at 1 by its own silence. Steps (3) can only
 // engage once a real decode has been measured.
 //

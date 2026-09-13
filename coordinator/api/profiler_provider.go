@@ -115,6 +115,8 @@ type StoredInferenceProfile struct {
 	ThermalState protocol.ThermalState `json:"thermal_state,omitempty"`
 	CancelStage  protocol.CancelStage  `json:"cancel_stage,omitempty"`
 
+	DeadlineDecision *StoredDeadlineDecision `json:"deadline_decision,omitempty"`
+
 	Engine *StoredEngineProfile `json:"engine,omitempty"`
 }
 
@@ -329,6 +331,9 @@ func decodeInferenceProfile(raw []byte, receivedAt time.Time) (stored *StoredInf
 	enumFolded = stored.DeadlineMode != w.DeadlineMode ||
 		stored.ThermalState != w.ThermalState ||
 		stored.CancelStage != w.CancelStage
+	decision, decisionFolded := storeDeadlineDecision(w.DeadlineDecision, &b)
+	stored.DeadlineDecision = decision
+	enumFolded = enumFolded || decisionFolded
 
 	if e := w.Engine; e != nil {
 		stored.Engine = &StoredEngineProfile{
@@ -392,6 +397,9 @@ func decodeInferenceProfile(raw []byte, receivedAt time.Time) (stored *StoredInf
 // PRESENT stamps. It runs after the range check, so values equal the wire
 // values here.
 func storedProfileOrdered(p *StoredInferenceProfile) bool {
+	if !storedDeadlineDecisionOrdered(p) {
+		return false
+	}
 	if !nonDecreasing(p.DequeuedUS, p.DecryptedUS, p.ParsedUS, p.AdmissionUS,
 		p.EngineSubmitUS, p.EngineAdmittedUS, p.FirstDeltaUS, p.LastDeltaUS,
 		p.TerminalBuiltUS, p.TerminalSentUS, p.TotalUS) {

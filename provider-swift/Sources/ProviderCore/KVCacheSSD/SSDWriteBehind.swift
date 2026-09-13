@@ -309,10 +309,12 @@ final class SSDWriteBehind: @unchecked Sendable {
             settleAll(job, dropped: job.blocks.count)
             return
         }
-        // Low-disk guard: stop writing under max(20 GiB, 5% capacity) free.
+        // Admit the whole donation above the reserve, not just its first
+        // block. Like the hybrid checkpoint writer, account for the pending
+        // payload before any I/O. This is not an OS disk-space reservation.
         if let space = config.volumeSpace() {
             let floor = SSDPrefixCachePolicy.lowDiskFloorBytes(volumeCapacityBytes: space.capacity)
-            if space.free < floor {
+            if space.free < floor || job.totalBytes > space.free - floor {
                 diskUnavailable = true
                 settleAll(job, dropped: job.blocks.count)
                 return

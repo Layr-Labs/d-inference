@@ -11,28 +11,17 @@ struct PrefixCacheV2EvidenceCallbacks: Sendable {
 /// before terminal by the finalizer, while racing ready callbacks are held until
 /// lookup has been emitted.
 actor PrefixCacheEvidenceSequencer {
-    private final class EnqueueGate: @unchecked Sendable {
-        private let lock = NSLock()
-        private var nextID: UInt64 = 1
-        private var closed = false
-
-        func claim() -> UInt64? {
-            lock.withLock {
-                guard !closed, nextID < UInt64.max else { return nil }
-                defer { nextID += 1 }
-                return nextID
-            }
-        }
-
-        func close() {
-            lock.withLock { closed = true }
-        }
+    struct RequestStateSnapshot: Sendable, Equatable {
+        let terminalSeen: Bool
+        let readyBuffered: Bool
+        let hasExpiry: Bool
     }
 
     private struct Context: Sendable, Equatable {
         let requestID: String
         let nonce: String
         let capability: PrefixCacheV2Capability
+        let forwardTerminal: Bool
     }
 
     private struct RequestState {
@@ -50,12 +39,15 @@ actor PrefixCacheEvidenceSequencer {
     }
 
     private static let terminalRetention: Duration = .seconds(125)
+    private static let unresolvedPromptAnchor = PrefixCacheAnchor(
+        chainHash: "", tokenCount: 0)
     private static let maxReceiptTokens: UInt64 = 1_000_000
     private static let maxStageMs = 600_000.0
 
+    private let receiptTier: PrefixCacheTier
     private let capabilityProvider: @Sendable () -> PrefixCacheV2Capability?
     private let sequenceProvider: (@Sendable (String) -> UInt64?)?
-    private nonisolated let enqueueGate = EnqueueGate()
+    private nonisolated let enqueueGate = PrefixCacheEvidenceEnqueueGate()
     private var activeCapability: PrefixCacheV2Capability?
     private var nextSequence: UInt64 = 1
     private var nextCommandID: UInt64 = 1
@@ -63,33 +55,56 @@ actor PrefixCacheEvidenceSequencer {
     private var requests: [String: RequestState] = [:]
 
     init(cache: SSDPrefixCache) {
-        self.capabilityProvider = { [weak cache] in
-            cache?.prefixCacheV2Capability()
+        self.init(source: cache)
+    }
+
+    init(source: any DurablePrefixCacheEvidenceSource) {
+        self.receiptTier = .ssd
+        self.capabilityProvider = { [weak source] in
+            source?.prefixCacheV2Capability()
         }
-        self.sequenceProvider = { [weak cache] expectedEpoch in
-            cache?.takeNextPrefixCacheV2Sequence(expectedEpoch: expectedEpoch)
+        self.sequenceProvider = { [weak source] expectedEpoch in
+            source?.takeNextPrefixCacheV2Sequence(expectedEpoch: expectedEpoch)
         }
     }
 
-    init(capabilityProvider: @escaping @Sendable () -> PrefixCacheV2Capability?) {
+    init(
+        tier: PrefixCacheTier = .ssd,
+        capabilityProvider: @escaping @Sendable () -> PrefixCacheV2Capability?
+    ) {
+        self.receiptTier = tier
         self.capabilityProvider = capabilityProvider
         self.sequenceProvider = nil
     }
 
     nonisolated func shutdown() {
+        // Recovery may close the cache before an outer inference handler sends
+        // its final completion/error. Stop accepting optional evidence, but let
+        // terminal messages follow all commands accepted before this boundary.
         enqueueGate.close()
     }
 
     nonisolated func callbacks(
         requestID: String,
         nonce: String,
-        send: SendHandle
+        send: SendHandle,
+        forwardTerminal: Bool = true,
+        readyBoundaryMode: String? = nil
     ) -> PrefixCacheV2EvidenceCallbacks? {
-        guard let capability = capabilityProvider() else { return nil }
+        guard enqueueGate.isOpen, let capability = capabilityProvider() else { return nil }
+        // The echo is absent on old coordinators. Local SSD reuse may still
+        // proceed, but its checkpoint receipts must not be misread as legacy
+        // durable coverage through the full prompt floor.
+        if receiptTier == .ssd, let mode = capability.readyBoundaryMode, !mode.isEmpty {
+            guard mode == PrefixCacheV2Capability.checkpointBoundaryMode,
+                readyBoundaryMode == mode else { return nil }
+        }
         let context = Context(
             requestID: requestID,
             nonce: nonce,
-            capability: capability)
+            capability: capability,
+            forwardTerminal: forwardTerminal)
+        let terminalGate = PrefixCacheTerminalDeliveryGate()
         return PrefixCacheV2EvidenceCallbacks(
             lookup: { [weak self] result in
                 self?.enqueue(.lookup(context, result, send))
@@ -98,14 +113,26 @@ actor PrefixCacheEvidenceSequencer {
                 self?.enqueue(.ready(context, result, send))
             },
             terminal: { [weak self] message in
-                self?.enqueue(.terminal(context, message, send))
+                guard terminalGate.claim() else { return }
+                if let self {
+                    self.enqueue(.terminal(context, message, send))
+                } else if context.forwardTerminal {
+                    // Accepted commands retain the sequencer until they have
+                    // drained, so deallocation means there is no queued proof
+                    // left for this direct fallback to overtake.
+                    send.send(message)
+                }
             })
     }
 
     private nonisolated func enqueue(_ command: Command) {
-        guard let id = enqueueGate.claim() else { return }
-        Task { [weak self] in
-            await self?.receive(id: id, command: command)
+        let terminal: Bool
+        if case .terminal = command { terminal = true } else { terminal = false }
+        guard let id = enqueueGate.claim(terminal: terminal) else { return }
+        // Do not let model/bridge teardown drop an already accepted command or
+        // leave a hole that prevents later command IDs from draining.
+        Task {
+            await self.receive(id: id, command: command)
         }
     }
 
@@ -113,7 +140,7 @@ actor PrefixCacheEvidenceSequencer {
         pendingCommands[id] = command
         while let next = pendingCommands.removeValue(forKey: nextCommandID) {
             sweepExpired(now: .now)
-            nextCommandID += 1
+            nextCommandID &+= 1
             switch next {
             case .lookup(let context, let result, let send):
                 handleLookup(context, result: result, send: send)
@@ -135,6 +162,20 @@ actor PrefixCacheEvidenceSequencer {
         for nonce in expired {
             requests.removeValue(forKey: nonce)
         }
+    }
+
+    func requestStateSnapshotForTesting(nonce: String) -> RequestStateSnapshot? {
+        requests[nonce].map {
+            RequestStateSnapshot(
+                terminalSeen: $0.terminalSeen,
+                readyBuffered: $0.pendingReady != nil,
+                hasExpiry: $0.expiresAt != nil)
+        }
+    }
+
+    func sweepExpiredForTesting(after duration: Duration) -> Int {
+        sweepExpired(now: ContinuousClock.now.advanced(by: duration))
+        return requests.count
     }
 
     private func current(_ context: Context) -> Bool {
@@ -160,13 +201,16 @@ actor PrefixCacheEvidenceSequencer {
         guard current(context) else { return }
         let existing = requests[context.nonce]
         guard existing == nil || existing?.promptAnchor.chainHash.isEmpty == true,
-            result.tier == .ssd,
+            result.tier == receiptTier,
             valid(stageMs: result.stageMs),
             let promptAnchor = result.promptAnchor,
             valid(anchor: promptAnchor, capability: context.capability)
         else { return }
 
         if result.outcome == .hit {
+            if receiptTier == .ssd,
+                context.capability.readyBoundaryMode == PrefixCacheV2Capability.checkpointBoundaryMode,
+                (result.requiredRecomputeTokens != 0 || (result.stageMs ?? 0) <= 0) { return }
             guard let matched = result.matchedAnchor,
                 valid(anchor: matched, capability: context.capability),
                 matched.tokenCount <= promptAnchor.tokenCount,
@@ -203,7 +247,16 @@ actor PrefixCacheEvidenceSequencer {
             stageMs: result.stageMs)))
 
         let pending = existing?.pendingReady
-        requests[context.nonce] = RequestState(promptAnchor: promptAnchor)
+        var resolved = RequestState(promptAnchor: promptAnchor)
+        // A lookup command can arrive after a ready/terminal race. Preserve a
+        // terminal tombstone's deadline while replacing its unresolved anchor;
+        // a pre-lookup ready without a terminal becomes ordinary live state.
+        if existing?.terminalSeen == true {
+            resolved.terminalSeen = true
+            resolved.expiresAt = existing?.expiresAt
+                ?? ContinuousClock.now.advanced(by: Self.terminalRetention)
+        }
+        requests[context.nonce] = resolved
         if let pending {
             handleReady(context, result: pending, send: send)
         }
@@ -215,7 +268,7 @@ actor PrefixCacheEvidenceSequencer {
         send: SendHandle
     ) {
         guard current(context),
-            result.tier == .ssd,
+            result.tier == receiptTier,
             valid(stageMs: result.stageMs),
             let finalAnchor = result.finalAnchor,
             valid(anchor: finalAnchor, capability: context.capability),
@@ -226,10 +279,13 @@ actor PrefixCacheEvidenceSequencer {
         else { return }
         guard var state = requests[context.nonce] else {
             // Donation can settle before the lookup command reaches this actor.
-            // Keep only the furthest durable anchor for bounded buffering.
+            // Keep only the furthest publication for bounded buffering. An
+            // expiry is mandatory: a lookup from another tier is ignored,
+            // so a late publication must not create immortal state.
             requests[context.nonce] = RequestState(
-                promptAnchor: PrefixCacheAnchor(chainHash: "", tokenCount: 0),
-                pendingReady: result)
+                promptAnchor: Self.unresolvedPromptAnchor,
+                pendingReady: result,
+                expiresAt: ContinuousClock.now.advanced(by: Self.terminalRetention))
             return
         }
         guard !state.promptAnchor.chainHash.isEmpty else {
@@ -239,15 +295,31 @@ actor PrefixCacheEvidenceSequencer {
             }
             return
         }
-        guard finalAnchor.tokenCount >= state.promptAnchor.tokenCount,
+        let explicitCheckpoints = receiptTier == .memory
+            || context.capability.readyBoundaryMode == PrefixCacheV2Capability.checkpointBoundaryMode
+        guard (explicitCheckpoints || finalAnchor.tokenCount >= state.promptAnchor.tokenCount),
             finalAnchor.tokenCount > UInt64(state.highestReadyTokens),
-            let sequence = takeSequence(expectedEpoch: context.capability.cacheEpoch)
+            receiptTier != .ssd || !explicitCheckpoints
+                || (result.requiredRecomputeTokens == 0 && (result.stageMs ?? 0) > 0)
         else { return }
-        var anchors = [state.promptAnchor]
-        if finalAnchor != state.promptAnchor {
-            anchors.append(finalAnchor)
+        let anchors: [PrefixCacheAnchor]
+        if explicitCheckpoints {
+            anchors = result.readyAnchors
+            guard !anchors.isEmpty, anchors.count <= 16,
+                anchors.last == finalAnchor,
+                anchors.allSatisfy({
+                    valid(anchor: $0, capability: context.capability)
+                        && $0.tokenCount <= state.promptAnchor.tokenCount
+                }),
+                zip(anchors, anchors.dropFirst()).allSatisfy({ pair in
+                    pair.0.tokenCount < pair.1.tokenCount
+                })
+            else { return }
+        } else {
+            anchors = finalAnchor == state.promptAnchor
+                ? [state.promptAnchor] : [state.promptAnchor, finalAnchor]
         }
-        guard anchors.count <= 2 else { return }
+        guard let sequence = takeSequence(expectedEpoch: context.capability.cacheEpoch) else { return }
         send.send(.prefixCacheReadyV2(ProviderMessage.PrefixCacheReadyV2(
             requestId: context.requestID,
             cacheReceiptNonce: context.nonce,
@@ -271,12 +343,23 @@ actor PrefixCacheEvidenceSequencer {
         message: OutboundMessage,
         send: SendHandle
     ) {
-        if current(context), var state = requests[context.nonce] {
-            state.terminalSeen = true
-            state.expiresAt = ContinuousClock.now.advanced(by: Self.terminalRetention)
-            requests[context.nonce] = state
+        if current(context) {
+            let expiry = ContinuousClock.now.advanced(by: Self.terminalRetention)
+            if var state = requests[context.nonce] {
+                state.terminalSeen = true
+                state.expiresAt = expiry
+                requests[context.nonce] = state
+            } else {
+                // A missing or other-tier lookup creates no resolved state.
+                // Keep a bounded tombstone so a late publication cannot
+                // recreate an expiry-less placeholder after terminal.
+                requests[context.nonce] = RequestState(
+                    promptAnchor: Self.unresolvedPromptAnchor,
+                    terminalSeen: true,
+                    expiresAt: expiry)
+            }
         }
-        send.send(message)
+        if context.forwardTerminal { send.send(message) }
     }
 
     private func takeSequence(expectedEpoch: String) -> UInt64? {
@@ -296,9 +379,9 @@ actor PrefixCacheEvidenceSequencer {
             && anchor.tokenCount > 0
             && anchor.tokenCount <= Self.maxReceiptTokens
             && anchor.tokenCount % UInt64(capability.blockSize) == 0
-            && anchor.chainHash.count == 64
-            && anchor.chainHash.allSatisfy {
-                $0.isNumber || ("a" ... "f").contains(String($0))
+            && anchor.chainHash.utf8.count == 64
+            && anchor.chainHash.utf8.allSatisfy {
+                (48...57).contains($0) || (97...102).contains($0)
             }
     }
 

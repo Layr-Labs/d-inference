@@ -1,6 +1,6 @@
 # Encryption and privacy model
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `7ae06021f`
 
 An inference request crosses three NaCl Box hops: consumer → coordinator
 (optional), coordinator → provider (mandatory), provider → coordinator
@@ -78,7 +78,7 @@ sequenceDiagram
 | Encrypt | `box.Seal` with a random 24-byte nonce → `EncryptedPayload{ephemeral_public_key, ciphertext}` where `ciphertext` = base64(nonce ‖ box) | `coordinator/internal/e2e/e2e.go` (`Encrypt`); `coordinator/protocol/messages.go` (`EncryptedPayload`) |
 | Body preparation | The parsed request map is re-marshalled with HTML escaping disabled; plaintext inference bodies are capped at `maxInferenceBodyBytes` ([limits](../../reference/api-contracts.md#limits-and-validation)) before sealing | `coordinator/api/inference_preprocess.go` (`marshalForwardBody`, `maxInferenceBodyBytes`) |
 | Wire message | `inference_request` with `encrypted_body` set and `body` empty | `coordinator/protocol/messages.go` (`InferenceRequestMessage`) |
-| Eligibility | Only providers passing `providerSupportsPrivateTextLocked` receive requests; a missing key fails that gate ([`attestation.md`](./attestation.md#routing-gate)) | `coordinator/registry/registry.go` (`providerSupportsPrivateTextLocked`) |
+| Eligibility | Only providers passing `providerSupportsPrivateTextLocked` receive requests; a missing key fails that gate ([`attestation.md`](./attestation.md#routing-gate)) | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`) |
 
 ### Hop 3 — provider → coordinator (mandatory)
 
@@ -129,7 +129,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 
 ## Invariants
 
-1. A request is dispatched only to a provider that passes `providerSupportsPrivateTextLocked`: non-empty X25519 key, `mlx-swift` backend, `encrypted_response_chunks`, runtime manifest checked, coordinator-verified SIP, code identity when enforced, and the five required `PrivacyCapabilities` — `coordinator/registry/registry.go` (`providerSupportsPrivateTextLocked`). The full gate is tabulated in [`attestation.md`](./attestation.md#routing-gate).
+1. A request is dispatched only to a provider that passes `providerSupportsPrivateTextLocked`: non-empty X25519 key, `mlx-swift` backend, `encrypted_response_chunks`, runtime manifest checked, coordinator-verified SIP, code identity when enforced, and the five required `PrivacyCapabilities` — `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`). The full gate is tabulated in [`attestation.md`](./attestation.md#routing-gate).
 2. Every hop-2 payload uses a fresh X25519 session key pair and a random 24-byte nonce — `coordinator/internal/e2e/e2e.go` (`GenerateSessionKeys`, `Encrypt`).
 3. A response chunk is accepted only if it is encrypted, carries no plaintext, and its `ephemeral_public_key` equals `Provider.PublicKey`; any other chunk untrusts the provider and fails the request — `coordinator/api/provider.go` (`decryptTextResponseChunk`).
 4. The provider's X25519 key is the one bound to its Secure Enclave identity: `register.public_key` must equal the signed blob's `encryptionPublicKey` — `coordinator/api/provider.go` (`verifyProviderAttestation`).
@@ -148,7 +148,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Corrupt envelope or wrong key | `400 invalid_sealed_envelope` / `400 decryption_failed`; nothing is forwarded | `coordinator/api/sender_encryption.go` |
 | Sealed body over the [inference body limit](../../reference/api-contracts.md#limits-and-validation) | `400 invalid_request_error` | `coordinator/api/sender_encryption.go` |
 | Plaintext inference body over `maxInferenceBodyBytes` | `413 invalid_request_error`; the global ceiling for any body is `maxRequestBodyBytes` ([limits](../../reference/api-contracts.md#limits-and-validation)) | `coordinator/api/inference_preprocess.go` (`parseInferencePrelude`, `maxInferenceBodyBytes`); `coordinator/api/server.go` (`bodyLimitMiddleware`) |
-| Provider registered without an X25519 key or without `encrypted_response_chunks` | Never routable for private text | `coordinator/registry/registry.go` (`providerSupportsPrivateTextLocked`) |
+| Provider registered without an X25519 key or without `encrypted_response_chunks` | Never routable for private text | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`) |
 | Provider returns a plaintext or wrong-key chunk | Provider marked `untrusted`; request fails `502` with `FailureCodeEncryptionFailure` | `coordinator/api/provider.go` |
 | Provider disconnects mid-stream | Session key forgotten; `chunkKeyCache` cap (8192) bounds leaked entries and drops the cache wholesale when full | `coordinator/api/chunk_key_cache.go` |
 
@@ -163,7 +163,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 | Request body cap and forward marshalling | `coordinator/api/inference_preprocess.go` (`maxInferenceBodyBytes`, `marshalForwardBody`) |
 | Chunk decryption and violation handling | `coordinator/api/provider.go` (`decryptTextResponseChunk`) |
 | Wire types | `coordinator/protocol/messages.go` (`EncryptedPayload`, `InferenceRequestMessage`, `InferenceResponseChunkMessage`, `RegisterMessage`) |
-| Private-text routing gate | `coordinator/registry/registry.go` (`providerSupportsPrivateTextLocked`) |
+| Private-text routing gate | `coordinator/registry/attestation_policy.go` (`providerSupportsPrivateTextLocked`) |
 | Consumer-visible headers | `coordinator/api/response_metadata.go` (`writeCommittedProviderHeaders`) |
 | Telemetry ingest disabled | `coordinator/api/telemetry_handlers.go` (`handleTelemetryIngest`) |
 | Provider key pair and decrypt/encrypt | `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift`, `provider-swift/Sources/ProviderCore/ProviderLoop.swift` |

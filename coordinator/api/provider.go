@@ -258,6 +258,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		// provider down), so the measured reconnect gap starts here rather
 		// than at the last periodic coverage pass.
 		s.stopTrustCoverageForProvider(providerID)
+		s.stopCodeAttestCoverageForProvider(providerID)
 		s.registry.DisconnectWithReason(providerID, registry.ClassifyPeerClose(peerCloseStatus, false))
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
@@ -403,7 +404,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 			provider = s.registry.Register(providerID, conn, regMsg)
 			s.attachProviderLocation(providerID, provider, r)
-			s.verifyProviderAttestation(providerID, provider, regMsg)
+			if err := s.verifyProviderAttestation(loopCtx, providerID, provider, regMsg); err != nil {
+				// No duplicate eviction or account/MDM continuation after failed
+				// recovery. Pending state remains unroutable through teardown.
+				s.logger.Warn("provider registration recovery failed", "provider_id", providerID, "error", err)
+				_ = conn.Close(websocket.StatusTryAgainLater, "provider state temporarily unavailable")
+				return
+			}
 
 			// Record registration outcome metrics + telemetry.
 			if s.metrics != nil {
@@ -598,6 +605,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			replaceCacheCapabilities :=
 				hbMsg.PrefixCacheProtocol != 0 || hbMsg.PrefixCacheV2Models != nil
 			if replaceCacheCapabilities ||
+				hbMsg.PrefixCacheMemoryModels != nil ||
 				hbMsg.PrefixCacheStatuses != nil ||
 				hbMsg.PrefixCacheDonationOutcomes != nil {
 				var capabilities []protocol.PrefixCacheV2Capability
@@ -609,10 +617,11 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					replaceCacheCapabilities,
 					hbMsg.PrefixCacheProtocol,
 					capabilities,
+					hbMsg.PrefixCacheMemoryModels,
 					hbMsg.PrefixCacheStatuses,
 					hbMsg.PrefixCacheDonationOutcomes,
 				)
-				if err != nil && replaceCacheCapabilities {
+				if err != nil && (replaceCacheCapabilities || hbMsg.PrefixCacheMemoryModels != nil) {
 					s.logger.Warn("rejecting malformed heartbeat cache capabilities",
 						"provider_id", providerID)
 					s.ddIncr("routing.cache_capability_rejected", []string{"source:heartbeat"})
@@ -621,6 +630,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 						providerID,
 						true,
 						1,
+						nil,
 						nil,
 						hbMsg.PrefixCacheStatuses,
 						hbMsg.PrefixCacheDonationOutcomes,
@@ -699,31 +709,43 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypePrefixCacheLookupV2:
 			lookupMsg := msg.Payload.(*protocol.PrefixCacheLookupV2Message)
-			if s.registry.ApplyPrefixCacheLookupV2(providerID, lookupMsg) {
+			receipt := s.registry.ApplyPrefixCacheLookupV2Result(providerID, lookupMsg)
+			s.emitCacheReceiptResult("lookup_v2", receipt)
+			s.emitModelCacheReceipt(lookupMsg.ModelID, lookupMsg.Tier, "lookup_v2", receipt)
+			if receipt.Accepted {
+				s.emitModelCacheLookup(lookupMsg, receipt)
 				s.ddIncr("routing.cache_lookup_receipt", []string{
 					"protocol:v2",
 					"outcome:" + lookupMsg.Outcome,
 					"tier:" + lowCardinalityCacheTier(lookupMsg.Tier),
 				})
-				s.emitExactCacheSSDLookup("v2", lookupMsg.Outcome, lookupMsg.StageMs)
+				if lookupMsg.Tier == "ssd" {
+					s.emitExactCacheSSDLookup("v2", lookupMsg.Outcome, lookupMsg.StageMs)
+				}
 			} else {
-				s.ddIncr("routing.cache_receipt_rejected", []string{"type:lookup_v2"})
+				s.ddIncr("routing.cache_receipt_rejected", []string{"type:lookup_v2", "reason:" + string(receipt.Reason)})
 			}
 
 		case protocol.TypePrefixCacheReadyV2:
 			readyMsg := msg.Payload.(*protocol.PrefixCacheReadyV2Message)
-			if s.registry.ApplyPrefixCacheReadyV2(providerID, readyMsg) {
+			receipt := s.registry.ApplyPrefixCacheReadyV2Result(providerID, readyMsg)
+			s.emitCacheReceiptResult("ready_v2", receipt)
+			s.emitModelCacheReceipt(readyMsg.ModelID, readyMsg.Tier, "ready_v2", receipt)
+			if receipt.Accepted {
+				s.emitModelCacheDonation(readyMsg, receipt)
 				s.ddIncr("routing.cache_ready_receipt", []string{
 					"protocol:v2",
 					"tier:" + lowCardinalityCacheTier(readyMsg.Tier),
 				})
-				donatedTokens := 0
-				if len(readyMsg.ReadyAnchors) > 0 {
-					donatedTokens = readyMsg.ReadyAnchors[len(readyMsg.ReadyAnchors)-1].TokenCount
+				if readyMsg.Tier == "ssd" {
+					donatedTokens := 0
+					if len(readyMsg.ReadyAnchors) > 0 {
+						donatedTokens = readyMsg.ReadyAnchors[len(readyMsg.ReadyAnchors)-1].TokenCount
+					}
+					s.emitExactCacheSSDDonation("v2", readyMsg.StageMs, donatedTokens)
 				}
-				s.emitExactCacheSSDDonation("v2", readyMsg.StageMs, donatedTokens)
 			} else {
-				s.ddIncr("routing.cache_receipt_rejected", []string{"type:ready_v2"})
+				s.ddIncr("routing.cache_receipt_rejected", []string{"type:ready_v2", "reason:" + string(receipt.Reason)})
 			}
 
 		case protocol.TypeAttestationResponse:
@@ -885,6 +907,7 @@ func (s *Server) emitCacheSelectionTerminal(pr *registry.PendingRequest, usage p
 		return false
 	}
 	tags := cacheSelectionTerminalTags(pr, usage, usageValid, usagePresent)
+	s.emitModelCacheSelection(pr, tags, usage, usageValid)
 	s.ddIncr("routing.cache_selection_terminal", tags)
 	if pr.CacheSelectionDiscountMs > 0 {
 		s.ddHistogram("routing.cache_selection_discount_ms", pr.CacheSelectionDiscountMs, tags)
@@ -911,6 +934,7 @@ func (s *Server) emitCacheSelectionTTFT(pr *registry.PendingRequest, usage proto
 	if !ok {
 		return
 	}
+	s.cacheModelTiming("ttft", value, s.cacheModelSelectionLabels(pr.Model, tags)...)
 	s.ddHistogram("routing.cache_selection_ttft_ms", value, tags)
 }
 
@@ -1862,6 +1886,9 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		ap.DecryptUSTotal.Add(time.Since(decryptStart).Microseconds())
 		ap.MarkAt(registry.StampFirstChunkIngress, receivedAt)
 	}
+	if pr.Profile != nil && !pr.Profile.GeneratedContentObserved.Load() && (generatedContentSSE([]byte(chunkData)) || generatedContentJSON([]byte(chunkData))) {
+		pr.Profile.GeneratedContentObserved.Store(true)
+	}
 	contentBearing := !isBoilerplateChunk(chunkData)
 	firstContent := pr.FinishProviderChunkIngress(receivedAt, contentBearing)
 	ingressClassified = true
@@ -2053,6 +2080,9 @@ func (s *Server) handleCompleteAt(
 	// otherwise never finalize.
 	var claimed *registry.AttemptProfile
 	if pending := provider.GetPending(msg.RequestID); pending != nil {
+		if pending.Profile != nil {
+			pending.Profile.ProviderCompleteObserved.Store(true)
+		}
 		pending.MarkCompletionIngress(receivedAt)
 		pending.Profile.MarkAt(registry.StampCompleteIngress, receivedAt)
 		// The claim is the single ownership token: only the frame that owns
@@ -2062,14 +2092,17 @@ func (s *Server) handleCompleteAt(
 		// pending request is a provider duplicate and is dropped here. Without
 		// a profile (profiler off) there is no token and the pre-existing
 		// RemovePending race decides, exactly as before.
-		terminalOwner, terminalClaimed = pending.Profile == nil || pending.Profile.ClaimTerminal(), true
+		compact := compactOnlyAttempt(pending.Profile)
+		terminalOwner, terminalClaimed = pending.Profile == nil || compact || pending.Profile.ClaimTerminal(), true
 		if !terminalOwner {
 			s.logger.Warn("duplicate complete for in-flight request", "provider_id", providerID)
 			s.ddIncr("inference.unknown_request_frames", []string{"kind:duplicate_complete"})
 			s.unknownRequestFrames.Add(1)
 			return
 		}
-		claimed = pending.Profile
+		if !compact {
+			claimed = pending.Profile
+		}
 		// Usage and the provider profile are retained BEFORE any branch below
 		// can discard this completion (the deadline-late conversion to an error,
 		// the speculative-loser return), so a losing or late racer that sent a
@@ -2077,7 +2110,9 @@ func (s *Server) handleCompleteAt(
 		// claim site below no-ops for this pending (a second retain would count
 		// a false duplicate); it still retains for a PARKED record, which has
 		// no pending entry.
-		pending.Profile.SetTerminalUsage(msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
+		if !compact {
+			pending.Profile.SetTerminalUsage(msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
+		}
 		s.retainProviderProfile(pending.Profile, msg.Profile)
 		msg.Profile = nil
 		if !pending.HasFirstContentIngress() &&
@@ -2122,10 +2157,12 @@ func (s *Server) handleCompleteAt(
 				// race can be resolved and never on the write-failure path, so
 				// the check is deterministic; the close always lands because the
 				// attempt cannot finalize before the handler half (finalizeProfile).
-				if pending.Profile.Dispatched() {
+				if !compact && pending.Profile.Dispatched() {
 					pending.Profile.SetOutcome("", "", "", "completed", "")
 				}
-				pending.Profile.CompleteTerminal()
+				if !compact {
+					pending.Profile.CompleteTerminal()
+				}
 				return
 			}
 		}
@@ -2169,9 +2206,19 @@ func (s *Server) handleCompleteAt(
 		claimed.CompleteTerminal()
 		return
 	}
+	if pr.Profile != nil {
+		pr.Profile.ProviderCompleteObserved.Store(true)
+	}
 	pr.Profile.MarkAt(registry.StampCompleteIngress, receivedAt)
+	if compactOnlyAttempt(pr.Profile) {
+		// With heavy profiling off, RemovePending/claimSettlement is the
+		// existing arbitration. Only its actual winner claims compact
+		// evidence, after removal; receipt never gates another terminal.
+		pr.Profile.ClaimTerminal()
+		terminalOwner = true
+	}
 	if !terminalClaimed { // parked record (mutex single-winner): no pending entry above
-		terminalOwner = pr.Profile == nil || pr.Profile.ClaimTerminal()
+		terminalOwner = pr.Profile == nil || compactOnlyAttempt(pr.Profile) || pr.Profile.ClaimTerminal()
 	}
 	// Terminal usage is recorded at ingress, outside the billing gate, so a
 	// completion whose reservation was already finalized (a late terminal after
@@ -2269,6 +2316,7 @@ func (s *Server) handleCompleteAt(
 		s.emitExactCacheUsage(msg.Usage.CacheOutcome, lowCardinalityCacheTier(msg.Usage.CacheTier),
 			msg.Usage.CachedTokens, msg.Usage.PrefillTokensSaved, msg.Usage.CacheStageMs)
 	}
+	s.emitModelCacheUsage(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
 	cacheTerminalClaimed := s.emitCacheSelectionTerminal(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
 	s.reconcileOutputAdmission(pr, msg.Usage.CompletionTokens)
 
@@ -2779,7 +2827,7 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	// completes a claimed terminal).
 	var claimedHere *registry.AttemptProfile
 	pending := provider.GetPending(msg.RequestID)
-	if pending != nil && pending.Profile != nil && !owned {
+	if pending != nil && pending.Profile != nil && !compactOnlyAttempt(pending.Profile) && !owned {
 		if !pending.Profile.ClaimTerminal() {
 			s.logger.Warn("duplicate error for in-flight request", "provider_id", providerID)
 			s.ddIncr("inference.unknown_request_frames", []string{"kind:duplicate_error"})
@@ -2843,6 +2891,9 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 		s.noteProviderDraining(providerID, pr.Model)
 	}
 	if ap := pr.Profile; ap != nil {
+		if compactOnlyAttempt(ap) {
+			ap.ClaimTerminal()
+		}
 		ap.Mark(registry.StampCompleteIngress)
 		// A pending entry was claimed at the peek above; a PARKED record (no
 		// pending entry) is claimed here. claimSettlement is single-winner, so
@@ -3000,7 +3051,7 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 // if one was included in the registration message. If the attestation is valid,
 // the provider is marked as attested. If missing or invalid, the provider is
 // accepted in Open Mode only when no binary hash policy is configured.
-func (s *Server) verifyProviderAttestation(providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage) {
+func (s *Server) verifyProviderAttestation(ctx context.Context, providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage) error {
 	policyConfigured, knownBinaryHashes := s.binaryHashPolicySnapshot()
 	if len(regMsg.Attestation) == 0 {
 		if policyConfigured {
@@ -3012,12 +3063,12 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 				Error: "attestation missing",
 			})
 			s.registry.MarkUntrusted(providerID)
-			return
+			return nil
 		}
 		s.logger.Info("provider registered without attestation (Open Mode)",
 			"provider_id", providerID,
 		)
-		return
+		return nil
 	}
 
 	result, err := attestation.VerifyJSON(regMsg.Attestation)
@@ -3033,7 +3084,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			})
 			s.registry.MarkUntrusted(providerID)
 		}
-		return
+		return nil
 	}
 
 	provider.SetAttestationResult(&result)
@@ -3046,7 +3097,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		if policyConfigured {
 			s.registry.MarkUntrusted(providerID)
 		}
-		return
+		return nil
 	}
 
 	enforceReconnectFreshness := regMsg.Version != "" &&
@@ -3059,7 +3110,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		s.registry.MarkUntrusted(providerID)
 		s.logger.Warn("provider registration attestation replay rejected",
 			"provider_id", providerID)
-		return
+		return nil
 	}
 
 	if !enforceReconnectFreshness {
@@ -3088,7 +3139,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			if policyConfigured {
 				s.registry.MarkUntrusted(providerID)
 			}
-			return
+			return nil
 		}
 		if result.EncryptionPublicKey != regMsg.PublicKey {
 			s.logger.Warn("attestation encryption key does not match register public key",
@@ -3102,7 +3153,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			if policyConfigured {
 				s.registry.MarkUntrusted(providerID)
 			}
-			return
+			return nil
 		}
 	}
 
@@ -3122,7 +3173,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			result.Error = "binary hash missing"
 			provider.SetAttestationResult(&result)
 			s.registry.MarkUntrusted(providerID)
-			return
+			return nil
 		}
 		binaryHash, err := normalizeSHA256Hex(result.BinaryHash, "binary_hash")
 		if err != nil || !knownBinaryHashes[binaryHash] {
@@ -3134,7 +3185,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			result.Error = "binary hash not recognized"
 			provider.SetAttestationResult(&result)
 			s.registry.MarkUntrusted(providerID)
-			return
+			return nil
 		}
 		s.logger.Info("provider binary hash verified",
 			"provider_id", providerID,
@@ -3167,35 +3218,16 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		"trust_level", registry.TrustSelfSigned,
 	)
 
-	// Restore persisted state: if this provider was previously known (by serial
-	// number or SE key), restore trust level, reputation, and account linkage.
-	// Fresh attestation verification still runs (above), but stored reputation
-	// is preserved so routing quality is maintained across coordinator restarts.
-	if s.storedProviders != nil {
-		var storedRec *store.ProviderRecord
-		if result.SerialNumber != "" {
-			storedRec = s.storedProviders[result.SerialNumber]
-		}
-		if storedRec == nil && result.PublicKey != "" {
-			storedRec = s.storedProviders["sekey:"+result.PublicKey]
-		}
-		if storedRec != nil {
-			s.registry.RestoreProviderState(provider, storedRec)
-			s.logger.Info("restored persisted provider state",
-				"provider_id", providerID,
-				"stored_serial", storedRec.SerialNumber,
-				"stored_trust", storedRec.TrustLevel,
-			)
-		}
+	// Resolve only this freshly verified identity, rather than loading all historical
+	// sessions before startup. Exclude every live session and keep incomplete
+	// registrations' identities unpublished across asynchronous persistence.
+	if err := s.restorePersistedProviderState(ctx, provider, result.SerialNumber, result.PublicKey); err != nil {
+		return err
 	}
 
-	// Stage the durable Apple MDA cert chain from a LIVE store read. storedProviders
-	// above is a one-time startup snapshot — empty for the coordinator's whole life
-	// under the in-memory store used in prod — so it cannot surface a chain earned
-	// during this coordinator's lifetime. The store record survives provider
-	// disconnect, so a serial lookup recovers a chain a previous connection earned,
-	// letting attachCachedMDAProof reuse it (re-verified + SE-key-bound) instead of
-	// forcing a fresh, Apple-rate-limited DevicePropertiesAttestation round-trip.
+	// Independently recover the newest non-empty durable MDA chain. A newer
+	// empty record must not shadow a chain earned by an earlier session. The
+	// hardware-grant path still re-verifies the certificate and SE-key binding.
 	s.stageDurableMDAChain(provider, result.SerialNumber)
 
 	// Deduplicate: if another provider connection exists from the same physical
@@ -3218,6 +3250,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			"provider_id", providerID,
 		)
 	}
+	return nil
 }
 
 // mdmVerifyOutcome classifies one scheduler-owned MDM verification attempt.
@@ -3438,10 +3471,8 @@ func (s *Server) ApplyLateSecurityInfo(
 
 // stageDurableMDAChain recovers a previously-earned Apple MDA cert chain from the
 // store (by serial) and stages it on the provider as a reuse candidate for this
-// reconnect. The store record survives provider disconnect, so this works under
-// the in-memory store used in prod — where the startup storedProviders snapshot is
-// empty — as well as a durable store. Best-effort: a missing record / chain or a
-// read error simply stages nothing, and a fresh attestation is requested.
+// reconnect. A missing record / chain or a read error stages nothing, and a
+// fresh attestation is requested. This read is independent of counter recovery.
 func (s *Server) stageDurableMDAChain(provider *registry.Provider, serial string) {
 	if s.store == nil || serial == "" {
 		return

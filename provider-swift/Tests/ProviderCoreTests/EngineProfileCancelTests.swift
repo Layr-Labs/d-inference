@@ -13,7 +13,7 @@ import Testing
 /// Engine whose event delivery is driven by the test, one request at a time.
 private final class ControlledEngine: CBv2Engine, @unchecked Sendable {
     /// Verdict the deadline-capable submit returns once its gate opens.
-    enum DeadlineVerdict { case admitted, unreachable }
+    enum DeadlineVerdict { case admitted, unreachable, cancelledAfterAccepted, cancelledWithoutVerdict }
 
     private let lock = NSLock()
     private var continuation: AsyncStream<CBv2Event>.Continuation?
@@ -21,34 +21,68 @@ private final class ControlledEngine: CBv2Engine, @unchecked Sendable {
     private var deadlineGate: AsyncGate?
     private var deadlineVerdict: DeadlineVerdict = .admitted
     private var deadlineSubmitEntered = false
+    private var returnAcceptedAfterDeadline = false
+    private var acceptedReturnTiming: (
+        admittedAt: ContinuousClock.Instant, returnedAt: ContinuousClock.Instant
+    )?
+    private var projectedWork: CBv2FirstTokenProjectedWork = .unbounded
+
+    func setProjectedWork(_ work: CBv2FirstTokenProjectedWork) {
+        lock.withLock { projectedWork = work }
+    }
 
     /// Arm the atomic deadline submit: it parks on `gate` (the bridge actor
     /// is suspended meanwhile) and then returns `verdict`.
-    func armDeadlineSubmit(gate: AsyncGate, verdict: DeadlineVerdict) {
+    func armDeadlineSubmit(
+        gate: AsyncGate, verdict: DeadlineVerdict, returnAcceptedAfterDeadline: Bool = false
+    ) {
         lock.withLock {
             deadlineGate = gate
             deadlineVerdict = verdict
             deadlineSubmitEntered = false
+            self.returnAcceptedAfterDeadline = returnAcceptedAfterDeadline
+            acceptedReturnTiming = nil
         }
     }
 
     var enteredDeadlineSubmit: Bool { lock.withLock { deadlineSubmitEntered } }
 
+    var deadlineReturnTiming: (
+        admittedAt: ContinuousClock.Instant, returnedAt: ContinuousClock.Instant
+    )? {
+        lock.withLock { acceptedReturnTiming }
+    }
+
     func submit(
         _ request: CBv2Request, firstTokenDeadline: CBv2FirstTokenDeadlineAdmission
     ) async throws -> CBv2FirstTokenDeadlineResult {
-        let (gate, verdict) = lock.withLock {
+        let (gate, verdict, delayAcceptedReturn) = lock.withLock {
             deadlineSubmitEntered = true
-            return (deadlineGate, deadlineVerdict)
+            return (deadlineGate, deadlineVerdict, returnAcceptedAfterDeadline)
         }
+        // Model an engine-queue commit followed by a delayed bridge resumption.
+        let admittedAt = ContinuousClock.now
         if let gate { await gate.wait() }
+        let work = lock.withLock { projectedWork }
         switch verdict {
         case .unreachable:
-            return .deadlineUnreachable(projectedWork: .unbounded)
+            return .deadlineUnreachable(projectedWork: work)
         case .admitted:
+            if delayAcceptedReturn {
+                // This suspension is reached only after engine submission;
+                // it consumes the original deadline without an entry-poll race.
+                try await ContinuousClock().sleep(
+                    until: firstTokenDeadline.deadline.advanced(by: .milliseconds(1)))
+            }
+            lock.withLock { acceptedReturnTiming = (admittedAt, .now) }
             return .admitted(
-                stream: try submit(request), projectedWork: .unbounded, admittedAt: .now,
+                stream: try submit(request), projectedWork: work, admittedAt: admittedAt,
                 retirement: CBv2RequestRetirement(waitUntilRetired: {}))
+        case .cancelledAfterAccepted:
+            throw CBv2FirstTokenAdmissionCancellation(
+                stream: try submit(request), retirement: .acknowledged)
+        case .cancelledWithoutVerdict:
+            throw CancellationError()
         }
     }
 
@@ -495,6 +529,9 @@ struct EngineProfileCancelTests {
         #expect(refused)
         #expect(engine.cancelledIDs.isEmpty, "never admitted → nothing to cancel")
         #expect(profile.wireObject().tokensAfterCancel == 0)
+        #expect(profile.wireObject().deadlineDecision?.verdict == .deadlineUnreachable)
+        #expect(profile.wireObject().deadlineDecision?.projection == .unbounded)
+        #expect(profile.wireObject().deadlineDecision?.continuation == .cancelled)
         #expect(sink.recorded.isEmpty)
         #expect(await awaitPendingDrained(on: bridge))
     }
@@ -525,6 +562,9 @@ struct EngineProfileCancelTests {
         // produced a token, so the field must be ABSENT — not a fabricated 0.
         #expect(engine.cancelledIDs.count == 1)
         #expect(profile.wireObject().tokensAfterCancel == nil)
+        #expect(profile.wireObject().deadlineDecision?.verdict == .accepted)
+        #expect(profile.wireObject().deadlineDecision?.continuation == .cancelled)
+        #expect(profile.wireObject().engineAdmittedUs == nil)
         #expect(sink.recorded.isEmpty)
         // The retirement transfer releases the pending bookkeeping.
         #expect(await awaitPendingDrained(on: bridge))
@@ -566,3 +606,163 @@ struct EngineProfileCancelTests {
         #expect(wire.kvBytesInUseAtAdmit == 4096)
     }
 }
+
+
+#if DEBUG
+@Suite("Provider deadline decision telemetry")
+struct DeadlineDecisionBridgeTests {
+    @Test("refused projections retain bounded work or explicit unbounded state", arguments: [false, true])
+    func refusedWorkIsPreserved(bounded: Bool) async throws {
+        let engine = ControlledEngine()
+        let bridge = await makeDeadlineBridge(engine: engine)
+        let gate = AsyncGate()
+        gate.open()
+        engine.armDeadlineSubmit(gate: gate, verdict: .unreachable)
+        if bounded {
+            engine.setProjectedWork(.bounded(
+                work: CBv2FirstTokenScheduledWork(
+                    prefillTokens: 300, decodeTokens: 8, scheduledSteps: 3, mixedSteps: 2),
+                serviceDuration: .seconds(7)))
+        }
+        let profile = RequestProfileBuilder()
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await submitControlled(
+                bridge: bridge, requestId: "refused", profile: profile,
+                deadline: FirstContentDeadline(relativeBudgetMilliseconds: 5_000))
+        }
+        let wire = profile.wireObject()
+        let decision = try #require(wire.deadlineDecision)
+        #expect(decision.verdict == .deadlineUnreachable)
+        #expect(decision.continuation == nil)
+        #expect(decision.projection == (bounded ? .bounded : .unbounded))
+        #expect(decision.projectedPrefillTokens == (bounded ? 300 : nil))
+        #expect(decision.projectedDecodeTokens == (bounded ? 8 : nil))
+        #expect(decision.projectedServiceUs == (bounded ? 7_000_000 : nil))
+        #expect(decision.projectionReason == nil)
+        #expect(decision.prefillTps == 500)
+        #expect(decision.decodeTps == nil)
+        #expect(try #require(decision.submitRemainingUs) >= #require(decision.remainingUs))
+        #expect(try #require(decision.observedUs) >= #require(wire.engineSubmitUs))
+        #expect(try #require(decision.observedUs) <= #require(wire.totalUs))
+        #expect(wire.engineAdmittedUs == nil)
+        #expect(wire.projectedServiceUs == nil)
+        #expect(wire.budgetRemainingAtAdmitUs == nil)
+        #expect(await bridge._testLivePumpCount() == 0)
+    }
+
+    @Test("accepted engine verdict survives expiry while submit is suspended", .timeLimit(.minutes(1)))
+    func acceptedThenExpired() async throws {
+        let engine = ControlledEngine()
+        let bridge = await makeDeadlineBridge(engine: engine)
+        let gate = AsyncGate()
+        gate.open()
+        engine.armDeadlineSubmit(
+            gate: gate, verdict: .admitted, returnAcceptedAfterDeadline: true)
+        engine.setProjectedWork(.bounded(
+            work: CBv2FirstTokenScheduledWork(
+                prefillTokens: 3, decodeTokens: 0, scheduledSteps: 1, mixedSteps: 0),
+            serviceDuration: .milliseconds(1)))
+        let profile = RequestProfileBuilder()
+        // Leave setup time for the full provider suite's concurrent GPU/model
+        // work. The engine fixture itself waits until this real deadline has
+        // expired; no separate submit task or fixed-count yield loop competes
+        // to observe entry during a one-second window.
+        let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 30_000)
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await submitControlled(
+                bridge: bridge, requestId: "accepted-expired", profile: profile, deadline: deadline)
+        }
+        let timing = try #require(engine.deadlineReturnTiming)
+        #expect(timing.admittedAt < deadline.instant)
+        #expect(timing.returnedAt >= deadline.instant)
+        let wire = profile.wireObject()
+        let decision = try #require(wire.deadlineDecision)
+        #expect(decision.verdict == .accepted)
+        #expect(decision.continuation == .expired)
+        #expect(decision.remainingUs == 0)
+        #expect(try #require(decision.submitRemainingUs) > 0)
+        #expect(decision.projectedServiceUs == 1_000)
+        #expect(wire.engineAdmittedUs == nil)
+        #expect(wire.projectedServiceUs == nil)
+        #expect(engine.cancelledIDs.count == 1)
+        #expect(await awaitPendingDrained(on: bridge))
+    }
+
+    @Test("expired before the engine call is distinct from an engine refusal")
+    func expiredBeforeSubmit() async throws {
+        let engine = ControlledEngine()
+        let bridge = await makeDeadlineBridge(engine: engine)
+        let profile = RequestProfileBuilder()
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await submitControlled(
+                bridge: bridge, requestId: "already-expired", profile: profile,
+                deadline: FirstContentDeadline(relativeBudgetMilliseconds: -1))
+        }
+        let wire = profile.wireObject()
+        #expect(wire.deadlineDecision?.verdict == .expiredBeforeSubmit)
+        #expect(wire.deadlineDecision?.remainingUs == 0)
+        #expect(wire.deadlineDecision?.submitRemainingUs == nil)
+        #expect(wire.engineSubmitUs == nil)
+        #expect(!engine.enteredDeadlineSubmit)
+    }
+
+    @Test("cancellation exception distinguishes known acceptance from unavailable verdict", arguments: [false, true])
+    func cancellationException(accepted: Bool) async throws {
+        let engine = ControlledEngine()
+        let bridge = await makeDeadlineBridge(engine: engine)
+        let gate = AsyncGate()
+        gate.open()
+        engine.armDeadlineSubmit(
+            gate: gate, verdict: accepted ? .cancelledAfterAccepted : .cancelledWithoutVerdict)
+        let profile = RequestProfileBuilder()
+        await #expect(throws: CancellationError.self) {
+            _ = try await submitControlled(
+                bridge: bridge, requestId: "cancelled-call", profile: profile,
+                deadline: FirstContentDeadline(relativeBudgetMilliseconds: 5_000))
+        }
+        let wire = profile.wireObject()
+        #expect(wire.deadlineDecision?.verdict == (accepted ? .accepted : .cancelled))
+        #expect(wire.deadlineDecision?.continuation == .cancelled)
+        #expect(wire.deadlineDecision?.projection == nil)
+        #expect(wire.deadlineDecision?.projectedServiceUs == nil)
+        #expect(wire.engineAdmittedUs == nil)
+        #expect(await awaitPendingDrained(on: bridge))
+    }
+
+    @Test("ordinary submit explains projection bypass", arguments: [
+        DeadlineProjectionReason.noDeadline, .modeOff, .unsupportedScheduler,
+        .multimodal, .unmeasuredPrefill,
+    ])
+    func ordinarySubmitReasons(reason: DeadlineProjectionReason) async throws {
+        let engine = ControlledEngine()
+        let bridge = EngineV2Bridge(
+            engine: engine, modelId: "fake-model",
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()), eosTokenIds: [],
+            prefillDeadlineMode: reason == .modeOff ? .off : .enforce,
+            prefillDeadlineProjectionEnabled: reason != .unsupportedScheduler)
+        if reason != .unmeasuredPrefill { await bridge._testSeedIsolatedPrefillEwma(1_000) }
+        let profile = RequestProfileBuilder()
+        let stream = try await bridge.submitTokenized(
+            promptTokens: [1, 2, 3],
+            request: ChatCompletionRequest(
+                model: "fake-model", messages: [ChatMessage(role: "user", content: "hi")]),
+            requestId: "bypass",
+            multimodal: reason == .multimodal
+                ? CBv2MultimodalInput(spans: [], embeddings: { [] }) : nil,
+            firstContentDeadline: reason == .noDeadline
+                ? nil : FirstContentDeadline(relativeBudgetMilliseconds: 5_000),
+            profile: profile)
+        engine.emit(.finished(reason: .stop, usage: CBv2Usage(promptTokens: 3, completionTokens: 0)))
+        for await _ in stream {}
+        let decision = try #require(profile.wireObject().deadlineDecision)
+        #expect(decision.verdict == .accepted)
+        #expect(decision.projection == .notAttempted)
+        #expect(decision.projectionReason == reason)
+        #expect(decision.prefillTps == nil)
+        #expect(decision.decodeTps == nil)
+        #expect(decision.projectedServiceUs == nil)
+        #expect((decision.remainingUs == nil) == (reason == .noDeadline))
+        #expect(!engine.enteredDeadlineSubmit)
+    }
+}
+#endif

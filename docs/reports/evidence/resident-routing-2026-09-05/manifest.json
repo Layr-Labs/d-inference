@@ -1,0 +1,19 @@
+{
+  "coordinator_commit": "5ec53973a73657304972b71d7fc7b0a36ac00821",
+  "toolchain": "go1.25.0",
+  "validation_order": "Full coordinator suite passed before isolated resident-readiness metric; final affected races include the metric addition.",
+  "logs": [
+    {
+      "file": "darkbloom-radix-go-all-final.txt",
+      "sha256": "b65a970d4db01fb7065fe5f905c0521617bef8d9bb8a8c981dc37cc7ace91819"
+    },
+    {
+      "file": "darkbloom-radix-go-routing-race-final.txt",
+      "sha256": "1e874df779f137451870b6f4bddabd42080f44d94b07200bc1c02f2c37a5240d"
+    },
+    {
+      "file": "darkbloom-radix-go-api-resident-race-final.txt",
+      "sha256": "4bbf3dd9eb19a79c745acde90788fbf57f6ce0b1f7a59c0d6c29ef58e6437b2c"
+    }
+  ]
+}

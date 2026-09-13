@@ -111,6 +111,9 @@ import Testing
         "lossy_snapshot", "incomplete_layer_state", "stage_size_exceeded",
         "write_rate_limited", "write_queue_full", "already_durable",
         "already_queued", "cache_closed", "disk_unavailable", "write_failed",
+        "host_memory_unavailable", "cache_epoch_changed", "cache_maintenance_busy",
+        "disk_space_insufficient", "unsafe_cache_root", "write_io_failed",
+        "existing_cache_unreadable", "cache_entry_evicted",
     ])
 }
 
@@ -1227,12 +1230,14 @@ import Testing
         cacheReceiptNonce: "nonce-1",
         cacheScope: "account-route-key",
         prefixCacheProtocol: 2,
+        cacheReceiptBoundaryMode: PrefixCacheV2Capability.checkpointBoundaryMode,
         toolSchemaMetadataProtocol: 1))
     let data = try ProviderProtocolCodec.encodeCoordinatorMessage(scoped)
     let object = try jsonObject(data)
     #expect(object["cache_receipt_nonce"] as? String == "nonce-1")
     #expect(object["cache_scope"] as? String == "account-route-key")
     #expect(object["prefix_cache_protocol"] as? Int == 2)
+    #expect(object["cache_receipt_boundary_mode"] as? String == "checkpoint")
     #expect(object["tool_schema_metadata_protocol"] as? Int == 1)
     #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: data) == scoped)
 
@@ -1243,7 +1248,26 @@ import Testing
     #expect(decoded.cacheReceiptNonce == nil)
     #expect(decoded.cacheScope == nil)
     #expect(decoded.prefixCacheProtocol == nil)
+    #expect(decoded.cacheReceiptBoundaryMode == nil)
     #expect(decoded.toolSchemaMetadataProtocol == nil)
+}
+
+@Test func checkpointCapabilityModeIsOptionalAndRoundTrips() throws {
+    let capability = PrefixCacheV2Capability(
+        modelId: "model", modelAggregateHash: String(repeating: "a", count: 64),
+        promptContractId: String(repeating: "b", count: 64), blockHashVersion: "dbk3",
+        blockSize: 256, cacheEpoch: "11111111-1111-1111-1111-111111111111",
+        enabled: true, ready: true,
+        readyBoundaryMode: PrefixCacheV2Capability.checkpointBoundaryMode)
+    let encoded = try JSONEncoder().encode(capability)
+    #expect(try JSONDecoder().decode(PrefixCacheV2Capability.self, from: encoded) == capability)
+    var object = try jsonObject(encoded)
+    #expect(object.removeValue(forKey: "ready_boundary_mode") as? String == "checkpoint")
+    let legacyData = try JSONSerialization.data(withJSONObject: object)
+    let legacy = try JSONDecoder().decode(PrefixCacheV2Capability.self, from: legacyData)
+    #expect(legacy.readyBoundaryMode == nil)
+    #expect(legacy.modelAggregateHash == capability.modelAggregateHash)
+    #expect(try jsonObject(JSONEncoder().encode(legacy))["ready_boundary_mode"] == nil)
 }
 
 @Test func prefixCacheReceiptMessagesMatchWireContract() throws {
@@ -1408,6 +1432,20 @@ private func fullInferenceProfile() -> InferenceProfile {
     e.prefixAdoptionNs = maxNs
     e.finishReason = .stopSequence
     p.engine = e
+    var d = DeadlineDecisionProfile()
+    d.verdict = .expiredBeforeSubmit
+    d.continuation = .cancelled
+    d.projection = .notAttempted
+    d.projectionReason = .unsupportedScheduler
+    d.observedUs = maxUs
+    d.remainingUs = maxUs
+    d.submitRemainingUs = maxUs
+    d.projectedServiceUs = maxUs
+    d.projectedPrefillTokens = maxCount
+    d.projectedDecodeTokens = maxCount
+    d.prefillTps = 999_999_999.1234567
+    d.decodeTps = 999_999_999.1234567
+    p.deadlineDecision = d
     return p
 }
 
@@ -1758,10 +1796,11 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     let profile = fullInferenceProfile()
     assertNoStrings(profile, label: "InferenceProfile")
     assertNoStrings(try #require(profile.engine), label: "EngineProfile")
+    assertNoStrings(try #require(profile.deadlineDecision), label: "DeadlineDecisionProfile")
     assertNoStrings(fullSlotTelemetry(), label: "SlotTelemetry")
     assertNoStrings(fullCapacityTelemetry(), label: "CapacityTelemetry")
-    // 2 anchors + 20 offsets + 7 durations + 23 counts/flags + 3 enums + engine.
-    #expect(Mirror(reflecting: profile).children.count == 56)
+    // 2 anchors + 20 offsets + 7 durations + 23 counts/flags + 3 enums + engine + deadline decision.
+    #expect(Mirror(reflecting: profile).children.count == 57)
     #expect(Mirror(reflecting: try #require(profile.engine)).children.count == 30)
 }
 
@@ -1784,6 +1823,7 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
             "heartbeat_omitted", "heartbeat_telemetry",
             "inference_complete_full", "inference_complete_omitted",
             "inference_error_minimal", "inference_error_omitted",
+            "inference_error_deadline", "inference_error_accepted_expired",
         ])
 
     func roundTrip(_ name: String) throws -> (ProviderMessage, [String: Any], [String: Any]) {
@@ -1837,6 +1877,22 @@ private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<Strin
     guard case .inferenceError(let e2) = errorOmitted else { throw TestFailure.unexpectedMessage }
     #expect(e2.profile == nil)
     #expect(errorOmittedReencoded["profile"] == nil)
+
+    for name in ["inference_error_deadline", "inference_error_accepted_expired"] {
+        let (decoded, original, encoded) = try roundTrip(name)
+        guard case .inferenceError(let message) = decoded else { throw TestFailure.unexpectedMessage }
+        let profile = try #require(message.profile)
+        #expect(profile.deadlineDecision?.verdict == (name == "inference_error_deadline"
+            ? .deadlineUnreachable : .accepted))
+        #expect(profile.deadlineDecision?.projection == .bounded)
+        #expect(profile.deadlineDecision?.projectedServiceUs == 200_000)
+        #expect(profile.deadlineDecision?.continuation == (name == "inference_error_deadline"
+            ? nil : .expired))
+        #expect(profile.engineAdmittedUs == nil)
+        #expect(profile.projectedServiceUs == nil)
+        try expectSameKeys(
+            original["profile"] as? [String: Any], encoded["profile"] as? [String: Any], name)
+    }
 
     // heartbeat: both telemetry sub-objects + the new stats counters ⇄ omitted.
     let (heartbeat, heartbeatFrame, heartbeatReencoded) = try roundTrip("heartbeat_telemetry")

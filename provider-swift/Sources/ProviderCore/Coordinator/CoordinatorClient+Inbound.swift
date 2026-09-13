@@ -91,6 +91,7 @@ extension CoordinatorClient {
                 cacheReceiptNonce: request.cacheReceiptNonce,
                 cacheScope: request.cacheScope,
                 prefixCacheProtocol: request.prefixCacheProtocol,
+                cacheReceiptBoundaryMode: request.cacheReceiptBoundaryMode,
                 toolSchemaMetadataProtocol: request.toolSchemaMetadataProtocol,
                 firstContentDeadline: firstContentDeadline,
                 receivedAt: receivedAt,
@@ -124,7 +125,7 @@ extension CoordinatorClient {
                 model: advertisedModelStore.models.first { $0.id == probe.model },
                 ttft: ttft,
                 visionLimits: VisionTowerBudget.liveLimits,
-                refusingNewWork: state.refusingNewWork))
+                refusingNewWork: state.refusingNewWork(forModel: probe.model)))
             do {
                 let json = try ProviderProtocolCodec.encodeProviderMessageString(
                     .capacityQuote(quote))

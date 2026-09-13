@@ -84,7 +84,7 @@ type providerWriteRequest struct {
 //   - queue: data frames — inference request bodies (up to ~21 MiB sealed
 //     vision payloads) AND the load_model / prefetch_model / desired_models
 //     commands (SendLoadModel, SendPrefetchModel, SendDesiredModels in
-//     registry.go go through WriteText). Rerouting those model commands to
+//     model_commands.go go through WriteText). Rerouting those model commands to
 //     the control lane is a candidate follow-up; today they share the data
 //     lane.
 //

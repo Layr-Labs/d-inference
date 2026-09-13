@@ -1,0 +1,75 @@
+{
+  "artifact_manifest_sha256": "21a19a7143c5202850dfbf95040a5e6c7a25687b234e691cba7d10e07138f9aa",
+  "artifacts": {
+    "darkbloom": {
+      "bytes": 87665304,
+      "mode": 493,
+      "sha256": "d9eac4348bbb7ef56cad6890f01ae680a6b3d16f8b34f4d300c713513b626161"
+    },
+    "mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal": {
+      "bytes": 24804,
+      "mode": 420,
+      "sha256": "4ad3ff17d8c6e0a3b5b8a91e9151447f84e36cb3688ed204e1e7eb6838dd9149"
+    },
+    "mlx.metallib": {
+      "bytes": 182425984,
+      "mode": 420,
+      "sha256": "20972c37e53fe6db3b3191a0434f6604c4ffc4f5ac62b370574f9922585b0fdb"
+    },
+    "radix-engine": {
+      "bytes": 81662752,
+      "mode": 493,
+      "sha256": "6165cedafd539d01da427bbb20ee7810cb9292f0facfb26f5ca86110acf5bd5c"
+    },
+    "swift-crypto_Crypto.bundle/PrivacyInfo.xcprivacy": {
+      "bytes": 398,
+      "mode": 292,
+      "sha256": "42fb8a30dd8d7ba0900e1bf17fe64ed8c12cfdb8a9c791ab6b4e1eceb0f299c0"
+    },
+    "swift-nio_NIOPosix.bundle/PrivacyInfo.xcprivacy": {
+      "bytes": 599,
+      "mode": 292,
+      "sha256": "982f20d820bc4460acc9d4116c3e6c8ec837f717dc82edbb7308f7400515c909"
+    },
+    "swift-transformers_Hub.bundle/gpt2_tokenizer_config.json": {
+      "bytes": 234,
+      "mode": 292,
+      "sha256": "551e26ec611d8d0c8edc3ef72e518a38418cb71f40de1347dd486a595e1557d7"
+    },
+    "swift-transformers_Hub.bundle/t5_tokenizer_config.json": {
+      "bytes": 20746,
+      "mode": 292,
+      "sha256": "e0aff0b1de9071e30d9a60a199303b6abe916a64a19932bd1c46992279b41a1f"
+    }
+  },
+  "build_seconds": 254.98581091687083,
+  "build_steps": 13,
+  "capsule": {
+    "bytes": 1331199,
+    "members": 37,
+    "sha256": "c996ece187cb07e8a37005d4d423d4795d89e9a98f683f598535c68c8c65b96f"
+  },
+  "compiled_product_sources": {
+    "darkbloom": 1006,
+    "radix-engine": 930
+  },
+  "dependency_pins_per_product": 36,
+  "fresh_cpu_checks": {
+    "benchmark_python_tests": 24,
+    "native_parser_cases": 8,
+    "source_closure_tests": 9
+  },
+  "model_qualification_pending": true,
+  "numerical_suites_rerun": false,
+  "original_collection_archive_sha256": "6ace0805dab9b2a978bbeb1b5ad91b4ca31f55a1f2b914005fd3b84bf172a2f7",
+  "original_evidence_files": 93,
+  "owned_processes_retired": true,
+  "persistent_keychain_restart_validated": false,
+  "prior_test_runtime_review_sha256": "5bf7b2b054a9ac1bd512d7b3901eec10cfe0c1bc5286f265948ddfb51dca956e",
+  "publication_commit": "dfa72078a9f0104ff94e043118b29e2fec676075",
+  "resources_equal_predecessor": true,
+  "root_runtime_review_sha256": "0294038647e97e98398c516bb6df6c52914c49c1897726a9fffd00064c2e86ee",
+  "source_files": 7478,
+  "source_manifest_sha256": "da88c7aabccd399e20544a73dc182775493a0d4b5db5568b34a8169ffae54bbf",
+  "status": "FINAL_VERSIONED_BUILD_AND_RUNTIME_REVIEW_PASSED_MODEL_QUALIFICATION_PENDING"
+}

@@ -42,6 +42,9 @@ public enum KVEstimation {
     private static let recurrentLayerTypes: Set<String> = [
         "linear_attention",   // Qwen3.5 GatedDeltaNet
         "recurrent",
+        "mamba",  // fixed recurrent state, not growing attention KV
+        "mlp",    // stand-alone feed-forward blocks in hybrid trunks
+        "moe",
     ]
 
     // MARK: - config.json read
@@ -100,6 +103,7 @@ public enum KVEstimation {
         // `sliding_window_pattern=5` → repeating [S, S, S, S, F].
         var slidingWindowPattern: Int? = cfg["sliding_window_pattern"] as? Int
         var layerTypes: [String]? = cfg["layer_types"] as? [String]
+            ?? cfg["layers_block_type"] as? [String]
 
         // MoE + dimension fields for the adaptive-prefill roofline seed.
         // E (`num_local_experts`) and k (`num_experts_per_tok`) decide how many

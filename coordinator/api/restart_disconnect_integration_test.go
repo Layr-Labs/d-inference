@@ -48,6 +48,9 @@ func bindRestartTestIdentity(t *testing.T, reg *registry.Registry, fp *failoverP
 		t.Fatalf("provider %s not registered", fp.name)
 	}
 	p.SetAttestationResult(&attestation.VerificationResult{Valid: true, SerialNumber: serial})
+	// This fixture binds identity directly instead of executing registration's
+	// durable-state lookup; simulate its successful completion as well.
+	p.CompleteProviderStateRestore()
 	return "serial:" + serial
 }
 

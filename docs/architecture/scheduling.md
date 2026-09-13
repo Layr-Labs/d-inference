@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-04 · commit `6f364e64b`
+> Last updated: 2026-09-10 · commit `213b8c2b6`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -57,7 +57,7 @@ anything else to `unknown`):
 
 | `DrainTrigger` | Fired by |
 |---|---|
-| `heartbeat` | A provider heartbeat for any model it serves (`Heartbeat`, `coordinator/registry/registry.go`). |
+| `heartbeat` | A provider heartbeat for any model it serves (`Heartbeat`, `coordinator/registry/heartbeat.go`). |
 | `idle` | A provider finished a request (`SetProviderIdle`). |
 | `challenge` | A provider passed a challenge and became eligible (`coordinator/api/provider.go`, `coordinator/api/provider_codeattest.go`). |
 | `load` | A provider reported a model load complete (`coordinator/api/provider.go`). |
@@ -182,6 +182,14 @@ The **absolute hardware-fit gate** (`modelFitsHardware`,
 `modelMemoryHeadroomFactor`) precedes both paths for non-resident models
 and is described with the other gates in [`routing.md`](routing.md#eligibility-gates-and-the-gatereason-vocabulary).
 
+Optional MTP preparation retains its target across asynchronous work, so the
+provider excludes that target from eviction feasibility and refreshes its
+capacity quote when staging ownership changes. A quote calculated before a
+staging change cannot overwrite the newer snapshot
+(`provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift`,
+`updateAggregateCapacity`). The retained-weight and survivor-grant lifecycle is
+specified in [Inference: multi-token prediction](inference.md#multi-token-prediction).
+
 ### Concurrency caps
 
 Admission also requires headroom
@@ -190,7 +198,7 @@ Admission also requires headroom
 the model must be below its *effective per-model cap*, **and** its in-flight
 count across all models must be below its *provider cap*.
 
-**Provider cap** (`Provider.maxConcurrency`, `coordinator/registry/registry.go`):
+**Provider cap** (`Provider.maxConcurrency`, `coordinator/registry/provider.go`):
 
 | Condition | Cap |
 |---|---|
@@ -241,7 +249,7 @@ states and, when it asks for a load, relies on the provider to evict.
 **Pending model loads.** When the coordinator sends `load_model` (or
 `prefetch_model` / `desired_models`) it records a pending entry per
 (provider, model) so it does not re-send while the load is in progress
-(`coordinator/registry/registry.go`):
+(`coordinator/registry/model_loading.go`):
 
 | Constant | Value | When |
 |---|---|---|
@@ -254,7 +262,7 @@ states and, when it asks for a load, relies on the provider to evict.
 Pending entries are cleared when the load completes, when the provider
 disconnects (`Disconnect`), and by the warm-pool sweep as they expire.
 
-**Model swaps.** `TriggerModelSwaps` (`coordinator/registry/registry.go`)
+**Model swaps.** `TriggerModelSwaps` (`coordinator/registry/model_loading.go`)
 plans one swap per model with queued requests and no warm provider: it picks
 a cold provider that has the model on disk (`bestModelLoadProviderLocked`)
 and sends `load_model`, so demand that no resident slot can satisfy pulls the
@@ -350,7 +358,7 @@ ranked by `warmPoolCandidateReasonLocked`; those disqualified are tallied by
 reason (`offline_untrusted_private`, `pending_load_or_cooldown`, `not_idle`,
 `thermal_critical`, `trust_or_runtime`, `stale_challenge`,
 `not_serving_catalog`, `dedicated_excluded`, `model_too_large`,
-`no_free_for_load`).
+`no_free_for_load`, `state_restoring`).
 
 **`WarmPoolSnapshot`.** Every tick produces one per model, logged as
 `warm_pool_tick` and retained as the controller's latest state
@@ -417,7 +425,7 @@ with `providerWriteDrainErrorString = "provider websocket writer stopped"`.
 
 ### `Disconnect()`
 
-`Registry.Disconnect` (`coordinator/registry/registry.go`) is the single
+`Registry.Disconnect` (`coordinator/registry/provider_lifecycle.go`) is the single
 teardown path, reached from socket close and from eviction. On socket close
 the provider handler (`coordinator/api/provider.go`) first flips the record to
 `StatusOffline` — failing the routing gate `offline` at once, so a slow
@@ -464,7 +472,7 @@ times. Version metadata for departed identities remains for
 `identityVersionRetention = 20 * time.Minute` after the last activity or
 disconnect; live identities, recent resets and active fault state retain their
 gate. The existing eviction-loop gate sweep handles this cleanup
-(`coordinator/registry/version_history.go`, `versionHistoryActive`;
+(`coordinator/registry/version_reset.go`, `versionHistoryActive`;
 `coordinator/registry/gate_sweep.go`, `sweepGates`).
 
 ## Invariants
@@ -480,7 +488,7 @@ gate. The existing eviction-loop gate sweep handles this cleanup
    provider cap** — `hasConcurrencyHeadroomForModelCapResolvedLocked`
    (`coordinator/registry/concurrency_cap.go`).
 5. **A `load_model` is not re-sent to a pair while its pending entry is
-   live** — `pendingModelLoadTTL` handling in `coordinator/registry/registry.go`.
+   live** — `pendingModelLoadTTL` handling in `coordinator/registry/model_loading.go`.
 6. **The warm target never exceeds what the fleet can reach and never drops
    below the current warm count** — `warmTarget`
    (`coordinator/registry/warm_pool_target.go`).
@@ -515,17 +523,17 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 | Concern | File / symbol |
 |---|---|
 | Per-model queue, drain triggers, stale sweep | `coordinator/registry/queue.go` — `RequestQueue`, `Enqueue`, `WaitForProviderContext`, `PopNextFresh`, `cleanStaleLocked`, `DrainTrigger*` |
-| Drain orchestration | `coordinator/registry/scheduler.go` — `drainQueuedRequestsForModelsWithReason`; `coordinator/registry/registry.go` — `SetProviderIdle`, `Heartbeat` |
+| Drain orchestration | `coordinator/registry/scheduler.go` — `drainQueuedRequestsForModelsWithReason`; `coordinator/registry/provider_lifecycle.go` — `SetProviderIdle`; `coordinator/registry/heartbeat.go` — `Heartbeat` |
 | Slot vocabulary | `coordinator/registry/gate_reason.go` — `SlotState`; `coordinator/registry/scheduler.go` — `slotStatePenalty`, `slotStateModelLoaded` |
 | Heartbeat payload | `coordinator/protocol/messages.go` — `BackendCapacity`, `BackendSlotCapacity` |
 | Token-budget and memory admission | `coordinator/registry/scheduler.go` — `freeMemoryAdmits`, `pooledBudgetAdmits`, `knownZeroTokenBudget`, `committedTokenBudget` |
-| Concurrency caps | `coordinator/registry/registry.go` — `maxConcurrency`, `maxConcurrencyForModelLocked`, `DefaultMaxConcurrent`; `coordinator/registry/concurrency_cap.go` — `SetQualityConcurrencyCap`, `effectiveMaxConcurrencyForModelRateLocked`, `hasConcurrencyHeadroomForModelCapResolvedLocked` |
-| Pending loads and swaps | `coordinator/registry/registry.go` — `pendingModelLoadTTL`, `TriggerModelSwaps`, `bestModelLoadProviderLocked`, `SendLoadModel`; `coordinator/registry/model_swap_coalesce.go` — `modelSwapPlanInterval`, `modelSwapPlanGate`, `triggerModelSwapsFromHeartbeat` |
+| Concurrency caps | `coordinator/registry/provider.go` — `maxConcurrency`, `maxConcurrencyForModelLocked`; `coordinator/registry/config.go` — `DefaultMaxConcurrent`; `coordinator/registry/concurrency_cap.go` — `SetQualityConcurrencyCap`, `effectiveMaxConcurrencyForModelRateLocked`, `hasConcurrencyHeadroomForModelCapResolvedLocked` |
+| Pending loads and swaps | `coordinator/registry/model_loading.go` — `pendingModelLoadTTL`, `TriggerModelSwaps`, `bestModelLoadProviderLocked`; `coordinator/registry/model_commands.go` — `SendLoadModel`; `coordinator/registry/model_swap_coalesce.go` — `modelSwapPlanInterval`, `modelSwapPlanGate`, `triggerModelSwapsFromHeartbeat` |
 | Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`, `WarmPoolSnapshot`; `coordinator/registry/warm_pool_target.go` — `warmTarget`, `qualityConcurrency`, `estimateServiceTime`, `rampLoadsThisTick`; `coordinator/registry/warm_pool_state.go` — `warmPoolArrivalEWMAAlpha` |
 | Warm-pool and quality-cap configuration | `coordinator/registry/config.go` — `WarmPoolConfig`, `QualityCapConfig`, `ReadConfig` |
-| Eviction | `coordinator/registry/registry.go` — `StartEvictionLoop`, `evictStale`, `disconnectProvider`, `evictStrikeThreshold`; wired in `coordinator/cmd/coordinator/main.go` |
+| Eviction | `coordinator/registry/provider_lifecycle.go` — `StartEvictionLoop`, `evictStale`, `disconnectProvider`, `evictStrikeThreshold`; wired in `coordinator/cmd/coordinator/main.go` |
 | Provider writer | `coordinator/registry/provider_writer.go` — `providerWriter`, `providerWriteTimeout`, `watchWrites` |
-| Teardown | `coordinator/registry/registry.go` — `Disconnect` |
+| Teardown | `coordinator/registry/provider_lifecycle.go` — `Disconnect` |
 | Cold dispatch and queue-before-shed flags | `coordinator/api/cold_dispatch.go` |
 | Provider-side slot limit and heartbeat interval | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` — `maxModelSlots`, `heartbeatIntervalSecs` |
 

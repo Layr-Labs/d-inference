@@ -85,7 +85,7 @@ TOOLING_VENV ?= .venv/tooling
 TOOLING_PYTHON = $(TOOLING_VENV)/bin/python
 TOOLING_REQUIREMENTS = scripts/benchmarks/attention_packet/requirements.txt
 
-$(TOOLING_VENV)/.requirements-installed: $(TOOLING_REQUIREMENTS)
+$(TOOLING_VENV)/.requirements-installed: $(TOOLING_REQUIREMENTS) mise.toml
 	python3 -m venv --clear "$(TOOLING_VENV)"
 	"$(TOOLING_PYTHON)" -m pip install -r "$<"
 	touch "$@"

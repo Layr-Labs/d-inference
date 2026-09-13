@@ -21,6 +21,8 @@ class ToolingEnvironmentTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         shutil.copy2(MAKEFILE, self.root / "Makefile")
+        self.toolchain = self.root / "mise.toml"
+        self.toolchain.write_text('[tools]\npython = "3.12"\n')
         self.requirements = self.root / "scripts/benchmarks/attention_packet/requirements.txt"
         self.requirements.parent.mkdir(parents=True)
         self.requirements.write_text("numpy==2.4.2\n")
@@ -83,11 +85,60 @@ if args[:2] == ["-m", "pip"] and os.environ.get("TOOLING_TEST_FAIL_INSTALL"):
         self.assertEqual(self.make("tooling-install").returncode, 0)
         stamp = self.root / ".venv/tooling/.requirements-installed"
         # Make the prior successful install older than its dependency without sleeping.
+        os.utime(self.toolchain, (0, 0))
         os.utime(stamp, (1, 1))
         self.requirements.write_text("numpy==2.4.2\n# revised input\n")
         result = self.make("tooling-install")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sum(call.startswith("-m pip install -r ") for call in self.calls()), 2)
+
+    def change_python_pin(self, stamp):
+        # Only the toolchain input is newer than the successful install. Keep
+        # requirements older so they cannot accidentally trigger this rebuild.
+        os.utime(self.requirements, (1, 1))
+        os.utime(stamp, (2, 2))
+        self.toolchain.write_text('[tools]\npython = "3.13"\n')
+        os.utime(self.toolchain, (3, 3))
+
+    def test_python_pin_change_rebuilds_and_then_reuses_environment(self):
+        for directory in (".venv/tooling", ".venv/tooling-override"):
+            with self.subTest(directory=directory):
+                self.toolchain.write_text('[tools]\npython = "3.12"\n')
+                result = self.make("tooling-install", TOOLING_VENV=directory)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                stamp = self.root / directory / ".requirements-installed"
+                old_environment_file = self.root / directory / "old-interpreter-state"
+                old_environment_file.write_text("must disappear when the pin changes")
+                previous = self.calls()
+                requirements = self.requirements.read_bytes()
+                self.change_python_pin(stamp)
+                result = self.make("tooling-install", TOOLING_VENV=directory)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(old_environment_file.exists())
+                self.assertEqual(self.requirements.read_bytes(), requirements)
+                self.assertEqual(self.calls()[len(previous):], [
+                    f'-m venv --clear {directory}',
+                    '-m pip install -r scripts/benchmarks/attention_packet/requirements.txt',
+                ])
+                rebuilt = self.calls()
+                result = self.make("tooling-install", TOOLING_VENV=directory)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.calls(), rebuilt)
+
+    def test_failed_python_pin_refresh_blocks_tests_until_retry(self):
+        result = self.make("tooling-install")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stamp = self.root / ".venv/tooling/.requirements-installed"
+        self.change_python_pin(stamp)
+        result = self.make(TOOLING_TEST_FAIL_INSTALL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(stamp.exists())
+        self.assertFalse(any(call.startswith("-m unittest ") for call in self.calls()))
+        result = self.make()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(stamp.is_file())
+        self.assertEqual(sum(call.startswith("-m pip install -r ") for call in self.calls()), 3)
+        self.assertEqual(sum(call.startswith("-m unittest ") for call in self.calls()), 3)
 
     def test_removed_requirement_is_absent_after_real_rebuild(self):
         # Exercise the real venv and pip commands with one tiny local wheel.
@@ -142,6 +193,7 @@ print(json.dumps({"importable": present, "version": version}))
         # Removing a requirement must also remove its installed package and
         # metadata, exactly as a fresh developer/CI environment would see it.
         self.requirements.write_text("")
+        os.utime(self.toolchain, (0, 0))
         os.utime(self.root / ".venv/tooling/.requirements-installed", (1, 1))
         result = self.make("tooling-install", **offline)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

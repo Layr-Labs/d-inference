@@ -224,6 +224,51 @@ class DocsCheckTests(unittest.TestCase):
                     self.assertIn("Page.md: orphan", result.stderr)
                     self.assertNotIn("broken link", result.stderr)
 
+    def test_fences_in_containers_preserve_following_navigation_and_errors(self):
+        for block in (
+            "- ```\n  [hidden](Hidden.md)\n  ```",
+            "1. ```go\n   [hidden](Hidden.md)\n   ```",
+            "> ```\n> [hidden](Hidden.md)\n> ```",
+            "> - ```\n>   [hidden](Hidden.md)\n>   ```",
+            "- - ```\n    [hidden](Hidden.md)\n    ```",
+            "- > ```\n  > [hidden](Hidden.md)\n  > ```",
+            "- item\n\n  ```\n  [hidden](Hidden.md)\n  ```",
+            "- ````\n  ```\n  [hidden](Hidden.md)\n  ````",
+            "- ~~~ bad`tick\n  [hidden](Hidden.md)\n  ~~~",
+            "- ```\n\n  [hidden](Hidden.md)\n  ```",
+            "  > ```\n> [hidden](Hidden.md)\n> ```",
+        ):
+            for missing in (False, True):
+                with self.subTest(block=block, missing=missing):
+                    after = "[Page](Page.md)\n" + ("[Broken](Missing.md)\n" if missing else "")
+                    result = self.check("\n" + block + "\n\n" + after)
+                    self.assertNotIn("orphan", result.stderr)
+                    self.assertNotIn("broken link -> Hidden.md", result.stderr)
+                    if missing:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("broken link -> Missing.md", result.stderr)
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_fences_end_with_their_containers_and_keep_content_literal(self):
+        for example in (
+            "- ```\n  [hidden](Hidden.md)\n\n[Page](Page.md)",
+            "> ```\n> [hidden](Hidden.md)\n\n[Page](Page.md)",
+            "> - ```\n>   [hidden](Hidden.md)\n>\n> [Page](Page.md)",
+            "- ```\n  [hidden](Hidden.md)\n- [Page](Page.md)",
+            "- > ```\n  > [hidden](Hidden.md)\n\n[Page](Page.md)",
+            "- item\n\n  > ```\n  > [hidden](Hidden.md)\n> [Page](Page.md)",
+            "> - item\n>\n>   > ```\n>   > [hidden](Hidden.md)\n> > [Page](Page.md)",
+            "- item\n\n  > ```\n  > first\n  > ```\n  > ```\n  > [hidden](Hidden.md)\n> [Page](Page.md)",
+            "```\n> ```\n[hidden](Hidden.md)\n```\n\n[Page](Page.md)",
+            "> ```\n> > ```\n> [hidden](Hidden.md)\n> ```\n\n[Page](Page.md)",
+            "- ```\n  - ```\n  [hidden](Hidden.md)\n  ```\n\n[Page](Page.md)",
+            "- ``` bad`tick\n  [Page](Page.md)",
+        ):
+            with self.subTest(example=example):
+                result = self.check("\n" + example + "\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_html_blocks_do_not_create_navigation(self):
         for example in (
             "<!-- [guide] -->",
@@ -337,6 +382,40 @@ class DocsCheckTests(unittest.TestCase):
 
     def test_inline_link_and_reference_targets_stay_independent(self):
         result = self.check("[guide](Page.md)\n[guide]: Missing.md\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("broken link -> Missing.md", result.stderr)
+        self.assertNotIn("orphan", result.stderr)
+
+    def test_link_titles_do_not_create_navigation(self):
+        (self.root / "docs/Home.md").write_text(STAMP)
+        for usage in (
+            '[Home](Home.md "title ) [guide]")',
+            "[Home](Home.md 'title ) [guide]')",
+            r'[Home](Home.md "title \" ) [guide]")',
+            '[Home](Home.md "title )\n[guide]")',
+            '[Home](<Home.md> "title ) [guide]")',
+            r'[Home](Home.md (title \) [guide]))',
+            '[Home](Home.md)\n![diagram](Home.md "title ) [guide]")',
+        ):
+            with self.subTest(usage=usage):
+                result = self.check("\n" + usage + "\n\n[guide]: Page.md\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Page.md: orphan", result.stderr)
+                self.assertNotIn("Home.md: orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+
+    def test_title_delimiters_preserve_real_links_and_missing_targets(self):
+        (self.root / "docs/Home.md").write_text(STAMP)
+        for usage in (
+            '[Home](Home.md "title ) [unused]") [guide]',
+            "[Home](Home.md 'title ) [unused]')[guide]",
+            '[Home](Home.md)\n[bad](Home.md "unterminated ) [guide]',
+            '[Home](Home.md)\n[bad](Home.md "title )\n\n[guide]\")',
+        ):
+            with self.subTest(usage=usage):
+                result = self.check("\n" + usage + "\n\n[guide]: Page.md\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.check('\n[Home](Home.md)\n[Page](Page.md)\n[bad](Missing.md "title ) [guide]")\n')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("broken link -> Missing.md", result.stderr)
         self.assertNotIn("orphan", result.stderr)

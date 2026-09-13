@@ -207,10 +207,42 @@ soft_break_pattern = re.compile(soft_break)
 # Visible labels balance arbitrary bracket depth; reference identifiers only
 # permit escaped brackets. Keep destination matching separate from that stack.
 reference_unit = rf"(?:\\.|[^\[\]\\\n]|{soft_break})"
-link_suffix = re.compile(
-    rf"\((?![^)]*\n[ \t]*\n)\s*(?:<(?P<angle>[^>\n]*)>|(?P<bare>[^\s)]*))[^)]*\)"
-    rf"|\[(?P<reference>{reference_unit}*)\]"
-)
+reference_suffix = re.compile(rf"\[(?P<reference>{reference_unit}*)\]")
+inline_destination = re.compile(r"\(\s*(?:<(?P<angle>[^>\n]*)>|(?P<bare>[^\s)]*))")
+link_space = re.compile(r"\s*")
+
+
+def inline_link(text, offset):
+    destination = inline_destination.match(text, offset)
+    if destination is None:
+        return None
+    end = destination.end()
+    spaced = link_space.match(text, end).end()
+    marker = text[spaced:spaced + 1]
+    if spaced > end and marker in ('"', "'", "("):
+        # A quoted title is one opaque token. Its parentheses and brackets
+        # cannot end the link or become independent navigation.
+        delimiter = ")" if marker == "(" else marker
+        end = spaced + 1
+        while end < len(text):
+            if text[end] == "\\":
+                end += 2
+            elif text[end] == delimiter:
+                end = link_space.match(text, end + 1).end()
+                break
+            else:
+                end += 1
+        else:
+            return None
+    else:
+        end = spaced
+    if text[end:end + 1] != ")":
+        return None
+    for newline in re.finditer("\n", text[offset:end + 1]):
+        if not soft_break_pattern.match(text, offset + newline.start()):
+            return None
+    target = destination["angle"] if destination["angle"] is not None else destination["bare"]
+    return target, end + 1
 
 
 def rendered_targets(text, definitions):
@@ -242,13 +274,14 @@ def rendered_targets(text, definitions):
         offset += 1
         if not opener["active"]:
             continue
-        suffix = link_suffix.match(text, offset)
-        if suffix and suffix["angle"] is not None:
-            target = suffix["angle"]
-        elif suffix and suffix["bare"] is not None:
-            target = suffix["bare"]
-        elif suffix:
-            target = definitions.get(label(suffix["reference"] or visible_label))
+        inline = inline_link(text, offset)
+        reference = reference_suffix.match(text, offset) if inline is None else None
+        finish = offset
+        if inline is not None:
+            target, finish = inline
+        elif reference:
+            target = definitions.get(label(reference["reference"] or visible_label))
+            finish = reference.end()
         elif text[offset:offset + 1] == "[":
             # An invalid explicit reference suppresses shortcut fallback.
             target = None
@@ -256,8 +289,7 @@ def rendered_targets(text, definitions):
             target = definitions.get(label(visible_label))
         if target is None:
             continue
-        if suffix:
-            offset = suffix.end()
+        offset = finish
         if opener["image"]:
             # Image alt text may contain link syntax, but those inner targets
             # are rendered as alt text, not independent links or images.
@@ -275,21 +307,58 @@ def rendered_targets(text, definitions):
 def parse(source):
     body, navigation = [], []
     fence = None
+    fence_containers = []
+    fence_parent = None
     html_end, html_depth, html_indent = None, 0, 0
     paragraph_open, quote_depth, list_indents = False, 0, []
     empty_item = False
     list_item = re.compile(r"^ {0,3}(?P<marker>[-+*]|[0-9]{1,9}[.)])(?P<padding> +|$)")
     for line in source.read_text().splitlines():
-        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        content = line.expandtabs(4)
         if fence is not None:
-            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
-                fence = None
-            continue
+            # Consume only the containers that opened this fence. Additional
+            # quote/list-looking text inside the code stays literal.
+            fenced_content = content
+            closed = False
+            for container in fence_containers:
+                if container is None:
+                    quote = re.match(r"^ {0,3}> ?", fenced_content)
+                    if not quote:
+                        break
+                    fenced_content = fenced_content[quote.end():]
+                elif fenced_content.strip():
+                    if len(fenced_content) - len(fenced_content.lstrip(" ")) < container:
+                        break
+                    fenced_content = fenced_content[container:]
+            else:
+                marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", fenced_content)
+                if not (marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip()):
+                    continue
+                closed = True
+            # A fence cannot outlive its list item or quote. Reprocess this
+            # line normally when its container prefix is no longer present.
+            fence = None
+            if fence_parent is not None:
+                quote_depth, list_indents = fence_parent
+            if closed:
+                continue
         # Indented code starts outside a paragraph. Measure its four columns
         # from the list/quote content, so ordinary nested links stay visible.
-        content = line.expandtabs(4)
         quote = re.match(r"^(?: {0,3}> ?)+", content)
         depth = quote[0].count(">") if quote else 0
+        quote_containers = [None] * depth
+        quote_parent = None
+        if depth > quote_depth and list_indents:
+            # A quote introduced on an indented list continuation still
+            # belongs to that list, even though the quote prefix matches first.
+            parent_content = content
+            for _ in range(quote_depth):
+                parent_quote = re.match(r"^ {0,3}> ?", parent_content)
+                parent_content = parent_content[parent_quote.end():]
+            list_indent = list_indents[-1]
+            if len(parent_content) - len(parent_content.lstrip(" ")) >= list_indent:
+                quote_containers = [None] * quote_depth + [list_indent] + [None] * (depth - quote_depth)
+                quote_parent = (quote_depth, list_indents.copy())
         if depth != quote_depth:
             list_indents = []
             empty_item = False
@@ -321,18 +390,6 @@ def parse(source):
                 paragraph_open = False
                 continue
             html_end = None
-        # Backtick fence info strings cannot contain backticks, even escaped
-        # ones. An invalid opener remains ordinary Markdown.
-        if marker and (marker[1][0] != "`" or "`" not in marker[2]):
-            fence = marker[1]
-            # Removing a fenced block must not join labels across paragraphs.
-            body.append("")
-            paragraph_open = False
-            empty_item = False
-            fence_indent = len(line) - len(line.lstrip(" "))
-            while list_indents and fence_indent < list_indents[-1]:
-                list_indents.pop()
-            continue
         was_in_list = bool(list_indents)
         while list_indents and indent < list_indents[-1]:
             if paragraph_open and not (
@@ -360,6 +417,33 @@ def parse(source):
             empty_item = not relative.strip()
         if not paragraph_open and len(relative) - len(relative.lstrip(" ")) >= 4:
             body.append("")
+            continue
+        # Lists may themselves contain quotes (and further lists). Record
+        # those prefixes without treating code inside them as new containers.
+        fenced_content, nested_containers = relative, []
+        while (quote := re.match(r"^ {0,3}> ?", fenced_content)):
+            nested_containers.append(None)
+            fenced_content = fenced_content[quote.end():]
+            while (item := list_item.match(fenced_content)):
+                padding = len(item["padding"])
+                width = item.start("padding") + (padding if 1 <= padding <= 4 else 1)
+                nested_containers.append(width)
+                fenced_content = fenced_content[width:]
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", fenced_content)
+        # Backtick fence info strings cannot contain backticks, even escaped
+        # ones. An invalid opener remains ordinary Markdown.
+        if marker and (marker[1][0] != "`" or "`" not in marker[2]):
+            fence = marker[1]
+            # None records a quote prefix; an integer records list indentation.
+            fence_containers = quote_containers + ([base] if base else []) + nested_containers
+            # Retain the surrounding list when a later fence starts in the
+            # same indented quote after this fence closes.
+            fence_parent = quote_parent
+            body.append("")
+            paragraph_open = False
+            empty_item = False
+            while list_indents and base < list_indents[-1]:
+                list_indents.pop()
             continue
         html_end = html_block_end(relative, paragraph_open)
         if html_end is not None:

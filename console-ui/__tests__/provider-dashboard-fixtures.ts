@@ -41,8 +41,6 @@ export function baseProvider(overrides: Partial<MyProvider> = {}): MyProvider {
     },
     lifetime_requests_served: 480,
     lifetime_tokens_generated: 1_200_000,
-    earnings_total_micro_usd: 5_000_000,
-    earnings_count: 480,
     last_challenge_verified: new Date().toISOString(),
     version: "0.5.16",
     ...overrides,

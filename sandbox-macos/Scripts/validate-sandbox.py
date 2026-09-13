@@ -142,7 +142,9 @@ def main():
     if args.consumer_config and consumer_summary.is_file():
         consumer = json.loads(consumer_summary.read_text())
         record["consumer_evidence"] = {"summary": "consumer/summary.json", "sha256": sha256(consumer_summary),
-                                       "selected_cases_passed": consumer.get("passed") is True}
+                                       "selected_cases_passed": consumer.get("passed") is True,
+                                       "evidence_scope": consumer.get("evidence_scope"),
+                                       "not_covered": consumer.get("not_covered", [])}
         if any(case.get("case") == "workspace_exhaustion" and case.get("status") == "passed"
                for case in consumer.get("cases", [])):
             record["not_covered"].remove("disk quota exhaustion")

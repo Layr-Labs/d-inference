@@ -1,15 +1,16 @@
 """Real consumer operations; no coordinator admin or host mutation shortcuts."""
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
-import json
-from pathlib import Path
 import re
 import time
 import uuid
 
 from sandbox_live_evidence import denied, digest, identity, require, success, utc
 from sandbox_live_quota import workspace_exhaustion
+from sandbox_live_coverage import not_covered
+from sandbox_live_expiry import delete_and_expiry
+from sandbox_live_files import transfer_recovery
+from sandbox_live_replay import command_replay
 
 TERMINAL = {"succeeded", "failed", "timed_out", "cancelled", "lost"}
 
@@ -25,7 +26,7 @@ class LiveSuite:
         self.input = client.root / "fixture.bin"
         self.input.write_bytes(self.fixture)
         self.transfers = []
-        self.not_covered = [] if client.config.get("workspace_exhaustion", False) else ["workspace_exhaustion"]
+        self.not_covered = not_covered(client.config)
 
     def save_ownership(self):
         self.client.write("ownership.json", {"created_ids": self.created, "pending_creations": self.pending,
@@ -85,9 +86,9 @@ class LiveSuite:
         success(self.client.call(action, [action, "--wait=false", sandbox_id], key=str(uuid.uuid4())))
         return self.wait_state(sandbox_id, target)
 
-    def submit(self, sandbox_id, arguments, timeout=30, label="submit"):
+    def submit(self, sandbox_id, arguments, timeout=30, label="submit", key=None):
         command = success(self.client.call(label, ["exec", "--wait=false", "--timeout", str(timeout), sandbox_id,
-                                                    "--"] + arguments, key=str(uuid.uuid4())))
+                                                    "--"] + arguments, key=key or str(uuid.uuid4())))
         identity(command.get("id"))
         require(command.get("sandbox_id") == sandbox_id, "command sandbox identity mismatch")
         return command
@@ -161,11 +162,12 @@ class LiveSuite:
         for index, sandbox_id in enumerate(self.sandboxes):
             self.download_exact(sandbox_id, f"instance-{index}.bin", f"positive-after-denial-{index}.bin")
 
-    def download_exact(self, sandbox_id, remote, local):
+    def download_exact(self, sandbox_id, remote, local, expected=None):
+        expected = self.fixture if expected is None else expected
         target = self.client.root / local
         result = success(self.client.call("download", ["download", sandbox_id, remote, str(target)], timeout=180))
-        require(result.get("size") == len(self.fixture) and target.read_bytes() == self.fixture, "download bytes differ")
-        self.client.write(local + ".digest.json", {"path": local, "bytes": len(self.fixture), "sha256": digest(target.read_bytes())})
+        require(result.get("size") == len(expected) and target.read_bytes() == expected, "download bytes differ")
+        self.client.write(local + ".digest.json", {"path": local, "bytes": len(expected), "sha256": digest(target.read_bytes())})
 
     def tenant_identity(self):
         script = """set -eu
@@ -261,18 +263,6 @@ printf 'policy-denied\n'
             require(value.get("state") == "succeeded" and value.get("stdout") == f"parallel-{index}\n",
                     "concurrent job output mismatch")
 
-    def delete_and_expiry(self):
-        self.lifecycle("delete", self.sandboxes[0], "deleted")
-        sandbox_id = self.sandboxes[1]
-        value = self.lifecycle("stop", sandbox_id, "stopped")
-        expiry = datetime.fromisoformat(value["lease_expires_at"].replace("Z", "+00:00"))
-        remaining = max(0, (expiry - datetime.now(timezone.utc)).total_seconds())
-        budget = self.client.config.get("expiry_seconds", 2100)
-        require(remaining + 60 <= budget, "expiry budget too short; natural lease expiry was not tested")
-        print("Waiting for the created sandbox's real lease expiry; no lease renewal or clock mutation.", flush=True)
-        self.wait_state(sandbox_id, "deleted", budget, interval=15)
-        require(datetime.now(timezone.utc) >= expiry, "sandbox was deleted before natural lease expiry")
-
     def cleanup(self):
         failures = []
         for key in list(self.pending):
@@ -293,10 +283,12 @@ printf 'policy-denied\n'
 
     def run(self):
         cases = [("create_two", self.create_two), ("exact_files_and_isolation", self.exact_files_and_isolation),
+                 ("command_idempotency", lambda: command_replay(self)),
+                 ("partial_transfer_recovery", lambda: transfer_recovery(self)),
                  ("tenant_identity", self.tenant_identity), ("network_denial", self.network_denial),
                  ("bounded_output", self.bounded_output), ("timeout_cancel_recovery", self.timeout_cancel_recovery),
                  ("workspace_persistence", self.persistence), ("concurrent_jobs", self.concurrent_jobs),
-                 ("delete_and_expiry", self.delete_and_expiry)]
+                 ("delete_and_expiry", lambda: delete_and_expiry(self))]
         if self.client.config.get("workspace_exhaustion", False):
             cases.insert(-1, ("workspace_exhaustion", lambda: workspace_exhaustion(self)))
         failed = False
@@ -315,12 +307,14 @@ printf 'policy-denied\n'
                     failed = True
                     result = {"case": name, "status": "failed", "reason": str(error)}
                 result.update(duration_seconds=time.monotonic() - start,
-                              evidence=[r["stdout"]["path"][:-7] + ".json" for r in self.client.records[before:]])
+                              evidence=[r["evidence_file"] for r in self.client.records[before:]])
                 self.results.append(result)
                 self.client.write("results.json", self.results)
         finally:
             failures = self.cleanup()
             self.client.write("summary.json", {"passed": not failed and not failures and len(self.results) == len(cases),
+                "evidence_scope": "selected consumer API and guest observations; not release readiness",
+                "production_ready": False,
                 "cases": self.results, "cleanup_failures": failures, "not_covered": self.not_covered,
                 "finished_at": utc()})
         return not failed and not failures

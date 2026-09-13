@@ -235,11 +235,12 @@ Optional stages:
   This opt-in is required for physical quota acceptance; the command has a
   900-second limit. No host filesystem path is used as the write destination.
 
-The last two stages use the existing development VM proof. They do not prove
-the production guest channel, network policy, workspace exhaustion, host-owner
-privacy, production keychain persistence or post-reboot cleanup. Name those
-separate gates in release evidence until their actual physical tests pass.
-Notarization is never inferred or submitted by these scripts.
+`--prepare-base` and `--two-vms` use the development VM proof. They do not prove
+the production guest channel or its tenant policies. `--consumer-config` uses
+the actual configured consumer API and host; retain its signed artifact identities
+and physical host inventory with the selected observations. Consumer success
+does not establish host-owner privacy, production keychain persistence or
+post-reboot cleanup. Notarization is never inferred or submitted by these scripts.
 
 The consumer harness can also run independently:
 
@@ -269,15 +270,42 @@ with the explicit disposable deployment. HTTP requires a loopback origin plus
 ```
 
 The harness checks multichunk binary round trips, cross-instance denial with
-working positive controls, tenant identity, scheduler and sudo denial, absent
-non-loopback IP interfaces, bounded output, timeout/cancellation cleanup,
-stop/start persistence, overlapping jobs, delete and real expiry. It saves raw
-CLI output with hashes, per-case status, create idempotency keys before mutation,
-and a scoped cleanup ledger. An uncertain create is reconciled with its original
-key. Cleanup addresses only IDs returned to this run, never a global list.
+working positive controls, command replay/conflict without duplicate execution,
+tenant identity, scheduler and sudo denial, absent non-loopback IP interfaces,
+bounded output, timeout/cancellation cleanup, stop/start persistence, overlapping
+jobs, delete and real expiry. A bounded file REST adapter starts an upload and
+acknowledges one chunk; a fresh CLI process resumes the same transfer ID. This
+tests interruption between requests, not a disconnect during an in-flight request.
+Additional cases verify partial abort without publication, committed-abort denial
+without data loss, and stale download-version rejection after a tenant mutation,
+followed by an exact new-version download. REST probes use the same account key
+and only sandbox IDs owned by the current run; they do not call raw guest operations.
+
+Natural expiry leaves the second VM ready and submits a long-running process in
+its final minute. The harness requires a running observation in the final twelve
+seconds, followed by natural deletion and terminal command cleanup. Command
+deadlines must fit the lease, so command timeout and lease expiry can race;
+`natural-expiry.json` records this limit. There is no Stop, Renew, shortened lease
+or clock mutation in this expiry case.
+
+The harness saves raw CLI output and bounded REST responses with hashes,
+per-case status, create/replay/transfer identities before requests, and a scoped cleanup
+ledger. An uncertain create is reconciled with its original key. Cleanup
+addresses only IDs returned to this run, never a global list.
 An API `deleted` state does not prove physical directory cleanup: retain the
 matching host inventory separately. Host assignment is operator-provided because
 the current CLI output omits host ID. Without `--workspace-exhaustion` (or
 `workspace_exhaustion: true` in its explicit configuration), the summary retains
-`workspace_exhaustion` under `not_covered`. The suite does not replace
-scheduler-respawn, crash/reboot, or release-signature tests.
+`workspace_exhaustion` under `not_covered`. Every summary labels its selected
+API/guest observations and retains `production_ready: false`. The closed list in
+`sandbox-macos/Scripts/sandbox_live_coverage.py` also names separate-account authorization,
+in-flight disconnect recovery, scheduler respawn, broker/host crash and reboot,
+physical removal, renewal/drain, CI build performance, cold boot/contention,
+release and privacy gates that this suite does not prove. The fixture currently
+enrolls one account; separate-account live proof requires a second independently
+seeded consumer and private key, denied access to the first account's resource
+IDs, and successful access to its own resources as a positive control.
+
+`test-sandbox-live-tools.py` exercises harness assertions through fake CLI/REST
+transports and simulated time. Those offline tests never constitute physical
+isolation, natural-expiry or performance evidence.

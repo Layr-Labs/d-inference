@@ -13,6 +13,7 @@ from unittest.mock import patch
 from sandbox_live_evidence import EvidenceCLI, MAX_CAPTURE, denied, validate_config
 from sandbox_live_suite import LiveSuite
 from sandbox_live_quota import workspace_exhaustion
+from sandbox_live_cases_tests import FileHTTPTests, FileRecoveryTests, ReplayExpiryTests
 
 
 def configuration(cli):
@@ -143,10 +144,25 @@ class HarnessTests(unittest.TestCase):
     def test_workspace_exhaustion_is_opt_in_and_excludes_foreign_paths(self):
         with tempfile.TemporaryDirectory() as temporary:
             suite = LiveSuite(FakeClient(Path(temporary)))
-            self.assertEqual(suite.not_covered, ["workspace_exhaustion"])
+            self.assertIn("workspace_exhaustion", suite.not_covered)
+            self.assertIn("physical_host_inventory_and_storage_removal", suite.not_covered)
+            self.assertIn("second_account_authorization", suite.not_covered)
             suite.sandboxes = [suite.client.foreign_id]
             with self.assertRaisesRegex(AssertionError, "created by this run"):
                 workspace_exhaustion(suite)
+
+    def test_summary_names_selection_and_unverified_physical_gates_after_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            suite = LiveSuite(FakeClient(Path(temporary)))
+            with patch.object(suite, "create_two", side_effect=AssertionError("offline fixture failure")), \
+                    patch.object(suite, "cleanup", return_value=[]):
+                self.assertFalse(suite.run())
+            summary = json.loads((suite.client.root / "summary.json").read_text())
+            self.assertFalse(summary["passed"])
+            self.assertFalse(summary["production_ready"])
+            self.assertIn("selected consumer API", summary["evidence_scope"])
+            self.assertIn("broker_crash_restart_and_host_reboot_reconciliation", summary["not_covered"])
+            self.assertTrue(all(case["status"] == "blocked" for case in summary["cases"][1:]))
 
     def test_workspace_enospc_is_bounded_and_recovers_after_removing_only_its_file(self):
         self.run_quota_fixture("No space left on device", succeeds=True)
@@ -224,4 +240,5 @@ class FakeClient:
 
 
 if __name__ == "__main__":
+    print("Offline harness assertions: fake CLI/REST transports and simulated time; no physical acceptance.", flush=True)
     unittest.main()

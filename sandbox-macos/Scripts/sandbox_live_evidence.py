@@ -98,12 +98,16 @@ class EvidenceCLI:
         finally:
             os.close(directory)
 
-    def call(self, label, args, *, key=None, timeout=60):
-        args = [str(a) for a in args]
+    def evidence_stem(self, label):
         with self.lock:
             self.sequence += 1
             stem = f"{self.sequence:04d}-{label}"
         require(re.fullmatch(r"[0-9A-Za-z_-]+", stem), "unsafe evidence label")
+        return stem
+
+    def call(self, label, args, *, key=None, timeout=60):
+        args = [str(a) for a in args]
+        stem = self.evidence_stem(label)
         argv = [self.config["cli"], "--json", "--api-url", self.config["api_url"]]
         if self.config.get("allow_insecure_localhost"):
             argv += ["--allow-insecure-localhost"]
@@ -158,6 +162,7 @@ class EvidenceCLI:
                 reader.join(timeout=5)
         require(not any(t.is_alive() for t in readers), "CLI output pipe did not close")
         record = {"label": label, "arguments": args, "idempotency_key": key,
+                  "evidence_file": stem + ".json", "transport": "consumer_cli",
                   "exit_code": process.returncode, "duration_seconds": time.monotonic() - started,
                   "interrupted": interrupted, "capture_truncated": overflow.is_set(), "finished_at": utc()}
         for name, data in streams.items():
@@ -188,9 +193,9 @@ def success(result):
     return payload
 
 
-def denied(result, code):
+def denied(result, code, *, status=404):
     record, payload = result
     require(record["exit_code"] != 0 and not record["interrupted"] and not record["capture_truncated"],
             "expected explicit API denial, not transport interruption")
-    require(isinstance(payload, dict) and payload.get("error") == f"sandbox request failed: {code} (HTTP 404)",
+    require(isinstance(payload, dict) and payload.get("error") == f"sandbox request failed: {code} (HTTP {status})",
             "unexpected denial reason; positive control or API behavior failed")

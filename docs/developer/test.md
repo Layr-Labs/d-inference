@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `2ee8a4c87`
+> Last updated: 2026-09-13 · commit `5c25e79a2`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -81,6 +81,13 @@ establish physical isolation. The `macOS Sandbox Tests` CI job separately builds
 and tests the exact pinned Lume patches and builds release host/guest products.
 See the [sandbox CLI workflow](../consumer/sandbox-cli.md) and
 [sandbox API contract](../reference/sandbox-api.md).
+
+`python3 -B sandbox-macos/Scripts/test-sandbox-live-tools.py` tests the live
+consumer harness with fake CLI/REST transports and simulated time. It checks
+command replay, partial upload resumption/abort, changed-revision denial,
+running-command expiry assertions and explicit evidence limits. It performs no
+physical acceptance. Follow [isolated sandbox acceptance](sandbox-acceptance.md)
+for the real deployment and retain the separate physical cleanup evidence.
 
 Run prediction telemetry checks from the repository root:
 

@@ -1,238 +1,221 @@
 # Sandbox completion checkpoint
 
-Status: goal active; implementation committed for review, physical qualification incomplete.
-No production deployment or host administrator installation has occurred.
+Status: active goal; implementation under review, physical qualification incomplete.
+No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Source and ownership
 
 - Worktree: `.worktrees/sandbox-completion-20260913`.
 - Branch: `codex/sandbox-completion-20260913`.
-- Starting sandbox tip: `0950ac41e`; integrated master: `93337ef05` in `453b37667`.
-- Latest pushed commit: `2ee8a4c87` (after `1ad135ab7` and `cadaa7fdb`).
+- Starting sandbox tip0950ac41e; master93337ef05 integrated in453b37667.
+- Latest pushed commit:5c25e79a22da55443ccc639ba6c3e567d41eb280.
+- Earlier integration commits:1ad135ab7,cadaa7fdb,2ee8a4c87,41522b85b.
 - Draft PR: https://github.com/Layr-Labs/d-inference/pull/996.
-- Main checkout and its unrelated edits remain untouched.
+- Main checkout and unrelated providers/edits remain untouched.
 - Evidence: `/private/tmp/darkbloom-sandbox-completion-evidence`.
-- Disposable lab: `/private/tmp/darkbloom-sandbox-lab-20260913`.
-- Root exclusively owns VM start/stop; agents must coordinate source/build changes.
+- Disposable lab: `/private/tmp/darkbloom-sandbox-lab-20260913` on both Macs.
+- Private primary fixture: `/private/tmp/darkbloom-physical-acceptance` mode0700.
+- Root exclusively owns VM lifecycle and privileged test-host actions.
 
-## Implemented product and boundaries
+## Product implemented
 
-The initial product is an opt-in, offline macOS CPU sandbox service. The
-coordinator owns admission, resource leases, fencing, idempotent lifecycle and
-command records. A separate host daemon holds machine-wide exclusive runtime
-ownership, manages VM disks, and authenticates the root guest supervisor over
-vsock. Tenant commands irreversibly drop to UID/GID2001. File operations are
-bounded, descriptor-based, resumable within the VM lifetime, and version-bound
-for downloads. The consumer Go CLI covers creation, inspection, execution, jobs,
-logs, cancellation, files, start/stop, renewal and deletion.
+The private alpha is an opt-in offline macOS CPU sandbox service. The real
+coordinator owns account admission, durable leases/fences, idempotent lifecycle
+and command records. A separate nonroot host daemon holds machine-wide exclusive
+runtime ownership and authenticates a signed root guest supervisor over vsock.
+Tenant commands irreversibly drop to never-registered UID/GID2001. File transfers
+are bounded, resumable between acknowledged chunks, and version-bound on reads.
+The Go consumer CLI covers create/list/inspect/execute/jobs/logs/cancel/files,
+start/stop/renew/delete. Service enablement, account admission and drain differ.
 
-Service enablement, account admission and operator drain are separate states.
-Cleanup remains possible after admission closes. Cancellation and uncertain
-runtime failures require VM stopped proof before resources can be reused.
-Durable deletion intent survives crashes and retains capacity until cleanup is
-proven. Start rotates fencing without extending the lease. Command journals have
-a256-command lifetime bound; accepted IDs always replay without re-execution.
+Cleanup remains available after admission closes. Uncertain runtime failures
+retain capacity until VM stopped proof. Durable deletion intent survives
+crashes. Start rotates fencing while preserving lease expiry and resources.
+Accepted command IDs replay without reexecution; lifetime journal admission is
+bounded at256 commands and1GiB. Host and actual VM retain exclusive ownership;
+inference must retain shared ownership for its lifetime. The authority inode is
+`/Library/Application Support/Darkbloom/runtime/ownership.lock` and must survive
+upgrades. Existing providers lacking this implementation require an explicit
+controlled transition before sharing the host.
 
-The offline profile has no IP NIC, audio, clipboard, host-directory sharing or
-GPU claim. Raw VM storage requires FileVault-encrypted APFS; it does not provide
-per-VM cryptographic erasure. Encrypted snapshot artifacts are a separate library
-and are not an integrated restore product. Billing and public access remain out
-of scope for this private alpha.
+The offline profile has no IP NIC, audio, clipboard, host-directory share or GPU
+claim. Tenant UID/GID2001 must remain absent from directory databases; lookup
+errors fail closed. Native cleanup handles tenant processes and launchd domains.
+Root never edits protected cron/at spools or disables SIP/TCC. Account-dependent
+APIs such as Node os.userInfo, Python pwd and some SSH flows are not assumed
+compatible. VM destruction remains the outer boundary for privileged OS queues.
 
-Machine authority is rooted at
-`/Library/Application Support/Darkbloom/runtime/ownership.lock`. Inference retains
-shared ownership for its full lifetime; sandbox broker and actual Lume VM retain
-exclusive ownership. No authority has been installed on this Mac. Existing
-providers must not be stopped or bypassed without the pending explicit test-host
-decision.
+Persistent raw VM disks require verified password-protected APFS encryption.
+This is volume protection, not per-VM cryptographic erasure or confidentiality
+from the running host administrator. Snapshot encryption code is a separate
+library; integrated restore, billing and public access are not shipped here.
 
-## Current validation
+## Validation at the pushed source
 
-- Full sandbox Swift suite at the pushed revision:392 tests,7 physical opt-in
-  skips,0 failures (`swift-integrated-wave7.log`). Later diagnostic/test changes
-  still require final integration verification.
-- Full coordinator suite:5996 passing events (3518 top-level,2478 subtests),
- 29 packages,3 opt-in skips. Disposable PostgreSQL, focused race tests, vet,
-  Linux coordinator build and macOS/Linux consumer CLI builds passed.
-- Pinned Lume:186 tests plus6 required lifecycle checks passed in the canonical
-  signed build. Native stop coalescing has9 focused tests; fail-stop diagnostics
-  have3 tests. Physical base creation, boot, SSH and cooperative stop succeeded.
-- Provider lifetime/ownership:14 focused tests passed; benchmark CLI target built.
-- Release tooling:24 tests; live acceptance harness:13 offline tests; CPU
-  benchmark harness:3 tests. Docs lint:278 files passed.
-- GitHub checks at `2ee8a4c87`: sandbox, provider, coordinator, E2E integration,
-  UI, release integrity, docs, lint and CodeQL all passed. E2E benchmarks await
-  their external gate. Threat Model Review failed because its configured API
-  credential returned401; no secret or workflow was modified.
-- The live two-VM acceptance and paired VM/host performance harnesses are built
-  but have not run against the isolated service. A reproducible offline Go CI
-  workload benchmark is being completed independently.
+- Swift wave8:400tests,7 physical opt-in skips,0failures,78.9seconds.
+- Coordinator:6005passing events (3527top-level,2478subtests),30packages,
+  3opt-in skips,0failures. Focused race/vet and macOS/Linux builds pass.
+- Packaging26tests; live harness13 offline tests; CPU harness3tests;
+  real Go CI harness12Python tests and its Go runner race suite pass.
+- Pinned Lume186tests plus6required checks; native stop9focused tests;
+  fail-stop diagnostics3tests. Physical public-base create/boot/SSH/stop pass.
+- Provider ownership14focused tests; benchmark CLI target built.
+- Docs lint283files; actionlint pass.
+- Go CI benchmark host-only baseline:356passing events per sample, two native
+  samples plus relocated source, four compiled artifact hashes identical.
+  No guest performance or compatibility claim yet.
+- GitHub5c25: coordinator/sandbox/lint/docs/UI/release-integrity/CodeQL pass.
+  Provider/E2E integration were still running at the last snapshot; benchmark
+  gate waits. Threat Model Review returned external API401 invalid credential;
+  no review result exists and no secret/workflow was changed.
 
-## Physical installation defect under investigation
+The live-harness improvements add active-VM natural expiry, file
+resume/abort/version controls, idempotency replay/conflict, and accurate
+coverage exclusions. Their26offline tests, syntax/diff checks and docs283-file
+check pass. Second-account and in-flight transport-disconnect proof remain
+explicitly outside this harness; command timeout can race natural lease expiry.
 
-The signed guest base has not qualified. Current partial image:
-`vms/darkbloom-sandbox-base-20260913`, in the disposable lab. Root probes stop the
-VM and record stopped proof. Check the newest probe result before any next run.
-Do not use the partial base for tenants or replay the installer over existing
-accounts. The qualified template receipt is `.darkbloom-template.json`.
+## Authorized test Mac and storage
 
-The first Lume provision failure was a concurrent Virtualization.framework stop
-race. Pinned patch0008 coalesces native stop completion without weakening
-terminal proof; physical base provisioning then succeeded.
+The user authorized SSH/sudo on nonproduction `gaj@100.104.151.128`.
+Credentials remain in the conversation and transient authentication only.
+ControlMaster: `/private/tmp/darkbloom-sandbox-test-remote-20260913/control`.
+Held SSH session49221. Never write the SSH/sudo password into files or logs.
 
-Guest installation subsequently exposed macOS path aliases, trusted-parent
-scheduler leaf ownership, and lazily recreated empty launchd user domains. Those
-fixes are committed. Signed release5 now reaches the native scheduler setup but
-has not completed installation. Direct root-SSH probes show `EPERM` both when
-changing `/private/var/at` ownership and when creating cron/at allowfiles. The
-installed signed helper reports `guest_bootstrap.scheduler_spool.policy_mismatch`.
-Root is testing the actual system LaunchDaemon execution context before choosing
-a supported installation design. No TCC database, host permissions or allowlist
-protection has been bypassed. Precise diagnostic edits are uncommitted.
+M3 Max,14cores,36GiB,macOS26.4,Xcode26.5,Swift6.3.2,Go1.27.1,Python3.9.6.
+System Data UUID9325586E-9099-489B-9100-82CED3DFB185 remains FileVault=false.
+Whole-Mac FileVault enablement is no longer needed for this test campaign.
 
-The installer also timed out instead of surfacing this failure. A generic
-long-timeout wrapper with immediate exit78 passes in0.4s; guest_architecture is
-tracing the actual installer failure path rather than replacing the transport
-without evidence.
+A NEW dedicated encrypted APFS volume was created under the test authorization:
+`/Volumes/DarkbloomSandboxTest-20260913`, disk3s7,
+UUID EFEE3956-B6E1-47EA-A240-ACB4FE32975C, quota384000000000bytes,reserve0.
+FileVault=true, owners enabled. Wrong passphrase denied and stayed locked;
+correct generated passphrase unlocked/remounted. Existing six volumes remain.
+Actual available bytes match Data/shared container; no virtual extra capacity.
+The passphrase is ONLY in the primary FileVault-protected0700 fixture directory,
+owner-only0600 `test-volume-passphrase.txt`; never copy it to remote disk/logs.
+Do not delete that key while the volume is retained.
 
-## Exact physical artifacts
+The new volume root is initially gaj:staff0775. Before broker use, the reviewed
+root setup must make that EXACT root root:wheel0755, then private broker0700
+children. No broker or machine authority exists yet. UID/GID430 and runtime
+GID431 were free at inspection; recheck before creation. Agent prepares a
+root setup script but root must review and explicitly execute it. Review
+found automatic macOS groups12(everyone),61(localaccounts),701(gaj Public
+Folder sharepoint nesting everyone),100(Print Operator nesting localaccounts).
+The script is being revised to verify this exact measured implicit graph and
+only the intended explicit memberships. InitGroups=false alone is not proof
+that opendirectoryd cannot resolve further memberships. Actual launchd
+credentials and group-file-access qualification remain separate.
 
-- IPSW: `UniversalMac_26.6.2_25G83_Restore.ipsw`,19772231540 bytes, SHA256
-  `885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95`.
-- Runtime: `runtime/lume-stop-fixed/lume`, SHA256
-  `973d851b0776b7fa8ffad253031313764488149bb8a623de5916973eb6e1f252`.
-- Signed package: `packages/release-5`, source `2ee8a4c87`, clean source at build.
-  Guest executable SHA256:
-  `2be6cb4adf97cbd208668a5923c38bba20cbdac7fd48dfdb144757e08fe41735`.
-- Developer ID signing verified. No sandbox keychain provisioning profile or
-  notarization proof; manifest correctly says `production_ready: false`.
-- Older packages are obsolete. Guest changes require a fresh signed package.
-  Host-only changes may reuse the exact four verified signed guest artifacts.
+The user suggested clearing 8-bit Gemma4. Only the exact verified
+`~/.cache/huggingface/hub/models--gemma-4-26b` was deleted after fresh ownership,
+no-symlink and no-use checks:26.064GiB reclaimed, free215.83GiB. QAT Gemma,
+31B4bit Gemma, all other models and Go cache remain intact. No broad cache
+permission is inferred. Obsolete owned VM images/restore download can be removed
+only after their required probes/replacement qualification complete. Two-VM
+capacity still needs sufficient actual free space for full reservations.
 
-## Remaining acceptance gates
+The actual CI runner is system/com.layr-labs.m3-max-org-runner, enabled/running,
+with no Worker at last inspection. Its plist hash:
+aff318a6a960fb840510eb52938ca9dba8b9d880497ee8df5f4592431da8fbdf.
+It has a caffeinate/sudo/bash/Runner.Listener chain and ExitTimeOut1200. It has
+NOT been paused. Before dedicating the host, recheck no Worker, disable/bootout
+that exact service and prove process exit. Restore its unchanged original plist
+and enabled state only after VM cleanup and runtime ownership release.
+Existing GUI provider/watchdog/dev-provider and obsolete GUI runner overrides
+are disabled. Preserve these states and the enabled fan service. The older
+io.eigeninference.provider label also needs its exact restart state checked.
 
-1. Fix and physically qualify complete signed guest installation and retirement
-   of the temporary bootstrap account.
-2. Finalize the current diagnostic and benchmark edits, review, test and push.
-3. Install the machine authority and isolated service on an explicitly approved
-   nonproduction Mac, then run single/two-VM API, isolation, quota, cancellation,
-   timeout, crash/recovery, cleanup and actual lease-expiry campaigns.
-4. Run paired host/VM CPU and actual Go CI workload measurements; publish raw
-   measurements and limits, without inferring parity from synthetic tests.
-5. Resolve signing/profile/notarization and external CI review gates before
-   claiming release readiness. Merge/publication/adoption are separate facts.
+## Real isolated coordinator
 
-The request for a nonproduction test Mac with administrator access and at least
-300GiB free remains unanswered. This Mac has128GiB RAM, roughly159GiB free with
-the current partial base, two existing providers, and no passwordless sudo.
-Its normal home deny-delete ACL must remain intact. Use only the private lab
-for these disposable probes. Progress on code and guest provisioning continues;
-the test-host question is not permission to mutate production.
+Dedicated PostgreSQL container122749d06998e9033bfc7a5b2327864708f333b005466d35787bd72be2267f71
+listens only127.0.0.1:60817. Its admin is sandbox_test. The dedicated database is
+darkbloom_sandbox_acceptance_02eeb9902f48, with restricted owner
+sandbox_acceptance_02eeb9902f48. The real fixture seeded one ordinary consumer
+with24hour API key and separate host credential. No production/admin key.
+DSN/coordinator environment remain private on the primary Mac. No fixture
+credentials have yet been copied to the test Mac or broker.
 
-## Latest physical findings and host interruption
+Real coordinator session76358, PID95344, listens ONLY127.0.0.1:18080.
+SSH reverse tunnel exposes only test-Mac127.0.0.1:18080. Authenticated sandbox
+list returns empty; unauthenticated list401. No registered host or allocations.
+Health explicitly reports source5c25e79a22da55443ccc639ba6c3e567d41eb280.
+The prior owned coordinator34128/session77821 stopped with zero allocations.
 
-These findings supersede the earlier scheduler hypothesis above:
+Current binaries came from a private git archive of committed source5c25,
+Go1.25.4, -buildvcs=false -trimpath -mod=readonly, explicit coordinator build
+metadata. Manifest: private fixture/artifacts-5c25e79a2/manifest.json.
+The earlier linked-worktree Go build used correct source but Go1.25.4 stamped
+the outer checkout because .git is a file. Do not trust that old VCS stamp.
+Old binaries are preserved under private fixture/pre-provenance-bin.
 
-- The valid system LaunchDaemon probe3 exited78 with the same scheduler spool
-  failure. Probe2 was invalid because its embedded plist label was not updated;
-  do not use probe2 as evidence.
-- Root `launchctl disable` reports both services disabled, and tenant attempts
-  to enable/bootstrap them are denied. Root bootout of cron fails150 because
-  SIP is engaged. After a clean shutdown/cold boot, atrun's override persists,
-  but cron's override is absent from the actual disabled.plist and cron remains
-  registered. Thus mandatory disabled-and-absent cron is not a workable control
-  on this image. No SIP, TCC database or protected files were bypassed.
-- Native failure-wrapper positive controls pass: staged debug0.757s, exact
-  signed release5 artifact0.779s, shell0.400s, with a300-second command deadline.
-  The apparent native-wrapper hang instead occurred before main while dyld
-  loaded an executable from Documents. No transport defect has been established.
-- A proposed alternative is a never-registered numeric UID/GID2001. Apple cron
-  and at source rejects absent passwd identities before accepting work. This
-  would remove account creation and protected scheduler-file manipulation,
-  while retaining credential dropping, workspace ownership, domain/UID cleanup
-  and the VM boundary. It remains a proposal until physical toolchain checks.
-  It is not proof that all privileged macOS broker queues are empty; programs
-  requiring passwd records, including some SSH/Node paths, may be incompatible.
-- The first numeric probe tried deleting our known2001 records and received
-  eDSPermissionError; it does not establish which record was removed. A second
-  probe instead used never-registered UID/GID2002, finished exit0 and stopped
-  the VM. Its results are in `numeric-tenant2-probe.log`, not yet readable.
-- Local process launches then stalled for root and control_audit, including
-  shell builtins, `/bin/cat`, `/bin/ps`, and alternate `/bin/sh` with a PTY.
-  The app RPC still responds. New VM/test launches are paused and the user has
-  been asked to restore the local command connection. Do not start duplicate
-  probes until existing sessions and the VM stopped record are inspected.
-- The Go CI benchmark now has8 passing Python tests, a passing stdlib runner
-  race suite, two fresh-cache native samples with356 passing events each, and
-  a relocated-bundle sample with identical compiled hashes. These are host-only
-  results. control_audit is integrating the harness tests into existing gates.
+## Guest installation blocker and exact probes
 
+Remote public base `darkbloom-sandbox-base-20260913` is stopped, partially
+installed with signed release6, and UNQUALIFIED. No template receipt. The
+installer failed deleting lume with eDSPermissionError -14120. Read-only disk
+inspection confirmed lume501 is the last admin and SecureToken user. Apple
+prevents deleting the last such user. Do not bypass SecureToken/SIP/TCC.
 
-## Resumed on September 13 with an authorized test Mac
+Proposed supported retirement: remove autologin, rotate public credentials to
+in-process random material, verify new-positive/old-negative, set shellfalse,
+disable account with strict authority/auth checks, remove exact known sudo rule,
+demote admin last, discard replacement and cold-boot verify. Preserve the
+required OS account record. This is NOT integrated or qualified yet.
 
-Local execution recovered; the pending checkpoint write completed. The goal is
-active again. The UID2002 physical probe is now inspected: numeric execution
-returned exact UID/GID/groups2002, while crontab list/submission and atq/at
-submission all rejected the absent account. The last owned local VM is stopped.
+Owned public probe VM: `darkbloom-retirement-probe-20260913`.
+- v1 autologin disable succeeded but immediate kcpassword absence failed.
+- v2 wrapper failed on zsh readonly variable status before password mutation.
+- v3/v4 OpenDirectory changePassword failed OD4100 even with authenticated node.
+- v5 private controlling PTY sysadminctl reset returned0, but replacement
+  authentication failed OD5000 and public old password remained valid. The
+  verifier rejected the image. Cleanly stopped; v5bootUUID
+  60D788A1-FEEE-4F3E-B383-E8151FD08920.
+- v5 signed probe SHA256bcba0cd1143e4a53b94d3471ca465d706fa12e2093495676634765967080faef.
+  Seven private-PTY transport regressions pass; this does not prove password
+  mutation. guest_architecture is adding bounded v6 diagnostic classifications.
 
-The user explicitly authorized SSH and sudo use on the nonproduction test Mac
-`gaj@100.104.151.128`. Credentials remain only in the conversation and transient
-SSH authentication; do not write them into files or logs. The authenticated
-ControlMaster is `/private/tmp/darkbloom-sandbox-test-remote-20260913/control`.
-An interactive SSH channel is held in session49221. Public artifacts are being
-staged in remote `/private/tmp/darkbloom-sandbox-lab-20260913`.
+v5 installed an OWN root inspection LaunchDaemon BEFORE the probe. It will run
+about40seconds into the next cold boot and shut the VM down, whether inspection
+passes or fails. Future SSH retry drivers must bootout/remove that exact job
+before attempting a long new probe, then stage the new inspection job for the
+next cold boot. Never start a second VM owner while a prior driver runs.
+v6 diagnostic probe is running in session55768; inspect it before any next VM
+action. Its signed SHA256 is
+6b72307feaddafcebbef4b6198c5f929e23dbf9934fdde07f8a0a428279440b4.
+v6 removes the prior own inspection job before attempting the reset, then
+stages inspection for the following cold boot. Latest v5 driver session83363
+completed. Evidence retirement-v5-proof.log and
+retirement-v5-final-state.json under REMOTE lab/evidence. Check newest state
+before further actions. Root owns VM lifecycle and all probe signing/transfers.
 
-Remote inventory: M3 Max,14 cores,36GiB RAM,macOS26.4,Xcode26.5,Swift6.3.2,
-Go1.27.1,Python3.9.6. It initially had about257GiB free. FileVault is OFF even
-though hardware Encryption=true. No alternate encrypted APFS volume was found.
-The user was asked specifically to authorize whole-Mac FileVault enablement or
-provide encrypted test storage; that answer is still pending. Do not infer it
-from elapsed time. No host administrator mutation has occurred yet.
+Signed release6: source41522b85b, clean source, Developer ID, no sandbox-specific
+profile or notarization, production_ready=false. Guest SHA256
+bc73640061c6a0a265f8e6886b623cdf9ea4e9e3d69384fe4769755f9a28f401.
+Runtime runtime/lume-stop-fixed/lume SHA256
+973d851b0776b7fa8ffad253031313764488149bb8a623de5916973eb6e1f252.
+IPSW UniversalMac_26.6.2_25G83_Restore.ipsw,19772231540bytes, SHA256
+885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95.
+All are transferred and verified on the test Mac. Guest changes require a fresh
+signed package and complete base qualification; host-only changes may reuse
+exact four signed guest files. Older release1–5 packages are obsolete.
 
-No active provider/VM process was found, but installed provider/watchdog
-LaunchAgent files exist. GitHub Runner.Listener was active and untouched; check
-for active jobs and account for restart paths before dedicating the host.
-The scoped Go build cache is about27.8GiB and Hugging Face model cache about
-152.6GiB. Neither has been deleted. Preserve model data without a concrete
-operator decision. Disk policy still requires100GiB boot disks; do not reduce
-it just to fit this machine.
+## Remaining gates
 
-The pinned Lume runtime was transferred with signing xattrs and its signature
-and SHA256 verified on the remote Mac. The IPSW SCP is running in session48994;
-inspect that handle before starting another writer. A16MiB Apple CDN range
-probe returned206 at roughly5.9MB/s; it did not justify replacing the active
-SCP. No remote VM has been started yet.
-
-Current source work (uncommitted):
-
-- guest_architecture implemented never-registered UID/GID2001, fail-closed
-  reentrant identity lookups and removal of protected scheduler/account changes.
-  It preserves credential drop, numeric workspace ownership and domain/UID
-  cleanup. Compatibility limits for account-dependent APIs are explicit.
-  Focused50 Swift tests passed with1opt-in skip; packaging24 and live-harness13
-  offline tests passed. It now owns the service-startup disk-check fix below.
-- The service inherited the doctor's fixed300GiB root-volume qualification
-  check before recovery. Capacity admission already uses actual configured
-  storage and preserves cleanup under pressure. Agent is separating startup
-  advisory inspection from authoritative admission, retaining all disk limits.
-- physical_inventory owns host-plan WSS path validation and regression tests;
-  the doc incorrectly used `/v1/sandbox-hosts/ws` instead of `/ws/sandbox-host`.
-- control_audit finished CI benchmark tooling/gates:12Python tests, Go runner
-  race suite, native/relocated356-event runs and exact artifacts passed. It is
-  adding a minimal optional coordinator bind-host setting and a private fixture
-  plan using real cmd/coordinator, API authentication and disposable PostgreSQL.
-  No coordinator service or fixture seed has been started.
-
-The current runtime uses transient Secure Enclave checks, token-file host auth
-and encrypted backing storage. Persistent keychain/artifact APIs are separate
-and unused by Serve. Developer-ID development-entitlement packages can exercise
-those runtime paths without claiming production keychain certification; the
-production host-installation profile gate remains intact. Only the remote
-provider profile was found, and it does not authorize the sandbox app.
-
-
-Current integrated local gate: full Swift wave8 passed400tests with7explicit
-physical opt-ins skipped and0failures in78.9seconds. Numeric identity, configured
-volume inspection and low-space recovery fixes are included. Packaging URL
-regressions pass26tests; CI benchmark tooling passes12Python tests and the Go
-runner race suite. Coordinator bind/fixture work remains separate and unfinished.
+1. Diagnose actual macOS retirement failure; implement modular supported
+   retirement and strict startup verification, focused tests and fresh signing.
+2. Complete fresh signed guest installation, clean shutdown and cold-boot
+   qualification. Never admit the partial base/probe as a tenant template.
+3. Review/execute test-host authority setup, safely reserve idle test machine,
+   install immutable signed package under broker identity and qualify doctor,
+   actual guest channel, encrypted disks and dedicated admission.
+4. Run real single/two-VM API/file/isolation/quota/cancellation/timeout/start,
+   natural expiry, idempotency and cleanup campaigns. Independent host inventory
+   must prove VM/material removal. Add actual broker crash/restart/reboot and
+   submitted-launchd-job respawn tests; API terminal state alone is insufficient.
+5. Run paired host/VM CPU and real offline Go CI build/test measurements under
+   the actual tenant UID; include contention and compatibility limits.
+6. Final modular refactor/review, relevant tests, docs/checkpoint/PR refresh and
+   latest CI. Production signing profile/notarization/external review, merge,
+   publication and adoption remain separate explicitly evidenced gates.

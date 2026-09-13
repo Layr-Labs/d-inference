@@ -1,6 +1,6 @@
 # Prepare isolated physical sandbox acceptance
 
-> Last updated: 2026-09-13 · commit `2ee8a4c87`
+> Last updated: 2026-09-13 · commit `5c25e79a2`
 
 Use the real coordinator, PostgreSQL store, consumer API authentication and
 dedicated host WebSocket on an authorized test Mac. The fixture tool creates
@@ -90,7 +90,9 @@ Mac. No SQL tunnel is needed in that topology.
 - Confirm the coordinator listener is loopback only and the startup log reports the expected address.
 - Missing/invalid consumer credentials must fail; the seeded API key must reach the actual account-scoped routes. A healthy `/health` response alone is insufficient.
 - Confirm host registration uses its separate token and that the enrolled account can create, execute, transfer files, recover and delete through the acceptance harness.
+- Check the command replay and partial-transfer cases, then `natural-expiry.json`: the second VM stays ready and a command must be observed running in the lease's final twelve seconds. Command timeout and expiry can race because command deadlines must fit the lease; no Stop/Renew or clock change is used in that case.
 - Retain the acceptance summary and independent physical inventory/cleanup proof. Local fixture unit tests do not establish VM isolation or performance.
+- Read `summary.json`'s `not_covered` list before assessing readiness. The fixture enrolls one consumer; separate-account denial requires a second independently seeded account/key and working positive controls for both owners. Broker crash/reboot, scheduler respawn and paired guest build performance are separate campaigns in the [release validation guide](../../sandbox-macos/Resources/RELEASE_VALIDATION.md).
 
 ## Troubleshooting
 

@@ -10,7 +10,6 @@ import json
 import os
 from pathlib import Path
 import plistlib
-import pwd
 import re
 import shlex
 import stat
@@ -22,9 +21,10 @@ from sandbox_release_support import (
     HOST_ID, file_inventory, new_directory, validate_lume, verify_signature, write_json,
 )
 from sandbox_install_validation import require_no_extended_acl, validate_artifact_layout, validate_install_ancestors
+from sandbox_broker_identity import BROKER_NAME, validate_broker_account
 
 
-BROKER = "_darkbloom_sandbox"
+BROKER = BROKER_NAME
 
 
 def activation_commands(configuration: dict, install_root: Path):
@@ -136,15 +136,13 @@ def main():
     manifest = validate_package(args.package)
     if args.verify_installed:
         validate_package(args.install_root)
-        broker = pwd.getpwnam(BROKER)
-        if broker.pw_uid == 0 or broker.pw_gid == 0:
-            raise ValueError("broker must use a dedicated non-root identity")
+        broker = validate_broker_account()
         validate_install_ancestors(args.install_root)
         validate_artifact_layout(args.install_root)
         for key, mode in [("tokenFile", 0o600), ("storageDirectory", 0o700), ("capacityDirectory", 0o700)]:
             path = Path(configuration[key])
             metadata = path.lstat()
-            if path.is_symlink() or metadata.st_uid != broker.pw_uid or stat.S_IMODE(metadata.st_mode) != mode:
+            if path.is_symlink() or metadata.st_uid != broker.uid or stat.S_IMODE(metadata.st_mode) != mode:
                 raise ValueError(f"unsafe installed {key}")
             if key == "tokenFile":
                 if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
@@ -152,7 +150,8 @@ def main():
             elif not stat.S_ISDIR(metadata.st_mode):
                 raise ValueError(f"installed {key} must be a directory")
             require_no_extended_acl(path)
-        print(json.dumps({"installed_layout_validated": True, "production_ready": False,
+        print(json.dumps({"installed_layout_validated": True, "broker_account_policy_validated": True,
+                          "production_ready": False,
                           "not_verified": ["Aqua access", "keychain persistence", "network policy", "live isolation"]}))
         return
     if not args.output:
@@ -186,7 +185,15 @@ Notarization, persistent Secure Enclave key storage and physical isolation are
 separate validation gates and are not established by this plan.
 
 1. Allocate an unused system UID/GID for `{BROKER}` and create a hidden account
-   with no password, login shell, home access or privileged group membership.
+   with disabled authentication, a non-login shell and `/var/empty` as its home.
+   Exclude explicit administrator, wheel and other privileged memberships;
+   permit only intended service memberships. Verify both explicit and resolved
+   groups: macOS can give nonadmin accounts ambient local-account, public-share
+   and print-operator access through nested groups. `InitGroups=false` does not
+   establish removal of that access. This trusted nonadmin host service retains
+   access to other host files permitted by Unix permissions. `sandbox_dedicated`
+   controls workload
+   admission and machine ownership; it does not change Unix permissions.
    Do not share this identity with the inference provider or tenant workloads.
 2. Provision a dedicated `darkbloom_runtime` group with an unused nonzero GID;
    add only the sandbox broker and intended provider service identities. Create
@@ -216,7 +223,10 @@ separate validation gates and are not established by this plan.
    `{BROKER}` mode 0600. Never put a token in launchd arguments or environment.
 5. Install the generated {HOST_ID}.plist as root:wheel mode 0644 under
    /Library/LaunchDaemons. Validate the installed layout with this tool's
-   `--verify-installed` option before starting it.
+   `--verify-installed` option as root before starting it. This protected
+   account-policy read must prove disabled authentication, hidden/nonlogin
+   settings, /var/empty home, runtime-group membership and no admin/wheel
+   membership; missing or unrecognized data fails verification.
 6. Run the signed host doctor as the broker and prove keychain persistence with
    the provisioned identity. Retain outputs with the release evidence.
 7. A newly initialized capacity store begins in draining mode. Bootstrap this

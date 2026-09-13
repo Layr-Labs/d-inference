@@ -17,6 +17,7 @@ from sandbox_release_support import (
 )
 from sandbox_install_validation import validate_artifact_layout
 from sandbox_guest_release import GUEST_FILES, copy_guest_release, validate_guest_release
+from test_sandbox_broker_identity import BrokerIdentityTests
 
 spec = importlib.util.spec_from_file_location("prepare_host", PACKAGE / "Scripts/prepare-sandbox-host.py")
 prepare_host = importlib.util.module_from_spec(spec)
@@ -184,6 +185,19 @@ class HostConfigurationTests(unittest.TestCase):
         self.assertEqual(args[args.index("--token-file") + 1], "/var/db/dbsandbox/host.token")
         self.assertNotIn("--allow-insecure-loopback", args)
         self.assertNotIn("--development-ad-hoc-lume", args)
+
+    def test_installed_verifier_requires_account_policy_before_layout_success(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            settings = Path(temporary) / "host.json"
+            settings.write_text(json.dumps(self.settings()))
+            with patch.object(prepare_host, "validate_package", return_value={"version": "fixture"}), \
+                    patch.object(prepare_host, "validate_broker_account", side_effect=ValueError("root policy unavailable")), \
+                    patch.object(prepare_host, "validate_artifact_layout") as layout, \
+                    patch("sys.argv", ["prepare-sandbox-host.py", "--package", "/fixture/release",
+                         "--configuration", str(settings), "--install-root", "/Library/Sandbox", "--verify-installed"]):
+                with self.assertRaisesRegex(ValueError, "root policy unavailable"):
+                    prepare_host.main()
+                layout.assert_not_called()
 
     def test_coordinator_route_query_fragment_and_malformed_authority_are_rejected(self):
         bad = [

@@ -78,9 +78,8 @@ cross-account inspect/execute/files/cancel/delete denial, at most2VMs, separate
 ownership/cleanup ledgers. It has30offline Python tests, focused Go fixture
 race/vet and283-file docs validation passing. No reseed-on-populatedDB path.
 Consumer-only fixtures can relocate to caller-owned0700 encrypted remote
-storage without copying coordinator environment, DSN or host token. The
-currently running real fixture still has one account and zero allocations;
-root must create a NEW database/fixture before the two-account campaign.
+storage without copying coordinator environment, DSN or host token. The running real fixture is now schema2 with two accounts and zero
+allocations. Actual cross-account resource denial still awaits guest readiness.
 
 ## Authorized test Mac and storage
 
@@ -148,15 +147,22 @@ with24hour API key and separate host credential. No production/admin key.
 DSN/coordinator environment remain private on the primary Mac. No fixture
 credentials have yet been copied to the test Mac or broker.
 
-Real coordinator session76358, PID95344, listens ONLY127.0.0.1:18080.
+Current real coordinator session95061, PID87260, listens ONLY127.0.0.1:18080.
 SSH reverse tunnel exposes only test-Mac127.0.0.1:18080. Authenticated sandbox
-list returns empty; unauthenticated list401. No registered host or allocations.
-Health explicitly reports source5c25e79a22da55443ccc639ba6c3e567d41eb280.
-The prior owned coordinator34128/session77821 stopped with zero allocations.
+lists for BOTH independently seeded accounts return empty; unauthenticated
+list401. No registered host or allocations. Health explicitly reports source
+54f1644cda51abc75afce39f9fee60183ed8cf1a. Prior owned coordinator95344/session76358
+stopped with zero allocations; older34128/session77821 also stopped safely.
 
-Current binaries came from a private git archive of committed source5c25,
+Current binaries came from a private git archive of committed source54f1644cd,
 Go1.25.4, -buildvcs=false -trimpath -mod=readonly, explicit coordinator build
-metadata. Manifest: private fixture/artifacts-5c25e79a2/manifest.json.
+metadata. Manifest: private fixture/artifacts-54f1644cd/manifest.json.
+NEW database darkbloom_sandbox_acceptance_42926a219074 has restricted owner
+sandbox_acceptance_42926a219074 and two ordinary accounts/keys. Private DSN is
+database-v2-url.txt; active fixture is fixture-v2. HostID
+edf67ba1-2d71-4a19-86b7-391097652b69. Earlier database/fixture remains preserved
+and inactive; no reseed or old credential reuse. New API/SSH-tunnel auth smoke
+passed (control-plane-live-smoke-v2.json); VM/cross-account-resource proof false.
 The earlier linked-worktree Go build used correct source but Go1.25.4 stamped
 the outer checkout because .git is a file. Do not trust that old VCS stamp.
 Old binaries are preserved under private fixture/pre-provenance-bin.
@@ -253,3 +259,55 @@ exact four signed guest files. Older release1–5 packages are obsolete.
 6. Final modular refactor/review, relevant tests, docs/checkpoint/PR refresh and
    latest CI. Production signing profile/notarization/external review, merge,
    publication and adoption remain separate explicitly evidenced gates.
+
+## Latest September13 physical state
+
+- Local reviewed commits f097a7116 (expanded live acceptance) and54f1644cd
+  (two-account fixtures) are not yet pushed; remote PR head remains5c25e79a2.
+- Modular installed-broker account policy enforcement is now implemented;
+  root/hidden/nonlogin/disabled-auth/noadmin/nowheel/runtime membership and
+  canonical nonprivileged GID checks fail closed.47release/tool tests and
+  docs-check pass. Direct execution of the actual helper on the test Mac also
+  passed as root (broker-account-validator-live.json). This does not qualify a
+  complete signed/profiled host installation; no host daemon is started.
+- Broker credential probev2 ran after correcting capture-file ownership.
+  UID/EUID430,GID/EGID431; getgroups included431,430,12,61,701,100 even with
+  InitGroups=false. UID430/runtime431 positive controls pass; root/admin files
+  denyEACCES; PrintOperator100/PublicShare701 files remain readable. This is
+  measured ambient access of a trusted nonadmin broker, not tenant host access.
+  Exit78 appeared as `78: EX_CONFIG`; a parser bug produced a spurious wait
+  timeout. Original evidence is preserved; prepared parser corrected; no rerun.
+  Both temporary labels are unloaded, their fixtures/plists retained.
+- Retirementv8 policy passed as root and trueUID501; actual own password change
+  still failedOD4100. Oldpubliccredential unchanged. v9 created a unique
+  standard-API control record atUID2003, but initial authentication failed5100
+  and exact deletion failed4001. Rotation never ran. Attribute reads reported
+  unavailable for control credential fields; do not present those as absence.
+  The partial UID2003 record remains ONLY in the quarantined disposable probe
+  VM. Its current lume SecureToken-marker0 is distinct from release6base's1.
+  No more guessed retirement retries; never use this image for tenants.
+- Latest old-probe driver45020 completed/stopped. Signedv9 hash
+  5281955483ef2f53a59fb22abfbf91e8716d2585380c949ac2b6dfbb28732f33.
+  The inspection LaunchDaemon was removed and NOT restaged byv9.
+- Fresh `darkbloom-accountless-probe-20260913` Apple restore completed0 in
+  168.206seconds throughsession21973, WITHOUT --unattended. No Lume account
+  injection ran. Stopped; disk107374182400bytes, allocated22866976768bytes,
+  observed diskdevice16777229 inode29089587 (recheck before attesting).
+  This is an experiment; no guest payload has been staged or booted yet.
+- Candidate cleaner workflow: temporary first-boot root job runs existing guest
+  installer --install while no bootstrap account exists, then clean shutdown;
+  remove ONLY our temporary staging/job while stopped; qualify a separate
+  clone through real vsock/media before publishing a new explicit receipt.
+  Do not alter .AppleSetupDone/privateaccountrecords/loginwindow/preboot/SIP/TCC.
+  Keep normal template readiness gates; never fabricate bootstrapRetired.
+- First discriminator payload materialized at primary evidence/accountless-payload-v1,
+  run9e60e50a-28af-4910-8146-805ad7b3eb10. It only runs the signed release6
+  validate-tenant-identity helper under a temporary root job, records public
+  setup-marker observations and requests shutdown. It does NOT install or
+  qualify the guest. physical_inventory prepares exact offline Data staging/read
+  helper, requiring a new ROOT-owned restore completion proof and no openers.
+  control_audit prepares supervised180s bootdriver using pinned isolated-v1
+  profile and empty public APFS control/workspace disks (no instance secrets).
+  Root parent must hold existing machine EX authority; actual Lume child501:20
+  receives transient supplementary431 and inheritedFD4. No persistent gaj
+  membership or directory permission changes are authorized or needed.

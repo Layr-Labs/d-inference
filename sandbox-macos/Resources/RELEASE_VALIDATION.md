@@ -165,7 +165,15 @@ python3 sandbox-macos/Scripts/prepare-sandbox-host.py \
   --output /absolute/new/install-plan
 ```
 
-Use `--verify-installed` in place of `--output` after operator installation.
+Run `--verify-installed` as root in place of `--output` after operator installation:
+
+```sh
+sudo /usr/bin/python3 sandbox-macos/Scripts/prepare-sandbox-host.py \
+  --package /absolute/signed-package --configuration /absolute/host.json \
+  --install-root '/Library/Application Support/DarkbloomSandbox/0.1.0' \
+  --verify-installed
+```
+
 The broker must have its own non-root account, immutable root-owned executable
 tree, private APFS state/storage and a private token file. A host running the
 inference provider must not be converted implicitly. Confirm Aqua-session and
@@ -175,6 +183,25 @@ code directories to 0755, data to 0644 and executables to 0755 so the broker can
 read and traverse them. Preserve the pinned Lume subtree's 0555/0444 modes and
 signing xattrs. The installed verifier rejects inaccessible roots, symlinks,
 hard-linked code files and extended ACLs. Token/state paths remain 0600/0700.
+
+The broker is a trusted nonadmin host service. A separate account protects
+private owner-only state. The broker retains access to other host files allowed
+by Unix permissions.
+macOS can grant ambient local-account, public-share and print-operator access
+through nested groups; `InitGroups=false` does not establish their removal.
+Inspect both explicit and resolved memberships, exclude explicit privileged
+memberships, and verify the actual service's file access when qualifying a host.
+The verifier requires a root reader for the protected authentication attribute.
+It checks hidden/nonlogin settings, the `/var/empty` home (including its known
+`/private/var/empty` spelling), dedicated Unix user/group consistency, native
+admin/wheel nonmembership and runtime-group membership. Supported disabled
+authentication shapes are the standalone `DisabledUser` marker and fully
+disabled ShadowHash wrappers; active or unknown authority entries, missing
+protected attributes and unrecognized membership responses fail verification.
+It reports account-policy validation, without claiming to strip ambient groups.
+`sandbox_dedicated` controls workload admission and ownership of the machine;
+it does not remove these Unix permissions. Tenant commands remain inside the VM
+under their separate numeric identity.
 
 Machine ownership is separately provisioned under
 `/Library/Application Support/Darkbloom/runtime`: root-owned directory mode 0750,

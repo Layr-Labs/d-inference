@@ -156,9 +156,9 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 			}
 		}
 		if t := s.Telemetry; t != nil {
-			// System-profiler slot telemetry (measurement only). Silent
-			// clamps, like the token-budget fields above: nothing routes on
-			// these, so a bad value is not worth a log line per heartbeat.
+			// Slot telemetry feeds fleet diagnostics and optional first-content
+			// preference. Silent clamps bound reported values; missing fields
+			// remain absent and cannot establish measured idle capacity.
 			// t is the registry-owned clone made by canonicalHeartbeatModelState.
 			clampTelemetryCount(t.QueuedPrefillTokens)
 			clampTelemetryCount(t.PartialPrefillRows)

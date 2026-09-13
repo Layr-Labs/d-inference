@@ -216,7 +216,8 @@ func ProviderVersionFold(raw string) string {
 // layer serialises it later. No slices, maps, or pointers: ProviderID is a
 // string-header copy of the immutable Provider.ID.
 type CandidateSummary struct {
-	ProviderID string
+	FirstContent FirstContentEstimate
+	ProviderID   string
 
 	CostMs, StateMs, QueueMs, PendingMs, BacklogMs, ThisReqMs, HealthMs, CapacityRateMs, CacheDiscountMs float64
 	TTFTMs, EffectiveTPS                                                                                 float64
@@ -244,6 +245,7 @@ func candidateSummaryOf(c *routingCandidate) CandidateSummary {
 	bd := c.breakdown
 	snap := &c.snapshot
 	return CandidateSummary{
+		FirstContent:          c.firstContent,
 		ProviderID:            c.provider.ID,
 		CostMs:                c.costMs,
 		StateMs:               bd.StateMs,

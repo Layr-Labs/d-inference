@@ -12,6 +12,8 @@ coordinator deployment.
 
 ### Coordinator
 
+- **First-content routing preference** — Add a separate estimate based on fresh idle-provider isolated prefill speed, calibrated prompt work, validated cache reuse and remaining request time. Default to shadow diagnostics; opt-in `prefer` selects a feasible provider when available and preserves fallbacks otherwise. Revalidate primary and retained retry/hedge candidates before reservation. No new 429 path or retry limit.
+
 - **Qwen prompt parity** — Match the provider's Qwen-family handling of required and named tool calls, including catalog aliases and Qwen3-VL, to avoid mismatched thinking controls in cache proofs.
 - **Repeated-prefix routing** — Prefer a stable cache-capable provider for repeated prefixes only among otherwise equivalent cost, queue and pending-work candidates. Exclude capabilities quarantined after a failed cache proof from this preference, even when heartbeats continue advertising them. Revalidate at reservation and rescan if affinity eligibility changed after selection. Preserve ordinary serving when no unfenced cache candidate is available, along with capacity, deadline, trust and proof gates. Profiler rows identify this preference as `prefix_affinity`.
 - **Cache opportunity diagnostics** — Report per-model reasons and numerical counts for repeated-prefix demand, usable holders and routing selection. These diagnostics distinguish routing opportunities from actual cache hits and measured latency savings. Add a [consumer guide](docs/consumer/prefix-cache.md) for preserving shared prompt prefixes.

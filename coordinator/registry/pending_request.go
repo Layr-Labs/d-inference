@@ -32,8 +32,11 @@ type PendingRequest struct {
 	// FirstContentDeadline is the request-absolute first-content deadline.
 	// Queue drain and provider-writer dequeue refresh their attempt-local
 	// ceilings from this timestamp; zero preserves legacy relative behavior.
-	FirstContentDeadline time.Time
-	ProviderID           string
+	// FirstContentPromptTokens is the calibrated work estimate for advisory
+	// deadline selection only. It never changes billing or KV reservations.
+	FirstContentPromptTokens int
+	FirstContentDeadline     time.Time
+	ProviderID               string
 	// Model is the CONCRETE build id used for routing, admission, billing, and
 	// warm-model matching (e.g. "mlx-community/gemma-4-26B-A4B-it-qat-4bit").
 	Model string

@@ -123,6 +123,7 @@ type cacheV2ProviderModelKey struct {
 }
 
 type cacheRoutingHint struct {
+	ExpiresAt  time.Time
 	generation *cacheRoutingGeneration
 	// Frozen at holder lookup; pricing never re-reads the clock at reservation.
 	EvidenceWeight     float64

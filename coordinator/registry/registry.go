@@ -36,7 +36,9 @@ type Registry struct {
 	// ready.
 	drainPasses queueDrainCoalescer
 
-	MinTrustLevel TrustLevel
+	// Guarded by mu; zero is off for registries built by tests/embedders.
+	firstContentRoutingMode string
+	MinTrustLevel           TrustLevel
 
 	// dedicatedModels holds lowercased substring patterns identifying model
 	// families that may ONLY route to providers dedicated to that family (a
@@ -241,6 +243,7 @@ type Registry struct {
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
+		firstContentRoutingMode: FirstContentRoutingOff,
 		providers:               make(map[string]*Provider),
 		queue:                   NewRequestQueueFromEnv(),
 		MinTrustLevel:           TrustHardware,

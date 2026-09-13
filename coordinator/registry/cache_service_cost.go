@@ -57,6 +57,18 @@ func (r *Registry) applyCacheHintLocked(hint cacheRoutingHint, model string, can
 	if !hint.currentForProviderLocked(candidate.provider, model) {
 		return
 	}
+	// A separate work credit for deadline estimates. Cost caps and the learned
+	// cost rate are not tokens. Keep full restore cost even when it exceeds
+	// recomputation; an absent expiry is not live holder evidence.
+	if validCacheReceiptTier(hint.Tier) && hint.PrefillTokensSaved > 0 &&
+		finitePositive(hint.EvidenceWeight) && hint.EvidenceWeight <= 1 &&
+		hint.StageMs >= 0 && !math.IsNaN(hint.StageMs) && !math.IsInf(hint.StageMs, 0) &&
+		(hint.Tier == "memory" || hint.StageMs > 0) && !hint.ExpiresAt.IsZero() {
+		candidate.firstContentCachedTokens = float64(hint.PrefillTokensSaved)
+		candidate.firstContentCacheWeight = hint.EvidenceWeight
+		candidate.firstContentRestoreMs = hint.StageMs
+		candidate.firstContentCacheExpiresAt = hint.ExpiresAt
+	}
 	delta, saved := cacheServiceCost(hint, candidate)
 	if delta < 0 {
 		// Safety caps limit benefits, never actual restore overhead.

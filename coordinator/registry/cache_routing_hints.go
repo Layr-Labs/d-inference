@@ -166,6 +166,7 @@ func cacheHintsForMatches(plan CachePlan, matches []cacheRoutingMatch,
 		// Matches arrive deepest first. Do not substitute a cheaper short record:
 		// the provider does not accept a coordinator-selected endpoint today.
 		out[holder.ProviderID] = cacheRoutingHint{
+			ExpiresAt:          holder.ExpiresAt,
 			generation:         plan.generation,
 			PrefillTokensSaved: holder.Anchor.TokenCount - holder.RequiredRecomputeTokens,
 			CachedTokens:       holder.Anchor.TokenCount,
@@ -194,4 +195,40 @@ func (hint cacheRoutingHint) currentForProviderLocked(provider *Provider, model 
 		capability == hint.Capability &&
 		capability.Enabled &&
 		capability.Ready
+}
+
+// prepareCacheRoutingHints queries holders before taking a selection/commit lock.
+// Callers revalidate hints under r.mu and p.mu before using their credit.
+func (r *Registry) prepareCacheRoutingHints(model string, pr *PendingRequest) (*cacheRoutingTracker, string) {
+	// Snapshot receipt-confirmed cache hints before taking the registry scan lock.
+	// Query holders outside the scan lock; the later candidate quarantine check
+	// uses the same registry -> provider -> tracker order as receipt rejection.
+	r.mu.RLock()
+	cacheTracker, cacheMode := r.cacheRouting, r.cacheRoutingMode
+	// Skip digest derivation and holder lookup unless the request can use them.
+	// Only matching holders need a capability snapshot; cold providers are
+	// visited once, by the ordinary eligibility scan below.
+	wantHints := cacheTracker != nil && cacheMode == CacheRoutingOn &&
+		pr.CachePlan.present() && len(r.cacheRouteKeys.route) > 0
+	var cacheRouteKey []byte
+	if wantHints {
+		cacheRouteKey = append([]byte(nil), r.cacheRouteKeys.route...)
+	}
+	r.mu.RUnlock()
+	pr.cacheRoutingHints = nil
+	pr.CacheOpportunity = CacheOpportunity{}
+	if wantHints {
+		pr.cacheRoutingHints, pr.CacheOpportunity = r.cacheRoutingHintsWithObservation(
+			model, pr.CachePlan, cacheTracker, cacheRouteKey, cacheMode, time.Now())
+	}
+	pr.CacheSelectionMode = ""
+	pr.CacheSelectionTier = ""
+	pr.CacheSelectionDiscountMs = 0
+	pr.CacheSelectionEstimatedTTFTSavedMs = 0
+	pr.CacheSelectionSelected = false
+	if pr.CachePlan.present() && cacheMode == CacheRoutingOn {
+		pr.CacheSelectionMode = "active"
+	}
+
+	return cacheTracker, cacheMode
 }

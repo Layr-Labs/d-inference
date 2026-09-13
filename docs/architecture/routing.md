@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-13 · commit `d66a38b77`
+> Last updated: 2026-09-13 · commit `e4df336bc`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -42,6 +42,73 @@ content beyond that. See [`data-flow.md`](data-flow.md) and
 
 ## Mechanism
 
+### First-content feasibility preference
+
+`EIGENINFERENCE_FIRST_CONTENT_ROUTING_MODE` separates the ordinary latency/cost
+score from an advisory estimate of work before first content. `shadow` (the
+service default) records the estimate and available feasible alternatives while
+keeping current choices. `prefer` narrows the owner-eligible pool to candidates
+whose estimate fits the remaining **absolute** request deadline, if any exist.
+Version/decode preferences, ordinary cost and prefix affinity rank that pool.
+If none qualify, all existing fallbacks remain usable. `off` disables this work.
+This policy introduces no new rejection, retry limit or deadline extension.
+
+The initial estimator deliberately covers a narrow, measurable case: a resident
+text model, a heartbeat no older than five seconds, no coordinator reservations,
+and every reported slot explicitly idle with zero queued/partial-prefill rows
+and no in-flight evaluation/clear. Missing counters, cold/loading models,
+other-model work, vision or uninitialized/non-finite throughput produce
+`unknown`. It does not reconstruct a busy provider's engine queue from counts.
+
+`estimateFirstContent` in `coordinator/registry/first_content_routing.go` computes:
+
+```text
+remaining prefill tokens / (isolated prefill TPS × 0.5)
++ min(max(1, requested output tokens), 33) / (observed decode TPS × 0.5)
++ cache restore time + 1 second handoff allowance
+```
+
+The half-rate assumption matches the provider admission haircut; the decode and
+handoff allowances are initial policy margins, not measured percentile bounds.
+`feasible` means this estimate fits, not guaranteed admission or visible content.
+Reasoning, detokenization, future arrivals and changed hardware conditions can
+still consume the budget. The completion-trained TTFT calibration ratio is not
+used here. Prompt work uses the existing family calibration (GPT-OSS defaults
+to 1.3×) unless authenticated current cache-plan derivation supplies exact tokens.
+Billing and physical KV reservations keep their existing inputs.
+
+Cache work credit is separate from the ordinary cost discount: only current,
+unexpired, receipt-confirmed holder evidence reduces prefill tokens, weighted by
+its existing age policy and accounting for required recomputation. Restore time
+is paid once in full. Affinity/repeated-prefix demand supplies no work credit;
+score-discount caps do not redefine tokens. Capability changes, epoch rotation
+and quarantine invalidate credit at reservation.
+
+The primary reservation recomputes the estimate under the existing provider
+lock; a changed feasibility class forces a rescan. Dispatch plans retain up to
+eight alternates, prioritizing feasible identities for retention and preserving
+fallbacks. `reserveFirstContentPlan` in
+`coordinator/registry/first_content_plan.go` re-evaluates retained providers on
+retry/hedge, using the current deadline and quote order within each preference
+tier. Deferred entries remain available. Queue drain uses the common selector.
+No tokenizer, RPC or database read is added to the per-candidate calculation.
+
+Profiler `candidates` JSON stores `first_content` separately from `ttft_ms`, plus
+the winner's mode, feasible candidate count and lowest-cost feasible alternative.
+The count/alternative describe the owner-eligible scan, before version/decode
+preferences; plan reservations omit scan counts. Metrics
+`routing.first_content.selection`, `.feasible_candidates`, `.alternative`,
+`.predicted_ms` and `.remaining_ms` count **selections/attempts**, not requests
+rescued. Validate shadow coverage and errors by model, prompt length, hardware,
+cache state and telemetry age; then compare a controlled prefer rollout on
+completed requests with timely first content, HTTP 429 fraction, provider refusal
+count per request, end-to-end latency and selection p95/p99. Include successful
+requests and preserve their retry histories. Profile retention favors slow and
+failed requests; use once-per-request terminal outcomes/access totals for HTTP
+success and 429 fractions, and report profile sampling coverage. A lower retry count alone is not a
+success criterion. No production recovery percentage is implied by unit tests or
+synthetic benchmarks. Production activation is a separate deployment/config step.
+
 ### Entry points
 
 `ReserveProviderWithPlan` (`coordinator/registry/scheduler.go`) is the
@@ -82,7 +149,7 @@ flowchart TD
     B --> C[cost = state + queue + pending + backlog + thisReq + health + capacityRate]
     C -->|ttft_ceiling| X5[tallyGate]
     C --> D[applyCacheRoutingCost]
-    D --> P[pool narrowing: prefer owner, avoid version, min decode TPS]
+    D --> P[pool narrowing: owner, optional first-content feasibility, version, decode TPS]
     P --> SEL[selectRoutingCandidateWithAffinity: unique_min / tie_queue / tie_pending / random / prefix_affinity]
     SEL --> PLAN[dispatch plan: winner + alternates]
     PLAN --> DISP[dispatch to winner]

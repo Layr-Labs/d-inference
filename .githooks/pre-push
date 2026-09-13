@@ -27,8 +27,10 @@ CHANGED_FILES=$(
     done
 )
 
-HAS_GO=$(echo "$CHANGED_FILES" | grep -q '^coordinator/' && echo 1 || echo 0)
-HAS_TS=$(echo "$CHANGED_FILES" | grep -q '^console-ui/' && echo 1 || echo 0)
+# Direct input avoids a producer SIGPIPE after an early match in a large list;
+# pipefail would otherwise turn that successful match into a skipped check.
+HAS_GO=$(grep -q '^coordinator/' <<< "$CHANGED_FILES" && echo 1 || echo 0)
+HAS_TS=$(grep -q '^console-ui/' <<< "$CHANGED_FILES" && echo 1 || echo 0)
 
 # ---------------------------------------------------------------------------
 # Go — formatting + tests

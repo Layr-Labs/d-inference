@@ -84,7 +84,7 @@ class DocsCheckTests(unittest.TestCase):
             "[Read\n<custom>guide</custom>](Page.md)",
         ):
             with self.subTest(usage=usage):
-                result = self.check(usage + "\n")
+                result = self.check("\n" + usage + "\n")
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_wrapped_labels_do_not_hide_missing_link_or_image_targets(self):
@@ -114,7 +114,7 @@ class DocsCheckTests(unittest.TestCase):
             "[Wrapped\n<!-- comment -->\nlabel](Page.md)",
         ):
             with self.subTest(usage=usage):
-                result = self.check(usage + "\n")
+                result = self.check("\n" + usage + "\n")
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Page.md: orphan", result.stderr)
 
@@ -160,6 +160,76 @@ class DocsCheckTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("broken link -> Missing.md", result.stderr)
         self.assertNotIn("orphan", result.stderr)
+
+    def test_empty_inline_destinations_do_not_use_reference_definitions(self):
+        for destination in ("", " ", " \n ", "<>", '<> "title"'):
+            with self.subTest(destination=destination):
+                result = self.check(f"\n[guide]({destination})\n\n[guide]: Page.md\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Page.md: orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+        result = self.check("\n[Page](Page.md)\n[empty](<>)\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_paragraph_break_prevents_empty_inline_destination(self):
+        for spacing in ("\n\n", "\n \t\n"):
+            with self.subTest(spacing=spacing):
+                result = self.check(f"\n[guide]({spacing})\n\n[guide]: Page.md\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_backslash_runs_preserve_link_and_image_meaning(self):
+        for usage, navigates in (
+            (r"\[guide]", False),
+            (r"\\[guide]", True),
+            (r"\\\[guide]", False),
+            (r"\\\\[guide]", True),
+            (r"![guide]", False),
+            (r"\![guide]", True),
+            (r"\\![guide]", False),
+            (r"\\\![guide]", True),
+            (r"\\\\![guide]", False),
+            (r"!\[guide]", False),
+            (r"!\\[guide]", True),
+        ):
+            with self.subTest(usage=usage):
+                result = self.check("\n" + usage + "\n\n[guide]: Page.md\n")
+                if navigates:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Page.md: orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+
+    def test_indented_code_does_not_create_navigation(self):
+        for example in (
+            "    [guide]",
+            "\t[guide]",
+            "    first line\n\n    [guide]",
+            "# Heading\n    [guide]",
+            "- Text\n\n      [guide]",
+            "> Text\n>\n>     [guide]",
+            "-\n\n    [guide]",
+            "- Text\n```\nexample\n```\n    [guide]",
+        ):
+            with self.subTest(example=example):
+                result = self.check("\n" + example + "\n\n[guide]: Page.md\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Page.md: orphan", result.stderr)
+
+    def test_indented_paragraph_and_list_links_remain_navigation(self):
+        for example in (
+            "   [guide]",
+            "Text\n    [guide]",
+            "> Text\n    [guide]",
+            "- Text\n\n    [guide]",
+            "- Outer\n  - Inner\n\n      [guide]",
+            "1. Text\n\n     [guide]",
+            "===\n    [guide]",
+            "Text\n[ordinary]: Page.md\n    [guide]",
+        ):
+            with self.subTest(example=example):
+                result = self.check("\n" + example + "\n\n[guide]: Page.md\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_missing_reference_target_is_reported(self):
         result = self.check("[Page](Page.md)\n[broken]: Missing.md\n")

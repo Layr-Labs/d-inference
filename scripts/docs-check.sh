@@ -106,7 +106,9 @@ definition_pattern = re.compile(r"^ {0,3}\[((?:\\.|[^\]\\\n])+)\]:[ \t]*(?:<([^>
 block_start = r" {0,3}(?:#{1,6}(?:[ \t]|\n|$)|>|(?:[-+*]|1[.)])[ \t]+)"
 # Setext underlines and thematic breaks occupy a whole line; marker prefixes
 # followed by ordinary text remain part of the label.
-marker_line = r" {0,3}(?:=+|-+|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})[ \t]*(?:\n|$)"
+setext_line = r" {0,3}(?:=+|-+)[ \t]*(?:\n|$)"
+thematic_line = r" {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})(?:\n|$)"
+marker_line = rf"(?:{setext_line}|{thematic_line})"
 # CommonMark HTML block starts can interrupt a paragraph. Complete inline or
 # custom tags cannot; treating every '<' as a boundary would lose real links.
 html_block_names = (
@@ -123,9 +125,10 @@ html_start = (
 soft_break = rf"\n(?![ \t]*\n|{block_start}|{marker_line}|{html_start})"
 label_unit = rf"(?:\\.|[^\[\]\\\n]|{soft_break})"
 reference_unit = rf"(?:\\.|[^\]\\\n]|{soft_break})"
+# Backslash pairs are literal; only an unmatched final slash escapes an opener.
 links = re.compile(
-    rf"(?<!\\)(?P<image>!)?\[(?P<label>(?:{label_unit}|\[{label_unit}*\])*)\]"
-    rf"(?:\(\s*(?:<(?P<angle>[^>\n]+)>|(?P<bare>[^\s)]+))[^)]*\)|\[(?P<reference>{reference_unit}*)\])?"
+    rf"(?<!\\)(?:\\\\)*(?P<image>!)?\[(?P<label>(?:{label_unit}|\[{label_unit}*\])*)\]"
+    rf"(?:\((?![^)]*\n[ \t]*\n)\s*(?:<(?P<angle>[^>\n]*)>|(?P<bare>[^\s)]*))[^)]*\)|\[(?P<reference>{reference_unit}*)\])?"
 )
 
 
@@ -136,8 +139,10 @@ def rendered_targets(text, definitions):
         if not match["image"]:
             for target, _ in rendered_targets(match["label"], definitions):
                 yield target, False
-        if match["angle"] is not None or match["bare"] is not None:
-            target = match["angle"] or match["bare"]
+        if match["angle"] is not None:
+            target = match["angle"]
+        elif match["bare"] is not None:
+            target = match["bare"]
         else:
             # Full [text][id], collapsed [id][], and shortcut [id] references.
             reference = match["reference"] or match["label"]
@@ -149,6 +154,9 @@ def rendered_targets(text, definitions):
 def parse(source):
     definitions, body, all_targets, navigation = {}, [], [], []
     fence = None
+    paragraph_open, quote_depth, list_indents = False, 0, []
+    empty_item = False
+    list_item = re.compile(r"^ {0,3}(?P<marker>[-+*]|[0-9]{1,9}[.)])(?P<padding> +|$)")
     for line in source.read_text().splitlines():
         marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
         if fence is not None:
@@ -159,6 +167,62 @@ def parse(source):
             fence = marker[1]
             # Removing a fenced block must not join labels across paragraphs.
             body.append("")
+            paragraph_open = False
+            empty_item = False
+            fence_indent = len(line) - len(line.lstrip(" "))
+            while list_indents and fence_indent < list_indents[-1]:
+                list_indents.pop()
+            continue
+
+        # Indented code starts outside a paragraph. Measure its four columns
+        # from the list/quote content, so ordinary nested links stay visible.
+        content = line.expandtabs(4)
+        quote = re.match(r"^(?: {0,3}> ?)+", content)
+        depth = quote[0].count(">") if quote else 0
+        if depth != quote_depth:
+            list_indents = []
+            empty_item = False
+            if depth > quote_depth:
+                paragraph_open = False
+        quote_depth = depth
+        if quote:
+            content = content[quote.end():]
+        if not content.strip():
+            # A blank line closes an otherwise empty list item.
+            if empty_item and list_indents:
+                list_indents.pop()
+            empty_item = False
+            body.append("")
+            paragraph_open = False
+            continue
+        indent = len(content) - len(content.lstrip(" "))
+        was_in_list = bool(list_indents)
+        while list_indents and indent < list_indents[-1]:
+            if paragraph_open and not (
+                list_item.match(content) or definition_pattern.match(content)
+                or re.match(rf"(?:{block_start}|{marker_line}|{html_start})", content)
+            ):
+                break  # A lazy paragraph continuation need not repeat indentation.
+            list_indents.pop()
+        base = list_indents[-1] if list_indents and indent >= list_indents[-1] else 0
+        relative = content[base:]
+        empty_item = False
+        while (item := list_item.match(relative)) and not (
+            re.match(thematic_line, relative) or paragraph_open and re.match(setext_line, relative)
+        ):
+            if paragraph_open and not was_in_list and (
+                item["marker"][0].isdigit() and item["marker"] not in ("1.", "1)")
+                or not relative[item.end():].strip()
+            ):
+                break
+            padding = len(item["padding"])
+            base += item.start("padding") + (padding if 1 <= padding <= 4 else 1)
+            list_indents.append(base)
+            relative = content[base:]
+            paragraph_open = False
+            empty_item = not relative.strip()
+        if not paragraph_open and len(relative) - len(relative.lstrip(" ")) >= 4:
+            body.append("")
             continue
         definition = definition_pattern.match(line)
         if definition:
@@ -167,7 +231,12 @@ def parse(source):
             all_targets.append(target)
         else:
             body.append(line)
-            if re.match(r"^ {0,3}#{1,6}(?:[ \t]|$)", line):
+            heading = re.match(r"^ {0,3}#{1,6}(?:[ \t]|$)", relative)
+            ends_paragraph = (heading or re.match(thematic_line, relative)
+                              or paragraph_open and re.match(setext_line, relative)
+                              or re.match(html_start, relative))
+            paragraph_open = bool(relative.strip()) and not ends_paragraph
+            if heading:
                 # An ATX heading ends on its own line even without a blank.
                 body.append("")
 

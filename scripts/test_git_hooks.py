@@ -38,8 +38,9 @@ class PrePushTests(unittest.TestCase):
         self.env = {**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
                     "HOOK_CALLS": str(self.calls)}
 
-    def git(self, *args):
-        return subprocess.check_output(["git", *args], cwd=self.root, text=True).strip()
+    def git(self, *args, input_text=None):
+        return subprocess.check_output(["git", *args], cwd=self.root,
+                                       input=input_text, text=True).strip()
 
     def commit(self, path, contents):
         (self.root / path).write_text(contents)
@@ -52,7 +53,7 @@ class PrePushTests(unittest.TestCase):
                         for i, (local, remote) in enumerate(refs))
         result = subprocess.run(["bash", str(HOOK), "origin", "unused"], cwd=self.root,
                                 env={**self.env, "HOOK_CHECK_STATUS": status},
-                                input=lines, capture_output=True, text=True)
+                                input=lines, capture_output=True, text=True, timeout=30)
         calls = self.calls.read_text() if self.calls.exists() else ""
         return result, calls
 
@@ -72,6 +73,34 @@ class PrePushTests(unittest.TestCase):
         self.assertIn("go test ./...", calls)
         self.assertIn("npx eslint --quiet src/", calls)
         self.assertIn("npm run build", calls)
+
+    def test_large_committed_path_list_keeps_checks_and_their_failures(self):
+        # A real Git index supplies a large committed tree without creating
+        # thousands of worktree files. Both component matches occur early,
+        # followed by enough paths to fill a pipe after grep -q exits.
+        blob = self.git("hash-object", "-w", "--stdin", input_text="")
+        padding = "large-path-" * 12
+        paths = ["coordinator/main.go", "console-ui/page.ts"] + [
+            f"zz-fixture/{index:04d}-{padding}.txt" for index in range(4096)
+        ]
+        self.git("update-index", "--index-info",
+                 input_text="".join(f"100644 {blob}\t{path}\n" for path in paths))
+        self.git("commit", "-qm", "large committed path list")
+        head = self.git("rev-parse", "HEAD")
+        changed = self.git("diff", "--name-only", self.base, head)
+        self.assertGreater(len(changed.encode()), 512 * 1024)
+
+        for remote in (self.base, ZERO):
+            for status in ("0", "1"):
+                with self.subTest(new_branch=remote == ZERO, check_status=status):
+                    self.calls.unlink(missing_ok=True)
+                    result, calls = self.run_hook((head, remote), status=status)
+                    details = f"hook exited {result.returncode}:\n{result.stdout}{result.stderr}"
+                    self.assertEqual(calls.splitlines(), [
+                        "gofmt -l .", "go test ./...",
+                        "npx eslint --quiet src/", "npm run build",
+                    ], details)
+                    self.assertEqual(result.returncode, int(status), details)
 
     def test_new_ref_for_existing_remote_commit_needs_no_checks(self):
         result, calls = self.run_hook((self.base, ZERO))

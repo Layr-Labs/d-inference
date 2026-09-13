@@ -14,6 +14,7 @@ import (
 // when NewServer constructs an instance.
 type ServerConfig struct {
 	Port                string
+	BindHost            string
 	ConsoleURL          string
 	CORSOrigin          string
 	BaseURL             string
@@ -71,6 +72,9 @@ type BaseRewardsConfig struct {
 }
 
 func (c ServerConfig) Check() error {
+	if err := c.checkBindHost(); err != nil {
+		return err
+	}
 	if err := c.SandboxService.Check(); err != nil {
 		return err
 	}
@@ -81,6 +85,7 @@ func (c ServerConfig) Check() error {
 func ReadServerConfig() ServerConfig {
 	return ServerConfig{
 		Port:                  env.EnvOr(env.EnvPrefix+"_PORT", "8080"),
+		BindHost:              os.Getenv(env.EnvPrefix + "_BIND_HOST"),
 		ConsoleURL:            os.Getenv(env.EnvPrefix + "_CONSOLE_URL"),
 		CORSOrigin:            os.Getenv("CORS_ORIGIN"),
 		BaseURL:               os.Getenv(env.EnvPrefix + "_BASE_URL"),

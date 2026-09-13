@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-13 · commit `453b37667`
+> Last updated: 2026-09-13 · commit `2ee8a4c87`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -45,6 +45,7 @@ See the [sandbox API contract](sandbox-api.md#access-and-service-modes).
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|
 | `EIGENINFERENCE_PORT` | TCP port | `8080` | `coordinator/api/server_config.go` (`ReadServerConfig`) | Listen port for the HTTP API and the provider WebSocket. |
+| `EIGENINFERENCE_BIND_HOST` | IP literal, or empty | empty (all interfaces) | `coordinator/api/server_config.go` (`ReadServerConfig`), `coordinator/api/listen_address.go` (`ListenAddress`, `checkBindHost`); `coordinator/cmd/coordinator/main.go` | Restricts the real HTTP and WebSocket listener to an explicit IPv4/IPv6 address. Hostnames, bracketed hosts, host:port strings and zone suffixes are rejected. `127.0.0.1` permits isolated local acceptance; the default preserves the existing bind behavior. |
 | `EIGENINFERENCE_BASE_URL` | URL | unset — derived per request from `Host` and `X-Forwarded-Proto` | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/server.go` (`resolveBaseURL`) | Public origin templated into the served `/install.sh` and other self-referencing URLs. |
 | `EIGENINFERENCE_CONSOLE_URL` | URL | unset — `<scheme>://<Host>/link` is derived per request | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/device_auth.go` | Console origin used to build the device-code `verification_uri` (`<console>/link`). |
 | `CORS_ORIGIN` | origin | `https://console.darkbloom.dev` (applied in `corsMiddleware`) | `coordinator/api/server_config.go` (`ReadServerConfig`); `coordinator/api/server.go` (`corsMiddleware`) | The single origin allowed for credentialed CORS; public read-only GETs stay wildcard. |

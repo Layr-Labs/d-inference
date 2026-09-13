@@ -1,0 +1,41 @@
+{
+  "status": "PASS independent raw byte review",
+  "common_inputs_byte_identical": true,
+  "arms": {
+    "nativeSDPA": {
+      "output_sha256": "390fe57dded021665191e7fffa0278a39ca44909f399b34128403fb6aa69b78d",
+      "mismatches": {
+        "contiguous": 0,
+        "paged": 786
+      },
+      "history_exact": null,
+      "pages": 0,
+      "segments": 0,
+      "partition_tokens": null,
+      "history_note": "No storage readback applicable to native SDPA arm"
+    },
+    "pagedFixed": {
+      "output_sha256": "accec5723d4f912aeadaece3119276b49643eed5f7b9f94526f107958abdfa3b",
+      "mismatches": {
+        "contiguous": 786,
+        "paged": 0
+      },
+      "history_exact": true,
+      "pages": 350,
+      "segments": 0,
+      "partition_tokens": 256
+    },
+    "pagedSegmented": {
+      "output_sha256": "accec5723d4f912aeadaece3119276b49643eed5f7b9f94526f107958abdfa3b",
+      "mismatches": {
+        "contiguous": 786,
+        "paged": 0
+      },
+      "history_exact": true,
+      "pages": 350,
+      "segments": 6,
+      "partition_tokens": 256
+    }
+  },
+  "scope": "Same captured operator; full model token/quality acceptance remains open."
+}

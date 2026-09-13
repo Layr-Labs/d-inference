@@ -14,6 +14,13 @@ const (
 	messagesEndpoint    = "/v1/messages"
 )
 
+func genericResponseMetadata(endpoint string, parsed map[string]any) (string, []string) {
+	if endpoint == messagesEndpoint {
+		return endpoint, requestedMessagesStopSequences(parsed)
+	}
+	return endpoint, nil
+}
+
 func buildGenericEndpointResponse(
 	pr *registry.PendingRequest,
 	message extractedMessage,

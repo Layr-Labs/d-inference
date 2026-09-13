@@ -2,6 +2,14 @@ import ArgumentParser
 import Foundation
 import ProviderCore
 
+private struct ReportUploadResponse: Decodable {
+    let reportID: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case reportID = "report_id"
+    }
+}
+
 /// Explicit, operator-initiated support report.
 ///
 /// Automatic log upload is intentionally not part of this command's lifecycle.
@@ -40,19 +48,17 @@ struct Report: AsyncParsableCommand {
         )
     }
 
+    static func decodeUploadReportID(_ data: Data) throws -> Int64 {
+        try JSONDecoder().decode(ReportUploadResponse.self, from: data).reportID
+    }
+
     mutating func run() async throws {
         await runUpdateBannerIfEnabled()
 
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         let httpBase = coordinatorHTTPBase(snapshot.config.coordinator.url)
 
-        guard let serial = macHardwareSerialNumber(), !serial.isEmpty else {
-            printError("Could not detect serial number. Run 'darkbloom doctor' for details.")
-            throw ExitCode.failure
-        }
-
         print("Darkbloom Log Report")
-        print("  Serial:  \(serial)")
         print("  Window:  \(last)")
         print("  Scope:   \(Self.subsystem) unified logs")
         print()
@@ -93,13 +99,11 @@ struct Report: AsyncParsableCommand {
 
         print("Uploading to coordinator...")
         do {
-            try await uploadReport(httpBase: httpBase, serial: serial, logData: logData)
+            let reportID = try await uploadReport(httpBase: httpBase, logData: logData)
             print()
             print("  Report uploaded successfully!")
-            print("  Serial: \(serial)")
-            print()
-            print("  Share your serial number with the Darkbloom team so they")
-            print("  can retrieve the report for troubleshooting.")
+            print("  Report ID: \(reportID)")
+            print("  Share this report ID with the Darkbloom team for troubleshooting.")
         } catch {
             printError("Upload failed: \(error.localizedDescription)")
             throw ExitCode.failure
@@ -129,8 +133,8 @@ struct Report: AsyncParsableCommand {
         return data
     }
 
-    private func uploadReport(httpBase: String, serial: String, logData: Data) async throws {
-        guard let url = URL(string: "\(httpBase)/v1/provider/log-report?serial=\(serial)") else {
+    private func uploadReport(httpBase: String, logData: Data) async throws -> Int64 {
+        guard let url = URL(string: "\(httpBase)/v1/provider/log-report") else {
             throw URLError(.badURL)
         }
 
@@ -156,6 +160,7 @@ struct Report: AsyncParsableCommand {
                 userInfo: [NSLocalizedDescriptionKey: "HTTP \(httpResponse.statusCode): \(body)"]
             )
         }
+        return try Self.decodeUploadReportID(data)
     }
 
 }

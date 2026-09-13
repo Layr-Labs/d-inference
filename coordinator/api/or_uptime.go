@@ -52,6 +52,17 @@ const (
 	orClassClientError = "client_error" // EXCLUDED (4xx client request error)
 )
 
+func isOpenRouterScoredDispatchEndpoint(endpoint string) bool {
+	return endpoint != completionsEndpoint && endpoint != messagesEndpoint
+}
+
+func (d *dispatchState) recordDispatchedRequestOutcome(attr kvBackendAttribution, class string) {
+	if d == nil || !isOpenRouterScoredDispatchEndpoint(d.consumerEndpoint) {
+		return
+	}
+	d.s.recordRequestOutcome(d.model, attr, class)
+}
+
 // recordRequestOutcome emits the per-request OR-uptime outcome counter. model is
 // normalized to "unknown" when empty (e.g. a rejection before model resolution)
 // so the tag is always present for dashboard grouping. No-op when Datadog is

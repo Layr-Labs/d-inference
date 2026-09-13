@@ -40,34 +40,59 @@ private func modelInfo(id: String, modelType: String?) -> ModelInfo {
 
 @Suite("EngineV2 supported-set advertise gate")
 struct EngineV2SupportedSetGateTests {
+    @Test("Lightning exact variants are supported without admitting shared-type Nano", arguments: [
+        "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit",
+        "nvidia-nemotron-3.5-lightning",
+        "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+    ])
+    func lightningVariantGate(modelID: String) async throws {
+        let lightning = modelInfo(id: modelID, modelType: "nemotron_h")
+        let nano = modelInfo(id: "mlx-community/NVIDIA-Nemotron-Nano", modelType: "nemotron_h")
+        #expect(EngineV2SupportedModels.isSupported(model: lightning))
+        #expect(!EngineV2SupportedModels.isSupported(model: nano))
+        #expect(!EngineV2SupportedModels.isSupported(modelType: "nemotron_h"))
+        let loop = try makeGateLoop(models: [lightning, nano])
+        #expect(await loop.isModelAdvertised(lightning.id))
+        #expect(!(await loop.isModelAdvertised(nano.id)))
+    }
 
     @Test("init drops unsupported families from the advertised set; supported ones stay")
     func initGateFiltersAdvertisedSet() async throws {
         let loop = try makeGateLoop(models: [
             modelInfo(id: "gpt-oss-20b", modelType: "gpt_oss"),
             modelInfo(id: "gemma-4-26b-qat-4bit", modelType: "gemma4"),
-            modelInfo(id: "qwen3-8b", modelType: "qwen3"),          // no CBv2 adapter
-            modelInfo(id: "gemma-3-legacy", modelType: "gemma3"),   // no CBv2 adapter
-            modelInfo(id: "mystery-build", modelType: nil),         // unknown → fail closed
+            modelInfo(id: "qwen3-vl-moe", modelType: "qwen3_vl_moe"),
+            modelInfo(id: "qwen3-vl-dense", modelType: "qwen3_vl"),
+            modelInfo(id: "qwen3-vl-moe-text", modelType: "qwen3_vl_moe_text"),
+            modelInfo(id: "qwen3-8b", modelType: "qwen3"),
+            modelInfo(id: "qwen3-moe", modelType: "qwen3_moe"),
+            modelInfo(id: "gemma-3-legacy", modelType: "gemma3"),
+            modelInfo(id: "mystery-build", modelType: nil),
         ])
         #expect(await loop.isModelAdvertised("gpt-oss-20b"))
         #expect(await loop.isModelAdvertised("gemma-4-26b-qat-4bit"))
+        #expect(await loop.isModelAdvertised("qwen3-vl-moe"))
+        #expect(await loop.isModelAdvertised("qwen3-vl-dense") == false)
+        #expect(await loop.isModelAdvertised("qwen3-vl-moe-text") == false)
         #expect(await loop.isModelAdvertised("qwen3-8b") == false)
+        #expect(await loop.isModelAdvertised("qwen3-moe") == false)
         #expect(await loop.isModelAdvertised("gemma-3-legacy") == false)
         #expect(await loop.isModelAdvertised("mystery-build") == false)
-        #expect(await loop.advertisedModelCount() == 2)
+        #expect(await loop.advertisedModelCount() == 3)
     }
 
     @Test("partition splits supported/unsupported order-preserving")
     func partitionHelper() {
         let models = [
             modelInfo(id: "a", modelType: "gpt_oss"),
-            modelInfo(id: "b", modelType: "qwen3"),
-            modelInfo(id: "c", modelType: "gemma4_text"),
+            modelInfo(id: "b", modelType: "qwen3_vl"),
+            modelInfo(id: "c", modelType: "qwen3_vl_moe"),
+            modelInfo(id: "d", modelType: "gemma4_text"),
+            modelInfo(id: "e", modelType: "qwen3_moe"),
         ]
         let split = EngineV2SupportedModels.partition(models)
-        #expect(split.supported.map(\.id) == ["a", "c"])
-        #expect(split.unsupported.map(\.id) == ["b"])
+        #expect(split.supported.map(\.id) == ["a", "c", "d"])
+        #expect(split.unsupported.map(\.id) == ["b", "e"])
     }
 
     @Test("load request for an unadvertised (unsupported/stale) id → 404-mapped error")

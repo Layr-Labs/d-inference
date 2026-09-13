@@ -42,3 +42,22 @@ func TestOrUptimeClassForRejection(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenRouterScoredDispatchEndpointExcludesGenericAPIs(t *testing.T) {
+	tests := []struct {
+		endpoint string
+		want     bool
+	}{
+		{"", true},
+		{"/v1/chat/completions", true},
+		{"/v1/responses", true},
+		{completionsEndpoint, false},
+		{messagesEndpoint, false},
+	}
+	for _, tt := range tests {
+		if got := isOpenRouterScoredDispatchEndpoint(tt.endpoint); got != tt.want {
+			t.Errorf("isOpenRouterScoredDispatchEndpoint(%q) = %v, want %v",
+				tt.endpoint, got, tt.want)
+		}
+	}
+}

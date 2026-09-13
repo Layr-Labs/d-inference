@@ -95,6 +95,16 @@ func createTestAttestationJSONWithSerial(t *testing.T, serial, encryptionKey str
 // when non-empty. When encryptionKey is set, the generated P-256 key is
 // registered as its challenge signer so subsequent challenge responses verify.
 func buildTestAttestationJSON(t *testing.T, encryptionKey, binaryHash, serial string) json.RawMessage {
+	return buildTestAttestationJSONWithFields(
+		t, encryptionKey, binaryHash, serial, time.Now(), nil)
+}
+
+func buildTestAttestationJSONWithFields(
+	t *testing.T,
+	encryptionKey, binaryHash, serial string,
+	timestamp time.Time,
+	extra map[string]interface{},
+) json.RawMessage {
 	t.Helper()
 
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -121,7 +131,7 @@ func buildTestAttestationJSON(t *testing.T, encryptionKey, binaryHash, serial st
 		"secureBootEnabled":        true,
 		"secureEnclaveAvailable":   true,
 		"sipEnabled":               true,
-		"timestamp":                time.Now().UTC().Format(time.RFC3339),
+		"timestamp":                timestamp.UTC().Format(time.RFC3339),
 	}
 	if encryptionKey != "" {
 		blobMap["encryptionPublicKey"] = encryptionKey
@@ -132,6 +142,9 @@ func buildTestAttestationJSON(t *testing.T, encryptionKey, binaryHash, serial st
 	}
 	if serial != "" {
 		blobMap["serialNumber"] = serial
+	}
+	for key, value := range extra {
+		blobMap[key] = value
 	}
 
 	blobJSON, err := json.Marshal(blobMap)

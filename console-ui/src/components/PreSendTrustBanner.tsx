@@ -7,7 +7,7 @@ import { TrustExplainerModal } from "./TrustExplainerModal";
 
 interface ProviderSummary {
   count: number;
-  lastVerified: string;
+  lastVerified: string | null;
 }
 
 export function PreSendTrustBanner({ visible }: { visible: boolean }) {
@@ -21,8 +21,7 @@ export function PreSendTrustBanner({ visible }: { visible: boolean }) {
 
     async function fetchProviders() {
       try {
-        // Slim same-origin summary instead of downloading the full attestation
-        // blob (cert chains) just for a count + timestamp (perf F9b).
+        // Slim same-origin summary for the count + timestamp banner.
         const res = await fetch(`/api/attestation?summary=1`);
         if (!res.ok) return;
         const data = (await res.json()) as { count?: number; last_verified?: string | null };
@@ -30,7 +29,7 @@ export function PreSendTrustBanner({ visible }: { visible: boolean }) {
 
         setSummary({
           count: data.count ?? 0,
-          lastVerified: data.last_verified ? formatRelative(data.last_verified) : "recently",
+          lastVerified: data.last_verified ? formatRelative(data.last_verified) : null,
         });
       } catch {
         // Silently fail — banner will just not show details
@@ -47,28 +46,19 @@ export function PreSendTrustBanner({ visible }: { visible: boolean }) {
 
   return (
     <>
-      <div className="max-w-4xl mx-auto px-3 sm:px-6 pb-2">
-        <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-light/40 border-2 border-teal/30">
-          <ShieldCheck size={16} className="text-teal shrink-0" />
-          <p className="text-xs text-text-secondary flex-1 leading-relaxed">
-            <span className="font-semibold text-text-primary">
-              End-to-end encrypted
-            </span>{" "}
-            &mdash; processed on Apple-verified hardware
-            {summary && (
-              <span className="text-text-tertiary">
-                {" "}
-                &middot; {summary.count} provider{summary.count !== 1 ? "s" : ""}{" "}
-                online &middot; Last verified {summary.lastVerified}
-              </span>
-            )}
+      <div className="mx-auto mt-7 max-w-3xl">
+        <div className="flex items-start justify-center gap-2 text-text-tertiary">
+          <ShieldCheck size={14} className="mt-0.5 shrink-0" />
+          <p className="text-xs leading-relaxed">
+            End-to-end encrypted on verified hardware
+            {summary && <span className="mt-1 block text-[11px]">{summary.count} provider{summary.count !== 1 ? "s" : ""} online.{summary.lastVerified ? ` Last verified ${summary.lastVerified}.` : ""}</span>}
           </p>
           <button
             onClick={() => setShowExplainer(true)}
-            className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold text-teal hover:bg-teal-light/60 transition-colors"
+            aria-label="How encryption and hardware verification work"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-text-tertiary transition-colors hover:text-accent-brand"
           >
             <Info size={12} />
-            <span className="hidden sm:inline">How it works</span>
           </button>
         </div>
       </div>

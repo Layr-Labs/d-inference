@@ -147,6 +147,9 @@ func makeRoutableProvider(t *testing.T, reg *registry.Registry, id, model string
 		},
 	}
 	p := reg.Register(id, nil, msg)
+	// This helper constructs an already registered, routable fixture. Recovery
+	// failure cases use their own pending-registration fixtures.
+	p.CompleteProviderStateRestore()
 	p.Mu().Lock()
 	p.TrustLevel = registry.TrustHardware
 	p.RuntimeVerified = true
@@ -187,7 +190,7 @@ func TestRoutingMetrics_SelectedEmitsDecisionAndCost(t *testing.T) {
 		Model:                 model,
 		EstimatedPromptTokens: 100,
 		RequestedMaxTokens:    256,
-		ChunkCh:               make(chan string, 1),
+		ChunkCh:               make(chan registry.ProviderChunk, 1),
 		CompleteCh:            make(chan protocol.UsageInfo, 1),
 		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
 	}
@@ -247,7 +250,7 @@ func TestRoutingMetrics_NoProviderEmitsNoProvider(t *testing.T) {
 		RequestID:          "req-noprovider",
 		Model:              model,
 		RequestedMaxTokens: 256,
-		ChunkCh:            make(chan string, 1),
+		ChunkCh:            make(chan registry.ProviderChunk, 1),
 		CompleteCh:         make(chan protocol.UsageInfo, 1),
 		ErrorCh:            make(chan protocol.InferenceErrorMessage, 1),
 	}
@@ -299,7 +302,7 @@ func TestRoutingMetrics_OverCapacityOutcome(t *testing.T) {
 		RequestID:          "req-overcap",
 		Model:              model,
 		RequestedMaxTokens: 256,
-		ChunkCh:            make(chan string, 1),
+		ChunkCh:            make(chan registry.ProviderChunk, 1),
 		CompleteCh:         make(chan protocol.UsageInfo, 1),
 		ErrorCh:            make(chan protocol.InferenceErrorMessage, 1),
 	}
@@ -508,7 +511,7 @@ func TestRoutingMetrics_AllTagsOnSelection(t *testing.T) {
 		Model:                 model,
 		EstimatedPromptTokens: 50,
 		RequestedMaxTokens:    128,
-		ChunkCh:               make(chan string, 1),
+		ChunkCh:               make(chan registry.ProviderChunk, 1),
 		CompleteCh:            make(chan protocol.UsageInfo, 1),
 		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
 	}

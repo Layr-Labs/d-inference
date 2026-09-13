@@ -32,6 +32,7 @@ final class RoleClassificationTests: XCTestCase {
             // preprocessor
             ("preprocessor_config.json", "preprocessor"),
             ("processor_config.json", "preprocessor"),
+            ("video_preprocessor_config.json", "preprocessor"),
             // other
             ("README.md", "other"),
             ("license.txt", "other"),

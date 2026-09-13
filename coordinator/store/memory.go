@@ -11,6 +11,7 @@ package store
 // the PostgresStore, so lookup semantics match across backends.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -76,6 +77,10 @@ type MemoryStore struct {
 	usersByAccountID       map[string]*User // accountID → user
 	usersByStripeAccountID map[string]*User // stripeAccountID → user (subset of usersByAccountID)
 
+	// Global Payouts use the same balance lock as Connect withdrawals.
+	globalRecipients map[string]GlobalRecipient
+	globalPayouts    map[string]GlobalPayout
+
 	// Stripe Connect withdrawals
 	stripeWithdrawalsByID         map[string]*StripeWithdrawal
 	stripeWithdrawalsByTransferID map[string]string   // transferID → withdrawalID
@@ -114,13 +119,17 @@ type MemoryStore struct {
 	// In the memory store this is lost on restart (same as the in-memory throttle
 	// it backs), but the methods exist so the store seam is uniform and Postgres
 	// persists for real once it is the production backend.
-	codeAttestations map[string]CodeAttestation
+	codeAttestations      map[string]CodeAttestation
+	codeAttestPushBudgets map[string]CodeAttestPushBudget
 
 	// Provider trust-reuse cache (DAR-326 Phase 0). Keyed by SE pubkey. Mirrors
 	// codeAttestations: lost on restart in the memory store (same as the in-memory
 	// cache it backs), but the methods exist so the store seam is uniform and
 	// Postgres persists for real as the production backend.
 	providerTrustReuse map[string]ProviderTrustReuse
+
+	// Durable scheduler parity for tests/development. Key is SE key + task kind.
+	verificationJobs map[string]VerificationJob
 
 	// Provider log reports
 	logReports   []LogReport
@@ -137,6 +146,14 @@ type MemoryStore struct {
 
 	// Rejected inbound inference requests (4xx/5xx) with servability snapshot.
 	inferenceRejections []RejectionRecord
+
+	// System profiler: per-attempt request profiles (write-once per
+	// request_id/attempt, mirroring the Postgres UNIQUE + DO NOTHING) and
+	// per-tick fleet snapshots. Both are append-only and capped by Prune.
+	requestOutcomes    map[string]RequestOutcomeRecord
+	requestProfiles    []RequestProfileRecord
+	requestProfileKeys map[string]struct{} // request_id/attempt -> present
+	fleetSnapshots     []FleetSnapshotRow
 
 	// Base rewards — per-epoch floor draws (idempotent on provider_key|epoch_id).
 	providerFloorDraws []ProviderFloorDraw
@@ -197,11 +214,16 @@ func NewMemory(scfg Config) *MemoryStore {
 		reputationRecords:             make(map[string]*ReputationRecord),
 		serialToProviderID:            make(map[string]string),
 		codeAttestations:              make(map[string]CodeAttestation),
+		codeAttestPushBudgets:         make(map[string]CodeAttestPushBudget),
 		providerTrustReuse:            make(map[string]ProviderTrustReuse),
+		verificationJobs:              make(map[string]VerificationJob),
 		inferenceRoutes:               make([]InferenceRouteRecord, 0),
 		inferenceRouteIndex:           make(map[string]int),
 		inferenceRouteOutcomes:        make(map[string]InferenceRouteOutcome),
 		inferenceRejections:           make([]RejectionRecord, 0),
+		requestProfiles:               make([]RequestProfileRecord, 0),
+		requestProfileKeys:            make(map[string]struct{}),
+		fleetSnapshots:                make([]FleetSnapshotRow, 0),
 		providerFloorDraws:            make([]ProviderFloorDraw, 0),
 		floorDrawKeys:                 make(map[string]struct{}),
 		sandboxes:                     make(map[string]*SandboxRecord),
@@ -270,6 +292,16 @@ func (s *MemoryStore) Prune(maxEntries int) {
 	// it could let a re-settle double-credit.
 	if n := len(s.providerFloorDraws); n > maxEntries {
 		s.providerFloorDraws = append([]ProviderFloorDraw(nil), s.providerFloorDraws[n-maxEntries:]...)
+	}
+	// System profiler slices. The write-once key set is rebuilt from the kept
+	// rows so a pruned (request_id, attempt) can be written again later, as it
+	// can in Postgres after the retention DELETE.
+	if n := len(s.requestProfiles); n > maxEntries {
+		s.requestProfiles = append([]RequestProfileRecord(nil), s.requestProfiles[n-maxEntries:]...)
+		s.rebuildRequestProfileKeysLocked()
+	}
+	if n := len(s.fleetSnapshots); n > maxEntries {
+		s.fleetSnapshots = append([]FleetSnapshotRow(nil), s.fleetSnapshots[n-maxEntries:]...)
 	}
 	// Expired device codes can be dropped outright.
 	now := time.Now()
@@ -647,11 +679,11 @@ func (s *MemoryStore) UsageRecordsSince(since time.Time) []UsageRecord {
 }
 
 // UsageCountSince returns the number of usage records created at or after the given time.
-func (s *MemoryStore) UsageCountSince(since time.Time) int64 {
+func (s *MemoryStore) UsageCountSince(since time.Time) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if since.IsZero() {
-		return int64(len(s.usage))
+		return int64(len(s.usage)), nil
 	}
 	var count int64
 	for _, r := range s.usage {
@@ -663,11 +695,11 @@ func (s *MemoryStore) UsageCountSince(since time.Time) int64 {
 			count++
 		}
 	}
-	return count
+	return count, nil
 }
 
 // UsageTotals returns aggregated lifetime totals.
-func (s *MemoryStore) UsageTotals() UsageTotals {
+func (s *MemoryStore) UsageTotals() (UsageTotals, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var t UsageTotals
@@ -676,11 +708,11 @@ func (s *MemoryStore) UsageTotals() UsageTotals {
 		t.PromptTokens += int64(r.PromptTokens)
 		t.CompletionTokens += int64(r.CompletionTokens)
 	}
-	return t
+	return t, nil
 }
 
 // UsageTotalsSince returns aggregate usage at or after `since`.
-func (s *MemoryStore) UsageTotalsSince(since time.Time) UsageTotals {
+func (s *MemoryStore) UsageTotalsSince(since time.Time) (UsageTotals, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var t UsageTotals
@@ -696,11 +728,11 @@ func (s *MemoryStore) UsageTotalsSince(since time.Time) UsageTotals {
 		t.PromptTokens += int64(r.PromptTokens)
 		t.CompletionTokens += int64(r.CompletionTokens)
 	}
-	return t
+	return t, nil
 }
 
 // UsageTimeSeries buckets usage records by the requested duration since `since`.
-func (s *MemoryStore) UsageTimeSeries(since, until time.Time, bucketSize time.Duration) []UsageBucket {
+func (s *MemoryStore) UsageTimeSeries(since, until time.Time, bucketSize time.Duration) ([]UsageBucket, error) {
 	since, until, bucketSize = normalizeUsageTimeSeriesRequest(since, until, bucketSize, time.Now())
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -729,7 +761,7 @@ func (s *MemoryStore) UsageTimeSeries(since, until time.Time, bucketSize time.Du
 		out = append(out, *b)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Minute.Before(out[j].Minute) })
-	return limitUsageTimeSeriesBuckets(out)
+	return limitUsageTimeSeriesBuckets(out), nil
 }
 
 // Leaderboard ranks accounts by the chosen metric, splitting inference work from
@@ -815,7 +847,7 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 // rewards. Base-reward rows count as reward earnings, not work/jobs/tokens.
 // Ledger rewards are only counted for accounts that also have provider earnings
 // rows in the window, so consumer-only reward recipients do not inflate totals.
-func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
+func (s *MemoryStore) NetworkTotals(since time.Time) (NetworkTotalsRow, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var t NetworkTotalsRow
@@ -848,7 +880,7 @@ func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 	}
 	t.EarningsMicroUSD = t.WorkEarningsMicroUSD + t.RewardEarningsMicroUSD
 	t.ActiveAccounts = int64(len(providers))
-	return t
+	return t, nil
 }
 
 // UsageByConsumer returns usage records for a specific consumer key.
@@ -909,89 +941,6 @@ func (s *MemoryStore) RecordUsageFullWithPublicModel(providerID, consumerKey, ke
 	}
 }
 
-// RecordInferenceRoute writes the routing decision snapshot for a request
-// attempt. Best-effort; failures are discarded.
-func (s *MemoryStore) RecordInferenceRoute(record *InferenceRouteRecord) error {
-	if record == nil {
-		return nil
-	}
-
-	now := time.Now()
-	rec := *record
-	if rec.CreatedAt.IsZero() {
-		rec.CreatedAt = now
-	}
-	if rec.UpdatedAt.IsZero() {
-		rec.UpdatedAt = now
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	key := record.RequestID + "/" + strconv.Itoa(record.Attempt)
-	if idx, ok := s.inferenceRouteIndex[key]; ok {
-		rec.CreatedAt = s.inferenceRoutes[idx].CreatedAt
-		if rec.UpdatedAt.IsZero() {
-			rec.UpdatedAt = now
-		}
-		s.inferenceRoutes[idx] = rec
-		return nil
-	}
-	s.inferenceRoutes = append(s.inferenceRoutes, rec)
-	s.inferenceRouteIndex[key] = len(s.inferenceRoutes) - 1
-	return nil
-}
-
-// UpdateInferenceRouteOutcome updates the attempt with final outcome data.
-// Best-effort; failures are discarded.
-func (s *MemoryStore) UpdateInferenceRouteOutcome(requestID string, attempt int, outcome *InferenceRouteOutcome) error {
-	if outcome == nil {
-		return nil
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	key := requestID + "/" + strconv.Itoa(attempt)
-	idx, ok := s.inferenceRouteIndex[key]
-	if !ok {
-		return nil
-	}
-
-	merged := s.inferenceRouteOutcomes[key]
-	mergeInferenceRouteOutcome(&merged, outcome)
-	s.inferenceRouteOutcomes[key] = merged
-	s.inferenceRoutes[idx].UpdatedAt = time.Now()
-	return nil
-}
-
-// InferenceRouteRecordsSince returns routing records created at or after the
-// given time. Zero since returns all records.
-func (s *MemoryStore) InferenceRouteRecordsSince(since time.Time) []InferenceRouteRecord {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	out := make([]InferenceRouteRecord, 0, len(s.inferenceRoutes))
-	for i := len(s.inferenceRoutes) - 1; i >= 0; i-- {
-		r := s.inferenceRoutes[i]
-		if !since.IsZero() && r.CreatedAt.Before(since) {
-			continue
-		}
-		key := r.RequestID + "/" + strconv.Itoa(r.Attempt)
-		if outcome, ok := s.inferenceRouteOutcomes[key]; ok {
-			applyInferenceRouteOutcomeToRecord(&r, outcome)
-		}
-		out = append(out, r)
-		if len(out) >= maxTelemetryReadRows {
-			break
-		}
-	}
-	if out == nil {
-		return []InferenceRouteRecord{}
-	}
-	return out
-}
-
 // RecordRejection writes a rejected-request record with its counterfactual
 // servability snapshot. Best-effort; failures are discarded.
 func (s *MemoryStore) RecordRejection(record *RejectionRecord) error {
@@ -1034,6 +983,173 @@ func (s *MemoryStore) RejectionRecordsSince(since time.Time) []RejectionRecord {
 	return out
 }
 
+// requestProfileKey is the write-once identity of a profile row, matching the
+// Postgres UNIQUE (request_id, attempt).
+func requestProfileKey(requestID string, attempt int) string {
+	return requestID + "/" + strconv.Itoa(attempt)
+}
+
+// rebuildRequestProfileKeysLocked recomputes the write-once key set from the
+// retained rows. Caller holds s.mu.
+func (s *MemoryStore) rebuildRequestProfileKeysLocked() {
+	s.requestProfileKeys = make(map[string]struct{}, len(s.requestProfiles))
+	for i := range s.requestProfiles {
+		r := &s.requestProfiles[i]
+		s.requestProfileKeys[requestProfileKey(r.RequestID, r.Attempt)] = struct{}{}
+	}
+}
+
+// RecordRequestProfiles appends one row per record, skipping any
+// (request_id, attempt) already present (ON CONFLICT DO NOTHING semantics).
+// RawMessage fields are cloned so the caller may reuse its buffers.
+func (s *MemoryStore) RecordRequestProfiles(records []*RequestProfileRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		key := requestProfileKey(record.RequestID, record.Attempt)
+		if _, dup := s.requestProfileKeys[key]; dup {
+			continue
+		}
+		rec := *record
+		if rec.CreatedAt.IsZero() {
+			rec.CreatedAt = now
+		}
+		rec.GateRejections = bytes.Clone(jsonbParam(rec.GateRejections))
+		rec.Candidates = bytes.Clone(jsonbParam(rec.Candidates))
+		rec.ProviderProfile = bytes.Clone(jsonbParam(rec.ProviderProfile))
+		s.requestProfiles = append(s.requestProfiles, rec)
+		s.requestProfileKeys[key] = struct{}{}
+	}
+	return nil
+}
+
+// RequestProfilesSince returns profiles created at or after since, newest
+// first (reverse insertion order), capped at maxTelemetryReadRows.
+func (s *MemoryStore) RequestProfilesSince(since time.Time) []RequestProfileRecord {
+	return s.RequestProfilesSinceFiltered(since, RequestProfileFilter{})
+}
+
+// RequestProfilesSinceFiltered applies the filter before the read cap.
+func (s *MemoryStore) RequestProfilesSinceFiltered(since time.Time, filter RequestProfileFilter) []RequestProfileRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]RequestProfileRecord, 0, len(s.requestProfiles))
+	for i := len(s.requestProfiles) - 1; i >= 0; i-- {
+		r := s.requestProfiles[i]
+		if !since.IsZero() && r.CreatedAt.Before(since) {
+			continue
+		}
+		if !filter.Matches(&r) {
+			continue
+		}
+		out = append(out, r)
+		if len(out) >= maxTelemetryReadRows {
+			break
+		}
+	}
+	return out
+}
+
+// RecordFleetSnapshots appends one sampler tick. RawMessage fields are cloned.
+func (s *MemoryStore) RecordFleetSnapshots(rows []FleetSnapshotRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range rows {
+		row := rows[i]
+		if row.SampledAt.IsZero() {
+			row.SampledAt = now
+		}
+		row.QueueDepthByModel = bytes.Clone(jsonbParam(row.QueueDepthByModel))
+		s.fleetSnapshots = append(s.fleetSnapshots, row)
+	}
+	return nil
+}
+
+// FleetSnapshotsSince returns snapshot rows sampled at or after since, newest
+// first (reverse insertion order), capped at maxTelemetryReadRows.
+func (s *MemoryStore) FleetSnapshotsSince(since time.Time) []FleetSnapshotRow {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]FleetSnapshotRow, 0, len(s.fleetSnapshots))
+	for i := len(s.fleetSnapshots) - 1; i >= 0; i-- {
+		r := s.fleetSnapshots[i]
+		if !since.IsZero() && r.SampledAt.Before(since) {
+			continue
+		}
+		out = append(out, r)
+		if len(out) >= maxTelemetryReadRows {
+			break
+		}
+	}
+	return out
+}
+
+// PruneTelemetry drops profiles created before profilesBefore and snapshots
+// sampled before snapshotsBefore. There is no per-batch transaction in the
+// memory store, so batch is accepted for interface parity and ignored; ctx is
+// checked before each table. A zero cutoff prunes nothing for that table.
+func (s *MemoryStore) PruneTelemetry(ctx context.Context, profilesBefore, snapshotsBefore time.Time, _ int) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	deleted := 0
+	if err := ctx.Err(); err != nil {
+		return deleted, err
+	}
+	if !profilesBefore.IsZero() {
+		for id, r := range s.requestOutcomes {
+			if r.ReceivedAt.Before(profilesBefore) {
+				delete(s.requestOutcomes, id)
+				deleted++
+			}
+		}
+		kept := s.requestProfiles[:0:0]
+		for i := range s.requestProfiles {
+			if s.requestProfiles[i].CreatedAt.Before(profilesBefore) {
+				deleted++
+				continue
+			}
+			kept = append(kept, s.requestProfiles[i])
+		}
+		if len(kept) != len(s.requestProfiles) {
+			s.requestProfiles = kept
+			s.rebuildRequestProfileKeysLocked()
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return deleted, err
+	}
+	if !snapshotsBefore.IsZero() {
+		kept := s.fleetSnapshots[:0:0]
+		for i := range s.fleetSnapshots {
+			if s.fleetSnapshots[i].SampledAt.Before(snapshotsBefore) {
+				deleted++
+				continue
+			}
+			kept = append(kept, s.fleetSnapshots[i])
+		}
+		s.fleetSnapshots = kept
+	}
+	return deleted, nil
+}
+
 // addKeySpendLocked increments the per-key spend accumulator. Caller holds s.mu.
 func (s *MemoryStore) addKeySpendLocked(keyID string, amount int64, at time.Time) {
 	ks, ok := s.keySpend[keyID]
@@ -1056,7 +1172,7 @@ func (s *MemoryStore) addKeySpendLocked(keyID string, amount int64, at time.Time
 }
 
 // UsageLocationBuckets returns approximate request-origin aggregates (in-memory).
-func (s *MemoryStore) UsageLocationBuckets(since time.Time) []UsageLocationBucket {
+func (s *MemoryStore) UsageLocationBuckets(since time.Time) ([]UsageLocationBucket, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1132,13 +1248,13 @@ func (s *MemoryStore) UsageLocationBuckets(since time.Time) []UsageLocationBucke
 			Providers:        len(b.providers),
 		})
 	}
-	return out
+	return out, nil
 }
 
 // UsageFlowBuckets aggregates directional consumer→provider flows in memory.
 // providerLocs supplies live provider locations from the registry; the store's
 // own providerRecords are used as a fallback for disconnected providers.
-func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) []UsageFlowBucket {
+func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) ([]UsageFlowBucket, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1228,7 +1344,7 @@ func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]
 		}
 		out = append(out, b)
 	}
-	return out
+	return out, nil
 }
 
 // KeyCount returns the number of active API keys.
@@ -1772,7 +1888,7 @@ func (s *MemoryStore) GetModelRegistryRecord(modelID string) (*ModelRegistryReco
 
 	rec := s.modelRegistryRecordLocked(modelID)
 	if rec == nil {
-		return nil, fmt.Errorf("model %q not found", modelID)
+		return nil, fmt.Errorf("model %q %w", modelID, ErrNotFound)
 	}
 	return rec, nil
 }
@@ -1920,6 +2036,8 @@ func cloneModelRegistryEntry(entry *ModelRegistryEntry) ModelRegistryEntry {
 	}
 	cp := *entry
 	cp.Capabilities = append([]string(nil), entry.Capabilities...)
+	cp.RequiredProviderCapabilities = append(
+		[]string(nil), entry.RequiredProviderCapabilities...)
 	cp.RuntimeParameters = cloneMetadata(entry.RuntimeParameters)
 	cp.Metadata = cloneMetadata(entry.Metadata)
 	return cp
@@ -1931,6 +2049,7 @@ func cloneModelVersion(version *ModelVersion) ModelVersion {
 	}
 	cp := *version
 	cp.PromotedAt = cloneTimePtr(version.PromotedAt)
+	cp.HuggingFaceArtifact = cloneHuggingFaceArtifact(version.HuggingFaceArtifact)
 	cp.Metadata = cloneMetadata(version.Metadata)
 	return cp
 }
@@ -2032,7 +2151,7 @@ func (s *MemoryStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 
 	u, ok := s.usersByPrivyID[privyUserID]
 	if !ok {
-		return nil, fmt.Errorf("user with Privy ID %q not found", privyUserID)
+		return nil, fmt.Errorf("user with Privy ID %q %w", privyUserID, ErrNotFound)
 	}
 	copy := *u
 	return &copy, nil
@@ -2045,7 +2164,7 @@ func (s *MemoryStore) GetUserByAccountID(accountID string) (*User, error) {
 
 	u, ok := s.usersByAccountID[accountID]
 	if !ok {
-		return nil, fmt.Errorf("user with account ID %q not found", accountID)
+		return nil, fmt.Errorf("user with account ID %q %w", accountID, ErrNotFound)
 	}
 	copy := *u
 	return &copy, nil
@@ -2883,6 +3002,10 @@ func (s *MemoryStore) ListReleases() []Release {
 	return releases
 }
 
+func (s *MemoryStore) ListReleasesWithError() ([]Release, error) {
+	return s.ListReleases(), nil
+}
+
 func (s *MemoryStore) GetLatestRelease(platform string) *Release {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -2922,6 +3045,11 @@ func (s *MemoryStore) UpsertProvider(_ context.Context, p ProviderRecord) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.upsertProviderRecordLocked(p)
+	return nil
+}
+
+func (s *MemoryStore) upsertProviderRecordLocked(p ProviderRecord) {
 	// Update serial index
 	if p.SerialNumber != "" {
 		// Remove old serial mapping if exists
@@ -2937,7 +3065,6 @@ func (s *MemoryStore) UpsertProvider(_ context.Context, p ProviderRecord) error 
 		cp.Location = &loc
 	}
 	s.providerRecords[p.ID] = &cp
-	return nil
 }
 
 func (s *MemoryStore) GetProviderRecord(_ context.Context, id string) (*ProviderRecord, error) {
@@ -3149,7 +3276,7 @@ func (s *MemoryStore) GetReputation(_ context.Context, providerID string) (*Repu
 
 	rep, ok := s.reputationRecords[providerID]
 	if !ok {
-		return nil, fmt.Errorf("reputation for provider %q not found", providerID)
+		return nil, fmt.Errorf("reputation for provider %q: %w", providerID, ErrNotFound)
 	}
 	cp := *rep
 	return &cp, nil
@@ -3163,7 +3290,7 @@ func (s *MemoryStore) ListCodeAttestations(_ context.Context) ([]CodeAttestation
 
 	out := make([]CodeAttestation, 0, len(s.codeAttestations))
 	for _, rec := range s.codeAttestations {
-		out = append(out, rec)
+		out = append(out, cloneCodeAttestation(rec))
 	}
 	return out, nil
 }
@@ -3175,7 +3302,12 @@ func (s *MemoryStore) UpsertCodeAttestation(_ context.Context, rec CodeAttestati
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.codeAttestations[rec.SEPubKey] = rec
+	if old, ok := s.codeAttestations[rec.SEPubKey]; !ok || !rec.AttestedAt.Before(old.AttestedAt) {
+		if ok && sameCodeProof(old, rec) && old.ContinuousCoverageUntil != nil && (rec.ContinuousCoverageUntil == nil || old.ContinuousCoverageUntil.After(*rec.ContinuousCoverageUntil)) {
+			rec.ContinuousCoverageUntil = old.ContinuousCoverageUntil
+		}
+		s.codeAttestations[rec.SEPubKey] = cloneCodeAttestation(rec)
+	}
 	return nil
 }
 
@@ -3187,6 +3319,164 @@ func (s *MemoryStore) DeleteCodeAttestation(_ context.Context, seKey string) err
 	defer s.mu.Unlock()
 	delete(s.codeAttestations, seKey)
 	return nil
+}
+
+func (s *MemoryStore) ListCodeAttestPushBudgets(_ context.Context) ([]CodeAttestPushBudget, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]CodeAttestPushBudget, 0, len(s.codeAttestPushBudgets))
+	for _, rec := range s.codeAttestPushBudgets {
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func codeAttestPushBudgetMapKey(seKey, tokenHash string) string {
+	return seKey + "\x00" + tokenHash
+}
+
+func (s *MemoryStore) UpsertCodeAttestPushBudget(_ context.Context, rec CodeAttestPushBudget) error {
+	if rec.SEPubKey == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := codeAttestPushBudgetMapKey(rec.SEPubKey, rec.TokenHash)
+	current, ok := s.codeAttestPushBudgets[key]
+	if ok && current.NextPushAt.After(rec.NextPushAt) {
+		return nil
+	}
+	if rec.LastClearAt.IsZero() {
+		rec.LastClearAt = current.LastClearAt // never regress the durable clear cooldown
+	}
+	s.codeAttestPushBudgets[key] = rec
+	return nil
+}
+
+func (s *MemoryStore) DeleteCodeAttestPushBudget(_ context.Context, seKey string) error {
+	if seKey == "" {
+		return nil
+	}
+	s.mu.Lock()
+	prefix := seKey + "\x00"
+	for key := range s.codeAttestPushBudgets {
+		if strings.HasPrefix(key, prefix) {
+			delete(s.codeAttestPushBudgets, key)
+		}
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *MemoryStore) ReserveCodeAttestPushBudget(
+	_ context.Context,
+	seKey, tokenHash string,
+	now, nextPushAt time.Time,
+) (bool, error) {
+	if seKey == "" || tokenHash == "" || !nextPushAt.After(now) {
+		return false, errors.New("store: invalid code attest push reservation")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := codeAttestPushBudgetMapKey(seKey, tokenHash)
+	current, ok := s.codeAttestPushBudgets[key]
+	if ok && current.NextPushAt.After(now) {
+		return false, nil
+	}
+	floorKey := codeAttestPushBudgetMapKey(seKey, "")
+	if !ok {
+		// Novel token: admission must additionally clear the per-SE-key floor,
+		// so fabricating fresh tokens cannot mint fresh budgets (Codex P1).
+		// s.mu serializes floor-check-then-admit here, mirroring the Postgres
+		// store, which acquires the floor sentinel row lock before inserting
+		// the token row (blue-green double-admission fix).
+		if floor, has := s.codeAttestPushBudgets[floorKey]; has &&
+			floor.NextPushAt.After(now) {
+			return false, nil
+		}
+	}
+	s.codeAttestPushBudgets[key] = CodeAttestPushBudget{
+		SEPubKey: seKey, TokenHash: tokenHash,
+		NextPushAt: nextPushAt, UpdatedAt: now,
+	}
+	// Every admitted push raises the admission floor for novel tokens. The
+	// sentinel's LastClearAt (durable rotation-clear cooldown) is preserved.
+	if floor, has := s.codeAttestPushBudgets[floorKey]; !has ||
+		nextPushAt.After(floor.NextPushAt) {
+		s.codeAttestPushBudgets[floorKey] = CodeAttestPushBudget{
+			SEPubKey: seKey, NextPushAt: nextPushAt, UpdatedAt: now,
+			LastClearAt: floor.LastClearAt,
+		}
+	}
+	s.pruneCodeAttestPushBudgetsLocked(seKey)
+	return true, nil
+}
+
+// ClearCodeAttestPushFloor drops the per-SE-key novel-token admission floor so
+// a genuinely rotated token can be challenged promptly. Per-token cooldown rows
+// are untouched (A-B-A retention). The clear is compare-and-set on the
+// sentinel's durable LastClearAt: it is honored only when the previous durable
+// clear is at least cooldown old, so the anti-abuse spacing between rotation
+// clears holds across coordinator restarts and blue-green peers — not just
+// within one process. Returns the durable last-clear instant (now when
+// honored, the existing one when throttled) and whether the clear was honored.
+func (s *MemoryStore) ClearCodeAttestPushFloor(
+	_ context.Context, seKey string, now time.Time, cooldown time.Duration,
+) (time.Time, bool, error) {
+	if seKey == "" {
+		return time.Time{}, false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := codeAttestPushBudgetMapKey(seKey, "")
+	if rec, ok := s.codeAttestPushBudgets[key]; ok && !rec.LastClearAt.IsZero() &&
+		now.Sub(rec.LastClearAt) < cooldown {
+		return rec.LastClearAt, false, nil
+	}
+	// Keep the sentinel: NextPushAt=now lifts the floor immediately while
+	// LastClearAt=now durably starts the next rotation-clear cooldown.
+	s.codeAttestPushBudgets[key] = CodeAttestPushBudget{
+		SEPubKey: seKey, NextPushAt: now, UpdatedAt: now, LastClearAt: now,
+	}
+	return now, true, nil
+}
+
+// pruneCodeAttestPushBudgetsLocked keeps the newest
+// CodeAttestPushBudgetMaxTokenRows token rows (never the floor sentinel) for
+// one SE key, bounding growth under token churn.
+func (s *MemoryStore) pruneCodeAttestPushBudgetsLocked(seKey string) {
+	prefix := seKey + "\x00"
+	floorKey := codeAttestPushBudgetMapKey(seKey, "")
+	type row struct {
+		key string
+		rec CodeAttestPushBudget
+	}
+	var rows []row
+	for key, rec := range s.codeAttestPushBudgets {
+		if key != floorKey && strings.HasPrefix(key, prefix) {
+			rows = append(rows, row{key, rec})
+		}
+	}
+	for len(rows) > CodeAttestPushBudgetMaxTokenRows {
+		oldest := 0
+		for i, candidate := range rows {
+			if codeAttestPushBudgetOlder(candidate.rec, rows[oldest].rec) {
+				oldest = i
+			}
+		}
+		delete(s.codeAttestPushBudgets, rows[oldest].key)
+		rows[oldest] = rows[len(rows)-1]
+		rows = rows[:len(rows)-1]
+	}
+}
+
+// codeAttestPushBudgetOlder matches the Postgres prune order
+// (updated_at DESC, token_hash DESC keeps newest).
+func codeAttestPushBudgetOlder(a, b CodeAttestPushBudget) bool {
+	if !a.UpdatedAt.Equal(b.UpdatedAt) {
+		return a.UpdatedAt.Before(b.UpdatedAt)
+	}
+	return a.TokenHash < b.TokenHash
 }
 
 // --- Provider trust-reuse cache (DAR-326 Phase 0) ---
@@ -3202,30 +3492,332 @@ func (s *MemoryStore) ListProviderTrustReuse(_ context.Context) ([]ProviderTrust
 	return out, nil
 }
 
-func (s *MemoryStore) UpsertProviderTrustReuse(_ context.Context, rec ProviderTrustReuse) error {
+func (s *MemoryStore) UpsertProviderTrustReuse(_ context.Context, rec ProviderTrustReuse, expectedRevocationGeneration uint64) (ProviderTrustReuseWriteResult, error) {
 	if rec.SEPubKey == "" {
+		return ProviderTrustReuseWriteResult{}, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.providerTrustReuse[rec.SEPubKey]
+	if ok && (current.RevokedAt != nil ||
+		current.RevocationGeneration != expectedRevocationGeneration) {
+		return ProviderTrustReuseWriteResult{
+			EvidenceGeneration:   current.EvidenceGeneration,
+			RevocationGeneration: current.RevocationGeneration,
+		}, nil
+	}
+	rec.RevocationGeneration = expectedRevocationGeneration
+	if ok {
+		rec.RevocationEventID = current.RevocationEventID
+		rec.EvidenceGeneration = current.EvidenceGeneration + 1
+	}
+	if rec.EvidenceGeneration == 0 {
+		rec.EvidenceGeneration = 1
+	}
+	s.providerTrustReuse[rec.SEPubKey] = rec
+	return ProviderTrustReuseWriteResult{
+		Applied:              true,
+		EvidenceGeneration:   rec.EvidenceGeneration,
+		RevocationGeneration: rec.RevocationGeneration,
+	}, nil
+}
+
+func (s *MemoryStore) RecoverProviderTrustReuse(_ context.Context, rec ProviderTrustReuse, expectedRevocationGeneration uint64) (ProviderTrustReuseWriteResult, error) {
+	if rec.SEPubKey == "" {
+		return ProviderTrustReuseWriteResult{}, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.providerTrustReuse[rec.SEPubKey]
+	if ok && current.RevocationGeneration != expectedRevocationGeneration {
+		return ProviderTrustReuseWriteResult{
+			EvidenceGeneration:   current.EvidenceGeneration,
+			RevocationGeneration: current.RevocationGeneration,
+		}, nil
+	}
+	rec.RevocationGeneration = expectedRevocationGeneration
+	rec.RevokedAt = nil
+	if ok {
+		rec.RevocationEventID = current.RevocationEventID
+		rec.EvidenceGeneration = current.EvidenceGeneration + 1
+	}
+	if rec.EvidenceGeneration == 0 {
+		rec.EvidenceGeneration = 1
+	}
+	s.providerTrustReuse[rec.SEPubKey] = rec
+	return ProviderTrustReuseWriteResult{
+		Applied:              true,
+		EvidenceGeneration:   rec.EvidenceGeneration,
+		RevocationGeneration: rec.RevocationGeneration,
+	}, nil
+}
+
+func (s *MemoryStore) AdvanceProviderTrustReuseCoverage(_ context.Context, seKeys []string, until time.Time) error {
+	if len(seKeys) == 0 || until.IsZero() {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	s.providerTrustReuse[rec.SEPubKey] = rec
+	for _, seKey := range seKeys {
+		rec, ok := s.providerTrustReuse[seKey]
+		if !ok || rec.RevokedAt != nil || rec.TrustLevel != "hardware" {
+			continue
+		}
+		if rec.ContinuousCoverageUntil != nil && !until.After(*rec.ContinuousCoverageUntil) {
+			continue
+		}
+		u := until
+		rec.ContinuousCoverageUntil = &u
+		s.providerTrustReuse[seKey] = rec
+	}
 	return nil
 }
 
-func (s *MemoryStore) DeleteProviderTrustReuse(_ context.Context, seKey string) error {
-	if seKey == "" {
-		return nil
+func (s *MemoryStore) RevokeProviderTrustReuse(_ context.Context, seKey, revocationEventID string) (ProviderTrustReuse, error) {
+	if seKey == "" || revocationEventID == "" {
+		return ProviderTrustReuse{}, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.providerTrustReuse, seKey)
+	rec := s.providerTrustReuse[seKey]
+	if rec.RevocationEventID == revocationEventID {
+		return rec, nil
+	}
+	rec.SEPubKey = seKey
+	rec.TrustLevel = ""
+	rec.ContinuousCoverageUntil = nil
+	rec.RevocationGeneration++
+	rec.RevocationEventID = revocationEventID
+	now := time.Now().UTC()
+	if rec.EvidenceGeneration == 0 {
+		rec.EvidenceGeneration = 1
+	}
+	if rec.HardwareProofVerifiedAt.IsZero() {
+		rec.HardwareProofVerifiedAt = now
+	}
+	rec.RevokedAt = &now
+	s.providerTrustReuse[seKey] = rec
+	return rec, nil
+}
+
+// --- Bounded durable MDM/MDA verification scheduler ---
+
+func verificationJobKey(seKey string, kind VerificationTaskKind) string {
+	return seKey + "\x00" + string(kind)
+}
+
+func cloneVerificationJob(rec VerificationJob) VerificationJob {
+	if rec.ClaimExpiresAt != nil {
+		expiry := *rec.ClaimExpiresAt
+		rec.ClaimExpiresAt = &expiry
+	}
+	return rec
+}
+
+func (s *MemoryStore) UpsertVerificationJob(_ context.Context, rec VerificationJob) (VerificationJob, error) {
+	if rec.SEPubKey == "" || rec.Kind == "" {
+		return VerificationJob{}, errors.New("store: verification job requires SE key and kind")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := verificationJobKey(rec.SEPubKey, rec.Kind)
+	current, exists := s.verificationJobs[key]
+	if exists && current.State != VerificationStateCompleted {
+		current.Serial = rec.Serial
+		if rec.UDID != "" {
+			current.UDID = rec.UDID
+		}
+		if rec.Priority < current.Priority {
+			current.Priority = rec.Priority
+		}
+		if current.State == VerificationStateWaitingChallenge &&
+			rec.State == VerificationStatePending {
+			current.State = VerificationStatePending
+			current.NextAttemptAt = rec.NextAttemptAt
+		}
+		if current.State == VerificationStateRunning &&
+			rec.State == VerificationStatePending {
+			current.ReopenPending = true
+			current.NextAttemptAt = rec.NextAttemptAt
+		}
+		current.UpdatedAt = rec.UpdatedAt
+		s.verificationJobs[key] = current
+		return cloneVerificationJob(current), nil
+	}
+	if rec.LastOutcome == "" {
+		rec.LastOutcome = VerificationOutcomeNone
+	}
+	rec.ReopenPending = false
+	rec.ClaimOwner = ""
+	rec.ClaimExpiresAt = nil
+	s.verificationJobs[key] = cloneVerificationJob(rec)
+	return cloneVerificationJob(rec), nil
+}
+func (s *MemoryStore) GetVerificationJob(_ context.Context, seKey string, kind VerificationTaskKind) (*VerificationJob, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rec, ok := s.verificationJobs[verificationJobKey(seKey, kind)]
+	if !ok {
+		return nil, nil
+	}
+	copy := cloneVerificationJob(rec)
+	return &copy, nil
+}
+
+func (s *MemoryStore) ListDueVerificationJobs(
+	ctx context.Context,
+	now time.Time,
+	limit int,
+) ([]VerificationJob, error) {
+	return s.ListDueVerificationJobsPage(ctx, now, limit, 0)
+}
+
+func (s *MemoryStore) ListDueVerificationJobsPage(
+	_ context.Context,
+	now time.Time,
+	limit, offset int,
+) ([]VerificationJob, error) {
+	if limit <= 0 || offset < 0 {
+		return nil, nil
+	}
+	s.mu.RLock()
+	out := make([]VerificationJob, 0, min(limit, len(s.verificationJobs)))
+	for _, rec := range s.verificationJobs {
+		claimExpired := rec.State == VerificationStateRunning &&
+			rec.ClaimExpiresAt != nil && !rec.ClaimExpiresAt.After(now)
+		if rec.State != VerificationStatePending &&
+			rec.State != VerificationStateBackoff && !claimExpired {
+			continue
+		}
+		if rec.NextAttemptAt.After(now) {
+			continue
+		}
+		if rec.ClaimOwner != "" && rec.ClaimExpiresAt != nil && rec.ClaimExpiresAt.After(now) {
+			continue
+		}
+		out = append(out, cloneVerificationJob(rec))
+	}
+	s.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Priority != out[j].Priority {
+			return out[i].Priority < out[j].Priority
+		}
+		if !out[i].NextAttemptAt.Equal(out[j].NextAttemptAt) {
+			return out[i].NextAttemptAt.Before(out[j].NextAttemptAt)
+		}
+		if out[i].SEPubKey != out[j].SEPubKey {
+			return out[i].SEPubKey < out[j].SEPubKey
+		}
+		return out[i].Kind < out[j].Kind
+	})
+	if offset >= len(out) {
+		return nil, nil
+	}
+	end := min(offset+limit, len(out))
+	return out[offset:end], nil
+}
+
+func (s *MemoryStore) ClaimVerificationJob(_ context.Context, seKey string, kind VerificationTaskKind, owner string, now, expiresAt time.Time) (VerificationJob, bool, error) {
+	if owner == "" || !expiresAt.After(now) {
+		return VerificationJob{}, false, errors.New("store: invalid verification claim")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := verificationJobKey(seKey, kind)
+	rec, ok := s.verificationJobs[key]
+	claimExpired := ok && rec.State == VerificationStateRunning &&
+		rec.ClaimExpiresAt != nil && !rec.ClaimExpiresAt.After(now)
+	if !ok ||
+		(rec.State != VerificationStatePending &&
+			rec.State != VerificationStateBackoff && !claimExpired) ||
+		rec.NextAttemptAt.After(now) ||
+		(rec.ClaimOwner != "" && rec.ClaimExpiresAt != nil && rec.ClaimExpiresAt.After(now)) {
+		return VerificationJob{}, false, nil
+	}
+	rec.State = VerificationStateRunning
+	rec.ReopenPending = false
+	rec.ClaimOwner = owner
+	expiry := expiresAt
+	rec.ClaimExpiresAt = &expiry
+	rec.UpdatedAt = now
+	s.verificationJobs[key] = rec
+	return cloneVerificationJob(rec), true, nil
+}
+
+func (s *MemoryStore) ReleaseVerificationJob(_ context.Context, seKey string, kind VerificationTaskKind, owner string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := verificationJobKey(seKey, kind)
+	rec, ok := s.verificationJobs[key]
+	if !ok || rec.ClaimOwner != owner {
+		return nil
+	}
+	rec.State = VerificationStatePending
+	rec.ReopenPending = false
+	rec.ClaimOwner = ""
+	rec.ClaimExpiresAt = nil
+	rec.UpdatedAt = now
+	s.verificationJobs[key] = rec
+	return nil
+}
+
+func (s *MemoryStore) CompleteVerificationJob(_ context.Context, seKey string, kind VerificationTaskKind, owner string, outcome VerificationOutcome, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := verificationJobKey(seKey, kind)
+	rec, ok := s.verificationJobs[key]
+	if !ok {
+		return nil
+	}
+	if rec.ClaimOwner != "" && rec.ClaimOwner != owner {
+		return nil
+	}
+	if rec.ReopenPending {
+		rec.State = VerificationStatePending
+		rec.ReopenPending = false
+	} else {
+		rec.State = VerificationStateCompleted
+		rec.RetryStage = 0
+		rec.PreviousDelay = 0
+		rec.NextAttemptAt = time.Time{}
+		rec.LastOutcome = outcome
+	}
+	rec.UpdatedAt = now
+	rec.ClaimOwner = ""
+	rec.ClaimExpiresAt = nil
+	s.verificationJobs[key] = rec
+	return nil
+}
+
+func (s *MemoryStore) RescheduleVerificationJob(_ context.Context, seKey string, kind VerificationTaskKind, owner string, priority VerificationPriority, retryStage int, previousDelay time.Duration, nextAttemptAt time.Time, outcome VerificationOutcome, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := verificationJobKey(seKey, kind)
+	rec, ok := s.verificationJobs[key]
+	if !ok || rec.ClaimOwner != owner {
+		return nil
+	}
+	if rec.ReopenPending {
+		rec.State = VerificationStatePending
+		rec.ReopenPending = false
+	} else {
+		rec.State = VerificationStateBackoff
+		rec.Priority = priority
+		rec.RetryStage = retryStage
+		rec.PreviousDelay = previousDelay
+		rec.NextAttemptAt = nextAttemptAt
+		rec.LastOutcome = outcome
+	}
+	rec.UpdatedAt = now
+	rec.ClaimOwner = ""
+	rec.ClaimExpiresAt = nil
+	s.verificationJobs[key] = rec
 	return nil
 }
 
 // --- Provider Log Reports ---
 
-func (s *MemoryStore) StoreLogReport(serialNumber, providerID, accountID string, logData []byte) error {
+func (s *MemoryStore) StoreLogReport(accountID string, logData []byte) (int64, error) {
 	const maxSize = 10 << 20 // 10 MB
 	if len(logData) > maxSize {
 		logData = logData[:maxSize]
@@ -3238,46 +3830,12 @@ func (s *MemoryStore) StoreLogReport(serialNumber, providerID, accountID string,
 	copy(cp, logData)
 	s.logReports = append(s.logReports, LogReport{
 		ID:           s.logReportSeq,
-		SerialNumber: serialNumber,
-		ProviderID:   providerID,
 		AccountID:    accountID,
 		LogSizeBytes: int64(len(cp)),
 		LogData:      cp,
 		CreatedAt:    time.Now(),
 	})
-	return nil
-}
-
-func (s *MemoryStore) GetLogReports(serialNumber string, limit int) ([]LogReport, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 10
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var reports []LogReport
-	for i := len(s.logReports) - 1; i >= 0; i-- {
-		r := s.logReports[i]
-		if r.SerialNumber != serialNumber {
-			continue
-		}
-		// Return without log data for list queries.
-		reports = append(reports, LogReport{
-			ID:           r.ID,
-			SerialNumber: r.SerialNumber,
-			ProviderID:   r.ProviderID,
-			AccountID:    r.AccountID,
-			LogSizeBytes: r.LogSizeBytes,
-			CreatedAt:    r.CreatedAt,
-		})
-		if len(reports) >= limit {
-			break
-		}
-	}
-	if reports == nil {
-		return []LogReport{}, nil
-	}
-	return reports, nil
+	return s.logReportSeq, nil
 }
 
 func (s *MemoryStore) GetLogReport(id int64) (*LogReport, error) {
@@ -3289,8 +3847,6 @@ func (s *MemoryStore) GetLogReport(id int64) (*LogReport, error) {
 			r := s.logReports[i]
 			cp := LogReport{
 				ID:           r.ID,
-				SerialNumber: r.SerialNumber,
-				ProviderID:   r.ProviderID,
 				AccountID:    r.AccountID,
 				LogSizeBytes: r.LogSizeBytes,
 				CreatedAt:    r.CreatedAt,

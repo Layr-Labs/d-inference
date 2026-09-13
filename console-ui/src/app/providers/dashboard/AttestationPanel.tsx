@@ -1,28 +1,18 @@
 "use client";
 
 // The trust chain as a connected vertical ladder: Secure Enclave → OS security
-// → MDM identity → Apple Device Attestation. Each link is green when verified
+// → MDM posture → Apple Device Attestation. Each link is green when verified
 // and dashed/grey where it breaks, so "where is the chain broken" is obvious at
-// a glance. Serves both the operator ("why am I blocked") and the trust-minded
-// visitor ("is this a real, secure Apple device"). The Apple Root CA check runs
-// the same client-side verifier the public stats page uses.
+// a glance. Raw Apple certificates and hardware identifiers stay private to
+// the provider and coordinator.
 
 import { useEffect, useState } from "react";
 import {
   CheckCircle2,
-  ExternalLink,
-  Loader2,
-  Shield,
   XCircle,
 } from "lucide-react";
-// Type-only import: keeps pkijs/asn1js (~76 KB gz) out of First Load. The
-// verifier itself is dynamically imported inside handleVerify (perf F4).
-import type {
-  CertVerificationResult,
-  VerificationStep,
-} from "@/lib/cert-verify";
 import type { MyProvider } from "../types";
-import { formatRelative, maskSerial } from "./format";
+import { formatRelative } from "./format";
 
 function CheckLine({ ok, label }: { ok: boolean; label: string }) {
   return (
@@ -68,26 +58,6 @@ function ChainNode({
   );
 }
 
-function VerifyStepLine({ step }: { step: VerificationStep }) {
-  return (
-    <div className="flex items-center gap-2 text-[11px]">
-      {step.status === "success" ? (
-        <CheckCircle2 size={11} className="text-accent-green shrink-0" />
-      ) : step.status === "error" ? (
-        <XCircle size={11} className="text-accent-red shrink-0" />
-      ) : step.status === "running" ? (
-        <Loader2 size={11} className="text-accent-brand animate-spin shrink-0" />
-      ) : (
-        <span className="w-[11px] h-[11px] rounded-full border border-border-subtle shrink-0" />
-      )}
-      <span className={step.status === "error" ? "text-accent-red" : "text-text-secondary"}>
-        {step.label}
-        {step.detail ? <span className="text-text-tertiary"> — {step.detail}</span> : null}
-      </span>
-    </div>
-  );
-}
-
 export function AttestationPanel({
   provider: p,
   challengeMaxAgeSeconds,
@@ -95,16 +65,11 @@ export function AttestationPanel({
   provider: MyProvider;
   challengeMaxAgeSeconds: number;
 }) {
-  const [steps, setSteps] = useState<VerificationStep[]>([]);
-  const [result, setResult] = useState<CertVerificationResult | null>(null);
-  const [verifying, setVerifying] = useState(false);
-
   // Each chain link is "ok" only when all of its sub-checks pass; the spine
   // renders green up to the first broken link so the gap is obvious.
-  const certs = p.mda_cert_chain_b64 ?? [];
   const enclaveOK = p.secure_enclave && p.se_key_bound;
   const osOK = p.sip_enabled && p.secure_boot_enabled && p.authenticated_root_enabled && p.runtime_verified;
-  const mdmOK = Boolean(p.mda_serial || p.mda_udid);
+  const mdmOK = p.trust_level === "hardware";
 
   // Staleness needs the wall clock, so compute it in an effect (never during
   // render) to keep the component pure.
@@ -117,21 +82,6 @@ export function AttestationPanel({
     const age = (Date.now() - new Date(p.last_challenge_verified).getTime()) / 1000;
     setChallengeStale(age > (challengeMaxAgeSeconds || 360));
   }, [p.last_challenge_verified, challengeMaxAgeSeconds]);
-
-  async function handleVerify() {
-    if (certs.length < 2 || verifying) return;
-    setVerifying(true);
-    setResult(null);
-    try {
-      const { verifyCertificateChain } = await import("@/lib/cert-verify");
-      const r = await verifyCertificateChain(certs, (s) => setSteps(s));
-      setResult(r);
-    } catch {
-      setResult({ success: false, steps, error: "Verification failed" });
-    } finally {
-      setVerifying(false);
-    }
-  }
 
   return (
     <div>
@@ -155,61 +105,23 @@ export function AttestationPanel({
         )}
       </ChainNode>
 
-      <ChainNode ok={mdmOK} title="MDM device identity">
+      <ChainNode ok={mdmOK} title="MDM security posture">
         {mdmOK ? (
           <div className="space-y-0.5 text-[11px] font-mono text-text-secondary">
-            {p.mda_serial && <div>serial {maskSerial(p.mda_serial)}</div>}
-            {p.mda_udid && <div>udid {maskSerial(p.mda_udid)}</div>}
+            <div>Device identity verified privately</div>
             {p.mda_os_version && <div>macOS {p.mda_os_version}</div>}
             {p.mda_sepos_version && <div>SEPOS {p.mda_sepos_version}</div>}
           </div>
         ) : (
-          <p className="text-xs text-text-tertiary">No MDM device record.</p>
+          <p className="text-xs text-text-tertiary">MDM verification pending.</p>
         )}
       </ChainNode>
 
       <ChainNode ok={p.mda_verified} title="Apple Device Attestation" last>
         <CheckLine
           ok={p.mda_verified}
-          label={
-            certs.length > 0
-              ? `Apple CA cert chain (${certs.length} cert${certs.length === 1 ? "" : "s"})`
-              : "Apple CA cert chain"
-          }
+          label="Apple CA certificate chain verified by coordinator"
         />
-        {certs.length >= 2 && (
-          <div className="mt-2 space-y-2">
-            <button
-              type="button"
-              onClick={handleVerify}
-              disabled={verifying}
-              className="focus-ring inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-accent-brand/10 text-accent-brand text-xs font-medium hover:bg-accent-brand/15 disabled:opacity-60 transition-colors"
-            >
-              {verifying ? <Loader2 size={12} className="animate-spin" /> : <Shield size={12} />}
-              Verify against Apple Root CA
-            </button>
-            {steps.length > 0 && (
-              <div className="space-y-1 rounded-lg bg-bg-tertiary/40 p-2.5">
-                {steps.map((s, i) => (
-                  <VerifyStepLine key={i} step={s} />
-                ))}
-                {result && (
-                  <p className={`text-[11px] font-medium mt-1 ${result.success ? "text-accent-green" : "text-accent-red"}`}>
-                    {result.success ? "✓ Verified Apple-attested device" : `✗ ${result.error || "Verification failed"}`}
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-        <a
-          href="https://www.apple.com/certificateauthority/private/"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 text-[11px] text-accent-brand hover:underline mt-2"
-        >
-          Apple Root CA reference <ExternalLink size={10} />
-        </a>
       </ChainNode>
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-2 border-t border-border-dim/40 text-[11px] text-text-tertiary">

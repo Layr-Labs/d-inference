@@ -1,0 +1,215 @@
+{
+  "scope": "Connected fixture preparation and exact CPU prompt plans; model execution pending",
+  "parent_base": "437bea4fe89100d8b6773c1039e398f52a5569dc",
+  "go_source_commit": "3aa73029ef22a6292aefff005b2267856f665a3c",
+  "package_manifest_sha256": "c6e1bf7b11885477661ddd63b5b7715fbac0d993c369d0d9505c9a14faf5c711",
+  "excluded_source_count": 986,
+  "excluded_runtime_binary": "connected-e2e.test; hash in package manifest, separate artifact archive",
+  "archive": {
+    "path": "payloads.tar.gz",
+    "sha256": "add0051914376001d14ed4c1369cfedb779d861b11616ea6875cc4e0bd65c53f",
+    "bytes": 1445607
+  },
+  "payloads": {
+    "README.md": {
+      "sha256": "e9c97f7a75a0d3f44f0f1a88a5393af969769d5837774086e66221bd6914f60f",
+      "bytes": 8591
+    },
+    "alias-tests-attempt1.log": {
+      "sha256": "5acc25d9977925988ceca4a485bd6ad877620313e34770de9aac687a73af1788",
+      "bytes": 3122
+    },
+    "alias-tests.log": {
+      "sha256": "6f0fa49ad20360a869284a8795236f59dd0059de511d96b6b43e473b41edbc32",
+      "bytes": 476
+    },
+    "assets/cube-hero.png": {
+      "sha256": "f9f9fbf8c0a05fbac1081db94dff3688cdcb3ee3425e2c18e51cbe90f3c5cb33",
+      "bytes": 1485871
+    },
+    "bundle-plan.json": {
+      "sha256": "a2a5688dbda2cafd638b5321e7974f4fb77ffda5c7758b70d78b8173497dbe53",
+      "bytes": 6755
+    },
+    "bundle-python-tests-attempt2.log": {
+      "sha256": "9ab40217d3bcd526e4427a19c5e561e9a700dbf1323658789b3747700efe5d4f",
+      "bytes": 1769
+    },
+    "bundle-python-tests.log": {
+      "sha256": "f8e0af0eadc568d934e321373dff485984d7a42483682d39c711a44c054219e1",
+      "bytes": 961
+    },
+    "compare_connected_cache_http.py": {
+      "sha256": "6c5566cfda56c51987c504e39639dfef813e1e79b7ab311b4cbfc0b484696511",
+      "bytes": 4723
+    },
+    "go-binary-build-info.txt": {
+      "sha256": "edb2f254e3e4cdecfa0d23225a4ef932bd23b322023bd607dba936bea506626d",
+      "bytes": 8671
+    },
+    "go-build.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "go-helper-tests.log": {
+      "sha256": "83dfcef44bb68f508ca1d8c381981c2bf6ff0e5dbb8e780dbe21bddaa54c50de",
+      "bytes": 2323
+    },
+    "go-source-manifest.json": {
+      "sha256": "9b247df651b52f31b7accd82d851045af7d91f8e2c3577bcb4f161e0beca6c66",
+      "bytes": 115295
+    },
+    "go-source-verified-after.json": {
+      "sha256": "a1e2aa5abb09f8c9788dec9bc22f786a744390f8afdc05909722c50462fd8f63",
+      "bytes": 169
+    },
+    "go-test-list.txt": {
+      "sha256": "a02c39e8ea721943f4aa482a96be0a78ff3d16ae529e53596779066b7231fea9",
+      "bytes": 483
+    },
+    "inputs/gemma-4-26b-paged-off-b1.json": {
+      "sha256": "330df0f3fe32f7143f5f1b278e13dd96e8ec8ca765a122744c6f3083994454e6",
+      "bytes": 43931
+    },
+    "inputs/gemma-4-26b-paged-ssd-b1.json": {
+      "sha256": "3e80055154050c8eb762b15924ee9c3c75a82863ffba91345b7556b5bbf483b9",
+      "bytes": 43931
+    },
+    "inputs/gpt-oss-20b-paged-off-b1.json": {
+      "sha256": "499b4801c00d1dc4268eca2b1635ed3bd1169dd2c011f31ec4780c1f296f8adc",
+      "bytes": 41686
+    },
+    "inputs/gpt-oss-20b-paged-ssd-b1.json": {
+      "sha256": "add4db013cd87cc491b79d094307ed49eccda4686ff62d157f66f493ceb35ac4",
+      "bytes": 41686
+    },
+    "inputs/qwen35-paged-off-b1.json": {
+      "sha256": "cb7ffad6ddcf3162b822a4274063e55b87b945f6e8cb232129ab3ed3180869f9",
+      "bytes": 43302
+    },
+    "inputs/qwen35-paged-ssd-b1.json": {
+      "sha256": "1353bc717bebdea8712abb514f1a6a443e724d44d15adccaaa4e7bb3a430bc5f",
+      "bytes": 43302
+    },
+    "inputs/qwen36-paged-off-b1.json": {
+      "sha256": "6929b8152e09e4148f5cf2c8c608075cf106053e87b29aa44e8477ae0efa7b42",
+      "bytes": 43219
+    },
+    "inputs/qwen36-paged-ssd-b1.json": {
+      "sha256": "2041302341ef7c4b5f330a376568eef1872821848613393354cd0d49a166936f",
+      "bytes": 43219
+    },
+    "inputs/qwen38-paged-off-b1.json": {
+      "sha256": "7aeae6ffdfe4684cb16f206df71f01773635de0d59502bfcd6de0a384d495fd7",
+      "bytes": 43549
+    },
+    "inputs/qwen38-paged-ssd-b1.json": {
+      "sha256": "98fb42e807e0af469baef68e17cf80053752c48ab983f05ca41ca4a36657cbba",
+      "bytes": 43549
+    },
+    "make_inputs.py": {
+      "sha256": "e6916538015a63ef05929a16c5db83195d5d2721cc506eea55b2079d358bb628",
+      "bytes": 5994
+    },
+    "manifests/gemma-4-26b.json": {
+      "sha256": "45c83bee7fc3fde8bdca900fa2f5fc0012672573c346cd372561244d528cdcee",
+      "bytes": 2870
+    },
+    "manifests/gpt-oss-20b.json": {
+      "sha256": "04c92344224faade11fe72ac95959af56cea235feea259eb5cf607ab5a9a2bb2",
+      "bytes": 2263
+    },
+    "manifests/qwen35.json": {
+      "sha256": "8e93b0bf6b07f413adbd0e874addffbd8bec6245139c957209166ea77b2a6785",
+      "bytes": 3029
+    },
+    "manifests/qwen36.json": {
+      "sha256": "b5ea3e4580ffa296e1e0c3bad3213bbf8e1c6f918b45178786fa2ee312f738d6",
+      "bytes": 2872
+    },
+    "manifests/qwen38.json": {
+      "sha256": "9a97486e7e3a2ac88f7a92cbc3fab3324805e18e895fc481c6f66275891e25cb",
+      "bytes": 3062
+    },
+    "package-manifest.json": {
+      "sha256": "c6e1bf7b11885477661ddd63b5b7715fbac0d993c369d0d9505c9a14faf5c711",
+      "bytes": 177426
+    },
+    "remote-preflight-readonly.json": {
+      "sha256": "dae7bf326826f9f3ddbf239932e14ae253d706f16a8d3c41a40282218686366a",
+      "bytes": 3611
+    },
+    "root/darkbloom-connected-m5-bundle-freeze.json": {
+      "sha256": "cb26cac7b7fff06ef32fd7530d6c840b98c48bfa2b65e204fe8bf0cfd99f659e",
+      "bytes": 778
+    },
+    "root/darkbloom-connected-m5-bundle-root-review.json": {
+      "sha256": "4aea87bcd63b723bf085393dc446359cca2ff42a35621e3e472d9f9224c4be8f",
+      "bytes": 1198
+    },
+    "run_connected_fixture.py": {
+      "sha256": "71b9925b212897e3ccbebf54ddb69747d804923d042d52adb84f965b75c3862d",
+      "bytes": 11543
+    },
+    "source-gates.json": {
+      "sha256": "76e800786f6f4157bff17ba0536e101ce7f136bf13d2edcf3fc9055dcf25e844",
+      "bytes": 1540
+    },
+    "source-inputs/darkbloom-0.9-validation--http-feature-plan.json": {
+      "sha256": "2cccd4c634fa4a673f3bbd9f9a845d776f6cbb5bc7bcd399b740cc1642900783",
+      "bytes": 2623
+    },
+    "source-inputs/darkbloom-cache-routing-release-audit--artifact-identities.json": {
+      "sha256": "69543ab828f561ac970b1ec693957fa40939a233700e761440d25f814a019079",
+      "bytes": 9611
+    },
+    "source-inputs/darkbloom-final-fleet-smoke1--plan.json": {
+      "sha256": "d8d8fa3dc044069db5c2e36dab6e9cb1da9c3d4ae4cf3dcc4419a8eca62c8b9d",
+      "bytes": 3122
+    },
+    "source-inputs/gemma-assistant--manifest.json": {
+      "sha256": "8b7c00b7f131345156f5f20fa9c94a895c5340f16d9331bafb9e59628bf45bf2",
+      "bytes": 859
+    },
+    "source-inputs/original-long-prompt-input.json": {
+      "sha256": "142bcc22315ac1ea942e17dc1ee822be94e6a20582057d7cc7f286b8d6269235",
+      "bytes": 72824
+    },
+    "source-inputs/payload--transfer-manifest.json": {
+      "sha256": "a002d1a8cea75ca3a96332943b48ae41fda17aaf6ebc9ddc11675bb9cf2a005f",
+      "bytes": 7125
+    },
+    "source-inputs/qwen35b-ssd-model-inventory--catalog.json": {
+      "sha256": "72dc4f9c5ff51a959ff94ceab082a2ac32b8cf81aa30ecf84e9e802ff02db153",
+      "bytes": 13384
+    },
+    "temporary_model_alias.py": {
+      "sha256": "06f1d1e8750f38bb56a90036183f4a30d72d1eb16663d398a3a30822ec99a4ad",
+      "bytes": 5577
+    },
+    "test_connected_bundle.py": {
+      "sha256": "00898d8fc06d6c41c4364cc116c414785c36a73f1ef2cb564a68c6b9aac22957",
+      "bytes": 3910
+    },
+    "test_temporary_model_alias.py": {
+      "sha256": "1d334f43d58acfb98c597adf842158df4d4ab829898b09ab5217dcadedddb4df",
+      "bytes": 3332
+    },
+    "tokenizer-plan.json": {
+      "sha256": "a608641c70059594dee47b2df91954d4592fd4f241df74faec9eba4e28890acc",
+      "bytes": 3366
+    },
+    "tokenizer-plan.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "verify_package.py": {
+      "sha256": "13ff608a4b5b97f17324d2e1b6bfbdc59d188d32cc142833b53ccb0a842506dd",
+      "bytes": 810
+    },
+    "verify_prompt_counts.py": {
+      "sha256": "b384100b8424cc3a8645f38f3d89fb4f1cae55ab48214ef995940874c10c4cf5",
+      "bytes": 4241
+    }
+  }
+}

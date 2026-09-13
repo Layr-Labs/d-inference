@@ -40,6 +40,28 @@ export function formatRelative(iso?: string): string {
 }
 
 /** Seconds -> compact uptime ("3d 4h", "5h 12m", "8m"). */
+/** Idle-unload window in minutes → "45 min" / "1 h" / "1 h 30 min". */
+export function formatIdleWindow(minutes: number): string {
+  const m = Math.max(0, Math.floor(minutes));
+  const hours = Math.floor(m / 60);
+  const rest = m % 60;
+  if (hours === 0) return `${m} min`;
+  if (rest === 0) return `${hours} h`;
+  return `${hours} h ${rest} min`;
+}
+
+/**
+ * Idle-memory policy from the heartbeat's `idle_unload_mins`: 0 keeps models
+ * resident ("always ready"), N frees them after N idle minutes and reloads on
+ * demand. `undefined` when the machine has not reported one (offline or an
+ * older provider) — callers should then say nothing rather than guess.
+ */
+export function describeIdlePolicy(minutes?: number): string | undefined {
+  if (minutes === undefined || minutes === null || minutes < 0) return undefined;
+  if (minutes === 0) return "Always ready — models stay loaded";
+  return `Free when idle — unloads after ${formatIdleWindow(minutes)} without requests, reloads on demand`;
+}
+
 export function humanizeUptime(seconds?: number): string {
   const s = seconds ?? 0;
   if (s <= 0) return "—";

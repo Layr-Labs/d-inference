@@ -45,9 +45,9 @@ public enum ModelLoadAdmission {
     ///     MLX-only view. The result is clamped to this so the gate can never
     ///     count memory the OS or other processes have already taken — the fix
     ///     for the OOM hole where `total − MLX.active − MLX.cache` over-reports.
-    ///   - outstandingReservationBytes: KV bytes already promised to in-flight
-    ///     requests (`GlobalKVCacheBudget`). Subtracted so a concurrent load
-    ///     can't claim memory a mid-decode request is counting on.
+    ///   - outstandingReservationBytes: outstanding unmaterialized commitments
+    ///     (C-M) from one coherent process-ledger snapshot. Do not pass total C:
+    ///     already materialized backing is included in the GPU usage above.
     public static func freeForLoadGb(
         totalBytes: UInt64,
         systemAvailableBytes: UInt64 = .max,
@@ -115,6 +115,21 @@ public enum ModelLoadAdmission {
     /// the (overhead-padded) weight footprint plus one-request headroom.
     public static func requiredToLoadGb(weightsGb: Double, headroomGb: Double = defaultLoadHeadroomGb) -> Double {
         max(0, weightsGb) + max(0, headroomGb)
+    }
+
+    /// Eviction feasibility (pure): whether evicting EVERY idle resident
+    /// model could reach the requirement at all. `reclaimableGb` is the sum of
+    /// the evictable slots' resident weights plus the MLX buffer cache (what
+    /// an unload plus clearCache hands back). When even that cannot reach
+    /// `requiredGb`, the caller must refuse WITHOUT evicting: unloading a
+    /// model the box can serve for one it cannot leaves it serving nothing
+    /// (#653, the 32 GB report: "a request for a model I can't serve killed
+    /// the one I could").
+    public static func evictionCanReach(
+        availableGb: Double, reclaimableGb: Double, requiredGb: Double
+    ) -> Bool {
+        guard availableGb.isFinite, reclaimableGb.isFinite, requiredGb.isFinite else { return false }
+        return max(0, availableGb) + max(0, reclaimableGb) >= requiredGb
     }
 
     /// Whether a model with the given weight footprint can be loaded now.

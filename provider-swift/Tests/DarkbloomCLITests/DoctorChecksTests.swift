@@ -16,7 +16,8 @@ struct DoctorChecksTests {
         hardware: HardwareInfo? = nil,
         configFileExists: Bool = true,
         models: [ModelInfo] = [],
-        bootSecurity: BootSecuritySnapshot = .init(macOSMajorVersion: 26, sip: .enabled)
+        bootSecurity: BootSecuritySnapshot = .init(macOSMajorVersion: 26, sip: .enabled),
+        contention: LocalContentionSnapshot = .empty
     ) -> [DoctorCheck] {
         buildDoctorChecks(
             snapshot: RuntimeSnapshot(
@@ -31,7 +32,8 @@ struct DoctorChecksTests {
                 hardwareError: nil,
                 models: models
             ),
-            bootSecurity: bootSecurity
+            bootSecurity: bootSecurity,
+            contention: contention
         )
     }
 
@@ -44,7 +46,7 @@ struct DoctorChecksTests {
         #expect(checks(hardware: hardware).map(\.name) == [
             "hardware", "metal gpu", "config", "huggingface cache", "local mlx models",
             "macos", "sip", "rdma", "authenticated root", "hardened runtime", "debugger",
-            "binary hash",
+            "binary hash", "competing inference",
         ])
     }
 
@@ -89,5 +91,25 @@ struct DoctorChecksTests {
         #expect(CheckStatus.fail.marker == "[FAIL]")
         #expect(CheckStatus(.pass) == .pass)
         #expect(CheckStatus(.warn) == .warn)
+    }
+
+    @Test("competing inference warns on ollama port or known process hints")
+    func competingInferenceDiagnosis() {
+        let clear = checks(hardware: hardware, contention: .empty)
+        #expect(check(clear, "competing inference")?.status == .pass)
+
+        let ollama = checks(
+            hardware: hardware,
+            contention: .init(ollamaPortListening: true, competingProcessHints: ["ollama"])
+        )
+        #expect(check(ollama, "competing inference")?.status == .warn)
+        #expect(check(ollama, "competing inference")?.detail.contains("11434") == true)
+
+        let llama = checks(
+            hardware: hardware,
+            contention: .init(ollamaPortListening: false, competingProcessHints: ["llama-server"])
+        )
+        #expect(check(llama, "competing inference")?.status == .warn)
+        #expect(check(llama, "competing inference")?.detail.contains("llama-server") == true)
     }
 }

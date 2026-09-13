@@ -184,6 +184,107 @@ func TestQuickCapacityCheckForRequestRequiresVision(t *testing.T) {
 	}
 }
 
+func TestQwen3VL30BVisionRoutingExcludesM5(t *testing.T) {
+	const targetModel = "qwen3-vl-30b-a3b-instruct"
+
+	tests := []struct {
+		name                 string
+		model                string
+		chipFamily           string
+		requiresVision       bool
+		wantCandidates       int
+		wantVisionRejections int
+	}{
+		{
+			name:                 "target M5 visual rejected",
+			model:                targetModel,
+			chipFamily:           "M5",
+			requiresVision:       true,
+			wantVisionRejections: 1,
+		},
+		{
+			name:           "target M5 text eligible",
+			model:          targetModel,
+			chipFamily:     "M5",
+			wantCandidates: 1,
+		},
+		{
+			name:           "target M4 visual eligible",
+			model:          targetModel,
+			chipFamily:     "M4",
+			requiresVision: true,
+			wantCandidates: 1,
+		},
+		{
+			name:           "lookalike M5 visual eligible",
+			model:          targetModel + "-lookalike",
+			chipFamily:     "M5",
+			requiresVision: true,
+			wantCandidates: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := New(testLogger())
+			provider := makeSchedulerProvider(t, reg, "provider", tt.model, 100)
+			provider.mu.Lock()
+			provider.Models[0].IsVision = true
+			provider.Hardware.ChipFamily = tt.chipFamily
+			provider.mu.Unlock()
+
+			candidates, capacityRejections, tooLarge := reg.QuickCapacityCheckForRequest(
+				tt.model, 100, 128, RequestTraits{}, tt.requiresVision,
+			)
+			if candidates != tt.wantCandidates || capacityRejections != 0 || tooLarge != 0 {
+				t.Errorf(
+					"QuickCapacityCheckForRequest = (cand=%d cap=%d tooLarge=%d), want (%d,0,0)",
+					candidates, capacityRejections, tooLarge, tt.wantCandidates,
+				)
+			}
+
+			request := &PendingRequest{
+				RequestID:             "request",
+				Model:                 tt.model,
+				EstimatedPromptTokens: 100,
+				RequestedMaxTokens:    128,
+				RequiresVision:        tt.requiresVision,
+			}
+			selected, decision := reg.ReserveProviderEx(tt.model, request)
+			if selected != nil {
+				defer func() {
+					selected.RemovePending(request.RequestID)
+					reg.SetProviderIdle(selected.ID)
+				}()
+			}
+
+			if tt.wantCandidates == 0 {
+				if selected != nil {
+					t.Errorf("ReserveProviderEx selected %q, want nil", selected.ID)
+				}
+			} else if selected == nil || selected.ID != provider.ID {
+				t.Errorf("ReserveProviderEx selected %v, want %q", selected, provider.ID)
+			}
+			if decision.CandidateCount != tt.wantCandidates {
+				t.Errorf("CandidateCount=%d, want %d", decision.CandidateCount, tt.wantCandidates)
+			}
+			if decision.VisionRejections != tt.wantVisionRejections ||
+				decision.CapacityRejections != 0 ||
+				decision.ModelTooLargeRejections != 0 ||
+				decision.TTFTRejections != 0 {
+				t.Errorf(
+					"rejections = (vision=%d cap=%d tooLarge=%d ttft=%d), want (%d,0,0,0)",
+					decision.VisionRejections,
+					decision.CapacityRejections,
+					decision.ModelTooLargeRejections,
+					decision.TTFTRejections,
+					tt.wantVisionRejections,
+				)
+			}
+		})
+	}
+}
+
 func TestQuickCapacityCheckExcludesCriticalThermal(t *testing.T) {
 	reg := New(testLogger())
 	model := "critical-thermal-preflight"

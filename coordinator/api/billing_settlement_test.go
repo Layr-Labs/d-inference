@@ -34,7 +34,7 @@ func TestNonStreamingCompleteObjectWithoutUsageDoesNotReturnSuccessAfterRefund(t
 		Model:            "missing-usage-model",
 		ConsumerKey:      consumerID,
 		ReservedMicroUSD: reservedMicroUSD,
-		ChunkCh:          make(chan string, 1),
+		ChunkCh:          make(chan registry.ProviderChunk, 1),
 		CompleteCh:       make(chan protocol.UsageInfo, 1),
 		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
 	}
@@ -46,7 +46,7 @@ func TestNonStreamingCompleteObjectWithoutUsageDoesNotReturnSuccessAfterRefund(t
 	rr := httptest.NewRecorder()
 	firstChunk := `data: {"id":"chatcmpl-missing-usage","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"ok"}}]}`
 
-	srv.handleNonStreamingResponseWithFirstChunk(rr, req, pr, []string{firstChunk})
+	srv.handleNonStreamingResponseWithFirstChunkAndError(rr, req, pr, []string{firstChunk}, nil)
 
 	if rr.Code == http.StatusOK {
 		t.Fatalf("status = 200 with refunded reservation and no completion usage; body = %s", rr.Body.String())
@@ -89,7 +89,7 @@ func TestLinkedProviderAccountCustomPriceUsedForSettlement(t *testing.T) {
 		Model:            model,
 		ConsumerKey:      consumerID,
 		ReservedMicroUSD: expectedCost,
-		ChunkCh:          make(chan string, 1),
+		ChunkCh:          make(chan registry.ProviderChunk, 1),
 		CompleteCh:       make(chan protocol.UsageInfo, 1),
 		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
 	}
@@ -135,7 +135,7 @@ func TestHandleCompleteRecordsJobSuccessOnly(t *testing.T) {
 		Model:            model,
 		ConsumerKey:      consumerID,
 		ReservedMicroUSD: cost,
-		ChunkCh:          make(chan string, 1),
+		ChunkCh:          make(chan registry.ProviderChunk, 1),
 		CompleteCh:       make(chan protocol.UsageInfo, 1),
 		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
 	}
@@ -219,7 +219,7 @@ func TestOverageChargeBeforeClamp(t *testing.T) {
 		Model:            model,
 		ConsumerKey:      consumerID,
 		ReservedMicroUSD: reservedAmount,
-		ChunkCh:          make(chan string, 1),
+		ChunkCh:          make(chan registry.ProviderChunk, 1),
 		CompleteCh:       make(chan protocol.UsageInfo, 1),
 		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
 	}
@@ -281,7 +281,7 @@ func TestOverageChargeClampOnInsufficientBalance(t *testing.T) {
 		Model:            model,
 		ConsumerKey:      consumerID,
 		ReservedMicroUSD: reservedAmount,
-		ChunkCh:          make(chan string, 1),
+		ChunkCh:          make(chan registry.ProviderChunk, 1),
 		CompleteCh:       make(chan protocol.UsageInfo, 1),
 		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
 	}

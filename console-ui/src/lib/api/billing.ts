@@ -1,6 +1,7 @@
 import { proxyHeaders } from "../http/proxy-client";
 import { apiErrorFromBody } from "./errors";
 import type {
+  BankWithdrawalQuote,
   BalanceResponse,
   UsageEntry,
   StripeCheckoutResponse,
@@ -79,11 +80,11 @@ export async function createStripeDashboardLink(): Promise<StripeDashboardLinkRe
   return res.json();
 }
 
-export async function withdrawStripe(amountUsd: string, method: "standard" | "instant"): Promise<StripeWithdrawResponse> {
+export async function withdrawStripe(amountUsd: string, method: "standard" | "instant", quoteId?: string): Promise<StripeWithdrawResponse> {
   const res = await fetch("/api/payments/withdraw/stripe", {
     method: "POST",
     headers: proxyHeaders(),
-    body: JSON.stringify({ amount_usd: amountUsd, method }),
+    body: JSON.stringify({ amount_usd: amountUsd, method, ...(quoteId ? { quote_id: quoteId } : {}) }),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -127,4 +128,11 @@ export function computeStripeFeeUsd(amountUsd: number, method: "standard" | "ins
   const minMicro = Math.round(instantFeeMinUsd * 1_000_000);
   const pctMicro = Math.floor((grossMicro * instantFeeBps) / 10_000);
   return Math.max(pctMicro, minMicro) / 1_000_000;
+}
+
+export async function fetchBankWithdrawalQuote(amountUsd: string): Promise<BankWithdrawalQuote> {
+ const res=await fetch("/api/payments/stripe/quote",{method:"POST",headers:proxyHeaders(),body:JSON.stringify({amount_usd:amountUsd})});
+ const data=await res.json().catch(()=>({}));
+ if(!res.ok) throw apiErrorFromBody(data,res.status,"Unable to review your withdrawal");
+ return data;
 }

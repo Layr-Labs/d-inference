@@ -19,7 +19,7 @@ export default async function OperatorsPage() {
       </h1>
       <p className="text-sm text-[var(--text-dim)]">
         Owners with at least one linked machine, machines aggregated per account. Filter, sort,
-        and copy operator emails. Per-machine detail (serial, trust, status) lives on the{" "}
+        and copy operator emails. Per-machine trust and status detail lives on the{" "}
         <span className="mono">Machines</span> page; unlinked machines have no operator and
         aren&apos;t shown here.
       </p>

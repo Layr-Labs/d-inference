@@ -110,7 +110,7 @@ var qualityCapOvercommitByModel map[string]float64
 // rate. Nested rather than flat-with-a-composite-key because the flat form
 // forced soloTPSSeedForClass to BUILD "model@class" on every probe — and that
 // probe runs once per candidate provider per request inside
-// snapshotProviderLocked, under both r.mu and p.mu, ~94 times on a full fleet.
+// snapshotProviderIntoLockedEx, under both r.mu and p.mu, ~94 times on a full fleet.
 // Two map reads allocate nothing; one string concatenation allocates every
 // time.
 //
@@ -319,7 +319,7 @@ func soloSeedFleetFallbacks(seed map[string]float64) map[string]float64 {
 // "Unknown|Unknown", so it matches no class-qualified entry and takes (2) or
 // (3). Both are floors, never the fast class's rate.
 // HOT PATH: once per candidate provider per request, inside
-// snapshotProviderLocked under both r.mu and p.mu. Every lookup here is a map
+// snapshotProviderIntoLockedEx under both r.mu and p.mu. Every lookup here is a map
 // read against an already-lowered key; nothing is concatenated and nothing is
 // allocated when the strings are already lower-case ASCII (strings.ToLower
 // returns its argument unchanged in that case, which is the common one — the
@@ -451,7 +451,7 @@ type soloModelTPS struct {
 // EWMA (EngineV2Bridge.observedDecodeTpsEwma) is 0 until updateDecodeTpsEwma
 // runs on a terminal event, `observed_decode_tps` is `omitempty`, and the
 // heartbeat ingest only calls RecordSolo when the reported value is > 0
-// (registry.go). So a fresh provider contributes NO solo sample, reaches (4)
+// (heartbeat.go). So a fresh provider contributes NO solo sample, reaches (4)
 // or (5), and is never capped at 1 by its own silence. Steps (3) can only
 // engage once a real decode has been measured.
 //

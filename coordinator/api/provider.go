@@ -26,9 +26,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"math"
 
 	"net/http"
@@ -55,6 +55,20 @@ const (
 
 	// ChallengeResponseTimeout is how long to wait for a challenge response.
 	ChallengeResponseTimeout = 30 * time.Second
+	// RegistrationAttestationMaxAge bounds replay of a previously valid signed
+	// registration claim. Challenge nonces provide ongoing liveness afterward.
+	RegistrationAttestationMaxAge = 2 * time.Minute
+	// RegistrationAttestationMaxFutureSkew is the corresponding positive clock
+	// skew accepted by attestation.CheckTimestamp. Keep the age and future-skew
+	// windows equal while that shared validator uses a symmetric bound.
+	RegistrationAttestationMaxFutureSkew = RegistrationAttestationMaxAge
+
+	// minProviderVersionForReconnectAttestation is the first provider release
+	// that rebuilds and re-signs its registration attestation on every
+	// reconnect. The same release introduced signed protected-runtime claims;
+	// older providers retain challenge-based liveness but cannot receive
+	// effective protected capabilities.
+	minProviderVersionForReconnectAttestation = "0.8.15"
 
 	// MaxConsecutiveChallengeTimeoutsBeforeReconnect is the number of consecutive
 	// transient challenge timeouts (no response within ChallengeResponseTimeout)
@@ -129,6 +143,17 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 	s.providerReadLoop(r.Context(), conn, providerID, r)
 }
 
+// maxProviderVersionLength bounds the provider-reported binary version accepted
+// at registration. The Swift provider sends the compile-time constant
+// ProviderCore.version ("0.8.15"; release tags must equal it, dev builds are
+// published with the same exact-version contract), and the longest shape the
+// coordinator has ever handled is "0.8.15-rc.1+build" (17 bytes). 128 leaves
+// an order of magnitude of margin while keeping provider-controlled bytes out
+// of the registry's parse memos, metric tags and logs. Raising this must be
+// paired with the registry's memo bound (maxMemoizedVersionLen), which stops
+// caching above 64 bytes.
+const maxProviderVersionLength = 128
+
 // sessionDisconnectReason maps a provider read-loop exit to the disconnect
 // reason recorded on its provider_sessions row. Kept to a small, fixed
 // vocabulary so the column stays aggregatable:
@@ -137,20 +162,50 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 //   - "ws_close_<code>" — the peer sent a WebSocket close frame (1000 = normal
 //     shutdown, 1001 = going away, 1006/close codes from intermediaries, ...);
 //   - "read_error"      — the socket died without a close frame (TCP reset,
-//     NAT/LB teardown, machine went to sleep mid-write).
+//     NAT/LB teardown, machine went to sleep mid-write);
+//   - "read_error_control_frame" — nhooyr failed while handling a peer
+//     control frame (see readErrorDisconnectReason).
+//
+// readReason is the frame-less classification from readErrorDisconnectReason
+// and is used only when neither stronger signal applies.
 //
 // The registry's own generic "disconnect" remains the reason for closes the
 // read loop did NOT observe first — in practice the stale-eviction sweep —
 // so post-fix, lingering "disconnect" rows ≈ silent drops reaped by eviction.
-func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool) string {
+func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool, readReason string) string {
 	switch {
 	case oomSuspected:
 		return string(registry.DisconnectReasonOOMSuspected)
 	case closeStatus != -1:
 		return "ws_close_" + strconv.Itoa(int(closeStatus))
 	default:
-		return "read_error"
+		return readReason
 	}
+}
+
+const (
+	readErrorReasonGeneric      = "read_error"
+	readErrorReasonControlFrame = "read_error_control_frame"
+)
+
+// readErrorDisconnectReason classifies a frame-less provider Read failure
+// into a fixed two-value vocabulary shared by the ws_disconnects metric, the
+// telemetry event, and the provider_sessions disconnect_reason column.
+//
+// nhooyr answers peer pings on its READ goroutine, with a 5s budget to take
+// the connection's per-frame write lock and put the pong on the wire. When
+// that fails, the library fails the Read with "failed to handle control frame
+// opPing: failed to write control frame opPong: failed to acquire lock: ..."
+// — the peer was alive (it just pinged us), so this is a
+// coordinator-side write stall, not a network drop, and must not be counted
+// with real drops. The same prefix covers any other control-frame handling
+// failure (e.g. a malformed control frame); close frames are never wrapped
+// this way (they surface as a CloseError on the peer_close branch).
+func readErrorDisconnectReason(err error) string {
+	if err != nil && strings.Contains(err.Error(), "failed to handle control frame") {
+		return readErrorReasonControlFrame
+	}
+	return readErrorReasonGeneric
 }
 
 // closeSessionWithReason closes this connection's provider_sessions row with a
@@ -179,12 +234,32 @@ func (s *Server) closeSessionWithReason(providerID, reason string) {
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
 	var provider *registry.Provider
 	tracker := newChallengeTracker()
+	var schedulerSEKey string
+	var schedulerGeneration uint64
 
+	// peerCloseStatus is the close code the peer sent, captured by the read
+	// loop so the deferred teardown can flush pending requests with the
+	// health-neutral restart cause on a graceful 1000/1001 close and the
+	// striking abrupt cause otherwise (registry.ClassifyPeerClose). -1 = no
+	// close frame observed.
+	peerCloseStatus := websocket.StatusCode(-1)
 	// Cancel context for cleanup of the challenge loop goroutine.
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
 		loopCancel()
-		s.registry.Disconnect(providerID)
+		if s.mdmScheduler != nil {
+			s.mdmScheduler.Unbind(schedulerSEKey, schedulerGeneration)
+		}
+		if s.codeAttestThrottle != nil {
+			s.codeAttestThrottle.clearResumeChallenges(providerID)
+		}
+		// End connection-continuity coverage with the EXACT coordinator-
+		// observed disconnect time (before registry.Disconnect tears the
+		// provider down), so the measured reconnect gap starts here rather
+		// than at the last periodic coverage pass.
+		s.stopTrustCoverageForProvider(providerID)
+		s.stopCodeAttestCoverageForProvider(providerID)
+		s.registry.DisconnectWithReason(providerID, registry.ClassifyPeerClose(peerCloseStatus, false))
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
 
@@ -193,7 +268,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		if err != nil {
 			closeStatus := websocket.CloseStatus(err)
 			oomSuspected := false
+			readReason := readErrorReasonGeneric
 			if closeStatus != -1 {
+				peerCloseStatus = closeStatus
 				s.logger.Info("provider websocket closed",
 					"provider_id", providerID, "close_code", int(closeStatus))
 				// Peer-initiated closes were previously unmetered — only
@@ -209,20 +286,23 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					"code:" + strconv.Itoa(int(closeStatus)),
 				})
 			} else {
-				s.logger.Error("provider websocket read error", "provider_id", providerID, "error", err)
+				readReason = readErrorDisconnectReason(err)
+				s.logger.Error("provider websocket read error",
+					"provider_id", providerID, "error", err, "reason", readReason)
 				s.emit(context.Background(), protocol.SeverityWarn, protocol.KindConnectivity,
 					"provider websocket read error",
 					map[string]any{
 						"provider_id": providerID,
 						"ws_state":    "read_error",
+						"reason":      readReason,
 						"last_error":  err.Error(),
 					})
 				if s.metrics != nil {
 					s.metrics.IncCounter("ws_disconnects_total",
-						MetricLabel{"reason", "read_error"},
+						MetricLabel{"reason", readReason},
 					)
 				}
-				s.ddIncr("ws.disconnects", []string{"reason:read_error"})
+				s.ddIncr("ws.disconnects", []string{"reason:" + readReason})
 
 				// An abrupt read_error under high last-known memory pressure with
 				// active inference is very likely a jetsam OOM (the kill leaves no
@@ -279,13 +359,15 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					provider.Status = registry.StatusOffline
 				}
 				provider.Mu().Unlock()
-				s.closeSessionWithReason(providerID, sessionDisconnectReason(closeStatus, oomSuspected))
+				s.closeSessionWithReason(providerID, sessionDisconnectReason(closeStatus, oomSuspected, readReason))
 			}
 			return
 		}
 
 		var msg protocol.ProviderMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
+		// DecodeProviderMessage is json.Unmarshal minus its redundant outer
+		// validation pass; per-token chunk frames take a hand-written decoder.
+		if err := protocol.DecodeProviderMessage(data, &msg); err != nil {
 			// Decoder errors may quote provider-controlled fields (notably an
 			// unknown message type). Never reflect the detail into logs.
 			s.logger.Warn("invalid provider message", "provider_id", providerID)
@@ -294,7 +376,24 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		switch msg.Type {
 		case protocol.TypeRegister:
+			if provider != nil {
+				s.logger.Warn("rejecting second register on provider connection",
+					"provider_id", providerID)
+				_ = conn.Close(websocket.StatusPolicyViolation, "provider already registered")
+				return
+			}
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
+			// The version string is provider-controlled and flows into semver
+			// parsing memos, metric tags and logs; a legitimate build id is a
+			// few dozen bytes. Reject anything larger before it reaches the
+			// registry so a hostile client cannot retain multi-MiB keys.
+			if len(regMsg.Version) > maxProviderVersionLength {
+				s.logger.Warn("rejecting provider registration with oversized version",
+					"provider_id", providerID, "version_len", len(regMsg.Version))
+				s.ddIncr("providers.registration_rejected", []string{"reason:oversized_version"})
+				_ = conn.Close(websocket.StatusPolicyViolation, "version string too long")
+				return
+			}
 			if err := s.registry.ValidatePrefixCacheRegistration(regMsg); err != nil {
 				// Validation errors can quote provider-controlled model IDs.
 				s.logger.Warn("rejecting malformed provider cache capabilities",
@@ -305,7 +404,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 			provider = s.registry.Register(providerID, conn, regMsg)
 			s.attachProviderLocation(providerID, provider, r)
-			s.verifyProviderAttestation(providerID, provider, regMsg)
+			if err := s.verifyProviderAttestation(loopCtx, providerID, provider, regMsg); err != nil {
+				// No duplicate eviction or account/MDM continuation after failed
+				// recovery. Pending state remains unroutable through teardown.
+				s.logger.Warn("provider registration recovery failed", "provider_id", providerID, "error", err)
+				_ = conn.Close(websocket.StatusTryAgainLater, "provider state temporarily unavailable")
+				return
+			}
 
 			// Record registration outcome metrics + telemetry.
 			if s.metrics != nil {
@@ -348,11 +453,12 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				}
 			}
 
-			// Store provider version.
+			// Store provider version. SetVersion also runs the version-changed
+			// reconnect reset for the session's stable identity, which the
+			// attestation bind above could not (the version was not stored
+			// yet) — see registry/version_reset.go.
 			if regMsg.Version != "" {
-				provider.Mu().Lock()
-				provider.Version = regMsg.Version
-				provider.Mu().Unlock()
+				provider.SetVersion(regMsg.Version)
 			}
 
 			// Verify runtime integrity against the known-good manifest. Swift
@@ -364,6 +470,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				provider.Mu().Lock()
 				provider.RuntimeVerified = runtimeOK
 				provider.RuntimeManifestChecked = runtimeOK
+				provider.MetallibVerified = runtimeOK &&
+					runtimeManifestApprovesMetallib(
+						s.knownRuntimeManifest, regMsg.TemplateHashes)
+				if !runtimeOK || !provider.MetallibVerified {
+					provider.RuntimeCapabilities = nil
+					provider.FreshCodeAttested = false
+				}
 				provider.PythonHash = regMsg.PythonHash
 				provider.RuntimeHash = regMsg.RuntimeHash
 				provider.TemplateHashes = registry.CloneStringMap(regMsg.TemplateHashes)
@@ -401,6 +514,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				provider.Mu().Lock()
 				provider.RuntimeVerified = true
 				provider.RuntimeManifestChecked = false
+				provider.MetallibVerified = false
+				provider.RuntimeCapabilities = nil
+				provider.FreshCodeAttested = false
 				provider.Mu().Unlock()
 			}
 
@@ -416,7 +532,20 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				provider.Mu().Lock()
 				provider.RuntimeVerified = false
 				provider.RuntimeManifestChecked = false
+				provider.MetallibVerified = false
+				provider.RuntimeCapabilities = nil
+				provider.FreshCodeAttested = false
 				provider.Mu().Unlock()
+			}
+
+			if err := s.registry.ReconcileAttestedRuntimeCapabilities(providerID); err != nil {
+				s.logger.Warn("provider attested runtime claims rejected",
+					"provider_id", providerID,
+					"reason", err.Error(),
+				)
+				s.registry.MarkUntrusted(providerID)
+				_ = conn.Close(websocket.StatusPolicyViolation, "attested runtime claims mismatch")
+				return
 			}
 
 			// Declaratively tell the provider the desired build per alias it
@@ -434,17 +563,18 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				}
 			}
 
+			// Submit stable device work to the Server-owned bounded scheduler. No
+			// goroutine is created for this provider.
+			if s.mdmScheduler != nil {
+				if ar := provider.GetAttestationResult(); ar != nil && ar.Valid {
+					priority := s.verificationSubmitPriority(ar.PublicKey, ar.SerialNumber)
+					schedulerSEKey = ar.PublicKey
+					schedulerGeneration = s.mdmScheduler.Submit(loopCtx, providerID, provider, priority)
+				}
+			}
 			// Start challenge loop after registration
 			saferun.Go(s.logger, "challengeLoop", func() {
 				s.challengeLoop(loopCtx, providerID, provider, tracker)
-			})
-
-			// Start the per-connection MDM verification loop. It runs the initial
-			// SecurityInfo check + a bounded, push-budget-aware retry, decoupled
-			// from the 5-minute challenge ticker. No-op when no MDM client is
-			// configured or the attestation carried no serial.
-			saferun.Go(s.logger, "mdmVerificationLoop", func() {
-				s.mdmVerificationLoop(loopCtx, providerID, provider)
 			})
 
 			// v0.6.0: APNs code-identity attestation. Runs only when an attestor is
@@ -475,6 +605,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			replaceCacheCapabilities :=
 				hbMsg.PrefixCacheProtocol != 0 || hbMsg.PrefixCacheV2Models != nil
 			if replaceCacheCapabilities ||
+				hbMsg.PrefixCacheMemoryModels != nil ||
 				hbMsg.PrefixCacheStatuses != nil ||
 				hbMsg.PrefixCacheDonationOutcomes != nil {
 				var capabilities []protocol.PrefixCacheV2Capability
@@ -486,10 +617,11 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					replaceCacheCapabilities,
 					hbMsg.PrefixCacheProtocol,
 					capabilities,
+					hbMsg.PrefixCacheMemoryModels,
 					hbMsg.PrefixCacheStatuses,
 					hbMsg.PrefixCacheDonationOutcomes,
 				)
-				if err != nil && replaceCacheCapabilities {
+				if err != nil && (replaceCacheCapabilities || hbMsg.PrefixCacheMemoryModels != nil) {
 					s.logger.Warn("rejecting malformed heartbeat cache capabilities",
 						"provider_id", providerID)
 					s.ddIncr("routing.cache_capability_rejected", []string{"source:heartbeat"})
@@ -498,6 +630,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 						providerID,
 						true,
 						1,
+						nil,
 						nil,
 						hbMsg.PrefixCacheStatuses,
 						hbMsg.PrefixCacheDonationOutcomes,
@@ -508,16 +641,26 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					s.ddIncr("routing.cache_telemetry_rejected", []string{"source:heartbeat"})
 				}
 			}
-			s.registry.Heartbeat(providerID, hbMsg)
-			// Emit only from the accepted registry snapshot: malformed values
-			// have been clamped and slot model IDs constrained to this
-			// connection's coordinator-known inventory.
-			capacity := provider.BackendCapacitySnapshot()
-			s.recordBackendWedgeTelemetry(capacity)
-			s.recordMLXCacheTelemetry(providerID, capacity)
+			s.applyProviderHeartbeat(providerID, provider, hbMsg)
 			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
 			// re-arms a code-identity challenge WITHOUT a reconnect.
 			s.maybeRearmCodeAttest(loopCtx, providerID, provider, hbMsg)
+
+		case protocol.TypeCapacityQuote:
+			if provider == nil {
+				// A quote answers a coordinator-sent probe, and probes are only
+				// sent to registered providers — a quote on an unregistered
+				// connection is a protocol violation, same posture as heartbeat.
+				s.logger.Warn("capacity quote from unregistered provider",
+					"provider_id", providerID)
+				continue
+			}
+			quoteMsg := msg.Payload.(*protocol.CapacityQuoteMessage)
+			// Correlation (quote_id → outstanding probe, provider binding,
+			// window expiry) and plan confirm/demote all live registry-side
+			// with the probe state; the read loop only delivers. Synchronous
+			// like heartbeat ingest — no DB or lock-heavy work on this path.
+			s.registry.HandleCapacityQuote(providerID, quoteMsg)
 
 		case protocol.TypeInferenceAccepted:
 			acceptMsg := msg.Payload.(*protocol.InferenceAcceptedMessage)
@@ -529,13 +672,17 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeInferenceComplete:
 			completeMsg := msg.Payload.(*protocol.InferenceCompleteMessage)
+			_, receivedAt := provider.MarkPendingCompletionIngressNow(completeMsg.RequestID)
+			if receivedAt.IsZero() {
+				receivedAt = time.Now()
+			}
 			// Run completion handling (billing settlement) off the read loop.
 			// Billing does synchronous DB calls (GetModelPrice, Credit, Charge)
 			// that can block for seconds under DB pressure. If the read loop is
 			// blocked, attestation challenge responses can't be read from the
 			// WebSocket, causing challenge timeouts and provider derouting.
 			saferun.Go(s.logger, "handleComplete", func() {
-				s.handleComplete(providerID, provider, completeMsg)
+				s.handleCompleteAt(providerID, provider, completeMsg, receivedAt)
 			})
 
 		case protocol.TypeInferenceError:
@@ -562,31 +709,43 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypePrefixCacheLookupV2:
 			lookupMsg := msg.Payload.(*protocol.PrefixCacheLookupV2Message)
-			if s.registry.ApplyPrefixCacheLookupV2(providerID, lookupMsg) {
+			receipt := s.registry.ApplyPrefixCacheLookupV2Result(providerID, lookupMsg)
+			s.emitCacheReceiptResult("lookup_v2", receipt)
+			s.emitModelCacheReceipt(lookupMsg.ModelID, lookupMsg.Tier, "lookup_v2", receipt)
+			if receipt.Accepted {
+				s.emitModelCacheLookup(lookupMsg, receipt)
 				s.ddIncr("routing.cache_lookup_receipt", []string{
 					"protocol:v2",
 					"outcome:" + lookupMsg.Outcome,
 					"tier:" + lowCardinalityCacheTier(lookupMsg.Tier),
 				})
-				s.emitExactCacheSSDLookup("v2", lookupMsg.Outcome, lookupMsg.StageMs)
+				if lookupMsg.Tier == "ssd" {
+					s.emitExactCacheSSDLookup("v2", lookupMsg.Outcome, lookupMsg.StageMs)
+				}
 			} else {
-				s.ddIncr("routing.cache_receipt_rejected", []string{"type:lookup_v2"})
+				s.ddIncr("routing.cache_receipt_rejected", []string{"type:lookup_v2", "reason:" + string(receipt.Reason)})
 			}
 
 		case protocol.TypePrefixCacheReadyV2:
 			readyMsg := msg.Payload.(*protocol.PrefixCacheReadyV2Message)
-			if s.registry.ApplyPrefixCacheReadyV2(providerID, readyMsg) {
+			receipt := s.registry.ApplyPrefixCacheReadyV2Result(providerID, readyMsg)
+			s.emitCacheReceiptResult("ready_v2", receipt)
+			s.emitModelCacheReceipt(readyMsg.ModelID, readyMsg.Tier, "ready_v2", receipt)
+			if receipt.Accepted {
+				s.emitModelCacheDonation(readyMsg, receipt)
 				s.ddIncr("routing.cache_ready_receipt", []string{
 					"protocol:v2",
 					"tier:" + lowCardinalityCacheTier(readyMsg.Tier),
 				})
-				donatedTokens := 0
-				if len(readyMsg.ReadyAnchors) > 0 {
-					donatedTokens = readyMsg.ReadyAnchors[len(readyMsg.ReadyAnchors)-1].TokenCount
+				if readyMsg.Tier == "ssd" {
+					donatedTokens := 0
+					if len(readyMsg.ReadyAnchors) > 0 {
+						donatedTokens = readyMsg.ReadyAnchors[len(readyMsg.ReadyAnchors)-1].TokenCount
+					}
+					s.emitExactCacheSSDDonation("v2", readyMsg.StageMs, donatedTokens)
 				}
-				s.emitExactCacheSSDDonation("v2", readyMsg.StageMs, donatedTokens)
 			} else {
-				s.ddIncr("routing.cache_receipt_rejected", []string{"type:ready_v2"})
+				s.ddIncr("routing.cache_receipt_rejected", []string{"type:ready_v2", "reason:" + string(receipt.Reason)})
 			}
 
 		case protocol.TypeAttestationResponse:
@@ -630,7 +789,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				s.registry.MarkModelWarm(providerID, statusMsg.ModelID)
 				duration := s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
 				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, true, duration)
-				s.registry.DrainQueuedRequestsForModel(statusMsg.ModelID)
+				s.registry.DrainQueuedRequestsForModelWithReason(statusMsg.ModelID, registry.DrainTriggerLoad)
 			case protocol.LoadModelStatusFailed:
 				duration := s.registry.PendingModelLoadDuration(providerID, statusMsg.ModelID)
 				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, false, duration)
@@ -748,6 +907,7 @@ func (s *Server) emitCacheSelectionTerminal(pr *registry.PendingRequest, usage p
 		return false
 	}
 	tags := cacheSelectionTerminalTags(pr, usage, usageValid, usagePresent)
+	s.emitModelCacheSelection(pr, tags, usage, usageValid)
 	s.ddIncr("routing.cache_selection_terminal", tags)
 	if pr.CacheSelectionDiscountMs > 0 {
 		s.ddHistogram("routing.cache_selection_discount_ms", pr.CacheSelectionDiscountMs, tags)
@@ -774,6 +934,7 @@ func (s *Server) emitCacheSelectionTTFT(pr *registry.PendingRequest, usage proto
 	if !ok {
 		return
 	}
+	s.cacheModelTiming("ttft", value, s.cacheModelSelectionLabels(pr.Model, tags)...)
 	s.ddHistogram("routing.cache_selection_ttft_ms", value, tags)
 }
 
@@ -843,9 +1004,10 @@ func (s *Server) attachProviderLocation(providerID string, provider *registry.Pr
 	provider.Location = loc
 	provider.Mu().Unlock()
 	s.registry.PersistProvider(provider)
-	if s.readCache != nil {
-		s.readCache.Invalidate("stats:v1")
-	}
+	// The stats:v1 read-cache entry is owned by the stats refresher (stats.go)
+	// and is NOT evicted here. Evicting it on every registration (~1,400/hour
+	// in production) turned its 60 s TTL into ~2.6 s and made every /v1/stats
+	// request rerun the multi-second usage analytics statements.
 	s.logger.Info("provider location resolved",
 		"provider_id", providerID,
 		"city", loc.City,
@@ -884,6 +1046,15 @@ func (s *Server) challengeLoop(ctx context.Context, providerID string, provider 
 				return
 			}
 			s.sendChallenge(ctx, providerID, provider, tracker)
+		case <-provider.ImmediateChallengeChan():
+			// Out-of-band kick (e.g. a release-policy refresh invalidated this
+			// provider's application evidence): re-challenge now so a healthy
+			// provider is re-verified and routable again well before the next
+			// periodic tick.
+			if provider.ChallengeShouldStop() {
+				return
+			}
+			s.sendChallenge(ctx, providerID, provider, tracker)
 		}
 	}
 }
@@ -899,6 +1070,7 @@ func generateNonce() (string, error) {
 
 // sendChallenge sends an attestation challenge to a provider and waits for the response.
 func (s *Server) sendChallenge(ctx context.Context, providerID string, provider *registry.Provider, tracker *challengeTracker) {
+	defer provider.SignalApplicationProofSettled()
 	nonce, err := generateNonce()
 	if err != nil {
 		s.logger.Error("failed to generate challenge nonce", "provider_id", providerID, "error", err)
@@ -988,6 +1160,8 @@ func (s *Server) handleAttestationResponse(providerID string, provider *registry
 // SIP status reported by the provider. If SIP has been disabled since
 // registration, the provider is marked untrusted immediately.
 func (s *Server) verifyChallengeResponse(providerID string, provider *registry.Provider, pc *pendingChallenge, resp *protocol.AttestationResponseMessage) {
+	provider.ClearApplicationEvidence()
+	defer provider.SignalApplicationProofSettled()
 	// Verify the nonce matches.
 	if resp.Nonce != pc.nonce {
 		s.handleChallengeFailure(providerID, "nonce mismatch")
@@ -1332,73 +1506,63 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		}
 	}
 
-	// Verify runtime integrity hashes from the signed challenge response.
-	// Swift providers omit Python/vllm hashes, but must still match manifest
-	// entries for external runtime assets such as mlx.metallib.
-	if s.knownRuntimeManifest != nil {
-		runtimeOK, mismatches := s.verifyRuntimeHashesForBackend(
-			provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
-		provider.Mu().Lock()
-		provider.RuntimeVerified = runtimeOK
-		provider.RuntimeManifestChecked = runtimeOK
-		if resp.PythonHash != "" {
-			provider.PythonHash = resp.PythonHash
+	// Always ingest the signed runtime identity, even while policy is withdrawn:
+	// otherwise a changed/omitted identity could leave stale approved hashes that
+	// re-promote when the old manifest returns.
+	runtimePolicyActive, runtimeOK, mismatches :=
+		s.applyChallengeRuntimePolicy(provider, resp)
+	if runtimePolicyActive && !runtimeOK {
+		// Log detailed mismatch info for debugging outages.
+		mismatchDetails := make([]string, 0, len(mismatches))
+		for _, m := range mismatches {
+			mismatchDetails = append(mismatchDetails, m.Component+"="+m.Got)
 		}
-		if resp.RuntimeHash != "" {
-			provider.RuntimeHash = resp.RuntimeHash
-		}
-		if len(resp.TemplateHashes) > 0 {
-			provider.TemplateHashes = registry.CloneStringMap(resp.TemplateHashes)
-		}
-		provider.Mu().Unlock()
-
-		if !runtimeOK {
-			// Log detailed mismatch info for debugging outages.
-			mismatchDetails := make([]string, 0, len(mismatches))
-			for _, m := range mismatches {
-				mismatchDetails = append(mismatchDetails, m.Component+"="+m.Got)
+		s.logger.Warn("provider runtime integrity mismatch in challenge response — excluding from routing",
+			"provider_id", providerID,
+			"mismatches", len(mismatches),
+			"details", mismatchDetails,
+			"backend", provider.Backend,
+		)
+		// Send status feedback but do NOT fail the challenge or mark untrusted.
+		// The provider remains connected but is excluded from routing until
+		// it reports matching hashes.
+		if provider.Conn != nil {
+			statusMsg := protocol.RuntimeStatusMessage{
+				Type:       protocol.TypeRuntimeStatus,
+				Verified:   false,
+				Mismatches: mismatches,
 			}
-			s.logger.Warn("provider runtime integrity mismatch in challenge response — excluding from routing",
-				"provider_id", providerID,
-				"mismatches", len(mismatches),
-				"details", mismatchDetails,
-				"backend", provider.Backend,
-			)
-			// Send status feedback but do NOT fail the challenge or mark untrusted.
-			// The provider remains connected but is excluded from routing until
-			// it reports matching hashes.
-			if provider.Conn != nil {
-				statusMsg := protocol.RuntimeStatusMessage{
-					Type:       protocol.TypeRuntimeStatus,
-					Verified:   false,
-					Mismatches: mismatches,
-				}
-				statusData, err := json.Marshal(statusMsg)
-				if err == nil {
-					if err := provider.EnqueueText(context.Background(), statusData); err != nil {
-						s.logger.Debug("failed to enqueue runtime status to provider", "provider_id", provider.ID, "error", err)
-						s.ddIncr("provider.enqueue_failed", []string{"msg:runtime_status"})
-					}
+			statusData, err := json.Marshal(statusMsg)
+			if err == nil {
+				if err := provider.EnqueueText(context.Background(), statusData); err != nil {
+					s.logger.Debug("failed to enqueue runtime status to provider", "provider_id", provider.ID, "error", err)
+					s.ddIncr("provider.enqueue_failed", []string{"msg:runtime_status"})
 				}
 			}
-			return
 		}
+		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
+		return
 	}
 
-	provider.Mu().Lock()
-	version := provider.Version
-	provider.Mu().Unlock()
-	if s.minProviderVersion != "" && version != "" && semverLess(version, s.minProviderVersion) {
-		s.logger.Warn("provider version below minimum during challenge revalidation — excluded from routing",
+	version, versionAllowed := s.applyChallengeMinVersionPolicy(provider)
+	if !versionAllowed {
+		s.logger.Warn("provider version below minimum during challenge revalidation — excluding from routing",
 			"provider_id", providerID,
 			"version", version,
 			"min_version", s.minProviderVersion,
 		)
 		s.ddIncr("provider_version_below_minimum", []string{"gate:challenge_revalidation", "version:" + version})
-		provider.Mu().Lock()
-		provider.RuntimeVerified = false
-		provider.RuntimeManifestChecked = false
-		provider.Mu().Unlock()
+		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
+		return
+	}
+
+	if err := s.registry.ReconcileAttestedRuntimeCapabilities(providerID); err != nil {
+		s.logger.Warn("provider live runtime claims no longer match attestation",
+			"provider_id", providerID,
+			"reason", err.Error(),
+		)
+		s.registry.MarkUntrusted(providerID)
+		s.handleChallengeFailure(providerID, "attested runtime claims mismatch")
 		return
 	}
 
@@ -1413,6 +1577,23 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	}
 	provider.ChallengeVerifiedSIP = resp.SIPEnabled != nil && *resp.SIPEnabled
 	provider.Mu().Unlock()
+
+	releaseFact := approvedReleaseTransitionFact{}
+	if fact, evidence, ok := s.deriveApprovedReleaseTransition(
+		provider, resp, statusFieldsTrusted,
+	); ok {
+		if provider.GrantApplicationEvidenceIfNotUntrusted(evidence) {
+			releaseFact = fact
+			s.codeAttestMetric("direct_application_proof")
+		} else {
+			// Derivation succeeded but installation lost a race (policy
+			// generation refresh or identity/token change between derive and
+			// grant). The derive-side "granted" counter alone would make this
+			// look successful; the distinct outcome keeps shadow-rollout
+			// counters honest. The grant path already kicks a re-challenge.
+			s.recordReleaseEvidenceOutcome("grant_lost_race")
+		}
+	}
 
 	// Challenge passed. Refresh stored per-model weight hashes BEFORE
 	// RecordChallengeSuccess: its queue drain re-enters routing, and queued
@@ -1451,15 +1632,9 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		)
 	}
 
-	// MDM SecurityInfo re-verification is intentionally NOT driven from the
-	// challenge response anymore. It used to re-run on every 5-minute challenge
-	// for self_signed providers, which fired an MDM/APNs push each time and got
-	// throttled by Apple (~2-3/hr budget) — the throttling itself caused the
-	// SecurityInfo timeouts that stranded providers at self_signed. SIP/Secure
-	// Boot can't change without a reboot, and a reboot drops this WebSocket, so
-	// the per-connection mdmVerificationLoop (spawned alongside challengeLoop)
-	// now owns MDM verification with a push-budget-aware backoff. See
-	// mdmVerificationLoop.
+	// MDM SecurityInfo work is driven only by the Server-owned scheduler. The
+	// periodic direct challenge refreshes live posture but never creates another
+	// MDM command; reboot/reconnect instead rebinds the durable singleflight job.
 	provider.Mu().Lock()
 	trustLevel := provider.TrustLevel
 	provider.Mu().Unlock()
@@ -1469,14 +1644,10 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		// re-proved this connection's identity + posture. If this device recently
 		// passed a FULL live MDM verification (a fresh trust-reuse record) and the
 		// fresh SIGNED challenge re-proves the SAME identity, an unchanged binary,
-		// and good posture within the window, grant hardware now — letting the
-		// per-connection mdmVerificationLoop SKIP its live MDM SecurityInfo
-		// round-trip. This is what avoids a fleet-wide MDM/APNs herd on a planned
-		// coordinator restart/swap. SECURITY: the live SE challenge always ran
-		// first; any gate miss (no record, binary changed, posture bad/unsigned,
-		// window elapsed, hard-untrusted) returns false and falls through to the
-		// unchanged full live MDM verify.
-		if s.tryTrustReuseFastSkip(providerID, provider, resp, statusFieldsTrusted) {
+		// and good posture within the window, grant hardware now and complete the
+		// scheduler fallback before any worker/command. The live SE challenge
+		// always ran; any gate miss falls through to durable live verification.
+		if s.tryTrustReuseFastSkip(providerID, provider, resp, statusFieldsTrusted, releaseFact) {
 			// The fast-skip granted hardware WITHOUT running the full live MDM verify,
 			// so verifyAppleDeviceAttestation never ran on this connection. Reuse the
 			// durable MDA proof (re-verified locally against Apple's root + re-bound to
@@ -1485,20 +1656,110 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			if ar := provider.GetAttestationResult(); ar != nil {
 				s.attachCachedMDAProof(providerID, provider, *ar)
 			}
+			if s.mdmScheduler != nil {
+				s.mdmScheduler.ChallengeSettled(provider, true)
+			}
 			// DAR-326 FIX 3: the fast-skip just granted hardware, so this provider is
 			// freshly routable — drain any queued requests now instead of waiting for
 			// the next heartbeat / 120s queue timeout. Off the challenge goroutine,
 			// mirroring the code-attest / MDM hardware-grant drain.
 			saferun.Go(s.logger, "trustReuseDrain", func() {
-				s.registry.DrainQueuedRequestsForProvider(provider)
+				s.registry.DrainQueuedRequestsForProviderWithReason(provider, registry.DrainTriggerChallenge)
 			})
 		} else {
-			// Fast-skip missed. Nudge the mdmVerificationLoop
-			// (SignalChallengeSettled, so it stops deferring and runs the live
-			// verify) — hardware trust is earned via MDM SecurityInfo.
-			provider.SignalChallengeSettled()
+			// Fast-skip missed. The submit-time refresh classification (a
+			// fresh-looking or continuity-covered record) is now known to be
+			// optimistic — the read gate refused it — so promote the job to
+			// first/expired before settling: the live MDM attempt must start
+			// inside the 120s dispatch-queue deadline, not on the refresh
+			// spread. Durable due time, priority, and retry stage then decide
+			// when SecurityInfo runs.
+			if s.mdmScheduler != nil {
+				s.mdmScheduler.PromoteFailedFastSkip(provider)
+				s.mdmScheduler.ChallengeSettled(provider, false)
+			}
 		}
 	}
+}
+
+// verificationSubmitPriority classifies this connection's durable SecurityInfo
+// submission. A record currently admissible for the fast-skip — via window
+// freshness OR connection continuity — schedules as a routine refresh (full
+// spread); anything else is first/expired (immediate due). The classification
+// is optimistic: if the fast-skip later DECLINES despite it, the read path
+// promotes the job back to first/expired (PromoteFailedFastSkip).
+func (s *Server) verificationSubmitPriority(seKey, serial string) store.VerificationPriority {
+	if s.trustReuseCache.hasFreshRecord(seKey, serial) {
+		return store.VerificationPriorityRefresh
+	}
+	return store.VerificationPriorityFirstOrExpired
+}
+
+// applyChallengeRuntimePolicy first records the exact signed runtime identity,
+// then applies the current manifest policy when one exists. Policy withdrawal
+// keeps runtime gates closed without invalidating an unchanged process proof;
+// any changed or omitted identity clears FreshCodeAttested independently.
+func (s *Server) applyChallengeRuntimePolicy(
+	provider *registry.Provider,
+	resp *protocol.AttestationResponseMessage,
+) (bool, bool, []protocol.RuntimeMismatch) {
+	manifest := s.knownRuntimeManifest
+	policyActive := manifest != nil
+	runtimeOK := false
+	var mismatches []protocol.RuntimeMismatch
+	if policyActive {
+		runtimeOK, mismatches = s.verifyRuntimeHashesForBackend(
+			provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
+	}
+
+	provider.Mu().Lock()
+	runtimeIdentityChanged :=
+		resp.PythonHash != provider.PythonHash ||
+			resp.RuntimeHash != provider.RuntimeHash ||
+			!maps.EqualFunc(
+				resp.TemplateHashes,
+				provider.TemplateHashes,
+				strings.EqualFold,
+			)
+
+	provider.RuntimeVerified = policyActive && runtimeOK
+	provider.RuntimeManifestChecked = policyActive && runtimeOK
+	provider.MetallibVerified = policyActive && runtimeOK &&
+		runtimeManifestApprovesMetallib(manifest, resp.TemplateHashes)
+	if !provider.RuntimeVerified ||
+		!provider.MetallibVerified ||
+		runtimeIdentityChanged {
+		provider.RuntimeCapabilities = nil
+	}
+	if runtimeIdentityChanged {
+		provider.FreshCodeAttested = false
+	}
+	provider.PythonHash = resp.PythonHash
+	provider.RuntimeHash = resp.RuntimeHash
+	provider.TemplateHashes = registry.CloneStringMap(resp.TemplateHashes)
+	provider.Mu().Unlock()
+	return policyActive, runtimeOK, mismatches
+}
+
+// applyChallengeMinVersionPolicy clears only policy-derived runtime state when
+// the coordinator temporarily raises its version floor. The unchanged process
+// proof remains valid and can promote capabilities again if policy rolls back.
+func (s *Server) applyChallengeMinVersionPolicy(
+	provider *registry.Provider,
+) (string, bool) {
+	provider.Mu().Lock()
+	defer provider.Mu().Unlock()
+	version := provider.Version
+	if s.minProviderVersion == "" ||
+		version == "" ||
+		!semverLess(version, s.minProviderVersion) {
+		return version, true
+	}
+	provider.RuntimeVerified = false
+	provider.RuntimeManifestChecked = false
+	provider.MetallibVerified = false
+	provider.RuntimeCapabilities = nil
+	return version, false
 }
 
 // handleTransientChallengeFailure records a transient challenge failure
@@ -1578,21 +1839,25 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		s.logger.Warn("chunk from unregistered provider", "provider_id", providerID)
 		return
 	}
-	pr := provider.GetPending(msg.RequestID)
+	pr, receivedAt := provider.BeginPendingChunkIngress(msg.RequestID)
 	if pr == nil {
-		// Until it matches pending state, request_id is provider-controlled and
-		// therefore an arbitrary log-exfiltration channel.
-		s.logger.Warn("chunk for unknown request", "provider_id", providerID)
-		// The provider is still generating into a stream we abandoned (consumer
-		// gone / already settled), burning its GPU and token-budget admission.
-		// Nudge it to stop — throttled so a chunk-per-token zombie doesn't flood
-		// the provider with cancels.
-		if s.zombieCanceller.shouldCancel(msg.RequestID, time.Now()) {
-			s.sendProviderCancel(provider, msg.RequestID)
-			s.ddIncr("inference.zombie_stream_cancel", []string{})
-		}
+		s.ddIncr("inference.unknown_request_frames", []string{"kind:chunk"})
+		s.unknownRequestFrames.Add(1)
+		// The provider is generating into a stream the coordinator abandoned
+		// (cancelled, consumer gone, already settled) — or sent an id it never
+		// owned. noteStrayChunk re-sends the cancel on the escalating zombie
+		// schedule and rate-limits the log line per provider; request_id stays
+		// out of the log until it matches coordinator state.
+		s.noteStrayChunk(provider, providerID, msg.RequestID, receivedAt)
 		return
 	}
+	ingressClassified := false
+	defer func() {
+		if !ingressClassified {
+			pr.FinishProviderChunkIngress(receivedAt, false)
+		}
+	}()
+	decryptStart := time.Now()
 	chunkData, err := s.decryptTextResponseChunk(provider, pr, msg)
 	if err != nil {
 		s.logger.Warn("rejecting insecure response chunk",
@@ -1601,6 +1866,12 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 			"error", err,
 		)
 		s.registry.MarkUntrusted(providerID)
+		// The provider is still generating: the synthesized terminal below
+		// settles the request on our side, so the committed writer's exit
+		// will not send a cancel for it (a settled terminal means "nothing
+		// left to stop"). Stop the real work here, like the deadline and
+		// overflow branches do.
+		s.sendProviderCancel(provider, msg.RequestID)
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   msg.RequestID,
@@ -1610,6 +1881,42 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		})
 		return
 	}
+	if ap := pr.Profile; ap != nil {
+		ap.ChunksIn.Add(1)
+		ap.DecryptUSTotal.Add(time.Since(decryptStart).Microseconds())
+		ap.MarkAt(registry.StampFirstChunkIngress, receivedAt)
+	}
+	if pr.Profile != nil && !pr.Profile.GeneratedContentObserved.Load() && (generatedContentSSE([]byte(chunkData)) || generatedContentJSON([]byte(chunkData))) {
+		pr.Profile.GeneratedContentObserved.Store(true)
+	}
+	contentBearing := !isBoilerplateChunk(chunkData)
+	firstContent := pr.FinishProviderChunkIngress(receivedAt, contentBearing)
+	ingressClassified = true
+	if firstContent {
+		pr.Profile.MarkAt(registry.StampFirstContentIngress, receivedAt)
+	}
+	deadlineExpiredWithoutContent := !pr.FirstContentDeadline.IsZero() &&
+		((firstContent && receivedAt.After(pr.FirstContentDeadline)) ||
+			(!contentBearing &&
+				!pr.HasFirstContentIngress() &&
+				time.Now().After(pr.FirstContentDeadline)))
+	if deadlineExpiredWithoutContent {
+		// The request-absolute SLA is defined at coordinator ingress. Reject
+		// either late first content or an on-time chunk that finished
+		// classification as boilerplate only after the deadline.
+		s.ddIncr("inference.first_content_after_deadline", []string{})
+		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseLateContent)
+		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+			Type:        protocol.TypeInferenceError,
+			RequestID:   pr.RequestID,
+			Error:       "first content was unavailable at the request deadline",
+			StatusCode:  http.StatusServiceUnavailable,
+			ErrorReason: errorReasonDeadlineUnreachable,
+			FailureCode: protocol.FailureCodeCapacity,
+		})
+		return
+	}
+	chunk := registry.ProviderChunk{Data: chunkData, ReceivedAt: receivedAt}
 	// Fast path: non-blocking send — this is the provider's single read
 	// goroutine, so it must not stall behind one slow consumer. A full channel
 	// means the consumer is ≥256 chunks behind; silently dropping the chunk
@@ -1619,9 +1926,9 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 	// then fail the request: cancel the provider's generation and surface a
 	// terminal error to the consumer goroutine.
 	select {
-	case pr.ChunkCh <- chunkData:
+	case pr.ChunkCh <- chunk:
 	default:
-		if sendChunkWithGrace(pr, chunkData) {
+		if sendChunkWithGrace(pr, chunk) {
 			return
 		}
 		s.logger.Error("chunk buffer overflow — failing request instead of corrupting stream",
@@ -1629,7 +1936,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 			"request_id", msg.RequestID,
 		)
 		s.ddIncr("inference.chunk_overflow_abort", []string{})
-		s.sendProviderCancel(provider, msg.RequestID)
+		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseOverflow)
 		// 499 + "request cancelled" classifies as a consumer-side terminal in
 		// handleInferenceError: no provider reputation hit for our backpressure.
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
@@ -1657,7 +1964,7 @@ const chunkOverflowGrace = 250 * time.Millisecond
 // another goroutine while we are blocked in the send, and a closed channel
 // here simply means the request is already torn down (delivered=false; the
 // caller's terminal path degrades to a no-op warn).
-func sendChunkWithGrace(pr *registry.PendingRequest, chunk string) (delivered bool) {
+func sendChunkWithGrace(pr *registry.PendingRequest, chunk registry.ProviderChunk) (delivered bool) {
 	defer func() {
 		if recover() != nil {
 			delivered = false
@@ -1728,6 +2035,7 @@ func (s *Server) handleInferenceAccepted(provider *registry.Provider, msg *proto
 	if pr == nil {
 		return
 	}
+	pr.Profile.Mark(registry.StampAccepted)
 	// Non-blocking signal — the dispatch loop may have already committed.
 	select {
 	case pr.AcceptedCh <- struct{}{}:
@@ -1744,23 +2052,202 @@ func (s *Server) handleInferenceAccepted(provider *registry.Provider, msg *proto
 const maxPlausibleDecodeTPS = 10000.0
 
 func (s *Server) handleComplete(providerID string, provider *registry.Provider, msg *protocol.InferenceCompleteMessage) {
+	s.handleCompleteAt(providerID, provider, msg, time.Now())
+}
+
+func (s *Server) handleCompleteAt(
+	providerID string,
+	provider *registry.Provider,
+	msg *protocol.InferenceCompleteMessage,
+	receivedAt time.Time,
+) {
 	if provider == nil {
 		s.logger.Warn("complete from unregistered provider", "provider_id", providerID)
 		return
+	}
+	if receivedAt.IsZero() {
+		receivedAt = time.Now()
+	}
+	// terminalOwner is true only for the frame that claimed the attempt's
+	// terminal first: concurrent duplicate completions for one request all
+	// pass GetPending before one wins RemovePending, and only the owner may
+	// retain usage / the profile (the others are rejected as unknown below).
+	terminalOwner, terminalClaimed := false, false
+	// claimed is the attempt whose terminal this frame owns. Every return
+	// below must complete it: once claimed, neither the route-outcome funnel
+	// nor the no-terminal fallback will, so a pending request removed by a
+	// consumer-side cleanup between the claim and RemovePending would
+	// otherwise never finalize.
+	var claimed *registry.AttemptProfile
+	if pending := provider.GetPending(msg.RequestID); pending != nil {
+		if pending.Profile != nil {
+			pending.Profile.ProviderCompleteObserved.Store(true)
+		}
+		pending.MarkCompletionIngress(receivedAt)
+		pending.Profile.MarkAt(registry.StampCompleteIngress, receivedAt)
+		// The claim is the single ownership token: only the frame that owns
+		// the terminal proceeds to the deadline / speculative branches and to
+		// RemovePending + settlement, so claim ownership and settlement
+		// ownership can never diverge. A second concurrent frame for the same
+		// pending request is a provider duplicate and is dropped here. Without
+		// a profile (profiler off) there is no token and the pre-existing
+		// RemovePending race decides, exactly as before.
+		compact := compactOnlyAttempt(pending.Profile)
+		terminalOwner, terminalClaimed = pending.Profile == nil || compact || pending.Profile.ClaimTerminal(), true
+		if !terminalOwner {
+			s.logger.Warn("duplicate complete for in-flight request", "provider_id", providerID)
+			s.ddIncr("inference.unknown_request_frames", []string{"kind:duplicate_complete"})
+			s.unknownRequestFrames.Add(1)
+			return
+		}
+		if !compact {
+			claimed = pending.Profile
+		}
+		// Usage and the provider profile are retained BEFORE any branch below
+		// can discard this completion (the deadline-late conversion to an error,
+		// the speculative-loser return), so a losing or late racer that sent a
+		// profile is not recorded as absent. msg.Profile is cleared so the
+		// claim site below no-ops for this pending (a second retain would count
+		// a false duplicate); it still retains for a PARKED record, which has
+		// no pending entry.
+		if !compact {
+			pending.Profile.SetTerminalUsage(msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
+		}
+		s.retainProviderProfile(pending.Profile, msg.Profile)
+		msg.Profile = nil
+		if !pending.HasFirstContentIngress() &&
+			!pending.FirstContentDeadline.IsZero() &&
+			receivedAt.After(pending.FirstContentDeadline) {
+			// A clean terminal without content is a valid empty completion only
+			// while the first-content SLA is still live. Once the absolute deadline
+			// has passed it must not race the dispatch timer into an empty HTTP 200.
+			// owned: this frame already holds the claim, so the error path
+			// must neither re-claim nor drop the conversion as a duplicate.
+			s.handleInferenceErrorOwned(providerID, provider, &protocol.InferenceErrorMessage{
+				Type:        protocol.TypeInferenceError,
+				RequestID:   pending.RequestID,
+				Error:       "provider completed after the first-content deadline",
+				StatusCode:  http.StatusServiceUnavailable,
+				ErrorReason: errorReasonDeadlineUnreachable,
+				FailureCode: protocol.FailureCodeCapacity,
+			}, true)
+			// handleInferenceError completes the terminal only when it still
+			// found the pending request; if a consumer-side cleanup removed it
+			// first, the provider still completed, so record that and close
+			// the claimed terminal here (both calls are first-write / idempotent).
+			claimed.SetOutcome("", "", "", "completed", "")
+			claimed.CompleteTerminal()
+			return
+		}
+		if !pending.HasFirstContentIngress() {
+			if accepted, waited := pending.AwaitSpeculativeEmptyCompletionDecision(); waited && !accepted {
+				// The losing racer's empty completion is discarded by the
+				// dispatch loop, which classifies the attempt through the
+				// route-outcome funnel (markSpeculativeLoser → cancelled /
+				// speculative_loser) and completes its terminal half there.
+				// Only the provider-side outcome is authoritative here — mirror
+				// handleInferenceError — and the idempotent CompleteTerminal
+				// covers the ordering where the funnel has not run yet.
+				//
+				// When the frame never reached the wire (releaseUnsentDispatch
+				// resolved the loser after a write failure), the dispatch side's
+				// closeUndispatchedAttempt records not_dispatched — the truthful
+				// provider outcome — so "completed" is written only for an
+				// attempt whose write completed. WriteDone is stamped before any
+				// race can be resolved and never on the write-failure path, so
+				// the check is deterministic; the close always lands because the
+				// attempt cannot finalize before the handler half (finalizeProfile).
+				if !compact && pending.Profile.Dispatched() {
+					pending.Profile.SetOutcome("", "", "", "completed", "")
+				}
+				if !compact {
+					pending.Profile.CompleteTerminal()
+				}
+				return
+			}
+		}
 	}
 	pr := provider.RemovePending(msg.RequestID)
 	// Clear any parked settlement record (consumer disconnected mid-stream):
 	// settles the disconnect case and stops the grace timer from no-op-refunding.
 	parked := s.claimSettlement(msg.RequestID)
+	// No live pending record means the attempt was abandoned (or is unknown):
+	// correlate the terminal with the cancel the coordinator sent. Metric-only
+	// — a parked post-commit record still settles billing below, and a
+	// pre-commit attempt was refunded when it was abandoned. Only a terminal
+	// that finds no live record is matched, so the coordinator's own
+	// synthesized errors (raised while the record is live) never resolve one.
+	var cancelled zombieEntry
+	wasCancelled := false
 	if pr == nil {
+		cancelled, wasCancelled = s.resolveCancelledTerminal(
+			msg.RequestID, cancelTerminalComplete, cancelledOutcomeCompletePartial, receivedAt)
 		pr = parked
 	}
 	if pr == nil {
-		// Until it matches pending state, request_id is provider-controlled and
-		// therefore an arbitrary log-exfiltration channel.
-		s.logger.Warn("complete for unknown request", "provider_id", providerID)
+		if wasCancelled && cancelled.cause != cancelCauseStrayChunk {
+			// The id matched a cancel the coordinator recorded, so it is
+			// coordinator-minted and safe to log: the provider honored the
+			// cancel with a partial completion.
+			s.logger.Debug("complete for cancelled request",
+				"request_id", msg.RequestID, "provider_id", providerID, "cause", cancelled.cause)
+		} else {
+			// Until it matches pending state, request_id is provider-controlled and
+			// therefore an arbitrary log-exfiltration channel.
+			s.logger.Warn("complete for unknown request", "provider_id", providerID)
+			s.emitUnknownFrame(unknownFrameKindComplete, provider)
+		}
+		s.ddIncr("inference.unknown_request_frames", []string{"kind:complete"})
+		s.unknownRequestFrames.Add(1)
+		// A claimed terminal whose pending request a consumer-side cleanup
+		// removed in between: the provider completed, the coordinator lost
+		// ownership; close the record rather than leak the attempt.
+		claimed.SetOutcome("", "", "", "completed", "")
+		claimed.CompleteTerminal()
 		return
 	}
+	if pr.Profile != nil {
+		pr.Profile.ProviderCompleteObserved.Store(true)
+	}
+	pr.Profile.MarkAt(registry.StampCompleteIngress, receivedAt)
+	if compactOnlyAttempt(pr.Profile) {
+		// With heavy profiling off, RemovePending/claimSettlement is the
+		// existing arbitration. Only its actual winner claims compact
+		// evidence, after removal; receipt never gates another terminal.
+		pr.Profile.ClaimTerminal()
+		terminalOwner = true
+	}
+	if !terminalClaimed { // parked record (mutex single-winner): no pending entry above
+		terminalOwner = pr.Profile == nil || compactOnlyAttempt(pr.Profile) || pr.Profile.ClaimTerminal()
+	}
+	// Terminal usage is recorded at ingress, outside the billing gate, so a
+	// completion whose reservation was already finalized (a late terminal after
+	// a consumer-side refund, or any path that skips billing) still carries the
+	// provider's token counts for the profile consistency check. Only the
+	// terminal owner writes; msg.Profile is already nil when the pending block
+	// above retained it.
+	if terminalOwner {
+		pr.Profile.SetTerminalUsage(msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
+		s.retainProviderProfile(pr.Profile, msg.Profile)
+		// The provider outcome is written here, OUTSIDE the billing gate: a
+		// consumer-side timeout can finalize (refund) the reservation after
+		// this frame claimed but before settlement, in which case the gate
+		// below is skipped and its own (idempotent) write never runs — the
+		// deferred CompleteTerminal would then close the record with an empty
+		// provider_outcome. Every branch that must not read "completed" (the
+		// deadline-late conversion, the losing racer) returned above.
+		pr.Profile.SetOutcome("", "", "", "completed", "")
+	}
+	msg.Profile = nil
+	// The terminal half completes when this handler returns, on every branch:
+	// after billing has settled and the settle_db_us stamp has landed, and after
+	// the consumer has been signalled. It completes regardless of billing state
+	// too — a reservation finalized earlier by a consumer-side path must not
+	// leave the record waiting on the (now suppressed) fallback. Deferred at the
+	// claim site (not inside the billing gate) so a PARKED completion, whose
+	// consumer is already gone, cannot enqueue its record before the settlement
+	// stamp is written.
+	defer pr.Profile.CompleteTerminal()
 	// The request is terminal — drop its memoized chunk-decryption key.
 	s.chunkKeys.forget(pr.SessionPrivKey)
 	// A parked record means the consumer handler already returned: there is no
@@ -1829,6 +2316,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		s.emitExactCacheUsage(msg.Usage.CacheOutcome, lowCardinalityCacheTier(msg.Usage.CacheTier),
 			msg.Usage.CachedTokens, msg.Usage.PrefillTokensSaved, msg.Usage.CacheStageMs)
 	}
+	s.emitModelCacheUsage(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
 	cacheTerminalClaimed := s.emitCacheSelectionTerminal(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
 	s.reconcileOutputAdmission(pr, msg.Usage.CompletionTokens)
 
@@ -1851,6 +2339,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// defaults. Service accounts run on a 0% fee.
 	var feePercent *int64
 	isServiceConsumer := false
+	settleStart := time.Now()
 	if u, err := s.store.GetUserByAccountID(pr.ConsumerKey); err == nil && u != nil {
 		feePercent = u.PlatformFeePercent
 		isServiceConsumer = u.Role == store.RoleService
@@ -2156,6 +2645,9 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			}
 		}
 		s.updateInferenceRouteOutcomeWithModel(msg.RequestID, pr.Attempt, pr.Model, outcome)
+		// Outcome only: the terminal half completes on return (deferred at the
+		// claim site), after the settlement stamps below.
+		pr.Profile.SetOutcome(outcome.FinalStatus, profileErrorReason(outcome), "", "completed", "")
 
 		s.ddIncr("inference.completions", []string{"model:" + pr.Model})
 		// Split the partial case out of the (intentionally unchanged) completions
@@ -2262,6 +2754,9 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		}
 
 		settlementWg.Wait()
+		if ap := pr.Profile; ap != nil {
+			ap.SettleDBUS.Add(time.Since(settleStart).Microseconds())
+		}
 	}
 
 	// Signal completion to the consumer response handler. This must happen
@@ -2288,7 +2783,19 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	)
 }
 
+// handleInferenceError handles a provider inference_error frame on the read
+// loop (and the coordinator-synthesized errors handleChunk raises there). The
+// frame holds no terminal claim; ownership is decided at the peek inside.
 func (s *Server) handleInferenceError(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage) {
+	s.handleInferenceErrorOwned(providerID, provider, msg, false)
+}
+
+// handleInferenceErrorOwned is handleInferenceError with terminal ownership
+// threaded in: owned is true only when the caller already holds the attempt's
+// terminal claim (handleCompleteAt converting a deadline-late empty
+// completion), so this path must neither re-claim nor drop that frame as a
+// duplicate.
+func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage, owned bool) {
 	if provider == nil {
 		s.logger.Warn("error from unregistered provider", "provider_id", providerID)
 		return
@@ -2304,22 +2811,113 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		s.ddIncr(metricUnknownTerminalCause, nil)
 		s.ddIncr(metricTypedTerminal, []string{"cause:unknown"})
 	}
+	// Ownership is decided BEFORE the pending request is removed. Completions
+	// settle on a worker goroutine while error frames run inline on the read
+	// loop, so an error frame for a request whose completion already claimed
+	// the terminal (parked on arbitration, or mid-settlement) used to remove
+	// the pending request, write the error outcome and settle — mixing the
+	// completion's usage/profile with this frame's outcome. The claim is the
+	// single ownership token across terminal TYPES: a frame that cannot claim
+	// is a duplicate of an in-flight owned terminal and is dropped here,
+	// leaving the pending request to its owner. Without a profile (profiler
+	// off) there is no token and the RemovePending race decides, as before.
+	// claimedHere is set only when THIS call took the claim: a pending request
+	// a consumer-side cleanup removes between the claim and RemovePending
+	// would otherwise never finalize (neither the funnel nor the fallback
+	// completes a claimed terminal).
+	var claimedHere *registry.AttemptProfile
+	pending := provider.GetPending(msg.RequestID)
+	if pending != nil && pending.Profile != nil && !compactOnlyAttempt(pending.Profile) && !owned {
+		if !pending.Profile.ClaimTerminal() {
+			s.logger.Warn("duplicate error for in-flight request", "provider_id", providerID)
+			s.ddIncr("inference.unknown_request_frames", []string{"kind:duplicate_error"})
+			s.unknownRequestFrames.Add(1)
+			msg.Profile = nil
+			return
+		}
+		owned, claimedHere = true, pending.Profile
+		// Retain the profile now, while the owner still holds the pending
+		// request: the record closes at the unknown-request return below if a
+		// consumer-side cleanup removes it before RemovePending.
+		s.retainProviderProfile(pending.Profile, msg.Profile)
+		msg.Profile = nil
+	}
+	if pending != nil && isDrainingErrorReason(msg.ErrorReason) {
+		s.noteProviderDraining(providerID, pending.Model)
+	}
 	pr := provider.RemovePending(msg.RequestID)
 	// Clear any parked settlement record (consumer disconnected mid-stream).
 	// Same object as a non-nil pr when the terminal raced the disconnect defer.
 	parked := s.claimSettlement(msg.RequestID)
+	// See handleCompleteAt: a terminal with no live pending record is matched
+	// against the cancel the coordinator sent for it (metric-only).
+	var cancelled zombieEntry
+	wasCancelled := false
 	if pr == nil {
+		cancelled, wasCancelled = s.resolveCancelledTerminal(
+			msg.RequestID, cancelTerminalError, cancelledErrorOutcome(msg), time.Now())
 		pr = parked
 	}
 	if pr == nil {
-		// request_id is provider-controlled until it matches coordinator-owned
-		// pending state. Do not log it: an attacker could use unknown IDs as an
-		// arbitrary log exfiltration channel.
-		s.logger.Warn("error for unknown request", "provider_id", providerID)
+		if wasCancelled && cancelled.cause != cancelCauseStrayChunk {
+			// Coordinator-minted id (it matched a recorded cancel): the
+			// provider honored the cancel before producing output.
+			s.logger.Debug("error for cancelled request",
+				"request_id", msg.RequestID, "provider_id", providerID,
+				"cause", cancelled.cause, "status_code", msg.StatusCode)
+		} else {
+			// request_id is provider-controlled until it matches coordinator-owned
+			// pending state. Do not log it: an attacker could use unknown IDs as an
+			// arbitrary log exfiltration channel.
+			s.logger.Warn("error for unknown request", "provider_id", providerID)
+			s.emitUnknownFrame(unknownFrameKindError, provider)
+		}
+		s.ddIncr("inference.unknown_request_frames", []string{"kind:error"})
+		s.unknownRequestFrames.Add(1)
+		// A terminal claimed here whose pending request a consumer-side cleanup
+		// removed in between: the provider errored, the coordinator lost
+		// ownership; close the record rather than leak the attempt. An owned
+		// claim passed in by handleCompleteAt is closed by that caller instead
+		// (as "completed"); both calls are nil-safe when nothing was claimed.
+		claimedHere.SetOutcome("", "", "", "error", "")
+		claimedHere.CompleteTerminal()
 		return
 	}
 	// From this point onward use only the coordinator-owned identifier.
 	msg.RequestID = pr.RequestID
+	if pending == nil && isDrainingErrorReason(msg.ErrorReason) {
+		// A consumer-gone request may already be parked outside the pending
+		// map. Fence its provider before SetProviderIdle drains queued work.
+		s.noteProviderDraining(providerID, pr.Model)
+	}
+	if ap := pr.Profile; ap != nil {
+		if compactOnlyAttempt(ap) {
+			ap.ClaimTerminal()
+		}
+		ap.Mark(registry.StampCompleteIngress)
+		// A pending entry was claimed at the peek above; a PARKED record (no
+		// pending entry) is claimed here. claimSettlement is single-winner, so
+		// retention is exactly-once; in the narrow parked race (an owned
+		// completion claims on its worker, a post-commit disconnect parks the
+		// record, and this error frame wins the parked settlement) the settler
+		// can differ from the claim owner — the completion then closes its own
+		// record as completed without billing while this frame settles, which
+		// is safe because this defer is unconditional. Only the owner retains
+		// the profile, once.
+		if owned || ap.ClaimTerminal() {
+			s.retainProviderProfile(ap, msg.Profile)
+		}
+		msg.Profile = nil
+		// Leave final_status/error_reason to the phase-aware classifier (the
+		// relay or dispatch loop writes partial_success / error / cancelled
+		// through the route-outcome funnel); only the terminal cause and the
+		// provider-side outcome are authoritative here.
+		ap.SetOutcome("", "", string(msg.TerminalCause), "error", "")
+		// The terminal half completes when this handler returns: after the
+		// parked (consumer-gone) branch has classified partial_success, and
+		// after the live branch has pushed the error to its channel reader.
+		defer ap.CompleteTerminal()
+	}
 	// The request is terminal — drop its memoized chunk-decryption key.
 	s.chunkKeys.forget(pr.SessionPrivKey)
 	consumerGone := parked != nil
@@ -2335,8 +2933,8 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	// every mid-stream disconnect — penalizing them would erode the whole
 	// fleet's reputation for consumer behavior.
 	//
-	// A structured NON-provider-fault error_reason is exempt too
-	// (isNonProviderFaultErrorReason): jinja_* template-render failures (E4 —
+	// A structured health-neutral error_reason is exempt too
+	// (isProviderHealthNeutralErrorReason): jinja_* template-render failures (E4 —
 	// the model's chat template could not render the REQUEST's tool schemas
 	// or message history, a request-shape fault that fails identically on
 	// every provider; prod: jinja requests averaged 1.57 dispatch rows, each
@@ -2345,8 +2943,9 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	// broke a forced tool_choice contract; the 422 stays on the bounded
 	// failover path precisely because a re-sample can comply, so each
 	// attempted provider must not eat a reputation strike for what the model
-	// generated). A plain 422 with no structured reason still counts —
-	// only the typed vocabulary exonerates.
+	// generated), plus deadline_unreachable (the coordinator-supplied remaining
+	// SLA could not be met). A plain 422 with no structured reason still counts
+	// — only the typed vocabulary exonerates.
 	// Typed terminal cause (new providers). Classify once and emit the typed
 	// terminal metrics; neutral (safety_deadline / backpressure_timeout /
 	// cancelled — platform policy or consumer behavior) and capacity
@@ -2361,8 +2960,8 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		causeClass == causeClassCapacity
 	cancelTerminal := msg.FailureCode == protocol.FailureCodeCancelled ||
 		msg.TerminalCause == terminalCauseCancelled
-	nonProviderFault := isNonProviderFaultErrorReason(msg.ErrorReason)
-	if !capacityRejection && !cancelTerminal && !nonProviderFault && !causeNeutralForHealth {
+	providerHealthNeutral := isProviderHealthNeutralErrorReason(msg.ErrorReason)
+	if !capacityRejection && !cancelTerminal && !providerHealthNeutral && !causeNeutralForHealth {
 		s.registry.RecordJobFailure(providerID)
 	}
 
@@ -2452,7 +3051,7 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 // if one was included in the registration message. If the attestation is valid,
 // the provider is marked as attested. If missing or invalid, the provider is
 // accepted in Open Mode only when no binary hash policy is configured.
-func (s *Server) verifyProviderAttestation(providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage) {
+func (s *Server) verifyProviderAttestation(ctx context.Context, providerID string, provider *registry.Provider, regMsg *protocol.RegisterMessage) error {
 	policyConfigured, knownBinaryHashes := s.binaryHashPolicySnapshot()
 	if len(regMsg.Attestation) == 0 {
 		if policyConfigured {
@@ -2464,12 +3063,12 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 				Error: "attestation missing",
 			})
 			s.registry.MarkUntrusted(providerID)
-			return
+			return nil
 		}
 		s.logger.Info("provider registered without attestation (Open Mode)",
 			"provider_id", providerID,
 		)
-		return
+		return nil
 	}
 
 	result, err := attestation.VerifyJSON(regMsg.Attestation)
@@ -2485,7 +3084,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			})
 			s.registry.MarkUntrusted(providerID)
 		}
-		return
+		return nil
 	}
 
 	provider.SetAttestationResult(&result)
@@ -2498,7 +3097,32 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		if policyConfigured {
 			s.registry.MarkUntrusted(providerID)
 		}
-		return
+		return nil
+	}
+
+	enforceReconnectFreshness := regMsg.Version != "" &&
+		!semverLess(regMsg.Version, minProviderVersionForReconnectAttestation)
+	if enforceReconnectFreshness &&
+		!attestation.CheckTimestamp(result, RegistrationAttestationMaxAge) {
+		result.Valid = false
+		result.Error = "attestation timestamp outside freshness window"
+		provider.SetAttestationResult(&result)
+		s.registry.MarkUntrusted(providerID)
+		s.logger.Warn("provider registration attestation replay rejected",
+			"provider_id", providerID)
+		return nil
+	}
+
+	if !enforceReconnectFreshness {
+		// Pre-0.8.15 providers reuse their signed registration blob across
+		// reconnects. Preserve that legacy identity proof, but discard the
+		// protected-runtime fields before storing it so no later trust or
+		// challenge transition can promote apple_m5/mlx_nax from a replayable
+		// claim. Their periodic nonce challenges remain the liveness proof.
+		result.ChipFamily = ""
+		result.RuntimeCapabilities = nil
+		result.MetallibHash = ""
+		provider.SetAttestationResult(&result)
 	}
 
 	// Bind the WebSocket X25519 key used for E2E text encryption to the
@@ -2515,7 +3139,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			if policyConfigured {
 				s.registry.MarkUntrusted(providerID)
 			}
-			return
+			return nil
 		}
 		if result.EncryptionPublicKey != regMsg.PublicKey {
 			s.logger.Warn("attestation encryption key does not match register public key",
@@ -2529,7 +3153,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			if policyConfigured {
 				s.registry.MarkUntrusted(providerID)
 			}
-			return
+			return nil
 		}
 	}
 
@@ -2549,7 +3173,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			result.Error = "binary hash missing"
 			provider.SetAttestationResult(&result)
 			s.registry.MarkUntrusted(providerID)
-			return
+			return nil
 		}
 		binaryHash, err := normalizeSHA256Hex(result.BinaryHash, "binary_hash")
 		if err != nil || !knownBinaryHashes[binaryHash] {
@@ -2561,7 +3185,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 			result.Error = "binary hash not recognized"
 			provider.SetAttestationResult(&result)
 			s.registry.MarkUntrusted(providerID)
-			return
+			return nil
 		}
 		s.logger.Info("provider binary hash verified",
 			"provider_id", providerID,
@@ -2594,35 +3218,16 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 		"trust_level", registry.TrustSelfSigned,
 	)
 
-	// Restore persisted state: if this provider was previously known (by serial
-	// number or SE key), restore trust level, reputation, and account linkage.
-	// Fresh attestation verification still runs (above), but stored reputation
-	// is preserved so routing quality is maintained across coordinator restarts.
-	if s.storedProviders != nil {
-		var storedRec *store.ProviderRecord
-		if result.SerialNumber != "" {
-			storedRec = s.storedProviders[result.SerialNumber]
-		}
-		if storedRec == nil && result.PublicKey != "" {
-			storedRec = s.storedProviders["sekey:"+result.PublicKey]
-		}
-		if storedRec != nil {
-			s.registry.RestoreProviderState(provider, storedRec)
-			s.logger.Info("restored persisted provider state",
-				"provider_id", providerID,
-				"stored_serial", storedRec.SerialNumber,
-				"stored_trust", storedRec.TrustLevel,
-			)
-		}
+	// Resolve only this freshly verified identity, rather than loading all historical
+	// sessions before startup. Exclude every live session and keep incomplete
+	// registrations' identities unpublished across asynchronous persistence.
+	if err := s.restorePersistedProviderState(ctx, provider, result.SerialNumber, result.PublicKey); err != nil {
+		return err
 	}
 
-	// Stage the durable Apple MDA cert chain from a LIVE store read. storedProviders
-	// above is a one-time startup snapshot — empty for the coordinator's whole life
-	// under the in-memory store used in prod — so it cannot surface a chain earned
-	// during this coordinator's lifetime. The store record survives provider
-	// disconnect, so a serial lookup recovers a chain a previous connection earned,
-	// letting attachCachedMDAProof reuse it (re-verified + SE-key-bound) instead of
-	// forcing a fresh, Apple-rate-limited DevicePropertiesAttestation round-trip.
+	// Independently recover the newest non-empty durable MDA chain. A newer
+	// empty record must not shadow a chain earned by an earlier session. The
+	// hardware-grant path still re-verifies the certificate and SE-key binding.
 	s.stageDurableMDAChain(provider, result.SerialNumber)
 
 	// Deduplicate: if another provider connection exists from the same physical
@@ -2637,22 +3242,18 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 	// This captures the attestation result, serial number, and trust level.
 	s.registry.PersistProvider(provider)
 
-	// MDM verification is NOT spawned here. It runs once per connection in
-	// mdmVerificationLoop (started alongside challengeLoop in providerReadLoop),
-	// which owns the initial verify + a bounded, push-budget-aware retry. Doing
-	// it per-connection instead of per-registration-and-every-challenge is
-	// security-equivalent (SIP/Secure Boot can't change without a reboot, which
-	// drops the connection) and stops the APNs push throttling that stranded
-	// providers at self_signed.
+	// MDM verification is not spawned here. Registration binds stable device work
+	// to the Server-owned bounded scheduler after attestation has established the
+	// Secure Enclave identity and serial.
 	if s.mdmClient != nil && result.SerialNumber == "" {
 		s.logger.Warn("provider attestation has no serial number — cannot verify via MDM",
 			"provider_id", providerID,
 		)
 	}
+	return nil
 }
 
-// mdmVerifyOutcome classifies the result of one MDM verification attempt so the
-// per-connection mdmVerificationLoop can decide whether to retry.
+// mdmVerifyOutcome classifies one scheduler-owned MDM verification attempt.
 type mdmVerifyOutcome int
 
 const (
@@ -2661,12 +3262,10 @@ const (
 	mdmVerifyTerminal                          // posture mismatch (hard untrust) — stop
 )
 
-// verifyProviderViaMDM runs one MDM SecurityInfo verification attempt for a
-// provider and, on success, upgrades it to hardware trust + records Apple Device
-// Attestation. It records a bucketed MDMFailureReason on the provider and emits
-// an outcome metric, then returns an outcome the per-connection loop uses to
-// decide whether to retry. It NEVER marks a provider untrusted for a transient
-// failure (not-enrolled / timeout) — only for a genuine posture mismatch.
+// verifyProviderViaMDM runs one MDM SecurityInfo attempt and, on success,
+// upgrades the live provider to hardware trust. It records a bucketed
+// MDMFailureReason and returns a fixed outcome to the scheduler. Transient
+// transport/enrollment failures never hard-untrust; proven posture mismatch does.
 func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, provider *registry.Provider, attestResult attestation.VerificationResult) mdmVerifyOutcome {
 	// Never let MDM promote a provider whose Secure Enclave attestation is not
 	// valid. verifyProviderAttestation stores an AttestationResult even for an
@@ -2674,29 +3273,40 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 	// without this a later SecurityInfo success could grant hardware to a provider
 	// whose SE attestation / encryption-key binding failed. result.Valid==true
 	// implies both passed (verifyProviderAttestation returns early otherwise). The
-	// per-connection loop also gates on this; this is the authoritative backstop.
+	// scheduler also gates on this; this is the authoritative backstop.
 	if !attestResult.Valid {
-		s.logger.Warn("refusing MDM verification — SE attestation not valid",
-			"provider_id", providerID, "serial_number", attestResult.SerialNumber)
+		s.logger.Warn("refusing MDM verification: SE attestation not valid")
 		return mdmVerifyTransient
 	}
 
-	s.logger.Info("starting MDM verification",
-		"provider_id", providerID,
-		"serial_number", attestResult.SerialNumber,
-	)
+	s.logger.Info("starting scheduled MDM verification")
 
-	mdmResult, err := s.mdmClient.VerifyProvider(
-		ctx,
-		attestResult.SerialNumber,
-		attestResult.SIPEnabled,
-		attestResult.SecureBootEnabled,
+	var (
+		observeUDID    func(string)
+		observeCommand func(string, string)
+	)
+	if metadata, ok := ctx.Value(mdmSchedulerAttemptContextKey{}).(*mdmSchedulerAttemptMetadata); ok {
+		observeUDID = func(udid string) {
+			metadata.udid = udid
+			if s.mdmScheduler != nil {
+				s.mdmScheduler.ObserveAttemptUDID(provider, udid)
+			}
+		}
+		observeCommand = func(udid, commandUUID string) {
+			if s.mdmScheduler != nil {
+				s.mdmScheduler.ObserveAttemptCommand(
+					provider, store.VerificationTaskSecurityInfo,
+					udid, commandUUID,
+				)
+			}
+		}
+	}
+	mdmResult, err := s.mdmClient.VerifyProviderWithUDIDObserver(
+		ctx, attestResult.SerialNumber, attestResult.SIPEnabled,
+		attestResult.SecureBootEnabled, observeUDID, observeCommand,
 	)
 	if err != nil {
-		s.logger.Error("MDM verification error",
-			"provider_id", providerID,
-			"error", err,
-		)
+		s.logger.Error("MDM verification error", "error", err)
 		provider.SetMDMFailureReason("error")
 		s.ddIncr("mdm.verification", []string{"outcome:error"})
 		return mdmVerifyTransient
@@ -2717,9 +3327,7 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 		case strings.Contains(mdmResult.Error, "not found"):
 			reason = "device-not-found"
 		}
-		s.logger.Warn("provider not MDM-verified — staying at self_signed trust",
-			"provider_id", providerID,
-			"serial_number", attestResult.SerialNumber,
+		s.logger.Warn("provider not MDM-verified; retaining current trust",
 			"reason", reason,
 			"error", mdmResult.Error,
 		)
@@ -2742,8 +3350,7 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 			if strings.Contains(mdmResult.Error, "timeout") {
 				reason = "securityinfo-timeout"
 			}
-			s.logger.Warn("MDM verification did not complete — staying at current trust level",
-				"provider_id", providerID,
+			s.logger.Warn("MDM verification did not complete; retaining current trust",
 				"reason", reason,
 				"error", mdmResult.Error,
 			)
@@ -2753,8 +3360,7 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 		}
 		// A real posture mismatch (SIP disabled, Secure Boot not full, attestation
 		// disagrees with MDM) IS evidence of a problem — hard untrust, no retry.
-		s.logger.Warn("MDM verification failed — marking provider untrusted",
-			"provider_id", providerID,
+		s.logger.Warn("MDM posture verification failed; marking provider untrusted",
 			"error", mdmResult.Error,
 			"mdm_sip", mdmResult.MDMSIPEnabled,
 			"mdm_secure_boot", mdmResult.MDMSecureBootFull,
@@ -2775,263 +3381,98 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 		provider.SetMDMFailureReason("securityinfo-timeout")
 		return mdmVerifyTransient
 	}
+	binaryHash := providerApplicationBinaryHash(
+		provider, attestResult.PublicKey, attestResult.BinaryHash,
+	)
 
-	// MDM SecurityInfo verification passed — atomically upgrade to hardware trust,
-	// but NOT while the provider is currently untrusted. A missed-challenge deroute
-	// can race this in-flight MDM verify; granting would leave the registry in
-	// hardware/untrusted (routing still rejects it on Status) while telling the
-	// provider it is "online". The atomic check-and-grant closes the TOCTOU between
-	// the status check and the trust write. Recovery from a transient untrust flows
-	// through a passing SE challenge that restores Status, after which a later loop
-	// iteration grants cleanly. (A hard untrust already stops the loop via
-	// ChallengeShouldStop.)
-	if !provider.GrantHardwareIfNotUntrusted() {
-		s.ddIncr("mdm.verification", []string{"outcome:deferred-untrusted"})
+	// Durable revocation is authoritative. Persist/recover the verified device
+	// evidence at the expected generation before touching live hardware trust;
+	// then the helper atomically rechecks the provider epoch/status while granting.
+	if !s.recordTrustReuse(
+		provider,
+		attestResult.PublicKey,
+		attestResult.SerialNumber,
+		binaryHash,
+		mdmResult.MDMSIPEnabled,
+		mdmResult.MDMSecureBootFull,
+		mdmResult.UDID,
+	) {
+		s.ddIncr("mdm.verification", []string{"outcome:deferred-revocation-cas"})
 		return mdmVerifyTransient
 	}
 	provider.SetMDMFailureReason("")
 	s.sendTrustStatus(provider, registry.TrustHardware, "online", "MDM verification passed")
 	s.ddIncr("mdm.verification", []string{"outcome:granted"})
-	s.logger.Info("MDM verification passed — upgraded to hardware trust",
-		"provider_id", providerID,
-		"serial_number", attestResult.SerialNumber,
+	s.logger.Info("MDM verification passed; upgraded live provider to hardware trust",
 		"mdm_sip", mdmResult.MDMSIPEnabled,
 		"mdm_secure_boot", mdmResult.MDMSecureBootFull,
 		"mdm_auth_root_volume", mdmResult.MDMAuthRootVolume,
 	)
-
-	// Persist the trust upgrade.
 	s.registry.PersistProvider(provider)
 
-	// DAR-326 Phase 0: record this FULL live MDM verification in the trust-reuse
-	// cache (in-memory + durable) so a planned coordinator restart/swap can
-	// fast-skip this device's live MDM round-trip — once a fresh live SE challenge
-	// re-proves the same identity, unchanged binary, and good posture within the
-	// window. Written only here, AFTER the verified MDM pass + hardware grant.
-	s.recordTrustReuse(
-		provider,
-		attestResult.PublicKey,
-		attestResult.SerialNumber,
-		attestResult.BinaryHash,
-		mdmResult.MDMSIPEnabled,
-		mdmResult.MDMSecureBootFull,
-		mdmResult.UDID,
-	)
-
-	// Request Apple Device Attestation — Apple's servers generate a
-	// certificate chain that proves this device's identity. This cert
-	// chain can be independently verified by users against Apple's
-	// Enterprise Attestation Root CA.
-	s.verifyAppleDeviceAttestation(ctx, providerID, provider, attestResult, mdmResult.UDID)
+	// Direct attempt-level callers retain the historical synchronous MDA behavior.
+	// Scheduler workers enqueue MDA behind the same global budget instead.
+	if _, scheduled := ctx.Value(mdmSchedulerAttemptContextKey{}).(*mdmSchedulerAttemptMetadata); !scheduled {
+		s.verifyAppleDeviceAttestation(ctx, providerID, provider, attestResult, mdmResult.UDID)
+	}
 	return mdmVerifyGranted
 }
 
-// ApplyLateSecurityInfo retroactively upgrades a self_signed provider to hardware
-// when its SecurityInfo arrives AFTER the synchronous verify timed out (slow APNs
-// / Power Nap). It mirrors verifyProviderViaMDM's success path so the late path
-// doesn't drift from it: confirm posture (SIP on + Secure Boot full), match the
-// device by UDID, require a valid SE attestation, skip a provider that has since
-// become untrusted (granting would leave hardware/untrusted), and on success grant
-// hardware, clear the MDM failure reason, send a fresh hardware/online
-// trust_status (so the provider's daemon + doctor stop reporting MDM-pending), and
-// persist. Wired as the mdm.Client late-SecurityInfo callback.
-func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoResponse) {
-	if s.mdmClient == nil || info == nil {
+// ApplyLateSecurityInfo accepts a delayed response only for the exact current
+// scheduler binding that issued the command and has completed the current
+// connection's phase-1 challenge. Unowned or stale-generation callbacks are
+// dropped; they are never bearer credentials for a fleet-wide provider lookup.
+func (s *Server) ApplyLateSecurityInfo(
+	udid, commandUUID string,
+	info *mdm.SecurityInfoResponse,
+) {
+	if s.mdmClient == nil || info == nil || commandUUID == "" {
 		return
 	}
-	// Posture must be good — a late response that reports SIP off / Secure Boot
-	// not full is not a basis for promotion (and the sync path would have hard-
-	// untrusted it; here we simply don't upgrade).
-	if !info.SystemIntegrityProtectionEnabled || info.SecureBootLevel != "full" {
+	securityOK := info.SystemIntegrityProtectionEnabled && info.SecureBootLevel == "full"
+	if s.mdmScheduler == nil {
 		return
 	}
-	// Collect self_signed, valid-attestation candidates under the lock, then do
-	// MDM lookups outside it to avoid blocking heartbeats/routing.
-	type candidate struct {
-		provider *registry.Provider
-		serial   string
+	binding := s.mdmScheduler.ApplyLateSecurityInfo(
+		udid, commandUUID, securityOK,
+	)
+	if binding == nil {
+		return
 	}
-	var candidates []candidate
-	s.registry.ForEachProvider(func(p *registry.Provider) {
-		p.Mu().Lock()
-		trust := p.TrustLevel
-		valid := p.AttestationResult != nil && p.AttestationResult.Valid
-		serial := ""
-		if p.AttestationResult != nil {
-			serial = p.AttestationResult.SerialNumber
-		}
-		p.Mu().Unlock()
-		if trust == registry.TrustSelfSigned && valid && serial != "" {
-			candidates = append(candidates, candidate{provider: p, serial: serial})
-		}
-	})
-	for _, c := range candidates {
-		dev, _ := s.mdmClient.LookupDevice(context.Background(), c.serial)
-		if dev == nil || dev.UDID != udid {
-			continue
-		}
-		// Atomically grant unless the provider became untrusted while the response
-		// was in flight — granting then would leave hardware/untrusted (routing
-		// rejects on Status) and falsely tell the provider it's online. The
-		// check-and-grant is a single lock (closes the TOCTOU); recovery from a
-		// transient untrust flows through a passing SE challenge. Mirrors
-		// verifyProviderViaMDM.
-		if !c.provider.GrantHardwareIfNotUntrusted() {
-			continue
-		}
-		c.provider.SetMDMFailureReason("")
-		// Notify the connection, exactly like the synchronous success path —
-		// otherwise the daemon stays self_signed and doctor keeps warning
-		// MDM-pending even though the coordinator now routes it as hardware.
-		s.sendTrustStatus(c.provider, registry.TrustHardware, "online", "MDM verification passed (late SecurityInfo)")
-		if s.metrics != nil {
-			s.metrics.IncCounter("mdm_late_securityinfo_upgrade_total")
-		}
-		// Also emit on the shared Datadog grant-rate metric so the late path is
-		// visible alongside synchronous grants (not just the in-process counter).
-		s.ddIncr("mdm.verification", []string{"outcome:granted-late"})
-		s.logger.Info("late SecurityInfo arrival — upgraded provider to hardware trust",
-			"provider_id", c.provider.ID,
-			"serial", c.serial,
-			"udid", udid,
+	if !securityOK {
+		binding.provider.SetMDMFailureReason("posture-mismatch")
+		s.registry.MarkUntrusted(binding.providerID)
+		s.mdmScheduler.RejectLateSecurityInfo(
+			*binding, udid, commandUUID,
 		)
-		s.registry.PersistProvider(c.provider)
-
-		// DAR-326 FIX B: cache this late grant in the trust-reuse cache too, so it
-		// gets the same restart-survivable fast-skip as the synchronous MDM path.
-		// Posture was confirmed good above (SIP on + Secure Boot full). Uses the
-		// same epoch-checked synchronous write-through (recordTrustReuse) — a
-		// concurrent hard untrust is detected and not persisted. seKey + binary hash
-		// come from the registration-bound SE attestation.
-		//
-		// FIX 1: nil-guard the derivation. The candidate set guaranteed a valid
-		// attestation + non-empty serial, but NOT a non-empty SE key or binary hash
-		// (Swift providers may omit the self-reported binary hash). Skip caching
-		// rather than call recordTrustReuse with empty values (which it would reject
-		// anyway) — keeps the intent explicit and avoids a useless call.
-		c.provider.Mu().Lock()
-		var seKey, binaryHash string
-		if c.provider.AttestationResult != nil {
-			seKey = c.provider.AttestationResult.PublicKey
-			binaryHash = c.provider.AttestationResult.BinaryHash
-		}
-		c.provider.Mu().Unlock()
-		if seKey != "" && binaryHash != "" {
-			s.recordTrustReuse(c.provider, seKey, c.serial, binaryHash, true /*sip*/, true /*secureBootFull*/, udid)
-		}
-
-		// The late grant earned hardware WITHOUT the synchronous MDM verify (which
-		// runs the MDA leg via verifyAppleDeviceAttestation), so attach the durable
-		// MDA proof here too — otherwise a provider upgraded via late SecurityInfo
-		// stays mda_verified=false despite a valid cached chain.
-		if ar := c.provider.GetAttestationResult(); ar != nil {
-			s.attachCachedMDAProof(c.provider.ID, c.provider, *ar)
-		}
-	}
-}
-
-// mdmVerificationLoop owns MDM SecurityInfo verification for one provider
-// connection. It replaces the old model where verification ran at registration
-// and then re-ran on every 5-minute challenge for self_signed providers — which
-// fired an MDM/APNs push each time and got throttled by Apple, so the
-// SecurityInfo checks timed out and stranded providers at self_signed.
-//
-// Why per-connection is sufficient (not weaker than polling): SIP and Secure
-// Boot cannot change at runtime — both require a reboot into Recovery — and a
-// reboot drops this WebSocket, which ends this loop and forces a fresh
-// connection that re-verifies. So we don't need to re-poll; we only need the one
-// check to LAND. The backoff below retries within the connection to survive APNs
-// / Power-Nap delivery delays and to catch a provider that finishes enrollment
-// mid-connection, while staying well under Apple's push budget.
-//
-// It stops as soon as hardware trust is earned, on a terminal posture
-// mismatch, or when the connection closes (ctx done).
-func (s *Server) mdmVerificationLoop(ctx context.Context, providerID string, provider *registry.Provider) {
-	if s.mdmClient == nil {
 		return
 	}
-	provider.Mu().Lock()
-	var result *attestation.VerificationResult
-	if provider.AttestationResult != nil {
-		r := *provider.AttestationResult
-		result = &r
-	}
-	provider.Mu().Unlock()
-	// Require a VALID Secure Enclave attestation before MDM can promote to
-	// hardware. verifyProviderAttestation sets AttestationResult even when the SE
-	// attestation is invalid (and, in Open Mode, leaves the provider connected),
-	// so gating only on a serial would let a later MDM SecurityInfo success
-	// promote a provider whose SE attestation / encryption-key binding FAILED.
-	// result.Valid==true implies both the SE attestation and the X25519↔SE binding
-	// passed (verifyProviderAttestation returns early otherwise).
-	if result == nil || !result.Valid || result.SerialNumber == "" {
+	ar := binding.attestation
+	binaryHash := providerApplicationBinaryHash(
+		binding.provider, ar.PublicKey, ar.BinaryHash,
+	)
+	if !s.recordLateTrustReuse(
+		binding.provider, ar.PublicKey, ar.SerialNumber, binaryHash,
+		true, true, udid,
+	) {
 		return
 	}
-
-	// DAR-326 Phase 0: if this device has a fresh trust-reuse record (it recently
-	// passed a FULL live MDM verification), give the live SE challenge a brief head
-	// start to re-prove identity + posture and grant hardware via the trust-reuse
-	// fast-skip BEFORE we run the (herd-causing) live MDM SecurityInfo round-trip.
-	// Without this, this loop's immediate first attempt would race ahead of the
-	// challenge and re-run the full verify anyway, recreating the fleet-wide MDM/APNs
-	// herd on a planned coordinator restart/swap. Only candidates wait; a first-ever
-	// / expired device proceeds straight to the full live verify (unchanged). If the
-	// challenge does not grant within the window (slow / gate miss / hard untrust),
-	// we fall through to the unchanged full live MDM verify below.
-	if s.trustReuseCache.hasFreshRecord(result.PublicKey, result.SerialNumber) {
-		if s.awaitTrustReuseGrant(ctx, provider) {
-			return // fast-skip granted hardware — no live MDM round-trip needed
-		}
+	binding.provider.SetMDMFailureReason("")
+	s.sendTrustStatus(binding.provider, registry.TrustHardware, "online", "MDM verification passed (late SecurityInfo)")
+	s.registry.PersistProvider(binding.provider)
+	if s.metrics != nil {
+		s.metrics.IncCounter("mdm_late_securityinfo_upgrade_total")
 	}
-
-	// One attempt up front, then a gentle cadence. The initial push (with the
-	// SecurityInfo waiter registered first) wakes an awake-or-reachable device and
-	// usually lands; retries exist only for genuine APNs/Power-Nap delivery delay,
-	// so they're spaced to stay within Apple's MDM push budget (the throttling this
-	// change exists to avoid) while still catching a provider that finishes
-	// enrollment later in the same connection.
-	backoff := []time.Duration{2 * time.Minute, 6 * time.Minute}
-	const steadyInterval = 15 * time.Minute
-
-	for attempt := 0; ; attempt++ {
-		// Stop if hardware was already earned — by this loop on a prior
-		// iteration, or by the trust-reuse fast-skip concurrently.
-		if provider.GetTrustLevel() == registry.TrustHardware {
-			return
-		}
-		// Stop if the provider was HARD-untrusted out-of-band (e.g. the challenge
-		// loop saw SIP disabled or a binary-hash change). Re-granting hardware to a
-		// hard-untrusted provider would leave TrustLevel=hardware while
-		// Status=untrusted — an inconsistent state. A hard untrust recovers only by
-		// reconnect, which restarts this loop. A *transient* untrust (missed-
-		// challenge timeouts) is intentionally NOT a stop: it can recover on a later
-		// passing challenge, after which MDM should still be able to grant hardware.
-		if provider.ChallengeShouldStop() {
-			return
-		}
-		switch s.verifyProviderViaMDM(ctx, providerID, provider, *result) {
-		case mdmVerifyGranted, mdmVerifyTerminal:
-			return
-		}
-		// Transient (not-enrolled / not-found / timeout / error) — schedule retry.
-		d := steadyInterval
-		if attempt < len(backoff) {
-			d = backoff[attempt]
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(d):
-		}
-	}
+	s.ddIncr("mdm.verification", []string{"outcome:granted-late"})
+	s.mdmScheduler.CompleteLateSecurityInfo(
+		*binding, udid, commandUUID,
+	)
 }
 
 // stageDurableMDAChain recovers a previously-earned Apple MDA cert chain from the
 // store (by serial) and stages it on the provider as a reuse candidate for this
-// reconnect. The store record survives provider disconnect, so this works under
-// the in-memory store used in prod — where the startup storedProviders snapshot is
-// empty — as well as a durable store. Best-effort: a missing record / chain or a
-// read error simply stages nothing, and a fresh attestation is requested.
+// reconnect. A missing record / chain or a read error stages nothing, and a
+// fresh attestation is requested. This read is independent of counter recovery.
 func (s *Server) stageDurableMDAChain(provider *registry.Provider, serial string) {
 	if s.store == nil || serial == "" {
 		return
@@ -3111,11 +3552,7 @@ func (s *Server) attachCachedMDAProof(providerID string, provider *registry.Prov
 	// indexes this session's row), forcing a fresh, rate-limited refetch on the
 	// next reconnect. Mirrors the fresh-MDA path's immediate persist.
 	s.registry.PersistProvider(provider)
-	s.logger.Info("MDA reused from durable cert chain — skipped fresh DevicePropertiesAttestation",
-		"provider_id", providerID,
-		"mda_serial", mdaResult.DeviceSerial,
-		"se_key_bound", true,
-	)
+	s.logger.Info("MDA reused from durable SE-key-bound certificate chain")
 	s.ddIncr("mda.verification", []string{"outcome:reused"})
 	return true
 }
@@ -3123,16 +3560,23 @@ func (s *Server) attachCachedMDAProof(providerID string, provider *registry.Prov
 // verifyAppleDeviceAttestation sends a DeviceInformation command requesting
 // DevicePropertiesAttestation and verifies the Apple-signed certificate chain.
 func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID string, provider *registry.Provider, attestResult attestation.VerificationResult, udid string) {
+	setOutcome := func(outcome string) {
+		if metadata, ok := ctx.Value(mdmSchedulerAttemptContextKey{}).(*mdmSchedulerAttemptMetadata); ok {
+			metadata.mdaOutcome = outcome
+		}
+	}
 	// Fast path: reuse a still-valid, SE-key-bound Apple attestation recovered from
 	// the durable store instead of requesting a fresh one. This skips the
 	// rate-limited APNs round-trip entirely on reconnect/restart and is what keeps
 	// mda_verified green across a provider restart.
 	if s.attachCachedMDAProof(providerID, provider, attestResult) {
+		setOutcome("reused")
 		return
 	}
 
 	if udid == "" {
-		s.logger.Warn("no UDID for MDA verification", "provider_id", providerID)
+		setOutcome("invalid")
+		s.logger.Warn("no UDID for MDA verification")
 		return
 	}
 
@@ -3147,69 +3591,60 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 		seKeyHash := sha256.Sum256([]byte(attestResult.PublicKey))
 		seKeyNonce = base64.StdEncoding.EncodeToString(seKeyHash[:])
 		expectedFreshness = seKeyHash
-		s.logger.Info("requesting Apple Device Attestation (MDA) with SE key binding",
-			"provider_id", providerID,
-			"udid", udid,
-			"se_key_hash", hex.EncodeToString(seKeyHash[:8])+"...",
-		)
-	} else {
-		s.logger.Info("requesting Apple Device Attestation (MDA)",
-			"provider_id", providerID,
-			"udid", udid,
-		)
 	}
+	s.logger.Info("requesting Apple Device Attestation",
+		"se_key_binding_requested", seKeyNonce != "",
+	)
 
-	// Always send the raw plist command so the nonce reaches Apple's servers.
-	// The structured MicroMDM API doesn't support DeviceAttestationNonce.
-	_, err := s.mdmClient.SendDeviceAttestationCommand(ctx, udid, seKeyNonce)
-	if err != nil {
-		s.logger.Warn("failed to send DeviceInformation attestation command",
-			"provider_id", providerID,
-			"error", err,
-		)
-		return
+	// Install exclusive UDID and exact command ownership before command
+	// visibility so an old late response cannot bind to this attempt.
+	var observeMDACommand func(string, string)
+	if _, scheduled := ctx.Value(mdmSchedulerAttemptContextKey{}).(*mdmSchedulerAttemptMetadata); scheduled &&
+		s.mdmScheduler != nil {
+		observeMDACommand = func(udid, commandUUID string) {
+			s.mdmScheduler.ObserveAttemptCommand(
+				provider, store.VerificationTaskMDA,
+				udid, commandUUID,
+			)
+		}
 	}
-
-	// Wait for Apple's response (device contacts Apple's servers — may take longer)
-	attestResp, err := s.mdmClient.WaitForDeviceAttestation(ctx, udid, 60*time.Second)
+	attestResp, err := s.mdmClient.RequestDeviceAttestation(
+		ctx, udid, seKeyNonce, 60*time.Second, observeMDACommand,
+	)
 	if err != nil {
-		s.logger.Warn("DevicePropertiesAttestation response timeout",
-			"provider_id", providerID,
-			"error", err,
-		)
+		if strings.Contains(strings.ToLower(err.Error()), "timeout") {
+			setOutcome("timeout")
+		} else {
+			setOutcome("transient")
+		}
+		s.logger.Warn("DevicePropertiesAttestation request failed", "error", err)
 		return
 	}
 
 	// Verify the certificate chain against Apple's Enterprise Attestation Root CA
 	mdaResult, err := attestation.VerifyMDADeviceAttestation(attestResp.CertChain)
 	if err != nil {
-		s.logger.Error("MDA certificate chain parse error",
-			"provider_id", providerID,
-			"error", err,
-		)
+		setOutcome("invalid")
+		s.logger.Error("MDA certificate chain parse error", "error", err)
 		return
 	}
 
 	if !mdaResult.Valid {
-		s.logger.Warn("MDA certificate chain verification FAILED — Apple did not attest this device",
-			"provider_id", providerID,
-			"error", mdaResult.Error,
-		)
+		setOutcome("invalid")
+		s.logger.Warn("MDA certificate chain verification failed")
 		return
 	}
 
 	// Cross-check: MDA serial must match the provider's self-reported serial
 	if mdaResult.DeviceSerial != "" && mdaResult.DeviceSerial != attestResult.SerialNumber {
-		s.logger.Error("MDA serial mismatch — provider is impersonating another device",
-			"provider_id", providerID,
-			"mda_serial", mdaResult.DeviceSerial,
-			"attestation_serial", attestResult.SerialNumber,
-		)
+		setOutcome("binding_mismatch")
+		s.logger.Error("MDA serial binding mismatch")
 		s.registry.MarkUntrusted(providerID)
 		return
 	}
 
-	// Apple Device Attestation verified — store proof for user verification.
+	// Apple Device Attestation verified — store the proof for coordinator-side
+	// trust decisions and reuse. Public APIs expose only the redacted verdict.
 	// Acquire provider lock since these fields are read by HTTP handlers
 	// (handleProviderAttestation, handleChatCompletions) concurrently.
 	seKeyBound := false
@@ -3217,12 +3652,16 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 		seKeyBound = bytes.Equal(mdaResult.FreshnessCode, expectedFreshness[:])
 	}
 
-	provider.Mu().Lock()
-	provider.MDAVerified = true
-	provider.MDACertChain = attestResp.CertChain
-	provider.MDAResult = mdaResult
-	provider.SEKeyBound = seKeyBound
-	provider.Mu().Unlock()
+	if seKeyNonce != "" && !seKeyBound {
+		setOutcome("binding_mismatch")
+		s.logger.Warn("MDA FreshnessCode did not bind the current Secure Enclave key")
+		return
+	}
+	if !provider.SetMDAProofIfHardwareBound(attestResp.CertChain, mdaResult, seKeyBound) {
+		setOutcome("invalid")
+		return
+	}
+	setOutcome("verified")
 
 	// Persist the freshly-earned chain NOW so it is durable for reuse. The
 	// hardware-grant PersistProvider ran before this MDA leg, so without an explicit
@@ -3233,45 +3672,32 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 	// coordinator restart.
 	s.registry.PersistProvider(provider)
 
-	// Log results.
-	if seKeyNonce != "" && len(mdaResult.FreshnessCode) > 0 {
-		if seKeyBound {
-			s.logger.Info("MDA verified with SE key binding — Apple CA confirmed device + key",
-				"provider_id", providerID,
-				"mda_serial", mdaResult.DeviceSerial,
-				"mda_udid", mdaResult.DeviceUDID,
-				"se_key_bound", true,
-			)
-		} else {
-			s.logger.Warn("MDA verified but FreshnessCode mismatch — SE key NOT bound",
-				"provider_id", providerID,
-				"mda_serial", mdaResult.DeviceSerial,
-				"expected_freshness", hex.EncodeToString(expectedFreshness[:8])+"...",
-				"got_freshness", hex.EncodeToString(mdaResult.FreshnessCode[:min(8, len(mdaResult.FreshnessCode))])+"...",
-			)
-		}
-	} else {
-		s.logger.Info("Apple Device Attestation (MDA) verified — Apple CA confirmed device identity",
-			"provider_id", providerID,
-			"mda_serial", mdaResult.DeviceSerial,
-			"mda_udid", mdaResult.DeviceUDID,
-			"mda_os_version", mdaResult.OSVersion,
-			"mda_sepos_version", mdaResult.SepOSVersion,
-			"se_key_bound", false,
-			"freshness_code_len", len(mdaResult.FreshnessCode),
-		)
-	}
+	s.logger.Info("MDA verified",
+		"se_key_bound", seKeyBound,
+		"freshness_code_present", len(mdaResult.FreshnessCode) > 0,
+	)
 }
 
-// handleProviderAttestation returns the attestation proof for all providers.
-// Users can independently verify the Apple MDA certificate chain against
-// Apple's public Enterprise Attestation Root CA.
+// providerAttestationCacheTTL bounds staleness of the public trust listing. It
+// reflects live connection state (trust level, status, models), so it uses the
+// same 2s window as GET /v1/models/capacity. The response is the same for every
+// caller (unauthenticated, no query parameters).
+const providerAttestationCacheTTL = 2 * time.Second
+
+const providerAttestationCacheKey = "providers:attestation:v1"
+
+// handleProviderAttestation returns privacy-redacted trust status for all providers.
+// Device identity and raw MDA certificates stay coordinator-private because
+// Apple's leaf certificate embeds the hardware serial number and UDID.
 func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Request) {
+	if body, ok := s.readCacheGet(providerAttestationCacheKey); ok {
+		writeCachedJSON(w, body)
+		return
+	}
 	type providerAttestation struct {
 		ProviderID    string `json:"provider_id"`
 		ChipName      string `json:"chip_name"`
 		HardwareModel string `json:"hardware_model"`
-		SerialNumber  string `json:"serial_number"`
 		TrustLevel    string `json:"trust_level"`
 		Status        string `json:"status"`
 
@@ -3297,17 +3723,16 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		// it as a required field.
 		ACMEVerified bool `json:"acme_verified"`
 
-		// Apple Device Attestation (MDA) — certificate chain signed by Apple
-		MDAVerified   bool     `json:"mda_verified"`
-		MDACertChain  []string `json:"mda_cert_chain_b64,omitempty"`
-		MDASerial     string   `json:"mda_serial,omitempty"`
-		MDAUDID       string   `json:"mda_udid,omitempty"`
-		MDAOSVersion  string   `json:"mda_os_version,omitempty"`
-		MDASepVersion string   `json:"mda_sepos_version,omitempty"`
+		// Apple Device Attestation (MDA), verified coordinator-side. The raw
+		// certificate chain is intentionally not part of this public DTO.
+		MDAVerified   bool   `json:"mda_verified"`
+		MDAOSVersion  string `json:"mda_os_version,omitempty"`
+		MDASepVersion string `json:"mda_sepos_version,omitempty"`
 	}
 
 	var providers []providerAttestation
 
+	publicProviderModels := s.registry.PublicProviderModels()
 	s.registry.ForEachProvider(func(p *registry.Provider) {
 		// Snapshot mutable fields under provider lock to avoid racing
 		// with background MDA verification and challenge goroutines.
@@ -3316,16 +3741,7 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 		status := p.Status
 		mdaVerified := p.MDAVerified
 		attestResult := p.AttestationResult
-		mdaCertChain := p.MDACertChain
 		mdaResult := p.MDAResult
-		// p.Models is replaced copy-on-write by UpdateModelWeightHashes on the
-		// challenge goroutine, so its slice header must be read under p.mu. Copy
-		// the IDs out within this same locked section rather than ranging the
-		// field after unlock.
-		modelIDs := make([]string, 0, len(p.Models))
-		for _, m := range p.Models {
-			modelIDs = append(modelIDs, m.ID)
-		}
 		p.Mu().Unlock()
 
 		// The public proofs (mdm/mda) are reported true ONLY for a connection
@@ -3346,12 +3762,11 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 			MDAVerified: mdaVerified && isHardware,
 		}
 
-		pa.Models = append(pa.Models, modelIDs...)
+		pa.Models = append(pa.Models, publicProviderModels[p.ID].Models...)
 
 		if attestResult != nil {
 			pa.ChipName = attestResult.ChipName
 			pa.HardwareModel = attestResult.HardwareModel
-			pa.SerialNumber = attestResult.SerialNumber
 			pa.SecureEnclave = attestResult.SecureEnclaveAvailable
 			pa.SIPEnabled = attestResult.SIPEnabled
 			pa.SecureBootEnabled = attestResult.SecureBootEnabled
@@ -3360,38 +3775,22 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 			pa.SEPublicKey = attestResult.PublicKey
 		}
 
-		// Include the MDA cert chain + parsed fields for independent verification
-		// ONLY for a connection currently holding hardware trust — same gate as the
-		// mda_verified boolean above. The late-MDA callback (main.go) can attach a
-		// cert chain to a provider that has since reconnected as self_signed; without
-		// this gate the endpoint would emit mda_verified=false alongside a non-empty
-		// mda_cert_chain_b64/serial/udid, which is exactly the drift this fix removes.
-		if isHardware {
-			if len(mdaCertChain) > 0 {
-				for _, der := range mdaCertChain {
-					pa.MDACertChain = append(pa.MDACertChain, base64.StdEncoding.EncodeToString(der))
-				}
-			}
-			if mdaResult != nil {
-				pa.MDASerial = mdaResult.DeviceSerial
-				pa.MDAUDID = mdaResult.DeviceUDID
-				pa.MDAOSVersion = mdaResult.OSVersion
-				pa.MDASepVersion = mdaResult.SepOSVersion
-			}
+		if isHardware && mdaResult != nil {
+			pa.MDAOSVersion = mdaResult.OSVersion
+			pa.MDASepVersion = mdaResult.SepOSVersion
 		}
 
 		providers = append(providers, pa)
 	})
 
-	resp := map[string]any{
-		"providers":                providers,
-		"apple_root_ca_url":        "https://www.apple.com/certificateauthority/",
-		"apple_enterprise_root_ca": "Apple Enterprise Attestation Root CA",
-		"verification_instructions": "Download each provider's mda_cert_chain_b64, decode from base64 to DER, " +
-			"then verify the certificate chain against Apple's Enterprise Attestation Root CA. " +
-			"If verification passes, Apple has confirmed this is a real Apple device with the attested properties.",
+	resp := map[string]any{"providers": providers}
+	body, err := encodeCachedJSON(resp)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode attestation"))
+		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	s.readCacheSet(providerAttestationCacheKey, body, providerAttestationCacheTTL)
+	writeCachedJSON(w, body)
 }
 
 // sendTrustStatus sends the provider its current trust level and status over

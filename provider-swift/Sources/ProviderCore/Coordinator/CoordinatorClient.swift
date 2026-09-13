@@ -84,6 +84,14 @@ public actor CoordinatorClient {
     /// the live map, and this keeps future registrations consistent.
     internal var modelWeightHashOverrides: [String: String]?
 
+    /// True from the moment this connection's `register` frame was handed to
+    /// the transport until the session tears down. Event-triggered heartbeats
+    /// check it so an out-of-band heartbeat can never precede registration on
+    /// a fresh connection (frames before `register` are a protocol violation);
+    /// the baseline heartbeat task starts after registration and needs no
+    /// gate.
+    internal var sessionRegistered = false
+
     private let shutdownFlag = ShutdownFlag()
 
     /// Fast, thread-safe shutdown visibility for connection tasks.
@@ -109,7 +117,10 @@ public actor CoordinatorClient {
         self.config = config
         self.stats = stats
         self.state = state
-        self.advertisedModelStore = AdvertisedModelStore(config.models)
+        self.advertisedModelStore = AdvertisedModelStore(config.models.filter {
+            ModelRuntimeRequirements.isEligible(
+                modelID: $0.id, available: config.runtimeCapabilities)
+        })
         self.liveAPNsToken = liveAPNsToken ?? { APNsBridge.shared.currentDeviceToken() }
 
         // Inference-chunk fast path. The encode closure is the same pure static
@@ -154,6 +165,13 @@ public actor CoordinatorClient {
     /// the coordinator's advertised inventory on the next reconnect.
     @discardableResult
     public func advertiseModel(_ model: ModelInfo) -> Bool {
+        guard ModelRuntimeRequirements.isEligible(
+            modelID: model.id, available: config.runtimeCapabilities)
+        else {
+            logger.error(
+                "advertiseModel(\(model.id)): permanently ineligible; refusing advertisement")
+            return false
+        }
         let isNew = advertisedModelStore.add(model)
         if isNew {
             logger.info("advertiseModel(\(model.id)): added to advertised set (\(self.advertisedModelStore.models.count) total); coordinator picks it up on next registration")

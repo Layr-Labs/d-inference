@@ -254,6 +254,25 @@ describe("fetchModels", () => {
     expect(m.supported_sampling_parameters).toContain("temperature");
   });
 
+  it("surfaces required_provider_capabilities from the top level or metadata", async () => {
+    client.fetch.mockResolvedValueOnce(jsonResponse({
+      data: [
+        // Public catalog path: top-level, as /api/models emits it.
+        { id: "qwen3.8-27b", object: "model", required_provider_capabilities: ["apple_m5", "mlx_nax"], metadata: {} },
+        // Forward-compat: where the keyed /v1/models path would carry it.
+        { id: "vendor/meta-only", object: "model", metadata: { required_provider_capabilities: ["mlx_nax"] } },
+        { id: "gemma-4-26b", object: "model", metadata: {} },
+      ],
+    }));
+
+    const result = await fetchModels();
+    const byID = new Map(result.map((m) => [m.id, m]));
+
+    expect(byID.get("qwen3.8-27b")?.required_provider_capabilities).toEqual(["apple_m5", "mlx_nax"]);
+    expect(byID.get("vendor/meta-only")?.required_provider_capabilities).toEqual(["mlx_nax"]);
+    expect(byID.get("gemma-4-26b")?.required_provider_capabilities).toBeUndefined();
+  });
+
   it("throws on non-ok response", async () => {
     client.fetch.mockResolvedValueOnce(jsonResponse({}, 503));
     await expect(fetchModels()).rejects.toThrow("Failed to fetch models: 503");

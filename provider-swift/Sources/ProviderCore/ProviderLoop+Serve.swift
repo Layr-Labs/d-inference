@@ -30,7 +30,7 @@ extension ProviderLoop {
 
         // Maintain the entire encrypted SSD-cache root even when no model is
         // loaded. This is metadata/file-only work: no weights or KV arrays are
-        // constructed. It closes TTL and 20 GiB budget gaps for unloaded dirs.
+        // constructed. It closes TTL and shared disk-budget gaps for unloaded dirs.
         SSDPrefixCacheFactory.startWholeRootMaintenance()
         defer { SSDPrefixCacheFactory.stopWholeRootMaintenance() }
 
@@ -73,6 +73,7 @@ extension ProviderLoop {
         // can perform the first normal cold target load. This never downloads
         // assistant bytes and fails open on timeout.
         await prewarmSpecDecCatalog()
+        startMTPUpgradeMonitor()
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
         // models. It starts after the bounded metadata prewarm, but still before
@@ -107,15 +108,15 @@ extension ProviderLoop {
         await runStartupPreloadGate()
         preloadLivenessRefresh.cancel()
 
-        // 2. Build attestation blob for registration
-        let attestation = buildRegistrationAttestation()
-
-        // 3. Hash the colocated mlx.metallib so the coordinator (and any
-        // user inspecting attestation) can correlate the GPU kernel set
-        // with the binary. Reported under template_hashes["mlx_metallib"]
-        // so legacy providers and Swift providers can keep one protocol
-        // shape while the coordinator applies backend-specific enforcement.
+        // 2. Hash the exact mlx.metallib the live process will load. The same
+        // digest is sent as reported runtime evidence and embedded in the
+        // Secure-Enclave-signed attestation below.
         let runtimeWithMetallib = augmentRuntimeHashesWithMetallib(loopConfig.runtimeHashes)
+
+        // 3. Capture immutable claims, but re-sign a fresh timestamp for every
+        // WebSocket registration/reconnect.
+        let registrationAttestation = makeRegistrationAttestationProvider(
+            runtimeHashes: runtimeWithMetallib)
         if let metallib = runtimeWithMetallib?.templateHashes["mlx_metallib"] {
             logger.info("mlx.metallib hash: \(metallib.prefix(16))...")
         } else {
@@ -147,14 +148,17 @@ extension ProviderLoop {
             heartbeatInterval: TimeInterval(loopConfig.config.coordinator.heartbeatIntervalSecs),
             publicKey: keyPair.publicKeyBase64,
             walletAddress: nil,
-            attestation: attestation,
+            attestation: nil,
+            registrationAttestation: registrationAttestation,
             authToken: loopConfig.authToken,
             runtimeHashes: runtimeWithMetallib,
             modelHashes: loopConfig.modelHashes,
             privacyCapabilities: privacyCapabilitiesForRegistration(),
+            runtimeCapabilities: loopConfig.runtimeCapabilities,
             privateOnly: loopConfig.config.coordinator.privateOnly,
             apnsDeviceToken: apnsDeviceToken,
-            apnsEnvironment: apnsDeviceToken != nil ? "production" : nil
+            apnsEnvironment: apnsDeviceToken != nil ? "production" : nil,
+            idleUnloadMins: loopConfig.config.backend.idleTimeoutMins
         )
 
         // 4. Create coordinator client and start connection
@@ -227,6 +231,11 @@ extension ProviderLoop {
                 switch event {
                 case .connected:
                     logger.info(.coordinatorConnected)
+                    // The post-retirement reconnect's admission barrier
+                    // (see `fireRetirementReconnect`) lifts with the new
+                    // session: the register it carried excluded every
+                    // retired id, so routed work is safe to admit again.
+                    setRetirementReconnectBarrier(false)
 
                 case .disconnected:
                     logger.warning(.coordinatorDisconnected)
@@ -237,7 +246,10 @@ extension ProviderLoop {
                 case .inferenceRequest(
                     let requestId, let ciphertext, let senderPublicKey,
                     let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
-                    let toolSchemaMetadataProtocol
+                    let cacheReceiptBoundaryMode,
+                    let toolSchemaMetadataProtocol, let firstContentDeadline,
+                    let receivedAt,
+                    let profile
                 ):
                     await handleInferenceRequest(
                         requestId: requestId,
@@ -246,7 +258,11 @@ extension ProviderLoop {
                         cacheReceiptNonce: cacheReceiptNonce,
                         authenticatedCacheScope: cacheScope,
                         prefixCacheProtocol: prefixCacheProtocol,
+                        cacheReceiptBoundaryMode: cacheReceiptBoundaryMode,
                         toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
+                        firstContentDeadline: firstContentDeadline,
+                        receivedAt: receivedAt,
+                        profile: profile,
                         send: send
                     )
 
@@ -259,6 +275,9 @@ extension ProviderLoop {
                         timestamp: timestamp,
                         send: send
                     )
+
+                case .codeAttestationResumeChallenge(let challenge):
+                    handleCodeChallenge(challenge, send: send)
 
                 case .runtimeOutdated(let mismatches):
                     logger.warning("Runtime outdated: \(mismatches.count) mismatch(es)")
@@ -299,9 +318,17 @@ extension ProviderLoop {
 
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
+        // Quote path mirror (routing v2): a shutting-down provider quotes
+        // `slot_state` rejections for the brief window the socket stays up.
+        state.refusingNewWork = true
         idleMonitorTask?.cancel()
+        // A pending post-retirement reconnect must not re-register a
+        // session shutdown is closing (its shutdown check has a hop).
+        pendingRetirementReconnect?.cancel()
         idleMonitorTask = nil
         capacityRefreshTask?.cancel()
+        trailingHeartbeatTask?.cancel()
+        trailingHeartbeatTask = nil
         capacityRefreshTask = nil
         autoUpdateTask?.cancel()
         autoUpdateTask = nil
@@ -310,7 +337,11 @@ extension ProviderLoop {
         for task in desiredPrefetchRetryTasks.values { task.cancel() }
         desiredPrefetchRetryTasks.removeAll()
         desiredPrefetchRetryAttempts.removeAll()
+        let mtpUpgradeTask = mtpUpgradeMonitorTask
+        mtpUpgradeMonitorTask = nil
+        mtpUpgradeTask?.cancel()
         await specDecFunnel.shutdown()
+        await mtpUpgradeTask?.value
         // Cancel background prefetch downloads (no GPU slot, but they hold a
         // network connection and disk staging we want to release promptly).
         if let prefetchCoordinator {
@@ -435,20 +466,27 @@ extension ProviderLoop {
 
     // MARK: - Attestation
 
-    private func buildRegistrationAttestation() -> RawJSON? {
-        guard let builder = attestationBuilder else {
-            logger.info("No Secure Enclave identity -- registration without attestation")
-            return nil
-        }
-        do {
-            let jsonData = try builder.buildAttestationJSON(
-                encryptionPublicKey: keyPair.publicKeyBase64,
-                binaryHash: binaryHash
-            )
+    private func makeRegistrationAttestationProvider(
+        runtimeHashes: RuntimeHashes?
+    ) -> @Sendable () -> RawJSON? {
+        let builder = attestationBuilder
+        let encryptionPublicKey = keyPair.publicKeyBase64
+        let signedBinaryHash = binaryHash
+        let chipFamily = loopConfig.hardware.chipFamily
+        let capabilities = loopConfig.runtimeCapabilities
+        let signedMetallibHash = runtimeHashes?.templateHashes["mlx_metallib"]
+        return {
+            guard let builder else { return nil }
+            guard let jsonData = try? builder.buildAttestationJSON(
+                encryptionPublicKey: encryptionPublicKey,
+                binaryHash: signedBinaryHash,
+                chipFamily: chipFamily,
+                runtimeCapabilities: capabilities,
+                metallibHash: signedMetallibHash
+            ) else {
+                return nil
+            }
             return RawJSON(rawBytes: jsonData)
-        } catch {
-            logger.error("Failed to build attestation: \(error)")
-            return nil
         }
     }
 

@@ -175,15 +175,43 @@ struct KVBackendPostureTests {
             daemonRunning: true, now: 1002, heartbeatIntervalSecs: heartbeat)
         #expect(check(honoured, "kv backend posture")?.status == .pass)
 
-        // `auto` promises nothing, so ANY backend it lands on passes. Since
-        // v0.8.0 it resolves paged and reaches contiguous by degrading, and
-        // that degrade is still not a posture fault.
         let auto = KVPostureDiagnosis.checks(
             state: state(slots: [
                 .init(model: "gemma-4-26b", kvBackend: "contiguous", kvBackendRequested: "auto")
             ]),
             daemonRunning: true, now: 1002, heartbeatIntervalSecs: heartbeat)
         #expect(check(auto, "kv backend posture")?.status == .pass)
+    }
+
+    @Test("Qwen auto reports the served backend and accepts contiguous fallback", arguments: [
+        "qwen3.5-35b-a3b",
+        "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+        "EigenLabs/Qwen3.8-27B-4bit-mtp",
+    ])
+    func doctorPassesQwenAuto(modelID: String) {
+        for fallbackReason: String? in [nil, "kernel_preflight: unavailable", "crash_loop_guard", "kill_switch"] {
+            let backend = fallbackReason == nil ? "paged" : "contiguous"
+            let snapshot = state(slots: [
+                .init(
+                    model: modelID, kvBackend: backend, kvBackendRequested: "auto",
+                    kvBackendFallbackReason: fallbackReason)
+            ])
+            let checks = KVPostureDiagnosis.checks(
+                state: snapshot, daemonRunning: true, now: 1002,
+                heartbeatIntervalSecs: heartbeat)
+            let verdict = check(checks, "kv backend posture")
+            #expect(verdict?.status == .pass)
+            #expect(verdict?.detail.contains("no explicit backend request (auto)") == true)
+            #expect(verdict?.detail.contains("\(modelID)=\(backend)") == true)
+
+            let text = KVBackendPosture.statusLines(
+                state: snapshot, now: 1002, heartbeatIntervalSecs: heartbeat)
+                .joined(separator: "\n")
+            #expect(text.contains("\(modelID): kv=\(backend) (requested auto"))
+            if let fallbackReason {
+                #expect(text.contains("fallback: \(fallbackReason)"))
+            }
+        }
     }
 
     @Test("doctor warns when paged is requested but nothing is loaded to prove it")

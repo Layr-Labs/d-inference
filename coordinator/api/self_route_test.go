@@ -311,7 +311,7 @@ func TestSelfRoute_SettlementMismatchFallsBackToPaid(t *testing.T) {
 		EstimatedPromptTokens: 50,
 		RequestedMaxTokens:    128,
 		AcceptedCh:            make(chan struct{}, 1),
-		ChunkCh:               make(chan string, 1),
+		ChunkCh:               make(chan registry.ProviderChunk, 1),
 		CompleteCh:            make(chan protocol.UsageInfo, 1),
 		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
 	}
@@ -467,7 +467,7 @@ func TestSelfRoute_UnfundedFallbackDoesNotPayProvider(t *testing.T) {
 		EstimatedPromptTokens: 50,
 		RequestedMaxTokens:    128,
 		AcceptedCh:            make(chan struct{}, 1),
-		ChunkCh:               make(chan string, 1),
+		ChunkCh:               make(chan registry.ProviderChunk, 1),
 		CompleteCh:            make(chan protocol.UsageInfo, 1),
 		ErrorCh:               make(chan protocol.InferenceErrorMessage, 1),
 	}

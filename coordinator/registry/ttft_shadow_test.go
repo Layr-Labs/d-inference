@@ -1,9 +1,14 @@
 package registry
 
 import (
+	"fmt"
 	"math"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -42,7 +47,7 @@ func TestTTFTOccupancyTermZeroWhenAlphaZero(t *testing.T) {
 		backendRunning:     8,
 		pendingForModel:    8,
 	}
-	if got := ttftOccupancyMs(snap); got != 0 {
+	if got := ttftOccupancyMs(snapPtr(snap)); got != 0 {
 		t.Fatalf("ttftOccupancyMs must be 0 when alpha=0, got %f", got)
 	}
 }
@@ -66,15 +71,16 @@ func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 		}
 	}
 	const reqPrompt = 1000
+	const model = "ordinary-shadow-model"
 
 	// The occupancy term must add to the SHADOW estimate at b>0 (compare alpha on
 	// vs off). The LIVE estimate (ttftMsFromSnapshot) must NOT move with alpha.
 	SetTTFTOccupancyAlpha(0)
-	liveOff := ttftMsFromSnapshot(mk(4), reqPrompt)
-	shadowOff := occupancyAwareTTFTMsFromSnapshot(mk(4), reqPrompt)
+	liveOff := ttftMsFromSnapshot(snapPtr(mk(4)), reqPrompt)
+	shadowOff := occupancyAwareTTFTMsFromSnapshot(snapPtr(mk(4)), reqPrompt)
 	SetTTFTOccupancyAlpha(45)
-	liveOn := ttftMsFromSnapshot(mk(4), reqPrompt)
-	shadowOn := occupancyAwareTTFTMsFromSnapshot(mk(4), reqPrompt)
+	liveOn := ttftMsFromSnapshot(snapPtr(mk(4)), reqPrompt)
+	shadowOn := occupancyAwareTTFTMsFromSnapshot(snapPtr(mk(4)), reqPrompt)
 	if liveOn != liveOff {
 		t.Fatalf("ttftMsFromSnapshot must be occupancy-FREE (invariant): alpha=0 %f vs alpha=45 %f", liveOff, liveOn)
 	}
@@ -86,11 +92,11 @@ func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 	}
 
 	// Strictly increasing in occupancy, crossing the deadline at a knee.
-	deadline := ttftDeadlineMsForPrompt(reqPrompt)
+	deadline := ttftDeadlineMsForPrompt(model, reqPrompt)
 	last := -1.0
 	knee := -1
 	for b := 0; b <= 8; b++ {
-		est := occupancyAwareTTFTMsFromSnapshot(mk(b), reqPrompt)
+		est := occupancyAwareTTFTMsFromSnapshot(snapPtr(mk(b)), reqPrompt)
 		if est <= last {
 			t.Fatalf("estimate not strictly increasing at b=%d: %f <= %f", b, est, last)
 		}
@@ -103,8 +109,35 @@ func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 		t.Fatalf("estimate should cross the %.0fms deadline at a knee in b=1..8, got knee=%d", deadline, knee)
 	}
 	// b=0 (idle) must stay well under the deadline — route-to-idle is preserved.
-	if idle := occupancyAwareTTFTMsFromSnapshot(mk(0), reqPrompt); idle > deadline {
+	if idle := occupancyAwareTTFTMsFromSnapshot(snapPtr(mk(0)), reqPrompt); idle > deadline {
 		t.Fatalf("idle box (b=0) must be under the deadline, got %f > %f", idle, deadline)
+	}
+}
+
+func TestTTFTShadowDeadlineUsesExactModelPolicy(t *testing.T) {
+	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	const promptTokens = 321
+
+	if got, want := ttftDeadlineMsForPrompt(
+		"ordinary-shadow-model", promptTokens,
+	), 10_321.0; got != want {
+		t.Fatalf("ordinary shadow deadline = %.0fms, want %.0fms", got, want)
+	}
+	if got, want := ttftDeadlineMsForPrompt(
+		modelpolicy.Qwen3VL30BA3BInstructModelID, promptTokens,
+	), 5_321.0; got != want {
+		t.Fatalf("Qwen3-VL shadow deadline = %.0fms, want %.0fms", got, want)
+	}
+	if got, want := ttftDeadlineMsForPrompt(
+		modelpolicy.Qwen3VL30BA3BInstructModelID+"-preview", promptTokens,
+	), 10_321.0; got != want {
+		t.Fatalf("lookalike shadow deadline = %.0fms, want %.0fms", got, want)
+	}
+	SetTTFTDeadlineBaseMs(3_000)
+	if got, want := ttftDeadlineMsForPrompt(
+		modelpolicy.Qwen3VL30BA3BInstructModelID, promptTokens,
+	), 3_321.0; got != want {
+		t.Fatalf("tight global shadow deadline = %.0fms, want %.0fms", got, want)
 	}
 }
 
@@ -129,14 +162,14 @@ func TestTTFTOccupancyTermRateUsesOccupancyNotBackendRunning(t *testing.T) {
 		backendWaiting:     0,
 		pendingForModel:    8,
 	}
-	occ := snapshotOccupancy(herd)
+	occ := snapshotOccupancy(snapPtr(herd))
 	if occ != 8 {
 		t.Fatalf("precondition: occ should be 8 (herd), got %d", occ)
 	}
-	got := ttftOccupancyMs(herd)
+	got := ttftOccupancyMs(snapPtr(herd))
 
 	// Correct: rate projected at the batch the request joins (occ).
-	wantRate := projectedPerRequestDecodeTPSAtBatch(herd, occ)
+	wantRate := projectedPerRequestDecodeTPSAtBatch(snapPtr(herd), occ)
 	want := 45 * float64(occ) * 1000.0 / wantRate
 	if math.Abs(got-want) > 1e-6 {
 		t.Fatalf("occupancy term must use occ for the rate: got %f want %f", got, want)
@@ -144,7 +177,7 @@ func TestTTFTOccupancyTermRateUsesOccupancyNotBackendRunning(t *testing.T) {
 
 	// The pre-fix rate (projected at the bare backend_running gauge) is FASTER, so
 	// the buggy term would be SMALLER. Assert the fix charges strictly more.
-	buggyRate := projectedPerRequestDecodeTPSAtBatch(herd, herd.backendRunning)
+	buggyRate := projectedPerRequestDecodeTPSAtBatch(snapPtr(herd), herd.backendRunning)
 	buggyTerm := 45 * float64(occ) * 1000.0 / buggyRate
 	if !(got > buggyTerm) {
 		t.Fatalf("herd term must exceed the backend_running-rate term: got %f buggy %f", got, buggyTerm)
@@ -154,9 +187,9 @@ func TestTTFTOccupancyTermRateUsesOccupancyNotBackendRunning(t *testing.T) {
 	// the term — both via the occ numerator AND the shrinking occ-projected rate.
 	lowBurst := herd
 	lowBurst.pendingForModel = 3 // occ = max(3, 2) = 3
-	if !(ttftOccupancyMs(herd) > ttftOccupancyMs(lowBurst)) {
+	if !(ttftOccupancyMs(snapPtr(herd)) > ttftOccupancyMs(snapPtr(lowBurst))) {
 		t.Fatalf("term must grow with pending burst at equal backend_running: occ8=%f occ3=%f",
-			ttftOccupancyMs(herd), ttftOccupancyMs(lowBurst))
+			ttftOccupancyMs(snapPtr(herd)), ttftOccupancyMs(snapPtr(lowBurst)))
 	}
 }
 
@@ -555,5 +588,71 @@ func TestLoadedIdleAlternativeHonorsMinDecodeTPS(t *testing.T) {
 	plain := &PendingRequest{RequestID: "rmd2", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128}
 	if !idleAlt(plain) {
 		t.Fatal("a plain retry must count the slow idle peer (proves it is otherwise eligible)")
+	}
+}
+
+// TestConcurrentReservationShadowUsesCommitTimeOccupancy proves a scan cohort
+// cannot publish the empty-fleet shadow snapshot after an earlier commit adds a
+// pending debit to the same winner. The second request must rescan and report
+// occupancy one.
+func TestConcurrentReservationShadowUsesCommitTimeOccupancy(t *testing.T) {
+	withTTFTConfig(t, 50, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	reg := New(testLogger())
+	model := "shadow-commit-occupancy"
+	p := planTestProvider(t, reg, "shadow-provider", model, 0)
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].MaxConcurrency = 2
+	p.mu.Unlock()
+
+	arrived := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var initialScans atomic.Int32
+	reg.reservationAfterScan = func(string) {
+		if initialScans.Add(1) > 2 {
+			return
+		}
+		arrived <- struct{}{}
+		<-release
+	}
+
+	type result struct {
+		requestID string
+		provider  *Provider
+		decision  RoutingDecision
+	}
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+	for i := range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			requestID := fmt.Sprintf("shadow-commit-%d", i)
+			provider, decision, _ := reg.ReserveProviderWithPlan(
+				model, planTestRequest(requestID, 100, 100))
+			results <- result{requestID: requestID, provider: provider, decision: decision}
+		}()
+	}
+	for range 2 {
+		select {
+		case <-arrived:
+		case <-time.After(2 * time.Second):
+			close(release)
+			t.Fatal("reservation scans did not overlap")
+		}
+	}
+	close(release)
+	wg.Wait()
+	close(results)
+
+	occupancies := make(map[int]int, 2)
+	for res := range results {
+		if res.provider == nil {
+			t.Fatalf("request %q failed reservation", res.requestID)
+		}
+		occupancies[res.decision.ShadowOccupancy]++
+		res.provider.RemovePending(res.requestID)
+	}
+	if occupancies[0] != 1 || occupancies[1] != 1 {
+		t.Fatalf("shadow occupancies=%v, want one commit at 0 and one at 1", occupancies)
 	}
 }

@@ -19,9 +19,9 @@ export default async function MachinesPage() {
         Machines <span className="text-[var(--text-faint)]">({formatNumber(total)})</span>
       </h1>
       <p className="text-sm text-[var(--text-dim)]">
-        Deduplicated by serial (latest session) — all {formatNumber(rows.length)} shown,{" "}
-        {formatNumber(online)} online. Filter, sort, and copy owner emails. Uptime/downtime
-        history isn&apos;t persisted yet — &ldquo;online&rdquo; is{" "}
+        One row per physical machine using its latest opaque provider ID — all{" "}
+        {formatNumber(rows.length)} shown, {formatNumber(online)} online. Filter, sort, and
+        copy owner emails. Uptime/downtime history isn&apos;t persisted yet — &ldquo;online&rdquo; is{" "}
         <span className="mono">last_seen</span> within 90s.
       </p>
       <MachinesView rows={rows} />

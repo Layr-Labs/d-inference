@@ -140,10 +140,23 @@ struct GemmaOptimizationReport: Sendable, Equatable {
 
 enum EngineV2SlotFactory {
 
+    static func shouldLogPrefillDeadlineProjectionBypass(
+        configuredMode: PrefillDeadlineMode?,
+        environment: [String: String]
+    ) -> Bool {
+        PrefillDeadlineMode.resolve(
+            configured: configuredMode,
+            environment: environment) == .enforce
+            && !EngineV2Factory.prefillDeadlineProjectionSupported(
+                environment: environment)
+    }
+
     /// Narrow assembly seams for production-order regression tests. Normal
     /// callers use the empty value and execute only concrete production code.
     struct AssemblyOverrides {
+        var gemmaMTPVerification: EngineV2BenchmarkMTPVerification? = nil
         var promptContractID: String? = nil
+        var completeCheckpointIdentity: CBv2CompleteCheckpointIdentity? = nil
         var pagedPreflight: (([CBv2LayerKind]) throws -> Void)? = nil
         var makePrefixCache:
             (([CBv2LayerKind], CBv2PrefixReuseCapability) async -> SSDPrefixCache?)? = nil
@@ -151,8 +164,16 @@ enum EngineV2SlotFactory {
 
     /// Human-readable cache state for the slot-serving log line.
     static func prefixCacheStateDescription(
-        ssdCache: SSDPrefixCache?
+        residentEnabled: Bool = false,
+        hybridEnabled: Bool = false,
+        ssdCache: SSDPrefixCache?,
+        completeCheckpointEnabled: Bool = false
     ) -> String {
+        let resident = hybridEnabled ? "memory=on (exact recurrent checkpoints)"
+            : residentEnabled ? "memory=on (zero-copy paged L1)" : "memory=off"
+        if completeCheckpointEnabled {
+            return "on (\(resident), ssd=on: encrypted complete checkpoints, matched-request staging)"
+        }
         if let ssdCache {
             // Saturating sum: an operator-set
             // DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS near Int.max
@@ -161,11 +182,11 @@ enum EngineV2SlotFactory {
             let (floor, floorOverflow) = ssdCache.config.adoptionBoundTokens
                 .addingReportingOverflow(ssdCache.config.minEffectiveTokens)
             let floorDesc = floorOverflow ? "Int.max (saturated)" : "\(floor)"
-            return "on (tier=ssd: encrypted offload, HMAC-keyed names, "
+            return "on (\(resident), ssd=on: encrypted offload, HMAC-keyed names, "
                 + "15-min sliding TTL, NO memory carve, per-donation gate "
                 + "> \(floorDesc) tok — T-041)"
         }
-        return "off"
+        return residentEnabled || hybridEnabled ? "on (\(resident), ssd=off)" : "off"
     }
 
     /// Build the production `EngineV2Bridge` for a freshly-loaded model.
@@ -175,8 +196,8 @@ enum EngineV2SlotFactory {
     /// - Parameters:
     ///   - modelId: catalog id the slot serves under.
     ///   - modelType: `model_type` from config.json (EOS policy input).
-    ///   - isVLM: config declares `vision_config` — the engine directly uses
-    ///     the `Gemma4TextModel` owned by the loaded VLM wrapper.
+    ///   - isVLM: config declares `vision_config` — Gemma serves its owned
+    ///     text tower, while Qwen3-VL serves the loaded wrapper directly.
     ///   - modelDirectory: checkpoint dir (prompt-contract identity input).
     ///   - tokenizer: the container's tokenizer handle.
     ///   - sizing: scheduler-free sizing snapshot (fp16 KV rate, context,
@@ -190,8 +211,9 @@ enum EngineV2SlotFactory {
     ///     their ledger).
     ///   - weightHash: the slot's verified weight hash binding for SSD
     ///     artifacts. Nil or blank disables reusable SSD caching.
-    ///   - environment: prefix-cache policy environment
-    ///     (`DARKBLOOM_PREFIX_CACHE*`); injectable for tests.
+    ///   - environment: runtime policy environment (including prefix-cache,
+    ///     MTP, KV-backend, and prefill-deadline controls); injectable for
+    ///     tests.
     ///   - emitTelemetry: injectable sink (tests); nil ⇒ shared client.
     ///   - makeEngineOverride: scripted engine builder for tests
     ///     ((modelId, engine capacity) — mirrors
@@ -213,6 +235,7 @@ enum EngineV2SlotFactory {
         kvBudget: GlobalKVCacheBudget?,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
+        prefillDeadlineMode: PrefillDeadlineMode? = nil,
         weightHash: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
@@ -233,6 +256,7 @@ enum EngineV2SlotFactory {
             kvBudget: kvBudget,
             kvBackendConfig: kvBackendConfig,
             kvBackendConfigByModel: kvBackendConfigByModel,
+            prefillDeadlineMode: prefillDeadlineMode,
             weightHash: weightHash,
             specDecPreparation: SpecDecPreparation(
                 artifact: nil,
@@ -258,19 +282,24 @@ enum EngineV2SlotFactory {
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         kvBudget: GlobalKVCacheBudget?,
+        activationReserveBytes: UInt64? = nil,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
+        prefillDeadlineMode: PrefillDeadlineMode? = nil,
         weightHash: String? = nil,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2PreparedModel? = nil,
         assemblyOverrides: AssemblyOverrides = AssemblyOverrides(),
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
+        startServingTelemetry: Bool = true,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngineOverride: (@Sendable (String, Int) throws -> any CBv2Engine)? = nil,
-        assistantLoader: any ProviderMTPAssistantLoading = Gemma4ProviderMTPAssistantLoader(),
+        assistantLoader: any ProviderMTPAssistantLoading = ProductionProviderMTPAssistantLoader(),
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> ProviderEngineBundle {
+        try persistentTestNamespace?.validate(environment: environment)
         // KV-backend gate, slot-veto layer (`EngineV2KVBackendPolicy`):
         // parse the operator selection (per-model override wins; typo →
         // WARN + auto), then force contiguous for slots the paged cache
@@ -284,7 +313,7 @@ enum EngineV2SlotFactory {
         // ASK rather than assume. A veto is policy, so it is silent even
         // for an explicit paged request. kv_quant is gone from the product
         // entirely — it is no longer a veto, no longer a parameter, and no
-        // longer warned about. `auto` resolves CONTIGUOUS as of v0.8.1;
+        // longer warned about. `auto` uses the exact candidate model ID;
         // that resolution, the fleet kill switch, physical-capacity
         // planning, and the degrade-or-REFUSE decision for an explicit
         // paged request all live in
@@ -345,14 +374,21 @@ enum EngineV2SlotFactory {
         let mtpVerification = providerMTPVerificationPolicy(
             for: assistantHandle?.drafter,
             automaticRectangularTokens: automaticRectangularTokens)
-        let fixedDraftTokens = MTPAutomaticVerificationPolicy.fixedDraftTokens(
+        let draftDepth = MTPAutomaticVerificationPolicy.draftDepthPolicy(
             usesRequestStatefulDrafter:
-                assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter)
-        let mtpConfig = CBv2MTPConfig(
+                assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter,
+            modelID: modelId,
+            hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil)
+        var mtpConfig = CBv2MTPConfig(
             enabled: assistantHandle != nil,
-            fixedDraftTokens: fixedDraftTokens,
+            maxDraftTokens: draftDepth.maximum,
+            fixedDraftTokens: draftDepth.fixed,
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens)
+        if let verification = assemblyOverrides.gemmaMTPVerification {
+            mtpConfig = try verification.applying(
+                to: mtpConfig, target: servingModel, drafter: assistantHandle?.drafter)
+        }
         // Same model-specific EOS augmentation as always (GPT-OSS/Harmony
         // adds its generation-config action stops) — from the
         // scheduler-free policy home.
@@ -370,17 +406,35 @@ enum EngineV2SlotFactory {
             ?? modelDirectory.flatMap {
                 try? PromptContractIdentity.compute(modelDirectory: $0)
             }
+        // Resident L1 must be configured before the paged backend is built;
+        // unlike SSD L2 it owns no snapshot object that can be injected after
+        // resolution. The backend consumes this only when it actually resolves
+        // paged, and disables it for model capabilities that cannot restore
+        // attention-only state.
+        let residentPrefixCache = PrefixCachePolicy.residentConfig(
+            modelId: modelId,
+            promptContractID: promptContractID,
+            environment: environment)
+        let hybridPrefixCache = PrefixCachePolicy.hybridConfig(
+            modelId: modelId, promptContractID: promptContractID,
+            kvBytesCapacity: engineKVBytesCapacity,
+            hasMTPDrafter: assistantHandle?.drafter != nil,
+            supportsMTPPrefixCheckpoint: assistantHandle?.drafter is any CBv2MTPPrefixCheckpointDrafter,
+            environment: environment)
         let preparedBackend: EngineV2Factory.ProductionBackendPreparation?
         if makeEngineOverride == nil {
             do {
                 preparedBackend = try EngineV2Factory.prepareProductionBackend(
                     model: servingModel,
+                    modelID: modelId,
                     kvBytesCapacity: engineKVBytesCapacity,
                     maxConcurrentRequests: maxConcurrentRequests,
                     kvBackend: kvBackendSelection,
                     maxContextLength: sizing.maxContextLength > 0
                         ? sizing.maxContextLength : nil,
                     environment: environment,
+                    residentPrefixCache: residentPrefixCache,
+                    hybridPrefixCache: hybridPrefixCache,
                     pagedPreflightOverride: assemblyOverrides.pagedPreflight)
             } catch {
                 EngineV2Factory.emitRefusalTelemetry(
@@ -394,25 +448,26 @@ enum EngineV2SlotFactory {
             preparedBackend = nil
         }
 
-        // Encrypted SSD is the only production prefix-cache tier.
-        // The same object serves as the ENGINE's `CBv2PrefixCache` and the
-        // BRIDGE's staging/backstop/shutdown handle. NOT funding-gated:
-        // the tier gates each DONATION on the model's own adoption bound +
-        // benefit floor instead (`SSDPrefixCache.donate`), so gemma-4's
-        // long-context tail caches while gpt-oss's never-adoptable short
-        // donations are skipped. Its budget is DISK (own kv3/ root, 20 GiB
-        // box-wide LRU) — the engine keeps the FULL slot grant; the tier's
-        // only RAM claims are per-request staging reservations in the
-        // shared `GlobalKVCacheBudget` (refused ⇒ silent recompute).
-        //
-        // VLM slots use the layer kinds of the exact text tower already
-        // resolved from the loaded wrapper. A family with no adapted serving
-        // model gets no prepared backend and is refused before cache creation.
+        // SSD staging reserves transient RAM through GlobalKVCacheBudget;
+        // refused staging falls back to recomputation. Complete recurrent
+        // checkpoints and attention-only blocks have separate codecs/gates.
+        // Resident payloads were prepared above only with the memory opt-in.
+        // VLM slots use the resolved serving text tower's layer kinds.
+        let completePreparation = await prepareCompletePrefixCache(
+            modelId: modelId, model: servingModel, preparedBackend: preparedBackend,
+            weightHash: weightHash, promptContractID: promptContractID,
+            mtpDrafter: assistantHandle?.drafter, mtpConfig: mtpConfig,
+            kvBudget: kvBudget, environment: environment,
+            persistentTestNamespace: persistentTestNamespace,
+            identityOverride: assemblyOverrides.completeCheckpointIdentity)
+        let ssdHybridCheckpointStore = completePreparation?.cache
         var ssdPrefixCache: SSDPrefixCache?
         var cacheCapability: CBv2PrefixReuseCapability?
         var cacheConstructionStatus = PrefixCacheConstructionStatus.configDisabled
         let cacheConstructionStatusBox = PrefixCacheConstructionStatusBox()
-        if makeEngineOverride != nil {
+        if let completePreparation {
+            cacheConstructionStatus = completePreparation.status
+        } else if makeEngineOverride != nil {
             cacheConstructionStatus = PrefixCacheConstructionStatus(
                 state: .disabled, reason: .unsupportedBackend)
         } else if let preparedBackend,
@@ -423,7 +478,7 @@ enum EngineV2SlotFactory {
             // the bridge must never retain or stage an incomplete snapshot.
             cacheConstructionStatus = PrefixCacheConstructionStatus(
                 state: .disabled, reason: .unsupportedLayout)
-        } else if PrefixCachePolicy.isEnabled(environment: environment) {
+        } else if PrefixCachePolicy.isEnabled(modelId: modelId, environment: environment) {
             if let preparedBackend,
                 !PrefixCachePolicy.adoptionIsExact(
                     onResolvedBackend: preparedBackend.kind)
@@ -484,6 +539,7 @@ enum EngineV2SlotFactory {
                             prefixReuseCapability: prefixReuseCapability,
                             kvBudget: kvBudget,
                             environment: environment,
+                            persistentTestNamespace: persistentTestNamespace,
                             onConstructionFailure: { failure in
                                 cacheConstructionStatusBox.record(
                                     failure: failure, capability: prefixReuseCapability)
@@ -544,7 +600,7 @@ enum EngineV2SlotFactory {
         let prefixCacheStatus = PrefixCacheModelStatus(
             modelId: modelId,
             backend: cacheBackend,
-            replayStrategy: PrefixCacheReplayStrategy(cacheCapability),
+            replayStrategy: ssdHybridCheckpointStore == nil ? PrefixCacheReplayStrategy(cacheCapability) : .direct,
             state: cacheConstructionStatus.state,
             reason: cacheConstructionStatus.reason)
         let enginePrefixCache: (any CBv2PrefixCache)? = ssdPrefixCache
@@ -569,10 +625,12 @@ enum EngineV2SlotFactory {
                     model: servingModel,
                     tokenizer: tokenizer.inner,
                     prefixCache: enginePrefixCache,
+                    completePrefixCache: ssdHybridCheckpointStore,
                     maxConcurrentRequests: maxConcurrentRequests,
                     mtpDrafter: assistantHandle?.drafter,
                     mtpConfig: mtpConfig,
-                    preparedBackend: preparedBackend)
+                    preparedBackend: preparedBackend,
+                    kvBudget: kvBudget)
             }
         }
 
@@ -581,6 +639,7 @@ enum EngineV2SlotFactory {
             targetKVBytesPerToken = slotKVBytesPerToken(
                 resolvedKind: preparedBackend.kind,
                 pagedPoolDType: preparedBackend.pagedPoolDType,
+                pagedLayerDTypes: preparedBackend.pagedLayerDTypes,
                 layerKinds: preparedBackend.layerKinds,
                 nominalFP16BytesPerToken: sizing.fp16KVBytesPerToken,
                 servingModelIsGPTOSS: servingModel is GPTOSSModel)
@@ -598,7 +657,27 @@ enum EngineV2SlotFactory {
             throw EngineV2ProductionError.noKVHeadroom
         }
 
+        let resolvedPartialPrefillCap =
+            EngineV2Factory.maxConcurrentPartialPrefills(
+                environment: environment)
+        if shouldLogPrefillDeadlineProjectionBypass(
+            configuredMode: prefillDeadlineMode,
+            environment: environment)
+        {
+            logInfo(
+                "engine_v2_prefill_deadline model_id=\(modelId) "
+                    + "effective=ordinary_submit "
+                    + "reason=partial_prefill_projection_unsupported "
+                    + "max_concurrent_partial_prefills="
+                    + (resolvedPartialPrefillCap.map(String.init) ?? "unlimited"))
+        }
 
+        let residentEvidence = weightHash.flatMap { modelHash in
+            promptContractID.flatMap { contract in
+                ResidentPrefixCacheEvidence(
+                    modelId: modelId, modelAggregateHash: modelHash, promptContractID: contract)
+            }
+        }
         let bridge = try EngineV2Factory.makeBridge(
             modelId: modelId,
             tokenizer: tokenizer,
@@ -606,6 +685,8 @@ enum EngineV2SlotFactory {
             extraEOSTokens: snapshot.extraEOSTokens,
             defaultMaxTokens: sizing.defaultMaxTokens,
             maxConcurrentRequests: maxConcurrentRequests,
+            prefillDeadlineMode: prefillDeadlineMode,
+            runtimePolicyEnvironment: environment,
             kvBytesPerToken: processKVBytesPerToken,
             auxiliaryBytesPerToken: assistantStateBytesPerToken,
             auxiliaryTokenGranularity: assistantStateTokenGranularity,
@@ -618,14 +699,15 @@ enum EngineV2SlotFactory {
             // release backstops, and shutdown (closed by `makeBridge` on
             // an engine-init failure so background tasks never leak).
             ssdPrefixCache: ssdPrefixCache,
+            ssdHybridCheckpointStore: ssdHybridCheckpointStore,
+            residentPrefixCacheEvidence: residentEvidence,
             prefixCacheStatus: prefixCacheStatus,
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
 
-        if let ssdPrefixCache {
-            await bridge.startSSDPrefixCacheStatsLogger(cache: ssdPrefixCache)
-        }
-        await bridge.configureMTPStatus(mtpStatus)
+        if startServingTelemetry { await bridge.startSSDPrefixCacheStatsLogger() }
+        await bridge.configureMTPStatus(mtpStatus,
+            metricsInterval: startServingTelemetry ? .seconds(60) : .zero)
         if let gemmaModel = servingModel as? Gemma4TextModel {
             // One load-time snapshot only. Never arm the benchmark counters in
             // production: the QMM hot path remains free of counter atomics.
@@ -654,7 +736,11 @@ enum EngineV2SlotFactory {
         logInfo(
             "engine_v2: \(modelId) prefix cache "
                 + prefixCacheStateDescription(
-                    ssdCache: ssdPrefixCache))
+                    residentEnabled:
+                        preparedBackend?.residentPrefixCacheEnabled == true,
+                    hybridEnabled: preparedBackend?.hybridPrefixCache != nil,
+                    ssdCache: ssdPrefixCache,
+                    completeCheckpointEnabled: ssdHybridCheckpointStore != nil))
 
         let reason = mtpStatus.reason?.rawValue ?? "none"
         let revision = mtpStatus.revision ?? "none"
@@ -671,34 +757,24 @@ enum EngineV2SlotFactory {
             mtpStatus: mtpStatus)
     }
 
-    /// Per-token KV rate the bridge reserves at and the heartbeat divides
-    /// by (`kv_bytes_per_token` / `activeTokenBudgetMax` in
-    /// `EngineV2Bridge+Capacity`), derived from the backend the slot was
-    /// ACTUALLY built with:
-    ///
-    ///   * contiguous + GPT-OSS ⇒ the native-width rate (fp32 owning
-    ///     full-attention rows on top of the fp16 sizing snapshot),
-    ///   * paged with fp32 pages (`DARKBLOOM_CBV2_PAGED_KV_DTYPE=float32`)
-    ///     ⇒ a flat 2x — every page doubles, windowed layers included —
-    ///     so the advertised token budget HALVES to match the pool's real
-    ///     page count. Without this the byte figure is right and the
-    ///     divisor is half the truth, and `BackendCapacity.Slots` being
-    ///     scheduler-authoritative means the coordinator over-admits ~2x
-    ///     against a pool that holds half the tokens,
-    ///   * everything else ⇒ the nominal fp16 rate unchanged.
-    ///
-    /// `pagedPoolDType` must come off `ProductionBackendPreparation` (the
-    /// CONSTRUCTED pool reporting itself), never the requested env value:
-    /// an fp32 request that degraded to contiguous carries nil here and
-    /// must not double a backend that has no pages. Pure and static so the
-    /// dtype→rate→budget wiring is unit-testable without loading a model.
+    /// Full-attention marginal KV rate used by shared request admission and
+    /// token-capacity reporting. Normal paged construction supplies the exact
+    /// per-layer table from the pool; shared rows own no storage. The scalar
+    /// branch preserves low-level fixed-pool callers. Contiguous GPT-OSS keeps
+    /// its existing native full-row adjustment. Window storage and recurrent
+    /// fixed charges are separate from this marginal rate.
     static func slotKVBytesPerToken(
         resolvedKind: EngineV2KVBackendKind,
         pagedPoolDType: String?,
+        pagedLayerDTypes: [DType]? = nil,
         layerKinds: [CBv2LayerKind],
         nominalFP16BytesPerToken: Int,
         servingModelIsGPTOSS: Bool
     ) -> Int {
+        if resolvedKind == .paged, let pagedLayerDTypes {
+            return EngineV2Factory.nativeFullKVBytesPerToken(
+                layerKinds: layerKinds, dtypes: pagedLayerDTypes)
+        }
         let capability = CBv2PrefixReuseCapability.derive(
             layerKinds: layerKinds,
             backend: .contiguousUnquantized)

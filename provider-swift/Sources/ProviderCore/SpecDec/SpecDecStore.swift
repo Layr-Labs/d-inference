@@ -1,4 +1,5 @@
 import CryptoKit
+import CoreFoundation
 import Foundation
 import Logging
 import ProviderCoreFoundation
@@ -324,23 +325,27 @@ enum SpecDecStore {
         else {
             return rejectInline("config.json is not a JSON object: \(configURL.path)")
         }
-        guard let inline = root["mtplx_mtp"] as? [String: Any],
-            inline["included"] as? Bool == true
-        else {
-            return rejectInline(
-                "config.json does not declare mtplx_mtp.included=true — not an inline-MTP checkpoint: \(configURL.path)")
-        }
-        guard root["mtplx_mtp_quantization"] as? [String: Any] != nil else {
-            return rejectInline(
-                "config.json is missing the mtplx_mtp_quantization object: \(configURL.path)")
-        }
         guard let index = try? JSONDecoder().decode(InlineWeightIndex.self, from: indexData)
         else {
             return rejectInline(
                 "model.safetensors.index.json does not decode (weight_map): \(indexURL.path)")
         }
 
-        let prefix = (inline["prefix"] as? String) ?? "mtp."
+        let prefix: String
+        if let inline = root["mtplx_mtp"] as? [String: Any],
+            inline["included"] as? Bool == true
+        {
+            guard root["mtplx_mtp_quantization"] as? [String: Any] != nil else {
+                return rejectInline(
+                    "config.json is missing the mtplx_mtp_quantization object: \(configURL.path)")
+            }
+            prefix = (inline["prefix"] as? String) ?? "mtp."
+        } else if declaresNemotronLightningMTP(root) {
+            prefix = "mtp."
+        } else {
+            return rejectInline(
+                "config.json does not declare mtplx_mtp.included=true or retained Nemotron Lightning MTP — not an inline-MTP checkpoint: \(configURL.path)")
+        }
         guard !prefix.isEmpty, prefix.utf8.count <= 128,
             prefix.utf8.allSatisfy({
                 (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
@@ -406,6 +411,66 @@ enum SpecDecStore {
                 inlineIndexSHA256: indexDigest))
     }
 
+    /// Cheap tri-state discriminator used before inline inspection. Ordinary
+    /// Qwen targets can pair with separately published MTP artifacts, so a
+    /// config that parses and carries no `mtplx_mtp.included=true` must fall
+    /// through to the catalog resolver without being logged as an invalid
+    /// inline payload — but "no declaration" and "declaration could not be
+    /// validated" are different answers. A config the probe cannot read (or
+    /// one that declares a head but exceeds the inspection's strict byte cap)
+    /// must reach `inspectInlineArtifact`, whose named rejection surfaces as
+    /// `inline_artifact_invalid` instead of being misreported as
+    /// config-disabled or silently skipped.
+    enum InlineDeclarationProbe: Equatable {
+        /// Config parsed and declares `mtplx_mtp.included = true`.
+        case declared
+        /// Config parsed and declares nothing (or an explicit `false`).
+        case absent
+        /// Config missing, unparseable, or beyond even the loose probe bound
+        /// — an embedded head cannot be ruled out.
+        case undeterminable
+
+        /// Whether the funnel/auto gate must run full inline inspection.
+        var mayDeclareEmbeddedArtifact: Bool { self != .absent }
+    }
+
+    /// The probe reads with a deliberately looser bound than the inspection's
+    /// `maximumConfigBytes`: an oversized config may still carry a
+    /// declaration, and that case must be REJECTED loudly by inspection, not
+    /// classified as absent because the probe refused to look.
+    static let inlineProbeMaximumConfigBytes = 64 * 1024 * 1024
+
+    static func inlineDeclarationProbe(directory: URL) -> InlineDeclarationProbe {
+        let configURL = directory.standardizedFileURL
+            .appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configURL),
+            data.count <= Self.inlineProbeMaximumConfigBytes,
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return .undeterminable }
+        if let inline = root["mtplx_mtp"] as? [String: Any],
+            inline["included"] as? Bool == true
+        {
+            return .declared
+        }
+        if declaresNemotronLightningMTP(root) {
+            return .declared
+        }
+        return .absent
+    }
+
+    /// Lightning must explicitly declare the retained attention/MoE MTP head.
+    static func declaresNemotronLightningMTP(_ root: [String: Any]) -> Bool {
+        guard root["model_type"] as? String == "nemotron_h",
+            let declaration = root["darkbloom_embedded_mtp"] as? [String: Any],
+            declaration["architecture"] as? String == "nemotron_h_attention_moe",
+            let version = declaration["version"] as? NSNumber,
+            CFGetTypeID(version) != CFBooleanGetTypeID(), version.doubleValue == 1,
+            let layers = root["num_nextn_predict_layers"] as? NSNumber,
+            CFGetTypeID(layers) != CFBooleanGetTypeID(), layers.doubleValue == 1,
+            root["mtp_layers_block_type"] as? [String] == ["attention", "moe"]
+        else { return false }
+        return true
+    }
     private static func rejectInline(
         _ reason: String
     ) -> Result<SpecDecArtifact, InlineArtifactRejection> {
@@ -480,6 +545,7 @@ enum SpecDecStore {
                     directory: artifact.directory,
                     source: .catalog,
                     revision: reference.revision,
+                    sourceRevision: artifact.sourceRevision,
                     artifactBytes: verification.artifactBytes,
                     residentBytes: SpecDecLimits.residentEstimate(
                         artifactBytes: verification.artifactBytes),
@@ -508,6 +574,9 @@ enum SpecDecStore {
                 return .fallback(
                     .localArtifactInvalid,
                     detail: "local assistant changed after admission")
+            }
+            if let sourceRevision = artifact.sourceRevision {
+                return .resolved(refreshed.recordingSourceRevision(sourceRevision))
             }
             return .resolved(refreshed)
         case .inline:

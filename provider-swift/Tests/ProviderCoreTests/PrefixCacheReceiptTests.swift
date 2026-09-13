@@ -87,6 +87,76 @@ struct PrefixCacheReceiptTests {
         #expect(result.prefillTokensSaved == 2560)
     }
 
+    @Test("resident L1 wins are memory even when SSD staging also matched")
+    func residentTierOverridesStagedSSD() throws {
+        let signal = EngineV2RequestUsageSignal()
+        signal.record(stageResult: SSDPrefixCacheStageResult(
+            disposition: .staged(
+                matchedTokens: 4096,
+                expectedPrefillTokensSaved: 2560,
+                shortenedByCorruption: false),
+            stageMs: 8.5))
+        signal.record(usage: CBv2Usage(
+            promptTokens: 5000,
+            completionTokens: 1,
+            prefixCacheOutcome: .hit,
+            prefixCacheTier: .resident,
+            prefixCacheMatchedTokens: 4096,
+            prefixCachePrefillTokensSaved: 2560))
+
+        let result = try #require(signal.lookupResult)
+        #expect(result.outcome == .hit)
+        #expect(result.tier == .memory)
+        #expect(result.cachedTokens == 4096)
+        #expect(result.prefillTokensSaved == 2560)
+        #expect(result.stageMs == nil)
+        #expect(result.promptAnchor == nil)
+        #expect(result.matchedAnchor == nil)
+    }
+
+    @Test("snapshot L2 wins retain SSD staging evidence")
+    func snapshotTierUsesStagedSSD() throws {
+        let signal = EngineV2RequestUsageSignal()
+        signal.record(stageResult: SSDPrefixCacheStageResult(
+            disposition: .staged(
+                matchedTokens: 256,
+                expectedPrefillTokensSaved: 256,
+                shortenedByCorruption: false),
+            stageMs: 3,
+            chainHashes: [Data(repeating: 7, count: 32)],
+            blockSize: 256))
+        signal.record(usage: CBv2Usage(
+            promptTokens: 300,
+            completionTokens: 1,
+            prefixCacheOutcome: .hit,
+            prefixCacheTier: .snapshot,
+            prefixCacheMatchedTokens: 256,
+            prefixCachePrefillTokensSaved: 256))
+
+        let result = try #require(signal.lookupResult)
+        #expect(result.tier == .ssd)
+        #expect(result.stageMs == 3)
+        #expect(result.promptAnchor?.tokenCount == 256)
+        #expect(result.matchedAnchor?.tokenCount == 256)
+    }
+
+    @Test("stale resident preflight falls back without inventing an SSD miss")
+    func staleResidentPreflightUsesMemoryTier() throws {
+        let signal = EngineV2RequestUsageSignal()
+        signal.recordResidentPrefixCandidate()
+        signal.record(usage: CBv2Usage(
+            promptTokens: 300,
+            completionTokens: 1,
+            prefixCacheOutcome: .adoptionFailed))
+
+        let result = try #require(signal.lookupResult)
+        #expect(result.outcome == .skippedPolicy)
+        #expect(result.tier == .memory)
+        #expect(result.stageMs == nil)
+        #expect(result.promptAnchor == nil)
+        #expect(result.matchedAnchor == nil)
+    }
+
     @Test("engine outcomes map precisely; adoption failure is conservative policy")
     func outcomeMapping() throws {
         for (engine, wire) in [
@@ -432,6 +502,98 @@ struct PrefixCacheReceiptTests {
         }
     }
 
+    @Test("resident memory hits never emit durable v2 holder evidence")
+    func v2ResidentHitPreservesTerminalWithoutCacheReceipt() async throws {
+        let capability = v2Capability(epoch: "11111111-1111-1111-1111-111111111111")
+        let sequencer = PrefixCacheEvidenceSequencer { capability }
+        defer { sequencer.shutdown() }
+        let messages = V2Messages()
+        let send = SendHandle { message in
+            messages.lock.withLock { messages.values.append(message) }
+        }
+        let callbacks = try #require(sequencer.callbacks(
+            requestID: "request",
+            nonce: "nonce",
+            send: send))
+        callbacks.lookup(PrefixCacheLookupResult(
+            outcome: .hit,
+            tier: .memory,
+            cachedTokens: 256,
+            prefillTokensSaved: 256))
+        callbacks.terminal(.inferenceError(
+            requestId: "request",
+            failure: InferenceFailure(code: .internalFailure, statusCode: 500)))
+
+        await waitForMessages(messages, count: 1)
+        let values = messages.lock.withLock { messages.values }
+        #expect(values.count == 1)
+        if let only = values.first {
+            guard case .inferenceError = only else {
+                Issue.record("resident hit emitted durable cache evidence")
+                return
+            }
+        }
+    }
+
+    @Test("late SSD ready after a resident terminal leaves only expiring state")
+    func v2ResidentTerminalLateReadyExpires() async throws {
+        let capability = v2Capability(epoch: "11111111-1111-1111-1111-111111111111")
+        let sequencer = PrefixCacheEvidenceSequencer { capability }
+        defer { sequencer.shutdown() }
+        let messages = V2Messages()
+        let send = SendHandle { message in
+            messages.lock.withLock { messages.values.append(message) }
+        }
+        let callbacks = try #require(sequencer.callbacks(
+            requestID: "request",
+            nonce: "resident-late-ready",
+            send: send))
+
+        callbacks.lookup(PrefixCacheLookupResult(
+            outcome: .hit,
+            tier: .memory,
+            cachedTokens: 256,
+            prefillTokensSaved: 256))
+        callbacks.terminal(.inferenceError(
+            requestId: "request",
+            failure: InferenceFailure(code: .internalFailure, statusCode: 500)))
+        await waitForMessages(messages, count: 1)
+
+        callbacks.ready(PrefixCacheReadyResult(
+            readyTokens: 256,
+            requiredRecomputeTokens: 0,
+            expectedPrefillTokensSaved: 256,
+            tier: .ssd,
+            stageMs: 1,
+            finalAnchor: PrefixCacheAnchor(
+                chainHash: String(repeating: "c", count: 64),
+                tokenCount: 256)))
+
+        for _ in 0 ..< 100 {
+            if await sequencer.requestStateSnapshotForTesting(
+                nonce: "resident-late-ready")?.readyBuffered == true
+            {
+                break
+            }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let state = try #require(await sequencer.requestStateSnapshotForTesting(
+            nonce: "resident-late-ready"))
+        #expect(state.terminalSeen)
+        #expect(state.readyBuffered)
+        #expect(state.hasExpiry)
+        #expect(await sequencer.sweepExpiredForTesting(after: .seconds(126)) == 0)
+
+        let values = messages.lock.withLock { messages.values }
+        #expect(values.count == 1)
+        if let only = values.first {
+            guard case .inferenceError = only else {
+                Issue.record("late SSD ready emitted durable evidence for a resident hit")
+                return
+            }
+        }
+    }
+
     @Test("v2 sequencer invalidates callbacks across epoch rollover")
     func v2SequencerEpochRollover() async throws {
         final class CapabilityBox: @unchecked Sendable {
@@ -473,7 +635,120 @@ struct PrefixCacheReceiptTests {
         #expect(sequences.lock.withLock { sequences.sequences } == [1])
     }
 
-    private func v2Capability(epoch: String) -> PrefixCacheV2Capability {
+    @Test("checkpoint SSD evidence requires a coordinator echo and names only committed endpoints")
+    func checkpointSSDNegotiationAndBoundaries() async throws {
+        let capability = v2Capability(
+            epoch: "11111111-1111-1111-1111-111111111111",
+            readyBoundaryMode: PrefixCacheV2Capability.checkpointBoundaryMode)
+        let sequencer = PrefixCacheEvidenceSequencer { capability }
+        defer { sequencer.shutdown() }
+        let messages = V2Messages()
+        let send = SendHandle { message in
+            messages.lock.withLock { messages.values.append(message) }
+        }
+        // Old coordinators ignore the capability's unknown optional field and
+        // send no echo. Never fall back to emitting legacy-shaped SSD evidence.
+        #expect(sequencer.callbacks(requestID: "old", nonce: "old", send: send) == nil)
+        #expect(sequencer.callbacks(requestID: "unknown", nonce: "unknown", send: send,
+            readyBoundaryMode: "future") == nil)
+        let callbacks = try #require(sequencer.callbacks(
+            requestID: "new", nonce: "new", send: send,
+            readyBoundaryMode: PrefixCacheV2Capability.checkpointBoundaryMode))
+        let first = PrefixCacheAnchor(chainHash: String(repeating: "c", count: 64), tokenCount: 4096)
+        let last = PrefixCacheAnchor(chainHash: String(repeating: "d", count: 64), tokenCount: 8192)
+        let prompt = PrefixCacheAnchor(chainHash: String(repeating: "e", count: 64), tokenCount: 12032)
+        callbacks.ready(PrefixCacheReadyResult(
+            readyTokens: 8192, requiredRecomputeTokens: 0,
+            expectedPrefillTokensSaved: 8192, tier: .ssd, stageMs: 12,
+            finalAnchor: last, readyAnchors: [first, last]))
+        callbacks.lookup(PrefixCacheLookupResult(
+            outcome: .missAbsent, tier: .ssd, stageMs: 1, promptAnchor: prompt))
+        callbacks.terminal(.inferenceError(
+            requestId: "new", failure: InferenceFailure(code: .internalFailure, statusCode: 500)))
+        await waitForMessages(messages, count: 3)
+        let values = messages.lock.withLock { messages.values }
+        #expect(values.count == 3)
+        if values.count == 3 {
+            guard case .prefixCacheLookupV2(let lookup) = values[0],
+                case .prefixCacheReadyV2(let ready) = values[1],
+                case .inferenceError = values[2] else {
+                Issue.record("checkpoint receipts lost lookup/ready/terminal ordering")
+                return
+            }
+            #expect(lookup.promptAnchor == prompt)
+            #expect(ready.readyAnchors == [first, last])
+            #expect(!ready.readyAnchors.contains(prompt))
+            #expect(ready.tier == .ssd)
+            #expect(ready.requiredRecomputeTokens == 0)
+            #expect(ready.expectedPrefillTokensSaved == 8192)
+            #expect(ready.cacheSeq == lookup.cacheSeq + 1)
+        }
+    }
+
+    @Test("complete checkpoint warmth requires v2 plus its echo across legacy protocol versions")
+    func checkpointReceiptCompatibilityMatrix() async throws {
+        let cases: [(Int?, Bool)] = [(nil, false), (0, false), (1, false), (2, false), (2, true)]
+        for (version, echo) in cases {
+            let messages = V2Messages()
+            let send = SendHandle { message in
+                messages.lock.withLock { messages.values.append(message) }
+            }
+            var callbacks: PrefixCacheReceiptEmitter.Callbacks = version == 2 ? (nil, nil)
+                : PrefixCacheReceiptEmitter.callbacks(requestID: "r", nonce: "n", send: send)
+            let finalizer = PrefixCacheLookupReceiptFinalizer(callback: callbacks.lookup)
+            PrefixCacheReceiptEmitter.suppressLegacyCheckpointReceipts(
+                protocolVersion: version, callbacks: &callbacks, finalizer: finalizer)
+            let capability = v2Capability(
+                epoch: "11111111-1111-1111-1111-111111111111",
+                readyBoundaryMode: PrefixCacheV2Capability.checkpointBoundaryMode)
+            let sequencer = PrefixCacheEvidenceSequencer { capability }
+            defer { sequencer.shutdown() }
+            if version == 2, let negotiated = sequencer.callbacks(
+                requestID: "r", nonce: "n", send: send,
+                readyBoundaryMode: echo ? PrefixCacheV2Capability.checkpointBoundaryMode : nil)
+            {
+                callbacks = (negotiated.lookup, negotiated.ready)
+                finalizer.configureV2(lookup: negotiated.lookup, terminal: negotiated.terminal)
+            }
+            let anchor = PrefixCacheAnchor(chainHash: String(repeating: "c", count: 64), tokenCount: 4096)
+            let prompt = PrefixCacheAnchor(chainHash: String(repeating: "d", count: 64), tokenCount: 5376)
+            finalizer.resolve(PrefixCacheLookupResult(
+                outcome: .hit, tier: .ssd, cachedTokens: 4096, prefillTokensSaved: 4096,
+                stageMs: 1, promptAnchor: prompt, matchedAnchor: anchor))
+            callbacks.ready?(PrefixCacheReadyResult(
+                readyTokens: 4096, requiredRecomputeTokens: 0, expectedPrefillTokensSaved: 4096,
+                tier: .ssd, stageMs: 1, finalAnchor: anchor, readyAnchors: [anchor]))
+            finalizer.sendTerminal(.inferenceError(
+                requestId: "r", failure: InferenceFailure(code: .internalFailure, statusCode: 500)),
+                fallbackFailure: .policy, send: send)
+            let expectedCount = version == 2 ? (echo ? 3 : 1) : 2
+            await waitForMessages(messages, count: expectedCount)
+            let values = messages.lock.withLock { messages.values }
+            #expect(values.count == expectedCount)
+            #expect(values.last.map { if case .inferenceError = $0 { true } else { false } } == true)
+            if version != 2 {
+                guard case .prefixCacheLookup(_, _, let outcome, _, let cached, let saved, _) = values.first else {
+                    Issue.record("legacy attempt did not settle cold")
+                    continue
+                }
+                #expect(outcome == .skippedPolicy)
+                #expect(cached == nil && saved == nil)
+                #expect(callbacks.ready == nil)
+            } else if echo {
+                guard values.count == 3,
+                    case .prefixCacheLookupV2(let lookup) = values[0],
+                    case .prefixCacheReadyV2(let ready) = values[1] else {
+                    Issue.record("negotiated checkpoint receipts were lost")
+                    continue
+                }
+                #expect(lookup.outcome == .hit)
+                #expect(lookup.matchedAnchor == anchor)
+                #expect(ready.readyAnchors == [anchor])
+            }
+        }
+    }
+
+    private func v2Capability(epoch: String, readyBoundaryMode: String? = nil) -> PrefixCacheV2Capability {
         PrefixCacheV2Capability(
             modelId: "model",
             modelAggregateHash: String(repeating: "a", count: 64),
@@ -482,7 +757,8 @@ struct PrefixCacheReceiptTests {
             blockSize: 256,
             cacheEpoch: epoch,
             enabled: true,
-            ready: true)
+            ready: true,
+            readyBoundaryMode: readyBoundaryMode)
     }
 
     private func waitForMessages(

@@ -459,6 +459,25 @@ struct WatchdogAgentPlistTests {
         #expect(environment == ["DARKBLOOM_NO_UPDATE_CHECK": "1"])
     }
 
+    @Test("watchdog plist excludes provider-only inference controls")
+    func excludesInferenceControls() {
+        let plist = WatchdogAgent.makeWatchdogPlist(
+            label: "io.darkbloom.watchdog",
+            programArguments: ["/opt/darkbloom", "watchdog"],
+            logPath: "/tmp/watchdog.log",
+            environment: [
+                EngineV2Factory.maxPartialPrefillsKey: "0",
+                PrefillDeadlineMode.environmentKey: "enforce",
+                "UNRELATED_SECRET": "excluded",
+            ]
+        )
+
+        // Recovery kickstarts the provider's existing launchd job; the
+        // provider plist, not the watchdog process environment, is the single
+        // source of truth for controls consumed by inference.
+        #expect(plist["EnvironmentVariables"] == nil)
+    }
+
     @Test("the watchdog label is distinct from the provider label")
     func distinctLabel() {
         #expect(WatchdogAgent.label != LaunchAgent.label)

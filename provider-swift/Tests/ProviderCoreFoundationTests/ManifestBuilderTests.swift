@@ -9,7 +9,7 @@ final class ManifestBuilderTests: XCTestCase {
         let tmp = try makeFixtureDir()
         defer { try? FileManager.default.removeItem(at: tmp) }
 
-        // 15 files: 13 top-level + 2 weight shards + 1 subdir adapter weight.
+        // 16 files: 13 top-level metadata + 2 weight shards + 1 adapter weight.
         // Build deterministic contents for each so the aggregate is stable.
         let textFiles: [String] = [
             "config.json",
@@ -21,6 +21,7 @@ final class ManifestBuilderTests: XCTestCase {
             "merges.txt",
             "preprocessor_config.json",
             "processor_config.json",
+            "video_preprocessor_config.json",
             "generation_config.json",
             "chat_template.jinja",
             "model.safetensors.index.json",
@@ -42,8 +43,8 @@ final class ManifestBuilderTests: XCTestCase {
             version: "v1"
         )
 
-        XCTAssertEqual(manifest.fileCount, 15)
-        XCTAssertEqual(manifest.files.count, 15)
+        XCTAssertEqual(manifest.fileCount, 16)
+        XCTAssertEqual(manifest.files.count, 16)
         XCTAssertEqual(manifest.r2Prefix, "v2/test-model--bbae3530039b/v1")
         XCTAssertEqual(manifest.schemaVersion, 1)
         XCTAssertEqual(manifest.modelID, "test/model")
@@ -73,6 +74,7 @@ final class ManifestBuilderTests: XCTestCase {
         XCTAssertEqual(roles["merges.txt"], "tokenizer")
         XCTAssertEqual(roles["preprocessor_config.json"], "preprocessor")
         XCTAssertEqual(roles["processor_config.json"], "preprocessor")
+        XCTAssertEqual(roles["video_preprocessor_config.json"], "preprocessor")
         XCTAssertEqual(roles["generation_config.json"], "config")
         XCTAssertEqual(roles["chat_template.jinja"], "template")
         XCTAssertEqual(roles["model.safetensors.index.json"], "index")

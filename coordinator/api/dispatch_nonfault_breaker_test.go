@@ -41,6 +41,7 @@ func newBreakerExemptionHarness(t *testing.T, name string) (*Server, *registry.R
 	provider.Mu().Lock()
 	provider.AccountID = "acct-" + name
 	provider.Mu().Unlock()
+	provider.RebindStableFaultKey()
 	pr := &registry.PendingRequest{
 		RequestID: "req-" + name,
 		Model:     "test-model",
@@ -125,6 +126,32 @@ func TestNoteDispatchRetry_ToolNoncomplianceSkipsProviderFaultBreakers(t *testin
 			"model did not emit the required tool call", "tool_noncompliance", "", nil)
 	}
 	assertBreakerStates(t, reg, provider, pr, false)
+}
+
+func TestNoteDispatchRetry_DeadlineUnreachableSkipsAllTrackers(t *testing.T) {
+	// A single accidental capacity strike would open the cooldown, making the
+	// absence of a strike directly observable in this test.
+	t.Setenv("EIGENINFERENCE_CAPACITY_COOLDOWN_THRESHOLD", "1")
+	srv, reg, provider, pr := newBreakerExemptionHarness(t, "deadline-skip")
+	d := &dispatchState{s: srv, model: pr.Model}
+
+	for range breakerStrikeRounds {
+		d.noteDispatchRetry(
+			provider, pr, http.StatusServiceUnavailable,
+			"request rejected: provider capacity unavailable",
+			errorReasonDeadlineUnreachable, "", nil)
+	}
+
+	assertBreakerStates(t, reg, provider, pr, false)
+	if reg.CapacityCooldownActive(provider.ID, pr.Model) {
+		t.Fatal("deadline refusal fed the capacity cooldown")
+	}
+	if reg.BudgetClampActive(provider.ID, pr.Model) {
+		t.Fatal("deadline refusal armed the capacity budget clamp")
+	}
+	if rate, samples := reg.CapacityRejectRate(provider.ID, pr.Model); rate != 0 || samples != 0 {
+		t.Fatalf("deadline refusal fed capacity-rate tracking: rate=%v samples=%d", rate, samples)
+	}
 }
 
 // Control: a plain 500 with no exonerating reason still feeds all three

@@ -36,7 +36,7 @@ let package = Package(
         // chat templates with the exact engine the runtime tokenizer uses, so
         // "renders here" == "renders at request time". Pure Foundation +
         // OrderedCollections — keeps ProviderCoreFoundation Linux-buildable.
-        .package(url: "https://github.com/huggingface/swift-jinja.git", from: "2.3.5"),
+        .package(url: "https://github.com/huggingface/swift-jinja.git", exact: "2.3.6"),
         // EventSource 1.4.x uses a Swift 6.1 traits manifest that enables an
         // AsyncHTTPClient/NIO dependency path in release builds. Xcode 26.4's
         // native SwiftPM builder then drops required transitive C module maps
@@ -96,6 +96,12 @@ let package = Package(
             path: "Sources/ProviderCoreFoundation"
         ),
 
+        .target(
+            name: "ProviderMetallibControl",
+            path: "Sources/ProviderMetallibControl",
+            publicHeadersPath: "include"
+        ),
+
         // ----------------------------------------------------------------
         // ProviderCore: shared library that holds protocol, hardware,
         // crypto, models, security, telemetry, coordinator client,
@@ -107,6 +113,7 @@ let package = Package(
             name: "ProviderCore",
             dependencies: [
                 "ProviderCoreFoundation",
+                "ProviderMetallibControl",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
@@ -205,6 +212,18 @@ let package = Package(
         // Phase 6 release-payload shape.
         // ----------------------------------------------------------------
         .testTarget(
+            name: "GPTOSSOptimizationTests",
+            dependencies: [
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "MLXRandom", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            ],
+            path: "Tests/GPTOSSOptimizationTests"
+        ),
+
+        .testTarget(
             name: "ProviderCoreTests",
             dependencies: [
                 "ProviderCore",
@@ -285,5 +304,6 @@ let package = Package(
             ],
             path: "Tests/DarkbloomPublishTests"
         ),
-    ]
+    ],
+    cxxLanguageStandard: .cxx17
 )

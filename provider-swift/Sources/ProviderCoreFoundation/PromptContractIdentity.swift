@@ -2,8 +2,8 @@ import Crypto
 import Foundation
 
 public enum PromptContractIdentity {
-    public static let normalizationVersion = "darkbloom-request-normalization-v2"
-    public static let rendererVersion = "swift-jinja-compatible-v1"
+    public static let normalizationVersion = "darkbloom-request-normalization-v3"
+    public static let rendererVersion = "swift-jinja-request-date-compatible-v3"
     public static let tokenizerVersion = "huggingface-tokenizer-json-v1"
     public static let blockHashVersion = "darkbloom-block-chain-v1"
     public static let blockSize: UInt32 = 256
@@ -58,7 +58,8 @@ public enum PromptContractIdentity {
         let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
         let standaloneTemplate = root.appendingPathComponent("chat_template.jinja")
         guard let template = try? String(contentsOf: standaloneTemplate, encoding: .utf8),
-              !template.contains("strftime_now"),
+              PromptRenderDate.supportsTemplate(template),
+              TemplateRenderCheck.templateSources(at: root).allSatisfy(PromptRenderDate.supportsTemplate),
               TemplateRenderCheck.renderOK(at: root) == true
         else {
             throw Error.invalidArtifact

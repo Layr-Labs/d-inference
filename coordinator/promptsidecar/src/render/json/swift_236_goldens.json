@@ -1,0 +1,522 @@
+[
+  {
+    "id" : "nested_default",
+    "output" : "{\"a\":{\"B\":3,\"a\":4},\"z\":[{\"a\":1,\"y\":2}]}",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "nested_unicode",
+    "output" : "{\"a\":{\"B\":3,\"a\":4},\"z\":[{\"a\":1,\"y\":2}]}",
+    "template" : "{{ value | tojson(ensure_ascii=false) }}"
+  },
+  {
+    "id" : "nested_ascii_zero",
+    "output" : "{\"a\":{\"B\":3,\"a\":4},\"z\":[{\"a\":1,\"y\":2}]}",
+    "template" : "{{ value | tojson(ensure_ascii=0) }}"
+  },
+  {
+    "id" : "nested_ascii_string",
+    "output" : "{\"a\":{\"B\":3,\"a\":4},\"z\":[{\"a\":1,\"y\":2}]}",
+    "template" : "{{ value | tojson(ensure_ascii='false') }}"
+  },
+  {
+    "id" : "nested_ascii_empty",
+    "output" : "{\"a\":{\"B\":3,\"a\":4},\"z\":[{\"a\":1,\"y\":2}]}",
+    "template" : "{{ value | tojson(ensure_ascii='') }}"
+  },
+  {
+    "id" : "nested_indent_null",
+    "output" : "{\"a\":{\"B\":3,\"a\":4},\"z\":[{\"a\":1,\"y\":2}]}",
+    "template" : "{{ value | tojson(indent=none) }}"
+  },
+  {
+    "id" : "nested_indent0",
+    "output" : "{\"a\":{\"B\":3,\"a\":4},\"z\":[{\"a\":1,\"y\":2}]}",
+    "template" : "{{ value | tojson(indent=0) }}"
+  },
+  {
+    "id" : "nested_indent1",
+    "output" : "{\n  \"a\" : {\n    \"B\" : 3,\n    \"a\" : 4\n  },\n  \"z\" : [\n    {\n      \"a\" : 1,\n      \"y\" : 2\n    }\n  ]\n}",
+    "template" : "{{ value | tojson(indent=1) }}"
+  },
+  {
+    "id" : "nested_indent2",
+    "output" : "{\n  \"a\" : {\n    \"B\" : 3,\n    \"a\" : 4\n  },\n  \"z\" : [\n    {\n      \"a\" : 1,\n      \"y\" : 2\n    }\n  ]\n}",
+    "template" : "{{ value | tojson(indent=2) }}"
+  },
+  {
+    "id" : "nested_indent4",
+    "output" : "{\n  \"a\" : {\n    \"B\" : 3,\n    \"a\" : 4\n  },\n  \"z\" : [\n    {\n      \"a\" : 1,\n      \"y\" : 2\n    }\n  ]\n}",
+    "template" : "{{ value | tojson(indent=4, ensure_ascii=false) }}"
+  },
+  {
+    "id" : "nested_indent_true",
+    "output" : "{\"a\":{\"B\":3,\"a\":4},\"z\":[{\"a\":1,\"y\":2}]}",
+    "template" : "{{ value | tojson(indent=true) }}"
+  },
+  {
+    "id" : "nested_indent_minus1",
+    "output" : "{\"a\":{\"B\":3,\"a\":4},\"z\":[{\"a\":1,\"y\":2}]}",
+    "template" : "{{ value | tojson(indent=-1) }}"
+  },
+  {
+    "id" : "nested_indent_string",
+    "output" : "{\"a\":{\"B\":3,\"a\":4},\"z\":[{\"a\":1,\"y\":2}]}",
+    "template" : "{{ value | tojson(indent='4') }}"
+  },
+  {
+    "id" : "unicode_default",
+    "output" : "{\"z\":\"\\u00e9 \\ud83d\\udc31 \\u65e5\\u672c\\u8a9e \\\/ slash < > & ' \\\" \\\\ \\u2028\\u2029\",\"\\u00e9\":\"line\\nreturn\\rtab\\tback\\bform\\f\\u0001\"}",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "unicode_unicode",
+    "output" : "{\"z\":\"é 🐱 日本語 \\\/ slash < > & ' \\\" \\\\   \",\"é\":\"line\\nreturn\\rtab\\tback\\bform\\f\\u0001\"}",
+    "template" : "{{ value | tojson(ensure_ascii=false) }}"
+  },
+  {
+    "id" : "unicode_ascii_zero",
+    "output" : "{\"z\":\"é 🐱 日本語 \\\/ slash < > & ' \\\" \\\\   \",\"é\":\"line\\nreturn\\rtab\\tback\\bform\\f\\u0001\"}",
+    "template" : "{{ value | tojson(ensure_ascii=0) }}"
+  },
+  {
+    "id" : "unicode_ascii_string",
+    "output" : "{\"z\":\"\\u00e9 \\ud83d\\udc31 \\u65e5\\u672c\\u8a9e \\\/ slash < > & ' \\\" \\\\ \\u2028\\u2029\",\"\\u00e9\":\"line\\nreturn\\rtab\\tback\\bform\\f\\u0001\"}",
+    "template" : "{{ value | tojson(ensure_ascii='false') }}"
+  },
+  {
+    "id" : "unicode_ascii_empty",
+    "output" : "{\"z\":\"é 🐱 日本語 \\\/ slash < > & ' \\\" \\\\   \",\"é\":\"line\\nreturn\\rtab\\tback\\bform\\f\\u0001\"}",
+    "template" : "{{ value | tojson(ensure_ascii='') }}"
+  },
+  {
+    "id" : "unicode_indent_null",
+    "output" : "{\"z\":\"\\u00e9 \\ud83d\\udc31 \\u65e5\\u672c\\u8a9e \\\/ slash < > & ' \\\" \\\\ \\u2028\\u2029\",\"\\u00e9\":\"line\\nreturn\\rtab\\tback\\bform\\f\\u0001\"}",
+    "template" : "{{ value | tojson(indent=none) }}"
+  },
+  {
+    "id" : "unicode_indent0",
+    "output" : "{\"z\":\"\\u00e9 \\ud83d\\udc31 \\u65e5\\u672c\\u8a9e \\\/ slash < > & ' \\\" \\\\ \\u2028\\u2029\",\"\\u00e9\":\"line\\nreturn\\rtab\\tback\\bform\\f\\u0001\"}",
+    "template" : "{{ value | tojson(indent=0) }}"
+  },
+  {
+    "id" : "unicode_indent1",
+    "output" : "{\n  \"z\" : \"\\u00e9 \\ud83d\\udc31 \\u65e5\\u672c\\u8a9e \\\/ slash < > & ' \\\" \\\\ \\u2028\\u2029\",\n  \"\\u00e9\" : \"line\\nreturn\\rtab\\tback\\bform\\f\\u0001\"\n}",
+    "template" : "{{ value | tojson(indent=1) }}"
+  },
+  {
+    "id" : "unicode_indent2",
+    "output" : "{\n  \"z\" : \"\\u00e9 \\ud83d\\udc31 \\u65e5\\u672c\\u8a9e \\\/ slash < > & ' \\\" \\\\ \\u2028\\u2029\",\n  \"\\u00e9\" : \"line\\nreturn\\rtab\\tback\\bform\\f\\u0001\"\n}",
+    "template" : "{{ value | tojson(indent=2) }}"
+  },
+  {
+    "id" : "unicode_indent4",
+    "output" : "{\n  \"z\" : \"é 🐱 日本語 \\\/ slash < > & ' \\\" \\\\   \",\n  \"é\" : \"line\\nreturn\\rtab\\tback\\bform\\f\\u0001\"\n}",
+    "template" : "{{ value | tojson(indent=4, ensure_ascii=false) }}"
+  },
+  {
+    "id" : "unicode_indent_true",
+    "output" : "{\"z\":\"\\u00e9 \\ud83d\\udc31 \\u65e5\\u672c\\u8a9e \\\/ slash < > & ' \\\" \\\\ \\u2028\\u2029\",\"\\u00e9\":\"line\\nreturn\\rtab\\tback\\bform\\f\\u0001\"}",
+    "template" : "{{ value | tojson(indent=true) }}"
+  },
+  {
+    "id" : "unicode_indent_minus1",
+    "output" : "{\"z\":\"\\u00e9 \\ud83d\\udc31 \\u65e5\\u672c\\u8a9e \\\/ slash < > & ' \\\" \\\\ \\u2028\\u2029\",\"\\u00e9\":\"line\\nreturn\\rtab\\tback\\bform\\f\\u0001\"}",
+    "template" : "{{ value | tojson(indent=-1) }}"
+  },
+  {
+    "id" : "unicode_indent_string",
+    "output" : "{\"z\":\"\\u00e9 \\ud83d\\udc31 \\u65e5\\u672c\\u8a9e \\\/ slash < > & ' \\\" \\\\ \\u2028\\u2029\",\"\\u00e9\":\"line\\nreturn\\rtab\\tback\\bform\\f\\u0001\"}",
+    "template" : "{{ value | tojson(indent='4') }}"
+  },
+  {
+    "id" : "numbers_default",
+    "output" : "[1,-0,1e-06,1e-07,1e+20,1e+21,1.25,1e+20,1000000000000000,1e+16,1.2345678901234567,9007199254740993,9223372036854775807,-9223372036854775808]",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "numbers_unicode",
+    "output" : "[1,-0,1e-06,1e-07,1e+20,1e+21,1.25,1e+20,1000000000000000,1e+16,1.2345678901234567,9007199254740993,9223372036854775807,-9223372036854775808]",
+    "template" : "{{ value | tojson(ensure_ascii=false) }}"
+  },
+  {
+    "id" : "numbers_ascii_zero",
+    "output" : "[1,-0,1e-06,1e-07,1e+20,1e+21,1.25,1e+20,1000000000000000,1e+16,1.2345678901234567,9007199254740993,9223372036854775807,-9223372036854775808]",
+    "template" : "{{ value | tojson(ensure_ascii=0) }}"
+  },
+  {
+    "id" : "numbers_ascii_string",
+    "output" : "[1,-0,1e-06,1e-07,1e+20,1e+21,1.25,1e+20,1000000000000000,1e+16,1.2345678901234567,9007199254740993,9223372036854775807,-9223372036854775808]",
+    "template" : "{{ value | tojson(ensure_ascii='false') }}"
+  },
+  {
+    "id" : "numbers_ascii_empty",
+    "output" : "[1,-0,1e-06,1e-07,1e+20,1e+21,1.25,1e+20,1000000000000000,1e+16,1.2345678901234567,9007199254740993,9223372036854775807,-9223372036854775808]",
+    "template" : "{{ value | tojson(ensure_ascii='') }}"
+  },
+  {
+    "id" : "numbers_indent_null",
+    "output" : "[1,-0,1e-06,1e-07,1e+20,1e+21,1.25,1e+20,1000000000000000,1e+16,1.2345678901234567,9007199254740993,9223372036854775807,-9223372036854775808]",
+    "template" : "{{ value | tojson(indent=none) }}"
+  },
+  {
+    "id" : "numbers_indent0",
+    "output" : "[1,-0,1e-06,1e-07,1e+20,1e+21,1.25,1e+20,1000000000000000,1e+16,1.2345678901234567,9007199254740993,9223372036854775807,-9223372036854775808]",
+    "template" : "{{ value | tojson(indent=0) }}"
+  },
+  {
+    "id" : "numbers_indent1",
+    "output" : "[\n  1,\n  -0,\n  1e-06,\n  1e-07,\n  1e+20,\n  1e+21,\n  1.25,\n  1e+20,\n  1000000000000000,\n  1e+16,\n  1.2345678901234567,\n  9007199254740993,\n  9223372036854775807,\n  -9223372036854775808\n]",
+    "template" : "{{ value | tojson(indent=1) }}"
+  },
+  {
+    "id" : "numbers_indent2",
+    "output" : "[\n  1,\n  -0,\n  1e-06,\n  1e-07,\n  1e+20,\n  1e+21,\n  1.25,\n  1e+20,\n  1000000000000000,\n  1e+16,\n  1.2345678901234567,\n  9007199254740993,\n  9223372036854775807,\n  -9223372036854775808\n]",
+    "template" : "{{ value | tojson(indent=2) }}"
+  },
+  {
+    "id" : "numbers_indent4",
+    "output" : "[\n  1,\n  -0,\n  1e-06,\n  1e-07,\n  1e+20,\n  1e+21,\n  1.25,\n  1e+20,\n  1000000000000000,\n  1e+16,\n  1.2345678901234567,\n  9007199254740993,\n  9223372036854775807,\n  -9223372036854775808\n]",
+    "template" : "{{ value | tojson(indent=4, ensure_ascii=false) }}"
+  },
+  {
+    "id" : "numbers_indent_true",
+    "output" : "[1,-0,1e-06,1e-07,1e+20,1e+21,1.25,1e+20,1000000000000000,1e+16,1.2345678901234567,9007199254740993,9223372036854775807,-9223372036854775808]",
+    "template" : "{{ value | tojson(indent=true) }}"
+  },
+  {
+    "id" : "numbers_indent_minus1",
+    "output" : "[1,-0,1e-06,1e-07,1e+20,1e+21,1.25,1e+20,1000000000000000,1e+16,1.2345678901234567,9007199254740993,9223372036854775807,-9223372036854775808]",
+    "template" : "{{ value | tojson(indent=-1) }}"
+  },
+  {
+    "id" : "numbers_indent_string",
+    "output" : "[1,-0,1e-06,1e-07,1e+20,1e+21,1.25,1e+20,1000000000000000,1e+16,1.2345678901234567,9007199254740993,9223372036854775807,-9223372036854775808]",
+    "template" : "{{ value | tojson(indent='4') }}"
+  },
+  {
+    "id" : "keysort_default",
+    "output" : "{\"A\":6,\"Z\":1,\"_\":3,\"a\":2,\"e\":5,\"\\u00e9\":4,\"\\u4e2d\":7}",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "keysort_unicode",
+    "output" : "{\"A\":6,\"Z\":1,\"_\":3,\"a\":2,\"e\":5,\"é\":4,\"中\":7}",
+    "template" : "{{ value | tojson(ensure_ascii=false) }}"
+  },
+  {
+    "id" : "keysort_ascii_zero",
+    "output" : "{\"A\":6,\"Z\":1,\"_\":3,\"a\":2,\"e\":5,\"é\":4,\"中\":7}",
+    "template" : "{{ value | tojson(ensure_ascii=0) }}"
+  },
+  {
+    "id" : "keysort_ascii_string",
+    "output" : "{\"A\":6,\"Z\":1,\"_\":3,\"a\":2,\"e\":5,\"\\u00e9\":4,\"\\u4e2d\":7}",
+    "template" : "{{ value | tojson(ensure_ascii='false') }}"
+  },
+  {
+    "id" : "keysort_ascii_empty",
+    "output" : "{\"A\":6,\"Z\":1,\"_\":3,\"a\":2,\"e\":5,\"é\":4,\"中\":7}",
+    "template" : "{{ value | tojson(ensure_ascii='') }}"
+  },
+  {
+    "id" : "keysort_indent_null",
+    "output" : "{\"A\":6,\"Z\":1,\"_\":3,\"a\":2,\"e\":5,\"\\u00e9\":4,\"\\u4e2d\":7}",
+    "template" : "{{ value | tojson(indent=none) }}"
+  },
+  {
+    "id" : "keysort_indent0",
+    "output" : "{\"A\":6,\"Z\":1,\"_\":3,\"a\":2,\"e\":5,\"\\u00e9\":4,\"\\u4e2d\":7}",
+    "template" : "{{ value | tojson(indent=0) }}"
+  },
+  {
+    "id" : "keysort_indent1",
+    "output" : "{\n  \"A\" : 6,\n  \"Z\" : 1,\n  \"_\" : 3,\n  \"a\" : 2,\n  \"e\" : 5,\n  \"\\u00e9\" : 4,\n  \"\\u4e2d\" : 7\n}",
+    "template" : "{{ value | tojson(indent=1) }}"
+  },
+  {
+    "id" : "keysort_indent2",
+    "output" : "{\n  \"A\" : 6,\n  \"Z\" : 1,\n  \"_\" : 3,\n  \"a\" : 2,\n  \"e\" : 5,\n  \"\\u00e9\" : 4,\n  \"\\u4e2d\" : 7\n}",
+    "template" : "{{ value | tojson(indent=2) }}"
+  },
+  {
+    "id" : "keysort_indent4",
+    "output" : "{\n  \"A\" : 6,\n  \"Z\" : 1,\n  \"_\" : 3,\n  \"a\" : 2,\n  \"e\" : 5,\n  \"é\" : 4,\n  \"中\" : 7\n}",
+    "template" : "{{ value | tojson(indent=4, ensure_ascii=false) }}"
+  },
+  {
+    "id" : "keysort_indent_true",
+    "output" : "{\"A\":6,\"Z\":1,\"_\":3,\"a\":2,\"e\":5,\"\\u00e9\":4,\"\\u4e2d\":7}",
+    "template" : "{{ value | tojson(indent=true) }}"
+  },
+  {
+    "id" : "keysort_indent_minus1",
+    "output" : "{\"A\":6,\"Z\":1,\"_\":3,\"a\":2,\"e\":5,\"\\u00e9\":4,\"\\u4e2d\":7}",
+    "template" : "{{ value | tojson(indent=-1) }}"
+  },
+  {
+    "id" : "keysort_indent_string",
+    "output" : "{\"A\":6,\"Z\":1,\"_\":3,\"a\":2,\"e\":5,\"\\u00e9\":4,\"\\u4e2d\":7}",
+    "template" : "{{ value | tojson(indent='4') }}"
+  },
+  {
+    "id" : "transitions_default",
+    "output" : "[0.001,0.0001,1e-05,100000000000000,1000000000000000,1e+16,0.00012345,1.2345e-05,1234567890000000,1.23456789e+16,0,-0,5e-324,1.7976931348623157e+308]",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "transitions_unicode",
+    "output" : "[0.001,0.0001,1e-05,100000000000000,1000000000000000,1e+16,0.00012345,1.2345e-05,1234567890000000,1.23456789e+16,0,-0,5e-324,1.7976931348623157e+308]",
+    "template" : "{{ value | tojson(ensure_ascii=false) }}"
+  },
+  {
+    "id" : "transitions_ascii_zero",
+    "output" : "[0.001,0.0001,1e-05,100000000000000,1000000000000000,1e+16,0.00012345,1.2345e-05,1234567890000000,1.23456789e+16,0,-0,5e-324,1.7976931348623157e+308]",
+    "template" : "{{ value | tojson(ensure_ascii=0) }}"
+  },
+  {
+    "id" : "transitions_ascii_string",
+    "output" : "[0.001,0.0001,1e-05,100000000000000,1000000000000000,1e+16,0.00012345,1.2345e-05,1234567890000000,1.23456789e+16,0,-0,5e-324,1.7976931348623157e+308]",
+    "template" : "{{ value | tojson(ensure_ascii='false') }}"
+  },
+  {
+    "id" : "transitions_ascii_empty",
+    "output" : "[0.001,0.0001,1e-05,100000000000000,1000000000000000,1e+16,0.00012345,1.2345e-05,1234567890000000,1.23456789e+16,0,-0,5e-324,1.7976931348623157e+308]",
+    "template" : "{{ value | tojson(ensure_ascii='') }}"
+  },
+  {
+    "id" : "transitions_indent_null",
+    "output" : "[0.001,0.0001,1e-05,100000000000000,1000000000000000,1e+16,0.00012345,1.2345e-05,1234567890000000,1.23456789e+16,0,-0,5e-324,1.7976931348623157e+308]",
+    "template" : "{{ value | tojson(indent=none) }}"
+  },
+  {
+    "id" : "transitions_indent0",
+    "output" : "[0.001,0.0001,1e-05,100000000000000,1000000000000000,1e+16,0.00012345,1.2345e-05,1234567890000000,1.23456789e+16,0,-0,5e-324,1.7976931348623157e+308]",
+    "template" : "{{ value | tojson(indent=0) }}"
+  },
+  {
+    "id" : "transitions_indent1",
+    "output" : "[\n  0.001,\n  0.0001,\n  1e-05,\n  100000000000000,\n  1000000000000000,\n  1e+16,\n  0.00012345,\n  1.2345e-05,\n  1234567890000000,\n  1.23456789e+16,\n  0,\n  -0,\n  5e-324,\n  1.7976931348623157e+308\n]",
+    "template" : "{{ value | tojson(indent=1) }}"
+  },
+  {
+    "id" : "transitions_indent2",
+    "output" : "[\n  0.001,\n  0.0001,\n  1e-05,\n  100000000000000,\n  1000000000000000,\n  1e+16,\n  0.00012345,\n  1.2345e-05,\n  1234567890000000,\n  1.23456789e+16,\n  0,\n  -0,\n  5e-324,\n  1.7976931348623157e+308\n]",
+    "template" : "{{ value | tojson(indent=2) }}"
+  },
+  {
+    "id" : "transitions_indent4",
+    "output" : "[\n  0.001,\n  0.0001,\n  1e-05,\n  100000000000000,\n  1000000000000000,\n  1e+16,\n  0.00012345,\n  1.2345e-05,\n  1234567890000000,\n  1.23456789e+16,\n  0,\n  -0,\n  5e-324,\n  1.7976931348623157e+308\n]",
+    "template" : "{{ value | tojson(indent=4, ensure_ascii=false) }}"
+  },
+  {
+    "id" : "transitions_indent_true",
+    "output" : "[0.001,0.0001,1e-05,100000000000000,1000000000000000,1e+16,0.00012345,1.2345e-05,1234567890000000,1.23456789e+16,0,-0,5e-324,1.7976931348623157e+308]",
+    "template" : "{{ value | tojson(indent=true) }}"
+  },
+  {
+    "id" : "transitions_indent_minus1",
+    "output" : "[0.001,0.0001,1e-05,100000000000000,1000000000000000,1e+16,0.00012345,1.2345e-05,1234567890000000,1.23456789e+16,0,-0,5e-324,1.7976931348623157e+308]",
+    "template" : "{{ value | tojson(indent=-1) }}"
+  },
+  {
+    "id" : "transitions_indent_string",
+    "output" : "[0.001,0.0001,1e-05,100000000000000,1000000000000000,1e+16,0.00012345,1.2345e-05,1234567890000000,1.23456789e+16,0,-0,5e-324,1.7976931348623157e+308]",
+    "template" : "{{ value | tojson(indent='4') }}"
+  },
+  {
+    "id" : "unicode_order_default",
+    "output" : "{\"\\ue000\":1,\"\\ud800\\udc00\":2}",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "unicode_order_unicode",
+    "output" : "{\"\":1,\"𐀀\":2}",
+    "template" : "{{ value | tojson(ensure_ascii=false) }}"
+  },
+  {
+    "id" : "unicode_order_ascii_zero",
+    "output" : "{\"\":1,\"𐀀\":2}",
+    "template" : "{{ value | tojson(ensure_ascii=0) }}"
+  },
+  {
+    "id" : "unicode_order_ascii_string",
+    "output" : "{\"\\ue000\":1,\"\\ud800\\udc00\":2}",
+    "template" : "{{ value | tojson(ensure_ascii='false') }}"
+  },
+  {
+    "id" : "unicode_order_ascii_empty",
+    "output" : "{\"\":1,\"𐀀\":2}",
+    "template" : "{{ value | tojson(ensure_ascii='') }}"
+  },
+  {
+    "id" : "unicode_order_indent_null",
+    "output" : "{\"\\ue000\":1,\"\\ud800\\udc00\":2}",
+    "template" : "{{ value | tojson(indent=none) }}"
+  },
+  {
+    "id" : "unicode_order_indent0",
+    "output" : "{\"\\ue000\":1,\"\\ud800\\udc00\":2}",
+    "template" : "{{ value | tojson(indent=0) }}"
+  },
+  {
+    "id" : "unicode_order_indent1",
+    "output" : "{\n  \"\\ue000\" : 1,\n  \"\\ud800\\udc00\" : 2\n}",
+    "template" : "{{ value | tojson(indent=1) }}"
+  },
+  {
+    "id" : "unicode_order_indent2",
+    "output" : "{\n  \"\\ue000\" : 1,\n  \"\\ud800\\udc00\" : 2\n}",
+    "template" : "{{ value | tojson(indent=2) }}"
+  },
+  {
+    "id" : "unicode_order_indent4",
+    "output" : "{\n  \"\" : 1,\n  \"𐀀\" : 2\n}",
+    "template" : "{{ value | tojson(indent=4, ensure_ascii=false) }}"
+  },
+  {
+    "id" : "unicode_order_indent_true",
+    "output" : "{\"\\ue000\":1,\"\\ud800\\udc00\":2}",
+    "template" : "{{ value | tojson(indent=true) }}"
+  },
+  {
+    "id" : "unicode_order_indent_minus1",
+    "output" : "{\"\\ue000\":1,\"\\ud800\\udc00\":2}",
+    "template" : "{{ value | tojson(indent=-1) }}"
+  },
+  {
+    "id" : "unicode_order_indent_string",
+    "output" : "{\"\\ue000\":1,\"\\ud800\\udc00\":2}",
+    "template" : "{{ value | tojson(indent='4') }}"
+  },
+  {
+    "id" : "empty_default",
+    "output" : "{\"array\":[],\"object\":{}}",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "empty_unicode",
+    "output" : "{\"array\":[],\"object\":{}}",
+    "template" : "{{ value | tojson(ensure_ascii=false) }}"
+  },
+  {
+    "id" : "empty_ascii_zero",
+    "output" : "{\"array\":[],\"object\":{}}",
+    "template" : "{{ value | tojson(ensure_ascii=0) }}"
+  },
+  {
+    "id" : "empty_ascii_string",
+    "output" : "{\"array\":[],\"object\":{}}",
+    "template" : "{{ value | tojson(ensure_ascii='false') }}"
+  },
+  {
+    "id" : "empty_ascii_empty",
+    "output" : "{\"array\":[],\"object\":{}}",
+    "template" : "{{ value | tojson(ensure_ascii='') }}"
+  },
+  {
+    "id" : "empty_indent_null",
+    "output" : "{\"array\":[],\"object\":{}}",
+    "template" : "{{ value | tojson(indent=none) }}"
+  },
+  {
+    "id" : "empty_indent0",
+    "output" : "{\"array\":[],\"object\":{}}",
+    "template" : "{{ value | tojson(indent=0) }}"
+  },
+  {
+    "id" : "empty_indent1",
+    "output" : "{\n  \"array\" : [\n\n  ],\n  \"object\" : {\n\n  }\n}",
+    "template" : "{{ value | tojson(indent=1) }}"
+  },
+  {
+    "id" : "empty_indent2",
+    "output" : "{\n  \"array\" : [\n\n  ],\n  \"object\" : {\n\n  }\n}",
+    "template" : "{{ value | tojson(indent=2) }}"
+  },
+  {
+    "id" : "empty_indent4",
+    "output" : "{\n  \"array\" : [\n\n  ],\n  \"object\" : {\n\n  }\n}",
+    "template" : "{{ value | tojson(indent=4, ensure_ascii=false) }}"
+  },
+  {
+    "id" : "empty_indent_true",
+    "output" : "{\"array\":[],\"object\":{}}",
+    "template" : "{{ value | tojson(indent=true) }}"
+  },
+  {
+    "id" : "empty_indent_minus1",
+    "output" : "{\"array\":[],\"object\":{}}",
+    "template" : "{{ value | tojson(indent=-1) }}"
+  },
+  {
+    "id" : "empty_indent_string",
+    "output" : "{\"array\":[],\"object\":{}}",
+    "template" : "{{ value | tojson(indent='4') }}"
+  },
+  {
+    "id" : "primitives_default",
+    "output" : "[true,false,null,\"\"]",
+    "template" : "{{ value | tojson }}"
+  },
+  {
+    "id" : "primitives_unicode",
+    "output" : "[true,false,null,\"\"]",
+    "template" : "{{ value | tojson(ensure_ascii=false) }}"
+  },
+  {
+    "id" : "primitives_ascii_zero",
+    "output" : "[true,false,null,\"\"]",
+    "template" : "{{ value | tojson(ensure_ascii=0) }}"
+  },
+  {
+    "id" : "primitives_ascii_string",
+    "output" : "[true,false,null,\"\"]",
+    "template" : "{{ value | tojson(ensure_ascii='false') }}"
+  },
+  {
+    "id" : "primitives_ascii_empty",
+    "output" : "[true,false,null,\"\"]",
+    "template" : "{{ value | tojson(ensure_ascii='') }}"
+  },
+  {
+    "id" : "primitives_indent_null",
+    "output" : "[true,false,null,\"\"]",
+    "template" : "{{ value | tojson(indent=none) }}"
+  },
+  {
+    "id" : "primitives_indent0",
+    "output" : "[true,false,null,\"\"]",
+    "template" : "{{ value | tojson(indent=0) }}"
+  },
+  {
+    "id" : "primitives_indent1",
+    "output" : "[\n  true,\n  false,\n  null,\n  \"\"\n]",
+    "template" : "{{ value | tojson(indent=1) }}"
+  },
+  {
+    "id" : "primitives_indent2",
+    "output" : "[\n  true,\n  false,\n  null,\n  \"\"\n]",
+    "template" : "{{ value | tojson(indent=2) }}"
+  },
+  {
+    "id" : "primitives_indent4",
+    "output" : "[\n  true,\n  false,\n  null,\n  \"\"\n]",
+    "template" : "{{ value | tojson(indent=4, ensure_ascii=false) }}"
+  },
+  {
+    "id" : "primitives_indent_true",
+    "output" : "[true,false,null,\"\"]",
+    "template" : "{{ value | tojson(indent=true) }}"
+  },
+  {
+    "id" : "primitives_indent_minus1",
+    "output" : "[true,false,null,\"\"]",
+    "template" : "{{ value | tojson(indent=-1) }}"
+  },
+  {
+    "id" : "primitives_indent_string",
+    "output" : "[true,false,null,\"\"]",
+    "template" : "{{ value | tojson(indent='4') }}"
+  }
+]

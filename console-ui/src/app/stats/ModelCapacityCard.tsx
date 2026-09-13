@@ -1,12 +1,5 @@
-import { Activity, CheckCircle2, Server, Zap } from "lucide-react";
 import { formatCompactNumber } from "./format";
 import { calculateKVHeadroom, calculateModelAvailability } from "./model-capacity";
-import { modelBrand } from "./model-brand";
-import { ModelMakerMark } from "./ModelMakerMark";
-
-const PRIMARY_VALUE_CLASS = "text-text-primary";
-const READY_VALUE_CLASS = "text-accent-green";
-const UNKNOWN_VALUE_CLASS = "text-text-tertiary";
 
 export interface ModelCapacityCardProps {
   id: string;
@@ -19,7 +12,7 @@ export interface ModelCapacityCardProps {
   minRAMGB?: number;
   maxContextLength?: number;
   totalNodes: number;
-  eligibleNodes: number;
+  eligibleNodes?: number;
   hardwareNodes: number;
   fleetSharePct: number;
   acceptingNodes?: number;
@@ -36,238 +29,49 @@ export interface ModelCapacityCardProps {
 }
 
 function formatLatency(ms?: number): string {
-  if (ms === undefined) return "Not reported";
-  if (ms >= 1_000) return `${(ms / 1_000).toFixed(1)} sec`;
-  return `${Math.round(ms)} ms`;
+  if (ms === undefined) return "—";
+  return ms >= 1_000 ? `${(ms / 1_000).toFixed(1)} s` : `${Math.round(ms)} ms`;
 }
 
-function formatGBRequirement(value: number | undefined, suffix: string): string | null {
-  if (value === undefined) return null;
-  const display = value >= 10 ? value.toFixed(0) : value.toFixed(1);
-  return `${display} GB ${suffix}`;
-}
-
-function modelRequirements(props: ModelCapacityCardProps): string[] {
-  return [
-    props.family ? `${props.family} family` : null,
-    props.quantization ? `${props.quantization.toUpperCase()} weights` : null,
-    formatGBRequirement(props.sizeGB, "model"),
-    formatGBRequirement(props.minRAMGB, "RAM minimum"),
-    props.maxContextLength ? `${formatCompactNumber(props.maxContextLength)} context` : null,
-  ].filter((value): value is string => Boolean(value));
-}
-
-function Requirement({ label }: { label: string }) {
-  return (
-    <span className="rounded-md border border-border-dim bg-bg-primary/75 px-2.5 py-1 text-[11px] text-text-secondary">
-      {label}
-    </span>
-  );
-}
-
-function AvailabilityStep({
-  label,
-  value,
-  description,
-  tone,
-}: {
-  label: string;
-  value: number | null;
-  description: string;
-  tone?: "green";
-}) {
-  let valueColor = PRIMARY_VALUE_CLASS;
-  if (tone === "green") valueColor = READY_VALUE_CLASS;
-  return (
-    <div className="min-w-0 rounded-lg border border-border-dim bg-bg-primary/65 px-3 py-3">
-      <p className={`font-mono text-xl font-bold tabular-nums ${valueColor}`}>
-        {value === null ? "—" : value.toLocaleString()}
-      </p>
-      <p className="mt-0.5 text-xs font-semibold text-text-secondary">{label}</p>
-      <p className="mt-1 text-[10px] leading-4 text-text-tertiary">{description}</p>
-    </div>
-  );
-}
-
-function LoadMetric({
-  label,
-  value,
-  detail,
-  tone,
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  tone?: "green" | "amber";
-}) {
-  let valueColor = PRIMARY_VALUE_CLASS;
-  if (tone === "green") valueColor = READY_VALUE_CLASS;
-  if (tone === "amber") valueColor = "text-accent-amber";
-  return (
-    <div>
-      <p className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary">{label}</p>
-      <p className={`mt-1 font-mono text-base font-bold tabular-nums ${valueColor}`}>{value}</p>
-      <p className="mt-0.5 text-[10px] leading-4 text-text-tertiary">{detail}</p>
-    </div>
-  );
-}
-
-function ModelIdentity({ props }: { props: ModelCapacityCardProps }) {
-  const brand = modelBrand(props.id, props.family);
-  return (
-    <div className="flex min-w-0 items-start gap-3">
-      <ModelMakerMark modelId={props.id} family={props.family} />
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <h3 className="text-base font-semibold text-text-primary">{props.displayName}</h3>
-          {props.statusLabel && (
-            <span className="rounded-full border border-accent-amber/30 bg-accent-amber-dim px-2 py-0.5 text-[9px] font-mono uppercase tracking-wider text-accent-amber">
-              {props.statusLabel}
-            </span>
-          )}
-        </div>
-        <p className="mt-1 font-mono text-[10px] text-text-tertiary">
-          {brand.makerLabel} · {props.id}
-        </p>
-        {props.description && (
-          <p className="mt-2 max-w-xl text-xs leading-5 text-text-secondary">{props.description}</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function TrafficStatus({ accepting }: { accepting: boolean | null }) {
-  let style = "border-border-dim bg-bg-primary/70 text-text-tertiary";
-  let label = "Admission unknown";
-  if (accepting === true) {
-    style = "border-accent-green/25 bg-accent-green/10 text-accent-green";
-    label = "Accepting traffic";
-  } else if (accepting === false) {
-    style = "border-accent-amber/30 bg-accent-amber-dim text-accent-amber";
-    label = "Limited right now";
-  }
-  return (
-    <div className={`inline-flex w-fit items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${style}`}>
-      {accepting ? <CheckCircle2 size={13} /> : <Activity size={13} />}
-      {label}
-    </div>
-  );
-}
-
-function Requirements({ values }: { values: string[] }) {
-  if (values.length === 0) return null;
-  return (
-    <div className="mt-4 flex flex-wrap gap-1.5">
-      {values.map((requirement) => <Requirement key={requirement} label={requirement} />)}
-    </div>
-  );
+function Metric({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return <div><dt className="text-xs text-text-tertiary">{label}</dt><dd className="mt-1.5 text-lg font-semibold tabular-nums tracking-tight text-text-primary">{value}</dd>{detail && <p className="mt-1 text-xs leading-5 text-text-tertiary">{detail}</p>}</div>;
 }
 
 export function ModelCapacityCard(props: ModelCapacityCardProps) {
-  const availability = calculateModelAvailability(
-    props.totalNodes,
-    props.eligibleNodes,
-    props.acceptingNodes,
-  );
-  const kvHeadroom = calculateKVHeadroom(
-    props.tokenBudgetRemaining,
-    props.tokenBudgetTotal,
-  );
-  const active = Math.max(0, props.activeRequests ?? 0);
-  const waiting = Math.max(0, props.queuedRequests ?? 0);
-  const queueLimit = Math.max(0, props.queueLimit ?? 0);
-  const queueAtLimit = queueLimit > 0 && waiting >= queueLimit;
-  const acceptingTraffic = availability.accepting === null || props.canAccept === undefined
-    ? null
-    : props.canAccept && availability.accepting > 0;
-  const requirements = modelRequirements(props);
+  const availability = calculateModelAvailability(props.totalNodes, props.eligibleNodes, props.acceptingNodes);
+  const kvHeadroom = calculateKVHeadroom(props.tokenBudgetRemaining, props.tokenBudgetTotal);
+  const requirements = [
+    props.quantization ? `${props.quantization.toUpperCase()} weights` : null,
+    props.sizeGB !== undefined ? `${props.sizeGB.toLocaleString()} GB model` : null,
+    props.minRAMGB !== undefined ? `${props.minRAMGB.toLocaleString()} GB minimum RAM` : null,
+    props.maxContextLength ? `${formatCompactNumber(props.maxContextLength)} context` : null,
+  ].filter(Boolean);
 
   return (
-    <article className="rounded-xl border border-border-dim bg-bg-secondary p-4 shadow-sm">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <ModelIdentity props={props} />
-        <TrafficStatus accepting={acceptingTraffic} />
+    <article aria-label={`${props.displayName} capacity`} className="rounded-2xl bg-bg-secondary p-5 sm:p-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div><h3 className="text-sm font-semibold text-text-primary">Capacity details</h3>{props.description && <p className="mt-1.5 max-w-xl text-sm leading-6 text-text-secondary">{props.description}</p>}</div>
+        {props.statusLabel && <span className="text-xs text-accent-amber">{props.statusLabel}</span>}
       </div>
-
-      <Requirements values={requirements} />
-
-      <div className="mt-4">
-        <div className="mb-2 flex items-center gap-2">
-          <Server size={13} className="text-accent-brand" />
-          <p className="text-xs font-semibold text-text-secondary">Availability path</p>
-          <p className="text-[10px] text-text-tertiary">live admission state</p>
-        </div>
-        <div className="grid grid-cols-3 gap-2">
-          <AvailabilityStep label="Connected" value={availability.connected} description="advertise this model" />
-          <AvailabilityStep label="Eligible" value={availability.eligible} description="trusted and healthy" />
-          <AvailabilityStep
-            label="Accepting now"
-            value={availability.accepting}
-            description={availability.accepting === null ? "admission data unavailable" : "concurrency + KV headroom"}
-            tone={availability.accepting === null ? undefined : "green"}
-          />
-        </div>
-        <div className="mt-2 flex items-center justify-between gap-3 text-[10px] text-text-tertiary">
-          <span>{props.hardwareNodes.toLocaleString()} hardware-attested</span>
-          <span>{props.fleetSharePct.toFixed(0)}% of model-ready fleet</span>
-        </div>
+      {requirements.length > 0 && <ul className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-xs text-text-tertiary" aria-label="Model requirements">{requirements.map((requirement) => <li key={requirement}>{requirement}</li>)}</ul>}
+      <dl className="mt-6 grid grid-cols-3 gap-4 border-y border-border-dim py-5">
+        <Metric label="Connected" value={availability.connected.toLocaleString()} detail="Advertise this model" />
+        <Metric label="Routing eligible" value={availability.eligible?.toLocaleString() ?? "—"} detail={availability.eligible === null ? "Not published per node" : "Coordinator routing verdicts"} />
+        <Metric label="Accepting now" value={availability.accepting?.toLocaleString() ?? "—"} detail={availability.accepting === null ? "Capacity not reported" : "Available request capacity"} />
+      </dl>
+      <div className="mt-5 flex items-center justify-between gap-3 text-xs text-text-tertiary"><span>{props.hardwareNodes.toLocaleString()} hardware-attested nodes</span><span>{props.fleetSharePct.toFixed(0)}% of model placements</span></div>
+      <div className="mt-7"><h4 className="text-sm font-medium text-text-primary">Current load</h4>
+        <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-5 lg:grid-cols-5">
+          <Metric label="In progress" value={props.activeRequests?.toLocaleString() ?? "—"} detail="Active requests" />
+          <Metric label="Waiting" value={props.queuedRequests?.toLocaleString() ?? "—"} detail={props.queueLimit ? `Queue limit ${props.queueLimit}` : "Queued requests"} />
+          <Metric label="Token headroom" value={kvHeadroom === null ? "—" : `${kvHeadroom}%`} detail="Free token memory" />
+          <Metric label="Combined speed" value={props.aggregateTPS === undefined ? "—" : `${formatCompactNumber(props.aggregateTPS)} tok/s`} detail="Estimated generation" />
+          <Metric label="First token" value={formatLatency(props.estimatedTTFTMS)} detail="Best loaded node estimate" />
+        </dl>
       </div>
-
-      <div className="mt-4 rounded-lg border border-border-dim bg-bg-primary/55 p-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Zap size={13} className="text-accent-brand" />
-            <p className="text-xs font-semibold text-text-secondary">Current load</p>
-          </div>
-          <p className="font-mono text-[10px] text-text-tertiary">
-            {props.warmNodes ?? 0} loaded · {props.coldNodes ?? 0} available to load
-          </p>
-        </div>
-        <div className="mt-3 grid grid-cols-2 gap-x-5 gap-y-4 sm:grid-cols-5">
-          <LoadMetric label="In progress" value={active.toLocaleString()} detail="active requests" />
-          <LoadMetric
-            label="Waiting"
-            value={waiting.toLocaleString()}
-            detail={queueLimit > 0 ? `${queueLimit} queue limit` : "no queue limit reported"}
-            tone={queueAtLimit ? "amber" : undefined}
-          />
-          <LoadMetric
-            label="KV headroom"
-            value={kvHeadroom === null ? "—" : `${kvHeadroom}%`}
-            detail="free token memory"
-            tone={kvHeadroom !== null && kvHeadroom > 10 ? "green" : "amber"}
-          />
-          <LoadMetric
-            label="Combined speed"
-            value={props.aggregateTPS === undefined ? "—" : `${formatCompactNumber(props.aggregateTPS)} tok/s`}
-            detail="estimated generation"
-          />
-          <LoadMetric
-            label="First token"
-            value={formatLatency(props.estimatedTTFTMS)}
-            detail="best loaded node"
-          />
-        </div>
-      </div>
-
-      <div className="mt-4">
-        <div className="flex items-center justify-between gap-3 text-[11px] text-text-tertiary">
-          <span>
-            {availability.accepting === null
-              ? "Live admission data is currently unavailable"
-              : `${availability.accepting} of ${availability.connected} connected nodes can accept a request now`}
-          </span>
-          <span className={`font-mono font-semibold ${availability.acceptingPct === null ? UNKNOWN_VALUE_CLASS : READY_VALUE_CLASS}`}>
-            {availability.acceptingPct === null ? "—" : `${availability.acceptingPct}%`}
-          </span>
-        </div>
-        <div className="mt-2 h-2 overflow-hidden rounded-full bg-bg-elevated">
-          <div
-            className="h-full rounded-full bg-accent-green/75 transition-[width] duration-500"
-            style={{ width: `${availability.acceptingPct ?? 0}%` }}
-          />
-        </div>
+      <div className="mt-6 flex flex-wrap justify-between gap-2 border-t border-border-dim pt-4 text-xs leading-5 text-text-tertiary">
+        <span>{props.warmNodes === undefined ? "Loaded count not reported" : `${props.warmNodes.toLocaleString()} loaded nodes`}{props.coldNodes !== undefined ? `; ${props.coldNodes.toLocaleString()} available to load` : ""}</span>
+        <span>{availability.accepting === null ? "Admission data unavailable" : `${availability.acceptingPct}% of connected nodes can accept requests`}</span>
       </div>
     </article>
   );

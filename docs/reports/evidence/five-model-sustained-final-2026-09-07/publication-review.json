@@ -1,0 +1,41 @@
+{
+  "reviewer": "gpt_finish",
+  "reviewed_unix": 1788747614.328321,
+  "status": "INDEPENDENT_PUBLICATION_REVIEW_PASSED",
+  "files": {
+    "report.md": {
+      "sha256": "effc5206ccb3af91d571fa69baeb2143df3308959b0a2587823eee716547eca0",
+      "bytes": 4998
+    },
+    "evidence.json": {
+      "sha256": "63f87b243711a09a7ab94a06edfc40aea5d44fe64131e7419836709dd08bb097",
+      "bytes": 49134
+    },
+    "manifest.json": {
+      "sha256": "4f6ed3807ae89a3c51192fa471aeb43ac7224d7f601738695daff9c72146c606",
+      "bytes": 6297
+    },
+    "evidence.tar.gz": {
+      "sha256": "5581c9a74e6ea9c269a1aaebccb75b602d7a97a0026286615372919ad9914e2d",
+      "bytes": 1057373
+    }
+  },
+  "archive_members_verified": 38,
+  "original_file_identities_verified": 231,
+  "excluded_encrypted_cache_files": 27,
+  "before_after_audit_pairs_identical": 5,
+  "observed_main_rows": 10,
+  "source_claims_checked": [
+    "All four passing cells emitted2048 tokens for both main rows and exceeded10s measured decode",
+    "QAT main rows70/62 tokens natural stop and below1s decode; overall verdict remainsfalse",
+    "ActualQATprompt arrays exactly match complete21621-token canonical prompt, including checklist instruction",
+    "Qwen repeat saved tokens20480/20480/8192, GPT/QAT disabled",
+    "Decoded duration recomputed from retained tokens-after-first-delta divided by decode_tps",
+    "Published root semantic review text hashes match original outputs; Qwen last numbered items57\u201398 and GPTpartial23 verified",
+    "Original failures and analysis-only/capped limitations retained; no universal quality or releasepass",
+    "Whole remote archive not rehashed; no original-mode preservation claim"
+  ],
+  "semantic_review_scope": "Original QAT outputs independently read in full; GPT and Qwen structural/text-position claims checked against actual reports and hash-bound root complete-output reviews. No independent universal model-quality claim.",
+  "remote_actions": false,
+  "model_execution": false
+}

@@ -2,6 +2,8 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,8 +11,6 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
-
-const testLogReportSerial = "TEST-SERIAL"
 
 func newLogReportTestServer() (*Server, *store.MemoryStore) {
 	memoryStore := store.NewMemory(store.Config{})
@@ -26,7 +26,7 @@ func TestProviderLogUploadStoresExplicitReport(t *testing.T) {
 	reportData := []byte(`{"eventMessage":"Provider starting"}` + "\n")
 	req := httptest.NewRequest(
 		http.MethodPost,
-		"/v1/provider/log-report?serial="+testLogReportSerial,
+		"/v1/provider/log-report",
 		bytes.NewReader(reportData),
 	)
 	recorder := httptest.NewRecorder()
@@ -36,14 +36,19 @@ func TestProviderLogUploadStoresExplicitReport(t *testing.T) {
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusCreated, recorder.Body.String())
 	}
-	reports, err := memoryStore.GetLogReports(testLogReportSerial, 10)
-	if err != nil {
-		t.Fatalf("GetLogReports: %v", err)
+	var upload struct {
+		ReportID int64 `json:"report_id"`
 	}
-	if len(reports) != 1 {
-		t.Fatalf("stored reports = %d, want 1", len(reports))
+	if err := json.Unmarshal(recorder.Body.Bytes(), &upload); err != nil {
+		t.Fatalf("decode upload response: %v", err)
 	}
-	stored, err := memoryStore.GetLogReport(reports[0].ID)
+	if upload.ReportID <= 0 {
+		t.Fatalf("report_id = %d, want positive id", upload.ReportID)
+	}
+	if strings.Contains(recorder.Body.String(), `"serial"`) {
+		t.Fatalf("upload response exposed serial data: %s", recorder.Body.String())
+	}
+	stored, err := memoryStore.GetLogReport(upload.ReportID)
 	if err != nil {
 		t.Fatalf("GetLogReport: %v", err)
 	}
@@ -60,22 +65,22 @@ func TestProviderLogUploadValidatesInputAndSize(t *testing.T) {
 		wantStatus int
 	}{
 		{
-			name:       "missing serial",
-			path:       "/v1/provider/log-report",
-			body:       strings.NewReader("diagnostic"),
-			wantStatus: http.StatusBadRequest,
-		},
-		{
 			name:       "empty body",
-			path:       "/v1/provider/log-report?serial=" + testLogReportSerial,
+			path:       "/v1/provider/log-report",
 			body:       strings.NewReader(""),
 			wantStatus: http.StatusBadRequest,
 		},
 		{
 			name:       "body exceeds limit",
-			path:       "/v1/provider/log-report?serial=" + testLogReportSerial,
+			path:       "/v1/provider/log-report",
 			body:       strings.NewReader(strings.Repeat("x", maxLogReportBodySize+1)),
 			wantStatus: http.StatusRequestEntityTooLarge,
+		},
+		{
+			name:       "legacy identity query requires upgrade",
+			path:       "/v1/provider/log-report?serial=PRIVATE-SERIAL",
+			body:       strings.NewReader("diagnostics"),
+			wantStatus: http.StatusUpgradeRequired,
 		},
 	}
 
@@ -88,47 +93,28 @@ func TestProviderLogUploadValidatesInputAndSize(t *testing.T) {
 			srv.handleUploadLogReport(recorder, req)
 
 			if recorder.Code != testCase.wantStatus {
-				t.Fatalf("status = %d, want %d", recorder.Code, testCase.wantStatus)
+				t.Fatalf("status = %d, want %d; body=%s", recorder.Code, testCase.wantStatus, recorder.Body.String())
 			}
-			reports, err := memoryStore.GetLogReports(testLogReportSerial, 10)
-			if err != nil {
-				t.Fatalf("GetLogReports: %v", err)
+			if strings.Contains(recorder.Body.String(), "PRIVATE-SERIAL") {
+				t.Fatalf("rejected upload echoed device identity: %s", recorder.Body.String())
 			}
-			if len(reports) != 0 {
-				t.Fatalf("invalid upload stored %d report(s)", len(reports))
+			if _, err := memoryStore.GetLogReport(1); err == nil {
+				t.Fatal("invalid upload was stored")
 			}
 		})
 	}
 }
 
-func TestAdminCanListAndRetrieveExplicitLogReport(t *testing.T) {
+func TestAdminCanRetrieveExplicitLogReportByID(t *testing.T) {
 	srv, memoryStore := newLogReportTestServer()
 	reportData := []byte("bounded provider diagnostics\n")
-	if err := memoryStore.StoreLogReport(testLogReportSerial, "provider-1", "account-1", reportData); err != nil {
+	reportID, err := memoryStore.StoreLogReport("account-1", reportData)
+	if err != nil {
 		t.Fatalf("StoreLogReport: %v", err)
 	}
-	reports, err := memoryStore.GetLogReports(testLogReportSerial, 10)
-	if err != nil || len(reports) != 1 {
-		t.Fatalf("GetLogReports = %v, %v", reports, err)
-	}
 
-	listReq := httptest.NewRequest(
-		http.MethodGet,
-		"/v1/admin/log-reports?serial="+testLogReportSerial,
-		nil,
-	)
-	listReq.Header.Set("Authorization", "Bearer test-admin-key")
-	listRecorder := httptest.NewRecorder()
-	srv.handleListLogReports(listRecorder, listReq)
-	if listRecorder.Code != http.StatusOK {
-		t.Fatalf("list status = %d, want %d", listRecorder.Code, http.StatusOK)
-	}
-	if strings.Contains(listRecorder.Body.String(), string(reportData)) {
-		t.Fatal("list response exposed the report body")
-	}
-
-	getReq := httptest.NewRequest(http.MethodGet, "/v1/admin/log-reports/1", nil)
-	getReq.SetPathValue("id", "1")
+	getReq := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/v1/admin/log-reports/%d", reportID), nil)
+	getReq.SetPathValue("id", fmt.Sprint(reportID))
 	getReq.Header.Set("Authorization", "Bearer test-admin-key")
 	getRecorder := httptest.NewRecorder()
 	srv.handleGetLogReport(getRecorder, getReq)
@@ -145,16 +131,31 @@ func TestAdminCanListAndRetrieveExplicitLogReport(t *testing.T) {
 
 func TestAdminLogReportRetrievalRequiresAdmin(t *testing.T) {
 	srv, _ := newLogReportTestServer()
-	req := httptest.NewRequest(
-		http.MethodGet,
-		"/v1/admin/log-reports?serial="+testLogReportSerial,
-		nil,
-	)
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/log-reports/1", nil)
+	req.SetPathValue("id", "1")
 	recorder := httptest.NewRecorder()
 
-	srv.handleListLogReports(recorder, req)
+	srv.handleGetLogReport(recorder, req)
 
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusForbidden)
+	}
+}
+
+func TestAdminLogReportSerialListRouteIsRemoved(t *testing.T) {
+	srv, _ := newLogReportTestServer()
+	srv.mux = http.NewServeMux()
+	srv.routes()
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/log-reports?serial=PRIVATE-SERIAL", nil)
+	req.Header.Set("Authorization", "Bearer test-admin-key")
+	recorder := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "PRIVATE-SERIAL") {
+		t.Fatalf("removed route echoed device identity: %s", recorder.Body.String())
 	}
 }

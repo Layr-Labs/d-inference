@@ -13,6 +13,9 @@ func TestReleases(t *testing.T) {
 	if len(releases) != 0 {
 		t.Fatalf("expected 0 releases, got %d", len(releases))
 	}
+	if releasesWithError, err := s.ListReleasesWithError(); err != nil || len(releasesWithError) != 0 {
+		t.Fatalf("empty ListReleasesWithError = %+v, err=%v", releasesWithError, err)
+	}
 	if r := s.GetLatestRelease("macos-arm64"); r != nil {
 		t.Fatal("expected nil latest release")
 	}
@@ -46,6 +49,10 @@ func TestReleases(t *testing.T) {
 	releases = s.ListReleases()
 	if len(releases) != 2 {
 		t.Fatalf("expected 2 releases, got %d", len(releases))
+	}
+	releasesWithError, err := s.ListReleasesWithError()
+	if err != nil || len(releasesWithError) != 2 {
+		t.Fatalf("ListReleasesWithError = %+v, err=%v", releasesWithError, err)
 	}
 
 	// Latest should be r2.
@@ -127,5 +134,13 @@ func TestGetLatestReleasePrefersHigherSemverOverNewerTimestamp(t *testing.T) {
 	}
 	if latest.Version != "0.3.9" {
 		t.Fatalf("latest version = %q, want %q", latest.Version, "0.3.9")
+	}
+}
+
+func TestPostgresListReleasesWithErrorSurfacesQueryFailure(t *testing.T) {
+	s := testPostgresStore(t)
+	s.Close()
+	if releases, err := s.ListReleasesWithError(); err == nil || releases != nil {
+		t.Fatalf("closed-pool ListReleasesWithError = %+v, err=%v; want nil result and non-nil error", releases, err)
 	}
 }

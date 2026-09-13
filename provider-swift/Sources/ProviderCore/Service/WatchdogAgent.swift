@@ -165,6 +165,11 @@ public enum WatchdogAgent: Sendable {
     /// default file while the daemon and `doctor --clear-backend-guard` read
     /// the overridden one. Mirrored in `LaunchAgent.passthroughEnvKeys` for
     /// the daemon side.
+    ///
+    /// Provider inference controls intentionally stay out of this job: the
+    /// watchdog never runs inference, and recovery kickstarts the existing
+    /// provider job, which retains `LaunchAgent.inferencePassthroughEnvKeys`
+    /// from its own plist.
     static let passthroughEnvKeys = [
         "DARKBLOOM_NO_UPDATE_CHECK",
         "DARKBLOOM_STATE_FILE",

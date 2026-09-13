@@ -3,6 +3,7 @@ package routingsim
 import (
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -21,14 +22,19 @@ const (
 	// OutcomeTTFTTooSlow means a candidate exists but even the fastest misses
 	// the TTFT deadline. Consumer reason code: "ttft_too_slow" (HTTP 429).
 	OutcomeTTFTTooSlow Outcome = "ttft_too_slow"
+	// OutcomeNoProvider: no candidate and no capacity rejection — the fleet
+	// cannot serve the model at all (reconstructed fleets can reach this).
+	OutcomeNoProvider Outcome = "no_provider"
+	// OutcomeModelTooLarge: providers advertise the model but none can fit it.
+	OutcomeModelTooLarge Outcome = "model_too_large"
 )
 
-// TTFTDeadline replicates api.ttftDeadline locally: 5s base + 1ms per estimated
-// prompt token. Replicated (not imported) so the harness has no dependency on
-// the unexported api package and cannot drift silently — the calibration test
-// would catch a formula change as a moved cliff.
-func TTFTDeadline(promptTokens int) time.Duration {
-	return 5*time.Second + time.Duration(promptTokens)*time.Millisecond
+// TTFTDeadline mirrors the ordinary API test posture (5s base) plus the shared
+// exact-model overrides. Keeping the policy in modelpolicy prevents this
+// simulation harness from silently using the standard deadline for a model
+// with a shorter upstream SLA.
+func TTFTDeadline(model string, promptTokens int) time.Duration {
+	return modelpolicy.CoordinatorFirstContentDeadline(model, promptTokens, 5*time.Second)
 }
 
 // ClassifyWithGate runs the REAL preflight capacity check for one arrival and
@@ -43,13 +49,19 @@ func TTFTDeadline(promptTokens int) time.Duration {
 // modelTooLarge / no-provider cases collapse into the served default here; a
 // well-formed fleet never produces them.
 func ClassifyWithGate(reg *registry.Registry, a Arrival, softTTFT bool) Outcome {
-	candidateCount, capacityRejections, _, bestTTFT, hasTTFT :=
-		reg.QuickCapacityCheckWithTTFTForRequest(a.Model, a.PromptTokens, a.MaxTokens, registry.RequestTraits{}, false)
+	candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT :=
+		reg.QuickCapacityCheckWithTTFTForRequest(a.Model, a.PromptTokens, a.MaxTokens, registry.RequestTraits{HasTools: a.HasTools}, a.RequiresVision)
 
 	if candidateCount == 0 && capacityRejections > 0 {
 		return OutcomeMachineBusy
 	}
-	if !softTTFT && hasTTFT && bestTTFT > TTFTDeadline(a.PromptTokens) {
+	if candidateCount == 0 && capacityRejections == 0 {
+		if modelTooLarge > 0 {
+			return OutcomeModelTooLarge
+		}
+		return OutcomeNoProvider
+	}
+	if !softTTFT && hasTTFT && bestTTFT > TTFTDeadline(a.Model, a.PromptTokens) {
 		return OutcomeTTFTTooSlow
 	}
 	return OutcomeServed

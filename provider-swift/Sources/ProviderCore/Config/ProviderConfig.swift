@@ -67,6 +67,74 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
         self.updateJitterSeconds = try container.decodeIfPresent(UInt64.self, forKey: .updateJitterSeconds) ?? 300
     }
 }
+/// Operator policy for multi-token prediction.
+///
+/// `auto` enables embedded Qwen 3.5-family and Nemotron Lightning heads, plus the separately published
+/// assistant for the exact `gemma-4-26b-qat-4bit` target. Other Gemma artifacts
+/// and Qwen checkpoints without an embedded declaration require explicit `on`.
+/// Model IDs are exact catalog identities; model types retain the funnel's
+/// case/whitespace normalization.
+///
+/// The declaration alone never activates anything: full artifact inspection
+/// and the process-wide kill switch remain enforced by
+/// `SpecDecArtifactFunnel`, so a declared-but-invalid head falls back to
+/// target-only with a recorded reason.
+public enum MTPMode: String, Sendable, Equatable, Codable {
+    case auto
+    case on
+    case off
+
+    /// `model_type` values whose embedded heads self-activate under `auto`.
+    /// Kept in sync with `SpecDecArtifactFunnel.isInlineTarget` — the
+    /// funnel stays the single authority on which models it will *resolve*;
+    /// this set only decides which ones `auto` is willing to *ask about*.
+    static let automaticEmbeddedModelTypes: Set<String> = [
+        "qwen3_5", "qwen3_5_moe", "nemotron_h",
+    ]
+
+    private static func isAutomaticGemmaTarget(modelType: String?, modelID: String?) -> Bool {
+        modelID == "gemma-4-26b-qat-4bit"
+            && SpecDecArtifactFunnel.isGemma4Target(modelType: modelType)
+    }
+
+    func enablesMTP(
+        forModelType modelType: String?,
+        embeddedArtifactDeclared: Bool,
+        modelID: String? = nil
+    ) -> Bool {
+        switch self {
+        case .on:
+            return true
+        case .off:
+            return false
+        case .auto:
+            if Self.isAutomaticGemmaTarget(modelType: modelType, modelID: modelID) {
+                return true
+            }
+            guard embeddedArtifactDeclared,
+                let raw = modelType?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased(), !raw.isEmpty
+            else { return false }
+            return Self.automaticEmbeddedModelTypes.contains(raw)
+        }
+    }
+
+    /// Startup warms metadata only for eligible external assistants. Embedded
+    /// Qwen and Nemotron heads resolve from their checkpoint and need no catalog request.
+    func requiresCatalogPrewarm(forModelType modelType: String?, modelID: String) -> Bool {
+        switch self {
+        case .off:
+            return false
+        case .auto:
+            return Self.isAutomaticGemmaTarget(modelType: modelType, modelID: modelID)
+        case .on:
+            return SpecDecArtifactFunnel.isGemma4Target(modelType: modelType)
+                || SpecDecArtifactFunnel.isInlineTarget(modelType: modelType)
+        }
+    }
+}
+
 
 public struct BackendSettings: Sendable, Equatable, Codable {
     public var port: UInt16
@@ -103,14 +171,12 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// `engineV2MaxConcurrent`.
     public var engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
-    /// `[backend]`): "auto" (default — resolves CONTIGUOUS as of v0.8.1,
-    /// reverting v0.8.0's paged default; see
-    /// `EngineV2Factory.prepareProductionBackend`), "paged", or
-    /// "contiguous". Setting "paged" explicitly is the ONLY way to put a
-    /// box on paged — the `DARKBLOOM_CBV2_PAGED_KV` env var is a
-    /// negative-polarity kill switch and cannot turn paged on. Note the
-    /// consequence of an explicit "paged" under a contiguous default: a
-    /// box that cannot serve paged now REFUSES the load
+    /// `[backend]`): "auto" follows the exact-model policy in
+    /// `EngineV2KVBackendPolicy.preferredBackend`; "paged" and "contiguous"
+    /// are explicit selections. `DARKBLOOM_CBV2_PAGED_KV` is a
+    /// negative-polarity kill switch and cannot turn paged on.
+    /// Automatic paged failures may fall back, but a box that cannot
+    /// construct an explicitly requested paged backend REFUSES the load
     /// (`EngineV2ProductionError.pagedUnavailable` ⇒ 503, the coordinator
     /// reroutes) rather than degrading, because refusal is reserved for a
     /// selection someone asked for by name.
@@ -161,13 +227,29 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// false: availability beats perfection — a self-test failure may be
     /// transient and the model can still serve via the lazy-load path.
     public var startupSelftestFailClosed: Bool
-    /// MTP (multi-token prediction / speculative decoding) opt-in for CBv2
-    /// (`mtp` under `[backend]`, default false — beta id `mtp`). When enabled,
-    /// slot build resolves a Gemma drafter (`mtp_drafter_path` if set, else the
-    /// catalog entry's `spec_dec` download) and binds it to the engine. Drafter
-    /// resolution/load is fail-open: any failure means plain decode, never a
-    /// slot failure. `DARKBLOOM_CBV2_MTP` remains the engine-side kill switch.
-    public var mtp: Bool
+    /// MTP (multi-token prediction / speculative decoding) policy
+    /// (`mtp_mode` under `[backend]`, default `"auto"` — beta id `mtp`).
+    /// Automatic mode activates Qwen3.5-family checkpoints (`qwen3_5`,
+    /// `qwen3_5_moe`) that declare an embedded head (`mtplx_mtp`), and the
+    /// catalog-declared assistant for exact `gemma-4-26b-qat-4bit`.
+    /// The legacy `mtp = true|false` key is accepted only when `mtp_mode` is
+    /// absent. Serialization emits only `mtp_mode`.
+    ///
+    /// Artifact resolution/load remains fail-open to target-only decode, and
+    /// `DARKBLOOM_CBV2_MTP=0` remains the final process-wide kill switch.
+    public var mtpMode: MTPMode
+    /// Source-compatible view of the former boolean setting. Reading is true
+    /// only for an explicit `.on`; assigning performs an explicit on/off
+    /// override rather than materializing the automatic model decision.
+    public var mtp: Bool {
+        get { mtpMode == .on }
+        set { mtpMode = newValue ? .on : .off }
+    }
+    /// Explicit provider-side atomic first-token deadline policy. Nil means the
+    /// key was absent, so runtime resolution inherits the legacy environment
+    /// control and otherwise securely enforces. Optional encoding preserves
+    /// that source distinction instead of materializing an explicit default.
+    public var prefillDeadlineMode: PrefillDeadlineMode?
     /// Optional local drafter directory override (`mtp_drafter_path` under
     /// `[backend]`) — the canary path: `config.json` + `*.safetensors`, no R2
     /// involved. Takes precedence over the `spec_dec` download when set. nil
@@ -212,7 +294,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         startupPreloadTimeoutSecs: UInt64 = 120,
         startupSelftest: Bool = true,
         startupSelftestFailClosed: Bool = false,
-        mtp: Bool = false,
+        mtp: Bool? = nil,
+        mtpMode: MTPMode = .auto,
+        prefillDeadlineMode: PrefillDeadlineMode? = nil,
         mtpDrafterPath: String? = nil
     ) {
         self.port = port
@@ -229,7 +313,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.startupPreloadTimeoutSecs = startupPreloadTimeoutSecs
         self.startupSelftest = startupSelftest
         self.startupSelftestFailClosed = startupSelftestFailClosed
-        self.mtp = mtp
+        self.mtpMode = mtp.map { $0 ? .on : .off } ?? mtpMode
+        self.prefillDeadlineMode = prefillDeadlineMode
         self.mtpDrafterPath = mtpDrafterPath
     }
 
@@ -248,7 +333,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case startupPreloadTimeoutSecs = "startup_preload_timeout_secs"
         case startupSelftest = "startup_selftest"
         case startupSelftestFailClosed = "startup_selftest_fail_closed"
-        case mtp
+        case legacyMTP = "mtp"
+        case mtpMode = "mtp_mode"
+        case prefillDeadlineMode = "prefill_deadline_mode"
         case mtpDrafterPath = "mtp_drafter_path"
     }
 
@@ -289,7 +376,17 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.startupSelftest = try container.decodeIfPresent(Bool.self, forKey: .startupSelftest) ?? true
         self.startupSelftestFailClosed =
             try container.decodeIfPresent(Bool.self, forKey: .startupSelftestFailClosed) ?? false
-        self.mtp = try container.decodeIfPresent(Bool.self, forKey: .mtp) ?? false
+        if container.contains(.mtpMode) {
+            self.mtpMode = try container.decode(MTPMode.self, forKey: .mtpMode)
+        } else if let legacyMTP = try container.decodeIfPresent(Bool.self, forKey: .legacyMTP) {
+            self.mtpMode = legacyMTP ? .on : .off
+        } else {
+            self.mtpMode = .auto
+        }
+        self.prefillDeadlineMode =
+            try container.decodeIfPresent(
+                PrefillDeadlineMode.self,
+                forKey: .prefillDeadlineMode)
         self.mtpDrafterPath = try container.decodeIfPresent(String.self, forKey: .mtpDrafterPath)
         // Retired keys: presence-only scan so startup can WARN (values are
         // ignored; an old provider.toml must keep loading cleanly).
@@ -297,6 +394,27 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.retiredKeysPresent = RetiredCodingKeys.allCases
             .filter { retired.contains($0) }
             .map(\.rawValue)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(port, forKey: .port)
+        try container.encodeIfPresent(model, forKey: .model)
+        try container.encode(enabledModels, forKey: .enabledModels)
+        try container.encode(idleTimeoutMins, forKey: .idleTimeoutMins)
+        try container.encode(maxModelSlots, forKey: .maxModelSlots)
+        try container.encode(engineV2MaxConcurrent, forKey: .engineV2MaxConcurrent)
+        try container.encode(engineV2MaxConcurrentByModel, forKey: .engineV2MaxConcurrentByModel)
+        try container.encode(engineV2KVBackend, forKey: .engineV2KVBackend)
+        try container.encode(engineV2KVBackendByModel, forKey: .engineV2KVBackendByModel)
+        try container.encode(startupPreload, forKey: .startupPreload)
+        try container.encode(preloadModels, forKey: .preloadModels)
+        try container.encode(startupPreloadTimeoutSecs, forKey: .startupPreloadTimeoutSecs)
+        try container.encode(startupSelftest, forKey: .startupSelftest)
+        try container.encode(startupSelftestFailClosed, forKey: .startupSelftestFailClosed)
+        try container.encode(mtpMode, forKey: .mtpMode)
+        try container.encodeIfPresent(prefillDeadlineMode, forKey: .prefillDeadlineMode)
+        try container.encodeIfPresent(mtpDrafterPath, forKey: .mtpDrafterPath)
     }
 }
 
@@ -338,30 +456,29 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     /// (`config_version`, top level, written by the startup stamp in
     /// `migrateConfigIfNeeded`).
     ///
-    /// Its whole job is to date the file, so that a cap the release wrote can
-    /// be told apart from one an operator typed — for exactly one boot per
-    /// schema generation. That evidence is spent at the migration below; once
-    /// the file carries the new stamp, its cap means what it says forever.
+    /// Its job is to date generated values so a schema migration can tell them
+    /// apart from an operator's current explicit choices. That evidence is
+    /// spent once; after the file carries the new stamp, its values mean what
+    /// they say forever.
     ///
-    /// Decoding always reports ``currentConfigVersion`` — the field
-    /// describes the schema this process speaks, and the pre-migration state
-    /// is reported through ``appliedMigrations`` instead.
+    /// Decoding always reports ``currentConfigVersion`` — the field describes
+    /// the schema this process speaks. Cap migrations that require an operator
+    /// warning are reported through ``appliedMigrations`` instead.
     public var configVersion: Int
-    /// Ids of the one-time migrations this decode applied, for the startup
-    /// WARN (see `RetiredKnobWarnings`). Derived, never encoded — the same
-    /// contract as ``BackendSettings/retiredKeysPresent``.
+    /// Ids of migrations this decode must surface in a startup warning (see
+    /// `RetiredKnobWarnings`). Derived, never encoded — the same contract as
+    /// ``BackendSettings/retiredKeysPresent``.
     public internal(set) var appliedMigrations: [String] = []
 
     /// Current `provider.toml` schema version.
     ///
     ///   * absent = pre-v0.8.0
     ///   * 1 = v0.8.0, which raised the concurrency default 4 -> 8
-    ///   * 2 = v0.8.1, which reverts it to 4 alongside the contiguous KV
-    ///     default
+    ///   * 2 = v0.8.1, which reverted it to 4 with contiguous KV
+    ///   * 3 = tri-state MTP; generated legacy false migrates to automatic
     ///
-    /// Bump this in the same commit as the ``ConcurrencyDefaultMigration``
-    /// step that consumes the previous value, never on its own.
-    public static let currentConfigVersion = 2
+    /// Bump only with a versioned migration that consumes the previous value.
+    public static let currentConfigVersion = MTPModeDefaultMigration.targetConfigVersion
 
     public init(
         provider: ProviderSettings,
@@ -388,9 +505,24 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         case configVersion = "config_version"
     }
 
+    /// Parent-level probe for fields whose migration depends on the top-level
+    /// config stamp. `BackendSettings` cannot see `config_version` while it is
+    /// decoding its nested table.
+    private struct BackendMTPMigrationProbe: Decodable {
+        let legacyMTP: Bool?
+        let mtpMode: MTPMode?
+
+        enum CodingKeys: String, CodingKey {
+            case legacyMTP = "mtp"
+            case mtpMode = "mtp_mode"
+        }
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.provider = try container.decodeIfPresent(ProviderSettings.self, forKey: .provider) ?? ProviderSettings(name: "darkbloom")
+        let mtpProbe = try container.decodeIfPresent(
+            BackendMTPMigrationProbe.self, forKey: .backend)
         var backend = try container.decodeIfPresent(BackendSettings.self, forKey: .backend) ?? BackendSettings()
         self.coordinator = try container.decodeIfPresent(CoordinatorSettings.self, forKey: .coordinator) ?? CoordinatorSettings()
         self.schedule = try container.decodeIfPresent(ScheduleConfig.self, forKey: .schedule)
@@ -398,8 +530,9 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
             GemmaOptimizationSettings.self, forKey: .gemmaOptimizations
         ) ?? GemmaOptimizationSettings()
 
-        // One-time concurrency-default migrations, selected by the stamp the
-        // file carries.
+        // Generated-value migrations selected by the stamp the file carries.
+        // MTP false from a pre-tri-state schema becomes automatic unless the
+        // authoritative `mtp_mode` key is present. Legacy true remains on.
         //
         // Deliberately narrow: a step fires only on the exact cap the release
         // generated, so an operator who picked any other value in range is
@@ -415,6 +548,10 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         // The predicate is shared with the on-disk rewrite so this in-memory
         // change and the durable text surgery cannot disagree.
         let onDiskVersion = try container.decodeIfPresent(Int.self, forKey: .configVersion)
+        backend.mtpMode = MTPModeDefaultMigration.resolvedMode(
+            onDiskVersion: onDiskVersion,
+            explicitMode: mtpProbe?.mtpMode,
+            legacyValue: mtpProbe?.legacyMTP)
         let migrated = ConcurrencyDefaultMigration.resolvedCap(
             onDiskVersion: onDiskVersion,
             cap: backend.engineV2MaxConcurrent,

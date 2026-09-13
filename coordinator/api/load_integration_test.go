@@ -173,6 +173,15 @@ func connectAndPrepareProvider(t *testing.T, ctx context.Context, tsURL string, 
 		DecodeTPS:               decodeTPS,
 		PrivacyCapabilities:     testPrivacyCaps(),
 	}
+	if model == registry.Qwen38NAXModelID {
+		regMsg.Hardware.ChipName = "Apple M5 Max"
+		regMsg.Hardware.ChipFamily = "M5"
+		regMsg.RuntimeCapabilities = []string{
+			registry.ProviderCapabilityAppleM5,
+			registry.ProviderCapabilityMLXNAX,
+		}
+		regMsg.TemplateHashes = map[string]string{"mlx_metallib": testHash}
+	}
 	regData, _ := json.Marshal(regMsg)
 	if err := conn.Write(ctx, websocket.MessageText, regData); err != nil {
 		t.Fatalf("write register: %v", err)

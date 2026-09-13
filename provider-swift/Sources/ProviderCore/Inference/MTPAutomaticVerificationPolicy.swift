@@ -1,13 +1,25 @@
 import Foundation
+import MLXLMCommon
 
 public enum MTPAutomaticVerificationPolicy {
     public static let initialDraftTokens = 1
 
-    /// Request-stateful assistants own enough trusted history to use the
-    /// engine's marginal 0...4 controller. Stateless Gemma keeps the
-    /// established fixed initial depth.
-    static func fixedDraftTokens(usesRequestStatefulDrafter: Bool) -> Int? {
-        usesRequestStatefulDrafter ? nil : initialDraftTokens
+    /// Qwen retains its request-stateful controller and drafter-owned cap.
+    /// Exact Gemma QAT can alternate ordinary decode with one draft token;
+    /// all other stateless assistants retain fixed depth one. Explicit offline
+    /// verification controls retain fixed depth one for comparable measurements.
+    static func draftDepthPolicy(
+        usesRequestStatefulDrafter: Bool,
+        modelID: String? = nil,
+        hasBenchmarkVerificationOverride: Bool = false
+    ) -> (maximum: Int, fixed: Int?) {
+        if usesRequestStatefulDrafter {
+            return (CBv2MTPConfig.testedMaxDraftTokens, nil)
+        }
+        if modelID == "gemma-4-26b-qat-4bit", !hasBenchmarkVerificationOverride {
+            return (1, nil)
+        }
+        return (CBv2MTPConfig.testedMaxDraftTokens, initialDraftTokens)
     }
 
     public static func maxRectangularTokens(

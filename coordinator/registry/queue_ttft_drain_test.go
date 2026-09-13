@@ -240,3 +240,143 @@ func TestDrainSoftGateUnaffectedByTTFT(t *testing.T) {
 		t.Fatalf("queue depth = %d, want 1 (busy soft-gate waiter requeued)", depth)
 	}
 }
+
+func TestDrainRefreshesAbsoluteFirstContentBudgetBeforeReservation(t *testing.T) {
+	reg := New(testLogger())
+	model := "absolute-drain-budget"
+	makeSchedulerProvider(t, reg, "fast-box", model, 100)
+	reg.SetQueue(NewRequestQueue(4, 5*time.Second))
+
+	pr := &PendingRequest{
+		RequestID:             "q-absolute-refresh",
+		Model:                 model,
+		EstimatedPromptTokens: 1,
+		RequestedMaxTokens:    32,
+		MaxTTFTMs:             5_000,
+		FirstContentDeadline:  time.Now().Add(2 * time.Second),
+	}
+	req := enqueueTTFTWaiter(t, reg, pr)
+	time.Sleep(60 * time.Millisecond)
+	reg.DrainQueuedRequestsForModel(model)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := reg.Queue().WaitForProviderContext(ctx, req); err != nil {
+		t.Fatalf("waiter assignment: %v", err)
+	}
+	if pr.MaxTTFTMs <= 0 || pr.MaxTTFTMs >= 1_980 {
+		t.Fatalf("drain MaxTTFTMs = %.1f, want refreshed remaining budget", pr.MaxTTFTMs)
+	}
+	if pr.FirstContentBudgetMS <= 0 ||
+		float64(pr.FirstContentBudgetMS) != pr.MaxTTFTMs {
+		t.Fatalf(
+			"wire budget=%d MaxTTFTMs=%.1f, want one refreshed clock",
+			pr.FirstContentBudgetMS, pr.MaxTTFTMs)
+	}
+}
+
+func TestDrainRejectsExpiredAbsoluteFirstContentDeadline(t *testing.T) {
+	reg := New(testLogger())
+	model := "expired-drain-budget"
+	makeSchedulerProvider(t, reg, "fast-box", model, 100)
+	reg.SetQueue(NewRequestQueue(4, 5*time.Second))
+
+	pr := &PendingRequest{
+		RequestID:             "q-absolute-expired",
+		Model:                 model,
+		EstimatedPromptTokens: 1,
+		RequestedMaxTokens:    32,
+		MaxTTFTMs:             5_000,
+		FirstContentDeadline:  time.Now().Add(-time.Millisecond),
+	}
+	req := enqueueTTFTWaiter(t, reg, pr)
+	reg.DrainQueuedRequestsForModel(model)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := reg.Queue().WaitForProviderContext(ctx, req); !errors.Is(
+		err, ErrQueueFirstContentDeadline) {
+		t.Fatalf("expired waiter error = %v, want absolute deadline", err)
+	}
+	if depth := reg.Queue().QueueSize(model); depth != 0 {
+		t.Fatalf("expired queue depth = %d, want 0", depth)
+	}
+}
+
+func TestQueueCancellationAfterReservationOfferReleasesProvider(t *testing.T) {
+	reg := New(testLogger())
+	const model = "queue-handoff-cancel-model"
+	provider := makeSchedulerProvider(t, reg, "queue-handoff-provider", model, 100)
+	reg.SetQueue(NewRequestQueue(4, time.Second))
+
+	offered := make(chan struct{})
+	releaseSend := make(chan struct{})
+	pr := &PendingRequest{
+		RequestID:             "queue-handoff-request",
+		Model:                 model,
+		EstimatedPromptTokens: 32,
+		RequestedMaxTokens:    32,
+	}
+	req := &QueuedRequest{
+		RequestID: pr.RequestID,
+		Model:     model,
+		Pending:   pr,
+		// Keep the scheduler at the ownership boundary until cancellation has
+		// run, making the former buffered-send leak race deterministic.
+		ResponseCh: make(chan *Provider),
+		beforeAssignmentSend: func() {
+			close(offered)
+			<-releaseSend
+		},
+	}
+	if err := reg.Queue().Enqueue(req); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	waitErr := make(chan error, 1)
+	go func() {
+		_, err := reg.Queue().WaitForProviderContext(ctx, req)
+		waitErr <- err
+	}()
+	drainDone := make(chan struct{})
+	go func() {
+		reg.DrainQueuedRequestsForModel(model)
+		close(drainDone)
+	}()
+
+	select {
+	case <-offered:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not publish reservation offer")
+	}
+	if provider.PendingCount() != 1 {
+		t.Fatalf("pending count before cancellation = %d, want 1", provider.PendingCount())
+	}
+
+	cancel()
+	select {
+	case err := <-waitErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("wait error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled queue waiter did not return")
+	}
+	close(releaseSend)
+	select {
+	case <-drainDone:
+	case <-time.After(time.Second):
+		t.Fatal("queue drain did not finish after cancellation")
+	}
+
+	if provider.PendingCount() != 0 {
+		t.Fatalf("pending count after cancellation = %d, want 0", provider.PendingCount())
+	}
+	provider.mu.Lock()
+	status := provider.Status
+	provider.mu.Unlock()
+	if status == StatusServing {
+		t.Fatalf("provider remained busy after rejected handoff: %s", status)
+	}
+}

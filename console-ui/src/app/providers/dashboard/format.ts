@@ -7,10 +7,11 @@ export {
   formatRelative,
   formatNumber,
   abbreviateNumber,
-  maskSerial,
   shortModelName,
   pct,
   clampPct,
   formatTps,
   humanizeUptime,
+  formatIdleWindow,
+  describeIdlePolicy,
 } from "@/lib/format";

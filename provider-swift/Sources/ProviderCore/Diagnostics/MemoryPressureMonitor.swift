@@ -39,6 +39,10 @@ public final class MemoryPressureMonitor: @unchecked Sendable {
     private let clearCache: @Sendable () -> Void
     private let writeMarker: @Sendable (MemoryPressureLevel) -> Void
     private let emit: @Sendable (MemoryPressureLevel, TelemetrySeverity) -> Void
+    /// Observer invoked with EVERY level the monitor handles (policy-free —
+    /// `emit` only fires for levels with a telemetry severity, i.e. critical,
+    /// so a heartbeat that wants the last warning must hook here).
+    private let onLevel: (@Sendable (MemoryPressureLevel) -> Void)?
     private let queue: DispatchQueue
     private var source: DispatchSourceMemoryPressure?
 
@@ -46,12 +50,14 @@ public final class MemoryPressureMonitor: @unchecked Sendable {
         queue: DispatchQueue = DispatchQueue(label: "dev.darkbloom.memory-pressure"),
         clearCache: @escaping @Sendable () -> Void,
         writeMarker: @escaping @Sendable (MemoryPressureLevel) -> Void,
-        emit: @escaping @Sendable (MemoryPressureLevel, TelemetrySeverity) -> Void
+        emit: @escaping @Sendable (MemoryPressureLevel, TelemetrySeverity) -> Void,
+        onLevel: (@Sendable (MemoryPressureLevel) -> Void)? = nil
     ) {
         self.queue = queue
         self.clearCache = clearCache
         self.writeMarker = writeMarker
         self.emit = emit
+        self.onLevel = onLevel
     }
 
     public func start() {
@@ -72,6 +78,7 @@ public final class MemoryPressureMonitor: @unchecked Sendable {
     /// Testable core: apply the policy for a level and invoke the injected
     /// actions. Safe to call directly from tests.
     public func handle(_ level: MemoryPressureLevel) {
+        onLevel?(level)
         let response = MemoryPressurePolicy.response(for: level)
         if response.clearCache { clearCache() }
         if response.writeMarker { writeMarker(level) }

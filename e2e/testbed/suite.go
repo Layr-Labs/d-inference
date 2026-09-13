@@ -2,8 +2,10 @@ package testbed
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -24,6 +26,8 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/e2e/testbed/deps"
 )
+
+var ErrProviderIneligible = errors.New("provider lacks expected testbed capabilities")
 
 type tcpListener struct {
 	inner   net.Listener
@@ -49,6 +53,8 @@ func execCommandContext(ctx context.Context, name string, args ...string) *exec.
 }
 
 type Suite struct {
+	providerAttempts []*Provider
+
 	Ctx    context.Context
 	Logger *slog.Logger
 	Config SuiteConfig
@@ -72,6 +78,7 @@ type Suite struct {
 	// A key is present for every provider that registered; a nil value means
 	// that provider reported no block at all.
 	privacyAtRegistration map[string]*protocol.PrivacyCapabilities
+	targetNonce           string
 }
 
 type Coordinator struct {
@@ -85,6 +92,11 @@ type Coordinator struct {
 }
 
 type Provider struct {
+	Target     *ProviderTarget
+	AccountID  string
+	suiteNonce string
+	owned      *ownedProvider
+
 	BinaryPath    string
 	Logger        *slog.Logger
 	ProviderIndex int
@@ -102,8 +114,8 @@ type Provider struct {
 	done   chan struct{}
 
 	// generatedConfig holds the provider TOML this instance wrote into
-	// StateDir. Empty when no KV-backend / concurrency knob was set, which is
-	// the default and launches with no --config at all.
+	// StateDir. Every provider gets one so auto-update and auto-restart stay off;
+	// KV-backend / concurrency keys remain optional within it.
 	generatedConfig string
 	// canonicalConfigExisted records whether ~/.config/darkbloom/provider.toml
 	// was present at launch. The provider copies a --config file there when it
@@ -147,6 +159,9 @@ func NewSuite(cfg SuiteConfig) *Suite {
 	if cfg.QueueTimeout <= 0 {
 		cfg.QueueTimeout = 120 * time.Second
 	}
+	if cfg.FirstContentDeadlineBase <= 0 {
+		cfg.FirstContentDeadlineBase = ProductionFirstContentDeadlineBase
+	}
 	if cfg.SeedBalance <= 0 {
 		cfg.SeedBalance = 100_000_000
 	}
@@ -176,9 +191,26 @@ func (s *Suite) PrimaryModelID() string {
 
 func (s *Suite) Start(ctx context.Context) (err error) {
 	s.Ctx = ctx
+	if err := validateProviderTargets(s.Config.ProviderTargets, s.Config.TotalProviders()); err != nil {
+		return err
+	}
+	if s.Config.ProviderTargets != nil {
+		if s.Config.ProviderRelay == nil || !s.Config.UseMemoryStore {
+			return fmt.Errorf("owned targets require the loopback relay and isolated memory store")
+		}
+		if s.Config.PrefixCacheMode != "off" && s.Config.PrefixCacheMode != "ssd" {
+			return fmt.Errorf("owned targets require explicit cache mode")
+		}
+		nonce := make([]byte, 16)
+		if _, err := rand.Read(nonce); err != nil {
+			return err
+		}
+		s.targetNonce = hex.EncodeToString(nonce)
+	}
+
 	defer func() {
 		if err != nil {
-			s.Stop()
+			err = errors.Join(err, s.StopAndWait())
 		}
 	}()
 
@@ -205,16 +237,29 @@ func (s *Suite) Start(ctx context.Context) (err error) {
 	return err
 }
 
-func (s *Suite) Stop() {
-	for _, p := range s.Providers {
-		p.Stop()
+func (s *Suite) Stop() { _ = s.StopAndWait() }
+
+func (s *Suite) StopAndWait() error {
+	var result error
+	seen := make(map[*Provider]bool)
+	for _, providers := range [][]*Provider{s.Providers, s.providerAttempts} {
+		for _, p := range providers {
+			if !seen[p] {
+				seen[p] = true
+				result = errors.Join(result, p.StopAndWait())
+			}
+		}
+	}
+	if s.Config.ProviderRelay != nil {
+		s.Config.ProviderRelay.Close()
 	}
 	if s.Coordinator != nil {
-		s.Coordinator.Stop()
+		result = errors.Join(result, s.Coordinator.Stop())
 	}
 	if s.Pg != nil {
 		s.Pg.Stop()
 	}
+	return result
 }
 
 func (s *Suite) startPostgres() error {
@@ -262,23 +307,31 @@ func (s *Suite) createUserPool() error {
 	s.Logger.Info("user pool created", "count", len(s.Users))
 	return nil
 }
-
 func (s *Suite) startCoordinator() error {
 	reg := registry.New(s.Logger)
 	reg.MinTrustLevel = registry.TrustLevel(TrustNone)
 
-	var catalog []registry.CatalogEntry
-	for _, id := range s.Config.AllModelIDs() {
-		catalog = append(catalog, registry.CatalogEntry{ID: id})
+	if len(s.Config.CatalogModels) == 0 {
+		var catalog []registry.CatalogEntry
+		for _, id := range s.Config.AllModelIDs() {
+			catalog = append(catalog, registry.CatalogEntry{ID: id})
+		}
+		reg.SetModelCatalog(catalog)
+	} else if err := seedCatalog(s.PgStore, s.Config.CatalogModels, s.Config.ModelAliases); err != nil {
+		return err
 	}
-	reg.SetModelCatalog(catalog)
 
-	srv := api.NewServer(reg, s.PgStore, api.ServerConfig{}, s.Logger)
+	srv := api.NewServer(reg, s.PgStore, api.ServerConfig{
+		FirstContentDeadlineBase: s.Config.FirstContentDeadlineBase,
+	}, s.Logger)
+	if len(s.Config.CatalogModels) > 0 {
+		srv.SyncModelCatalog()
+	}
 	srv.SetAdminKey("testbed-admin-key")
 	srv.SetRuntimeManifest(&api.RuntimeManifest{})
 	srv.SetChallengeInterval(1 * time.Hour)
 	srv.SetSkipChallenge(true)
-	srv.SetAllowDuplicateProviderSerialsForTesting(true)
+	srv.SetAllowDuplicateProviderSerialsForTesting(s.Config.ProviderTargets == nil)
 
 	ledger := payments.NewLedger(s.PgStore)
 	billingSvc := billing.NewService(s.PgStore, ledger, s.Logger, billing.Config{MockMode: true})
@@ -295,9 +348,17 @@ func (s *Suite) startCoordinator() error {
 }
 
 func (s *Suite) startProviders() error {
-	binaryPath, err := BuildProvider(s.Ctx, s.Logger)
-	if err != nil {
-		return fmt.Errorf("build provider: %w", err)
+	providerURL := s.Coordinator.BaseURL()
+	if s.Config.ProviderRelay != nil {
+		providerURL = s.Config.ProviderRelay.Start(providerURL)
+	}
+	var binaryPath string
+	if s.Config.ProviderTargets == nil {
+		var err error
+		binaryPath, err = BuildProvider(s.Ctx, s.Logger)
+		if err != nil {
+			return fmt.Errorf("build provider: %w", err)
+		}
 	}
 
 	providerIdx := 0
@@ -317,16 +378,31 @@ func (s *Suite) startProviders() error {
 				return fmt.Errorf("prepare provider auth %d: %w", providerIdx, err)
 			}
 			p.AuthDir = authDir
-			if err := p.Start(s.Ctx, s.Coordinator.BaseURL(), ProviderConfig{
+			p.AccountID = fmt.Sprintf("testbed-provider-%d", providerIdx)
+			if s.Config.ProviderTargets != nil {
+				target := s.Config.ProviderTargets[providerIdx]
+				p.Target = &target
+				p.suiteNonce = s.targetNonce
+			}
+			if p.Target != nil {
+				s.providerAttempts = append(s.providerAttempts, p)
+			}
+			if err := p.Start(s.Ctx, providerURL, ProviderConfig{
 				ModelIDs:                   modelIDs,
+				PrefixCacheMode:            s.Config.PrefixCacheMode,
 				TrustLevel:                 TrustNone,
+				MTPDrafterPath:             s.Config.MTPDrafterPath,
+				MTPMode:                    s.Config.MTPMode,
 				AuthTokenPath:              authTokenPath,
 				EnableEphemeralPrefixCache: s.Config.EnableEphemeralPrefixCache,
 				KVBackend:                  s.Config.KVBackend,
 				MaxConcurrent:              s.Config.MaxConcurrent,
 			}); err != nil {
-				_ = os.RemoveAll(authDir)
-				return fmt.Errorf("start provider %d (%s): %w", providerIdx, strings.Join(modelIDs, ","), err)
+				cleanupErr := p.StopAndWait()
+				if cleanupErr == nil {
+					_ = os.RemoveAll(authDir)
+				}
+				return errors.Join(fmt.Errorf("start provider %d (%s): %w", providerIdx, strings.Join(modelIDs, ","), err), cleanupErr)
 			}
 			s.Providers = append(s.Providers, p)
 			providerIdx++
@@ -378,6 +454,9 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 	if s.Coordinator.Registry.ProviderCount() < expectedCount {
 		return fmt.Errorf("only %d/%d providers registered after %v", s.Coordinator.Registry.ProviderCount(), expectedCount, timeout)
 	}
+	if _, err := s.BoundProviders(); err != nil {
+		return err
+	}
 	s.Logger.Info("providers registered", "count", s.Coordinator.Registry.ProviderCount())
 
 	time.Sleep(3 * time.Second)
@@ -385,19 +464,85 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 	// Snapshot each provider's self-reported privacy_capabilities BEFORE the
 	// force-trust mutation below overwrites it; see privacyAtRegistration.
 	snapshot := make(map[string]*protocol.PrivacyCapabilities)
+	var ineligible string
+	var capabilityProviderIDs []string
 
 	// Force-trust all providers and link them to a user account so the
-	// payout destination check passes when billing is enabled.
+	// payout destination check passes when billing is enabled. Capability-aware
+	// suites first validate the registration's hardware and runtime claims,
+	// then grant the stronger test trust required by protected catalog models.
 	s.Coordinator.Registry.ForEachProvider(func(p *registry.Provider) {
 		p.Mu().Lock()
+		defer p.Mu().Unlock()
 		if reported := p.PrivacyCapabilities; reported != nil {
 			copied := *reported
 			snapshot[p.ID] = &copied
 		} else {
 			snapshot[p.ID] = nil
 		}
+		if len(s.Config.ExpectedProviderCapabilities) > 0 {
+			reported := make(map[string]struct{}, len(p.ReportedRuntimeCapabilities))
+			for _, capability := range p.ReportedRuntimeCapabilities {
+				reported[capability] = struct{}{}
+			}
+			for _, capability := range s.Config.ExpectedProviderCapabilities {
+				if _, ok := reported[capability]; !ok && ineligible == "" {
+					ineligible = fmt.Sprintf(
+						"provider %s reported chip_family=%q and capabilities=%v; missing %q",
+						p.ID, p.Hardware.ChipFamily, p.ReportedRuntimeCapabilities, capability)
+				}
+				if capability == registry.ProviderCapabilityAppleM5 &&
+					p.Hardware.ChipFamily != "M5" && ineligible == "" {
+					ineligible = fmt.Sprintf(
+						"provider %s reported chip_family=%q, want M5",
+						p.ID, p.Hardware.ChipFamily)
+				}
+			}
+			metallibHash := p.TemplateHashes["mlx_metallib"]
+			if metallibHash == "" && ineligible == "" {
+				ineligible = fmt.Sprintf(
+					"provider %s did not bind mlx_metallib in its registration", p.ID)
+			}
+			verified := p.AttestationResult
+			if (verified == nil || !verified.Valid) && ineligible == "" {
+				ineligible = fmt.Sprintf(
+					"provider %s has no valid registration-verified attestation claims", p.ID)
+			}
+			if verified != nil && verified.Valid && ineligible == "" {
+				if verified.ChipFamily != p.Hardware.ChipFamily {
+					ineligible = fmt.Sprintf(
+						"provider %s signed chip_family=%q but reported %q",
+						p.ID, verified.ChipFamily, p.Hardware.ChipFamily)
+				}
+				signed := make(map[string]struct{}, len(verified.RuntimeCapabilities))
+				for _, capability := range verified.RuntimeCapabilities {
+					signed[capability] = struct{}{}
+				}
+				if len(signed) != len(reported) && ineligible == "" {
+					ineligible = fmt.Sprintf(
+						"provider %s signed capabilities=%v but reported %v",
+						p.ID, verified.RuntimeCapabilities, p.ReportedRuntimeCapabilities)
+				}
+				for capability := range reported {
+					if _, ok := signed[capability]; !ok && ineligible == "" {
+						ineligible = fmt.Sprintf(
+							"provider %s signed capabilities=%v but reported %v",
+							p.ID, verified.RuntimeCapabilities, p.ReportedRuntimeCapabilities)
+					}
+				}
+				if verified.MetallibHash != metallibHash && ineligible == "" {
+					ineligible = fmt.Sprintf(
+						"provider %s signed mlx_metallib=%q but reported %q",
+						p.ID, verified.MetallibHash, metallibHash)
+				}
+			}
+			if ineligible == "" {
+				capabilityProviderIDs = append(capabilityProviderIDs, p.ID)
+			}
+		} else {
+			p.TrustLevel = registry.TrustSelfSigned
+		}
 		p.Status = registry.StatusOnline
-		p.TrustLevel = registry.TrustSelfSigned
 		p.ChallengeVerifiedSIP = true
 		p.LastChallengeVerified = time.Now()
 		p.FailedChallenges = 0
@@ -416,8 +561,92 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 		if p.AccountID == "" && len(s.Users) > 0 {
 			p.AccountID = s.Users[0].AccountID
 		}
-		p.Mu().Unlock()
 	})
+	if ineligible != "" {
+		return fmt.Errorf("%w: %s", ErrProviderIneligible, ineligible)
+	}
+	for _, providerID := range capabilityProviderIDs {
+		p := s.Coordinator.Registry.GetProvider(providerID)
+		if p == nil {
+			return fmt.Errorf("provider %s disconnected during capability admission", providerID)
+		}
+		p.SetAttested(true, registry.TrustHardware)
+		p.SetFreshCodeAttested()
+		p.Mu().Lock()
+		p.RuntimeVerified = true
+		p.RuntimeManifestChecked = true
+		p.MetallibVerified = true
+		p.Mu().Unlock()
+		if err := s.Coordinator.Registry.ReconcileAttestedRuntimeCapabilities(providerID); err != nil {
+			return fmt.Errorf("reconcile signed provider capabilities for %s: %w", providerID, err)
+		}
+		p.Mu().Lock()
+		effective := append([]string(nil), p.RuntimeCapabilities...)
+		p.Mu().Unlock()
+		for _, required := range s.Config.ExpectedProviderCapabilities {
+			found := false
+			for _, capability := range effective {
+				if capability == required {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf(
+					"signed capability reconciliation omitted %q for provider %s: %v",
+					required, providerID, effective)
+			}
+		}
+	}
+	if len(s.Config.ExpectedProviderCapabilities) > 0 {
+		models := s.Config.AllModelIDs()
+		desired := make([]protocol.DesiredModelEntry, 0, len(models))
+		covered := make(map[string]struct{}, len(s.Config.ModelAliases))
+		for _, alias := range s.Config.ModelAliases {
+			if !alias.Active {
+				continue
+			}
+			desired = append(desired, protocol.DesiredModelEntry{
+				ModelName: alias.AliasID, DesiredBuild: alias.DesiredBuild,
+				PreviousBuild: alias.PreviousBuild,
+			})
+			covered[alias.DesiredBuild] = struct{}{}
+			covered[alias.PreviousBuild] = struct{}{}
+		}
+		for _, model := range models {
+			if _, ok := covered[model]; !ok {
+				desired = append(desired, protocol.DesiredModelEntry{
+					ModelName: model, DesiredBuild: model,
+				})
+			}
+		}
+		for _, providerID := range s.Coordinator.Registry.ProviderIDs() {
+			if err := s.Coordinator.Registry.SendDesiredModels(providerID, desired); err != nil {
+				return fmt.Errorf("refresh protected model inventory on provider %s: %w", providerID, err)
+			}
+		}
+		deadline := time.Now().Add(60 * time.Second)
+		for time.Now().Before(deadline) {
+			snapshot := s.Coordinator.Registry.ModelProviderSnapshot()
+			ready := true
+			for _, model := range models {
+				if snapshot[model] == 0 {
+					ready = false
+					break
+				}
+			}
+			if ready {
+				break
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		snapshot := s.Coordinator.Registry.ModelProviderSnapshot()
+		for _, model := range models {
+			if snapshot[model] == 0 {
+				return fmt.Errorf("protected model %q was not re-advertised after capability admission", model)
+			}
+		}
+	}
 	s.privacyMu.Lock()
 	s.privacyAtRegistration = snapshot
 	s.privacyMu.Unlock()
@@ -491,148 +720,4 @@ func (c *Coordinator) Stop() error {
 		}
 	}
 	return nil
-}
-
-func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg ProviderConfig) error {
-	binaryPath := p.BinaryPath
-	if binaryPath == "" {
-		binaryPath = findProviderBinary()
-	}
-	if binaryPath == "" {
-		return fmt.Errorf("provider binary not found (set DARKBLOOM_PROVIDER_BINARY or ensure 'darkbloom' is in PATH)")
-	}
-	p.BinaryPath = binaryPath
-
-	ctx, p.cancel = context.WithCancel(ctx)
-
-	wsURL := coordinatorURL
-	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
-	wsURL = strings.Replace(wsURL, "http://", "ws://", 1)
-	if !strings.HasSuffix(wsURL, "/ws/provider") {
-		wsURL += "/ws/provider"
-	}
-
-	args := []string{"start", "--foreground", "--coordinator-url", wsURL}
-	if len(cfg.ModelIDs) > 0 {
-		for _, modelID := range cfg.ModelIDs {
-			args = append(args, "--model", modelID)
-		}
-	} else if cfg.ModelID != "" {
-		args = append(args, "--model", cfg.ModelID)
-	}
-
-	// Isolate the provider's persisted state per testbed instance. The
-	// provider defaults these files to ~/.darkbloom/, which is shared by
-	// every provider process on the machine (and across CI runs on a
-	// persistent runner): test 1's provider would persist its loaded-model
-	// set there, and test 2's freshly-booted provider would then
-	// startup-preload + self-test it — behavior a fresh boot must not have.
-	if p.StateDir == "" {
-		stateDir, err := os.MkdirTemp("",
-			"darkbloom-testbed-state-"+strconv.Itoa(p.ProviderIndex)+"-")
-		if err != nil {
-			return fmt.Errorf("create provider state dir: %w", err)
-		}
-		p.StateDir = stateDir
-	}
-
-	// The KV backend and the per-slot concurrency cap have no env-var or CLI
-	// equivalent (DARKBLOOM_CBV2_PAGED_KV can only force paged OFF), so
-	// selecting them means handing the provider a TOML. Unset knobs render no
-	// file and add no argument: the default launch stays byte-identical.
-	generated, err := BuildProviderTOML(cfg, p.ProviderIndex)
-	if err != nil {
-		return fmt.Errorf("provider %d config: %w", p.ProviderIndex, err)
-	}
-	// Logged UNCONDITIONALLY, and before the file exists, because the case
-	// worth seeing in a green log is the one that writes no file: a run nobody
-	// pinned reads back "provider default" here instead of reading back
-	// nothing at all.
-	p.Logger.Info("provider KV posture",
-		"provider", p.ProviderIndex,
-		"posture", DescribeKVPosture(cfg))
-	if generated != "" {
-		configPath := filepath.Join(p.StateDir, "provider.toml")
-		if err := os.WriteFile(configPath, []byte(generated), 0600); err != nil {
-			return fmt.Errorf("write provider config: %w", err)
-		}
-		args = append(args, "--config", configPath)
-		p.generatedConfig = generated
-		if canonical := canonicalProviderConfigPath(); canonical != "" {
-			_, statErr := os.Stat(canonical)
-			p.canonicalConfigExisted = statErr == nil
-		}
-		p.Logger.Info("provider config written", "path", configPath)
-	}
-
-	cmd := execCommandContext(ctx, p.BinaryPath, args...)
-	cmd.Stdout = &logWriter{logger: p.Logger, prefix: "provider:stdout"}
-	cmd.Stderr = &logWriter{logger: p.Logger, prefix: "provider:stderr"}
-	cmd.Env = append(os.Environ(),
-		"DARKBLOOM_PID_FILE="+filepath.Join(p.StateDir, "provider.pid"),
-		"DARKBLOOM_NO_UPDATE_CHECK=1",
-		"DARKBLOOM_STATE_FILE="+filepath.Join(p.StateDir, "daemon-state.json"),
-		"DARKBLOOM_LOADED_MODELS_FILE="+filepath.Join(p.StateDir, "loaded-models.json"),
-	)
-	if cfg.AuthTokenPath != "" {
-		cmd.Env = append(cmd.Env, "DARKBLOOM_AUTH_TOKEN_PATH="+cfg.AuthTokenPath)
-	}
-	if cfg.EnableEphemeralPrefixCache {
-		cmd.Env = append(
-			cmd.Env,
-			"DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1",
-			"DARKBLOOM_PREFIX_CACHE_TEST_ROOT="+filepath.Join(p.StateDir, "prefix-cache"),
-		)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start provider: %w", err)
-	}
-
-	p.cmd = cmd.Process
-	p.done = make(chan struct{})
-	p.Logger.Info("provider started", "binary", p.BinaryPath, "pid", p.cmd.Pid)
-
-	go func(done chan struct{}) {
-		defer close(done)
-		state, err := cmd.Process.Wait()
-		if err != nil {
-			p.Logger.Warn("provider process wait failed", "error", err)
-			return
-		}
-		if state != nil && state.ExitCode() >= 0 {
-			p.Logger.Warn("provider process exited", "exit_code", state.ExitCode())
-		}
-	}(p.done)
-
-	return nil
-}
-
-func (p *Provider) Stop() {
-	if p.cmd != nil {
-		_ = p.cmd.Signal(os.Interrupt)
-		select {
-		case <-p.done:
-		case <-time.After(10 * time.Second):
-			_ = p.cmd.Kill()
-			select {
-			case <-p.done:
-			case <-time.After(time.Second):
-			}
-		}
-		p.cmd = nil
-		p.done = nil
-	}
-	if p.cancel != nil {
-		p.cancel()
-		p.cancel = nil
-	}
-	if p.AuthDir != "" {
-		_ = os.RemoveAll(p.AuthDir)
-	}
-	if p.StateDir != "" {
-		_ = os.RemoveAll(p.StateDir)
-	}
-	removeMigratedTestbedConfig(p.generatedConfig, p.canonicalConfigExisted)
-	p.Logger.Info("provider stopped")
 }

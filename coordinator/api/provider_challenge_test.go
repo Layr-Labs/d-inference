@@ -213,7 +213,7 @@ func TestChallengeResponseRequiresBinaryHashWhenPolicyConfigured(t *testing.T) {
 		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
 	}
 	p := reg.Register("provider-1", nil, regMsg)
-	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 	sipEnabled := true
 	secureBootEnabled := true
 	rdmaDisabled := true
@@ -263,7 +263,7 @@ func TestChallengeResponseRejectsHashChangedFromRegistrationAttestation(t *testi
 		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
 	}
 	p := reg.Register("provider-1", nil, regMsg)
-	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 	sipEnabled := true
 	secureBootEnabled := true
 	rdmaDisabled := true
@@ -313,7 +313,7 @@ func TestChallengeResponseAcceptsKnownBinaryHash(t *testing.T) {
 		Attestation:             createTestAttestationJSONWithBinaryHash(t, pubKey, knownGoodBinaryHashForTest),
 	}
 	p := reg.Register("provider-1", nil, regMsg)
-	srv.verifyProviderAttestation("provider-1", p, regMsg)
+	srv.verifyProviderAttestation(context.Background(), "provider-1", p, regMsg)
 	sipEnabled := true
 	secureBootEnabled := true
 	rdmaDisabled := true
@@ -779,7 +779,7 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	pubKey := testPublicKeyB64()
-	attestationJSON := createTestAttestationJSON(t, pubKey)
+	attestationJSON := createTestAttestationJSONWithSerial(t, "PRIVATE-SERIAL", pubKey)
 	regMsg := protocol.RegisterMessage{
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
@@ -857,6 +857,11 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 	attested := resp.Header.Get("X-Provider-Attested")
 	if attested != "true" {
 		t.Errorf("X-Provider-Attested = %q, want true", attested)
+	}
+	for _, header := range []string{"X-Provider-Serial", "X-Attestation-Device-Serial"} {
+		if value := resp.Header.Get(header); value != "" {
+			t.Errorf("%s leaked device serial %q", header, value)
+		}
 	}
 }
 

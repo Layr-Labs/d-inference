@@ -333,7 +333,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
         let blockSize = PrefixCachePolicy.blockSize
         let bound = PrefixCachePolicy.adoptionBoundTokens(layerKinds: live.layerKinds)
         #expect(bound == 1536, "gpt-oss-20b adoption bound drifted: \(bound)")
-        #expect(PrefixCachePolicy.isEnabled(environment: [:]))
+        #expect(PrefixCachePolicy.isGloballyEnabled(environment: [:]))
 
         // Turn-1 prefix past bound + benefit floor, with whole-block margin
         // (≥ 2.5k tokens — the adoption floor the win concentrates past).

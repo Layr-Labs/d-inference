@@ -3,8 +3,8 @@
 // ContinuousBatchingV2 — weight-sharing Qwen target extraction for VLM slots.
 //
 // Gemma 4 is deliberately absent: its MLXVLM wrapper directly owns the
-// `Gemma4TextModel` served by CBv2. Only `MLXVLM.Qwen35MoE` needs a separate
-// MLXLLM target over the same immutable weight arrays.
+// `Gemma4TextModel` served by CBv2. Both dense and MoE `MLXVLM.Qwen35`
+// wrappers need a separate MLXLLM target over the same immutable weight arrays.
 //
 //   1. decode the checkpoint with the matching MLXLLM config type and
 //      construct a lazy skeleton
@@ -78,10 +78,11 @@ enum EngineV2VLMTextExtractionError: Error, CustomStringConvertible {
 }
 
 /// Weight-sharing extraction of the CBv2-adapted MLXLLM Qwen target from a
-/// loaded `MLXVLM.Qwen35MoE` wrapper. Pure functions; no state.
+/// loaded dense or MoE `MLXVLM.Qwen35` wrapper. Pure functions; no state.
 enum EngineV2VLMTextExtraction {
 
     enum Family: String, Sendable {
+        case qwen35Dense
         case qwen35MoE
     }
 
@@ -105,11 +106,11 @@ enum EngineV2VLMTextExtraction {
 
     }
 
-    /// Build an MLXLLM `Qwen35MoEModel` over the weight arrays of a loaded
-    /// MLXVLM `Qwen35MoE` wrapper. See the file header for the full mechanism.
+    /// Build the matching MLXLLM `Qwen35Model` over the weight arrays of a
+    /// loaded dense or MoE wrapper. See the file header for the full mechanism.
     ///
     /// - Parameters:
-    ///   - model: the slot's loaded module (must be `MLXVLM.Qwen35MoE`).
+    ///   - model: the slot's loaded module (must be `MLXVLM.Qwen35`).
     ///   - modelDirectory: the checkpoint directory (for `config.json`).
     ///   - environment: env snapshot (parity-gate kill switch).
     static func extractTextModel(
@@ -117,7 +118,7 @@ enum EngineV2VLMTextExtraction {
         modelDirectory: URL,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> Extraction {
-        guard let wrapper = model as? MLXVLM.Qwen35MoE else {
+        guard let wrapper = model as? MLXVLM.Qwen35 else {
             throw EngineV2VLMTextExtractionError.unsupportedWrapper(
                 String(describing: type(of: model)))
         }
@@ -134,15 +135,15 @@ enum EngineV2VLMTextExtraction {
         // `language_model.`-prefixed key space.
         let baseConfig = try? JSONDecoder.json5().decode(BaseConfiguration.self, from: configData)
 
-        return try extractQwen35MoE(
+        return try extractQwen35(
             wrapper: wrapper,
             configData: configData,
             perLayerQuantization: baseConfig?.perLayerQuantization,
             environment: environment)
     }
 
-    private static func extractQwen35MoE(
-        wrapper: MLXVLM.Qwen35MoE,
+    private static func extractQwen35(
+        wrapper: MLXVLM.Qwen35,
         configData: Data,
         perLayerQuantization: BaseConfiguration.PerLayerQuantization?,
         environment: [String: String]
@@ -153,13 +154,21 @@ enum EngineV2VLMTextExtraction {
         // loader flag. Assistant ownership stays with ProviderCore's separate
         // partition/load path.
         let targetConfig = try decodeQwenConfiguration(configData: configData)
-        let skeleton = Qwen35MoEModel(targetConfig)
+        let family: Family
+        let skeleton: Qwen35Model
+        if wrapper is MLXVLM.Qwen35MoE {
+            family = .qwen35MoE
+            skeleton = Qwen35MoEModel(targetConfig)
+        } else {
+            family = .qwen35Dense
+            skeleton = Qwen35Model(targetConfig)
+        }
         let targetWeights = reKeyedQwenTargetWeights(
             flattenedWeights: wrapper.parameters().flattened(), sanitizer: skeleton)
         try applyQuantizationStructure(
             skeleton: skeleton,
             weights: targetWeights,
-            family: .qwen35MoE,
+            family: family,
             perLayerQuantization: perLayerQuantization)
         try skeleton.update(
             parameters: ModuleParameters.unflattened(targetWeights), verify: [.all])
@@ -172,7 +181,7 @@ enum EngineV2VLMTextExtraction {
         }
         return Extraction(
             servingModel: skeleton,
-            family: .qwen35MoE,
+            family: family,
             parityMaxAbsLogitDiff: parityDiff)
     }
 
@@ -245,7 +254,7 @@ enum EngineV2VLMTextExtraction {
     /// the same `language_model.*` namespace, so no second prefix transform is
     /// needed. Dictionary assignment retains the same lazy MLXArray handles.
     static func reKeyedQwenTargetWeights(
-        flattenedWeights: [(String, MLXArray)], sanitizer: Qwen35MoEModel
+        flattenedWeights: [(String, MLXArray)], sanitizer: Qwen35Model
     ) -> [String: MLXArray] {
         var targetWeights: [String: MLXArray] = [:]
         targetWeights.reserveCapacity(flattenedWeights.count)
@@ -311,8 +320,8 @@ enum EngineV2VLMTextExtraction {
     /// and scale the magnitude bound to the wrapper's fixed-probe logits
     /// because Qwen has no final-logit softcap.
     private static func assertQwenForwardParity(
-        wrapper: MLXVLM.Qwen35MoE,
-        extracted: Qwen35MoEModel,
+        wrapper: MLXVLM.Qwen35,
+        extracted: Qwen35Model,
         vocabSize: Int
     ) throws -> Float {
         let probeTokens = [1, 17, 29, 43, 61].map {

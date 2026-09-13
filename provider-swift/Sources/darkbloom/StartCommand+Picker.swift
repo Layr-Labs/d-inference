@@ -32,6 +32,13 @@ extension Start {
         let displayName: String
     }
 
+    struct EligiblePickerCatalog {
+        let models: [CatalogModel]
+        let aliasDisplayByBuildID: [String: String]
+        let hiddenBuildIDs: Set<String>
+        let sourceHasAliases: Bool
+    }
+
     /// Build picker entries from catalog rows and on-disk state. Pure (no IO) so
     /// the downloaded / won't-fit / resuming classification is unit-testable.
     ///
@@ -142,40 +149,77 @@ extension Start {
     private static let gemmaQATID = "gemma-4-26b-qat-4bit"
     private static let gemmaRollbackID = "gemma-4-26b-8bit"
 
-    private func pickerCatalogRows(models: [CatalogModel], aliases: [CatalogAlias]) -> [PickerCatalogRow] {
-        if aliases.isEmpty {
-            let gemmaQATAvailable = models.contains { $0.id == Self.gemmaQATID }
-            return models.compactMap { model in
-                if shouldHideGemmaRolloutModel(model, qatAvailable: gemmaQATAvailable) || isHiddenPickerModel(model) {
-                    return nil
-                }
-                return PickerCatalogRow(model: model, displayName: gemmaRolloutDisplayName(for: model) ?? model.displayName)
+    /// Apply the shared runtime-requirements gate before resolving public aliases.
+    /// The coordinator's `primary_build` is derived for the unfiltered catalog, so
+    /// it must not select a protected build that this provider cannot run.
+    static func evaluateEligiblePickerCatalog(
+        models: [CatalogModel],
+        aliases: [CatalogAlias],
+        runtimeCapabilities: Set<ProviderRuntimeCapability>
+    ) -> EligiblePickerCatalog {
+        let eligibleModels = models.filter {
+            ModelRuntimeRequirements.isEligible(
+                modelID: $0.id,
+                catalogRequirements: $0.requiredProviderCapabilities,
+                available: runtimeCapabilities)
+        }
+        let eligibleConcreteIDs = Set(eligibleModels.map(\.id))
+        var aliasDisplayByBuildID: [String: String] = [:]
+        var hiddenBuildIDs = Set<String>()
+
+        for alias in aliases {
+            hiddenBuildIDs.insert(alias.desiredBuild)
+            if let previous = alias.previousBuild {
+                hiddenBuildIDs.insert(previous)
+            }
+            for retired in alias.retiredBuilds ?? [] {
+                hiddenBuildIDs.insert(retired)
+            }
+
+            if eligibleConcreteIDs.contains(alias.desiredBuild) {
+                aliasDisplayByBuildID[alias.desiredBuild] = alias.displayName
+            } else if let previous = alias.previousBuild,
+                eligibleConcreteIDs.contains(previous)
+            {
+                aliasDisplayByBuildID[previous] = alias.displayName
             }
         }
 
-        var hiddenBuilds = Set<String>()
-        var aliasDisplayByBuild: [String: String] = [:]
-        for alias in aliases {
-            hiddenBuilds.insert(alias.desiredBuild)
-            if let previous = alias.previousBuild { hiddenBuilds.insert(previous) }
-            for retired in alias.retiredBuilds ?? [] { hiddenBuilds.insert(retired) }
+        return EligiblePickerCatalog(
+            models: eligibleModels,
+            aliasDisplayByBuildID: aliasDisplayByBuildID,
+            hiddenBuildIDs: hiddenBuildIDs,
+            sourceHasAliases: !aliases.isEmpty)
+    }
 
-            let primary = alias.primaryBuild ?? alias.desiredBuild
-            aliasDisplayByBuild[primary] = alias.displayName
+    static func pickerCatalogRows(catalog: EligiblePickerCatalog) -> [PickerCatalogRow] {
+        if !catalog.sourceHasAliases {
+            let gemmaQATAvailable = catalog.models.contains { $0.id == Self.gemmaQATID }
+            return catalog.models.compactMap { model in
+                if shouldHideGemmaRolloutModel(model, qatAvailable: gemmaQATAvailable)
+                    || isHiddenPickerModel(model)
+                {
+                    return nil
+                }
+                return PickerCatalogRow(
+                    model: model,
+                    displayName: gemmaRolloutDisplayName(for: model) ?? model.displayName)
+            }
         }
 
-        return models.compactMap { model in
+        let aliasDisplayByBuild = catalog.aliasDisplayByBuildID
+        return catalog.models.compactMap { model in
             if let displayName = aliasDisplayByBuild[model.id] {
                 return PickerCatalogRow(model: model, displayName: displayName)
             }
-            if hiddenBuilds.contains(model.id) || isHiddenPickerModel(model) {
+            if catalog.hiddenBuildIDs.contains(model.id) || isHiddenPickerModel(model) {
                 return nil
             }
             return PickerCatalogRow(model: model, displayName: model.displayName)
         }
     }
 
-    private func isHiddenPickerModel(_ model: CatalogModel) -> Bool {
+    private static func isHiddenPickerModel(_ model: CatalogModel) -> Bool {
         if let metadata = model.metadata {
             if metadata["hidden_from_picker"] == .bool(true) { return true }
             if metadata["hide_standalone"] == .bool(true) { return true }
@@ -183,13 +227,13 @@ extension Start {
         return model.displayName.localizedCaseInsensitiveContains("rollback")
     }
 
-    private func gemmaRolloutDisplayName(for model: CatalogModel) -> String? {
+    private static func gemmaRolloutDisplayName(for model: CatalogModel) -> String? {
         // Temporary Gemma 4 rollout shim. Remove after the coordinator alias
         // catalog contract is deployed and the picker consumes alias metadata.
         model.id == Self.gemmaQATID ? "Gemma 4 26B" : nil
     }
 
-    private func shouldHideGemmaRolloutModel(_ model: CatalogModel, qatAvailable: Bool) -> Bool {
+    private static func shouldHideGemmaRolloutModel(_ model: CatalogModel, qatAvailable: Bool) -> Bool {
         guard qatAvailable else { return model.id == Self.gemmaRollbackID }
         return model.id == Self.gemmaPublicID || model.id == Self.gemmaRollbackID
     }
@@ -200,7 +244,8 @@ extension Start {
     internal func interactiveCatalogPicker(
         snapshot: RuntimeSnapshot,
         config: ProviderConfig,
-        coordinatorURL: String
+        coordinatorURL: String,
+        runtimeCapabilities: Set<ProviderRuntimeCapability>
     ) async throws -> [String] {
         let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
 
@@ -213,7 +258,11 @@ extension Start {
             throw ExitCode.failure
         }
 
-        let catalog = pickerCatalogRows(models: catalogSnapshot.models, aliases: catalogSnapshot.aliases)
+        let eligibleCatalog = Self.evaluateEligiblePickerCatalog(
+            models: catalogSnapshot.models,
+            aliases: catalogSnapshot.aliases,
+            runtimeCapabilities: runtimeCapabilities)
+        let catalog = Self.pickerCatalogRows(catalog: eligibleCatalog)
 
         guard !catalog.isEmpty else {
             printError("No models in the coordinator catalog.")
@@ -252,7 +301,11 @@ extension Start {
 
         // Fall back to simple numbered picker if stdin is not a TTY.
         guard isatty(STDIN_FILENO) != 0 else {
-            return try await fallbackPicker(entries: entries, memoryGb: memoryGb, client: client)
+            return try await fallbackPicker(
+                entries: entries,
+                memoryGb: memoryGb,
+                client: client,
+                runtimeCapabilities: runtimeCapabilities)
         }
 
         // Run the interactive TUI picker.
@@ -269,7 +322,9 @@ extension Start {
 
         if !missing.isEmpty {
             print()
-            let downloader = ModelDownloader(catalogClient: client)
+            let downloader = ModelDownloader(
+                catalogClient: client,
+                runtimeCapabilities: runtimeCapabilities)
             for entry in missing {
                 print("  Downloading \(entry.displayName) (\(String(format: "%.1f GB", entry.sizeGb)))...")
                 do {
@@ -300,7 +355,8 @@ extension Start {
     private func fallbackPicker(
         entries: [PickerEntry],
         memoryGb: Double,
-        client: ModelCatalogClient
+        client: ModelCatalogClient,
+        runtimeCapabilities: Set<ProviderRuntimeCapability>
     ) async throws -> [String] {
         print()
         print("  Models (from coordinator catalog):")
@@ -343,7 +399,9 @@ extension Start {
             print()
             print("  Downloading \(missing.count) model(s)...")
             print()
-            let downloader = ModelDownloader(catalogClient: client)
+            let downloader = ModelDownloader(
+                catalogClient: client,
+                runtimeCapabilities: runtimeCapabilities)
             for entry in missing {
                 print("  Downloading \(entry.displayName) (\(String(format: "%.1f GB", entry.sizeGb)))...")
                 do {

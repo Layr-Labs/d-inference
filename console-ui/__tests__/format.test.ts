@@ -16,7 +16,7 @@ import {
   formatTps,
 } from "@/lib/format/number";
 import { relativeTime, formatRelative, humanizeUptime } from "@/lib/format/time";
-import { maskSerial, shortModelName } from "@/lib/format/text";
+import { shortModelName } from "@/lib/format/text";
 
 describe("format/currency", () => {
   it("converts micro <-> usd", () => {
@@ -98,12 +98,6 @@ describe("format/time", () => {
 });
 
 describe("format/text", () => {
-  it("maskSerial keeps head + tail", () => {
-    expect(maskSerial(undefined)).toBe("");
-    expect(maskSerial("ABC")).toBe("ABC");
-    expect(maskSerial("ABCDEFGHIJ")).toBe("ABCD••••IJ");
-  });
-
   it("shortModelName takes the last path segment", () => {
     expect(shortModelName("org/model")).toBe("model");
     expect(shortModelName("model")).toBe("model");

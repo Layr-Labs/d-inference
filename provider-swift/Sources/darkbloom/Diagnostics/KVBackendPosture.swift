@@ -4,12 +4,6 @@ import ProviderCore
 /// Operator-facing rendering and diagnosis of per-slot KV-backend and MTP
 /// posture (migration plan §16.5).
 ///
-/// WHY THIS EXISTS. The v0.8.0 paged rollout has no canary fleet, and an
-/// explicit `engine_v2_kv_backend = "paged"` now REFUSES rather than
-/// degrading — a box either serves paged or serves nothing. Until now
-/// nothing on the box said which happened: `status` listed warm models and
-/// `doctor` checked hardware, neither named a KV backend.
-///
 /// SOURCE OF TRUTH AND ITS STALENESS. Everything here reads
 /// `DaemonState` — the JSON snapshot at `~/.darkbloom/daemon-state.json`
 /// that the running daemon rewrites from `capacityRefreshTick` every
@@ -286,10 +280,8 @@ enum KVPostureDiagnosis {
     /// The verdict: did every EXPLICIT backend request get honoured?
     ///
     /// `auto` is never a failure — it promises nothing, so whichever
-    /// backend it lands on is by definition honoured. (It resolves
-    /// contiguous as of v0.8.1, so an `auto` slot reporting contiguous is
-    /// the expected steady state, not a finding.) An
-    /// explicit request is a claim someone verifies against, so a refusal
+    /// backend it lands on is by definition honoured. An explicit request
+    /// is a claim someone verifies against, so a refusal
     /// (no engine built, box serving nothing for that model) and a silent
     /// degrade (kill switch, VLM veto) both FAIL.
     ///

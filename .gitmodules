@@ -7,4 +7,4 @@
 [submodule "libs/mlx"]
 	path = libs/mlx
 	url = https://github.com/Layr-Labs/mlx.git
-	branch = darkbloom-base
+	branch = main

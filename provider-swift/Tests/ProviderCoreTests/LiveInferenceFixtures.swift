@@ -82,9 +82,10 @@ enum LiveInferenceFixtures {
     /// beside the test runner so a stale pre-existing file cannot survive into
     /// the current test invocation.
     ///
-    /// Returns the path to the colocated metallib on success, or `nil` if no
-    /// source metallib could be found -- in which case the caller should skip
-    /// the test rather than crashing in GPU initialization.
+    /// Returns the exact colocated URL on success. Live capability canaries
+    /// must pass this URL to `ProviderRuntimeCapabilityDetector.detectLive`
+    /// before any model load or other MLX operation. Returns nil when no source
+    /// metallib can be found, so the caller can fail without GPU initialization.
     static func ensureMetallibColocated() -> URL? {
         MLXMetallibEnvironment.withExclusiveAccess {
             let fm = FileManager.default
@@ -115,9 +116,9 @@ enum LiveInferenceFixtures {
                 } else {
                     try fm.moveItem(at: temporary, to: destination)
                 }
-                // Mirror to MLX_METALLIB_PATH so our own `locateMetallib()`
-                // (which trusts _NSGetExecutablePath, i.e. the xctest host
-                // path) can find it too if anyone else queries.
+                // Preserve the fixture's source hint for other test helpers.
+                // Production attestation ignores this env var and hashes the
+                // runner-local file just installed above, matching MLX C++.
                 MLXMetallibEnvironment.setPath(destination.path)
                 return destination
             } catch {
@@ -153,12 +154,23 @@ enum LiveInferenceFixtures {
     /// the test bundle (`.build/<arch>/<configuration>/...`) and accept only
     /// the configuration which contains the running test bundle.
     private static func findSourceMetallib() -> URL? {
-        let fm = FileManager.default
+        findSourceMetallib(testBundleURL: Bundle(for: BundleSentinel.self).bundleURL)
+    }
 
-        // Anchor at the test bundle path -- much more reliable than
-        // _NSGetExecutablePath under `swift test`.
-        let bundle = Bundle(for: BundleSentinel.self)
-        let components = bundle.bundleURL.pathComponents
+    /// SwiftPM's scratch directory need not be named `.build`. The immediate
+    /// configuration directory is authoritative; never accept the runner's
+    /// existing Contents/MacOS copy as a source or cross debug/release.
+    static func findSourceMetallib(testBundleURL: URL) -> URL? {
+        let fm = FileManager.default
+        let configurationDirectory = testBundleURL.deletingLastPathComponent()
+        if ["debug", "release"].contains(configurationDirectory.lastPathComponent) {
+            let staged = configurationDirectory.appendingPathComponent("mlx.metallib")
+            if fm.fileExists(atPath: staged.path) { return staged }
+        }
+
+        // Preserve the canonical `.build` helper drop sites for standard
+        // SwiftPM layouts, using only the running bundle's configuration.
+        let components = testBundleURL.pathComponents
         let configuration: String
         if let buildIndex = components.lastIndex(of: ".build"),
            let activeConfiguration = components[components.index(after: buildIndex)...]
@@ -168,7 +180,7 @@ enum LiveInferenceFixtures {
             configuration = "debug"
         }
 
-        var cursor = bundle.bundleURL
+        var cursor = testBundleURL
         for _ in 0..<12 {
             if cursor.lastPathComponent == ".build" {
                 let candidates: [URL] = [

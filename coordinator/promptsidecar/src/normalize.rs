@@ -10,6 +10,7 @@ pub struct NormalizedRequest {
     pub tools: Option<Vec<Value>>,
     pub additional_context: Map<String, Value>,
     pub body: Value,
+    pub prompt_date: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -38,13 +39,20 @@ pub fn normalize(
     normalize_tool_parameter_types(&mut body);
     normalize_legacy_function_calls(&mut body)?;
     let mut messages = template_messages(&body)?;
+    crate::response_format::prepare(&body, &mut messages)?;
     let mut tools = template_tools(&body)?;
-    apply_tool_choice_policy(&body, &mut messages, &mut tools)?;
+    let requires_tool_call = apply_tool_choice_policy(&body, &mut messages, &mut tools)?;
     messages = sanitize_array(messages);
     tools = tools.map(sanitize_array);
+    if crate::leading_system::qwen_applies(&model_id, model_type)
+        || is_harmony(Some(&model_id), model_type)
+    {
+        messages = crate::leading_system::normalize_messages(messages);
+    }
     validate_tool_history(&messages)?;
 
-    if is_harmony(Some(&model_id), model_type) {
+    let harmony = is_harmony(Some(&model_id), model_type);
+    if harmony {
         messages = harmony_messages(messages)?;
         tools = tools.map(harmony_tools);
     } else if crate::gemma4::applies(&model_id, model_type) {
@@ -52,26 +60,30 @@ pub fn normalize(
         tools = tools.map(crate::gemma4::normalize_tools);
     }
 
-    let mut additional_context = Map::new();
-    if let Some(effort) = body
-        .get("reasoning_effort")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    let forced_qwen_tool = requires_tool_call
+        && (model_id == "EigenLabs/Qwen3.8-27B-4bit"
+            || model_type.is_some_and(|value| {
+                value
+                    .trim()
+                    .to_ascii_lowercase()
+                    .replace('-', "_")
+                    .starts_with("qwen3_5")
+            }));
+    let mut additional_context = template_additional_context(&body, forced_qwen_tool)?;
+    // Match the provider's existing GPTOSSHarmonyTemplateFix serving policy.
+    if harmony
+        && additional_context
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            == Some("high")
     {
-        additional_context.insert("reasoning_effort".into(), Value::String(effort.into()));
+        additional_context.insert("reasoning_effort".into(), Value::String("medium".into()));
     }
-    match body.get("reasoning") {
-        None | Some(Value::Null) => {}
-        Some(Value::Object(reasoning)) => match reasoning.get("enabled") {
-            None | Some(Value::Null) => {}
-            Some(Value::Bool(enabled)) => {
-                additional_context.insert("enable_thinking".into(), Value::Bool(*enabled));
-            }
-            Some(_) => return Err(NormalizeError::InvalidMessages),
-        },
-        Some(_) => return Err(NormalizeError::InvalidMessages),
-    }
+    let prompt_date = body
+        .get(crate::request_date::BODY_FIELD)
+        .and_then(Value::as_str)
+        .filter(|value| crate::request_date::valid_date(value))
+        .map(str::to_owned);
 
     let mut normalized_body = Map::new();
     normalized_body.insert("model".into(), Value::String(model_id.clone()));
@@ -85,13 +97,78 @@ pub fn normalize(
             Value::Object(additional_context.clone()),
         );
     }
+    if let Some(date) = &prompt_date {
+        normalized_body.insert(
+            crate::request_date::BODY_FIELD.into(),
+            Value::String(date.clone()),
+        );
+    }
 
     Ok(NormalizedRequest {
         messages,
         tools,
         additional_context,
         body: Value::Object(normalized_body),
+        prompt_date,
     })
+}
+
+fn template_additional_context(
+    body: &Map<String, Value>,
+    forced_qwen_tool: bool,
+) -> Result<Map<String, Value>, NormalizeError> {
+    let mut context = Map::new();
+    let effort = body
+        .get("reasoning_effort")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(effort) = effort {
+        context.insert("reasoning_effort".into(), Value::String(effort.into()));
+    }
+
+    // `reasoning` is part of the typed OpenAI request and therefore matches the
+    // provider's strict decoder. The out-of-band Qwen extension spellings below
+    // are recovered independently so one malformed extension cannot erase
+    // another valid extension control.
+    let nested = match body.get("reasoning") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(reasoning)) => match reasoning.get("enabled") {
+            None | Some(Value::Null) => None,
+            Some(Value::Bool(enabled)) => Some(*enabled),
+            Some(_) => return Err(NormalizeError::InvalidMessages),
+        },
+        Some(_) => return Err(NormalizeError::InvalidMessages),
+    };
+    let top_level = body.get("enable_thinking").and_then(Value::as_bool);
+    let kwargs = body
+        .get("chat_template_kwargs")
+        .and_then(Value::as_object)
+        .and_then(|kwargs| kwargs.get("enable_thinking"))
+        .and_then(Value::as_bool);
+    let enable_thinking = if forced_qwen_tool {
+        // Must mirror ProviderCore: Qwen required/named tool choices use a
+        // tool-only prompt because XML post-validation rejects visible
+        // reasoning before <tool_call>.
+        Some(false)
+    } else {
+        nested.or(top_level).or(kwargs).or_else(|| {
+            effort
+                .filter(|value| {
+                    value.eq_ignore_ascii_case("none")
+                        || value.eq_ignore_ascii_case("off")
+                        || *value == "0"
+                })
+                .map(|_| false)
+        })
+    };
+    if let Some(enabled) = enable_thinking {
+        context.insert("enable_thinking".into(), Value::Bool(enabled));
+    }
+    if let Some(preserve) = body.get("preserve_thinking").and_then(Value::as_bool) {
+        context.insert("preserve_thinking".into(), Value::Bool(preserve));
+    }
+    Ok(context)
 }
 
 fn template_messages(body: &Map<String, Value>) -> Result<Vec<Value>, NormalizeError> {
@@ -731,7 +808,7 @@ fn apply_tool_choice_policy(
     body: &Map<String, Value>,
     messages: &mut Vec<Value>,
     tools: &mut Option<Vec<Value>>,
-) -> Result<(), NormalizeError> {
+) -> Result<bool, NormalizeError> {
     validate_tool_names(tools.as_deref().unwrap_or_default())?;
     if let Some(parallel) = body.get("parallel_tool_calls")
         && !parallel.is_boolean()
@@ -747,7 +824,7 @@ fn apply_tool_choice_policy(
             .and_then(Value::as_str)
     });
     if choice.is_none() || mode == Some("auto") {
-        return Ok(());
+        return Ok(false);
     }
     if mode == Some("none") {
         add_instruction(
@@ -756,7 +833,7 @@ fn apply_tool_choice_policy(
             false,
         );
         *tools = None;
-        return Ok(());
+        return Ok(false);
     }
     if !matches!(mode, Some("required" | "function")) {
         return Err(NormalizeError::InvalidTools);
@@ -808,7 +885,7 @@ fn apply_tool_choice_policy(
         "Call one of the declared tools now. You must emit a tool call with valid arguments before any final answer, even when the user's request does not require a tool. Your entire response must be the tool call; a text answer is forbidden.".into()
     };
     add_instruction(messages, &instruction, true);
-    Ok(())
+    Ok(true)
 }
 
 fn add_instruction(messages: &mut Vec<Value>, instruction: &str, repeat_user: bool) {
@@ -1014,7 +1091,7 @@ fn split_harmony_tool_calls(messages: Vec<Value>) -> Result<Vec<Value>, Normaliz
             next += 1;
         }
         if let Some(thinking) = thinking {
-            output.push(json!({"role": "assistant", "thinking": thinking}));
+            output.push(json!({"role": "assistant", "content": "", "thinking": thinking}));
         }
         let mut consumed = std::collections::HashSet::new();
         for (call_index, call) in calls.iter().enumerate() {
@@ -1174,12 +1251,150 @@ mod tests {
         );
     }
 
+    fn normalize_context(body: Value) -> Map<String, Value> {
+        normalize(body.as_object().unwrap().clone(), None)
+            .unwrap()
+            .additional_context
+    }
+
+    #[test]
+    fn harmony_effort_matches_existing_provider_policy() {
+        for (model, requested, expected) in [
+            ("gpt-oss-20b", "high", "medium"),
+            ("openai/gpt-oss-20b", " high ", "medium"),
+            ("gpt-oss-20b", "low", "low"),
+            ("qwen3.5-35b-a3b", "high", "high"),
+        ] {
+            let context = normalize_context(json!({
+                "model": model, "messages": [{"role":"user", "content":"hello"}],
+                "reasoning_effort": requested,
+            }));
+            assert_eq!(context["reasoning_effort"], expected, "{model}/{requested}");
+        }
+    }
+
+    #[test]
+    fn qwen_thinking_controls_match_reviewed_precedence() {
+        let nested = normalize_context(json!({
+            "model":"EigenLabs/Qwen3.8-27B-4bit",
+            "messages":[{"role":"user","content":"hi"}],
+            "reasoning":{"enabled":false},
+            "enable_thinking":true,
+            "chat_template_kwargs":{"enable_thinking":true},
+            "reasoning_effort":" high ",
+            "preserve_thinking":true
+        }));
+        assert_eq!(nested["enable_thinking"], json!(false));
+        assert_eq!(nested["reasoning_effort"], json!("high"));
+        assert_eq!(nested["preserve_thinking"], json!(true));
+
+        let top_level = normalize_context(json!({
+            "model":"EigenLabs/Qwen3.8-27B-4bit",
+            "messages":[{"role":"user","content":"hi"}],
+            "enable_thinking":false,
+            "chat_template_kwargs":{"enable_thinking":true}
+        }));
+        assert_eq!(top_level["enable_thinking"], json!(false));
+
+        let kwargs = normalize_context(json!({
+            "model":"EigenLabs/Qwen3.8-27B-4bit",
+            "messages":[{"role":"user","content":"hi"}],
+            "enable_thinking":"malformed",
+            "chat_template_kwargs":{"enable_thinking":true},
+            "reasoning_effort":3,
+            "preserve_thinking":false
+        }));
+        assert_eq!(kwargs["enable_thinking"], json!(true));
+        assert_eq!(kwargs["preserve_thinking"], json!(false));
+        assert!(!kwargs.contains_key("reasoning_effort"));
+    }
+
+    #[test]
+    fn forced_qwen_tools_disable_thinking_for_prompt_parity() {
+        for choice in [
+            json!("required"),
+            json!({"type":"function","function":{"name":"weather"}}),
+        ] {
+            let context = normalize_context(json!({
+                "model":"EigenLabs/Qwen3.8-27B-4bit",
+                "messages":[{"role":"user","content":"weather"}],
+                "tools":[{
+                    "type":"function",
+                    "function":{
+                        "name":"weather",
+                        "parameters":{"type":"object","properties":{}}
+                    }
+                }],
+                "tool_choice":choice,
+                "reasoning":{"enabled":true},
+                "enable_thinking":true,
+                "reasoning_effort":"high",
+                "preserve_thinking":true
+            }));
+            assert_eq!(context["enable_thinking"], json!(false));
+            assert_eq!(context["reasoning_effort"], json!("high"));
+            assert_eq!(context["preserve_thinking"], json!(true));
+        }
+    }
+
+    #[test]
+    fn qwen_malformed_typed_reasoning_matches_provider_rejection() {
+        for reasoning in [
+            json!("malformed"),
+            json!(false),
+            json!([]),
+            json!({"enabled":"malformed"}),
+            json!({"enabled":1}),
+            json!({"enabled":[]}),
+        ] {
+            let body = json!({
+                "model":"EigenLabs/Qwen3.8-27B-4bit",
+                "messages":[{"role":"user","content":"hi"}],
+                "reasoning":reasoning,
+                // Valid extension values must not make a malformed typed field
+                // pass here; ProviderLoop.decodeOpenAIRequest rejects first.
+                "enable_thinking":true,
+                "chat_template_kwargs":{"enable_thinking":false},
+                "preserve_thinking":true
+            });
+            assert!(matches!(
+                normalize(body.as_object().unwrap().clone(), None),
+                Err(NormalizeError::InvalidMessages)
+            ));
+        }
+    }
+
+    #[test]
+    fn qwen_reasoning_effort_only_disables_for_none_off_or_zero() {
+        for effort in ["none", " OFF ", "0"] {
+            let context = normalize_context(json!({
+                "model":"EigenLabs/Qwen3.8-27B-4bit",
+                "messages":[{"role":"user","content":"hi"}],
+                "reasoning_effort":effort
+            }));
+            assert_eq!(context["enable_thinking"], json!(false), "{effort}");
+            assert_eq!(
+                context["reasoning_effort"],
+                json!(effort.trim()),
+                "{effort}"
+            );
+        }
+
+        let minimal = normalize_context(json!({
+            "model":"EigenLabs/Qwen3.8-27B-4bit",
+            "messages":[{"role":"user","content":"hi"}],
+            "reasoning_effort":" minimal "
+        }));
+        assert_eq!(minimal["reasoning_effort"], json!("minimal"));
+        assert!(!minimal.contains_key("enable_thinking"));
+    }
+
     #[test]
     fn harmony_splits_parallel_calls_by_id() {
         let body = json!({
             "model":"gpt-oss-20b",
             "messages":[
-                {"role":"assistant","content":"","tool_calls":[
+                {"role":"assistant","content":"","reasoning_content":"Plan both calls", "tool_calls":[
                     {"id":"a","type":"function","function":{"name":"f","arguments":"{}"}},
                     {"id":"b","type":"function","function":{"name":"g","arguments":"{}"}}
                 ]},
@@ -1191,8 +1406,10 @@ mod tests {
         .unwrap()
         .clone();
         let normalized = normalize(body, Some("gpt_oss")).unwrap();
-        assert_eq!(normalized.messages[1]["tool_call_id"], "a");
-        assert_eq!(normalized.messages[3]["tool_call_id"], "b");
+        assert_eq!(normalized.messages[0]["thinking"], "Plan both calls");
+        assert_eq!(normalized.messages[0]["content"], "");
+        assert_eq!(normalized.messages[2]["tool_call_id"], "a");
+        assert_eq!(normalized.messages[4]["tool_call_id"], "b");
     }
 
     #[test]

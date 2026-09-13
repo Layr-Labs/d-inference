@@ -15,7 +15,7 @@ import (
 	"nhooyr.io/websocket"
 )
 
-func TestWriteProviderInferenceRequestUsesProviderQueue(t *testing.T) {
+func TestProviderWriteTextUsesProviderQueue(t *testing.T) {
 	serverConnCh := make(chan *websocket.Conn, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
@@ -46,8 +46,8 @@ func TestWriteProviderInferenceRequestUsesProviderQueue(t *testing.T) {
 	reg := registry.New(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	provider := reg.Register("provider-write-test", serverConn, &protocol.RegisterMessage{})
 	defer reg.Disconnect(provider.ID)
-	if err := writeProviderInferenceRequest(context.Background(), provider, []byte(`{"type":"inference_request"}`)); err != nil {
-		t.Fatalf("writeProviderInferenceRequest returned error: %v", err)
+	if err := provider.WriteText(context.Background(), []byte(`{"type":"inference_request"}`)); err != nil {
+		t.Fatalf("WriteText returned error: %v", err)
 	}
 
 	readCtx, cancelRead := context.WithTimeout(context.Background(), 5*time.Second)

@@ -1,0 +1,51 @@
+{
+  "actual_forward_width_errors": {
+    "contiguous-cache-off": [],
+    "paged-cache-off": [],
+    "paged-cache-on": []
+  },
+  "backend_gate": "passed",
+  "cache_gate": "failed",
+  "capsule_members": 140,
+  "cohort_scope": "One Qwen3.8 retained B2 triad; no B4, sustained or release acceptance",
+  "excluded_cache_payloads": 7,
+  "files": {
+    "backend-comparison.json": {
+      "bytes": 1614,
+      "sha256": "b70c92424d668d534aa487c06db0cfaa1ba49dc971b8d6b2545985af88cedfba"
+    },
+    "cache-comparison.json": {
+      "bytes": 1680,
+      "sha256": "b3384b6eb686a0faaf0b6bd913c47127f6f8fc6f7cdaf9ed1f7d9212d5ddaba0"
+    },
+    "capsule-receipt.json": {
+      "bytes": 28495,
+      "sha256": "a0190293020e2679530756729ff5b68d577a4a9ca7e701e9fabae59a61959096"
+    },
+    "postflight.json": {
+      "bytes": 1056,
+      "sha256": "ec3fb386f10bae9d25f643dfb16a7bfb8d25e24a604ad8f8b15166704629093c"
+    },
+    "review-capsule.tar.gz": {
+      "bytes": 5503928,
+      "sha256": "0d8c44483aed18558d724689a5922dd23f26adabac5ef65d50bd3cc007302774"
+    },
+    "review-summary.json": {
+      "bytes": 3106,
+      "sha256": "7fe5f8da57f99bdc7be4ee4620b349774c3dd3bbb19c8b551e3fd8463d70ea9a"
+    }
+  },
+  "full_raw_archive": {
+    "bytes": 2637363912,
+    "published": false,
+    "sha256": "e927b49bc1397dc2939a596796f271d66b60fedc0db4d213fe9f87d01115ef30"
+  },
+  "model_aggregate": "bbd0e0adcfe74e095073fefd0b9e116e4311d606ad9989cf81f8175e8ac18463",
+  "native": "f2d79145e040bbc28c6e0e355a19bc8923a70434",
+  "reason": "long-repeat-b0 lacks the required authenticated restore; skipped_policy, zero saved tokens",
+  "resident_bank_enabled": false,
+  "retention": "Complete full archive verified locally; compact capsule preserves exact raw non-cache-payload bytes.",
+  "same_id_measured_output_tokens_equal": true,
+  "schema": "darkbloom.qwen38-b2-staging-policy-evidence.v1",
+  "source_parent": "56fa3950160bb9e58d6702e9b751f2b0747ae3de"
+}

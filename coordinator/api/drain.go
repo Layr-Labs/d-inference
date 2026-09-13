@@ -95,6 +95,11 @@ func (s *Server) drainGate(next http.HandlerFunc) http.HandlerFunc {
 			s.writeTokenRateLimited(w, "coordinator", "draining", coordinatorDrainRetryAfter)
 			return
 		}
+		if blocked, reason := s.trustSafetyStatus(); blocked {
+			s.decInflight()
+			s.writeTokenRateLimited(w, "coordinator", reason, coordinatorDrainRetryAfter)
+			return
+		}
 		defer s.decInflight()
 		next(w, r)
 	}
@@ -108,22 +113,26 @@ func (s *Server) drainGate(next http.HandlerFunc) http.HandlerFunc {
 // ("safe to route new traffic here").
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	draining := s.IsDraining()
+	trustSafetyBlocked, healthReason := s.trustSafetyStatus()
+	ready := !draining && !trustSafetyBlocked
 	status := http.StatusOK
-	if draining {
+	if !ready {
 		status = http.StatusServiceUnavailable
 	}
 	writeJSON(w, status, readinessResponse{
-		Draining: draining,
-		Inflight: s.Inflight(),
-		Ready:    !draining,
+		Draining:     draining,
+		Inflight:     s.Inflight(),
+		Ready:        ready,
+		HealthReason: healthReason,
 	})
 }
 
 // readinessResponse is the JSON body returned by GET /readyz.
 type readinessResponse struct {
-	Draining bool  `json:"draining"`
-	Inflight int64 `json:"inflight"`
-	Ready    bool  `json:"ready"`
+	Draining     bool   `json:"draining"`
+	Inflight     int64  `json:"inflight"`
+	Ready        bool   `json:"ready"`
+	HealthReason string `json:"health_reason,omitempty"`
 }
 
 // handleAdminDrain handles POST /v1/admin/drain. It sets the coordinator into

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -191,4 +192,184 @@ func VerifyRegistryKVBackends(
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
+}
+
+// PrewarmRegistrySlot sends the production load_model command and waits for
+// the exact provider/model slot to report a usable idle capacity heartbeat.
+// The caller chooses the timeout because model size and runner storage speed
+// dominate this wait. probeLoadFailure may inspect provider-owned state for a
+// terminal load error; SendLoadModel is intentionally not a warm-pool
+// reservation, so its load_model_status reply is not the completion signal.
+func PrewarmRegistrySlot(
+	ctx context.Context,
+	reg *registry.Registry,
+	providerID, model, expectedBackend string,
+	timeout time.Duration,
+	logger *slog.Logger,
+	probeLoadFailure func() error,
+) error {
+	return prewarmRegistrySlot(
+		ctx, reg, providerID, model, expectedBackend, timeout, logger,
+		reg.SendLoadModel, probeLoadFailure)
+}
+
+type prewarmSlotObservation struct {
+	present          bool
+	state            string
+	numRunning       int
+	numWaiting       int
+	maxConcurrency   int
+	activeBudgetMax  int64
+	backend          string
+	fallback         string
+	pendingModelLoad bool
+}
+
+func prewarmRegistrySlot(
+	ctx context.Context,
+	reg *registry.Registry,
+	providerID, model, expectedBackend string,
+	timeout time.Duration,
+	logger *slog.Logger,
+	sendLoadModel func(string, string) error,
+	probeLoadFailure func() error,
+) error {
+	if expectedBackend != KVBackendPaged && expectedBackend != KVBackendContiguous {
+		return fmt.Errorf("unassertable expected KV backend %q", expectedBackend)
+	}
+	if timeout <= 0 {
+		return fmt.Errorf("pre-warm timeout must be positive, got %v", timeout)
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if err := sendLoadModel(providerID, model); err != nil {
+		return fmt.Errorf(
+			"send production load_model for exact slot %s/%s: %w (inspect provider stdout/stderr)",
+			providerID, model, err)
+	}
+	logger.Info("waiting for pre-warmed provider slot",
+		"provider_id", providerID, "model", model,
+		"expected_kv_backend", expectedBackend, "timeout", timeout)
+
+	deadline := time.Now().Add(timeout)
+	var last prewarmSlotObservation
+	for {
+		if probeLoadFailure != nil {
+			if err := probeLoadFailure(); err != nil {
+				return fmt.Errorf(
+					"provider failed production load_model for exact slot %s/%s: %w "+
+						"(inspect provider stdout/stderr)",
+					providerID, model, err)
+			}
+		}
+		observation, err := observeRegistrySlot(reg, providerID, model)
+		if err != nil {
+			return err
+		}
+		last = observation
+		if observation.present &&
+			observation.state == "idle" &&
+			observation.numRunning == 0 &&
+			observation.numWaiting == 0 &&
+			observation.maxConcurrency > 0 &&
+			observation.activeBudgetMax > 0 &&
+			observation.backend == expectedBackend &&
+			!observation.pendingModelLoad {
+			logger.Info("pre-warmed provider slot ready",
+				"provider_id", providerID, "model", model,
+				"kv_backend", observation.backend,
+				"max_concurrency", observation.maxConcurrency,
+				"active_token_budget_max", observation.activeBudgetMax)
+			return nil
+		}
+		if observation.present &&
+			observation.backend != "" &&
+			observation.backend != expectedBackend {
+			return fmt.Errorf(
+				"provider %s built exact slot %s with kv_backend=%q, want %q "+
+					"(fallback reason class: %s)",
+				providerID, model, observation.backend, expectedBackend, observation.fallback)
+		}
+		if observation.present && observation.state == "crashed" {
+			return fmt.Errorf(
+				"provider %s exact slot %s reported state=%q after load_model "+
+					"(inspect provider stdout/stderr and daemon-state load_error)",
+				providerID, model, observation.state)
+		}
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf(
+				"pre-warm exact slot %s/%s not ready after %v: "+
+					"present=%t state=%q running=%d waiting=%d max_concurrency=%d "+
+					"active_token_budget_max=%d kv_backend=%q fallback=%q pending_load=%t "+
+					"(inspect provider stdout/stderr and daemon-state load_error)",
+				providerID, model, timeout, last.present, last.state,
+				last.numRunning, last.numWaiting, last.maxConcurrency,
+				last.activeBudgetMax, last.backend, last.fallback, last.pendingModelLoad)
+		}
+		poll := 250 * time.Millisecond
+		if remaining < poll {
+			poll = remaining
+		}
+		timer := time.NewTimer(poll)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return fmt.Errorf("pre-warm exact slot %s/%s interrupted: %w",
+				providerID, model, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func observeRegistrySlot(
+	reg *registry.Registry, providerID, model string,
+) (prewarmSlotObservation, error) {
+	p := reg.GetProvider(providerID)
+	if p == nil {
+		return prewarmSlotObservation{}, fmt.Errorf(
+			"provider %q disconnected while pre-warming exact slot %q", providerID, model)
+	}
+
+	var observation prewarmSlotObservation
+	p.Mu().Lock()
+	if p.BackendCapacity != nil {
+		for i := range p.BackendCapacity.Slots {
+			slot := p.BackendCapacity.Slots[i]
+			if slot.Model != model {
+				continue
+			}
+			observation = observationFromBackendSlot(slot)
+			break
+		}
+	}
+	p.Mu().Unlock()
+	observation.pendingModelLoad = reg.HasPendingModelLoad(providerID, model)
+	return observation, nil
+}
+
+func observationFromBackendSlot(slot protocol.BackendSlotCapacity) prewarmSlotObservation {
+	observation := prewarmSlotObservation{
+		present:         true,
+		state:           slot.State,
+		numRunning:      slot.NumRunning,
+		numWaiting:      slot.NumWaiting,
+		maxConcurrency:  slot.MaxConcurrency,
+		activeBudgetMax: slot.ActiveTokenBudgetMax,
+	}
+	if slot.KVBackend != nil {
+		observation.backend = *slot.KVBackend
+	}
+	if slot.KVBackendFallbackReason != nil {
+		observation.fallback = registry.KVBackendFallbackTag(
+			*slot.KVBackendFallbackReason, true)
+	}
+	return observation
 }

@@ -31,7 +31,7 @@ import Testing
 @testable import ProviderCore
 
 // A real, round-trip-verified 1x1 PNG (red pixel) — same fixture as
-// MediaIngestTests; passes `validateMedia`'s real decode.
+// MediaIngestTests.
 private let tinyPNGDataURI =
     "data:image/png;base64,"
     + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAAXNSR0IArs4c6QAAAERl"
@@ -40,9 +40,7 @@ private let tinyPNGDataURI =
     + "AElFTkSuQmCC"
 
 // A real, round-trip-verified 64x64 H.264 mp4 (3 solid-gray frames) — same
-// fixture as MediaIngestTests; passes `validateMedia`'s real
-// AVFoundation metadata probe, so video-bearing requests reach the v2
-// routing branch in these tests.
+// fixture as MediaIngestTests.
 private let tinyMP4DataURI =
     "data:video/mp4;base64,"
     + "AAAAHGZ0eXBtcDQyAAAAAWlzb21tcDQxbXA0MgAAAAFtZGF0AAAAAAAAAK4AAAA7BgUyR1ZK3FxMQz+U78URPNFDqAEAAAMAAQMAAAMAAQIAAeYACwAAAwAA"
@@ -105,11 +103,12 @@ private final class VisionScriptedEngine: CBv2Engine, @unchecked Sendable {
 }
 
 private struct VisionStubTokenizer: MLXLMCommon.Tokenizer {
+    var promptTail: String? = nil
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
         Array(repeating: 0, count: text.count)
     }
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
-        tokenIds.map { "t\($0)" }.joined()
+        promptTail ?? tokenIds.map { "t\($0)" }.joined()
     }
     func convertTokenToId(_ token: String) -> Int? { ["</s>": 2][token] }
     func convertIdToToken(_ id: Int) -> String? { nil }
@@ -228,14 +227,15 @@ private func makeRoutingEngine(
     bridge: EngineV2Bridge?,
     plumbing: EngineV2VisionPlumbing?,
     modelType: String = "gemma4",
+    tokenizer: VisionStubTokenizer = .init(),
     visionGate: VisionMemoryGate? = nil,
-    reasoningEffort: String? = nil
+    templateControls: ChatTemplateControls = .init()
 ) -> MultiModelBatchSchedulerEngine {
     MultiModelBatchSchedulerEngine(
         registryProvider: { @Sendable in
             [
                 "test/vlm-stub": .init(
-                    tokenizer: TokenizerHandle(VisionStubTokenizer()),
+                    tokenizer: TokenizerHandle(tokenizer),
                     modelType: modelType,
                     container: container,
                     isVLM: true,
@@ -244,7 +244,7 @@ private func makeRoutingEngine(
             ]
         },
         defaultMaxTokens: 64,
-        reasoningEffort: reasoningEffort,
+        templateControls: templateControls,
         engineV2Vision: plumbing
     )
 }
@@ -478,6 +478,23 @@ struct EngineV2VisionSpanCarvingTests {
         }
     }
 
+    @Test("Qwen video: one contiguous video_pad run splits into adjacent frame spans")
+    func qwenContiguousVideoRun() throws {
+        // Qwen emits ONE run of T × spatial `video_pad` tokens. Two frames of
+        // 3 spatial tokens each is 6 adjacent pads — not Gemma's per-frame
+        // blocks with timestamps between them.
+        let tokens = [1, v, v, v, v, v, v, 9]
+        let carved = try EngineV2VisionPrefill.carveSpans(
+            tokens: tokens, imagePlaceholderId: nil, imageSpanLengths: [],
+            videoPlaceholderId: v, videoSpanLengths: [3, 3])
+        #expect(carved == [
+            EngineV2VisionPrefill.CarvedSpan(
+                kind: .video, span: CBv2ImageSpan(tokenOffset: 1, length: 3)),
+            EngineV2VisionPrefill.CarvedSpan(
+                kind: .video, span: CBv2ImageSpan(tokenOffset: 4, length: 3)),
+        ])
+    }
+
     @Test("a disabled kind's id is an ordinary token (mirrors the processor)")
     func disabledKindIgnored() throws {
         // No video features ⇒ the video id is not watched: a stray 991 in
@@ -490,6 +507,28 @@ struct EngineV2VisionSpanCarvingTests {
             videoPlaceholderId: nil, videoSpanLengths: [])
         #expect(carved.map(\.span) == [CBv2ImageSpan(tokenOffset: 1, length: 2)])
     }
+
+    @Test("Qwen3-VL media guard refuses video with unsupported-media")
+    func qwen3VLVideoRefusal() {
+        let input = LMInput(
+            text: .init(tokens: MLXArray([Int32(1), 2])),
+            video: .init(
+                pixels: MLXArray([Float(1)]).reshaped([1, 1]),
+                frames: [THW(1, 1, 1)]))
+        do {
+            try EngineV2VisionPrefill.validateQwen3VLMedia(input)
+            Issue.record("expected unsupportedMedia")
+        } catch let error as EngineV2VisionPrefillError {
+            guard case .unsupportedMedia(let detail) = error else {
+                Issue.record("expected unsupportedMedia, got \(error)")
+                return
+            }
+            #expect(detail == "Qwen3-VL video media is not production-proven")
+        } catch {
+            Issue.record("expected EngineV2VisionPrefillError, got \(error)")
+        }
+    }
+
 }
 
 // MARK: - Media-kind classification
@@ -506,11 +545,25 @@ struct MediaKindClassificationTests {
         }
     }
 
+    @Test("media requests default thinking off unless the client asks")
+    func mediaDefaultsThinkingOff() async throws {
+        let request = imageRequest()
+        let input = try await MediaIngest.buildUserInput(from: request)
+        #expect(input.additionalContext?["enable_thinking"] as? Bool == false)
+
+        let text = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: OpenAIChatCompletionRequest(
+                model: "qwen3.5-35b-a3b",
+                messages: [.init(role: .user, content: .text("hi"))]),
+            controls: .init())
+        #expect(text?["enable_thinking"] == nil)
+    }
+
     @Test("media processor preserves out-of-band reasoning effort")
     func reasoningEffortTemplateContext() async throws {
         let request = imageRequest()
         let input = try await MediaIngest.buildUserInput(
-            from: request, reasoningEffort: "high")
+            from: request, templateControls: .init(reasoningEffort: "high"))
         #expect(input.additionalContext?["reasoning_effort"] as? String == "high")
     }
 
@@ -599,6 +652,7 @@ struct EngineV2BridgeMultimodalTests {
         #expect(submitted.promptTokens == prepared.promptTokens)
         let multimodal = try #require(submitted.multimodal)
         #expect(multimodal.spans == prepared.spans)
+        #expect(multimodal.deepstackEmbeddings == nil)
         let arrays = try multimodal.embeddings()
         #expect(arrays.count == 1)
         #expect(arrays[0].shape == embedding.shape)
@@ -616,43 +670,78 @@ struct EngineV2BridgeMultimodalTests {
         #expect(visionEvents.first?.requestId == "req-vision-1")
     }
 
-    @Test("Qwen position state rides the multimodal input into CBv2Request")
-    func qwenPositionStatePassthrough() async throws {
+    @Test("Qwen final embedding, every DeepStack level, and positions ride into CBv2Request")
+    func qwenPositionAndDeepstackPassthrough() async throws {
         let engine = VisionScriptedEngine(
             script: .stream([
                 .finished(
                     reason: .stop,
-                    usage: CBv2Usage(promptTokens: 3, completionTokens: 0))
+                    usage: CBv2Usage(promptTokens: 5, completionTokens: 0))
             ]))
         let bridge = makeBridge(engine: engine)
         let positions = CBv2PositionState(
             promptPositionIds: MLXArray([
-                Int32(0), 1, 2,
-                0, 4, 5,
-                0, 7, 8,
-            ]).reshaped([3, 1, 3]),
+                Int32(0), 1, 2, 3, 4,
+                0, 5, 6, 7, 8,
+                0, 9, 10, 11, 12,
+            ]).reshaped([3, 1, 5]),
             decodeDeltas: [-2])
-        let input = CBv2MultimodalInput(
-            spans: [CBv2ImageSpan(tokenOffset: 1, length: 1)],
+        let final = [Float(9), 10].map {
+            MLXArray(Array(repeating: $0, count: 4)).reshaped([1, 1, 4])
+        }
+        let deepstack = (0 ..< 3).map { level in
+            (0 ..< 2).map { span in
+                MLXArray(Array(
+                    repeating: Float(level * 10 + span + 1), count: 4
+                )).reshaped([1, 1, 4])
+            }
+        }
+        let prepared = EngineV2VisionPrefill.PreparedSubmission(
+            promptTokens: [1, 990, 2, 990, 3],
+            spans: [
+                CBv2ImageSpan(tokenOffset: 1, length: 1),
+                CBv2ImageSpan(tokenOffset: 3, length: 1),
+            ],
+            embeddings: final,
+            deepstackEmbeddings: deepstack,
             attention: .causal,
-            positionState: positions
-        ) { [MLXArray.ones([1, 1, 4])] }
+            positionState: positions,
+            mediaKind: .image)
         let stream = await bridge.submitTokenized(
-            promptTokens: [1, 990, 2],
+            promptTokens: prepared.promptTokens,
             request: ChatCompletionRequest(
                 model: "test/vlm-stub",
                 messages: [ChatMessage(role: "user", content: "x")],
                 max_tokens: 1),
-            requestId: "qwen-position-passthrough",
-            multimodal: input,
+            requestId: "qwen-position-deepstack-passthrough",
+            multimodal: prepared.multimodalInput(),
             mediaKind: .image)
         for await _ in stream {}
 
         let submitted = try #require(engine.submitted.first)
+        let multimodal = try #require(submitted.multimodal)
         let submittedPositions = try #require(submitted.positionState)
-        #expect(submitted.multimodal?.attention == .causal)
+        let submittedFinal = try multimodal.embeddings()
+        let deepstackProvider = try #require(multimodal.deepstackEmbeddings)
+        let submittedDeepstack = try deepstackProvider()
+        #expect(multimodal.attention == .causal)
         #expect(submittedPositions.decodeDeltas == [-2])
-        #expect(submittedPositions.promptLength == 3)
+        #expect(submittedPositions.promptLength == 5)
+        #expect(submittedFinal.count == 2)
+        for span in final.indices {
+            #expect(
+                submittedFinal[span].asArray(Float.self)
+                    == final[span].asArray(Float.self))
+        }
+        #expect(submittedDeepstack.count == 3)
+        for level in deepstack.indices {
+            #expect(submittedDeepstack[level].count == 2)
+            for span in deepstack[level].indices {
+                #expect(
+                    submittedDeepstack[level][span].asArray(Float.self)
+                        == deepstack[level][span].asArray(Float.self))
+            }
+        }
     }
 
     @Test("text submit keeps multimodal nil and emits no vision telemetry")
@@ -721,6 +810,57 @@ struct Qwen35CBv2FixedRequestAccountingTests {
 
 @Suite("MultiModelBatchSchedulerEngine vision-v2 routing")
 struct EngineV2VisionRoutingTests {
+
+    @Test("thinking-disabled text, image, and video stream before engine completion",
+          arguments: ["text", "image", "video"], [ReasoningParserFormat.qwen3, .deepseekR1, .none])
+    func nonThinkingContentBeforeCompletion(kind: String, parser: ReasoningParserFormat) async throws {
+        let engine = VisionScriptedEngine(script: .manual)
+        let (prepared, _) = makePreparedSubmission(mediaKind: kind == "video" ? .video : .image)
+        let router = makeRoutingEngine(
+            container: makeStubContainer(), bridge: makeBridge(engine: engine),
+            plumbing: EngineV2VisionPlumbing(
+                prepare: { _, _, _ in prepared }, emitTelemetry: { _ in }),
+            modelType: "qwen3_5",
+            tokenizer: VisionStubTokenizer(promptTail: "<|im_start|>assistant\n<think>\n\n</think>\n\n"))
+        var request = imageRequest()
+        if kind == "text" {
+            request.messages = [.init(role: .user, content: .text("Describe the scene."))]
+        } else if kind == "video" {
+            request.messages = [.init(role: .user, content: .parts([.videoURL(tinyMP4DataURI)]))]
+        }
+        request.stream = true
+        request.reasoningParser = parser
+        let service = MLXOpenAIService(engine: router)
+        let frames = try await service.streamChatCompletionFrames(request: request)
+        let producer = try #require(engine.manualContinuation)
+        defer { producer.finish() }
+        producer.yield(.delta(text: "A person walks.", tokens: [10], logprobs: nil))
+
+        // Deliberately keep the producer open: buffering until finish must
+        // fail this assertion even if the eventual collected answer is right.
+        let streamed = try await withThrowingTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for try await frame in frames {
+                    if frame.contains("A person walks.") {
+                        #expect(!frame.contains("reasoning_content"))
+                        #expect(!frame.contains("<think>"))
+                        #expect(!frame.contains("</think>"))
+                        return true
+                    }
+                }
+                return false
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(2))
+                return false
+            }
+            defer { group.cancelAll() }
+            return try await group.next() ?? false
+        }
+        #expect(streamed)
+        #expect(engine.submitted.count == 1)
+        #expect((engine.submitted.first?.multimodal != nil) == (kind != "text"))
+    }
 
     init() {
         // Some assertions evaluate MLXArrays (embedding comparisons) — see
@@ -1032,7 +1172,7 @@ struct EngineV2VisionRoutingTests {
             })
     }
 
-    @Test("unsupported Qwen video maps to deterministic 400 without refusal telemetry")
+    @Test("injected unsupportedMedia maps to deterministic 400 without refusal telemetry")
     func unsupportedVideoMapsTo400() async throws {
         let engine = VisionScriptedEngine(script: .stream([]))
         let bridge = makeBridge(engine: engine)
@@ -1040,7 +1180,7 @@ struct EngineV2VisionRoutingTests {
         let plumbing = EngineV2VisionPlumbing(
             prepare: { _, _, _ in
                 throw EngineV2VisionPrefillError.unsupportedMedia(
-                    "Qwen35MoE video media is not production-proven")
+                    "Qwen3-VL video media is not production-proven")
             },
             emitTelemetry: telemetry.callback())
         let router = makeRoutingEngine(
@@ -1080,13 +1220,13 @@ struct EngineV2VisionRoutingTests {
         }
         let effort = EffortBox()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, reasoningEffort in
-                effort.set(reasoningEffort)
+            prepare: { _, _, templateControls in
+                effort.set(templateControls.reasoningEffort)
                 return prepared
             }, emitTelemetry: { _ in })
         let router = makeRoutingEngine(
             container: makeStubContainer(), bridge: bridge, plumbing: plumbing,
-            reasoningEffort: "medium")
+            templateControls: .init(reasoningEffort: "medium"))
 
         _ = try await collectContent(
             try await router.streamChatCompletion(request: imageRequest()))
@@ -1107,7 +1247,6 @@ struct EngineV2VisionRoutingTests {
             container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
 
-        // Real tinyMP4 so validateMedia passes and the preparer is reached.
         let request = imageRequest(parts: [
             .text("what happens in this clip?"), .videoURL(tinyMP4DataURI),
         ])
@@ -1185,9 +1324,8 @@ struct EngineV2VisionRoutingTests {
             container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
 
-        // The real tinyMP4 passes `validateMedia`'s AVFoundation probe, so
-        // the request reaches the v2 branch (a pre-release draft gated video to legacy
-        // here; v0.7.5 routes it through the engine).
+        // A pre-release draft gated video to legacy here; v0.7.5 routes it
+        // through the engine.
         let request = imageRequest(parts: [
             .text("what happens in this clip?"), .videoURL(tinyMP4DataURI),
         ])
@@ -1209,14 +1347,15 @@ struct EngineV2VisionRoutingTests {
         #expect(visionEvents.first?.fields?["media_kind"]?.description == "video")
     }
 
-    @Test("garbage inline video still dies in validateMedia (4xx) before the preparer")
-    func garbageVideoRejectedBeforePreparer() async throws {
+    @Test("MediaError from the single v2 preparer remains a pre-stream 4xx")
+    func garbageVideoRejectedByPreparer() async throws {
         let engine = VisionScriptedEngine(script: .stream([]))
         let bridge = makeBridge(engine: engine)
         let counter = PrepareCallCounter()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in
+            prepare: { _, request, _ in
                 counter.increment()
+                _ = try await MediaIngest.buildUserInput(from: request)
                 throw VisionStubProcessorError()
             },
             emitTelemetry: { _ in }
@@ -1224,9 +1363,9 @@ struct EngineV2VisionRoutingTests {
         let router = makeRoutingEngine(
             container: makeStubContainer(),
             bridge: bridge, plumbing: plumbing)
-        // The garbage inline video dies in `validateMedia` (a 400-class
-        // MediaError) BEFORE the v2 attempt — the preparer must not fire
-        // and the engine must stay untouched.
+        // The production preparer owns decode and model preparation in one
+        // pass. Its MediaError must escape this async-throws call before a
+        // stream is returned, and the engine must stay untouched.
         let request = imageRequest(parts: [
             .imageURL(tinyPNGDataURI), .videoURL("data:video/mp4;base64,AAAA"),
         ])
@@ -1239,7 +1378,7 @@ struct EngineV2VisionRoutingTests {
         } catch {
             Issue.record("expected MediaError, got \(error)")
         }
-        #expect(counter.count == 0)
+        #expect(counter.count == 1)
         #expect(engine.submitted.isEmpty)
     }
 

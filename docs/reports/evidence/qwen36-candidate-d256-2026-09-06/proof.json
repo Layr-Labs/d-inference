@@ -1,0 +1,11 @@
+{
+  "source_manifest_sha256": "e7b769e2713e48c53fb62fbe74e449bb409c8fc1b7e5f036b14e808a7c3da3f5",
+  "package_manifest_sha256": "b79dcd51726ed8b6e1e4cebc0639b77342d9d86a9fd5862545c169fdb540371e",
+  "source_graph_sha256": "e50588e57db7be6a186d7a6fc862a0e7058572aca9fb31d43987f0bcf25bdcd4",
+  "exact_clean_dependency_count": 36,
+  "source_before_after_equal": true,
+  "runtime_artifacts_before_after_equal": true,
+  "owned_steps_exit_zero_clean": true,
+  "existing_tolerances_unchanged": true,
+  "full_model_acceptance": false
+}

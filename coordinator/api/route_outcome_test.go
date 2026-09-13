@@ -158,7 +158,8 @@ func TestPostCommitTimeoutAndNoTerminalArePartialSuccess(t *testing.T) {
 }
 
 func TestSpeculativeLoserOutcome(t *testing.T) {
-	pr := &registry.PendingRequest{RequestID: "req-loser", UsedBackup: true}
+	pr := &registry.PendingRequest{RequestID: "req-loser"}
+	pr.UsedBackup.Store(true)
 	out := speculativeLoserOutcome(pr)
 	if out.FinalStatus != "cancelled" {
 		t.Fatalf("FinalStatus = %q, want cancelled", out.FinalStatus)
@@ -171,5 +172,112 @@ func TestSpeculativeLoserOutcome(t *testing.T) {
 	}
 	if out.BackupWon {
 		t.Fatal("speculative loser outcome must not set backup_won")
+	}
+}
+
+func TestSpeculativeOutcomeFlagsSurviveCompletionBeforeWinnerSelection(t *testing.T) {
+	for _, completionFirst := range []bool{true, false} {
+		name := "commit_before_delayed_completion"
+		if completionFirst {
+			name = "completion_before_commit"
+		}
+		t.Run(name, func(t *testing.T) {
+			st := store.NewMemory(store.Config{})
+			pr := &registry.PendingRequest{RequestID: "early-backup-completion", Attempt: 1}
+			if err := st.RecordInferenceRoute(&store.InferenceRouteRecord{
+				RequestID: pr.RequestID, Attempt: pr.Attempt, ProviderID: "backup",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			completion := completeRouteOutcome(pr, protocol.UsageInfo{
+				PromptTokens: 17, CompletionTokens: 3,
+			}, 0, false)
+			if completion.UsedBackup || completion.BackupWon {
+				t.Fatal("early completion must precede backup classification")
+			}
+			pr.UsedBackup.Store(true)
+			pr.BackupWon.Store(true)
+			commit := committedRouteOutcome(pr)
+			updates := []*store.InferenceRouteOutcome{commit, completion}
+			if completionFirst {
+				updates = []*store.InferenceRouteOutcome{completion, commit}
+			}
+			for _, update := range updates {
+				if err := st.UpdateInferenceRouteOutcome(pr.RequestID, pr.Attempt, update); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rows := st.InferenceRouteRecordsSince(time.Time{})
+			if len(rows) != 1 {
+				t.Fatalf("route count = %d, want 1", len(rows))
+			}
+			got := rows[0]
+			if got.FinalStatus != finalStatusSuccess || got.PromptTokens != 17 || got.CompletionTokens != 3 ||
+				!got.UsedBackup || !got.BackupWon {
+				t.Fatalf("completion and winner classification did not merge: %+v", got)
+			}
+		})
+	}
+}
+
+func TestTimingDecompositionMetricEmitsSegments(t *testing.T) {
+	collector := newUDPCollector(t)
+	defer collector.Close()
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	ddClient := newTestDD(t, collector)
+	defer ddClient.Close()
+	srv.SetDatadog(ddClient)
+
+	srv.updateInferenceRouteOutcomeWithModel("req-timing", 1, "gpt-oss-20b", &store.InferenceRouteOutcome{
+		FinalStatus:     "success",
+		ParseMs:         1.5,
+		ReserveMs:       2,
+		RouteMs:         3,
+		EncryptMs:       0, // not measured -> no sample
+		QueueWaitMs:     4,
+		DispatchMs:      5,
+		TotalDurationMs: 20,
+	})
+
+	_ = ddClient.Statsd.Flush()
+	packets := collector.drain()
+	for _, seg := range []string{"parse_ms", "reserve_ms", "route_ms", "queue_wait_ms", "dispatch_ms", "total_duration_ms"} {
+		metrics := findMetrics(packets, metricTimingSegmentPrefix+seg)
+		if len(metrics) == 0 {
+			t.Fatalf("missing %s%s metric; packets=%v", metricTimingSegmentPrefix, seg, packets)
+		}
+		if !hasMetric(metrics, "model:gpt-oss-20b") || !hasMetric(metrics, "final_status:success") {
+			t.Fatalf("missing tags on %s; packets=%v", seg, metrics)
+		}
+	}
+	if metrics := findMetrics(packets, metricTimingSegmentPrefix+"encrypt_ms"); len(metrics) != 0 {
+		t.Fatalf("unmeasured segment must not emit a zero sample; packets=%v", metrics)
+	}
+}
+
+func TestTimingDecompositionMetricSkipsCommitPrefill(t *testing.T) {
+	collector := newUDPCollector(t)
+	defer collector.Close()
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	ddClient := newTestDD(t, collector)
+	defer ddClient.Close()
+	srv.SetDatadog(ddClient)
+
+	// Commit-time pre-fill writes carry the decomposition but no FinalStatus;
+	// emitting there would double-count a successful request (once at commit,
+	// once at terminal).
+	srv.updateInferenceRouteOutcomeWithModel("req-prefill", 1, "gpt-oss-20b", &store.InferenceRouteOutcome{
+		ParseMs:         1.5,
+		TotalDurationMs: 20,
+	})
+
+	_ = ddClient.Statsd.Flush()
+	packets := collector.drain()
+	if metrics := findMetrics(packets, metricTimingSegmentPrefix); len(metrics) != 0 {
+		t.Fatalf("commit pre-fill must not emit timing metrics; packets=%v", metrics)
 	}
 }

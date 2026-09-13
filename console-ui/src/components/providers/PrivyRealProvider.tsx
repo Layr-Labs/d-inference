@@ -31,7 +31,7 @@ function PrivyAuthBridge({ onAuthChange }: { onAuthChange: (s: AuthState) => voi
   // (readiness, authentication, or which user). A token refresh that leaves
   // those untouched must not churn the context. The action callbacks above are
   // stable refs, so they are intentionally excluded from the deps.
-  const userId = (user as { id?: string } | null)?.id ?? null;
+  const userId = user?.id ?? null;
   useEffect(() => {
     onAuthChange({ ready, authenticated, user, login, logout, getAccessToken });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -58,7 +58,10 @@ export default function PrivyRealProvider({
         },
         // Don't auto-create embedded web3 wallets — nothing in the console uses
         // them, and it avoids pulling the @solana/viem code paths (perf F1b).
-        embeddedWallets: { createOnLogin: "off" },
+        embeddedWallets: {
+          ethereum: { createOnLogin: "off" },
+          solana: { createOnLogin: "off" },
+        },
       }}
     >
       <PrivyAuthBridge onAuthChange={onAuthChange} />

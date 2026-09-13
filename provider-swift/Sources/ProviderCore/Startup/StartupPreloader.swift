@@ -61,6 +61,14 @@ public struct StartupPreloader: Sendable {
         public var onSelfTestFailed: @Sendable (String, String) -> Void
         /// Human-readable progress/warning lines.
         public var log: @Sendable (String) -> Void
+        /// LIVE per-candidate requirement (GB), consulted at each
+        /// admission step. Candidates capture their requiredGb at PLAN
+        /// time, but a fail-closed retirement mid-preload can relax the
+        /// serving-set activation floor — a later candidate compared
+        /// against its stale (larger) figure would be skipped on a box the
+        /// refreshed load gate admits. nil (tests/legacy) keeps the
+        /// planned figure; a nil RESULT for one id falls back likewise.
+        public var currentRequiredGb: (@Sendable (String) async -> Double?)?
 
         public init(
             freeMemoryGb: @escaping @Sendable () async -> Double,
@@ -69,7 +77,8 @@ public struct StartupPreloader: Sendable {
             selfTestFailClosed: Bool = false,
             retire: @escaping @Sendable (String) async -> Void = { _ in },
             onSelfTestFailed: @escaping @Sendable (String, String) -> Void = { _, _ in },
-            log: @escaping @Sendable (String) -> Void = { _ in }
+            log: @escaping @Sendable (String) -> Void = { _ in },
+            currentRequiredGb: (@Sendable (String) async -> Double?)? = nil
         ) {
             self.freeMemoryGb = freeMemoryGb
             self.load = load
@@ -78,6 +87,7 @@ public struct StartupPreloader: Sendable {
             self.retire = retire
             self.onSelfTestFailed = onSelfTestFailed
             self.log = log
+            self.currentRequiredGb = currentRequiredGb
         }
     }
 
@@ -109,11 +119,18 @@ public struct StartupPreloader: Sendable {
             let modelId = candidate.modelId
 
             // Memory admission WITHOUT eviction (see the design rules above).
+            // Requirement recomputed LIVE when the hook is wired: an earlier
+            // fail-closed retirement can have relaxed the serving-set floor
+            // since plan time.
+            var requiredGb = candidate.requiredGb
+            if let live = deps.currentRequiredGb, let liveGb = await live(modelId) {
+                requiredGb = liveGb
+            }
             let freeGb = await deps.freeMemoryGb()
-            guard freeGb >= candidate.requiredGb else {
+            guard freeGb >= requiredGb else {
                 deps.log(
                     "WARN: startup preload skipping '\(modelId)': needs "
-                        + "\(Self.gb(candidate.requiredGb)) GB, \(Self.gb(freeGb)) GB free — "
+                        + "\(Self.gb(requiredGb)) GB, \(Self.gb(freeGb)) GB free — "
                         + "will lazy-load on first request")
                 summary.skippedInsufficientMemory.append(modelId)
                 continue

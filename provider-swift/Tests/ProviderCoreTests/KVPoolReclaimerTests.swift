@@ -131,8 +131,8 @@ struct KVPoolReclaimerTests {
             minInterval: .zero,
             proactiveThresholdBytes: 2 * gib)
 
-        let reclaim = Task { await reclaimer.sweep() }
-        await gate.waitUntilClearStarted()
+        let reclaim = Task.detached(priority: .high) { await reclaimer.sweep() }
+        #expect(gate.waitUntilClearStarted())
         let failsafe = Task {
             try? await taskSleep(.milliseconds(250))
             gate.releaseClear()
@@ -223,33 +223,21 @@ private final class ReclaimSpy: @unchecked Sendable {
 }
 
 private final class BlockingReclaimGate: @unchecked Sendable {
+    private let started = DispatchSemaphore(value: 0)
     private let release = DispatchSemaphore(value: 0)
     private let lock = NSLock()
-    private var clearStarted = false
-    private var startWaiters: [CheckedContinuation<Void, Never>] = []
     private var released = false
 
     func enterClear() {
-        lock.lock()
-        clearStarted = true
-        let waiters = startWaiters
-        startWaiters.removeAll()
-        lock.unlock()
-        waiters.forEach { $0.resume() }
+        started.signal()
         release.wait()
     }
 
-    func waitUntilClearStarted() async {
-        await withCheckedContinuation { continuation in
-            lock.lock()
-            guard !clearStarted else {
-                lock.unlock()
-                continuation.resume()
-                return
-            }
-            startWaiters.append(continuation)
-            lock.unlock()
-        }
+    func waitUntilClearStarted() -> Bool {
+        // The full Swift suite runs thousands of tests concurrently on CI.
+        // Give the detached actor task scheduling headroom; once the clear
+        // starts, the latency assertion below remains the behavior under test.
+        started.wait(timeout: .now() + 10) == .success
     }
 
     func releaseClear() {

@@ -13,7 +13,7 @@ import (
 // rejectionInfo carries everything known about a rejected inbound inference
 // request at a 4xx/5xx exit point. Callers populate what they have; zero values
 // are fine. It is the single contract the consumer/handler code uses to feed the
-// rejection ledger (see docs/architecture/routing-telemetry-and-calibration.md §4.9).
+// rejection ledger (see docs/design/routing-telemetry-and-calibration.md §4.9).
 type rejectionInfo struct {
 	r          *http.Request
 	stage      string // auth, validation, model_resolution, balance, rate_limit, preflight_capacity, routing_ttft
@@ -47,19 +47,12 @@ type rejectionInfo struct {
 	limitKind         string
 	overBy            int64
 
-	// suppressOutcome skips this row's OR-uptime emission because the caller
-	// books a different class itself. Set when a prefill keepalive already
-	// committed HTTP 200 and the failure went out in-band: the ledger keeps the
-	// true reason and status, but what the caller received was a broken stream
-	// (mid_stream), not the status class named here. Without this the request
-	// would be counted twice, under two different classes.
-	suppressOutcome bool
-
 	// Counterfactual. When servabilityComputed is true the caller already ran the
 	// capacity check (e.g. the pre-flight) and the candidate*/bestTTFTMs fields
 	// below are authoritative — recordRejection will NOT recompute. Otherwise, when
 	// a resolvedModel is set, recordRejection computes servability itself.
 	servabilityComputed     bool
+	skipServability         bool // shedding under saturation must not start another fleet scan
 	candidateCount          int
 	capacityRejections      int
 	modelTooLargeRejections int
@@ -72,6 +65,7 @@ type rejectionInfo struct {
 // request path when the caller did not already do so. Best-effort: it never
 // blocks or fails the request.
 func (s *Server) recordRejection(info rejectionInfo) {
+	annotateOutcomeRejection(info)
 	if s == nil || s.store == nil {
 		return
 	}
@@ -105,6 +99,7 @@ func (s *Server) recordRejection(info rejectionInfo) {
 		CreatedAt:             time.Now(),
 	}
 	if info.r != nil {
+		rec.RequestID = coordRequestIDFromContext(info.r.Context())
 		rec.Endpoint = info.r.URL.Path
 		rec.ClientClass = clientClassFromUserAgent(info.r.UserAgent())
 		if rec.RequestBodyBytes == 0 && info.r.ContentLength > 0 {
@@ -121,12 +116,16 @@ func (s *Server) recordRejection(info rejectionInfo) {
 	// nothing to attribute it to. The zero attribution normalizes to
 	// kv_backend:unknown / kv_backend_fallback:unknown — booking it to a real
 	// backend, or to "did not degrade", would invent a data point.
-	if info.stage != "dispatch" && !info.suppressOutcome {
+	if info.stage != "dispatch" {
 		model := info.resolvedModel
 		if model == "" {
 			model = info.requestedModel
 		}
 		s.recordRequestOutcome(model, newUnknownKVBackendAttribution(), orUptimeClassForRejection(info.httpStatus))
+		// OR-view mirror of the pre-dispatch arm (the dispatch-stage exhausted
+		// rejection is counted by run()'s tail). Resolved model only: the raw
+		// requested name is client-controlled and must not mint tag values.
+		s.recordRequestOutcomeORView(info.resolvedModel, orUptimeClassForRejection(info.httpStatus))
 	}
 
 	// Seed the counterfactual from whatever the caller already computed.
@@ -137,7 +136,7 @@ func (s *Server) recordRejection(info rejectionInfo) {
 	rec.BestTTFTMs = info.bestTTFTMs
 
 	// Decide whether we still need to compute servability inside the goroutine.
-	computeServability := !info.servabilityComputed && info.resolvedModel != "" && s.registry != nil
+	computeServability := !info.skipServability && !info.servabilityComputed && info.resolvedModel != "" && s.registry != nil
 	reg := s.registry
 	resolvedModel := info.resolvedModel
 	estPrompt := info.estimatedPromptTokens
@@ -160,7 +159,10 @@ func (s *Server) recordRejection(info rejectionInfo) {
 		}
 		// A request could have produced output iff at least one provider could
 		// serve it right now. This is the headline "was the 'no' necessary?" flag.
-		rec.CouldHaveServed = rec.CandidateCount > 0
+		if info.servabilityComputed || computeServability {
+			couldHaveServed := rec.CandidateCount > 0
+			rec.CouldHaveServed = &couldHaveServed
+		}
 		_ = s.store.RecordRejection(rec)
 	})
 }

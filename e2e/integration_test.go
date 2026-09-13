@@ -2,12 +2,20 @@ package e2e
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -197,6 +205,644 @@ func TestIntegration_NonStreamingInference(t *testing.T) {
 	t.Logf("\n%s", run.SummaryTable())
 
 	assertAccounting(t, s)
+}
+
+const (
+	qwen38ConcreteModel  = registry.Qwen38NAXModelID
+	qwen38Alias          = "qwen3.8-27b"
+	qwen38TargetRev      = "301e9e2767fd0efcfab7883004720ba3c9a552a1"
+	qwen38MTPModel       = "EigenLabs/Qwen3.8-27B-MTP-4bit"
+	qwen38MTPRev         = "329261c5e0b3f9c233485e682cb3b67b88c20a55"
+	qwen38PrewarmTimeout = 10 * time.Minute
+)
+
+type qwen38E2EConfig struct {
+	targetPath  string
+	mtpPath     string
+	manifest    store.ModelManifest
+	mtpManifest *store.ModelManifest
+}
+
+type qwen38GateOutcome string
+
+const (
+	qwen38GateSkip qwen38GateOutcome = "skip"
+	qwen38GateFail qwen38GateOutcome = "fail"
+	qwen38GateRun  qwen38GateOutcome = "run"
+)
+
+func qwen38GatePolicy(
+	optedIn, missingRequired, hostIneligible, postStartIneligible bool,
+) qwen38GateOutcome {
+	if !optedIn {
+		return qwen38GateSkip
+	}
+	if missingRequired || hostIneligible || postStartIneligible {
+		return qwen38GateFail
+	}
+	return qwen38GateRun
+}
+
+func TestQwen38GatePolicy(t *testing.T) {
+	require.Equal(t, qwen38GateSkip, qwen38GatePolicy(false, true, true, true))
+	require.Equal(t, qwen38GateFail, qwen38GatePolicy(true, true, false, false))
+	require.Equal(t, qwen38GateFail, qwen38GatePolicy(true, false, true, false))
+	require.Equal(t, qwen38GateFail, qwen38GatePolicy(true, false, false, true))
+	require.Equal(t, qwen38GateRun, qwen38GatePolicy(true, false, false, false))
+}
+
+func qwen38RequiredEnv(t *testing.T, key string) string {
+	t.Helper()
+	value := strings.TrimSpace(os.Getenv(key))
+	require.NotEmpty(t, value, "%s is required once DARKBLOOM_QWEN38_E2E=1", key)
+	return value
+}
+
+func requireQwen38E2EConfig(t *testing.T) qwen38E2EConfig {
+	t.Helper()
+	if qwen38GatePolicy(os.Getenv("DARKBLOOM_QWEN38_E2E") == "1", false, false, false) == qwen38GateSkip {
+		t.Skip("set DARKBLOOM_QWEN38_E2E=1 and the pinned local artifact variables to run the real-process Qwen3.8 E2E")
+	}
+
+	modelID := qwen38RequiredEnv(t, "DARKBLOOM_QWEN38_MODEL_ID")
+	revision := qwen38RequiredEnv(t, "DARKBLOOM_QWEN38_MODEL_REVISION")
+	capabilitiesRaw := qwen38RequiredEnv(t, "DARKBLOOM_QWEN38_EXPECT_PROVIDER_CAPABILITIES")
+	modelPath := qwen38RequiredEnv(t, "DARKBLOOM_QWEN38_MODEL_PATH")
+	manifestPath := qwen38RequiredEnv(t, "DARKBLOOM_QWEN38_MANIFEST_PATH")
+	require.Equal(t, qwen38ConcreteModel, modelID,
+		"DARKBLOOM_QWEN38_MODEL_ID must name the final protected catalog build")
+	require.Equal(t, qwen38TargetRev, revision,
+		"DARKBLOOM_QWEN38_MODEL_REVISION must be the reviewed immutable revision")
+
+	expectedCapabilities := strings.Split(capabilitiesRaw, ",")
+	for i := range expectedCapabilities {
+		expectedCapabilities[i] = strings.TrimSpace(expectedCapabilities[i])
+	}
+	sort.Strings(expectedCapabilities)
+	require.Equal(t, []string{
+		registry.ProviderCapabilityAppleM5,
+		registry.ProviderCapabilityMLXNAX,
+	}, expectedCapabilities, "Qwen3.8 E2E must explicitly require the protected M5+NAX capability set")
+
+	requireQwen38Host(t)
+	targetPath := requireQwen38Snapshot(
+		t, modelPath, qwen38ConcreteModel, qwen38TargetRev, true)
+	manifest := loadQwen38Manifest(
+		t, manifestPath, targetPath, qwen38ConcreteModel)
+
+	cfg := qwen38E2EConfig{targetPath: targetPath, manifest: manifest}
+	mtpPath := strings.TrimSpace(os.Getenv("DARKBLOOM_QWEN38_MTP_PATH"))
+	if mtpPath == "" {
+		require.Empty(t, strings.TrimSpace(os.Getenv("DARKBLOOM_QWEN38_MTP_REVISION")),
+			"DARKBLOOM_QWEN38_MTP_REVISION requires DARKBLOOM_QWEN38_MTP_PATH")
+		require.Empty(t, strings.TrimSpace(os.Getenv("DARKBLOOM_QWEN38_MTP_MANIFEST_PATH")),
+			"DARKBLOOM_QWEN38_MTP_MANIFEST_PATH requires DARKBLOOM_QWEN38_MTP_PATH")
+		return cfg
+	}
+	require.Equal(t, qwen38MTPRev,
+		qwen38RequiredEnv(t, "DARKBLOOM_QWEN38_MTP_REVISION"),
+		"local MTP must use the reviewed immutable assistant revision")
+	cfg.mtpPath = requireQwen38Snapshot(t, mtpPath, qwen38MTPModel, qwen38MTPRev, false)
+	mtpManifest := loadQwen38Manifest(
+		t, qwen38RequiredEnv(t, "DARKBLOOM_QWEN38_MTP_MANIFEST_PATH"),
+		cfg.mtpPath, qwen38MTPModel)
+	cfg.mtpManifest = &mtpManifest
+	return cfg
+}
+
+func requireQwen38Host(t *testing.T) {
+	t.Helper()
+	chip, err := exec.Command("/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string").Output()
+	if err != nil {
+		require.Equal(t, qwen38GateFail, qwen38GatePolicy(true, false, true, false))
+		t.Fatalf("cannot establish opted-in Qwen3.8 host eligibility: sysctl chip query failed: %v", err)
+	}
+	if !strings.Contains(strings.TrimSpace(string(chip)), "Apple M5") {
+		require.Equal(t, qwen38GateFail, qwen38GatePolicy(true, false, true, false))
+		t.Fatalf("opted-in Qwen3.8 requires an Apple M5 host; this host reports %q",
+			strings.TrimSpace(string(chip)))
+	}
+	rawMemory, err := exec.Command("/usr/sbin/sysctl", "-n", "hw.memsize").Output()
+	if err != nil {
+		require.Equal(t, qwen38GateFail, qwen38GatePolicy(true, false, true, false))
+		t.Fatalf("cannot establish opted-in Qwen3.8 host eligibility: sysctl memory query failed: %v", err)
+	}
+	memoryBytes, err := strconv.ParseUint(strings.TrimSpace(string(rawMemory)), 10, 64)
+	require.NoError(t, err, "parse hw.memsize")
+	if memoryBytes < 48<<30 {
+		require.Equal(t, qwen38GateFail, qwen38GatePolicy(true, false, true, false))
+		t.Fatalf("opted-in Qwen3.8 requires at least 48 GiB unified memory; this host reports %.1f GiB",
+			float64(memoryBytes)/(1<<30))
+	}
+}
+
+func requireQwen38Snapshot(
+	t *testing.T, configured, modelID, revision string, target bool,
+) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(configured)
+	require.NoError(t, err, "resolve configured snapshot %q", configured)
+	info, err := os.Stat(resolved)
+	require.NoError(t, err, "stat configured snapshot %q", resolved)
+	require.True(t, info.IsDir(), "configured snapshot must be a directory: %s", resolved)
+	require.Equal(t, revision, filepath.Base(resolved),
+		"snapshot path must end in the immutable revision")
+	if target {
+		home, err := os.UserHomeDir()
+		require.NoError(t, err)
+		cachePath := filepath.Join(home, ".cache", "huggingface", "hub",
+			"models--"+strings.ReplaceAll(modelID, "/", "--"), "snapshots", revision)
+		cached, err := filepath.EvalSymlinks(cachePath)
+		require.NoError(t, err,
+			"opted-in final Qwen3.8 snapshot must already be cached at %s; the test never downloads it",
+			cachePath)
+		require.Equal(t, cached, resolved,
+			"the provider scanner serves the pinned Hugging Face cache snapshot; MODEL_PATH must identify that exact directory")
+	}
+	return resolved
+}
+
+func loadQwen38Manifest(
+	t *testing.T, manifestPath, snapshotPath, modelID string,
+) store.ModelManifest {
+	t.Helper()
+	raw, err := os.ReadFile(manifestPath)
+	require.NoError(t, err, "read immutable model manifest")
+	var manifest store.ModelManifest
+	require.NoError(t, json.Unmarshal(raw, &manifest), "parse immutable model manifest")
+	require.Equal(t, 1, manifest.SchemaVersion)
+	require.Equal(t, modelID, manifest.ModelID)
+	require.NotEmpty(t, manifest.Version)
+	require.NotEmpty(t, manifest.R2Prefix)
+	require.Len(t, manifest.Files, manifest.FileCount)
+	require.NotEmpty(t, manifest.Files)
+	requireSHA256(t, manifest.AggregateSHA256, "aggregate_sha256")
+
+	var total int64
+	seen := make(map[string]struct{}, len(manifest.Files))
+	for _, file := range manifest.Files {
+		require.NotEmpty(t, file.Role, "manifest role for %q", file.Path)
+		requireSHA256(t, file.SHA256, file.Path)
+		clean := filepath.Clean(file.Path)
+		require.False(t, filepath.IsAbs(clean), "manifest path must be relative: %q", file.Path)
+		require.NotEqual(t, "..", clean)
+		require.False(t, strings.HasPrefix(clean, ".."+string(filepath.Separator)),
+			"manifest path escapes snapshot: %q", file.Path)
+		_, duplicate := seen[clean]
+		require.False(t, duplicate, "duplicate manifest path %q", clean)
+		seen[clean] = struct{}{}
+		info, err := os.Stat(filepath.Join(snapshotPath, clean))
+		require.NoError(t, err, "manifest file missing from snapshot: %s", clean)
+		require.Equal(t, file.SizeBytes, info.Size(), "manifest size mismatch for %s", clean)
+		total += file.SizeBytes
+	}
+	require.Equal(t, manifest.TotalSizeBytes, total, "manifest total_size_bytes")
+	return manifest
+}
+
+func requireSHA256(t *testing.T, value, field string) {
+	t.Helper()
+	decoded, err := hex.DecodeString(value)
+	require.NoError(t, err, "%s must be hexadecimal", field)
+	require.Len(t, decoded, 32, "%s must be a SHA-256 digest", field)
+	require.Equal(t, strings.ToLower(value), value, "%s must use canonical lowercase hex", field)
+}
+
+func qwen38SuiteConfig(cfg qwen38E2EConfig) testbed.SuiteConfig {
+	metadata := map[string]any{
+		"hugging_face_id": qwen38ConcreteModel,
+		"source_revision": qwen38TargetRev,
+	}
+	if cfg.mtpManifest != nil {
+		var configSHA string
+		roles := make(map[string]struct{})
+		for _, file := range cfg.mtpManifest.Files {
+			roles[file.Role] = struct{}{}
+			if filepath.Clean(file.Path) == "config.json" {
+				configSHA = file.SHA256
+			}
+		}
+		allowed := make([]string, 0, len(roles))
+		for role := range roles {
+			allowed = append(allowed, role)
+		}
+		sort.Strings(allowed)
+		metadata["spec_dec"] = map[string]any{
+			"assistant_model_id": qwen38MTPModel,
+			"r2_prefix":          cfg.mtpManifest.R2Prefix,
+			"manifest_sha256":    cfg.mtpManifest.AggregateSHA256,
+			"total_size_bytes":   cfg.mtpManifest.TotalSizeBytes,
+			"file_count":         cfg.mtpManifest.FileCount,
+			"max_file_count":     cfg.mtpManifest.FileCount,
+			"allowed_file_types": allowed,
+			"config_sha256":      configSHA,
+			"revision":           qwen38MTPRev,
+		}
+	}
+	return testbed.SuiteConfig{
+		ModelSpecs: []testbed.ModelSpec{{
+			ModelID: qwen38ConcreteModel, NumProviders: 1,
+		}},
+		UseMemoryStore: true,
+		CatalogModels: []testbed.CatalogModel{{
+			Entry: store.ModelRegistryEntry{
+				ID: qwen38ConcreteModel, DisplayName: "Qwen3.8 27B",
+				Family: "qwen3.8", Architecture: "27B dense VLM", Quantization: "4bit",
+				MaxContextLength: 262144, MaxOutputLength: 32768, MinRAMGB: 48,
+				Capabilities: []string{"tools", "reasoning", "json_mode", "vision", "video"},
+				RequiredProviderCapabilities: []string{
+					registry.ProviderCapabilityAppleM5,
+					registry.ProviderCapabilityMLXNAX,
+				},
+				Status:      "active",
+				Description: "Dense Qwen3.8 vision-language model with bounded image and video input.",
+				RuntimeParameters: map[string]any{
+					"reasoning_parser":       "qwen3",
+					"tool_call_parser":       "qwen3_coder",
+					"chat_template_required": true,
+				},
+				Metadata: metadata,
+			},
+			Manifest: cfg.manifest,
+		}},
+		ModelAliases: []store.ModelAlias{{
+			AliasID: qwen38Alias, DisplayName: "Qwen3.8 27B",
+			DesiredBuild: qwen38ConcreteModel, Active: true,
+		}},
+		ExpectedProviderCapabilities: []string{
+			registry.ProviderCapabilityAppleM5,
+			registry.ProviderCapabilityMLXNAX,
+		},
+		MTPDrafterPath: cfg.mtpPath,
+	}
+}
+
+func qwen38ExpectedBuiltKVBackend(requested string) (string, error) {
+	switch requested {
+	case "", testbed.KVBackendAuto:
+		// The provider's production .auto selection resolves contiguous.
+		return testbed.KVBackendContiguous, nil
+	case testbed.KVBackendPaged, testbed.KVBackendContiguous:
+		return requested, nil
+	default:
+		return "", fmt.Errorf("unsupported Qwen3.8 testbed KV backend %q", requested)
+	}
+}
+
+func TestQwen38ExpectedBuiltKVBackend(t *testing.T) {
+	for requested, want := range map[string]string{
+		"":                          testbed.KVBackendContiguous,
+		testbed.KVBackendAuto:       testbed.KVBackendContiguous,
+		testbed.KVBackendContiguous: testbed.KVBackendContiguous,
+		testbed.KVBackendPaged:      testbed.KVBackendPaged,
+	} {
+		got, err := qwen38ExpectedBuiltKVBackend(requested)
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+	}
+	_, err := qwen38ExpectedBuiltKVBackend("invalid")
+	require.Error(t, err)
+}
+
+func qwen38LoadFailureProbe(provider *testbed.Provider) func() error {
+	return func() error {
+		if !provider.Running() {
+			return errors.New("provider process exited during model load")
+		}
+		raw, err := os.ReadFile(provider.DaemonStatePath())
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read provider daemon state: %w", err)
+		}
+		var state struct {
+			Slots []struct {
+				Model     string  `json:"model"`
+				LoadError *string `json:"load_error"`
+			} `json:"slots"`
+		}
+		if err := json.Unmarshal(raw, &state); err != nil {
+			// The daemon owns this asynchronously-written observation. A
+			// transient partial read is not a model-load verdict; retry.
+			return nil
+		}
+		for _, slot := range state.Slots {
+			if slot.Model == qwen38ConcreteModel &&
+				slot.LoadError != nil &&
+				strings.TrimSpace(*slot.LoadError) != "" {
+				return fmt.Errorf("daemon-state load_error: %s", *slot.LoadError)
+			}
+		}
+		return nil
+	}
+}
+
+func prewarmQwen38(t *testing.T, s *testbed.Suite) {
+	t.Helper()
+	providerIDs := s.Coordinator.Registry.ProviderIDs()
+	require.Len(t, providerIDs, 1, "Qwen3.8 E2E requires one exact provider slot")
+	expectedBackend, err := qwen38ExpectedBuiltKVBackend(
+		testbed.ResolveKVBackend(s.Config.KVBackend))
+	require.NoError(t, err)
+
+	err = testbed.PrewarmRegistrySlot(
+		s.Ctx,
+		s.Coordinator.Registry,
+		providerIDs[0],
+		qwen38ConcreteModel,
+		expectedBackend,
+		qwen38PrewarmTimeout,
+		s.Logger,
+		qwen38LoadFailureProbe(s.Providers[0]),
+	)
+	if err == nil {
+		return
+	}
+	daemonState, stateErr := os.ReadFile(s.Providers[0].DaemonStatePath())
+	if stateErr != nil {
+		t.Fatalf("Qwen3.8 production pre-warm failed: %v; "+
+			"provider daemon state unavailable: %v; inspect provider stdout/stderr above",
+			err, stateErr)
+	}
+	t.Fatalf("Qwen3.8 production pre-warm failed: %v\nprovider daemon state: %s",
+		err, daemonState)
+}
+
+func postQwen38Request(
+	t *testing.T, s *testbed.Suite, body map[string]any,
+) (*http.Response, []byte) {
+	t.Helper()
+	bodyJSON, err := json.Marshal(body)
+	require.NoError(t, err)
+	req, err := http.NewRequestWithContext(
+		s.Ctx, http.MethodPost, s.Coordinator.BaseURL()+"/v1/chat/completions",
+		bytes.NewReader(bodyJSON))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer testbed-admin-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: httpTimeout}).Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return resp, respBody
+}
+
+func assertQwen38Route(t *testing.T, s *testbed.Suite, resp *http.Response) {
+	t.Helper()
+	ids := s.Coordinator.Registry.ProviderIDs()
+	require.Len(t, ids, 1)
+	require.Equal(t, ids[0], resp.Header.Get("X-Provider-Id"), "concrete provider attribution")
+	require.Contains(t, resp.Header.Get("X-Provider-Chip"), "M5")
+	p := s.Coordinator.Registry.GetProvider(ids[0])
+	require.NotNil(t, p)
+	p.Mu().Lock()
+	defer p.Mu().Unlock()
+	key, err := base64.StdEncoding.DecodeString(p.PublicKey)
+	require.NoError(t, err, "provider route must carry an X25519 key for sealed wire requests")
+	require.Len(t, key, 32, "provider route must use a 32-byte X25519 public key")
+	require.Equal(t, "M5", p.Hardware.ChipFamily)
+	for _, requiredCapability := range []string{
+		registry.ProviderCapabilityAppleM5,
+		registry.ProviderCapabilityMLXNAX,
+	} {
+		require.Contains(t, p.RuntimeCapabilities, requiredCapability)
+	}
+	var advertised *bool
+	for i := range p.Models {
+		if p.Models[i].ID == qwen38ConcreteModel {
+			advertised = p.Models[i].TemplateRenderOK
+			require.True(t, p.Models[i].IsVision, "video route must be backed by a VLM advertisement")
+			require.Equal(t, s.Config.CatalogModels[0].Manifest.AggregateSHA256, p.Models[i].WeightHash)
+		}
+	}
+	require.NotNil(t, advertised, "provider must advertise the concrete protected build")
+	require.True(t, *advertised, "required-tool route needs the provider's rendered-template capability")
+}
+
+func assertQwen38Catalog(t *testing.T, s *testbed.Suite) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(
+		s.Ctx, http.MethodGet, s.Coordinator.BaseURL()+"/v1/models/catalog?include_aliases=1", nil)
+	require.NoError(t, err)
+	resp, err := (&http.Client{Timeout: httpTimeout}).Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var catalog struct {
+		Models  []map[string]any `json:"models"`
+		Aliases []map[string]any `json:"aliases"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&catalog))
+	var concrete map[string]any
+	for _, model := range catalog.Models {
+		if model["id"] == qwen38ConcreteModel {
+			concrete = model
+		}
+	}
+	require.NotNil(t, concrete)
+	require.ElementsMatch(t,
+		[]any{registry.ProviderCapabilityAppleM5, registry.ProviderCapabilityMLXNAX},
+		concrete["required_provider_capabilities"])
+	runtimeParameters, ok := concrete["runtime_parameters"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "qwen3", runtimeParameters["reasoning_parser"])
+	require.Equal(t, "qwen3_coder", runtimeParameters["tool_call_parser"])
+	require.Equal(t, true, runtimeParameters["chat_template_required"])
+	require.Len(t, catalog.Aliases, 1)
+	require.Equal(t, qwen38Alias, catalog.Aliases[0]["id"])
+	require.Equal(t, qwen38ConcreteModel, catalog.Aliases[0]["desired_build"])
+	resolved, alias, ok := s.Coordinator.Registry.ResolveModel(qwen38Alias)
+	require.True(t, ok)
+	require.True(t, alias)
+	require.Equal(t, qwen38ConcreteModel, resolved)
+	require.NotNil(t, findRoutableProvider(s.Coordinator.Registry, qwen38ConcreteModel))
+}
+
+func assertQwen38DaemonPosture(t *testing.T, s *testbed.Suite, localMTP bool) {
+	t.Helper()
+	require.Len(t, s.Providers, 1)
+	type slotPosture struct {
+		Model             string  `json:"model"`
+		MTPEnabled        bool    `json:"mtp_enabled"`
+		MTPActive         bool    `json:"mtp_active"`
+		MTPInactiveReason *string `json:"mtp_inactive_reason"`
+		LoadError         *string `json:"load_error"`
+	}
+	var target slotPosture
+	require.Eventually(t, func() bool {
+		raw, err := os.ReadFile(s.Providers[0].DaemonStatePath())
+		if err != nil {
+			return false
+		}
+		var state struct {
+			Slots []slotPosture `json:"slots"`
+		}
+		if json.Unmarshal(raw, &state) != nil {
+			return false
+		}
+		for _, slot := range state.Slots {
+			if slot.Model == qwen38ConcreteModel {
+				target = slot
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, 250*time.Millisecond, "provider never published Qwen3.8 slot posture")
+	require.Nil(t, target.LoadError, "target model must remain the authoritative serving slot")
+	configBytes, err := os.ReadFile(filepath.Join(s.Providers[0].StateDir, "provider.toml"))
+	require.NoError(t, err)
+	require.NotContains(t, string(configBytes), "mtp_mode",
+		"testbed must preserve the provider's exact-model automatic MTP policy")
+	if localMTP {
+		require.Contains(t, string(configBytes), "mtp_drafter_path",
+			"local MTP path must be used only when explicitly configured")
+		require.True(t, target.MTPEnabled, "configured immutable assistant was not enabled")
+	} else {
+		require.NotContains(t, string(configBytes), "mtp_drafter_path",
+			"ordinary target-only runs must not inject a local assistant")
+	}
+	if target.MTPActive {
+		require.True(t, target.MTPEnabled)
+		require.Nil(t, target.MTPInactiveReason)
+	} else {
+		require.NotNil(t, target.MTPInactiveReason,
+			"target-only fallback must name why the subordinate MTP assistant is inactive")
+		require.NotEmpty(t, *target.MTPInactiveReason)
+	}
+	require.True(t, s.Providers[0].Running(), "provider process exited after tool/video inference")
+}
+
+func TestIntegration_Qwen38RealProcessToolsAndVideo(t *testing.T) {
+	cfg := requireQwen38E2EConfig(t)
+	s := testbed.NewSuite(qwen38SuiteConfig(cfg))
+	err := s.Start(context.Background())
+	if errors.Is(err, testbed.ErrProviderIneligible) {
+		require.Equal(t, qwen38GateFail, qwen38GatePolicy(true, false, false, true))
+		t.Fatalf("opted-in M5+NAX provider failed signed capability admission: %v", err)
+	}
+	require.NoError(t, err, "Qwen3.8 suite startup failed")
+	t.Cleanup(s.Stop)
+	prewarmQwen38(t, s)
+	assertQwen38Catalog(t, s)
+
+	toolBody := map[string]any{
+		"model": qwen38Alias,
+		"messages": []map[string]string{{
+			"role":    "user",
+			"content": `Call get_weather exactly once with the city argument exactly "Boston".`,
+		}},
+		"tools": []map[string]any{{
+			"type": "function",
+			"function": map[string]any{
+				"name": "get_weather", "description": "Get weather for a city",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"city": map[string]string{"type": "string"},
+					},
+					"required": []string{"city"}, "additionalProperties": false,
+				},
+			},
+		}},
+		"tool_choice": "required", "enable_thinking": false,
+		"reasoning_effort": "low", "temperature": 0.0, "max_tokens": 96,
+	}
+	_, hasReasoningParser := toolBody["reasoning_parser"]
+	_, hasToolParser := toolBody["tool_call_parser"]
+	require.False(t, hasReasoningParser, "client must omit the catalog-owned reasoning parser")
+	require.False(t, hasToolParser, "client must omit the catalog-owned tool parser")
+	toolResp, toolRespBody := postQwen38Request(t, s, toolBody)
+	require.Equal(t, http.StatusOK, toolResp.StatusCode, "body: %s", toolRespBody)
+	assertQwen38Route(t, s, toolResp)
+	var toolCompletion struct {
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				ToolCalls []struct {
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	require.NoError(t, json.Unmarshal(toolRespBody, &toolCompletion))
+	require.Equal(t, qwen38Alias, toolCompletion.Model, "response model must be rewritten to the public alias")
+	require.NotContains(t, string(toolRespBody), qwen38ConcreteModel,
+		"concrete route identity must not leak through the alias response body")
+	require.Len(t, toolCompletion.Choices, 1)
+	require.Len(t, toolCompletion.Choices[0].Message.ToolCalls, 1)
+	call := toolCompletion.Choices[0].Message.ToolCalls[0].Function
+	require.Equal(t, "get_weather", call.Name)
+	var arguments map[string]any
+	require.NoError(t, json.Unmarshal([]byte(call.Arguments), &arguments))
+	require.Equal(t, "Boston", arguments["city"])
+	require.Greater(t, toolCompletion.Usage.PromptTokens, 0)
+	require.Greater(t, toolCompletion.Usage.CompletionTokens, 0)
+	require.Equal(t,
+		toolCompletion.Usage.PromptTokens+toolCompletion.Usage.CompletionTokens,
+		toolCompletion.Usage.TotalTokens)
+
+	video, err := os.ReadFile(filepath.Join(
+		"..", "libs", "mlx-swift-lm", "Tests", "MLXLMTests", "Resources", "1080p_30.mov"))
+	require.NoError(t, err)
+	require.Less(t, len(video), 128<<10, "canonical color-bar video fixture must stay bounded")
+	videoURI := "data:video/quicktime;base64," + base64.StdEncoding.EncodeToString(video)
+	videoBody := map[string]any{
+		"model": qwen38Alias,
+		"messages": []map[string]any{{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "text", "text": "Describe the main test pattern in this video in a short phrase."},
+				{"type": "video_url", "video_url": map[string]string{"url": videoURI}},
+			},
+		}},
+		"enable_thinking": false, "temperature": 0.0, "max_tokens": 32,
+	}
+	videoResp, videoRespBody := postQwen38Request(t, s, videoBody)
+	require.Equal(t, http.StatusOK, videoResp.StatusCode, "body: %s", videoRespBody)
+	assertQwen38Route(t, s, videoResp)
+	var videoCompletion struct {
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	require.NoError(t, json.Unmarshal(videoRespBody, &videoCompletion))
+	require.Equal(t, qwen38Alias, videoCompletion.Model)
+	require.NotContains(t, string(videoRespBody), qwen38ConcreteModel)
+	require.Len(t, videoCompletion.Choices, 1)
+	grounded := strings.TrimSpace(videoCompletion.Choices[0].Message.Content)
+	require.NotEmpty(t, grounded, "decrypted video response must contain grounded text")
+	normalizedGrounded := strings.ToLower(grounded)
+	require.True(t,
+		strings.Contains(normalizedGrounded, "color bar") ||
+			strings.Contains(normalizedGrounded, "colour bar"),
+		"response must identify the canonical color-bar fixture: %q", grounded)
+	require.Greater(t, videoCompletion.Usage.PromptTokens, 0)
+	require.Greater(t, videoCompletion.Usage.CompletionTokens, 0)
+	require.Equal(t,
+		videoCompletion.Usage.PromptTokens+videoCompletion.Usage.CompletionTokens,
+		videoCompletion.Usage.TotalTokens)
+
+	assertQwen38DaemonPosture(t, s, cfg.mtpPath != "")
+	report := tbassert.NewAccountingAsserter(s.PgStore).EvaluateAll(s.Ctx)
+	require.True(t, report.Passed, "tool/video accounting integrity failed\n%s", report.SummaryTable())
 }
 
 func TestIntegration_StreamingInference(t *testing.T) {

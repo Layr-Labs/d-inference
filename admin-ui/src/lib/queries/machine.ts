@@ -15,7 +15,6 @@ export interface MachineHardware {
 }
 
 export interface MachineDetail {
-  serial_number: string;
   id: string;
   account_id: string;
   email: string | null;
@@ -40,45 +39,51 @@ export interface MachineDetail {
   last_session_tokens_generated: string;
 }
 
-// The latest session row for one physical machine (deduped by serial_number,
-// keeping the most recent last_seen), joined to the owner's email.
+// Resolve an opaque provider id to the physical machine's latest session. The
+// coordinator-private serial is used only inside SQL and never selected.
 // hardware/models are returned as parsed JSONB objects/arrays by pg.
 //
 // NEVER select credential hashes here. python_hash / runtime_hash are runtime
 // integrity digests (safe public attestation metadata), not credentials.
-export async function getMachineBySerial(serial: string): Promise<MachineDetail | null> {
+export async function getMachineByProviderID(providerId: string): Promise<MachineDetail | null> {
   const rows = await query<
     Omit<MachineDetail, "failed_challenges"> & { failed_challenges: number | string }
   >(
-    `SELECT DISTINCT ON (serial_number)
-            serial_number,
-            id,
-            account_id,
+    `WITH target AS (
+       SELECT serial_number
+         FROM providers
+        WHERE id = $1
+        LIMIT 1
+     )
+     SELECT p.id,
+            p.account_id,
             (SELECT email FROM users u WHERE u.account_id = p.account_id) AS email,
-            hardware,
-            models,
-            backend,
-            version,
-            trust_level,
-            attested,
-            mda_verified,
-            runtime_verified,
-            se_public_key,
-            python_hash,
-            runtime_hash,
-            last_challenge_verified,
-            failed_challenges,
-            registered_at,
-            last_seen,
-            lifetime_requests_served,
-            lifetime_tokens_generated,
-            last_session_requests_served,
-            last_session_tokens_generated
+            p.hardware,
+            p.models,
+            p.backend,
+            p.version,
+            p.trust_level,
+            p.attested,
+            p.mda_verified,
+            p.runtime_verified,
+            p.se_public_key,
+            p.python_hash,
+            p.runtime_hash,
+            p.last_challenge_verified,
+            p.failed_challenges,
+            p.registered_at,
+            p.last_seen,
+            p.lifetime_requests_served,
+            p.lifetime_tokens_generated,
+            p.last_session_requests_served,
+            p.last_session_tokens_generated
        FROM providers p
-      WHERE serial_number = $1
-      ORDER BY serial_number, last_seen DESC
+       CROSS JOIN target t
+      WHERE p.id = $1
+         OR (t.serial_number <> '' AND p.serial_number = t.serial_number)
+      ORDER BY p.last_seen DESC
       LIMIT 1`,
-    [serial],
+    [providerId],
   );
   const r = rows[0];
   if (!r) return null;

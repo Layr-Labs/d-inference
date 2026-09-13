@@ -18,11 +18,20 @@ public enum KVHeadroomProbe {
     /// (`active + cache`, reflecting every co-resident model's weights and
     /// KV) clamped to real OS-available memory. NO floor is applied, so it
     /// reports a true zero when the cap is already exhausted.
-    public static var measuredLiveKVHeadroomBytes: UInt64 {
+    /// `activationReserveBytes` is the reserve the caller's serving set
+    /// resolves to (`UnifiedMemoryCap.resolvedActivationReserveBytes
+    /// (modelIDs:)`); nil keeps the flat default. The load gate and this
+    /// measured guard MUST carve the same reserve, or a model the gate
+    /// admits at the serving-set floor is unloaded here against the larger
+    /// flat one — the admit-then-fail churn #653 removes.
+    public static func measuredLiveKVHeadroomBytes(
+        activationReserveBytes: UInt64? = nil
+    ) -> UInt64 {
         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
         return UnifiedMemoryCap.liveKVHeadroomBytes(
             mlxUsedBytes: mlxUsed,
-            systemAvailableBytes: SystemMemory.availableBytes() ?? .max)
+            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+            activationReserveBytes: activationReserveBytes)
     }
 
     /// Post-load guard: true iff the freshly-loaded model leaves at least
@@ -32,9 +41,12 @@ public enum KVHeadroomProbe {
     /// shape). Trim the cold-load buffer pool (`MLX.Memory.clearCache()`)
     /// BEFORE probing, or transient load buffers false-reject a serveable
     /// model.
-    public static func hasServeableKVHeadroom() -> Bool {
+    public static func hasServeableKVHeadroom(
+        activationReserveBytes: UInt64? = nil
+    ) -> Bool {
         UnifiedMemoryCap.loadIsServeable(
-            measuredLiveKVHeadroomBytes: measuredLiveKVHeadroomBytes)
+            measuredLiveKVHeadroomBytes: measuredLiveKVHeadroomBytes(
+                activationReserveBytes: activationReserveBytes))
     }
 
     /// Post-BRIDGE serveable-KV verdict for a freshly-built slot.
@@ -45,11 +57,12 @@ public enum KVHeadroomProbe {
     ///
     ///   * CONTIGUOUS: KV allocates lazily from free headroom, so measure
     ///     live headroom (the classic guard).
-    ///   * PAGED: require BOTH a serveable committed pool and the same
-    ///     minimum residual whole-machine headroom. Physical sizing uses
-    ///     only a conservative fraction of the pre-build live headroom, so
-    ///     the residual check catches unaccounted engine/JIT residency or
-    ///     concurrent OS pressure without rejecting every valid pool.
+    ///   * PAGED: require both a serveable backend ceiling and the same
+    ///     minimum residual whole-machine headroom. Segmented storage reports
+    ///     its mutable admitted grant; an explicit fixed-reference pool reports
+    ///     physical capacity. An empty segmented pool need not commit pages to
+    ///     pass this guard. Live headroom still catches engine/JIT residency and
+    ///     concurrent OS pressure before the newly built slot is advertised.
     ///
     /// Pure over its inputs (the live measurement is a defaulted
     /// autoclosure) so the matrix is unit-testable without touching MLX
@@ -57,17 +70,17 @@ public enum KVHeadroomProbe {
     public static func postBuildServeable(
         kvBackendKind: EngineV2KVBackendKind,
         pagedPoolBytes: UInt64,
-        measuredHeadroomBytes: @autoclosure () -> UInt64 = KVHeadroomProbe
-            .measuredLiveKVHeadroomBytes
+        activationReserveBytes: UInt64? = nil,
+        measuredHeadroomBytes: @autoclosure () -> UInt64? = nil
     ) -> Bool {
+        let measured = measuredHeadroomBytes()
+            ?? measuredLiveKVHeadroomBytes(activationReserveBytes: activationReserveBytes)
         switch kvBackendKind {
         case .paged:
             return pagedPoolBytes >= UnifiedMemoryCap.minimumLoadKVBytes
-                && UnifiedMemoryCap.loadIsServeable(
-                    measuredLiveKVHeadroomBytes: measuredHeadroomBytes())
+                && UnifiedMemoryCap.loadIsServeable(measuredLiveKVHeadroomBytes: measured)
         case .contiguous:
-            return UnifiedMemoryCap.loadIsServeable(
-                measuredLiveKVHeadroomBytes: measuredHeadroomBytes())
+            return UnifiedMemoryCap.loadIsServeable(measuredLiveKVHeadroomBytes: measured)
         }
     }
 }

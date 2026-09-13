@@ -36,6 +36,58 @@ func TestVerifyValidAttestation(t *testing.T) {
 	}
 }
 
+func TestVerifyReturnsSignedRuntimeClaimsAndRejectsTampering(t *testing.T) {
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := AttestationBlob{
+		AuthenticatedRootEnabled: true,
+		ChipFamily:               "M5",
+		ChipName:                 "Apple M5 Max",
+		HardwareModel:            "Mac17,1",
+		MetallibHash:             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		OSVersion:                "26.0",
+		PublicKey: base64.StdEncoding.EncodeToString(
+			marshalUncompressedP256(privKey)),
+		RDMADisabled:           true,
+		RuntimeCapabilities:    []string{"apple_m5", "mlx_nax"},
+		SecureBootEnabled:      true,
+		SecureEnclaveAvailable: true,
+		SIPEnabled:             true,
+		Timestamp:              time.Now().UTC().Format(time.RFC3339),
+	}
+	signed := signBlob(t, blob, privKey)
+	result := Verify(signed)
+	if !result.Valid {
+		t.Fatalf("signed claims failed verification: %s", result.Error)
+	}
+	if result.ChipFamily != "M5" ||
+		result.MetallibHash != blob.MetallibHash ||
+		len(result.RuntimeCapabilities) != 2 ||
+		result.RuntimeCapabilities[0] != "apple_m5" ||
+		result.RuntimeCapabilities[1] != "mlx_nax" {
+		t.Fatalf("verification result lost signed runtime claims: %+v", result)
+	}
+
+	signed.Attestation.RuntimeCapabilities = []string{"apple_m5"}
+	signed.AttestationRaw = nil
+	if tampered := Verify(signed); tampered.Valid {
+		t.Fatal("runtime capability tampering preserved a valid signature")
+	}
+}
+
+func TestVerifyLegacyPayloadHasNoRuntimeClaims(t *testing.T) {
+	result := Verify(createTestAttestation(t))
+	if !result.Valid {
+		t.Fatalf("legacy attestation failed: %s", result.Error)
+	}
+	if result.ChipFamily != "" || result.MetallibHash != "" ||
+		len(result.RuntimeCapabilities) != 0 {
+		t.Fatalf("legacy payload fabricated runtime claims: %+v", result)
+	}
+}
+
 // TestVerifyTamperedAttestation modifies the attestation after signing
 // and expects verification to fail.
 func TestVerifyTamperedAttestation(t *testing.T) {
@@ -199,6 +251,13 @@ func TestCheckTimestamp(t *testing.T) {
 	}
 	if CheckTimestamp(result, 10*time.Second) {
 		t.Error("expected 30s old attestation to fail 10s check")
+	}
+	future := VerificationResult{
+		Valid:     true,
+		Timestamp: time.Now().Add(30 * time.Second),
+	}
+	if CheckTimestamp(future, 10*time.Second) {
+		t.Error("expected far-future attestation to fail freshness check")
 	}
 }
 

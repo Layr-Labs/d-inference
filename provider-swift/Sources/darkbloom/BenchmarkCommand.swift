@@ -23,6 +23,31 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Maximum tokens to generate per iteration.")
     var maxTokens = ModelBenchmark.defaultMaxTokens
 
+    @Flag(name: .long, help: """
+        Run the fail-closed signed-candidate cap-0/cap-1 scheduler-prefill \
+        evaluation. This mode only runs from the packaged signed \
+        Darkbloom.app main executable.
+        """)
+    var schedulerPrefillDecision = false
+
+    @Option(name: .long, help: "Signed decision: expected registered model aggregate SHA-256.")
+    var expectedModelAggregateSHA256: String?
+
+    @Option(name: .long, help: "Signed decision: expected registered signed darkbloom binary SHA-256.")
+    var expectedRegisteredBinarySHA256: String?
+
+    @Option(name: .long, help: "Signed decision: exact expected ProviderCore version.")
+    var expectedVersion: String?
+
+    @Option(name: .long, help: "Signed decision: source commit SHA (40 or 64 lowercase hex).")
+    var sourceSHA: String?
+
+    @Option(name: .long, help: "Signed decision: measured iterations per cap/workload cell (minimum/default 10).")
+    var decisionIterations = SchedulerPrefillDecisionReport.minimumLiveIterations
+
+    @Option(name: .long, help: "Signed decision: write JSON atomically to this file; omit for stdout.")
+    var output: String?
+
     // MARK: - Throughput sweep mode (prefill tok/s × prompt length; decode tok/s × batch size)
 
     @Flag(name: .long, help: """
@@ -59,20 +84,26 @@ struct Benchmark: AsyncParsableCommand {
     var decodeIterations = ThroughputSweep.defaultDecodeIterations
 
     @Option(name: .long, help: """
-        KV backend EVERY engine this command builds is built with — \
-        auto|contiguous|paged (default auto, which resolves to CONTIGUOUS as \
-        of v0.8.1 — pass --kv-backend paged to measure the paged arm). \
-        Applies to --sweep, --scheduler-prefill and \
-        --arrival-invariance alike, so the three phases of a wrapper run can \
-        never measure different arms. An explicit paged selection FAILS the \
+        KV-backend selection passed to every engine this command builds — \
+        auto|contiguous|paged (default auto). Candidate auto selects paged only \
+        for exact model IDs qwen3.5-35b-a3b, qwen3.6-35b-a3b-vl-mtp-mxfp8, \
+        and EigenLabs/Qwen3.8-27B-4bit-mtp; all other models use contiguous. \
+        Automatic paged failures and the version-bound crash-loop guard \
+        still fall back to contiguous. Pass --kv-backend paged to require \
+        the paged arm rather than automatic fallback. \
+        Applies to --sweep, --scheduler-prefill, \
+        --scheduler-prefill-decision, and --arrival-invariance alike. Each \
+        engine receives the same requested selection; automatic fallback \
+        can produce different resolved backends. An explicit paged selection FAILS the \
         run rather than degrading: if paged cannot be served, engine \
         construction throws, the cell records no samples, and the command \
-        exits non-zero naming the reason — so a paged benchmark can never \
-        measure contiguous. Only DARKBLOOM_CBV2_PAGED_KV=0 still degrades an \
+        exits non-zero naming the reason. DARKBLOOM_CBV2_PAGED_KV=0 and \
+        capability/span-mask vetoes can still force contiguous, even for an \
         explicit selection. The backend that actually served is recorded per \
         measured engine (decode[].resolvedKVBackend, \
         samples[].resolvedKVBackend) and de-duplicated in each report's \
-        kvBackend block.
+        kvBackend block. Candidate rollout is not yet validated; see \
+        docs/design/qwen-first-paged-ssd-rollout.md.
         """)
     var kvBackend = "auto"
 
@@ -91,6 +122,9 @@ struct Benchmark: AsyncParsableCommand {
 
     @Option(name: .long, help: "Arrival benchmark: prompt tokens per request.")
     var arrivalPromptTokens = 512
+
+    @Option(name: .long, help: "Arrival benchmark: four comma-separated per-row prompt lengths, e.g. 8192,512,512,512.")
+    var arrivalPromptLengths: String?
 
     @Option(name: .long, help: "Arrival benchmark: generated tokens per request.")
     var arrivalDecodeTokens = 64
@@ -126,7 +160,23 @@ struct Benchmark: AsyncParsableCommand {
         """)
     var parityPrefixTokens = 28672
 
+    @Option(name: .long, help: "Score bounded exact token contexts from JSON with an explicit --model and --kv-backend; ordinary target only, cache and MTP off.")
+    var teacherForcedInput: String?
+
     mutating func run() async throws {
+        if let conflict = benchmarkModeConflict() {
+            printError(conflict)
+            throw ExitCode(2)
+        }
+        if let error = teacherForcedOptionError() {
+            printError(error)
+            throw ExitCode(2)
+        }
+        if schedulerPrefillDecision {
+            try await runSignedSchedulerPrefillDecision()
+            return
+        }
+
         let snapshot = try loadRuntimeSnapshot(
             configPath: configOptions.config,
             migrateOnDisk: false)
@@ -189,6 +239,17 @@ struct Benchmark: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
+        if let teacherForcedInput {
+            let result = try await TeacherForcedBenchmark.run(
+                modelID: selectedModel.id, modelDirectory: modelPath,
+                inputURL: URL(fileURLWithPath: teacherForcedInput), backend: kvBackend,
+                gemmaOptimizations: gemmaSettings)
+            // Preserve nonfinite/neutrality evidence even when inconclusive.
+            print(result.json)
+            if !result.controlsPassed { throw ExitCode(2) }
+            return
+        }
+
         if parity {
             try await runBackendParity(
                 modelID: selectedModel.id,
@@ -238,5 +299,33 @@ struct Benchmark: AsyncParsableCommand {
         )
 
         report.printTable()
+    }
+
+    func benchmarkModeConflict() -> String? {
+        let selected = [
+            (schedulerPrefillDecision, "--scheduler-prefill-decision"),
+            (sweep, "--sweep"),
+            (schedulerPrefill, "--scheduler-prefill"),
+            (arrivalInvariance, "--arrival-invariance"),
+            (parity, "--parity"),
+            (teacherForcedInput != nil, "--teacher-forced-input"),
+        ].compactMap { $0.0 ? $0.1 : nil }
+        guard selected.count <= 1 else {
+            return "benchmark modes are mutually exclusive: \(selected.joined(separator: ", "))"
+        }
+        return nil
+    }
+
+    func teacherForcedOptionError() -> String? {
+        guard let teacherForcedInput else { return nil }
+        guard !teacherForcedInput.isEmpty, let model, !model.isEmpty else {
+            return "--teacher-forced-input requires a file and explicit --model"
+        }
+        guard assistantModel == nil, output == nil else {
+            return "--teacher-forced-input uses ordinary target scoring and JSON stdout; assistant and signed-decision output options do not apply"
+        }
+        do { try TeacherForcedBenchmark.validateBackend(kvBackend) }
+        catch { return "--teacher-forced-input requires --kv-backend contiguous or paged" }
+        return nil
     }
 }

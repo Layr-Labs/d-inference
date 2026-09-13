@@ -72,13 +72,26 @@ func makeLocalInferenceApplication(
     mtpSlots: @escaping @Sendable () async -> [MTPSlotMetricsSample],
     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
 ) -> LocalInferenceApplication {
-    let engine = MultiModelBatchSchedulerEngine(
-        acquire: acquire,
-        tokenizerProvider: tokenizerProvider,
-        availableModels: availableModels,
-        defaultMaxTokens: defaultMaxTokens
-    )
-    let service = MLXOpenAIService(engine: engine)
+    // The upstream OpenAI request shape intentionally ignores Qwen's
+    // template-only controls. Build a lightweight engine/service facade per
+    // chat request so the raw-body controls recovered by
+    // `LocalChatUploadResponder` reach tokenization without changing the
+    // shared model registry, response store, or metrics identity.
+    let responseStore = InMemoryResponseStore()
+    let metrics = ServerMetrics()
+    let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService = {
+        controls in
+        let engine = MultiModelBatchSchedulerEngine(
+            acquire: acquire,
+            tokenizerProvider: tokenizerProvider,
+            availableModels: availableModels,
+            defaultMaxTokens: defaultMaxTokens,
+            templateControls: controls
+        )
+        return MLXOpenAIService(
+            engine: engine, responseStore: responseStore, metrics: metrics)
+    }
+    let service = serviceForTemplateControls(.init())
     let router = MLXServerApplication.buildRouter(service: service)
     // Chat-completions POSTs are served by the interception responder with
     // the 32 MiB body ceiling (the upstream router's BasicRequestContext
@@ -86,7 +99,8 @@ func makeLocalInferenceApplication(
     // LocalChatUploadResponder); everything else falls through to the
     // upstream router unchanged.
     let uploadResponder = LocalChatUploadResponder(
-        inner: router.buildResponder(), service: service)
+        inner: router.buildResponder(), service: service,
+        serviceForTemplateControls: serviceForTemplateControls)
     // GET /metrics is served by the metrics responder: the upstream
     // ServerMetrics body plus the provider-owned MTP posture lines (see
     // LocalMetricsResponder for why the upstream route cannot be extended).

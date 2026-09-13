@@ -1,0 +1,105 @@
+{
+  "schema": 1,
+  "run_id": 34043318652,
+  "workflow_sha": "f9423f94ef41ced998009f4d503919e038c35175",
+  "source_sha": "f91fe843b0cb22e2d1b2a85c0652982f3a8ff146",
+  "version": "0.8.16",
+  "submodules": [
+    " 0a725e3000edabc4911cde345270ca950bfa152f libs/mlx (0a725e3)",
+    " c3ac44766c3e0be2066bbd87a3e26aaa6f410ab0 libs/mlx-swift (c3ac447)",
+    " f8eec2476cdb5263fb6e2a19dd71f2c8b7c0a7d3 libs/mlx-swift/Source/Cmlx/mlx (f8eec24)",
+    " 8bdeb0f3c5793c54139e86c5437b09abc9ab9b42 libs/mlx-swift/Source/Cmlx/mlx-c (8bdeb0f)",
+    " 67ac8607b5846e8acfbbdd8f36c0d252d69d0d01 libs/mlx-swift-lm (67ac860)"
+  ],
+  "unsigned": {
+    "status": "UNSIGNED_ARCHIVE_AND_PROVENANCE_VALID",
+    "archive_sha256": "6c8263064792a1c5f46726111200e849c4942321dfed4266156d3ad7ff9129fa",
+    "archive_bytes": 100239655,
+    "file_count": 15,
+    "notarization_proven": false,
+    "developer_id_signing_proven": false
+  },
+  "signed": {
+    "status": "SIGNED_ARCHIVE_PROVENANCE_AND_RECEIPTS_VALID",
+    "archive_sha256": "c429b7f91e770d95cc2619976169d5da45a5daad22143db2d8f0036b102286d0",
+    "archive_bytes": 198293975,
+    "file_count": 22,
+    "extraction_mode": "native macOS --mac-metadata --xattrs"
+  },
+  "same_run_unsigned_manifest_matches": true,
+  "reviewed_entitlements_match": true,
+  "signed_github_zip_digest_independently_verified": true,
+  "local_static_checks": {
+    "status": "LOCAL_STATIC_SIGNATURES_VALID",
+    "signatures": {
+      "app": {
+        "developer_id_authority_and_team": true,
+        "leaf_sha1": "95B67556E04653F56BA5411D20D33DD263EF6E2A",
+        "selected_leaf_matches": true,
+        "codesign_verification_returncode": 0
+      },
+      "cli": {
+        "developer_id_authority_and_team": true,
+        "leaf_sha1": "95B67556E04653F56BA5411D20D33DD263EF6E2A",
+        "selected_leaf_matches": true,
+        "codesign_verification_returncode": 0
+      },
+      "enclave": {
+        "developer_id_authority_and_team": true,
+        "leaf_sha1": "95B67556E04653F56BA5411D20D33DD263EF6E2A",
+        "selected_leaf_matches": true,
+        "codesign_verification_returncode": 0
+      },
+      "fan-helper": {
+        "developer_id_authority_and_team": true,
+        "leaf_sha1": "95B67556E04653F56BA5411D20D33DD263EF6E2A",
+        "selected_leaf_matches": true,
+        "codesign_verification_returncode": 0
+      },
+      "metallib": {
+        "developer_id_authority_and_team": true,
+        "leaf_sha1": "95B67556E04653F56BA5411D20D33DD263EF6E2A",
+        "selected_leaf_matches": true,
+        "codesign_verification_returncode": 0
+      }
+    },
+    "unsigned_cli_signature": "ad-hoc/linker-signed; no TeamIdentifier",
+    "stapler_returncode": 0,
+    "gatekeeper_returncode": 0,
+    "gatekeeper_notarized_developer_id": true,
+    "failures": [],
+    "verified_at_utc": "2026-09-06T16:07:20.545640+00:00",
+    "verifier_correction": "Initial optional codesign certificate-prefix syntax was rejected; corrected --extract-certificates=PREFIX succeeded without artifact changes. Initial command receipts preserved."
+  },
+  "flat_export_signature_metadata": {
+    "darkbloom": {
+      "returncode": 0,
+      "metadata": [
+        "Authority=Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)",
+        "Authority=Developer ID Certification Authority",
+        "Authority=Apple Root CA",
+        "TeamIdentifier=SLDQ2GJ6TL"
+      ]
+    },
+    "darkbloom-enclave": {
+      "returncode": 0,
+      "metadata": [
+        "Authority=Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)",
+        "Authority=Developer ID Certification Authority",
+        "Authority=Apple Root CA",
+        "TeamIdentifier=SLDQ2GJ6TL"
+      ]
+    },
+    "mlx.metallib": {
+      "returncode": 1,
+      "metadata": [
+        "<FLAT_BIN>/mlx.metallib: code object is not signed at all"
+      ]
+    }
+  },
+  "handling_caveat": "Explicit macOS tar --mac-metadata --xattrs required for metallib signature restoration",
+  "flat_export_caveat": "bin/mlx.metallib is unsigned; do not treat flat bin exports as equivalent to the verified notarized app",
+  "app_executed": false,
+  "model_executed": false,
+  "Qwen56fa_runtime_acceptance": false
+}

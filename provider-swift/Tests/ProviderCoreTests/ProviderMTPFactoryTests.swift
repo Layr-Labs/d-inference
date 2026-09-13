@@ -145,7 +145,8 @@ private func mtpCatalogArtifact() throws -> SpecDecArtifact {
         maximumFileCount: 8,
         allowedFileRoles: ["config", "weight"],
         configSHA256: mtpSHA256(config),
-        revision: manifest.version)
+        revision: manifest.version,
+        huggingFaceArtifact: nil)
     let verification = try SpecDecStore.verifyPublishedArtifact(
         at: directory, reference: reference).get()
     return SpecDecArtifact(
@@ -374,6 +375,17 @@ struct ProviderMTPFactoryTests {
             for: MTPFactoryDrafter(), automaticRectangularTokens: 8)
         #expect(automatic.mode == .automatic)
         #expect(automatic.automaticRectangularTokens == 8)
+    }
+
+    @Test("ordinary assistant verification retains the configured rectangular bound")
+    func automaticProductionVerification() {
+        for bound in [0, 4, 8] {
+            let policy = providerMTPVerificationPolicy(
+                for: MTPFactoryDrafter(), automaticRectangularTokens: bound)
+            #expect(policy.mode == .automatic && policy.automaticRectangularTokens == bound)
+        }
+        let absent = providerMTPVerificationPolicy(for: nil, automaticRectangularTokens: 8)
+        #expect(absent.mode == .automatic)
     }
 
     @Test("cached catalog bytes are revalidated on every load and rebuild")

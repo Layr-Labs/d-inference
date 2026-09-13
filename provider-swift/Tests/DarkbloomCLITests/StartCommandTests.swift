@@ -7,27 +7,32 @@ import Testing
 
 @Suite("Serve runtime preparation (shared Start/Benchmark seam)")
 struct StartCommandTests {
-    @Test("TOML projection precedes the first MLX touch")
-    func projectionPrecedesMetal() throws {
+    @Test("TOML projection and metallib binding precede the first MLX touch")
+    func projectionAndBindingPrecedeMetal() throws {
         let settings = GemmaOptimizationSettings(
             prefillLayer18: false,
             weightedR1: false
         )
         var events: [String] = []
 
-        try ServeRuntimePreparer.prepareRuntime(
+        let hash = try ServeRuntimePreparer.prepareRuntime(
             settings: settings,
             apply: { received in
                 #expect(received.prefillLayer18 == false)
                 #expect(received.weightedR1 == false)
                 events.append("projection")
             },
+            bindMetallib: {
+                events.append("metallib")
+                return "bound-hash"
+            },
             requireMetal: {
                 events.append("metal")
             }
         )
 
-        #expect(events == ["projection", "metal"])
+        #expect(hash == "bound-hash")
+        #expect(events == ["projection", "metallib", "metal"])
     }
 
     @Test("a rejected projection aborts before the first MLX touch")
@@ -42,13 +47,18 @@ struct StartCommandTests {
         )
 
         // The coupled weighted-unsort/safe-R1 pair is a process-start latch:
-        // a half-applied projection must never reach engine construction.
+        // a half-applied projection must reach neither metallib binding nor
+        // engine construction.
         do {
             try ServeRuntimePreparer.prepareRuntime(
                 settings: GemmaOptimizationSettings(),
                 apply: { _ in
                     events.append("projection")
                     throw failure
+                },
+                bindMetallib: {
+                    events.append("metallib")
+                    return "must-not-bind"
                 },
                 requireMetal: {
                     events.append("metal")
@@ -66,47 +76,50 @@ struct StartCommandTests {
     }
 
     @Test("the default projection path is the environment apply boundary")
-    func defaultApplyProjectsSettings() throws {
-        let settings = GemmaOptimizationSettings(
-            prefillLayer18: false,
-            weightedR1: true
-        )
-        let projection = GemmaOptimizationEnvironment.projection(for: settings)
-        let saved = projection.keys.reduce(into: [String: String?]()) { out, key in
-            out[key] = key.withCString { getenv($0).map { String(cString: $0) } }
-        }
-        defer {
-            for (key, value) in saved {
-                if let value {
-                    _ = setenv(key, value, 1)
-                } else {
-                    _ = unsetenv(key)
-                }
+    func defaultApplyProjectsSettings() async {
+        // The real apply path mutates process-wide settings that concurrent
+        // model tests read and MLX caches on first use. Restoring environment
+        // strings cannot restore those cached values; suite serialization
+        // does not isolate other suites. Keep the real startup assertion in
+        // its own process, as GPUEnforcementTests does for device defaults.
+        await #expect(processExitsWith: .success) {
+            let isChildProcess = ExitTest.current != nil
+            #expect(isChildProcess)
+            let settings = GemmaOptimizationSettings(
+                prefillLayer18: false,
+                weightedR1: true
+            )
+            let projection = GemmaOptimizationEnvironment.projection(for: settings)
+            var metalProbed = false
+
+            try ServeRuntimePreparer.prepareRuntime(
+                settings: settings,
+                bindMetallib: { "test-bound-hash" },
+                requireMetal: { metalProbed = true }
+            )
+
+            for (key, value) in projection {
+                let observed = key.withCString { getenv($0).map { String(cString: $0) } }
+                #expect(observed == value)
             }
+            #expect(metalProbed)
         }
-        var metalProbed = false
-
-        try ServeRuntimePreparer.prepareRuntime(
-            settings: settings,
-            requireMetal: { metalProbed = true }
-        )
-
-        for (key, value) in projection {
-            let observed = key.withCString { getenv($0).map { String(cString: $0) } }
-            #expect(observed == value)
-        }
-        #expect(metalProbed)
     }
 
-    @Test("the Start compatibility shim forwards to the shared seam")
+    @Test("the Start compatibility shim forwards the full startup order")
     func startShimForwards() throws {
         var events: [String] = []
-        try Start.prepareServeRuntime(
+        let hash = try Start.prepareServeRuntime(
             settings: GemmaOptimizationSettings(),
             apply: { _ in events.append("projection") },
+            bindMetallib: {
+                events.append("metallib")
+                return "bound-hash"
+            },
             requireMetal: { events.append("metal") }
         )
-        #expect(events == ["projection", "metal"])
+        #expect(hash == "bound-hash")
+        #expect(events == ["projection", "metallib", "metal"])
     }
 
     @Test("benchmark env guard: a conflicting shell preset is rejected")

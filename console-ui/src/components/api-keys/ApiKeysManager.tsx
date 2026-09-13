@@ -80,7 +80,7 @@ export function ApiKeysManager({ onConsoleKeyChange }: { onConsoleKeyChange?: (k
         <button
           onClick={login}
           disabled={!ready}
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-coral text-white text-sm font-medium hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-coral text-white dark:text-bg-primary text-sm font-medium hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {ready ? "Sign In" : "Loading…"}
         </button>
@@ -113,7 +113,7 @@ export function ApiKeysManager({ onConsoleKeyChange }: { onConsoleKeyChange?: (k
         <p className="text-sm text-text-tertiary mb-4">Create a named key to start using the Darkbloom API.</p>
         <button
           onClick={() => setCreateOpen(true)}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-coral text-white text-sm font-medium hover:opacity-90 transition-all"
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-coral text-white dark:text-bg-primary text-sm font-medium hover:opacity-90 transition-all"
         >
           <Plus size={15} />
           Create your first key
@@ -146,7 +146,7 @@ export function ApiKeysManager({ onConsoleKeyChange }: { onConsoleKeyChange?: (k
         {authenticated && (
           <button
             onClick={() => setCreateOpen(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-coral text-white text-sm font-medium hover:opacity-90 transition-all"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-coral text-white dark:text-bg-primary text-sm font-medium hover:opacity-90 transition-all"
           >
             <Plus size={15} />
             New key

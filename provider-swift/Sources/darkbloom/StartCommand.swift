@@ -25,7 +25,7 @@ struct Start: AsyncParsableCommand {
     @Flag(help: "Serve all local models (skips interactive picker).")
     var all = false
 
-    @Option(help: "Idle timeout in minutes before unloading the model.")
+    @Option(help: "Minutes without requests before a model is unloaded (0 = keep loaded). Saved to your config; the interactive picker asks this too. See `darkbloom idle`.")
     var idleTimeout: UInt64?
 
     @Flag(inversion: .prefixedNo, help: .hidden)
@@ -78,13 +78,37 @@ struct Start: AsyncParsableCommand {
         let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
         var effectiveConfig = snapshot.config
         if let idleTimeout {
-            effectiveConfig.backend.idleTimeoutMins = idleTimeout
+            if let problem = IdleUnloadPolicy.validate(minutes: idleTimeout) {
+                printError("--idle-timeout: \(problem)")
+                throw ExitCode.failure
+            }
+            if foreground {
+                // Plists written before the idle policy moved to TOML baked
+                // `--idle-timeout` into the daemon argv. The TOML key is the
+                // authority now — `darkbloom idle` must win over a stale plist
+                // after `restart` — so the flag only fills in when the config
+                // does not set the key.
+                if !idleTimeoutPinned(at: snapshot.configPath) {
+                    effectiveConfig.backend.idleTimeoutMins = idleTimeout
+                }
+            } else {
+                // Operator-facing: `--idle-timeout` is a writer of the one
+                // authority, so `restart` and later `start`s keep the choice.
+                let result = try setIdleUnloadMinutes(idleTimeout, configPath: configOptions.config)
+                if result.changed {
+                    print("Memory when idle: \(IdleUnloadPolicy.describe(minutes: idleTimeout)) (saved to \(result.path.path))")
+                }
+                effectiveConfig.backend.idleTimeoutMins = idleTimeout
+            }
         }
 
         // These controls are process-start latches in MLX/MLXLM. Project the
-        // authoritative TOML before requireMetal() performs the first MLX touch.
+        // authoritative TOML, bind the immutable default runtime metallib, and
+        // only then let requireMetal() perform the first MLX touch.
+        let boundMetallibHash: String?
         do {
-            try Self.prepareServeRuntime(settings: snapshot.config.gemmaOptimizations)
+            boundMetallibHash = try Self.prepareServeRuntime(
+                settings: snapshot.config.gemmaOptimizations)
         } catch {
             printError("Cannot start: \(error)")
             throw ExitCode.failure
@@ -94,7 +118,12 @@ struct Start: AsyncParsableCommand {
             printError("Cannot start: hardware detection failed (\(snapshot.hardwareError?.localizedDescription ?? "unknown"))")
             throw ExitCode.failure
         }
-
+        // Diagnose once from the already-bound immutable snapshot and carry
+        // this exact set through every serving mode and registration path.
+        let runtimeCapabilities = ProviderRuntimeCapabilityDetector.detectPrepared(
+            hardware: hardware,
+            boundMetallibHash: boundMetallibHash
+        )
         // One WARN per retired knob still set, BEFORE the serving-mode split:
         // `--local` builds no ProviderLoop, so emitting these from the serve
         // loop left standalone operators with no notice at all.
@@ -106,43 +135,50 @@ struct Start: AsyncParsableCommand {
             try await runLocalStandalone(
                 snapshot: snapshot,
                 config: effectiveConfig,
-                hardware: hardware
+                hardware: hardware,
+                runtimeCapabilities: runtimeCapabilities
             )
         } else if foreground {
             try await runForeground(
                 snapshot: snapshot,
                 hardware: hardware,
                 config: effectiveConfig,
-                coordinatorURL: effectiveCoordinator
+                coordinatorURL: effectiveCoordinator,
+                runtimeCapabilities: runtimeCapabilities
             )
         } else {
             try await launchDaemon(
                 snapshot: snapshot,
                 config: effectiveConfig,
                 coordinatorURL: effectiveCoordinator,
-                configPath: configOptions.config == nil ? nil : snapshot.configPath
+                configPath: configOptions.config == nil ? nil : snapshot.configPath,
+                runtimeCapabilities: runtimeCapabilities
             )
         }
     }
 
     /// Backward-compatible forwarding shim for the process-start environment
-    /// projection. The real seam (and its ordering contract: config projection
-    /// strictly BEFORE the first MLX touch; a rejected projection throws
-    /// before `requireMetal()`) lives in `ServeRuntimePreparer.prepareRuntime`
-    /// so `benchmark` mirrors the serve path without referencing `Start`.
-    /// Tests target `ServeRuntimePreparer` directly.
+    /// projection and metallib binding. The real seam (and its ordering
+    /// contract: config projection, then binding, then the first MLX touch)
+    /// lives in `ServeRuntimePreparer.prepareRuntime` so `benchmark` mirrors the
+    /// serve path without referencing `Start`. Tests target both seams.
+    @discardableResult
     internal static func prepareServeRuntime(
         settings: GemmaOptimizationSettings,
         apply: (GemmaOptimizationSettings) throws -> Void = {
             try GemmaOptimizationEnvironment.apply($0)
         },
+        bindMetallib: () -> String? = {
+            bindRuntimeMetallibForMLX(from: nil)
+        },
         requireMetal: () throws -> Void = {
             _ = try GPUEnforcement.requireMetal()
         }
-    ) throws {
+    ) throws -> String? {
         try ServeRuntimePreparer.prepareRuntime(
             settings: settings,
             apply: apply,
+            bindMetallib: bindMetallib,
             requireMetal: requireMetal
         )
     }

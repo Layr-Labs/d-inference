@@ -62,9 +62,15 @@ public enum InferenceErrorReason: String, Codable, Sendable, Equatable, CaseIter
     case requestExceedsNodeBudget = "request_exceeds_node_budget"
     case requestExceedsBatchTokenBudget = "request_exceeds_batch_token_budget"
     case capacityBusy = "capacity_busy"
+    case deadlineUnreachable = "deadline_unreachable"
     case cancelled
     case clientError = "client_error"
     case toolNoncompliance = "tool_noncompliance"
+    /// The provider is refusing new work for an update drain / shutdown.
+    /// Distinct from `capacityBusy` so the coordinator can skip the box
+    /// without derating the (provider, model) pair or spending the request's
+    /// capacity retries. Wire string mirrors coordinator/protocol/messages.go.
+    case draining
 }
 
 /// The only value accepted by provider-to-coordinator inference error sinks.
@@ -76,19 +82,38 @@ public struct InferenceFailure: Sendable, Equatable {
     public let errorReason: InferenceErrorReason?
     public let terminalCause: InferenceTerminalCause?
     public let attemptUsage: UsageInfo?
+    /// Routing-v2 enriched capacity rejection (all nil away from the
+    /// capacity-shaped live-gate paths; omitted on the wire when nil so the
+    /// legacy frame shape is untouched). Stamped by
+    /// `CapacityRejectionEnrichment.enrich` at the ProviderLoop's
+    /// capacity-shaped rejection sites, from the published capacity snapshot
+    /// so every rejection is also a fresh state sample for the coordinator's
+    /// ledger/clamp/taxonomy.
+    public let rejectionReason: CapacityRejectionReason?
+    public let availableTokenBudget: Int64?
+    public let feasibleAfterMs: Int64?
+    public let capacitySeq: UInt64?
 
     public init(
         code: InferenceFailureCode,
         statusCode: UInt16,
         errorReason: InferenceErrorReason? = nil,
         terminalCause: InferenceTerminalCause? = nil,
-        attemptUsage: UsageInfo? = nil
+        attemptUsage: UsageInfo? = nil,
+        rejectionReason: CapacityRejectionReason? = nil,
+        availableTokenBudget: Int64? = nil,
+        feasibleAfterMs: Int64? = nil,
+        capacitySeq: UInt64? = nil
     ) {
         self.code = code
         self.statusCode = statusCode
         self.errorReason = errorReason
         self.terminalCause = terminalCause
         self.attemptUsage = attemptUsage
+        self.rejectionReason = rejectionReason
+        self.availableTokenBudget = availableTokenBudget
+        self.feasibleAfterMs = feasibleAfterMs
+        self.capacitySeq = capacitySeq
     }
 
     public var message: String { code.message }

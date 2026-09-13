@@ -1,7 +1,7 @@
 "use client";
 
 // Reusable chevron accordion for progressive disclosure (backend slots,
-// attestation chain). Holds its own open state; defaults to collapsed so the
+// attestation status). Holds its own open state; defaults to collapsed so the
 // machine card's resting height stays small.
 
 import { useState, type ReactNode } from "react";

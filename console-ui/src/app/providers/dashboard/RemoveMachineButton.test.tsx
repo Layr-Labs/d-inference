@@ -4,7 +4,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { RemoveMachineButton } from "./RemoveMachineButton";
 import { makeProvider } from "./testFixtures";
 
-const getAccessToken = vi.fn(async () => "tok");
+const getAccessToken = vi.fn<() => Promise<string | null>>().mockResolvedValue("tok");
 vi.mock("@/hooks/useAuth", () => ({
   useAuth: () => ({ getAccessToken }),
 }));
@@ -15,9 +15,9 @@ vi.mock("@/hooks/useToast", () => ({
     selector({ addToast }),
 }));
 
-const deleteProvider = vi.fn(async () => {});
+const deleteProvider = vi.fn<typeof import("@/lib/api").deleteProvider>().mockResolvedValue(undefined);
 vi.mock("@/lib/api", () => ({
-  deleteProvider: (...args: unknown[]) => deleteProvider(...args),
+  deleteProvider: (...args: Parameters<typeof deleteProvider>) => deleteProvider(...args),
 }));
 
 const REMOVE_BTN = { name: "Remove machine" } as const;
@@ -30,20 +30,20 @@ beforeEach(() => {
 });
 
 describe("RemoveMachineButton", () => {
-  it("confirms, deletes by serial_number, toasts success, and calls onRemoved", async () => {
+  it("confirms, deletes by opaque provider id, toasts success, and calls onRemoved", async () => {
     const onRemoved = vi.fn();
     render(
-      <RemoveMachineButton provider={makeProvider({ serial_number: "SER-1", id: "p1" })} onRemoved={onRemoved} />
+      <RemoveMachineButton provider={makeProvider({ id: "p1" })} onRemoved={onRemoved} />
     );
     fireEvent.click(screen.getByRole("button", REMOVE_BTN));
 
-    await waitFor(() => expect(deleteProvider).toHaveBeenCalledWith("tok", "SER-1"));
+    await waitFor(() => expect(deleteProvider).toHaveBeenCalledWith("tok", "p1"));
     await waitFor(() => expect(onRemoved).toHaveBeenCalled());
     expect(addToast).toHaveBeenCalledWith("Machine removed.", "success");
   });
 
-  it("falls back to the provider id when serial_number is empty", async () => {
-    render(<RemoveMachineButton provider={makeProvider({ serial_number: "", id: "p9" })} />);
+  it("uses the provider id directly", async () => {
+    render(<RemoveMachineButton provider={makeProvider({ id: "p9" })} />);
     fireEvent.click(screen.getByRole("button", REMOVE_BTN));
     await waitFor(() => expect(deleteProvider).toHaveBeenCalledWith("tok", "p9"));
   });
@@ -77,7 +77,7 @@ describe("RemoveMachineButton", () => {
   });
 
   it("warns and aborts when no auth token is available", async () => {
-    getAccessToken.mockResolvedValue(null as unknown as string);
+    getAccessToken.mockResolvedValue(null);
     render(<RemoveMachineButton provider={makeProvider()} />);
     fireEvent.click(screen.getByRole("button", REMOVE_BTN));
 

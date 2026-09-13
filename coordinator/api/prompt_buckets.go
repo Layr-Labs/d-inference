@@ -59,13 +59,25 @@ func providerChipFamily(p *registry.Provider) string {
 // request was cancelled in the queue before a provider was chosen) so the tag is
 // always present for dashboard grouping.
 func (s *Server) emitClientGone(model string, promptTokens int, chipFamily, phase string) {
-	if chipFamily == "" {
-		chipFamily = "unknown"
+	// After-commit callers (provider terminals, settlement grace) have no
+	// first-content clock to bucket against: the budget was met before commit.
+	s.emitClientGoneBucketed(model, promptTokens, chipFamily, phase, deadlineBucketNotApplicable)
+}
+
+// emitClientGoneBucketed is emitClientGone with the deadline_bucket tag: for a
+// pre-content cancel, how far into the first-content budget the client left
+// (see deadlineBucket), which separates "the upstream timed out on us" from an
+// early application abort. deadlineBucket is normalized to "unknown" when empty.
+func (s *Server) emitClientGoneBucketed(model string, promptTokens int, chipFamily, phase, deadlineBucket string) {
+	chipFamily = sanitizeChipFamilyTag(chipFamily)
+	if deadlineBucket == "" {
+		deadlineBucket = deadlineBucketUnknown
 	}
 	s.ddIncr("routing.client_gone", []string{
 		"model:" + model,
 		"prompt_bucket:" + promptBucket(promptTokens),
 		"chip_family:" + chipFamily,
 		"phase:" + phase,
+		"deadline_bucket:" + deadlineBucket,
 	})
 }

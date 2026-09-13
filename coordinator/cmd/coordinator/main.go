@@ -26,10 +26,13 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -37,13 +40,13 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api"
 	"github.com/eigeninference/d-inference/coordinator/apns"
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/config"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
@@ -57,13 +60,6 @@ import (
 	ddtracer "gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
 
-// defaultPrefillKeepaliveInterval is the on-by-default cadence for SSE prefill
-// keepalives. OpenRouter cancels silent upstream requests at approximately 10s,
-// so 5s leaves a full interval of margin while keeping the early-commit blast
-// radius to genuinely long prefills; tune via
-// EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (0 disables).
-const defaultPrefillKeepaliveInterval = 5 * time.Second
-
 func main() {
 	// Structured JSON logging. When Datadog is active, we wrap the handler
 	// with trace context injection so logs correlate with APM traces.
@@ -75,6 +71,14 @@ func main() {
 	}
 	logger := slog.New(slogHandler)
 	slog.SetDefault(logger)
+
+	if len(os.Args) > 1 {
+		if err := runMaintenanceCommand(os.Args[1:]); err != nil {
+			logger.Error("coordinator maintenance command failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Read all configuration from environment variables.
 	cfg := config.ReadAppConfig()
@@ -134,6 +138,17 @@ func main() {
 			}
 		})
 	}
+
+	// Read-through cache for the per-request user and model-registry lookups
+	// (one Postgres round trip each, 4-5 per inference request). Wraps both
+	// backends so dev/test and prod behave identically. Invalidation is
+	// in-process -- correct because this single process serves every admin and
+	// publish mutation; the TTLs only bound staleness from out-of-band DB edits.
+	cacheCfg := store.DefaultCacheConfig()
+	st = store.NewCached(st, cacheCfg)
+	logger.Info("store read-through cache enabled",
+		"user_ttl", cacheCfg.UserTTL, "model_ttl", cacheCfg.ModelTTL, "negative_ttl", cacheCfg.NegativeTTL,
+		"max_users", cacheCfg.MaxUsers, "max_models", cacheCfg.MaxModels)
 
 	// Reconcile provider sessions left open by a previous coordinator process
 	// (durable uptime history). Best-effort + time-bounded — neither an error nor
@@ -211,6 +226,8 @@ func main() {
 	cacheRoutingCfg := reg.CacheRoutingConfigSnapshot()
 	logger.Info("provider-confirmed cache routing configured",
 		"mode", cacheRoutingCfg.Mode,
+		"artifact_allowlist_configured", cacheRoutingCfg.AllowedArtifacts != nil,
+		"artifact_allowlist_count", len(cacheRoutingCfg.AllowedArtifacts),
 		"activation_percent", cacheRoutingCfg.ActivationPct,
 		"max_plan_qps", cacheRoutingCfg.MaxPlanQPS,
 		"ttl", cacheRoutingCfg.TTL.String(),
@@ -236,7 +253,22 @@ func main() {
 	// AppConfig; hand the validated value to the server instead of letting
 	// NewServer re-read the environment.
 	serverCfg := cfg.ServerConfig
+	serverCfg.DurableTrustReuse = cfg.StoreConfig.DatabaseURL != ""
 	serverCfg.MediaFetch = &cfg.MediaFetchCfg
+	// LIVE first-content deadline base — distinct from the shadow evaluator's
+	// base below. Validate and bind it to this Server instance before startup;
+	// production sets 9000ms, while an unset/invalid value keeps the intentional
+	// 5000ms ordinary-unit default. Exact model policy may tighten this base but
+	// never loosen a lower operator value. Every request adds 1ms per prompt token.
+	if v := os.Getenv("EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS"); v != "" {
+		if base, ok := validateTTFTDeadlineBaseMs(v); ok {
+			serverCfg.FirstContentDeadlineBase = time.Duration(base) * time.Millisecond
+			logger.Warn("LIVE TTFT deadline base OVERRIDDEN via EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS (changes the HARD_REJECT cutoff)", "base_ms", base)
+		} else {
+			logger.Warn("invalid or out-of-range EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS; keeping default 5000",
+				"value", v, "min_ms", minTTFTDeadlineBaseMs, "max_ms", maxTTFTDeadlineBaseMs)
+		}
+	}
 	srv := api.NewServer(reg, st, serverCfg, logger)
 	var promptProvisioner *promptcontract.Provisioner
 	if cfg.PromptSidecar.Enabled {
@@ -385,13 +417,59 @@ func main() {
 
 	// Server configuration applied from config.ServerConfig during NewServer().
 
-	// Sync known-good provider hashes from active releases in the store.
-	srv.SyncBinaryHashes()
-	srv.SyncRuntimeManifest()
+	// Sync known-good provider hashes from active releases in the store. Release
+	// inventory is a routing authority; an unreadable inventory must fail startup.
+	if err := srv.SyncBinaryHashes(); err != nil {
+		logger.Error("refusing to start: release policy inventory is unavailable", "error", err)
+		os.Exit(1)
+	}
+	if err := srv.SyncRuntimeManifest(); err != nil {
+		logger.Error("refusing to start: runtime release inventory is unavailable", "error", err)
+		os.Exit(1)
+	}
 	if hashList := os.Getenv("EIGENINFERENCE_KNOWN_BINARY_HASHES"); hashList != "" {
 		hashes := strings.Split(hashList, ",")
 		srv.AddKnownBinaryHashes(hashes)
 		logger.Info("additional binary hashes from env var", "count", len(hashes))
+	}
+	// Release-policy routing gate mode. SHADOW (default): application evidence
+	// is derived, granted, swept, and counted (release_evidence.outcome metrics
+	// + /v1/stats application_evidence_providers) but NEVER blocks routing —
+	// identical routing behavior to the pre-release-policy coordinator. ENFORCE:
+	// the routing chokepoint requires generation-current evidence. Enforcement
+	// must only be enabled after a shadow deployment shows evidence coverage
+	// near the connected fleet size (2026-08-31: enforcing an unproven evidence
+	// predicate zeroed network capacity twice).
+	switch mode := os.Getenv("EIGENINFERENCE_RELEASE_POLICY_MODE"); mode {
+	case "enforce":
+		// A restarted coordinator boots with an EMPTY provider registry: zero
+		// evidence exists until reconnected providers complete their first
+		// challenge. Enforcing from the first request would 429 the whole
+		// fleet for minutes — so enforcement always waits out a boot grace
+		// (default 20m ≈ four challenge cycles) during which routing behaves
+		// exactly like shadow while evidence coverage rebuilds.
+		// The override is RAISE-ONLY, mirroring DARKBLOOM_ACTIVATION_RESERVE_GB:
+		// a shorter grace recreates the empty-registry 429 interval the grace
+		// exists to prevent, so values below the default clamp up to it.
+		const minEnforceGrace = 20 * time.Minute
+		grace := minEnforceGrace
+		if v := os.Getenv("EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d >= minEnforceGrace {
+				grace = d
+			} else if err == nil {
+				logger.Warn("EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE below the 20m minimum; clamping up", "value", v)
+			} else {
+				logger.Warn("invalid EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE; keeping default 20m", "value", v)
+			}
+		}
+		reg.SetReleasePolicyEnforcement(true)
+		reg.SetReleasePolicyEnforceAfter(time.Now().Add(grace))
+		logger.Warn("release-policy routing gate ENFORCED via EIGENINFERENCE_RELEASE_POLICY_MODE — providers without current application evidence will not route after the boot grace",
+			"boot_grace", grace.String())
+	case "", "shadow":
+		logger.Info("release-policy routing gate in SHADOW mode (default): evidence tracked and counted, never blocks routing; set EIGENINFERENCE_RELEASE_POLICY_MODE=enforce after coverage is proven")
+	default:
+		logger.Warn("invalid EIGENINFERENCE_RELEASE_POLICY_MODE; staying in SHADOW mode", "value", mode)
 	}
 	// v0.6.0: self-reported binaryHash is demoted to drift telemetry by default
 	// (APNs code-identity attestation is the real signal). Set this to re-enable
@@ -404,8 +482,9 @@ func main() {
 	// Routing: TTFT admission ceiling mode. Default is a SOFT routing preference
 	// (serve the best-available provider when one passes every routing/capacity
 	// gate). Set this to restore the legacy HARD 429 when the best estimated TTFT
-	// exceeds the 5s+1ms/token deadline. The estimate's prefill term is not
-	// provider-measured, so the hard gate over-rejected serveable requests.
+	// exceeds the pinned request-local model deadline. The estimate's prefill
+	// term is not provider-measured, so the hard gate over-rejected serveable
+	// requests.
 	if os.Getenv("EIGENINFERENCE_TTFT_HARD_REJECT") == "true" {
 		srv.SetTTFTHardReject(true)
 		logger.Warn("TTFT hard-reject ENABLED via EIGENINFERENCE_TTFT_HARD_REJECT (legacy 429-on-slow-estimate; soft preference is the default)")
@@ -449,10 +528,11 @@ func main() {
 	//     candidate-loop ceiling, and the preflight bestTTFT — byte-for-byte the
 	//     pre-Phase-0 value. Reuses the occupancy the snapshot already tracks
 	//     (max(pendingForModel, backend_running+backend_waiting)); herd-aware.
-	//   - EIGENINFERENCE_TTFT_DEADLINE_BASE_MS (float, default 10000): the SLA
-	//     base the shadow evaluator gates against. The verified OpenRouter SLA is
-	//     ~10s+1ms/token; the live consumer.go ttftDeadline (5s base) is left
-	//     untouched. Used ONLY by the shadow evaluator.
+	//   - EIGENINFERENCE_TTFT_DEADLINE_BASE_MS (float, default 10000): the
+	//     ordinary-model SLA base the shadow evaluator gates against. The
+	//     standard OpenRouter SLA is ~10s+1ms/token; exact-model policy can only
+	//     tighten that base. The instance-owned live first-content deadline
+	//     configured above is independent. Used ONLY by the shadow evaluator.
 	//   - EIGENINFERENCE_TTFT_ADMISSION_MODE (off|shadow|enforce, default off):
 	//     off => no evaluation; shadow/enforce => compute would_shed +
 	//     would_redirect_to_idle and emit routing.ttft_admission /
@@ -474,21 +554,6 @@ func main() {
 			logger.Info("TTFT shadow deadline base configured via EIGENINFERENCE_TTFT_DEADLINE_BASE_MS", "base_ms", base)
 		} else {
 			logger.Warn("invalid or out-of-range EIGENINFERENCE_TTFT_DEADLINE_BASE_MS; keeping default ~10s",
-				"value", v, "min_ms", minTTFTDeadlineBaseMs, "max_ms", maxTTFTDeadlineBaseMs)
-		}
-	}
-	// LIVE TTFT deadline base — the HARD_REJECT cutoff. Distinct from the SHADOW
-	// base above: this sets consumer.go's ttftDeadline = base + 1ms*prompt_tokens,
-	// which drives the live preflight shed, the scheduler MaxTTFTMs candidate
-	// ceiling, and the queued-request ceiling. Default 5000 (5s) is unchanged;
-	// raising it (e.g. 9000) admits more long-prompt requests instead of 429ing
-	// them, at the cost of higher tail TTFT. Reuses the [1s,120s] validation.
-	if v := os.Getenv("EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS"); v != "" {
-		if base, ok := validateTTFTDeadlineBaseMs(v); ok {
-			api.SetTTFTLiveDeadlineBaseMs(base)
-			logger.Warn("LIVE TTFT deadline base OVERRIDDEN via EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS (changes the HARD_REJECT cutoff)", "base_ms", base)
-		} else {
-			logger.Warn("invalid or out-of-range EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS; keeping default 5000",
 				"value", v, "min_ms", minTTFTDeadlineBaseMs, "max_ms", maxTTFTDeadlineBaseMs)
 		}
 	}
@@ -551,6 +616,22 @@ func main() {
 	srv.SetMinDecodeTPS(minDecodeTPS)
 	logger.Info("per-request decode floor (quality bar)", "min_decode_tps", minDecodeTPS)
 
+	// Routing-scan concurrency limit (2026-09-01 congestion collapse: a fresh
+	// full fleet scan per dispatch attempt × retry-amplified inbound saturated
+	// every coordinator CPU). Default runtime.NumCPU() (min 2); override via
+	// EIGENINFERENCE_ROUTING_CONCURRENCY. Requests that cannot get a scan slot
+	// within their remaining first-content budget shed as capacity-shaped 429s.
+	routingConcurrency := api.DefaultRoutingConcurrency()
+	if v := os.Getenv("EIGENINFERENCE_ROUTING_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 2 {
+			routingConcurrency = n
+			srv.SetRoutingConcurrency(n)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_ROUTING_CONCURRENCY (need an integer >= 2); using default", "value", v, "default", routingConcurrency)
+		}
+	}
+	logger.Info("routing-scan concurrency limit", "max_concurrent_scans", routingConcurrency)
+
 	// Smart early-429 admission gate. ON by default: a request whose
 	// (prompt+max_tokens) cannot fit the model context window or any provider's
 	// structural token budget is rejected with an uptime-neutral 429 at preflight
@@ -594,48 +675,52 @@ func main() {
 		}
 	}
 
-	// SSE keepalives during long prefill. ON by default at a 5s cadence, safely
-	// below OpenRouter's observed ~10s silent-upstream timeout. The first keepalive
-	// fires one interval in, so a STREAMING request that produces its first token
-	// quickly keeps clean deferred-commit / invisible-failover — only genuinely
-	// long prefills commit HTTP 200 early and emit ": keepalive" comments. Override
-	// the cadence (or set 0 to disable) via
-	// EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (a Go duration).
-	prefillKeepalive := defaultPrefillKeepaliveInterval
-	if v := os.Getenv("EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
-			prefillKeepalive = d
-		} else {
-			logger.Warn("invalid EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL; using default (want a Go duration like 5s, or 0 to disable)", "value", v, "default", defaultPrefillKeepaliveInterval.String())
-		}
-	}
-	srv.SetPrefillKeepaliveInterval(prefillKeepalive)
-	if prefillKeepalive > 0 {
-		logger.Info("prefill SSE keepalives enabled", "interval", prefillKeepalive.String())
-	} else {
-		logger.Info("prefill SSE keepalives disabled")
-	}
-
 	// Load runtime template manifest from environment variable (optional override).
 	// When configured, providers whose template hashes don't match are excluded from
 	// routing (but not disconnected) and receive feedback about mismatches.
 	// Python/runtime hashes are deprecated — only template hashes (e.g. mlx_metallib) are checked.
 	if templateHashes := os.Getenv("EIGENINFERENCE_KNOWN_TEMPLATE_HASHES"); templateHashes != "" {
-		manifest := &api.RuntimeManifest{
-			PythonHashes:   make(map[string]bool),
-			RuntimeHashes:  make(map[string]bool),
-			TemplateHashes: make(map[string]string),
-		}
+		// The manifest is a set per template name: repeating a name
+		// (mlx_metallib=<a>,mlx_metallib=<b>) accepts every listed hash.
+		manifest := api.NewRuntimeManifest()
 		for _, pair := range strings.Split(templateHashes, ",") {
 			parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
 			if len(parts) == 2 {
-				manifest.TemplateHashes[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				manifest.AddTemplateHash(parts[0], parts[1])
 			}
 		}
 		srv.SetRuntimeManifest(manifest)
 		logger.Info("runtime manifest configured from env",
 			"template_hashes", len(manifest.TemplateHashes),
 		)
+	}
+
+	// Exact-model first-content deadline base overrides
+	// ("<model>=<upstream_ms>,...", 0/"off" removes an entry so the model
+	// falls back to the global base). The built-in table (Qwen3-VL 5s/4s) can
+	// only tighten the global base — during the 2026-09-01 incident that
+	// hardcoding killed ~47% of vision traffic with no operator recourse.
+	if v := os.Getenv("EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES"); v != "" {
+		if replaced, removed := modelpolicy.SetFirstContentBasesFromEnv(v); replaced+removed > 0 {
+			logger.Info("exact-model first-content deadline bases overridden via EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES",
+				"replaced", replaced, "removed", removed, "value", v)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES; using built-in table", "value", v)
+		}
+	}
+
+	// Optional pprof listener on a DEDICATED private mux/port — never the
+	// public mux. The 2026-09-01 collapse was diagnosed blind because the
+	// binary shipped without pprof (GET /debug/pprof/ = 404). Unset = nothing
+	// listens.
+	if addr := os.Getenv("EIGENINFERENCE_PPROF_ADDR"); addr != "" {
+		if ln, err := startPprofListener(addr); err != nil {
+			logger.Error("pprof listener failed to start", "addr", addr, "error", err)
+		} else {
+			enableContentionProfiling()
+			logger.Warn("pprof debug listener ENABLED via EIGENINFERENCE_PPROF_ADDR — profiling data is sensitive; keep this address private (bind loopback / firewall it)",
+				"addr", ln.Addr().String())
+		}
 	}
 
 	billingCfg := cfg.BillingConfig
@@ -706,47 +791,15 @@ func main() {
 	if mdmCfg.URL != "" {
 		mdmClient := mdm.NewClient(mdmCfg.URL, mdmCfg.APIKey, logger)
 
-		mdmClient.SetOnMDA(func(udid string, certChain [][]byte) {
-			// Parse + verify the Apple cert chain once (not per provider).
-			mdaResult, err := attestation.VerifyMDADeviceAttestation(certChain)
-			if err != nil {
-				logger.Error("late MDA cert parse error", "udid", udid, "error", err)
-				return
-			}
-			if !mdaResult.Valid {
-				return
-			}
-			// Attach the proof only to a connection that currently holds hardware
-			// trust, atomically (trust check + writes under one lock). A late
-			// DevicePropertiesAttestation can arrive after the device reconnected as
-			// self_signed (RestoreProviderState caps it); attaching MDA to a
-			// self_signed provider is the drift this fix removes — and a separate
-			// check-then-write would be a TOCTOU. MDA is re-earned live once hardware
-			// is re-granted this connection.
-			reg.ForEachProvider(func(p *registry.Provider) {
-				if p.SetMDAProofIfHardware(certChain, mdaResult) {
-					// Persist now so the late-arriving chain is durable for reuse on
-					// the next reconnect, rather than waiting on a throttled heartbeat.
-					reg.PersistProvider(p)
-					logger.Info("late MDA cert stored on provider",
-						"provider_id", p.ID,
-						"serial", mdaResult.DeviceSerial,
-						"udid", mdaResult.DeviceUDID,
-						"os_version", mdaResult.OSVersion,
-					)
-				}
-			})
-		})
+		mdmClient.SetOnMDA(srv.ApplyLateMDA)
 
-		// Register callback for late-arriving SecurityInfo responses. When APN
-		// delivery is slow (device sleeping, Power Nap cycle), the synchronous 90s
-		// wait may time out but the webhook arrives later. The Server method
-		// retroactively upgrades the matching self_signed provider — mirroring the
-		// synchronous success path (status guard + trust_status notification) so the
-		// two paths can't drift.
+		// Register callbacks for responses that arrive after the synchronous wait.
+		// The server accepts them only for the exact current scheduler command
+		// binding after the connection's phase-1 challenge has settled.
 		mdmClient.SetOnLateSecurityInfo(srv.ApplyLateSecurityInfo)
 
 		srv.SetMDMClient(mdmClient)
+		srv.StartMDMScheduler()
 		// Optional shared secret for the MicroMDM webhook. Defense-in-depth on
 		// top of the mandatory solicited-command (CommandUUID) gate: configure
 		// MicroMDM's command-webhook-url with ?token=<secret> and set this to
@@ -811,24 +864,30 @@ func main() {
 		logger.Info("APNs code-identity attestation not configured — providers route without code-identity proof")
 	}
 
-	// DAR-326 Phase 0: seed the provider trust-reuse cache from the store (and wire
-	// write-through + the hard-untrust invalidation hook). This lets a planned
-	// coordinator restart / blue-green swap skip a fleet-wide live MDM SecurityInfo
-	// + APNs re-verification herd: a reconnecting, recently-fully-verified provider
-	// is granted hardware from its record once a fresh live SE challenge re-proves
-	// identity + posture. Durable in prod (Postgres store; see the store selection
-	// above); a no-op only under the in-memory store fallback. Independent of the
-	// APNs attestor — MDM verification runs whenever an MDM client is configured.
-	srv.SeedTrustReuseCache(ctx)
+	// Seed durable trust reuse only after the fsync-backed hard-untrust journal is
+	// available and replayed. A pending or malformed journal must block startup;
+	// accepting providers before replay could resurrect a stale hardware row.
+	if err := srv.SeedTrustReuseCache(ctx); err != nil {
+		logger.Error("refusing to start: trust-reuse revocation journal is not safe",
+			"health_reason", "trust_reuse_revocation_journal_unavailable",
+			"error", err,
+		)
+		os.Exit(1)
+	}
 
 	// Start background eviction of stale providers.
 	reg.StartEvictionLoop(ctx, 90*time.Second)
 
 	// Push gauge values to DogStatsD periodically.
 	go srv.StartDDGaugeLoop(ctx)
+	srv.StartProfilerLoops(ctx)
 
 	// Reclaim expired read-cache entries periodically (bounds memory growth).
 	go srv.StartReadCacheJanitor(ctx)
+
+	// Background goroutines own the /v1/stats and /v1/network/totals cache
+	// entries; handlers only read them.
+	srv.StartCacheRefreshers(ctx)
 
 	// Flag any model decoding far below its active-param/hardware class (W8 —
 	// auto-detects the gemma-dense decode bug). Spawns its own panic-safe loop.
@@ -843,6 +902,7 @@ func main() {
 	// manual payout schedule and alerts on withdrawals stuck in "transferred".
 	// No-op when Stripe Connect isn't configured. Spawns its own panic-safe loop.
 	srv.StartStripePayoutReconciler(ctx)
+	srv.StartGlobalPayoutReconciler(ctx)
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{
@@ -965,9 +1025,9 @@ const (
 	// default (0 = term off) rather than silently distorting the shadow estimate.
 	maxTTFTOccupancyAlpha = 1e6
 	// minTTFTDeadlineBaseMs / maxTTFTDeadlineBaseMs bound
-	// EIGENINFERENCE_TTFT_DEADLINE_BASE_MS. Below ~1s no first-token SLA is
-	// realistic; above ~120s the shadow gate is meaningless. The verified
-	// OpenRouter base is ~10s (telemetry-db findings §2).
+	// EIGENINFERENCE_TTFT_DEADLINE_BASE_MS and
+	// EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS. Below ~1s no first-token SLA
+	// is realistic; above ~120s either gate is operationally meaningless.
 	minTTFTDeadlineBaseMs = 1000.0
 	maxTTFTDeadlineBaseMs = 120000.0
 )
@@ -990,11 +1050,11 @@ func validateTTFTOccupancyAlpha(raw string) (float64, bool) {
 	return v, true
 }
 
-// validateTTFTDeadlineBaseMs parses and range-checks
-// EIGENINFERENCE_TTFT_DEADLINE_BASE_MS. It returns (baseMs, ok): ok=false means
-// the raw value was unparseable, non-finite, or outside
-// [minTTFTDeadlineBaseMs, maxTTFTDeadlineBaseMs], and the caller should keep the
-// verified ~10s default.
+// validateTTFTDeadlineBaseMs parses and range-checks either shadow or live
+// first-content deadline base. It returns (baseMs, ok): ok=false means the raw
+// value was unparseable, non-finite, or outside
+// [minTTFTDeadlineBaseMs, maxTTFTDeadlineBaseMs], and the caller keeps its own
+// default.
 func validateTTFTDeadlineBaseMs(raw string) (float64, bool) {
 	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
 	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
@@ -1060,4 +1120,44 @@ func loadAPNsAttestor(logger *slog.Logger) *apns.APNsPushAttestor {
 		return nil
 	}
 	return attestor
+}
+
+// enableContentionProfiling turns on the runtime's mutex and block profiles,
+// which are off by default, so /debug/pprof/mutex and /debug/pprof/block on
+// the pprof listener stop coming back empty. Sampling one in every hundred
+// mutex contention events and an average of one blocking event per 1 ms
+// spent blocked bounds the sampling overhead. Called only together with the env-gated listener.
+func enableContentionProfiling() {
+	runtime.SetMutexProfileFraction(100)
+	runtime.SetBlockProfileRate(1_000_000)
+}
+
+// startPprofListener starts net/http/pprof on a DEDICATED mux bound to addr
+// (EIGENINFERENCE_PPROF_ADDR, e.g. "127.0.0.1:6060") and serves it on its own
+// listener — the public mux never gains /debug/pprof/ routes. An empty addr
+// never reaches here (the caller gates on the env var), so nothing listens by
+// default. The 2026-09-01 congestion collapse had to be diagnosed without any
+// profiler (GET /debug/pprof/ = 404 on the running binary); this closes that
+// gap without exposing profiles publicly.
+func startPprofListener(addr string) (net.Listener, error) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	server := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		// The listener lives for the whole process; Serve only returns on a
+		// listener error, which is not worth crashing the coordinator over.
+		_ = server.Serve(ln)
+	}()
+	return ln, nil
 }

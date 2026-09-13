@@ -15,9 +15,11 @@ extension CoordinatorClient {
         sendTextFrame(json, on: connection, identifier: identifier)
     }
 
-    internal func handleIncomingText(_ text: String) async {
-        guard let data = text.data(using: .utf8) else { return }
-
+    internal func handleIncomingFrame(
+        _ data: Data,
+        receivedAt: ContinuousClock.Instant,
+        profileAnchor: SuspendingClock.Instant = .now
+    ) async {
         let parsed: CoordinatorMessage
         do {
             parsed = try CoordinatorClientCodec.decodeIncomingMessage(from: data)
@@ -29,13 +31,28 @@ extension CoordinatorClient {
         switch parsed {
         case .inferenceRequest(let request):
             let requestId = request.requestId
+            // The receive callback anchored this before executor scheduling,
+            // UTF-8 materialization, JSON parsing, logging, validation, or
+            // base64 decoding. Downstream work must not restart the clock.
+            let firstContentDeadline = request.firstContentBudgetMs.map {
+                FirstContentDeadline(
+                    relativeBudgetMilliseconds: $0,
+                    receivedAt: receivedAt)
+            }
+            // Profiler accumulator, created UNCONDITIONALLY (a request without
+            // a first-content budget still gets a profile) and anchored on the
+            // suspending instant taken in the receive callback.
+            let profile = RequestProfileBuilder(
+                suspendingAnchor: profileAnchor,
+                continuousAnchor: receivedAt)
             logger.info("Received inference request: \(requestId)")
 
             guard let encrypted = request.encryptedBody else {
                 logger.error("Rejecting plaintext inference request: \(requestId)")
                 let errorResponse = encodeInferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+                    profile: profile.wireObject()
                 )
                 sendOnCurrentConnection(errorResponse, identifier: "inference_error")
                 return
@@ -49,7 +66,8 @@ extension CoordinatorClient {
                 logger.error("Rejecting inference request \(requestId): ciphertext is not valid base64")
                 let errorResponse = encodeInferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+                    profile: profile.wireObject()
                 )
                 sendOnCurrentConnection(errorResponse, identifier: "inference_error")
                 return
@@ -59,7 +77,8 @@ extension CoordinatorClient {
                 logger.error("Rejecting inference request \(requestId): invalid ephemeral public key")
                 let errorResponse = encodeInferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+                    profile: profile.wireObject()
                 )
                 sendOnCurrentConnection(errorResponse, identifier: "inference_error")
                 return
@@ -72,7 +91,11 @@ extension CoordinatorClient {
                 cacheReceiptNonce: request.cacheReceiptNonce,
                 cacheScope: request.cacheScope,
                 prefixCacheProtocol: request.prefixCacheProtocol,
-                toolSchemaMetadataProtocol: request.toolSchemaMetadataProtocol
+                cacheReceiptBoundaryMode: request.cacheReceiptBoundaryMode,
+                toolSchemaMetadataProtocol: request.toolSchemaMetadataProtocol,
+                firstContentDeadline: firstContentDeadline,
+                receivedAt: receivedAt,
+                profile: profile
             ))
 
         case .cancel(let cancel):
@@ -80,12 +103,49 @@ extension CoordinatorClient {
             logger.info("Received cancel for: \(requestId)")
             eventContinuation?.yield(.cancel(requestId: requestId))
 
+        case .capacityProbe(let probe):
+            // Routing v2: answer from the lock-free published snapshot — the
+            // capacity payload of the last heartbeat this connection sent —
+            // plus the advertised catalog and the TTFT tracker. No hop to the
+            // ProviderLoop or engine actors, no inference, no model load, no
+            // KV allocation: a probe storm costs this connection some JSON,
+            // never admission or decode throughput.
+            let published = state.publishedCapacity
+            let slot = published?.slots.first { $0.model == probe.model }
+            let ttft = state.ttftTracker.estimate(
+                model: probe.model,
+                warm: slot != nil,
+                promptBucket: TTFTQuantileTracker.promptBucket(
+                    forPromptTokens: probe.promptTokensBucket),
+                batchBucket: TTFTQuantileTracker.batchBucket(
+                    forActiveRequests: Int(slot?.numRunning ?? 0)))
+            let quote = CapacityQuoteEngine.quote(CapacityQuoteEngine.Inputs(
+                probe: probe,
+                capacity: published,
+                model: advertisedModelStore.models.first { $0.id == probe.model },
+                ttft: ttft,
+                visionLimits: VisionTowerBudget.liveLimits,
+                refusingNewWork: state.refusingNewWork(forModel: probe.model)))
+            do {
+                let json = try ProviderProtocolCodec.encodeProviderMessageString(
+                    .capacityQuote(quote))
+                sendOnCurrentConnection(json, identifier: "capacity_quote")
+            } catch {
+                // A quote is advisory; the coordinator treats a missing one
+                // as a timeout/demotion. Never tear anything down for it.
+                logger.warning("Failed to encode capacity quote")
+            }
+
         case .attestationChallenge(let challenge):
             logger.info(.attestationChallengeReceived)
             eventContinuation?.yield(.attestationChallenge(
                 nonce: challenge.nonce,
                 timestamp: challenge.timestamp
             ))
+
+        case .codeAttestationResumeChallenge(let challenge):
+            eventContinuation?.yield(
+                .codeAttestationResumeChallenge(challenge.codeChallenge))
 
         case .runtimeStatus(let status):
             if status.verified {

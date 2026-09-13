@@ -144,23 +144,25 @@ export const ENDPOINTS: Endpoint[] = [
   {
     method: "GET",
     path: "/v1/providers/attestation",
-    description: "Full attestation chain for all online providers",
+    description: "Privacy-redacted attestation status for online providers",
     icon: Shield,
     auth: false,
     response: `{
   "providers": [{
-    "id": "...",
-    "chip": "Apple M4 Max",
-    "serial": "F46G****0H",
+    "provider_id": "...",
+    "chip_name": "Apple M4 Max",
+    "hardware_model": "Mac16,1",
     "trust_level": "hardware",
+    "status": "online",
     "secure_enclave": true,
     "sip_enabled": true,
+    "secure_boot_enabled": true,
+    "mdm_verified": true,
     "mda_verified": true,
-    "se_key_bound": true,
-    "attestation_cert_chain": ["<PEM>", "<PEM>"]
+    "se_public_key": "..."
   }]
 }`,
-    notes: "Publicly accessible — no authentication required. Use this to independently verify that providers are running on genuine Apple hardware with Secure Enclave attestation.",
+    notes: "Publicly accessible — no authentication required. Hardware serials, UDIDs, and raw Apple certificate chains stay private to the provider and coordinator.",
   },
   {
     method: "GET",

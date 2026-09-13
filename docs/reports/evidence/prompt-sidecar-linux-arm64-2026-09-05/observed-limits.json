@@ -1,0 +1,19 @@
+{
+  "scope": "Local native ARM Linux diagnostic, observer reads /proc every100ms; native amd64 CI still pending",
+  "elapsed_seconds": 19.455510014000083,
+  "proof_exit_code": 0,
+  "observed_children": {
+    "9995": {
+      "limits": "Limit                     Soft Limit           Hard Limit           Units     \nMax cpu time              unlimited            unlimited            seconds   \nMax file size             unlimited            unlimited            bytes     \nMax data size             unlimited            unlimited            bytes     \nMax stack size            8388608              unlimited            bytes     \nMax core file size        0                    unlimited            bytes     \nMax resident set          unlimited            unlimited            bytes     \nMax processes             15801                15801                processes \nMax open files            1024                 4096                 files     \nMax locked memory         8388608              8388608              bytes     \nMax address space         1073741824           1073741824           bytes     \nMax file locks            unlimited            unlimited            locks     \nMax pending signals       15801                15801                signals   \nMax msgqueue size         819200               819200               bytes     \nMax nice priority         0                    0                    \nMax realtime priority     0                    0                    \nMax realtime timeout      unlimited            unlimited            us        \n",
+      "max_vm_size_kib": 480684,
+      "max_vm_rss_kib": 418048,
+      "max_threads": 21
+    },
+    "10020": {
+      "limits": "Limit                     Soft Limit           Hard Limit           Units     \nMax cpu time              unlimited            unlimited            seconds   \nMax file size             unlimited            unlimited            bytes     \nMax data size             unlimited            unlimited            bytes     \nMax stack size            8388608              unlimited            bytes     \nMax core file size        0                    unlimited            bytes     \nMax resident set          unlimited            unlimited            bytes     \nMax processes             15801                15801                processes \nMax open files            1024                 4096                 files     \nMax locked memory         8388608              8388608              bytes     \nMax address space         1073741824           1073741824           bytes     \nMax file locks            unlimited            unlimited            locks     \nMax pending signals       15801                15801                signals   \nMax msgqueue size         819200               819200               bytes     \nMax nice priority         0                    0                    \nMax realtime priority     0                    0                    \nMax realtime timeout      unlimited            unlimited            us        \n",
+      "max_vm_size_kib": 493932,
+      "max_vm_rss_kib": 469488,
+      "max_threads": 6
+    }
+  }
+}

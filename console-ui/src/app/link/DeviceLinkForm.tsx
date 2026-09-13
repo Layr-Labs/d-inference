@@ -118,9 +118,8 @@ export function DeviceLinkForm() {
           Your provider is now connected to your account. Earnings will be
           credited automatically.
         </p>
-        <p className="text-text-tertiary text-sm mt-4">
-          You can close this page.
-        </p>
+        <p className="text-text-tertiary text-sm mt-4">Return to your terminal to finish starting the provider.</p>
+        <a href="/providers" className="mt-6 inline-flex min-h-11 items-center rounded-lg bg-accent-brand px-5 text-sm font-medium text-white dark:text-bg-primary">Open your provider workspace</a>
       </div>
     );
   }

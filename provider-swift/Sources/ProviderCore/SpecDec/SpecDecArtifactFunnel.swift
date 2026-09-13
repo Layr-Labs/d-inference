@@ -59,6 +59,12 @@ actor SpecDecArtifactFunnel {
         /// artifacts may carry their assistant inline in the same indexed
         /// shards; nil preserves the external Gemma assistant flow.
         let modelDirectory: URL?
+        /// The caller's ONE authoritative declaration probe for
+        /// `modelDirectory`, taken at the same moment `enabled` was computed.
+        /// The funnel never re-probes: a second read racing a config change
+        /// could flip an embedded-only `auto` decision into a catalog
+        /// resolution the mode does not permit.
+        let inlineDeclaration: SpecDecStore.InlineDeclarationProbe
         let allowDownload: Bool
         let environment: [String: String]
 
@@ -68,6 +74,7 @@ actor SpecDecArtifactFunnel {
             enabled: Bool,
             localPath: String?,
             modelDirectory: URL? = nil,
+            inlineDeclaration: SpecDecStore.InlineDeclarationProbe = .absent,
             allowDownload: Bool,
             environment: [String: String]
         ) {
@@ -76,6 +83,7 @@ actor SpecDecArtifactFunnel {
             self.enabled = enabled
             self.localPath = localPath
             self.modelDirectory = modelDirectory
+            self.inlineDeclaration = inlineDeclaration
             self.allowDownload = allowDownload
             self.environment = environment
         }
@@ -89,6 +97,16 @@ actor SpecDecArtifactFunnel {
     }
     private var prefetches: [String: Prefetch] = [:]
     private var prefetchFailures: [String: MTPFallbackReason] = [:]
+    private var prefetchFailureCounts: [String: Int] = [:]
+    private var prefetchRetryAfter: [String: ContinuousClock.Instant] = [:]
+    /// Injectable only for deterministic retry tests; production uses bounded
+    /// jitter to avoid synchronized retries across independently upgrading Macs.
+    var retryClock: @Sendable () -> ContinuousClock.Instant = { .now }
+    var retryDelay: @Sendable (Int) -> Duration = { failureCount in
+        let ceiling = min(300, 15 * (1 << min(max(0, failureCount - 1), 5)))
+        return .seconds(Int.random(in: max(1, ceiling * 3 / 4)...ceiling))
+    }
+
     private let maximumPrefetches = 2
     private var isShutdown = false
     private var shutdownTasks: [Task<Void, Never>] = []
@@ -144,14 +162,19 @@ actor SpecDecArtifactFunnel {
                 artifact: nil,
                 status: .disabled(.catalogUnavailable, configured: request.enabled))
         }
+        guard Self.killSwitchEnabled(environment: request.environment) else {
+            return .init(
+                artifact: nil,
+                status: .disabled(
+                    .killSwitchDisabled,
+                    configured: request.enabled))
+        }
         guard request.enabled else {
             return .init(artifact: nil, status: .disabled(.configDisabled, configured: false))
         }
-        guard Self.killSwitchEnabled(environment: request.environment) else {
-            return .init(artifact: nil, status: .disabled(.killSwitchDisabled, configured: true))
-        }
-        if Self.isQwen35Target(modelType: request.modelType),
-            let directory = request.modelDirectory
+        if Self.isInlineTarget(modelType: request.modelType),
+            let directory = request.modelDirectory,
+            request.inlineDeclaration.mayDeclareEmbeddedArtifact
         {
             switch SpecDecStore.inspectInlineArtifact(directory: directory) {
             case .failure:
@@ -163,7 +186,9 @@ actor SpecDecArtifactFunnel {
                 return .init(artifact: artifact, status: .candidate(artifact))
             }
         }
-        guard Self.isGemma4Target(modelType: request.modelType) else {
+        guard Self.isGemma4Target(modelType: request.modelType)
+            || Self.isInlineTarget(modelType: request.modelType)
+        else {
             return .init(artifact: nil, status: .disabled(.targetUnsupported, configured: true))
         }
 
@@ -244,6 +269,7 @@ actor SpecDecArtifactFunnel {
     ) {
         guard !isShutdown,
             prefetches[modelId] == nil,
+            prefetchRetryAfter[modelId].map({ retryClock() >= $0 }) ?? true,
             prefetches.count < maximumPrefetches
         else {
             return
@@ -280,6 +306,7 @@ actor SpecDecArtifactFunnel {
     ) {
         guard !isShutdown,
             prefetches[modelId] == nil,
+            prefetchRetryAfter[modelId].map({ retryClock() >= $0 }) ?? true,
             prefetches.count < maximumPrefetches
         else {
             return
@@ -315,6 +342,7 @@ actor SpecDecArtifactFunnel {
     private func scheduleArtifactPrefetch(modelId: String, model: CatalogModel) {
         guard !isShutdown,
             prefetches[modelId] == nil,
+            prefetchRetryAfter[modelId].map({ retryClock() >= $0 }) ?? true,
             prefetches.count < maximumPrefetches
         else {
             return
@@ -344,8 +372,13 @@ actor SpecDecArtifactFunnel {
         prefetches.removeValue(forKey: modelId)
         if let reason {
             prefetchFailures[modelId] = reason
+            let count = min(6, (prefetchFailureCounts[modelId] ?? 0) + 1)
+            prefetchFailureCounts[modelId] = count
+            prefetchRetryAfter[modelId] = retryClock().advanced(by: retryDelay(count))
         } else {
             prefetchFailures.removeValue(forKey: modelId)
+            prefetchFailureCounts.removeValue(forKey: modelId)
+            prefetchRetryAfter.removeValue(forKey: modelId)
         }
     }
 
@@ -354,10 +387,20 @@ actor SpecDecArtifactFunnel {
     }
 
     static func isQwen35Target(modelType: String?) -> Bool {
-        modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            == "qwen3_5_moe"
+        guard let modelType = modelType?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        else { return false }
+        return modelType == "qwen3_5" || modelType == "qwen3_5_moe"
     }
 
+    static func isInlineQwenTarget(modelType: String?) -> Bool {
+        isQwen35Target(modelType: modelType)
+    }
+
+    static func isInlineTarget(modelType: String?) -> Bool {
+        isInlineQwenTarget(modelType: modelType)
+            || modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "nemotron_h"
+    }
     static func killSwitchEnabled(environment: [String: String]) -> Bool {
         guard let raw = environment["DARKBLOOM_CBV2_MTP"]?
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !raw.isEmpty

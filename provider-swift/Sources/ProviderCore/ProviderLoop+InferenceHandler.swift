@@ -33,19 +33,89 @@ extension ProviderLoop {
     internal var isDrainingForUpdate: Bool { updatePhase == .draining }
 
     /// Coordinator admission: sends the 503 reroute and returns true if the
-    /// request must be dropped because we're draining.
-    private func rejectIfDrainingForUpdate(
+    /// request must be dropped because we're draining — for the update
+    /// hot-swap, or across the post-retirement reconnect (the socket is
+    /// about to close; admitting now would only hand the request to the
+    /// `.disconnected` cancel).
+    internal func rejectIfDrainingForUpdate(
         requestId: String,
         send: SendHandle,
         lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer
     ) -> Bool {
-        guard isDrainingForUpdate else { return false }
+        guard isDrainingForUpdate || isReconnectingAfterRetirement else { return false }
         lookupReceiptFinalizer.sendTerminal(
             .inferenceError(
                 requestId: requestId,
-                failure: InferenceFailure(code: .capacity, statusCode: 503)),
+                failure: CapacityRejectionEnrichment.enrich(
+                    InferenceFailure(code: .capacity, statusCode: 503, errorReason: .draining),
+                    modelId: nil,
+                    published: state.publishedCapacity,
+                    fallbackReason: .slotState),
+                profile: inflightProfiles[requestId]),
             fallbackFailure: .capacity,
             send: send)
+        return true
+    }
+
+    /// Preserve the retryable capacity/status compatibility contract while
+    /// carrying the typed deadline reason to coordinators that understand it.
+    private static func inferenceFailure(
+        for failure: PreContentDeadlineFailure
+    ) -> InferenceFailure {
+        sanitizedInferenceFailure(from: failure, phase: .streamStart)
+    }
+
+    /// Reject before `inference_accepted` while the request still owns only its
+    /// receipt finalizer. The finalizer settles lookup exactly once.
+    private func rejectIfFirstContentDeadlineExpired(
+        _ deadline: FirstContentDeadline?,
+        requestId: String,
+        send: SendHandle,
+        lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer
+    ) -> Bool {
+        guard let deadline else { return false }
+        do {
+            try deadline.check()
+            return false
+        } catch let failure as PreContentDeadlineFailure {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    failure: CapacityRejectionEnrichment.enrich(
+                        Self.inferenceFailure(for: failure),
+                        modelId: nil,
+                        published: state.publishedCapacity,
+                        fallbackReason: .deadline),
+                    profile: inflightProfiles[requestId]),
+                fallbackFailure: .capacity,
+                send: send)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Reject after acceptance and unwind every provider-owned reservation.
+    private func rejectAcceptedRequestIfFirstContentDeadlineExpired(
+        _ deadline: FirstContentDeadline?,
+        requestId: String,
+        send: SendHandle,
+        lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer
+    ) async -> Bool {
+        guard rejectIfFirstContentDeadlineExpired(
+            deadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        else {
+            return false
+        }
+        if requestToModel.removeValue(forKey: requestId) != nil {
+            powerAssertion.release()
+            syncWarmModelState()
+            await updateAggregateCapacity()
+        }
+        await cancellationRegistry.finish(requestId: requestId)
         return true
     }
 
@@ -55,12 +125,15 @@ extension ProviderLoop {
     /// `localReservations`; without the shutdown gate a steady local client
     /// could keep reservations non-empty and hold `run()` open for the full
     /// shutdown drain timeout, then have its models unloaded mid-stream.
-    internal func throwIfRefusingNewLocalWork() throws {
+    internal func throwIfRefusingNewLocalWork(modelId: String? = nil) throws {
         if isShuttingDown {
             throw MultiModelBatchSchedulerEngineError.queueFull("provider shutting down")
         }
         if isDrainingForUpdate {
             throw MultiModelBatchSchedulerEngineError.queueFull(providerDrainingForUpdateReason)
+        }
+        if let modelId, mtpAdmissionDrains.contains(modelId) {
+            throw MultiModelBatchSchedulerEngineError.requestRejected("model preparing assistant swap")
         }
     }
 
@@ -97,9 +170,33 @@ extension ProviderLoop {
         cacheReceiptNonce: String?,
         authenticatedCacheScope: String?,
         prefixCacheProtocol: Int? = nil,
+        cacheReceiptBoundaryMode: String? = nil,
         toolSchemaMetadataProtocol: Int? = nil,
+        firstContentDeadline: FirstContentDeadline? = nil,
+        receivedAt: ContinuousClock.Instant = .now,
+        profile requestProfile: RequestProfileBuilder? = nil,
         send: SendHandle
     ) async {
+        // Profiler accumulator anchored at frame receipt (a fresh one for
+        // direct/test callers). Registered so `handleCancellation` can stamp
+        // cancel receipt; removed on every exit that does not hand it to the
+        // detached task (see the `receiptTransferredToTask` defer below).
+        let profile = requestProfile ?? RequestProfileBuilder()
+        let statsForProfileHook = self.stats
+        profile.update { f, now in
+            f.mark(.dequeued, offsetUs: now)
+            // `tokens_after_cancel_total` is bumped by the bridge at engine
+            // finish. Partial cancellation waits for that finish, but error
+            // and pre-output terminals can still precede it, so the detached
+            // task's defer cannot own that add.
+            // Captures ONLY the process-lifetime stats sink — never `self`,
+            // the profile, or `inflightProfiles` — so the counter lands even
+            // when `finishInflightRequest` already dropped the map entry.
+            f.onTokensAfterCancel = { tokens in
+                statsForProfileHook.addTokensAfterCancel(UInt64(max(0, tokens)))
+            }
+        }
+        inflightProfiles[requestId] = profile
         logger.info("Processing inference request: \(requestId)")
 
         // Cache receipt ownership begins before any admission/decrypt/load work.
@@ -108,10 +205,7 @@ extension ProviderLoop {
         let remoteCache = RemotePrefixCacheContext(
             cacheScope: authenticatedCacheScope,
             cacheReceiptNonce: cacheReceiptNonce)
-        var receiptCallbacks: (
-            lookup: (@Sendable (PrefixCacheLookupResult) -> Void)?,
-            ready: (@Sendable (PrefixCacheReadyResult) -> Void)?
-        ) = (nil, nil)
+        var receiptCallbacks: PrefixCacheReceiptEmitter.Callbacks = (nil, nil)
         if prefixCacheProtocol != 2 {
             receiptCallbacks = PrefixCacheReceiptEmitter.callbacks(
                 requestID: requestId,
@@ -124,14 +218,29 @@ extension ProviderLoop {
         defer {
             if !receiptTransferredToTask {
                 lookupReceiptFinalizer.finalize(failure: .policy)
+                inflightProfiles.removeValue(forKey: requestId)
             }
+        }
+
+        if rejectIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
         }
 
         if isShuttingDown {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(code: .capacity, statusCode: 503)),
+                    failure: CapacityRejectionEnrichment.enrich(
+                        InferenceFailure(code: .capacity, statusCode: 503),
+                        modelId: nil,
+                        published: state.publishedCapacity,
+                        fallbackReason: .slotState),
+                    profile: profile),
                 fallbackFailure: .capacity,
                 send: send)
             return
@@ -155,7 +264,8 @@ extension ProviderLoop {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)),
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+                    profile: profile),
                 fallbackFailure: .policy,
                 send: send)
             return
@@ -172,9 +282,20 @@ extension ProviderLoop {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)),
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+                    profile: profile),
                 fallbackFailure: .policy,
                 send: send)
+            return
+        }
+        profile.mark(.decrypted)
+
+        if rejectIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
             return
         }
 
@@ -186,9 +307,19 @@ extension ProviderLoop {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)),
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+                    profile: profile),
                 fallbackFailure: .policy,
                 send: send)
+            return
+        }
+
+        if rejectIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
             return
         }
 
@@ -215,19 +346,27 @@ extension ProviderLoop {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)),
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+                    profile: profile),
                 fallbackFailure: .policy,
                 send: send)
             return
         }
+        profile.mark(.parsed)
 
-        // `reasoning_effort` is not part of the upstream
-        // `OpenAIChatCompletionRequest` shape, so decode it directly from
-        // the request body and thread it into the chat template's render
-        // context below (see `MultiModelBatchSchedulerEngine`). gpt-oss /
-        // Harmony reads it to set the reasoning budget; other models
-        // ignore the extra template variable.
-        let reasoningEffort = Self.extractReasoningEffort(from: decryptedData)
+        if rejectIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
+        }
+
+        // Recover the one out-of-band template-control value once from the
+        // authenticated plaintext body. The same value is used by text,
+        // vision, and both prompt-token recount paths.
+        let templateControls = Self.extractChatTemplateControls(from: decryptedData).resolvingPromptDate()
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
         // for remote cache partitioning. Legacy coordinators omit the outer
@@ -241,6 +380,15 @@ extension ProviderLoop {
         // shape). Overlaid onto the EngineV2 translation.
         let samplingOverrides = Self.extractSamplingOverrides(from: decryptedData)
 
+        if rejectIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
+        }
+
         // 3. Fast pre-accept admission check. The coordinator accepts fast and
         // then waits for the first chunk with the full inference timeout, so we
         // must REJECT (status 503) any request we are *certain* we cannot serve
@@ -250,14 +398,35 @@ extension ProviderLoop {
         // deliberately conservative: when in doubt it admits and lets the
         // post-accept load path below make the final call.
         let modelId = chatRequest.model
-        if await fastAdmissionReject(modelId: modelId) {
+        if rejectIfDrainingForMTP(modelId: modelId, requestId: requestId, send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer) { return }
+        // Warm/cold classification for the TTFT tracker, captured BEFORE the
+        // load step: a cold sample includes model-load latency and must never
+        // calibrate warm quotes.
+        let modelWasResidentAtDispatch = modelSlots[modelId] != nil
+        let fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
+        profile.mark(.admission)
+        if rejectIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
+        }
+        if fastAdmissionRejected {
             // modelId comes from decrypted request JSON. Never reflect it into
             // persistent diagnostics, even though normal callers use catalog IDs.
             logger.warning("[\(requestId)] Pre-accept reject: insufficient capacity to load requested model")
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(code: .capacity, statusCode: 503)),
+                    failure: CapacityRejectionEnrichment.enrich(
+                        InferenceFailure(code: .capacity, statusCode: 503),
+                        modelId: modelId,
+                        published: state.publishedCapacity,
+                        fallbackReason: isRefusedByRetirement(modelId) ? .slotState : .memoryCap),
+                    profile: profile),
                 fallbackFailure: .capacity,
                 send: send)
             return
@@ -278,8 +447,23 @@ extension ProviderLoop {
             return
         }
 
+        if rejectIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
+        }
+
+        // Authoritative model drain re-check: no suspension before acceptance
+        // and requestToModel registration, so the drain sees every old owner.
+        if rejectIfDrainingForMTP(modelId: modelId, requestId: requestId, send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer) { return }
+
         // 5. Send inference_accepted
         send.send(.inferenceAccepted(requestId: requestId))
+        profile.mark(.acceptedSent)
 
         // 6. Mark the request before loading so concurrent preloads cannot
         // evict the model this accepted request is waiting for.
@@ -287,15 +471,44 @@ extension ProviderLoop {
         powerAssertion.acquire()
         syncWarmModelState()
         let token = await cancellationRegistry.register(requestId: requestId)
+        guard requestToModel[requestId] == modelId else {
+            await cancellationRegistry.finish(requestId: requestId)
+            logger.info("[\(requestId)] Request cancelled during admission")
+            return
+        }
+        if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
+        }
 
         // 6. Ensure model is loaded. The fast check above only rules out
         // certain failures; this stays authoritative for races (e.g. another
         // request consuming the last slot or free memory between accept and
         // load). Map the failure to a status code so capacity errors reroute
         // (503) and missing models 404 instead of always counting as a fault.
+        // Profiler: these two reads are, with no `await` in between, exactly
+        // the first checks `ensureModelLoaded` performs — the warm return
+        // (resident slot) and the park behind another request's in-flight
+        // load — so the flags are read here without changing its signature.
+        let loadWasWarm = modelSlots[modelId] != nil
+        let loadParked = !loadWasWarm && modelsLoading.contains(modelId)
+        profile.update { f, now in
+            f.mark(.loadWaitStart, offsetUs: now)
+            f.set(.loadCold, !loadWasWarm)
+            f.set(.loadParked, loadParked)
+        }
         do {
             try await ensureModelLoaded(modelId: modelId)
         } catch {
+            // Captured BEFORE the awaits below: a retirement completing
+            // during them clears its tombstone, and the reject would then
+            // be misfiled as memory_cap instead of slot_state.
+            let rejectedByRetirement = isRefusedByRetirement(modelId)
+            profile.mark(.loadWaitEnd)
             if requestToModel.removeValue(forKey: requestId) != nil {
                 powerAssertion.release()
                 syncWarmModelState()
@@ -303,13 +516,30 @@ extension ProviderLoop {
             }
             await cancellationRegistry.finish(requestId: requestId)
             logger.error("[\(requestId)] model load failed")
-            let failure = Self.loadInferenceFailure(for: error)
+            let failure = CapacityRejectionEnrichment.enrich(
+                Self.loadInferenceFailure(for: error),
+                modelId: modelId,
+                published: state.publishedCapacity,
+                fallbackReason: rejectedByRetirement ? .slotState : .memoryCap)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    failure: failure),
+                    failure: failure,
+                    profile: profile),
                 fallbackFailure: failure.code == .capacity ? .capacity : .policy,
                 send: send)
+            return
+        }
+        profile.mark(.loadWaitEnd)
+
+        // Model loading mutates slot/Metal state and is not safely cancellable.
+        // Reject immediately after the authoritative load returns.
+        if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
             return
         }
 
@@ -330,7 +560,8 @@ extension ProviderLoop {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(code: .modelUnavailable, statusCode: 503)),
+                    failure: InferenceFailure(code: .modelUnavailable, statusCode: 503),
+                    profile: profile),
                 fallbackFailure: .policy,
                 send: send)
             return
@@ -346,6 +577,18 @@ extension ProviderLoop {
         let registry = self.cancellationRegistry
         let signingIdentity = self.signer
         let log = self.logger
+        // TTFT tracking inputs (routing v2): the tracker feeds capacity-quote
+        // quantiles from completed real requests. `receivedAt` was anchored by
+        // the CoordinatorClient's receive callback, so the recorded duration
+        // is genuinely dispatch-received → first content token, end to end.
+        // Batch occupancy comes from the latest capacity rebuild — a cheap
+        // lock read that intentionally avoids an engine-actor hop; it can lag
+        // one rebuild behind the engine's row count, which shifts a sample by
+        // at most one batch bucket.
+        let ttftTracker = state.ttftTracker
+        let dispatchReceivedAt = receivedAt
+        let activeRequestsAtDispatch = Int(
+            state.backendCapacity?.slots.first { $0.model == modelId }?.numRunning ?? 0)
         let tokenizer = slot.tokenizer
         // Read modelType from the loaded SLOT, not advertisedModels: the latter
         // goes nil in the hard-swap drop window while the slot is still resident,
@@ -359,12 +602,18 @@ extension ProviderLoop {
         // the scheduler-free vision gate covers media decode and generation
         // memory reservations.
         let slotEngineV2 = slot.engineV2
+        if slotEngineV2.ssdHybridCheckpointStore != nil {
+            PrefixCacheReceiptEmitter.suppressLegacyCheckpointReceipts(
+                protocolVersion: prefixCacheProtocol, callbacks: &receiptCallbacks,
+                finalizer: lookupReceiptFinalizer)
+        }
         if prefixCacheProtocol == 2,
             let nonce = remoteCache.receiptNonce,
-            let callbacks = slotEngineV2.prefixCacheEvidenceSequencer?.callbacks(
+            let callbacks = slotEngineV2.prefixCacheEvidenceCallbacks(
                 requestID: requestId,
                 nonce: nonce,
-                send: send)
+                send: send,
+                readyBoundaryMode: cacheReceiptBoundaryMode)
         {
             receiptCallbacks = (callbacks.lookup, callbacks.ready)
             lookupReceiptFinalizer.configureV2(
@@ -379,6 +628,15 @@ extension ProviderLoop {
         let logprobsChannel: EngineV2LogprobsChannel? =
             logprobsSpec != nil ? EngineV2LogprobsChannel() : nil
 
+        if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
+            firstContentDeadline,
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
+        }
+
         // 8. Spawn inference task. The streaming pipeline now flows through
         // the upstream `MLXLMServer` library:
         //   - `MultiModelBatchSchedulerEngine` adapts the selected slot's
@@ -391,14 +649,74 @@ extension ProviderLoop {
         // chunk back from its JSON delta.
         let me = self
         receiptTransferredToTask = true
+        profile.mark(.taskSpawned)
         let task = Task.detached {
             defer {
                 lookupReceiptFinalizer.finalize(failure: .policy)
+                // Profiler cancel-abort latency: only meaningful when a cancel
+                // was received AND this task actually aborted (both stamps
+                // set). `tokens_after_cancel_total` is NOT added here — the
+                // bridge fires the builder's hook at engine finish, which may
+                // be after this defer.
+                if let abortNs = profile.cancelSummary().abortNs {
+                    providerStats.addCancelAbortNs(UInt64(abortNs))
+                }
                 Task {
                     await registry.finish(requestId: requestId)
                     await me.finishInflightRequest(requestId: requestId)
                 }
             }
+
+            /// Terminal-time posture shared by EVERY terminal this task emits
+            /// (complete and error): ONE lock for the frame counters, the
+            /// thermal/power/MLX posture, the optional SE-sign duration, and
+            /// the `terminal_built` stamp.
+            let finalizeProfile: @Sendable (Int, Int, Bool, Duration?) -> Void = {
+                framesEmitted, bytesEmitted, usageRecovered, seSign in
+                let thermal = ProfileThermalState(ProcessInfo.processInfo.thermalState)
+                let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+                let mlxActive = Int64(max(0, MLX.Memory.activeMemory))
+                let mlxPeak = Int64(max(0, MLX.Memory.peakMemory))
+                profile.update { f, now in
+                    f.set(.framesEmitted, Int64(framesEmitted))
+                    f.set(.bytesEmitted, Int64(bytesEmitted))
+                    f.set(.usageRecovered, usageRecovered)
+                    f.thermalState = thermal
+                    f.set(.lowPowerMode, lowPower)
+                    f.set(.mlxActiveBytesAtFinish, mlxActive)
+                    f.set(.mlxPeakBytes, mlxPeak)
+                    if let seSign {
+                        f.add(.seSign, us: RequestProfileBuilder.microseconds(seSign))
+                    }
+                    f.mark(.terminalBuilt, offsetUs: now)
+                }
+            }
+
+            let rejectExpiredDeadline: @Sendable () -> Bool = {
+                guard let firstContentDeadline else { return false }
+                do {
+                    try firstContentDeadline.check()
+                    return false
+                } catch let failure as PreContentDeadlineFailure {
+                    finalizeProfile(0, 0, false, nil)
+                    lookupReceiptFinalizer.sendTerminal(
+                        .inferenceError(
+                            requestId: requestId,
+                            failure: CapacityRejectionEnrichment.enrich(
+                                Self.inferenceFailure(for: failure),
+                                modelId: modelId,
+                                published: me.state.publishedCapacity,
+                                fallbackReason: .deadline),
+                            profile: profile),
+                        fallbackFailure: .capacity,
+                        send: send)
+                    return true
+                } catch {
+                    return false
+                }
+            }
+
+            if rejectExpiredDeadline() { return }
 
             // Phase 3: precompute the DH shared secret once per request.
             // This drops per-chunk encryption from ~150 us (full Curve25519
@@ -414,15 +732,18 @@ extension ProviderLoop {
             } catch {
                 log.error("[\(requestId)] response-key setup failed")
                 providerStats.incrementChunkEncryptionErrors()
+                finalizeProfile(0, 0, false, nil)
                 lookupReceiptFinalizer.sendTerminal(
                     .inferenceError(
                         requestId: requestId,
                         failure: InferenceFailure(
-                            code: .encryptionFailure, statusCode: 502)),
+                            code: .encryptionFailure, statusCode: 502),
+                        profile: profile),
                     fallbackFailure: .policy,
                     send: send)
                 return
             }
+            if rejectExpiredDeadline() { return }
 
             /// Encrypts and emits an SSE frame string. Returns `false` if
             /// encryption failed — callers must abort the inference task
@@ -438,11 +759,13 @@ extension ProviderLoop {
                 } catch {
                     log.error("[\(requestId)] response-chunk encryption failed")
                     providerStats.incrementChunkEncryptionErrors()
+                    finalizeProfile(0, 0, false, nil)
                     lookupReceiptFinalizer.sendTerminal(
                         .inferenceError(
                             requestId: requestId,
                             failure: InferenceFailure(
-                                code: .encryptionFailure, statusCode: 502)),
+                                code: .encryptionFailure, statusCode: 502),
+                            profile: profile),
                         fallbackFailure: .policy,
                         send: send)
                     return false
@@ -490,7 +813,7 @@ extension ProviderLoop {
                 reserveModel: { _ in },
                 releaseModel: { _ in },
                 defaultMaxTokens: Self.schedulerDefaultMaxTokens,
-                reasoningEffort: reasoningEffort,
+                templateControls: templateControls,
                 cacheScope: cacheScope,
                 cacheEnabled: remoteCache.cacheEnabled,
                 engineV2Logprobs: logprobsChannel.map {
@@ -498,7 +821,9 @@ extension ProviderLoop {
                         topLogprobs: logprobsSpec?.topLogprobs, channel: $0)
                 },
                 engineV2Sampling: samplingOverrides,
-                engineV2Usage: v2UsageSignal
+                engineV2Usage: v2UsageSignal,
+                firstContentDeadline: firstContentDeadline,
+                profile: profile
             )
 
             // Force-stream so we get SSE frames even if the original request
@@ -533,9 +858,11 @@ extension ProviderLoop {
             let service = MLXOpenAIService(engine: providerEngine)
             let frames: AsyncThrowingStream<String, Error>
             do {
+                if rejectExpiredDeadline() { return }
                 frames = try await service.streamChatCompletionFrames(
                     request: streamingRequest
                 )
+                if rejectExpiredDeadline() { return }
             } catch {
                 // A cancel that lands while the stream is STARTING — the
                 // consumer cancelled during prompt templating or the v0.7.5
@@ -552,6 +879,8 @@ extension ProviderLoop {
                 if error is CancellationError || token.isCancelled {
                     log.info("[\(requestId)] Request cancelled while starting the stream")
                     providerStats.incrementCancellationsBeforeOutput()
+                    profile.mark(.cancelAborted)
+                    finalizeProfile(0, 0, false, nil)
                     lookupReceiptFinalizer.sendTerminal(
                         .inferenceError(
                             requestId: requestId,
@@ -562,8 +891,25 @@ extension ProviderLoop {
                                 // coordinator classifies this health-neutral (never
                                 // a provider fault). Nothing was delivered, so no
                                 // attempt usage rides along (the coordinator refunds).
-                                terminalCause: .cancelled)),
+                                terminalCause: .cancelled),
+                            profile: profile),
                         fallbackFailure: .policy,
+                        send: send)
+                    return
+                }
+                if let failure = error as? PreContentDeadlineFailure {
+                    log.info("[\(requestId)] Refusing pre-content request: \(failure.rawValue)")
+                    finalizeProfile(0, 0, false, nil)
+                    lookupReceiptFinalizer.sendTerminal(
+                        .inferenceError(
+                            requestId: requestId,
+                            failure: CapacityRejectionEnrichment.enrich(
+                                Self.inferenceFailure(for: failure),
+                                modelId: modelId,
+                                published: me.state.publishedCapacity,
+                                fallbackReason: .deadline),
+                            profile: profile),
+                        fallbackFailure: .capacity,
                         send: send)
                     return
                 }
@@ -604,20 +950,44 @@ extension ProviderLoop {
                         )
                     }
                 }
+                finalizeProfile(0, 0, false, nil)
                 lookupReceiptFinalizer.sendTerminal(
                     .inferenceError(
                         requestId: requestId,
-                        failure: failure),
+                        // Enrich the capacity-shaped engine rejections (queue
+                        // full, token budget, KV headroom — the live gate's
+                        // fast rejects) with the published snapshot; non-
+                        // capacity failures pass through unchanged. The token
+                        // envelope (evaluated lazily, token_budget shape only)
+                        // lets the enrichment stamp a real feasible_after_ms
+                        // busy-wait forecast.
+                        failure: CapacityRejectionEnrichment.enrich(
+                            failure,
+                            modelId: modelId,
+                            published: me.state.publishedCapacity,
+                            fallbackReason: .tokenBudget,
+                            neededTokens: Self.admissionTokenEnvelope(
+                                request: streamingRequest,
+                                tokenizer: tokenizer,
+                                modelType: modelType,
+                                templateControls: templateControls)),
+                        profile: profile),
                     fallbackFailure: failure.statusCode == 503 ? .capacity : .policy,
                     send: send)
                 return
             }
 
             await me.updateAggregateCapacity()
+            if rejectExpiredDeadline() { return }
 
             var fullResponseText = ""
             var promptTokens = 0
             var completionTokens = 0
+            // Profiler frame counters (locals; written to the profile once at
+            // the terminal — never a per-frame lock).
+            var framesEmitted = 0
+            var bytesEmitted = 0
+            var usageRecovered = false
             // Defense-in-depth for the billing-zero leak: count SSE frames that
             // carried visible output. If the usage chunk is lost entirely
             // (parser drift / upstream regression), this is a conservative
@@ -626,6 +996,11 @@ extension ProviderLoop {
             // fully refund). MLX streams ~1 token per frame, so this slightly
             // under-counts vs. true tokenization but never bills $0 for work.
             var contentFrameCount = 0
+            // End-to-end TTFT (dispatch-received → first content token),
+            // captured at the first content-bearing frame and committed to
+            // the tracker only on clean completion (routing v2 quotes must
+            // calibrate on completed real requests). Duration only.
+            var firstContentElapsedMs: Double?
             // Accumulated `reasoning_content` deltas (gpt-oss analysis
             // channel, Qwen3/DeepSeek <think>, Gemma4 channels). Re-tokenized
             // at completion to report an accurate `reasoning_tokens` count —
@@ -654,9 +1029,17 @@ extension ProviderLoop {
             var pendingLogprobsDropped = 0
             do {
                 for try await frame in frames {
+                    // The iterator suspension is the final pre-content await.
+                    // Role/usage boilerplate is not content, so keep enforcing
+                    // the same absolute deadline until a real content,
+                    // reasoning, or tool delta has been observed.
+                    if contentFrameCount == 0, rejectExpiredDeadline() {
+                        return
+                    }
                     if token.isCancelled {
                         log.info("[\(requestId)] Cancelled during generation")
                         cancelledMidStream = true
+                        profile.mark(.cancelAborted)
                         break  // exiting propagates the abort via onTermination
                     }
                     // Aggregate the assistant text + usage by parsing each
@@ -704,7 +1087,20 @@ extension ProviderLoop {
                             frameHadContent = true
                         }
                         if frameHadContent {
+                            // First content frame (both counters flip here,
+                            // so one check suffices).
+                            if contentFrameCount == 0 {
+                                let elapsed = ContinuousClock.Instant.now - dispatchReceivedAt
+                                firstContentElapsedMs =
+                                    Double(elapsed.components.seconds) * 1000.0
+                                    + Double(elapsed.components.attoseconds) / 1e15
+                            }
                             contentFrameCount += 1
+                            if contentFrameCount == 1 {
+                                // First content-bearing frame seen by the
+                                // provider loop (once per request).
+                                profile.mark(.firstFrame)
+                            }
                         }
                         if let usage = parsed.usage {
                             promptTokens = usage.promptTokens
@@ -780,6 +1176,8 @@ extension ProviderLoop {
                         }
                     }
                     if !emitSSE(frameToEmit) { return }
+                    framesEmitted += 1
+                    bytesEmitted += frameToEmit.utf8.count
                 }
             } catch {
                 // Cancellation can throw here or end the stream as a clean
@@ -787,6 +1185,7 @@ extension ProviderLoop {
                 if error is CancellationError || token.isCancelled {
                     log.info("[\(requestId)] Cancelled while waiting on next frame")
                     cancelledMidStream = true
+                    profile.mark(.cancelAborted)
                 } else {
                     let failure = Self.sanitizedInferenceFailure(
                         from: error,
@@ -808,16 +1207,21 @@ extension ProviderLoop {
                     // string-based Jinja classification remains confined to stream
                     // startup. Finalize the lookup receipt first so the cache attempt
                     // cannot survive this terminal path.
+                    finalizeProfile(framesEmitted, bytesEmitted, false, nil)
                     lookupReceiptFinalizer.sendTerminal(
                         .inferenceError(
                             requestId: requestId,
-                            failure: failure),
+                            failure: failure,
+                            profile: profile),
                         fallbackFailure: failure.statusCode == 503 ? .capacity : .policy,
                         send: send)
                     return
                 }
             }
-            if token.isCancelled { cancelledMidStream = true }
+            if token.isCancelled {
+                cancelledMidStream = true
+                profile.mark(.cancelAborted)
+            }
 
             if pendingLogprobsDropped > 0 {
                 // Surface the request's TOTAL evicted-entry count once at
@@ -858,11 +1262,12 @@ extension ProviderLoop {
                     request: streamingRequest,
                     tokenizer: tokenizer,
                     modelType: modelType,
-                    reasoningEffort: reasoningEffort
+                    templateControls: templateControls
                 ))
                 guard case .complete(let settledUsage) = terminal else {
                     // Cancelled with nothing delivered: 499 so the coordinator refunds.
                     providerStats.incrementCancellationsBeforeOutput()
+                    finalizeProfile(framesEmitted, bytesEmitted, false, nil)
                     lookupReceiptFinalizer.sendTerminal(
                         .inferenceError(
                             requestId: requestId,
@@ -873,7 +1278,8 @@ extension ProviderLoop {
                                 // coordinator classifies this health-neutral (never
                                 // a provider fault). Nothing was delivered, so no
                                 // attempt usage rides along (the coordinator refunds).
-                                terminalCause: .cancelled)),
+                                terminalCause: .cancelled),
+                            profile: profile),
                         fallbackFailure: .policy,
                         send: send)
                     return
@@ -893,6 +1299,12 @@ extension ProviderLoop {
                 promptTokens = Int(clamping: settledUsage.promptTokens)
                 completionTokens = Int(clamping: settledUsage.completionTokens)
                 reasoningTokens = Int(clamping: settledUsage.reasoningTokens)
+
+                // Partial billing stays tied to delivered output. Cache usage
+                // needs the native terminal that proves adoption; cancellation
+                // can end this frame loop before the bridge records it.
+                await slotEngineV2.settleCancelledStream(
+                    profile: profile, usageSignal: v2UsageSignal)
             }
 
             // No usage chunk on a clean finish means an upstream regression.
@@ -914,7 +1326,7 @@ extension ProviderLoop {
                         request: streamingRequest,
                         tokenizer: tokenizer,
                         modelType: modelType,
-                        reasoningEffort: reasoningEffort
+                        templateControls: templateControls
                     )
                     if promptTokens > 0 {
                         log.warning(
@@ -948,6 +1360,7 @@ extension ProviderLoop {
                 if !cancelledMidStream {
                     providerStats.incrementUsageGaps()
                 }
+                usageRecovered = true
             }
 
             if cancelledMidStream {
@@ -958,16 +1371,31 @@ extension ProviderLoop {
             providerStats.incrementRequestsServed()
             providerStats.addTokensGenerated(UInt64(max(completionTokens, 0)))
 
+            // Commit the TTFT sample (routing v2): completed real requests
+            // only — a cancelled stream's first-token timing is still real,
+            // but the plan calibrates quotes on clean completions so partial
+            // settles cannot skew the distribution during incident churn.
+            if !cancelledMidStream, let ttftMs = firstContentElapsedMs {
+                ttftTracker.record(
+                    model: modelId,
+                    warm: modelWasResidentAtDispatch,
+                    promptTokens: promptTokens,
+                    activeRequestsAtDispatch: activeRequestsAtDispatch,
+                    ttftMs: ttftMs)
+            }
+
             // Update state
             await me.updateAggregateCapacity()
 
             // Send completion
+            let seSignStart = SuspendingClock.now
             let attestation = computeResponseAttestation(
                 identity: signingIdentity,
                 requestId: requestId,
                 completionTokens: UInt64(max(completionTokens, 0)),
                 responseBody: fullResponseText
             )
+            let seSignDuration = SuspendingClock.now - seSignStart
             let cacheResult = remoteCache.scope == nil ? nil : v2UsageSignal.lookupResult
             let usageInfo = UsageInfo(
                 promptTokens: UInt64(max(0, promptTokens)),
@@ -979,13 +1407,17 @@ extension ProviderLoop {
                 prefillTokensSaved: cacheResult.map { UInt64(max(0, $0.prefillTokensSaved)) },
                 cacheStageMs: cacheResult?.stageMs
             )
+            finalizeProfile(framesEmitted, bytesEmitted, usageRecovered, seSignDuration)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceComplete(
                     requestId: requestId,
                     usage: usageInfo,
                     stopSequence: v2UsageSignal.matchedStopSequence,
                     seSignature: attestation.signature,
-                    responseHash: attestation.hash),
+                    responseHash: attestation.hash,
+                    // Live builder: SendHandle.send stamps flush/terminal_sent,
+                    // the codec materializes the wire object at encode time.
+                    profile: profile),
                 fallbackFailure: .policy,
                 send: send)
 

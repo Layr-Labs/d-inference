@@ -20,13 +20,12 @@ import { AttentionFeed } from "./AttentionFeed";
 import { MachineGrid } from "./MachineGrid";
 import { TrustFooter } from "./TrustFooter";
 import { OnboardingState } from "./OnboardingState";
-import { SignInGate, LoadingState, ErrorState } from "./states";
+import { LoadingState, ErrorState } from "./states";
 
 export function ProviderDashboard() {
   const {
     ready,
     authenticated,
-    login,
     providersResp,
     summary,
     ctx,
@@ -58,7 +57,7 @@ export function ProviderDashboard() {
   );
 
   if (!ready) return <Shell><LoadingState /></Shell>;
-  if (!authenticated) return <Shell><SignInGate onLogin={login} /></Shell>;
+  if (!authenticated) return <Shell><OnboardingState /></Shell>;
   if (loading && !providersResp) return <Shell><LoadingState /></Shell>;
   if (error && !providersResp) return <Shell><ErrorState message={error} onRetry={refetch} /></Shell>;
 

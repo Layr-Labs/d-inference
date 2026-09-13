@@ -80,7 +80,7 @@ func TestCORSPreflight(t *testing.T) {
 	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
 	req.Header.Set(
 		"Access-Control-Request-Headers",
-		"Authorization, Content-Type, Idempotency-Key",
+		"Authorization, Content-Type, Idempotency-Key, "+metadataDetailsHeader+"",
 	)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
@@ -94,6 +94,9 @@ func TestCORSPreflight(t *testing.T) {
 			"Access-Control-Allow-Headers = %q, want Idempotency-Key",
 			allowedHeaders,
 		)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(strings.ToLower(got), strings.ToLower(metadataDetailsHeader)) {
+		t.Errorf("Access-Control-Allow-Headers = %q, want %q", got, metadataDetailsHeader)
 	}
 }
 

@@ -1,32 +1,21 @@
 "use client";
 
 import type { TrustMetadata } from "@/lib/api";
-import type { VerificationStep, CertVerificationResult } from "@/lib/cert-verify";
 import {
   ShieldCheck,
   Cpu,
   Lock,
   Fingerprint,
-  Loader2,
   Info,
 } from "lucide-react";
-import { VerifyStepLine } from "./StatusLine";
 
-/** Normal mode: human-readable trust guarantees with one-click verification. */
+/** Normal mode: human-readable coordinator-verified trust guarantees. */
 export function NormalMode({
   trust,
   onOpenExplainer,
-  verifySteps,
-  verifyResult,
-  verifying,
-  onVerify,
 }: {
   trust: TrustMetadata;
   onOpenExplainer: () => void;
-  verifySteps: VerificationStep[];
-  verifyResult: CertVerificationResult | null;
-  verifying: boolean;
-  onVerify: () => void;
 }) {
   const isHardware = trust.trustLevel === "hardware";
 
@@ -94,45 +83,12 @@ export function NormalMode({
         </div>
       ))}
 
-      {/* One-click verification for normal users */}
       {isHardware && (
-        <div className="pt-2 border-t border-border-dim/50">
-          <button
-            onClick={onVerify}
-            disabled={verifying}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-teal-light/50 border-2 border-teal/30 text-teal text-xs font-semibold hover:bg-teal-light/70 transition-colors disabled:opacity-50 w-full justify-center"
-          >
-            {verifying ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <ShieldCheck size={14} />
-            )}
-            {verifying
-              ? "Verifying..."
-              : verifyResult?.success
-                ? "Apple-verified hardware"
-                : "Verify device"}
-          </button>
-
-          {verifySteps.length > 0 && (
-            <div className="mt-2 space-y-0.5">
-              {verifySteps.map((step, i) => (
-                <VerifyStepLine key={i} step={step} />
-              ))}
-            </div>
-          )}
-
-          {verifyResult && (
-            <p
-              className={`mt-2 text-xs font-semibold text-center ${
-                verifyResult.success ? "text-accent-green" : "text-accent-red"
-              }`}
-            >
-              {verifyResult.success
-                ? `Genuine Apple device ${verifyResult.deviceInfo?.serial ? `(${verifyResult.deviceInfo.serial})` : ""}`
-                : verifyResult.error || "Verification failed"}
-            </p>
-          )}
+        <div className="flex items-center gap-2 border-t border-border-dim/50 pt-2 text-xs text-accent-green">
+          <ShieldCheck size={14} />
+          <span className="font-semibold">
+            {trust.mdaVerified ? "Apple attestation verified by the coordinator" : "Hardware posture verified"}
+          </span>
         </div>
       )}
 

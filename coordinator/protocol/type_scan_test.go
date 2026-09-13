@@ -31,6 +31,14 @@ func TestScanTopLevelString(t *testing.T) {
 			want: "heartbeat", ok: true,
 		},
 		{
+			// System profiler: a terminal frame carries a nested `profile`
+			// object (with its own nested `engine`) before the type key. The
+			// scanner must skip it whole and stay on the single-parse path.
+			name: "nested profile object before type",
+			in:   `{"request_id":"r","usage":{"prompt_tokens":1},"profile":{"schema":1,"total_us":42,"cancel_stage":"none","engine":{"type":"decoy","finish_reason":"stop","decode_steps":[1,2]}},"type":"inference_complete"}`,
+			want: "inference_complete", ok: true,
+		},
+		{
 			name: "numbers bools null floats exponents skipped",
 			in:   `{"a":1,"b":-2.5,"c":1e10,"d":2.5E-3,"e":true,"f":false,"g":null,"type":"heartbeat"}`,
 			want: "heartbeat", ok: true,
@@ -201,6 +209,18 @@ func TestProviderMessageUnmarshalScanEquivalence(t *testing.T) {
 			},
 			wantType:    TypeInferenceError,
 			wantPayload: &InferenceErrorMessage{},
+		},
+		{
+			// System profiler: terminal with the nested `profile` object.
+			name: "inference complete with profile",
+			msg: InferenceCompleteMessage{
+				Type:      TypeInferenceComplete,
+				RequestID: "req-abc123-def456-789012",
+				Usage:     UsageInfo{PromptTokens: 812, CompletionTokens: 147},
+				Profile:   json.RawMessage(`{"schema":1,"total_us":3982400,"cancel_stage":"none","engine":{"finish_reason":"stop","decode_steps":150}}`),
+			},
+			wantType:    TypeInferenceComplete,
+			wantPayload: &InferenceCompleteMessage{},
 		},
 	}
 

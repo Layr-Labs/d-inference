@@ -142,11 +142,19 @@ struct PagedKernelPreflightTests {
             try PagedKernelPreflight.run(
                 layerKinds: [layerKind()],
                 executableURL: child.executable,
-                childTimeout: 0.5)
+                // 2s, not 0.5: sibling tests in this suite run
+                // PagedAttentionKernel.runtimeSmoke on REAL Metal kernels in
+                // parallel, and their in-process compile load can delay the
+                // child's bash startup past a half-second deadline — the pid
+                // file then never exists and the kill assertion below reads
+                // as a missing-file error. The deadline only needs to be
+                // SHORT relative to the 120s production default; it does not
+                // need to race compiler contention.
+                childTimeout: 2.0)
             Issue.record("hung child unexpectedly passed")
         } catch PagedKernelPreflightError.childTimedOut(let seconds) {
-            #expect(seconds == 0.5)
-            #expect(ProcessInfo.processInfo.systemUptime - started < 4)
+            #expect(seconds == 2.0)
+            #expect(ProcessInfo.processInfo.systemUptime - started < 12)
             #if canImport(Darwin)
             let pidText = try String(contentsOf: pidFile, encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines)

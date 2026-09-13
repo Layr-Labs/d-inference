@@ -1,5 +1,7 @@
 # Darkbloom Privacy Policy
 
+> Last updated: 2026-08-25 · commit `3b7c281fd`
+
 Updated: June 16, 2026
 
 This Privacy Policy explains how Eigen Labs, Inc., operating the Darkbloom platform ("Eigen Labs," "Darkbloom," "we," "us," or "our") collects, uses, discloses, and otherwise processes personal information in connection with Darkbloom's websites, console, APIs, software, provider applications, hosted services, and related products and features (collectively, the "Services").
@@ -145,7 +147,10 @@ We may disclose personal information:
 Some information may also be public by design:
 
 - blockchain transaction data may be visible on public ledgers;
-- attestation or verification artifacts may be made available through public or customer-facing verification endpoints.
+- privacy-redacted attestation or verification status may be made available
+  through public or customer-facing verification endpoints. Hardware serial
+  numbers, UDIDs, and raw identity-bearing device certificates are excluded
+  from those endpoints.
 
 We do not sell personal information for money. We also do not share personal information for cross-context behavioral advertising as those terms are used in certain U.S. privacy laws.
 

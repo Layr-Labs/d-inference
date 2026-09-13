@@ -45,6 +45,7 @@ public struct CapturedMessages: Sendable {
     public var prefixCacheReady: [ProviderMessage.PrefixCacheReady] = []
     public var prefixCacheLookupsV2: [ProviderMessage.PrefixCacheLookupV2] = []
     public var prefixCacheReadyV2: [ProviderMessage.PrefixCacheReadyV2] = []
+    public var capacityQuotes: [ProviderMessage.CapacityQuote] = []
     public var telemetryBatches: [TelemetryBatch] = []
 
     public init() {}
@@ -344,6 +345,7 @@ public final class MockCoordinator: @unchecked Sendable {
         requestId: String,
         providerPublicKeyBase64: String,
         chatRequestJSON: Data,
+        firstContentBudgetMs: Int64? = nil,
         cacheReceiptNonce: String? = nil,
         cacheScope: String? = nil
     ) async throws {
@@ -361,6 +363,7 @@ public final class MockCoordinator: @unchecked Sendable {
             requestId: requestId,
             body: .null,
             encryptedBody: payload,
+            firstContentBudgetMs: firstContentBudgetMs,
             cacheReceiptNonce: cacheReceiptNonce,
             cacheScope: cacheScope
         ))
@@ -611,6 +614,7 @@ public final class MockCoordinator: @unchecked Sendable {
             case .prefixCacheReady(let r):   captured.prefixCacheReady.append(r)
             case .prefixCacheLookupV2(let r): captured.prefixCacheLookupsV2.append(r)
             case .prefixCacheReadyV2(let r): captured.prefixCacheReadyV2.append(r)
+            case .capacityQuote(let q):      captured.capacityQuotes.append(q)
             }
         }
         eventContinuation.yield(.providerMessage(parsed))

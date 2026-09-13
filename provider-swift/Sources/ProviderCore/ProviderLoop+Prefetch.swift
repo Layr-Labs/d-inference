@@ -25,7 +25,9 @@ extension ProviderLoop {
     internal func makePrefetchCoordinator() -> ModelPrefetchCoordinator {
         let me = self
         let prefetcher: any ModelPrefetcher =
-            CatalogModelPrefetcher(coordinatorURL: loopConfig.coordinatorURL)
+            CatalogModelPrefetcher(
+                coordinatorURL: loopConfig.coordinatorURL,
+                runtimeCapabilities: loopConfig.runtimeCapabilities)
         return ModelPrefetchCoordinator(
             prefetcher: prefetcher,
             preCheck: { modelId in await me.prefetchPreCheck(modelId: modelId) },
@@ -38,6 +40,12 @@ extension ProviderLoop {
     /// `.started` status is queued; the download runs on a low-priority task and
     /// never consumes a GPU slot or blocks inference.
     func handlePrefetchModelRequest(modelId: String, priority: Int, send: SendHandle) async {
+        guard ModelRuntimeRequirements.isEligible(
+            modelID: modelId, available: loopConfig.runtimeCapabilities)
+        else {
+            rejectPermanentlyIneligiblePrefetch(modelId: modelId, send: send)
+            return
+        }
         guard let prefetchCoordinator else {
             // Defensive: prefetchCoordinator is built in run() before the event
             // loop starts, so this should be unreachable on the live path.
@@ -62,11 +70,13 @@ extension ProviderLoop {
         // a no-op (handleDesiredPrefetchFailure guards on the desired set).
         let sink = RetryNotifyingPrefetchSink(
             base: SendHandlePrefetchSink(send: send),
-            onFailed: { [weak self] failedModelId in
+            onFailed: { [weak self] failedModelId, error in
                 guard let self else { return }
-                Task { await self.handleDesiredPrefetchFailure(modelId: failedModelId, send: send) }
-            }
-        )
+                Task {
+                    await self.handleDesiredPrefetchFailure(
+                        modelId: failedModelId, error: error, send: send)
+                }
+            })
         await prefetchCoordinator.handlePrefetch(
             modelId: modelId,
             priority: priority,
@@ -74,14 +84,31 @@ extension ProviderLoop {
         )
     }
 
-    /// React to a terminal `.failed` prefetch status for a build. If the build
-    /// is still a desired target (and not stale), schedule a single
-    /// bounded-backoff retry — the resume-aware downloader continues from the
-    /// bytes already on disk, so retries are cheap. After the delay budget is
-    /// exhausted the provider stays on its current build until the next
-    /// desired_models push (operator re-POST or reconnect), which resets the
-    /// budget and retries immediately via reconcile.
-    private func handleDesiredPrefetchFailure(modelId: String, send: SendHandle) async {
+    /// React to a terminal `.failed` prefetch status for a build. Capability
+    /// mismatches are permanent and clear desired/retry state. Other failures
+    /// retain the bounded transient retry policy.
+    private func handleDesiredPrefetchFailure(
+        modelId: String, error: String?, send: SendHandle
+    ) async {
+        if error?.contains(ModelRuntimeIneligibleError.permanentFailureMarker) == true {
+            desiredSwapDrop.removeValue(forKey: modelId)
+            desiredPrefetchTargets.remove(modelId)
+            staleDesiredPrefetches.insert(modelId)
+            clearDesiredPrefetchRetryState(for: modelId)
+            return
+        }
+        scheduleDesiredPrefetchRetry(modelId: modelId, send: send)
+    }
+
+    /// Schedule one bounded-backoff re-run of a desired build's prefetch.
+    /// No-op when the build is no longer desired, a retry is already
+    /// pending, or the delay budget is spent (until the next desired_models
+    /// push resets it). Shared by the transient-failure path above and the
+    /// reserve-floor refusal in `applyVerifiedPrefetch`: a build the box
+    /// cannot take NOW may fit after an unload, and the coordinator
+    /// deduplicates unchanged desired_models snapshots, so without a local
+    /// retry the provider would sit on the superseded build indefinitely.
+    private func scheduleDesiredPrefetchRetry(modelId: String, send: SendHandle) {
         guard !isShuttingDown,
               desiredPrefetchTargets.contains(modelId),
               !staleDesiredPrefetches.contains(modelId),
@@ -96,10 +123,86 @@ extension ProviderLoop {
         let delay = desiredPrefetchRetryDelays[attempt - 1]
         logger.info("Scheduling desired-build prefetch retry \(attempt)/\(desiredPrefetchRetryDelays.count) for \(modelId) in \(delay)")
         desiredPrefetchRetryTasks[modelId] = Task { [weak self] in
-            try? await taskSleep( delay)
+            try? await taskSleep(delay)
             guard let self, !Task.isCancelled else { return }
             await self.retryDesiredPrefetch(modelId: modelId, send: send)
         }
+    }
+
+    /// A verified prefetch deferred for a capacity reason: remember it and
+    /// schedule the bounded backoff. The remembered id is re-offered by the
+    /// capacity-change events themselves (`retryReserveDeferredPrefetches`),
+    /// because the backoff budget (~18 min) is shorter than the idle-unload
+    /// horizon that typically frees the room.
+    private func deferPrefetchForCapacity(modelId: String) {
+        // Remembered whether desired OR an explicit `prefetch_model`: the
+        // coordinator ignores the `.verified` status this attempt still
+        // emits, so a capacity-change re-offer is the only path that ever
+        // advertises the build. The bounded backoff is desired-only (that
+        // machinery is keyed on the desired set).
+        reserveDeferredPrefetches.insert(modelId)
+        guard desiredPrefetchTargets.contains(modelId), let send = outboundSend else { return }
+        scheduleDesiredPrefetchRetry(modelId: modelId, send: send)
+    }
+
+    /// Re-offer every capacity-deferred build NOW. Called after a slot
+    /// unloads and after a load finishes (installed or failed): both change
+    /// the arithmetic the deferral was made under. Each id is forgotten
+    /// BEFORE its re-run — a re-refusal re-remembers it through
+    /// `deferPrefetchForCapacity`, an unscannable or no-longer-wanted build
+    /// simply drops out. Desired builds also get a fresh backoff budget; a
+    /// stale desired id is skipped. The re-run is a hash pass (the bytes are
+    /// on disk) that re-enters `applyVerifiedPrefetch` and its preflight — a
+    /// still-tight box defers again.
+    internal func retryReserveDeferredPrefetches() async {
+        guard !reserveDeferredPrefetches.isEmpty, !isShuttingDown, let send = outboundSend
+        else { return }
+        let deferred = reserveDeferredPrefetches.sorted()
+        reserveDeferredPrefetches.removeAll()
+        for modelId in deferred {
+            if staleDesiredPrefetches.contains(modelId) { continue }
+            // The refusing attempt may still be finishing inside the
+            // coordinator (its terminal `.verified` emit follows the
+            // onVerified await): a re-run now would COALESCE into it and
+            // never reach applyVerifiedPrefetch again. Keep the deferral
+            // (and the desired backoff) for the next capacity change.
+            if await prefetchCoordinator?.isInFlight(modelId: modelId) == true {
+                reserveDeferredPrefetches.insert(modelId)
+                scheduleDeferredPrefetchWakeup(modelId: modelId)
+                continue
+            }
+            if desiredPrefetchTargets.contains(modelId) {
+                clearDesiredPrefetchRetryState(for: modelId)
+            }
+            logger.info("Re-offering capacity-deferred build \(modelId) after a capacity change")
+            await handlePrefetchModelRequest(
+                modelId: modelId, priority: Self.desiredModelsPrefetchPriority, send: send)
+        }
+    }
+
+    /// A deferral was kept because its attempt was still finishing inside
+    /// the coordinator when the capacity change fired. Explicit prefetches
+    /// have no backoff timer, and the capacity-change callers may never
+    /// fire again, so wait (off the actor) for the attempt's terminal
+    /// cleanup and re-offer then. One wake-up per id; bounded by the
+    /// attempt itself finishing.
+    private func scheduleDeferredPrefetchWakeup(modelId: String) {
+        guard deferredPrefetchWakeups[modelId] == nil else { return }
+        deferredPrefetchWakeups[modelId] = Task { [weak self] in
+            while let self, !Task.isCancelled,
+                await self.prefetchCoordinator?.isInFlight(modelId: modelId) == true
+            {
+                try? await taskSleep(.milliseconds(250))
+            }
+            guard let self, !Task.isCancelled else { return }
+            await self.finishDeferredPrefetchWakeup(modelId: modelId)
+        }
+    }
+
+    private func finishDeferredPrefetchWakeup(modelId: String) async {
+        deferredPrefetchWakeups.removeValue(forKey: modelId)
+        guard reserveDeferredPrefetches.contains(modelId) else { return }
+        await retryReserveDeferredPrefetches()
     }
 
     /// Fire a scheduled desired-build prefetch retry, re-checking that the
@@ -121,6 +224,25 @@ extension ProviderLoop {
     private func clearDesiredPrefetchRetryState(for modelId: String) {
         desiredPrefetchRetryTasks.removeValue(forKey: modelId)?.cancel()
         desiredPrefetchRetryAttempts.removeValue(forKey: modelId)
+    }
+    private func rejectPermanentlyIneligiblePrefetch(
+        modelId: String, send: SendHandle
+    ) {
+        desiredSwapDrop.removeValue(forKey: modelId)
+        desiredPrefetchTargets.remove(modelId)
+        staleDesiredPrefetches.insert(modelId)
+        clearDesiredPrefetchRetryState(for: modelId)
+        let eligibility = ModelRuntimeRequirements.evaluate(
+            modelID: modelId, available: loopConfig.runtimeCapabilities)
+        let message = ModelRuntimeIneligibleError(
+            eligibility: eligibility).localizedDescription
+        logger.error(message)
+        send.send(.prefetchModelStatus(
+            modelId: modelId,
+            status: .failed,
+            bytesDone: 0,
+            bytesTotal: 0,
+            error: message))
     }
 
     /// Pre-check used by the prefetch coordinator to short-circuit when a build
@@ -155,7 +277,29 @@ extension ProviderLoop {
     /// The scan + weight-hash computation run OFF the actor (`Task.detached`,
     /// utility priority) so hashing a multi-GB build never blocks inference or
     /// the event loop; only the small dictionary writes happen on the actor.
+    /// True when the durable failed-self-test record refuses this (id, hash)
+    /// pair: same bytes that failed, or the "" sentinel (bytes unknown —
+    /// refuse every same-id build until restart). Checked at EVERY guard in
+    /// `applyVerifiedPrefetch`, not just the first: a retirement completing
+    /// entirely inside any of the suspensions sets the record after an
+    /// earlier check already passed.
+    private func selfTestRecordRefuses(modelId: String, hash: String) -> Bool {
+        guard let failed = failedSelfTestHashes[modelId] else { return false }
+        return failed.isEmpty || failed == hash
+    }
+
     func applyVerifiedPrefetch(modelId: String) async {
+        guard ModelRuntimeRequirements.isEligible(
+            modelID: modelId, available: loopConfig.runtimeCapabilities)
+        else {
+            desiredSwapDrop.removeValue(forKey: modelId)
+            desiredPrefetchTargets.remove(modelId)
+            staleDesiredPrefetches.insert(modelId)
+            clearDesiredPrefetchRetryState(for: modelId)
+            logger.error(
+                "Ignoring verified prefetch for permanently ineligible model \(modelId)")
+            return
+        }
         if staleDesiredPrefetches.remove(modelId) != nil {
             desiredSwapDrop.removeValue(forKey: modelId)
             logger.info("Ignoring verified prefetch for stale desired build \(modelId); alias target changed before verification completed")
@@ -196,11 +340,31 @@ extension ProviderLoop {
             logger.error("Prefetch verified \(modelId) but the weight hash could not be computed; not advertising (keeping the previous build to avoid an unverifiable swap)")
             return
         }
+        // Fail-closed against the self-test verdict, ABA-proof: the
+        // detached scan/hash above can span an ENTIRE retirement (insert
+        // AND removal of its tombstone), so the tombstone checks below
+        // cannot catch that interleaving alone. The failed-hash record
+        // persists: the same bytes that failed the self-test are refused
+        // here no matter how the suspensions interleave; different bytes
+        // are a genuinely new build and clear the record.
+        guard !selfTestRecordRefuses(modelId: modelId, hash: hash) else {
+            desiredSwapDrop.removeValue(forKey: modelId)
+            logger.warning(
+                "Prefetch verified \(modelId) but this build "
+                    + "(weight_hash=\(hash.prefix(16))) is refused by the failed "
+                    + "self-test record; not re-advertising")
+            return
+        }
+        // A different-hash build clears the record only at the ADVERTISE
+        // point below, not here: a verify that passes this check but is
+        // then refused by a later guard must leave the record standing, or
+        // an operator byte-rollback afterwards would sneak the failed build
+        // past a fresh verify.
         // Architecture-derived supported set (v0.7.5): a prefetched build
         // whose family has no CBv2 adapter can never serve — advertising it
         // would invite requests that always refuse. Keep the previous build
         // serving; the catalog entry is the thing that needs fixing.
-        guard EngineV2SupportedModels.isSupported(modelType: info.modelType) else {
+        guard EngineV2SupportedModels.isSupported(model: info) else {
             desiredSwapDrop.removeValue(forKey: modelId)
             logger.error(
                 "Prefetch verified \(modelId) but model_type '\(info.modelType ?? "unknown")' "
@@ -213,14 +377,165 @@ extension ProviderLoop {
         // build can be held resident alongside the model currently being served
         // during a zero-downtime migration -- bounded by the configured hard
         // cap (`configuredMaxModelSlots`).
+        // A tombstoned id is mid-retirement (failed self-test, unload
+        // draining): its resident slot makes prefetchPreCheck report
+        // `.alreadyAvailable`, and re-advertising here would undo the
+        // fail-closed removal — the retired build must stay dark until the
+        // retirement completes and a FUTURE prefetch re-verifies it.
+        guard !retiringModels.contains(modelId) else {
+            logger.warning(
+                "Prefetch verified \(modelId) but it is mid-retirement; not re-advertising")
+            return
+        }
+        // Raise the runtime KV reserve for the grown serving set BEFORE the
+        // build joins `advertisedModels` (and so before it is announced or
+        // loadable) — a decode step of the new model must never run against a
+        // reserve resolved without it. Epoch-stamped, so a concurrent
+        // refresh's stale value cannot land after this one.
+        // Serialize behind in-flight loads: a load between its admission
+        // gate and slot install (`modelsLoading`, set before the gate) was
+        // admitted against the CURRENT floor, and raising it underneath
+        // would overcommit the load transient before the post-load guard
+        // can act — the pending-load reservation fences competing KV
+        // grants, not this. Defer through the desired-build backoff; the
+        // load's install clears the marker well within the retry budget.
+        guard modelsLoading.isEmpty else {
+            logger.info(
+                "Prefetch verified \(modelId) while a load is in flight (\(modelsLoading.sorted())); "
+                    + "deferring the advertisement")
+            deferPrefetchForCapacity(modelId: modelId)
+            return
+        }
+        // Held from the preflight through the re-slice + capacity publish,
+        // exactly as a load holds it across its own preflight-through-
+        // install: a load admitted in between would size its slot against
+        // the pre-raise budget and be shrunk below the floor by the
+        // re-slice below with neither side having seen the other. Released
+        // explicitly at every exit (the load path's idiom).
+        await acquireResliceGate()
+        let raisedReserve = UnifiedMemoryCap.resolvedActivationReserveBytes(
+            modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys)
+                + Array(modelsLoading) + [modelId])
+        // The raise shrinks the fleet KV budget the RESIDENT slots share;
+        // on a tight multi-slot box it can push a survivor below the
+        // serviceable minimum with no new slot loaded. Refuse the
+        // advertisement before touching anything — the same floor the load
+        // path refuses a newcomer on. Then retry through the desired-build
+        // backoff policy (the re-run is a hash pass — the bytes are on
+        // disk): `.verified` still goes out for this attempt and the
+        // coordinator deduplicates unchanged desired_models pushes, so
+        // without a local retry nothing would ever re-offer the build,
+        // even after an unload frees the room.
+        guard await reserveRaiseKeepsSurvivorsServiceable(reserveBytes: raisedReserve) else {
+            releaseResliceGate()
+            logger.warning(
+                "Prefetch verified \(modelId) but its activation floor would re-slice a resident "
+                    + "model's KV grant below the serviceability floor; not advertising")
+            deferPrefetchForCapacity(modelId: modelId)
+            return
+        }
+        // Re-check in-flight loads AFTER the preflight (it awaited each
+        // bridge's grant): a load admitted during those hops passed its gate
+        // against the pre-raise floor and is not in `modelSlots` yet, so the
+        // preflight neither counted its weights nor covered its transient.
+        guard modelsLoading.isEmpty else {
+            releaseResliceGate()
+            logger.info(
+                "Prefetch verified \(modelId) but a load entered during the preflight; "
+                    + "deferring the advertisement")
+            deferPrefetchForCapacity(modelId: modelId)
+            return
+        }
+        // Pin the id into the live reserve basis BEFORE the push's own
+        // suspension: a load admitted during the push then resolves its gate
+        // and fleet budget against the raised floor already (the basis is
+        // advertised ∪ resident ∪ loading ∪ pending-advertise). Removed the
+        // moment the id joins `advertisedModels`, or on the refusal below.
+        pendingAdvertise.insert(modelId)
+        await pushActivationReserve(raisedReserve)
+        // Re-check the tombstone AND the durable record AFTER the push's
+        // suspension: a retirement can run — or fully complete — during
+        // that await; the tombstone catches an in-progress one and the
+        // record catches a completed one. (The pushed raise is harmless —
+        // epoch-ordered; retirement's own refresh carries a newer epoch.)
+        guard !retiringModels.contains(modelId),
+            !selfTestRecordRefuses(modelId: modelId, hash: hash)
+        else {
+            // The pre-insert push above already raised the budget for an id
+            // that will now never join the set — recompute without it, or
+            // the phantom raise stands until the next unrelated mutation.
+            pendingAdvertise.remove(modelId)
+            await refreshActivationReserve()
+            releaseResliceGate()
+            logger.warning(
+                "Prefetch verified \(modelId) but retirement began during the reserve push; not advertising")
+            return
+        }
+        // A different-hash build reaching the actual advertise clears the
+        // failed-self-test record (same-hash builds were refused above; the
+        // clear deliberately does NOT happen at the check, see there).
+        failedSelfTestHashes.removeValue(forKey: modelId)
         advertisedModels[modelId] = info
+        pendingAdvertise.remove(modelId)  // now carried by `advertisedModels`
+        reserveDeferredPrefetches.remove(modelId)  // the capacity deferral is over
         modelHashes[modelId] = hash
         liveModelHashes[modelId] = hash
         syncWarmModelState()
+        // Re-refresh AFTER the insert too: a concurrent refresh (idle unload,
+        // retire) interleaving in the pre-insert await computed WITHOUT the
+        // incoming id and could land last — this post-insert refresh, now
+        // resolving over the set that includes it, makes the final value
+        // authoritative either way (the pre-insert push handles raise-early,
+        // this one handles lost-update).
+        await refreshActivationReserve()
+        // The raise shrinks the fleet KV budget: re-slice the resident
+        // engines' grants against it and refresh the aggregate capacity
+        // BEFORE announcing the enlarged set, or the coordinator routes
+        // against a token budget the tightened shared KV gate rejects until
+        // the next periodic capacity tick.
+        await resliceGrowSurvivorsLocked()
+        await updateAggregateCapacity()
+        releaseResliceGate()
+        // Final re-check before announcing to the coordinator: retirement
+        // interleaving in the refresh suspension above removes the local
+        // advertisement — announcing then would diverge the client store
+        // from the loop's (the fail-closed removal must win).
+        guard !retiringModels.contains(modelId),
+            !selfTestRecordRefuses(modelId: modelId, hash: hash),
+            advertisedModels[modelId] != nil
+        else {
+            logger.warning(
+                "Prefetch verified \(modelId) but retirement removed it before announcement; not advertising")
+            return
+        }
         logger.info("Prefetch verified \(modelId) (weight_hash=\(hash.prefix(16))); advertising (\(advertisedModels.count) model(s) total)")
         if let coordinatorClient {
             await coordinatorClient.updateModelWeightHashes(liveModelHashes)
             await coordinatorClient.advertiseModel(info)
+            // Retirement interleaving in the two client awaits above removes
+            // the LOCAL advertisement; the client add we just made would then
+            // be the only copy — and the retirement's post-drain reconnect
+            // would register a build the loop no longer serves (persistent
+            // false routing). Undo the client add and skip the live
+            // announcement. No suspension sits between this check and the
+            // sync `outboundSend` below, so the announcement cannot race
+            // past it.
+            guard advertisedModels[modelId] != nil, !retiringModels.contains(modelId)
+            else {
+                await coordinatorClient.unadvertiseModel(modelId)
+                // The store rollback cannot retract a registration the
+                // reconnect loop already encoded from the transiently-stale
+                // store (retirement's own reconnect can fire while we sat in
+                // the client awaits above). Force one more reconnect so the
+                // coordinator's registered inventory converges on the
+                // corrected store — rare double-race path; the disruption is
+                // bounded and correctness-restoring.
+                await coordinatorClient.forceReconnect()
+                logger.warning(
+                    "Prefetch announcement for \(modelId) aborted: retirement removed it "
+                        + "mid-announce; client store restored and re-registered")
+                return
+            }
         }
         // Push the authoritative ModelInfo (incl. the just-computed weight hash)
         // to the coordinator out-of-band so it can cross-check the build against
@@ -249,6 +564,14 @@ extension ProviderLoop {
         modelHashes.removeValue(forKey: buildID)
         await coordinatorClient?.unadvertiseModel(buildID)
         syncWarmModelState()
+        // The shrunken set may carry a lower measured floor; let the runtime
+        // KV budget relax to it. (Raising happened on the add side.) Then
+        // regrow surviving engines — their grants were sized under the
+        // dropped build's floor, and grant clamps are min(granted, current),
+        // so nothing else would ever hand the difference back.
+        await refreshActivationReserve()
+        await resliceGrowSurvivors()
+        await updateAggregateCapacity()
         logger.info("Hard swap: dropped superseded build \(buildID) from advertised set (\(advertisedModels.count) remaining)")
     }
 
@@ -257,7 +580,11 @@ extension ProviderLoop {
     /// build is dropped; missing → background-prefetch it (applyVerifiedPrefetch
     /// advertises it + drops the previous build once verified).
     internal func reconcileDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
-        let currentDesired = Set(entries.map(\.desiredBuild).filter { !$0.isEmpty })
+        let requestedDesired = Set(entries.map(\.desiredBuild).filter { !$0.isEmpty })
+        let currentDesired = Set(requestedDesired.filter {
+            ModelRuntimeRequirements.isEligible(
+                modelID: $0, available: loopConfig.runtimeCapabilities)
+        })
         for stale in desiredPrefetchTargets.subtracting(currentDesired) {
             desiredSwapDrop.removeValue(forKey: stale)
             staleDesiredPrefetches.insert(stale)
@@ -268,6 +595,12 @@ extension ProviderLoop {
         for entry in entries {
             let desired = entry.desiredBuild
             guard !desired.isEmpty else { continue }
+            guard ModelRuntimeRequirements.isEligible(
+                modelID: desired, available: loopConfig.runtimeCapabilities)
+            else {
+                rejectPermanentlyIneligiblePrefetch(modelId: desired, send: send)
+                continue
+            }
             staleDesiredPrefetches.remove(desired)
             // A fresh declarative push resets the retry budget (and supersedes
             // any pending backoff timer — the loop below re-prefetches a missing

@@ -120,25 +120,32 @@ type UsageStore interface {
 
 	// UsageCountSince returns the number of usage records created at or after
 	// the given time. Zero since returns all records. Uses SQL COUNT(*) to
-	// avoid transferring rows over the wire.
-	UsageCountSince(since time.Time) int64
+	// avoid transferring rows over the wire. It returns an error (never a
+	// zero count) when the statement could not be completed, so callers do
+	// not cache or display zeros for a statement that timed out.
+	UsageCountSince(since time.Time) (int64, error)
 
 	// UsageTotals returns aggregated lifetime totals across all usage records
-	// without transferring per-row data over the wire.
-	UsageTotals() UsageTotals
+	// without transferring per-row data over the wire. It returns an error
+	// (never zero totals) when the statement could not be completed.
+	UsageTotals() (UsageTotals, error)
 
 	// UsageTotalsSince returns aggregate usage at or after the given time
-	// without transferring per-row data over the wire.
-	UsageTotalsSince(since time.Time) UsageTotals
+	// without transferring per-row data over the wire. It returns an error
+	// (never zero totals) when the statement could not be completed.
+	UsageTotalsSince(since time.Time) (UsageTotals, error)
 
 	// UsageTimeSeries returns aggregates for the given time window using the
 	// requested bucket size. Implementations enforce a one-minute minimum,
-	// thirty-day maximum lookback, and bounded result cardinality.
-	UsageTimeSeries(since, until time.Time, bucketSize time.Duration) []UsageBucket
+	// thirty-day maximum lookback, and bounded result cardinality. It returns
+	// an error (never a partial or empty series) when the statement could
+	// not be completed.
+	UsageTimeSeries(since, until time.Time, bucketSize time.Duration) ([]UsageBucket, error)
 
 	// UsageLocationBuckets returns approximate request-origin aggregates for
 	// public stats. Implementations must not store or return raw client IPs.
-	UsageLocationBuckets(since time.Time) []UsageLocationBucket
+	// An error distinguishes query failure from a successful empty window.
+	UsageLocationBuckets(since time.Time) ([]UsageLocationBucket, error)
 
 	// UsageFlowBuckets returns aggregated directional flow buckets between
 	// consumer and provider regions. providerLocs supplies live provider
@@ -146,15 +153,18 @@ type UsageStore interface {
 	// haven't been persisted yet are included. PostgresStore uses a SQL
 	// JOIN with the providers table and merges the live map; MemoryStore
 	// uses providerLocs directly.
-	UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) []UsageFlowBucket
+	// Query and iteration failures return an error, never partial buckets.
+	UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) ([]UsageFlowBucket, error)
 
 	// Leaderboard returns the top N accounts ranked by the given metric
 	// over the given time window. Zero `since` means all-time.
 	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow
 
 	// NetworkTotals returns aggregated metrics across the network for the
-	// given window. Zero `since` means all-time.
-	NetworkTotals(since time.Time) NetworkTotalsRow
+	// given window. Zero `since` means all-time. It returns an error (never a
+	// zero row) when the aggregate could not be computed, so callers do not
+	// cache or display zeros for a statement that timed out.
+	NetworkTotals(since time.Time) (NetworkTotalsRow, error)
 
 	// UsageByConsumer returns usage records for a specific consumer key.
 	UsageByConsumer(consumerKey string) []UsageRecord
@@ -167,9 +177,23 @@ type TelemetryStore interface {
 	// request attempt. Best-effort; failures must not block inference.
 	RecordInferenceRoute(record *InferenceRouteRecord) error
 
+	// RecordInferenceRoutes persists a batch of routing decision snapshots with
+	// exactly the per-row semantics of RecordInferenceRoute (upsert on
+	// request_id/attempt, zero CreatedAt/UpdatedAt defaulted to now), issued as
+	// one multi-row statement per chunk instead of one round trip per record.
+	// Records are applied in slice order; a duplicate (request_id, attempt) key
+	// within the slice starts a new statement so the later record refreshes the
+	// earlier one exactly as sequential calls would. Nil records are skipped.
+	RecordInferenceRoutes(records []*InferenceRouteRecord) error
+
 	// UpdateInferenceRouteOutcome updates the attempt with final outcome data
 	// (tokens, timing, error). Best-effort; failures must not block inference.
 	UpdateInferenceRouteOutcome(requestID string, attempt int, outcome *InferenceRouteOutcome) error
+
+	// UpdateInferenceRouteOutcomes applies a batch of outcome updates in slice
+	// order with exactly the per-row semantics of UpdateInferenceRouteOutcome,
+	// pipelined as one round trip. Updates with a nil Outcome are skipped.
+	UpdateInferenceRouteOutcomes(updates []InferenceRouteOutcomeUpdate) error
 
 	// InferenceRouteRecordsSince returns routing records created at or after the
 	// given time. Zero since returns all records.
@@ -183,6 +207,37 @@ type TelemetryStore interface {
 	// RejectionRecordsSince returns rejection records created at or after the
 	// given time. Zero since returns all records.
 	RejectionRecordsSince(since time.Time) []RejectionRecord
+
+	// RecordRequestProfiles writes one request_profiles row per record in a
+	// single multi-row INSERT ... ON CONFLICT (request_id, attempt) DO NOTHING
+	// (write-once; a duplicate attempt is silently skipped). nil/empty input is
+	// a no-op. Best-effort; failures must not block inference.
+	RecordRequestProfiles(records []*RequestProfileRecord) error
+
+	// RequestProfilesSince returns request profiles created at or after the
+	// given time, newest-first, capped at maxTelemetryReadRows. Zero since
+	// returns the newest rows across all time.
+	RequestProfilesSince(since time.Time) []RequestProfileRecord
+
+	// RequestProfilesSinceFiltered is RequestProfilesSince with the admin
+	// browse/export predicates applied BEFORE the read cap, so a matching row
+	// older than the newest maxTelemetryReadRows rows is still returned.
+	RequestProfilesSinceFiltered(since time.Time, filter RequestProfileFilter) []RequestProfileRecord
+
+	// RecordFleetSnapshots bulk-writes one sampler tick (one row per provider
+	// slot plus the coordinator row). nil/empty input is a no-op. Best-effort.
+	RecordFleetSnapshots(rows []FleetSnapshotRow) error
+
+	// FleetSnapshotsSince returns fleet snapshot rows sampled at or after the
+	// given time, newest-first, capped at maxTelemetryReadRows.
+	FleetSnapshotsSince(since time.Time) []FleetSnapshotRow
+
+	// PruneTelemetry deletes request_profiles rows created before
+	// profilesBefore and fleet_snapshots rows sampled before snapshotsBefore in
+	// primary-key batches of at most batch rows, each in its own short
+	// transaction, stopping at the first error or when ctx is done. It returns
+	// the number of rows deleted before stopping.
+	PruneTelemetry(ctx context.Context, profilesBefore, snapshotsBefore time.Time, batch int) (deleted int, err error)
 }
 
 // LedgerStore is the double-entry balance ledger (all amounts in micro-USD).
@@ -398,8 +453,13 @@ type ReleaseStore interface {
 	// SetRelease adds or updates a release in the store.
 	SetRelease(release *Release) error
 
-	// ListReleases returns all releases, ordered by created_at descending.
+	// ListReleases is a convenience for non-authoritative tests and diagnostics;
+	// callers making policy decisions must use ListReleasesWithError.
 	ListReleases() []Release
+	// ListReleasesWithError returns the complete release inventory and preserves
+	// storage query, scan, and iteration failures for security-sensitive policy
+	// synchronization.
+	ListReleasesWithError() ([]Release, error)
 
 	// GetLatestRelease returns the latest active release for a platform.
 	GetLatestRelease(platform string) *Release
@@ -518,6 +578,12 @@ type ProviderEarningsStore interface {
 	// GetAccountEarningsSummary returns lifetime aggregates for an account across all linked nodes.
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)
 
+	// AccountEarningsWindows returns the account's last-24h and last-7d row
+	// count and micro-USD sum as of now, aggregated by the store over the
+	// 7 d window only. Every provider_earnings row counts (base_reward rows
+	// included), matching the dashboard header's historical semantics.
+	AccountEarningsWindows(accountID string, now time.Time) (AccountEarningsWindows, error)
+
 	// RecordProviderPayout stores a payout record for a provider wallet.
 	RecordProviderPayout(payout *ProviderPayout) error
 
@@ -579,11 +645,20 @@ type ProviderStore interface {
 	// UpsertProvider creates or updates a provider record.
 	UpsertProvider(ctx context.Context, p ProviderRecord) error
 
+	// UpsertProviderWithReputation atomically publishes a completed provider record
+	// with the reputation that the next reconnect will read.
+	UpsertProviderWithReputation(ctx context.Context, p ProviderRecord, rep ReputationRecord) error
+
 	// GetProviderRecord returns a provider record by ID.
 	GetProviderRecord(ctx context.Context, id string) (*ProviderRecord, error)
 
 	// GetProviderBySerial returns a provider record by serial number.
 	GetProviderBySerial(ctx context.Context, serial string) (*ProviderRecord, error)
+
+	// GetProviderForRestore returns the newest historical record for a verified
+	// serial, falling back to the verified SE key only when no serial record exists.
+	// excludeIDs removes all live/in-progress sessions from the candidate set. No match returns (nil, nil); failures return errors.
+	GetProviderForRestore(ctx context.Context, serial, seKey string, excludeIDs []string) (*ProviderRecord, error)
 
 	// GetMDAChainBySerial returns the newest NON-EMPTY Apple MDA cert chain stored
 	// for a serial, or (nil, nil) if none. A reconnecting provider gets a new row
@@ -647,6 +722,11 @@ type ProviderStore interface {
 	// GetReputation returns a provider's reputation record.
 	GetReputation(ctx context.Context, providerID string) (*ReputationRecord, error)
 
+	// GetReputations returns the reputation records that exist for the given
+	// provider IDs, keyed by provider ID, in one lookup. Unknown IDs are
+	// simply absent from the result.
+	GetReputations(ctx context.Context, providerIDs []string) (map[string]*ReputationRecord, error)
+
 	// --- APNs code-identity attestation reuse cache (survives deploys) ---
 
 	// ListCodeAttestations returns all persisted code-identity attestation
@@ -665,31 +745,54 @@ type ProviderStore interface {
 	// restarts. Best-effort; must not block the read loop.
 	DeleteCodeAttestation(ctx context.Context, seKey string) error
 
-	// --- Provider trust-reuse cache (DAR-326 Phase 0) ---
+	// --- Durable provider device evidence ---
 
-	// ListProviderTrustReuse returns all persisted trust-reuse records (for
-	// seeding the in-memory reuse cache at startup).
 	ListProviderTrustReuse(ctx context.Context) ([]ProviderTrustReuse, error)
 
-	// UpsertProviderTrustReuse creates or updates the trust-reuse record for a
-	// device (keyed by SEPubKey). Called after a successful live MDM verification;
-	// best-effort, must not block the read loop.
-	UpsertProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse) error
+	// UpsertProviderTrustReuse records a normal successful full-device proof at
+	// the caller's expected revocation generation. It never clears a durable
+	// tombstone and returns the authoritative durable generations.
+	UpsertProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse, expectedRevocationGeneration uint64) (ProviderTrustReuseWriteResult, error)
 
-	// DeleteProviderTrustReuse removes a device's persisted trust-reuse record
-	// (keyed by SEPubKey). Called when the provider is HARD-untrusted so a later
-	// coordinator restart cannot reseed and fast-skip on a stale pre-untrust
-	// record — keeping "hard untrust always takes effect" durable across restarts.
-	// Best-effort; must not block the read loop.
-	DeleteProviderTrustReuse(ctx context.Context, seKey string) error
+	// RecoverProviderTrustReuse is the only store operation allowed to clear a
+	// tombstone. It succeeds only when expectedRevocationGeneration still equals
+	// the durable generation, so a raced hard-untrust wins.
+	RecoverProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse, expectedRevocationGeneration uint64) (ProviderTrustReuseWriteResult, error)
+
+	// AdvanceProviderTrustReuseCoverage batch-advances the coordinator-measured
+	// continuous-coverage watermark for the given identities in one write pass.
+	// Monotonic and fail-safe: it never moves a watermark backward, and it
+	// skips tombstoned or non-hardware rows entirely (a revocation tombstone
+	// wins; coverage never resurrects evidence).
+	AdvanceProviderTrustReuseCoverage(ctx context.Context, seKeys []string, until time.Time) error
+
+	// RevokeProviderTrustReuse atomically installs one durable hard-untrust event.
+	// Retrying the same non-empty event ID returns the authoritative existing row
+	// unchanged, including after an ambiguous commit. A different event ID always
+	// advances the durable generation and tombstones the row, regardless of stale
+	// coordinator state.
+	RevokeProviderTrustReuse(ctx context.Context, seKey, revocationEventID string) (ProviderTrustReuse, error)
+
+	// --- Bounded durable MDM/MDA verification scheduler ---
+
+	// UpsertVerificationJob creates or rebinds stable scheduler state. Existing
+	// pending/running/backoff timing and claims win over reconnect input.
+	UpsertVerificationJob(ctx context.Context, rec VerificationJob) (VerificationJob, error)
+	GetVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind) (*VerificationJob, error)
+	// ListDueVerificationJobs returns at most limit claimable due rows, ordered by
+	// priority and due time. Callers pass only free in-memory queue capacity.
+	ListDueVerificationJobs(ctx context.Context, now time.Time, limit int) ([]VerificationJob, error)
+	// ClaimVerificationJob atomically leases one due row. A non-expired claim
+	// owned by another coordinator cannot be stolen.
+	ClaimVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, now, expiresAt time.Time) (VerificationJob, bool, error)
+	ReleaseVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, now time.Time) error
+	CompleteVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, outcome VerificationOutcome, now time.Time) error
+	RescheduleVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, priority VerificationPriority, retryStage int, previousDelay time.Duration, nextAttemptAt time.Time, outcome VerificationOutcome, now time.Time) error
 
 	// --- Provider Log Reports ---
 
-	// StoreLogReport stores a provider log report.
-	StoreLogReport(serialNumber, providerID, accountID string, logData []byte) error
-
-	// GetLogReports retrieves log reports for a serial number, newest first.
-	GetLogReports(serialNumber string, limit int) ([]LogReport, error)
+	// StoreLogReport stores a provider log report and returns its support ID.
+	StoreLogReport(accountID string, logData []byte) (int64, error)
 
 	// GetLogReport retrieves a single log report by ID.
 	GetLogReport(id int64) (*LogReport, error)

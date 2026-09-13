@@ -54,7 +54,7 @@ func (f *fakeMicroMDM) handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 
-	// SendSecurityInfoCommand
+	// sendSecurityInfoCommand
 	mux.HandleFunc("POST /v1/commands", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		f.mu.Lock()
@@ -99,18 +99,23 @@ func newFakeMDM(t *testing.T, fake *fakeMicroMDM) (*Client, *httptest.Server) {
 	return c, ts
 }
 
-// TestSendSecurityInfoCommandDoesNotDoublePush: the structured POST /v1/commands
-// already makes MicroMDM send the APNs push, so SendSecurityInfoCommand must NOT
+// TestSecurityInfoCommandDoesNotDoublePush: the structured POST /v1/commands
+// already makes MicroMDM send the APNs push, so sendSecurityInfoCommand must NOT
 // issue a second explicit GET /push/{udid} — a double push wastes Apple's MDM push
 // budget (the pressure this whole change reduces). It enqueues exactly one command
 // and returns the command_uuid; zero explicit pushes.
-func TestSendSecurityInfoCommandDoesNotDoublePush(t *testing.T) {
+func TestSecurityInfoCommandDoesNotDoublePush(t *testing.T) {
 	fake := &fakeMicroMDM{commandUUID: "cmd-abc-123"}
 	c, _ := newFakeMDM(t, fake)
 
-	gotUUID, err := c.SendSecurityInfoCommand(context.Background(), "UDID-PUSH")
+	_, bind, release, err := c.registerSecurityInfoWaiter("UDID-PUSH")
 	if err != nil {
-		t.Fatalf("SendSecurityInfoCommand: %v", err)
+		t.Fatal(err)
+	}
+	defer release()
+	gotUUID, err := c.sendSecurityInfoCommand(context.Background(), "UDID-PUSH", bind)
+	if err != nil {
+		t.Fatalf("sendSecurityInfoCommand: %v", err)
 	}
 	if gotUUID != "cmd-abc-123" {
 		t.Errorf("command_uuid = %q, want %q", gotUUID, "cmd-abc-123")
@@ -155,7 +160,7 @@ func TestVerifyProviderSuccess(t *testing.T) {
 		c.HandleWebhook(buildSecurityInfoWebhook("UDID-OK", "cmd-ok"))
 	}()
 
-	res, err := c.VerifyProvider(context.Background(), "SERIAL-OK", true /*sip*/, true /*secureboot*/)
+	res, err := c.VerifyProviderWithUDIDObserver(context.Background(), "SERIAL-OK", true /*sip*/, true /*secureboot*/, nil, nil)
 	if err != nil {
 		t.Fatalf("VerifyProvider returned transport error: %v", err)
 	}
@@ -173,16 +178,19 @@ func TestVerifyProviderSuccess(t *testing.T) {
 	}
 }
 
-// TestVerifyProviderTimeout: device is enrolled but no SecurityInfo webhook ever
-// arrives, so the 90s waiter times out. We shrink the wait by NOT delivering a
-// webhook and overriding the client to a short timeout is not possible (the
-// 90s is hardcoded), so instead we assert the timeout-error semantics via the
-// lower-level WaitForSecurityInfo with a short timeout — the same error string
-// ("timeout") that VerifyProvider surfaces into result.Error and that
-// verifyProviderViaMDM buckets as securityinfo-timeout.
+// TestVerifyProviderTimeout pins the lower-level waiter error string used by
+// VerifyProvider's fixed 90-second transport timeout without retaining an
+// unbound split send/wait API.
 func TestVerifyProviderTimeoutErrorString(t *testing.T) {
 	c := testClient()
-	_, err := c.WaitForSecurityInfo(context.Background(), "UDID-NO-REPLY", 50*time.Millisecond)
+	ch, _, release, err := c.registerSecurityInfoWaiter("UDID-NO-REPLY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	_, err = awaitSecurityInfo(
+		context.Background(), ch, 50*time.Millisecond,
+	)
 	if err == nil {
 		t.Fatal("expected a timeout error when no webhook arrives")
 	}
@@ -198,7 +206,7 @@ func TestVerifyProviderDeviceNotFound(t *testing.T) {
 	fake := &fakeMicroMDM{device: nil, commandUUID: "unused"}
 	c, _ := newFakeMDM(t, fake)
 
-	res, err := c.VerifyProvider(context.Background(), "SERIAL-MISSING", true, true)
+	res, err := c.VerifyProviderWithUDIDObserver(context.Background(), "SERIAL-MISSING", true, true, nil, nil)
 	if err != nil {
 		t.Fatalf("VerifyProvider transport error: %v", err)
 	}

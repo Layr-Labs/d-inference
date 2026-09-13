@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const testDeviceSerial = "TEST-DEVICE-SERIAL"
+
 // createTestMDACert creates a self-signed test certificate with custom MDA OIDs.
 func createTestMDACert(t *testing.T, sipEnabled, secureBootEnabled, kextsAllowed bool) ([]byte, *x509.Certificate) {
 	t.Helper()
@@ -31,7 +33,7 @@ func createTestMDACert(t *testing.T, sipEnabled, secureBootEnabled, kextsAllowed
 		SerialNumber: big.NewInt(1),
 		Subject: pkix.Name{
 			CommonName:   "Test Device",
-			SerialNumber: "C02XL3FHJG5J",
+			SerialNumber: testDeviceSerial,
 		},
 		NotBefore: time.Now().Add(-1 * time.Hour),
 		NotAfter:  time.Now().Add(24 * time.Hour),
@@ -118,7 +120,7 @@ func createTestMDACertChain(t *testing.T, sipEnabled, secureBootEnabled, kextsAl
 		SerialNumber: big.NewInt(2),
 		Subject: pkix.Name{
 			CommonName:   "Test Device Leaf",
-			SerialNumber: "C02XL3FHJG5J",
+			SerialNumber: testDeviceSerial,
 		},
 		NotBefore: time.Now().Add(-1 * time.Hour),
 		NotAfter:  time.Now().Add(24 * time.Hour),
@@ -163,8 +165,8 @@ func TestVerifyMDACertChainSelfSigned(t *testing.T) {
 	if result.ThirdPartyKexts {
 		t.Error("expected ThirdPartyKexts = false")
 	}
-	if result.DeviceSerial != "C02XL3FHJG5J" {
-		t.Errorf("device serial = %q, want C02XL3FHJG5J", result.DeviceSerial)
+	if result.DeviceSerial != testDeviceSerial {
+		t.Errorf("device serial = %q, want %s", result.DeviceSerial, testDeviceSerial)
 	}
 }
 

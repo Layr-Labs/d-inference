@@ -134,7 +134,7 @@ enum EngineV2Translation {
 
     /// OpenAI `logprobs`/`top_logprobs` → contract `topLogprobs`.
     ///
-    /// CONTRACT NOTE (see docs/engine-v2/CONTRACT-ISSUES-H-provider.md):
+    /// CONTRACT NOTE (see docs/reports/2026-07-02-engine-v2-contract-issues-provider-bridge.md):
     /// `CBv2SamplingParams.topLogprobs == 0` means "no logprobs at all", so
     /// the OpenAI shape "logprobs=true, top_logprobs omitted/0" (chosen
     /// token's logprob only, no alternatives) has no exact representation.
@@ -161,16 +161,23 @@ enum EngineV2Translation {
     ) -> [SSETokenLogprob] {
         logprobs.map { entry in
             let token = decodeToken(entry.token)
+            let bytes = token.utf8.map(Int.init)
             return SSETokenLogprob(
                 token: token,
                 logprob: entry.logprob,
-                bytes: Array(token.utf8).map(Int.init),
+                bytes: bytes,
                 topLogprobs: entry.topLogprobs.map { alt in
+                    // The chosen token commonly also appears in top_logprobs.
+                    // Its text and bytes are identical; decode it only once.
+                    if alt.token == entry.token {
+                        return SSETokenLogprob.Top(
+                            token: token, logprob: alt.logprob, bytes: bytes)
+                    }
                     let altToken = decodeToken(alt.token)
                     return SSETokenLogprob.Top(
                         token: altToken,
                         logprob: alt.logprob,
-                        bytes: Array(altToken.utf8).map(Int.init)
+                        bytes: altToken.utf8.map(Int.init)
                     )
                 }
             )

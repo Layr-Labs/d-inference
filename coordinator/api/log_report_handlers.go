@@ -15,12 +15,13 @@ import (
 
 const maxLogReportBodySize = 10 << 20 // 10 MB
 
-// handleUploadLogReport handles POST /v1/provider/log-report?serial=XXX.
-// The provider authenticates through requireAuth before this handler runs.
+// handleUploadLogReport handles POST /v1/provider/log-report. The provider
+// authenticates through requireAuth before this handler runs; callers receive
+// an opaque support ID instead of supplying or receiving hardware identity.
 func (s *Server) handleUploadLogReport(w http.ResponseWriter, r *http.Request) {
-	serial := r.URL.Query().Get("serial")
-	if serial == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "serial query parameter is required"))
+	if r.URL.Query().Has("serial") {
+		writeJSON(w, http.StatusUpgradeRequired,
+			errorResponse("upgrade_required", "update darkbloom before uploading support reports"))
 		return
 	}
 
@@ -39,51 +40,18 @@ func (s *Server) handleUploadLogReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	accountID := s.resolveAccountID(r)
-	if err := s.store.StoreLogReport(serial, "", accountID, body); err != nil {
-		s.logger.Error("log report: store failed", "serial", serial, "error", err)
+	reportID, err := s.store.StoreLogReport(accountID, body)
+	if err != nil {
+		s.logger.Error("log report: store failed", "account_id", accountID, "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to store log report"))
 		return
 	}
 
-	s.logger.Info("log report uploaded", "serial", serial, "size_bytes", len(body))
+	s.logger.Info("log report uploaded", "report_id", reportID, "account_id", accountID, "size_bytes", len(body))
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"status":     "stored",
-		"serial":     serial,
+		"report_id":  reportID,
 		"size_bytes": len(body),
-	})
-}
-
-// handleListLogReports handles GET /v1/admin/log-reports?serial=XXX&limit=10.
-// It returns report metadata without log-data blobs.
-func (s *Server) handleListLogReports(w http.ResponseWriter, r *http.Request) {
-	if !s.isAdminAuthorized(w, r) {
-		return
-	}
-
-	serial := r.URL.Query().Get("serial")
-	if serial == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "serial query parameter is required"))
-		return
-	}
-
-	limit := 10
-	if value := r.URL.Query().Get("limit"); value != "" {
-		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-
-	reports, err := s.store.GetLogReports(serial, limit)
-	if err != nil {
-		s.logger.Error("log report: list failed", "serial", serial, "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list log reports"))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"serial":  serial,
-		"reports": reports,
-		"count":   len(reports),
 	})
 }
 

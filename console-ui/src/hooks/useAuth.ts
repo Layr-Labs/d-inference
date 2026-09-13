@@ -87,7 +87,7 @@ export function useAuth() {
   const [apiKeyReady, setApiKeyReady] = useState(false);
 
   // Derive useful fields from the Privy user
-  const email = (user as { email?: { address?: string } } | null)?.email?.address || null;
+  const email = user?.email?.address || null;
 
   const displayName = email || null;
 

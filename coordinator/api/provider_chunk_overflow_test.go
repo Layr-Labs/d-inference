@@ -43,14 +43,14 @@ func TestHandleChunkOverflowFailsRequest(t *testing.T) {
 	pr := &registry.PendingRequest{
 		RequestID:      "req-overflow",
 		Model:          "test-model",
-		ChunkCh:        make(chan string, 1),
+		ChunkCh:        make(chan registry.ProviderChunk, 1),
 		CompleteCh:     make(chan protocol.UsageInfo, 1),
 		ErrorCh:        make(chan protocol.InferenceErrorMessage, 1),
 		SessionPrivKey: &sessionKeys.PrivateKey,
 	}
 	// Fill the chunk buffer so the next send would block: this simulates a
 	// consumer that stopped draining (stalled TCP write / wedged handler).
-	pr.ChunkCh <- "data: buffered-but-undrained"
+	pr.ChunkCh <- registry.ProviderChunk{Data: "data: buffered-but-undrained"}
 	provider.AddPending(pr)
 
 	// Deliver one more VALID encrypted chunk — decryption succeeds, but the
@@ -93,8 +93,8 @@ func TestHandleChunkOverflowFailsRequest(t *testing.T) {
 		if !ok {
 			t.Fatal("chunk channel closed before draining the buffered chunk")
 		}
-		if got != "data: buffered-but-undrained" {
-			t.Fatalf("buffered chunk = %q, want the pre-filled one", got)
+		if got.Data != "data: buffered-but-undrained" {
+			t.Fatalf("buffered chunk = %q, want the pre-filled one", got.Data)
 		}
 	default:
 		t.Fatal("chunk channel should still hold the pre-filled chunk")
@@ -170,17 +170,17 @@ func TestHandleChunkOverflowGraceDeliversToSlowConsumer(t *testing.T) {
 	pr := &registry.PendingRequest{
 		RequestID:      "req-grace",
 		Model:          "test-model",
-		ChunkCh:        make(chan string, 1),
+		ChunkCh:        make(chan registry.ProviderChunk, 1),
 		CompleteCh:     make(chan protocol.UsageInfo, 1),
 		ErrorCh:        make(chan protocol.InferenceErrorMessage, 1),
 		SessionPrivKey: &sessionKeys.PrivateKey,
 	}
-	pr.ChunkCh <- "data: buffered-but-draining"
+	pr.ChunkCh <- registry.ProviderChunk{Data: "data: buffered-but-draining"}
 	provider.AddPending(pr)
 
 	// Simulate a slow-but-alive consumer: drain one slot well within the
 	// grace window while handleChunk is blocked in sendChunkWithGrace.
-	drained := make(chan string, 1)
+	drained := make(chan registry.ProviderChunk, 1)
 	go func() {
 		time.Sleep(30 * time.Millisecond)
 		drained <- <-pr.ChunkCh
@@ -198,8 +198,8 @@ func TestHandleChunkOverflowGraceDeliversToSlowConsumer(t *testing.T) {
 
 	select {
 	case first := <-drained:
-		if first != "data: buffered-but-draining" {
-			t.Fatalf("drained chunk = %q, want the pre-filled one", first)
+		if first.Data != "data: buffered-but-draining" {
+			t.Fatalf("drained chunk = %q, want the pre-filled one", first.Data)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for the drainer")
@@ -208,8 +208,11 @@ func TestHandleChunkOverflowGraceDeliversToSlowConsumer(t *testing.T) {
 	// The overflowing chunk must have been delivered into the freed slot.
 	select {
 	case got := <-pr.ChunkCh:
-		if got == "" {
+		if got.Data == "" {
 			t.Fatal("empty chunk delivered")
+		}
+		if got.ReceivedAt.IsZero() {
+			t.Fatal("overflow-grace chunk is missing ingress timestamp")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("overflowing chunk was not delivered despite the consumer draining within grace")

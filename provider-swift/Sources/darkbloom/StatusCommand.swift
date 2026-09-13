@@ -24,9 +24,8 @@ struct Status: AsyncParsableCommand {
         print("Coordinator: \(config.coordinator.url)")
         print("Backend port: \(config.backend.port)")
         print("Configured model: \(config.backend.model ?? "auto-select")")
-        print("Idle timeout: \(config.backend.idleTimeoutMins == 0 ? "disabled" : "\(config.backend.idleTimeoutMins)m")")
-        let enabledBeta = BetaFeatures.enabledIDs(in: config)
-        print("Beta features: \(enabledBeta.isEmpty ? "none" : enabledBeta.joined(separator: ", ")) (manage with `darkbloom beta`)")
+        print("Memory when idle: \(IdleUnloadPolicy.describe(minutes: config.backend.idleTimeoutMins)) (manage with `darkbloom idle`)")
+        print("Beta features: \(betaFeaturesStatus(config)) (manage with `darkbloom beta`)")
         print("Auto-restart: \(autoRestartStatus(config: config))")
 
         if let hardware = snapshot.hardware {
@@ -117,6 +116,14 @@ struct Status: AsyncParsableCommand {
         }
 
         print("Warm models: \(WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel))")
+        if let line = Self.notLoadedLine(
+            advertised: state.advertisedModels,
+            warmModels: state.warmModels,
+            currentModel: state.currentModel,
+            idleTimeoutMins: config.backend.idleTimeoutMins)
+        {
+            print(line)
+        }
         print("\(WarmModelsFormat.mostRecentlyUsedLabel): \(WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel))")
         print("Requests served: \(state.stats.requestsServed)  |  tokens: \(state.stats.tokensGenerated)")
         if let err = state.lastModelLoadError {
@@ -184,10 +191,42 @@ struct Status: AsyncParsableCommand {
             + "out of date"
     }
 
+    /// Advertised models with no resident engine right now. Under an idle
+    /// policy that is the expected steady state between bursts ("reload on
+    /// demand"), so it is reported as information, not as a fault; under
+    /// "always ready" the same gap means the model has simply not been asked
+    /// for since start. nil when every advertised model is warm (or the daemon
+    /// predates `advertisedModels`).
+    static func notLoadedLine(
+        advertised: [String]?,
+        warmModels: [String],
+        currentModel: String?,
+        idleTimeoutMins: UInt64
+    ) -> String? {
+        guard let advertised else { return nil }
+        var resident = Set(warmModels)
+        if let currentModel, !currentModel.isEmpty { resident.insert(currentModel) }
+        let notLoaded = advertised.filter { !resident.contains($0) }
+        guard !notLoaded.isEmpty else { return nil }
+        let why = idleTimeoutMins == IdleUnloadPolicy.alwaysReadyMinutes
+            ? "loads on first request" : "unloaded when idle; reloads on demand"
+        return "Not loaded (\(why)): \(notLoaded.joined(separator: ", "))"
+    }
+
     private func formatUptime(_ seconds: Double) -> String {
         let s = Int(seconds)
         if s < 60 { return "\(s)s" }
         if s < 3600 { return "\(s / 60)m" }
         return "\(s / 3600)h\((s % 3600) / 60)m"
     }
+}
+
+/// Render every configured beta posture rather than only the force-enabled
+/// subset. In particular, MTP automatic mode is model-aware and must not
+/// disappear from `darkbloom status` or look like an explicit rollback.
+func betaFeaturesStatus(_ config: ProviderConfig) -> String {
+    guard !BetaFeatures.all.isEmpty else { return "none" }
+    return BetaFeatures.all.map { feature in
+        "\(feature.id)=\(feature.state(in: config).displayValue)"
+    }.joined(separator: ", ")
 }

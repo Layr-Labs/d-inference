@@ -298,7 +298,7 @@ fn manifest_paths(arguments: &Arguments) -> Result<Vec<PathBuf>> {
 }
 
 fn require_case_ids(cases: &[FixtureCase]) -> Result<()> {
-    const REQUIRED: [&str; 12] = [
+    const REQUIRED: [&str; 16] = [
         "tools",
         "nulls",
         "harmony",
@@ -311,6 +311,10 @@ fn require_case_ids(cases: &[FixtureCase]) -> Result<()> {
         "endpoint_messages",
         "exact_block_multiple",
         "long_prompt",
+        "json_object",
+        "json_schema",
+        "response_text",
+        "multi_system",
     ];
     for required in REQUIRED {
         if !cases.iter().any(|fixture| fixture.id == required) {

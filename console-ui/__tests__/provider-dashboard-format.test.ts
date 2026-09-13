@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   formatUSD,
   abbreviateNumber,
-  maskSerial,
   shortModelName,
   pct,
   clampPct,
@@ -45,18 +44,6 @@ describe("pct", () => {
     expect(pct(0.5)).toBe("50%");
     expect(pct(0)).toBe("0%");
     expect(pct(1.5)).toBe("100%");
-  });
-});
-
-describe("maskSerial", () => {
-  it("masks the middle, keeping head and tail", () => {
-    expect(maskSerial("ABCD1234XY")).toBe("ABCD••••XY");
-    expect(maskSerial("")).toBe("");
-    expect(maskSerial("SHORT")).toBe("SHORT");
-  });
-
-  it("caps the mask at 6 bullets for long serials", () => {
-    expect(maskSerial("ABCD123456789012XY")).toBe("ABCD••••••XY");
   });
 });
 

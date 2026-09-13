@@ -1,11 +1,9 @@
 import { apiError } from "../http/proxy-client";
 
-// Remove an offline/retired machine from the provider portal. The `serial` is
-// the machine's stable identity token — pass serial_number when present, else
-// the provider id. Ownership + the online-machine guard are enforced by the
-// coordinator (403 cross-account, 409 if still online).
-export async function deleteProvider(token: string, serial: string): Promise<void> {
-  const res = await fetch(`/api/me/providers/${encodeURIComponent(serial)}`, {
+// Remove an offline/retired machine by its opaque provider session id.
+// Ownership + the online-machine guard are enforced by the coordinator.
+export async function deleteProvider(token: string, providerID: string): Promise<void> {
+  const res = await fetch(`/api/me/providers/${encodeURIComponent(providerID)}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${token}` },
   });

@@ -8,6 +8,35 @@ require_cmd() {
   fi
 }
 
+normalize_required_provider_capabilities() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+
+raw = sys.argv[1]
+if not raw.strip():
+    print("")
+    raise SystemExit
+
+seen = set()
+normalized = []
+for raw_capability in raw.split(","):
+    capability = raw_capability.strip()
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", capability):
+        print(
+            "Required provider capabilities must be comma-separated "
+            "lowercase capability names.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if capability not in seen:
+        seen.add(capability)
+        normalized.append(capability)
+
+print(",".join(normalized))
+PY
+}
+
 require_cmd swift
 require_cmd aws
 require_cmd gcloud
@@ -22,6 +51,20 @@ R2_BUCKET="${R2_BUCKET:-darkbloom-models}"
 read -r -p "Model directory: " MODEL_DIR
 read -r -p "Model id (for example mlx-community/foo): " MODEL_ID
 read -r -p "Version (no slashes): " VERSION
+
+DEFAULT_REQUIRED_PROVIDER_CAPABILITIES=""
+if [[ "$MODEL_ID" == "EigenLabs/Qwen3.8-27B-4bit" ]]; then
+  DEFAULT_REQUIRED_PROVIDER_CAPABILITIES="apple_m5,mlx_nax"
+fi
+
+if [[ -n "$DEFAULT_REQUIRED_PROVIDER_CAPABILITIES" ]]; then
+  read -r -p "Required provider capabilities (comma-separated) [$DEFAULT_REQUIRED_PROVIDER_CAPABILITIES]: " REQUIRED_PROVIDER_CAPABILITIES
+  REQUIRED_PROVIDER_CAPABILITIES="${REQUIRED_PROVIDER_CAPABILITIES:-$DEFAULT_REQUIRED_PROVIDER_CAPABILITIES}"
+else
+  read -r -p "Required provider capabilities (comma-separated, optional): " REQUIRED_PROVIDER_CAPABILITIES
+fi
+
+REQUIRED_PROVIDER_CAPABILITIES="$(normalize_required_provider_capabilities "$REQUIRED_PROVIDER_CAPABILITIES")"
 
 if [[ ! -d "$MODEL_DIR" ]]; then
   printf 'Model directory does not exist: %s\n' "$MODEL_DIR" >&2
@@ -43,6 +86,28 @@ if [[ -z "${R2_ACCOUNT_ID:-}" ]]; then
   printf 'R2_ACCOUNT_ID is required.\n' >&2
   exit 1
 fi
+
+# Pin an existing public HF mirror; the registry remains the checksum authority.
+# This script uploads R2 bytes, while HF publication remains a separate operation.
+HUGGING_FACE_ARTIFACT_JSON="$(python3 - "${HUGGING_FACE_ARTIFACT_JSON:-null}" <<'PYHF'
+import json, re, sys
+artifact = json.loads(sys.argv[1])
+if artifact is not None:
+    component = r"[A-Za-z0-9_][A-Za-z0-9._-]*"
+    if not isinstance(artifact, dict) or set(artifact) - {"repo_id", "revision", "path_prefix"}:
+        raise SystemExit("Invalid HUGGING_FACE_ARTIFACT_JSON object")
+    repo, revision, prefix = (artifact.get(k, "") for k in ("repo_id", "revision", "path_prefix"))
+    if not all(isinstance(v, str) for v in (repo, revision, prefix)):
+        raise SystemExit("HF artifact fields must be strings")
+    if len(repo) > 192 or ".." in repo or not re.fullmatch(component + "/" + component, repo):
+        raise SystemExit("HF repo_id must be owner/repository")
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise SystemExit("HF revision must be a full lowercase commit SHA")
+    if len(prefix) > 1024 or ".." in prefix or (prefix and not re.fullmatch(component + "(?:/" + component + ")*", prefix)):
+        raise SystemExit("HF path_prefix must be a relative repository path")
+print(json.dumps(artifact, separators=(",", ":")))
+PYHF
+)"
 
 MANIFEST="$(mktemp -t darkbloom-model-manifest.XXXXXX.json)"
 trap 'rm -f "$MANIFEST"' EXIT
@@ -101,11 +166,13 @@ Register with GitHub Actions:
     -f architecture="<architecture>" \
     -f quantization="<quantization>" \
     -f capabilities_csv="tools,reasoning" \
+    -f required_provider_capabilities="$REQUIRED_PROVIDER_CAPABILITIES" \
     -f max_context_length="<max context tokens>" \
     -f max_output_length="<max output tokens>" \
     -f min_ram_gb="<minimum RAM GB>" \
     -f description="" \
     -f runtime_parameters_json='{}' \
+    -f hugging_face_artifact_json='$HUGGING_FACE_ARTIFACT_JSON' \
     -f metadata_json='{}' \
     -f promote="false" \
     -f coordinator_url="https://api.darkbloom.dev"

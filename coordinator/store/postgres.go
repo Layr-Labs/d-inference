@@ -50,6 +50,13 @@ type cachedPrice struct {
 // NewPostgres creates a new PostgresStore connected to the given database URL.
 // It runs schema migrations on startup.
 func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
+	return newPostgresWithPoolConfig(ctx, scfg, nil)
+}
+
+// newPostgresWithPoolConfig is NewPostgres with a hook that may adjust the
+// parsed pool configuration before the pool is created. Production passes nil;
+// package tests use it to attach a pgx query tracer.
+func newPostgresWithPoolConfig(ctx context.Context, scfg Config, tune func(*pgxpool.Config)) (*PostgresStore, error) {
 	cfg, err := pgxpool.ParseConfig(scfg.DatabaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("store: parse postgres config: %w", err)
@@ -68,6 +75,9 @@ func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
 	cfg.HealthCheckPeriod = 30 * time.Second
+	if tune != nil {
+		tune(cfg)
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -75,7 +85,10 @@ func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 	}
 
 	// Verify connectivity.
-	if err := pool.Ping(ctx); err != nil {
+	pingStarted := time.Now()
+	pingErr := pool.Ping(ctx)
+	logStartupMigration("connect", pingStarted, pingErr)
+	if err := pingErr; err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("store: ping postgres: %w", err)
 	}
@@ -150,6 +163,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 // database-wide PostgreSQL migration advisory lock.
 func (s *PostgresStore) migrateLocked(ctx context.Context) error {
 	migrations := []string{
+		globalPayoutSchema,
 		// schema_migrations records one-time data migrations that must run at most
 		// once rather than on every boot. Idempotent DDL (CREATE/ALTER ... IF [NOT]
 		// EXISTS) does not need this; it exists to gate destructive one-shot DML
@@ -427,6 +441,7 @@ func (s *PostgresStore) migrateLocked(ctx context.Context) error {
 			max_output_length INTEGER NOT NULL DEFAULT 0,
 			min_ram_gb INTEGER NOT NULL DEFAULT 0,
 			capabilities TEXT[] NOT NULL DEFAULT '{}',
+			required_provider_capabilities TEXT[] NOT NULL DEFAULT '{}',
 			status TEXT NOT NULL DEFAULT 'beta',
 			description TEXT NOT NULL DEFAULT '',
 			runtime_parameters JSONB NOT NULL DEFAULT '{}',
@@ -450,6 +465,7 @@ func (s *PostgresStore) migrateLocked(ctx context.Context) error {
 			metadata JSONB NOT NULL DEFAULT '{}',
 			UNIQUE(model_id, version)
 		)`,
+		`ALTER TABLE model_versions ADD COLUMN IF NOT EXISTS hugging_face_artifact JSONB`,
 		`DO $$ BEGIN
 			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS max_context_length INTEGER NOT NULL DEFAULT 0;
 		EXCEPTION WHEN others THEN NULL;
@@ -462,6 +478,19 @@ func (s *PostgresStore) migrateLocked(ctx context.Context) error {
 			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS runtime_parameters JSONB NOT NULL DEFAULT '{}';
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
+		`DO $$ BEGIN
+			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS required_provider_capabilities TEXT[] NOT NULL DEFAULT '{}';
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
+		`UPDATE model_registry
+		 SET required_provider_capabilities = (
+		   SELECT ARRAY_AGG(DISTINCT capability ORDER BY capability)
+		   FROM UNNEST(required_provider_capabilities ||
+		     ARRAY['apple_m5', 'mlx_nax']::TEXT[]) AS capability
+		 )
+		 WHERE id = 'EigenLabs/Qwen3.8-27B-4bit'
+		   AND NOT (required_provider_capabilities @>
+		     ARRAY['apple_m5', 'mlx_nax']::TEXT[])`,
 		`CREATE INDEX IF NOT EXISTS idx_model_versions_model ON model_versions(model_id)`,
 		`CREATE TABLE IF NOT EXISTS model_version_files (
 			id BIGSERIAL PRIMARY KEY,
@@ -660,23 +689,7 @@ func (s *PostgresStore) migrateLocked(ctx context.Context) error {
 			PRIMARY KEY (key, key_type)
 		)`,
 
-		// Backfill earnings_summary from existing provider_earnings rows.
-		// The INSERT ... ON CONFLICT DO NOTHING ensures this only runs once per key.
-		`INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		 SELECT account_id, 'account', COUNT(*), COALESCE(SUM(amount_micro_usd), 0),
-		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), NOW()
-		 FROM provider_earnings
-		 WHERE account_id != ''
-		 GROUP BY account_id
-		 ON CONFLICT (key, key_type) DO NOTHING`,
-
-		`INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		 SELECT provider_key, 'provider', COUNT(*), COALESCE(SUM(amount_micro_usd), 0),
-		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), NOW()
-		 FROM provider_earnings
-		 WHERE provider_key != ''
-		 GROUP BY provider_key
-		 ON CONFLICT (key, key_type) DO NOTHING`,
+		earningsSummaryBackfillPendingDDL,
 
 		// Provider payouts — wallet-based payout history for unlinked providers
 		`CREATE TABLE IF NOT EXISTS provider_payouts (
@@ -744,28 +757,28 @@ func (s *PostgresStore) migrateLocked(ctx context.Context) error {
 			total_prompt_tokens BIGINT NOT NULL DEFAULT 0,
 			total_completion_tokens BIGINT NOT NULL DEFAULT 0
 		)`,
-		// Backfill from existing usage rows.  ON CONFLICT DO NOTHING makes
-		// this idempotent — only runs on first deploy.
-		`INSERT INTO usage_totals (id, total_requests, total_prompt_tokens, total_completion_tokens)
-		 SELECT 1, COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0)
-		 FROM usage
-		 ON CONFLICT (id) DO NOTHING`,
 
 		// Partial index for UsageLocationBuckets — only rows with a
 		// non-null request_location are ever queried.
 		`CREATE INDEX IF NOT EXISTS idx_usage_request_location_notnull ON usage(created_at DESC) WHERE request_location IS NOT NULL`,
 
 		// Provider log reports — providers upload 24h unified logs for debugging.
+		// serial_number is retained only as a rollback-compatible legacy column.
+		// The write guard and one-time scrub keep it empty.
 		`CREATE TABLE IF NOT EXISTS provider_log_reports (
 			id BIGSERIAL PRIMARY KEY,
-			serial_number TEXT NOT NULL,
+			serial_number TEXT NOT NULL DEFAULT '',
 			provider_id TEXT NOT NULL DEFAULT '',
 			account_id TEXT NOT NULL DEFAULT '',
 			log_data BYTEA NOT NULL,
 			log_size_bytes BIGINT NOT NULL DEFAULT 0,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_log_reports_serial ON provider_log_reports(serial_number, created_at DESC)`,
+		`ALTER TABLE provider_log_reports ALTER COLUMN serial_number SET DEFAULT ''`,
+		providerLogReportSerialGuardFunction,
+		providerLogReportSerialGuardTrigger,
+		providerLogReportSerialScrubMigration,
+		`DROP INDEX IF EXISTS idx_log_reports_serial`,
 
 		// Provider sessions — durable connect→disconnect history for uptime/downtime.
 		// One row per websocket connection; disconnected_at IS NULL while open.
@@ -985,31 +998,61 @@ func (s *PostgresStore) migrateLocked(ctx context.Context) error {
 			se_pubkey TEXT PRIMARY KEY,
 			version TEXT NOT NULL DEFAULT '',
 			attested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			apns_token TEXT NOT NULL DEFAULT ''
+			apns_token TEXT NOT NULL DEFAULT '',
+			node_public_key TEXT NOT NULL DEFAULT '',
+			binary_hash TEXT NOT NULL DEFAULT ''
 		)`,
 		// Token-binding column for reuse (Codex #7): additive for DBs whose
 		// code_attestations table predates it (the CREATE above is a no-op there).
 		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS apns_token TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS node_public_key TEXT NOT NULL DEFAULT ''`,
+		// Attested binary identity (Codex 05:55Z P1): additive; a pre-existing
+		// row's empty hash marks a legacy identity-less proof, which never
+		// authorizes a release-transition resume (real APNs challenge instead).
+		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS binary_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS continuous_coverage_until TIMESTAMPTZ`,
+		// Durable APNs admission state is deliberately separate from successful
+		// attestation evidence. Spending a push budget never creates trust.
+		`CREATE TABLE IF NOT EXISTS code_attest_push_budgets (
+			se_pubkey TEXT NOT NULL,
+			token_hash TEXT NOT NULL DEFAULT '',
+			next_push_at TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (se_pubkey, token_hash)
+		)`,
+		`DO $$
+		DECLARE key_columns TEXT[];
+		BEGIN
+			SELECT array_agg(a.attname::TEXT ORDER BY k.ordinality)
+			  INTO key_columns
+			  FROM pg_constraint c
+			  CROSS JOIN LATERAL unnest(c.conkey)
+			    WITH ORDINALITY AS k(attnum, ordinality)
+			  JOIN pg_attribute a
+			    ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+			 WHERE c.conrelid = 'code_attest_push_budgets'::regclass
+			   AND c.contype = 'p';
+			IF key_columns IS DISTINCT FROM
+			   ARRAY['se_pubkey', 'token_hash']::TEXT[] THEN
+				ALTER TABLE code_attest_push_budgets
+					DROP CONSTRAINT IF EXISTS code_attest_push_budgets_pkey;
+				ALTER TABLE code_attest_push_budgets
+					ADD CONSTRAINT code_attest_push_budgets_pkey
+					PRIMARY KEY (se_pubkey, token_hash);
+			END IF;
+		END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_code_attest_push_budgets_due
+			ON code_attest_push_budgets(next_push_at)`,
+		// Durable rotation-clear cooldown (Codex 06:36Z P1): the sentinel row
+		// records the last honored floor clear so restart/blue-green peers
+		// share one anti-abuse clear budget. NULL = never cleared (legacy rows
+		// and fresh sentinels clear immediately, preserving genuine-rotation UX).
+		`ALTER TABLE code_attest_push_budgets
+			ADD COLUMN IF NOT EXISTS last_clear_at TIMESTAMPTZ`,
 
-		// Provider trust-reuse cache (DAR-326 Phase 0). Mirrors code_attestations.
-		// Persists the in-memory trust-reuse cache so a blue-green deploy / restart
-		// does not wipe it and provoke a fleet-wide live MDM SecurityInfo + APNs
-		// re-verification herd. One row per device (keyed by Secure Enclave public
-		// key). The row records that the device completed a FULL live MDM
-		// verification at verified_at (proven serial, binary hash, SIP, Secure
-		// Boot). The identity + binary + fresh-posture + freshness gate is applied
-		// on READ (in the coordinator, behind a live SE challenge), so a
-		// stale/wrong-binary/expired row never extends trust — it only lets the
-		// coordinator skip a redundant live MDM round-trip.
-		//
-		// SECURITY-SENSITIVE (Threat-Model #5): a row here grants a hardware
-		// fast-skip, so write access must be guarded like the payment ledger — only
-		// the coordinator writes it, and only after a verified live MDM pass.
-		// SeedTrustReuseCache TRUSTS this table's contents on restart; that trust is
-		// bounded by the always-run live SE challenge on read (re-proving posture +
-		// binary + identity) plus future-date rejection, so a tampered/stale row
-		// still falls through to a full live MDM verification rather than silently
-		// granting hardware.
+		// Durable provider device evidence. The legacy binary_hash/verified_at
+		// columns remain accepted during migration, but application proof is never
+		// fabricated from them.
 		`CREATE TABLE IF NOT EXISTS provider_trust_reuse (
 			se_pubkey TEXT PRIMARY KEY,
 			serial TEXT NOT NULL DEFAULT '',
@@ -1018,8 +1061,63 @@ func (s *PostgresStore) migrateLocked(ctx context.Context) error {
 			sip_enabled BOOL NOT NULL DEFAULT FALSE,
 			secure_boot_full BOOL NOT NULL DEFAULT FALSE,
 			mda_udid TEXT NOT NULL DEFAULT '',
-			verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_verified_binary_hash TEXT NOT NULL DEFAULT '',
+			hardware_proof_verified_at TIMESTAMPTZ,
+			application_proof_verified_at TIMESTAMPTZ,
+			evidence_generation BIGINT NOT NULL DEFAULT 1,
+			revocation_generation BIGINT NOT NULL DEFAULT 0,
+			revocation_event_id TEXT NOT NULL DEFAULT '',
+			revoked_at TIMESTAMPTZ
 		)`,
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS last_verified_binary_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS hardware_proof_verified_at TIMESTAMPTZ`,
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS application_proof_verified_at TIMESTAMPTZ`,
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS evidence_generation BIGINT NOT NULL DEFAULT 1`,
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS revocation_generation BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS revocation_event_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ`,
+		// Coordinator-measured continuous-liveness watermark (connection
+		// continuity trust reuse). Written only by the coordinator; NULL for
+		// pre-migration rows means "no continuity evidence" (fail-safe).
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS continuous_coverage_until TIMESTAMPTZ`,
+		`UPDATE provider_trust_reuse
+		 SET hardware_proof_verified_at = verified_at
+		 WHERE hardware_proof_verified_at IS NULL`,
+		`UPDATE provider_trust_reuse
+		 SET last_verified_binary_hash = binary_hash
+		 WHERE last_verified_binary_hash = '' AND binary_hash <> ''`,
+		`ALTER TABLE provider_trust_reuse ALTER COLUMN hardware_proof_verified_at SET DEFAULT NOW()`,
+		`ALTER TABLE provider_trust_reuse ALTER COLUMN hardware_proof_verified_at SET NOT NULL`,
+
+		// Durable bounded verification scheduler. This table contains retry and
+		// short claim metadata only; provider/session IDs are intentionally absent
+		// and a row is never trust authority.
+		`CREATE TABLE IF NOT EXISTS provider_verification_jobs (
+			se_pubkey TEXT NOT NULL,
+			serial TEXT NOT NULL DEFAULT '',
+			udid TEXT NOT NULL DEFAULT '',
+			task_kind TEXT NOT NULL,
+			task_state TEXT NOT NULL,
+			priority SMALLINT NOT NULL,
+			retry_stage INTEGER NOT NULL DEFAULT 0,
+			previous_delay_ns BIGINT NOT NULL DEFAULT 0,
+			next_attempt_at TIMESTAMPTZ,
+			last_outcome TEXT NOT NULL DEFAULT 'none',
+			reopen_pending BOOLEAN NOT NULL DEFAULT FALSE,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			claim_owner TEXT NOT NULL DEFAULT '',
+			claim_expires_at TIMESTAMPTZ,
+			PRIMARY KEY (se_pubkey, task_kind)
+		)`,
+		`ALTER TABLE provider_verification_jobs
+		 ADD COLUMN IF NOT EXISTS reopen_pending BOOLEAN NOT NULL DEFAULT FALSE`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_verification_jobs_due
+		 ON provider_verification_jobs(priority, next_attempt_at)
+		 WHERE task_state IN ('pending', 'backoff')`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_verification_jobs_claim
+		 ON provider_verification_jobs(claim_expires_at)
+		 WHERE claim_owner <> ''`,
 
 		// Base-rewards per-job settlement idempotency relies on a partial UNIQUE
 		// index on provider_earnings(job_id). DAR-349: that index is built AFTER
@@ -1051,10 +1149,57 @@ func (s *PostgresStore) migrateLocked(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_floor_draws_epoch ON provider_floor_draws(epoch_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_floor_draws_account ON provider_floor_draws(account_id, epoch_id)`,
+
+		// System profiler (docs/reports request-profiler plan §2.1/§2.4): two NEW
+		// append-only telemetry tables, no ALTER on any existing table. The DDL
+		// text lives in the request/fleet constants below so tests can pin the Go
+		// column lists to it. Both tables are created empty on first boot, so the
+		// plain CREATE INDEX statements never lock a populated table; any FUTURE
+		// index on these tables must be built CONCURRENTLY outside this loop
+		// (see ensureProviderEarningsJobIndex). The request_waterfall view is NOT
+		// here — it is applied by hand from store/migrations/request_waterfall.sql.
+		requestOutcomesTableDDL,
+		`CREATE INDEX IF NOT EXISTS idx_request_outcomes_received ON request_outcomes (received_at, coord_request_id)`,
+		requestProfilesTableDDL,
+		requestProfilesCreatedIndexDDL,
+		requestProfilesCoordIndexDDL,
+		requestProfilesProviderIndexDDL,
+		fleetSnapshotsTableDDL,
+		fleetSnapshotsSampledIndexDDL,
+		// request_profiles / fleet_snapshots are profiler-only and cold (never
+		// hot-path locked), so idempotent ADD COLUMN IF NOT EXISTS is safe here;
+		// it upgrades a database that first booted at 02832be21 (before the
+		// request-shape columns) or before the fleet capability columns. Only
+		// duplicate_column (two coordinators racing the same ALTER) is swallowed;
+		// any other failure aborts boot so a half-migrated schema is never served.
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS estimated_prompt_tokens INT NOT NULL DEFAULT 0; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS requested_max_tokens INT NOT NULL DEFAULT 0; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS requires_vision BOOL NOT NULL DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS has_tools BOOL NOT NULL DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS predictive_bypass TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS reservation_ttft_ceiling_ms DOUBLE PRECISION; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS dispatch_budget_ms BIGINT; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS provider_version TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		// free_for_load_gb became nullable (nil = provider did not report it); idempotent.
+		`ALTER TABLE fleet_snapshots ALTER COLUMN free_for_load_gb DROP NOT NULL`,
+		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS model_vision BOOL NOT NULL DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS template_render_ok BOOL; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		fleetSnapshotsProviderIndexDDL,
 	}
 	migrations = append(migrations, sandboxSchemaMigrations()...)
 
 	if err := s.executeSchemaMigrationsLocked(ctx, migrations); err != nil {
+		return err
+	}
+
+	if err := s.migrateEarningsSummary(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureProviderRestoreIndexes(ctx); err != nil {
+		return err
+	}
+
+	if err := s.migrateUsageTotals(ctx); err != nil {
 		return err
 	}
 
@@ -1090,9 +1235,12 @@ func (s *PostgresStore) executeSchemaMigrationsLocked(
 	}
 	defer conn.Release()
 
-	for _, migration := range migrations {
-		if _, err := conn.Exec(ctx, migration); err != nil {
-			return fmt.Errorf("migration failed: %w", err)
+	for index, migration := range migrations {
+		started := time.Now()
+		_, err := conn.Exec(ctx, migration)
+		logStartupMigration(fmt.Sprintf("schema_statement_%03d", index), started, err)
+		if err != nil {
+			return fmt.Errorf("migration statement %d failed: %w", index, err)
 		}
 	}
 	return nil
@@ -1764,8 +1912,6 @@ func (s *PostgresStore) RecordUsageFullWithPublicModel(providerID, consumerKey, 
 	)
 }
 
-const inferenceRouteErrorReasonUpsertAssignment = "error_reason = COALESCE(NULLIF(EXCLUDED.error_reason, ''), inference_routes.error_reason)"
-
 const inferenceRouteSelectColumns = `
 			id,
 			request_id, attempt, provider_id, model, public_model, consumer_key_hash, key_id, outcome,
@@ -1785,184 +1931,6 @@ const inferenceRouteSelectColumns = `
 			provider_region, consumer_region,
 			parse_ms, reserve_ms, route_ms, encrypt_ms, queue_wait_ms, dispatch_ms, actual_decode_tps,
 			admitted_but_failed, used_backup, backup_won, error_reason`
-
-// RecordInferenceRoute writes the routing decision snapshot for a request
-// attempt. Callers keep this best-effort by logging returned errors off the
-// request path rather than blocking inference.
-func (s *PostgresStore) RecordInferenceRoute(record *InferenceRouteRecord) error {
-	if record == nil {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	now := time.Now().UTC()
-	createdAt := record.CreatedAt
-	if createdAt.IsZero() {
-		createdAt = now
-	}
-	updatedAt := record.UpdatedAt
-	if updatedAt.IsZero() {
-		updatedAt = now
-	}
-
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO inference_routes (
-			request_id, attempt, provider_id, model, public_model, consumer_key_hash, key_id, outcome,
-			cost_ms, state_ms, queue_ms, pending_ms, backlog_ms, this_req_ms, health_ms, ttft_ms, best_ttft_ms,
-			effective_queue, candidate_count, capacity_rejections, model_too_large_rejections, vision_rejections, ttft_rejections,
-			effective_tps, static_tps, provider_status, provider_trust_level, provider_version,
-			hardware_chip, hardware_chip_family, hardware_tier, memory_gb, gpu_cores, cpu_cores,
-			system_memory_pressure, system_cpu_usage, system_thermal_state,
-			gpu_memory_active_gb, gpu_memory_peak_gb, gpu_memory_cache_gb,
-			slot_state, backend_running, backend_waiting,
-			active_token_budget_used, active_token_budget_max, queued_token_budget,
-			estimated_prompt_tokens, requested_max_tokens,
-			requires_vision, has_tools, self_route_only, prefer_owner,
-			created_at, updated_at,
-			provider_region, consumer_region, error_reason
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8,
-			$9, $10, $11, $12, $13, $14, $15, $16, $17,
-			$18, $19, $20, $21, $22, $23,
-			$24, $25, $26, $27, $28,
-			$29, $30, $31, $32, $33, $34,
-			$35, $36, $37,
-			$38, $39, $40,
-			$41, $42, $43,
-			$44, $45, $46,
-			$47, $48,
-			$49, $50, $51, $52,
-			$53, $54,
-			$55, $56, $57
-		) ON CONFLICT (request_id, attempt) DO UPDATE SET
-			provider_id = EXCLUDED.provider_id,
-			model = EXCLUDED.model,
-			public_model = EXCLUDED.public_model,
-			consumer_key_hash = EXCLUDED.consumer_key_hash,
-			key_id = EXCLUDED.key_id,
-			outcome = EXCLUDED.outcome,
-			cost_ms = EXCLUDED.cost_ms,
-			state_ms = EXCLUDED.state_ms,
-			queue_ms = EXCLUDED.queue_ms,
-			pending_ms = EXCLUDED.pending_ms,
-			backlog_ms = EXCLUDED.backlog_ms,
-			this_req_ms = EXCLUDED.this_req_ms,
-			health_ms = EXCLUDED.health_ms,
-			ttft_ms = EXCLUDED.ttft_ms,
-			best_ttft_ms = EXCLUDED.best_ttft_ms,
-			effective_queue = EXCLUDED.effective_queue,
-			candidate_count = EXCLUDED.candidate_count,
-			capacity_rejections = EXCLUDED.capacity_rejections,
-			model_too_large_rejections = EXCLUDED.model_too_large_rejections,
-			vision_rejections = EXCLUDED.vision_rejections,
-			ttft_rejections = EXCLUDED.ttft_rejections,
-			effective_tps = EXCLUDED.effective_tps,
-			static_tps = EXCLUDED.static_tps,
-			provider_status = EXCLUDED.provider_status,
-			provider_trust_level = EXCLUDED.provider_trust_level,
-			provider_version = EXCLUDED.provider_version,
-			hardware_chip = EXCLUDED.hardware_chip,
-			hardware_chip_family = EXCLUDED.hardware_chip_family,
-			hardware_tier = EXCLUDED.hardware_tier,
-			memory_gb = EXCLUDED.memory_gb,
-			gpu_cores = EXCLUDED.gpu_cores,
-			cpu_cores = EXCLUDED.cpu_cores,
-			system_memory_pressure = EXCLUDED.system_memory_pressure,
-			system_cpu_usage = EXCLUDED.system_cpu_usage,
-			system_thermal_state = EXCLUDED.system_thermal_state,
-			gpu_memory_active_gb = EXCLUDED.gpu_memory_active_gb,
-			gpu_memory_peak_gb = EXCLUDED.gpu_memory_peak_gb,
-			gpu_memory_cache_gb = EXCLUDED.gpu_memory_cache_gb,
-			slot_state = EXCLUDED.slot_state,
-			backend_running = EXCLUDED.backend_running,
-			backend_waiting = EXCLUDED.backend_waiting,
-			active_token_budget_used = EXCLUDED.active_token_budget_used,
-			active_token_budget_max = EXCLUDED.active_token_budget_max,
-			queued_token_budget = EXCLUDED.queued_token_budget,
-			estimated_prompt_tokens = EXCLUDED.estimated_prompt_tokens,
-			requested_max_tokens = EXCLUDED.requested_max_tokens,
-			requires_vision = EXCLUDED.requires_vision,
-			has_tools = EXCLUDED.has_tools,
-			self_route_only = EXCLUDED.self_route_only,
-			prefer_owner = EXCLUDED.prefer_owner,
-			provider_region = EXCLUDED.provider_region,
-			consumer_region = EXCLUDED.consumer_region,
-			`+inferenceRouteErrorReasonUpsertAssignment+`,
-			updated_at = EXCLUDED.updated_at`,
-		record.RequestID, record.Attempt, record.ProviderID, record.Model, record.PublicModel, record.ConsumerKeyHash, record.KeyID, record.Outcome,
-		record.CostMs, record.StateMs, record.QueueMs, record.PendingMs, record.BacklogMs, record.ThisReqMs, record.HealthMs, record.TTFTMs, record.BestTTFTMs,
-		record.EffectiveQueue, record.CandidateCount, record.CapacityRejections, record.ModelTooLargeRejections, record.VisionRejections, record.TTFTRejections,
-		record.EffectiveTPS, record.StaticTPS, record.ProviderStatus, record.ProviderTrustLevel, record.ProviderVersion,
-		record.HardwareChip, record.HardwareChipFamily, record.HardwareTier, record.MemoryGB, record.GPUCores, record.CPUCores,
-		record.SystemMemoryPressure, record.SystemCPUUsage, record.SystemThermalState,
-		record.GPUMemoryActiveGB, record.GPUMemoryPeakGB, record.GPUMemoryCacheGB,
-		record.SlotState, record.BackendRunning, record.BackendWaiting,
-		record.ActiveTokenBudgetUsed, record.ActiveTokenBudgetMax, record.QueuedTokenBudget,
-		record.EstimatedPromptTokens, record.RequestedMaxTokens,
-		record.RequiresVision, record.HasTools, record.SelfRouteOnly, record.PreferOwner,
-		createdAt, updatedAt,
-		record.ProviderRegion, record.ConsumerRegion, record.ErrorReason,
-	)
-	if err != nil {
-		return fmt.Errorf("store: record inference route: %w", err)
-	}
-	return nil
-}
-
-// UpdateInferenceRouteOutcome updates the attempt with final outcome data
-// (tokens, timing, error). Callers keep this best-effort by logging returned
-// errors off the request path rather than blocking inference.
-func (s *PostgresStore) UpdateInferenceRouteOutcome(requestID string, attempt int, outcome *InferenceRouteOutcome) error {
-	if outcome == nil {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`UPDATE inference_routes SET
-			final_status = COALESCE(NULLIF($3, ''), final_status),
-			error_code = CASE WHEN $4 <> 0 THEN $4 ELSE error_code END,
-			error_class = COALESCE(NULLIF($5, ''), error_class),
-			error_reason = COALESCE(NULLIF($6, ''), error_reason),
-			prompt_tokens = CASE WHEN $7 <> 0 THEN $7 ELSE prompt_tokens END,
-			-- $24 (CompletionTokensSet) force-writes the count even when 0 so a
-			-- terminal cancel/error/timeout row persists 0 instead of NULL; the
-			-- OR $8 <> 0 keeps the legacy non-zero write path (mirrors the memory
-			-- store's mergeInferenceRouteOutcome exactly).
-			completion_tokens = CASE WHEN $24 OR $8 <> 0 THEN $8 ELSE completion_tokens END,
-			reasoning_tokens = CASE WHEN $9 <> 0 THEN $9 ELSE reasoning_tokens END,
-			cost_micro_usd = CASE WHEN $10 <> 0 THEN $10 ELSE cost_micro_usd END,
-			actual_ttft_ms = CASE WHEN $11 <> 0 THEN $11 ELSE actual_ttft_ms END,
-			dispatch_to_first_chunk_ms = CASE WHEN $12 <> 0 THEN $12 ELSE dispatch_to_first_chunk_ms END,
-			total_duration_ms = CASE WHEN $13 <> 0 THEN $13 ELSE total_duration_ms END,
-			parse_ms = CASE WHEN $14 <> 0 THEN $14 ELSE parse_ms END,
-			reserve_ms = CASE WHEN $15 <> 0 THEN $15 ELSE reserve_ms END,
-			route_ms = CASE WHEN $16 <> 0 THEN $16 ELSE route_ms END,
-			encrypt_ms = CASE WHEN $17 <> 0 THEN $17 ELSE encrypt_ms END,
-			queue_wait_ms = CASE WHEN $18 <> 0 THEN $18 ELSE queue_wait_ms END,
-			dispatch_ms = CASE WHEN $19 <> 0 THEN $19 ELSE dispatch_ms END,
-			actual_decode_tps = CASE WHEN $20 <> 0 THEN $20 ELSE actual_decode_tps END,
-			admitted_but_failed = COALESCE(admitted_but_failed, FALSE) OR $21,
-			used_backup = COALESCE(used_backup, FALSE) OR $22,
-			backup_won = COALESCE(backup_won, FALSE) OR $23,
-			updated_at = NOW()
-		 WHERE request_id = $1 AND attempt = $2`,
-		requestID, attempt,
-		outcome.FinalStatus, outcome.ErrorCode, outcome.ErrorClass, outcome.ErrorReason, outcome.PromptTokens, outcome.CompletionTokens, outcome.ReasoningTokens,
-		outcome.CostMicroUSD, outcome.ActualTTFTMs, outcome.DispatchToFirstChunkMs, outcome.TotalDurationMs,
-		outcome.ParseMs, outcome.ReserveMs, outcome.RouteMs, outcome.EncryptMs, outcome.QueueWaitMs, outcome.DispatchMs, outcome.ActualDecodeTPS,
-		outcome.AdmittedButFailed, outcome.UsedBackup, outcome.BackupWon,
-		outcome.CompletionTokensSet,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update inference route outcome: %w", err)
-	}
-	return nil
-}
 
 // InferenceRouteRecordsSince returns routing records created at or after the
 // given time. Zero since returns all records.
@@ -2193,121 +2161,6 @@ func (s *PostgresStore) RejectionRecordsSince(since time.Time) []RejectionRecord
 	return records
 }
 
-// UsageLocationBuckets aggregates usage by approximate request origin.
-func (s *PostgresStore) UsageLocationBuckets(since time.Time) []UsageLocationBucket {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT
-			COALESCE(request_location->>'city', '') AS city,
-			COALESCE(request_location->>'region', '') AS region,
-			COALESCE(request_location->>'region_code', '') AS region_code,
-			COALESCE(request_location->>'country', '') AS country,
-			COALESCE(request_location->>'country_code', '') AS country_code,
-			COALESCE(AVG(NULLIF(request_location->>'latitude', '')::double precision), 0),
-			COALESCE(AVG(NULLIF(request_location->>'longitude', '')::double precision), 0),
-			COUNT(*),
-			COALESCE(SUM(prompt_tokens), 0),
-			COALESCE(SUM(completion_tokens), 0),
-			COUNT(DISTINCT provider_id)
-		 FROM usage
-		 WHERE request_location IS NOT NULL
-		   AND ($1::timestamptz IS NULL OR created_at >= $1)
-		 GROUP BY city, region, region_code, country, country_code
-		 ORDER BY COUNT(*) DESC`,
-		nullSince(since),
-	)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	var buckets []UsageLocationBucket
-	for rows.Next() {
-		var b UsageLocationBucket
-		if err := rows.Scan(
-			&b.City,
-			&b.Region,
-			&b.RegionCode,
-			&b.Country,
-			&b.CountryCode,
-			&b.Latitude,
-			&b.Longitude,
-			&b.Requests,
-			&b.PromptTokens,
-			&b.CompletionTokens,
-			&b.Providers,
-		); err != nil {
-			continue
-		}
-		buckets = append(buckets, b)
-	}
-	return buckets
-}
-
-// UsageFlowBuckets aggregates directional consumer→provider flows by JOINing
-// the usage table with providers in SQL. This replaces loading all rows into
-// Go and doing the aggregation in-process. The query only returns the top 50
-// flows (by request count) so the result set is bounded.
-func (s *PostgresStore) UsageFlowBuckets(since time.Time, _ map[string]*ProviderLocation) []UsageFlowBucket {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT
-			COALESCE(u.request_location->>'city', '')         AS c_city,
-			COALESCE(u.request_location->>'region', '')       AS c_region,
-			COALESCE(u.request_location->>'region_code', '')  AS c_region_code,
-			COALESCE(u.request_location->>'country', '')      AS c_country,
-			COALESCE(u.request_location->>'country_code', '') AS c_country_code,
-			COALESCE(AVG(NULLIF(u.request_location->>'latitude',  '')::double precision), 0) AS c_lat,
-			COALESCE(AVG(NULLIF(u.request_location->>'longitude', '')::double precision), 0) AS c_lng,
-			COALESCE(p.location->>'city', '')         AS p_city,
-			COALESCE(p.location->>'region', '')       AS p_region,
-			COALESCE(p.location->>'region_code', '')  AS p_region_code,
-			COALESCE(p.location->>'country', '')      AS p_country,
-			COALESCE(p.location->>'country_code', '') AS p_country_code,
-			COALESCE(AVG(NULLIF(p.location->>'latitude',  '')::double precision), 0) AS p_lat,
-			COALESCE(AVG(NULLIF(p.location->>'longitude', '')::double precision), 0) AS p_lng,
-			COUNT(*)                              AS requests,
-			COALESCE(SUM(u.prompt_tokens), 0)     AS prompt_tokens,
-			COALESCE(SUM(u.completion_tokens), 0) AS completion_tokens
-		 FROM usage u
-		 JOIN providers p ON p.id = u.provider_id
-		 WHERE u.request_location IS NOT NULL
-		   AND p.location IS NOT NULL
-		   AND ($1::timestamptz IS NULL OR u.created_at >= $1)
-		 GROUP BY c_city, c_region, c_region_code, c_country, c_country_code,
-		          p_city, p_region, p_region_code, p_country, p_country_code
-		 ORDER BY requests DESC
-		 LIMIT 50`,
-		nullSince(since),
-	)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	var buckets []UsageFlowBucket
-	for rows.Next() {
-		var b UsageFlowBucket
-		if err := rows.Scan(
-			&b.ConsumerCity, &b.ConsumerRegion, &b.ConsumerRegionCode,
-			&b.ConsumerCountry, &b.ConsumerCountryCode,
-			&b.ConsumerLatitude, &b.ConsumerLongitude,
-			&b.ProviderCity, &b.ProviderRegion, &b.ProviderRegionCode,
-			&b.ProviderCountry, &b.ProviderCountryCode,
-			&b.ProviderLatitude, &b.ProviderLongitude,
-			&b.Requests, &b.PromptTokens, &b.CompletionTokens,
-		); err != nil {
-			continue
-		}
-		buckets = append(buckets, b)
-	}
-	return buckets
-}
-
 func nullSince(since time.Time) any {
 	if since.IsZero() {
 		return nil
@@ -2332,56 +2185,71 @@ func (s *PostgresStore) RecordPayment(txHash, consumerAddr, providerAddr, amount
 }
 
 // UsageCountSince returns the number of usage records created at or after the
-// given time. Uses idx_usage_created for an index-only count.
-func (s *PostgresStore) UsageCountSince(since time.Time) int64 {
+// given time. Uses idx_usage_created for an index-only count. A statement that
+// cannot complete is reported as an error, never as a zero count.
+func (s *PostgresStore) UsageCountSince(since time.Time) (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var count int64
-	_ = s.pool.QueryRow(ctx,
+	if err := s.pool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM usage
 		 WHERE ($1::timestamptz IS NULL OR created_at >= $1)`,
 		nullSince(since),
-	).Scan(&count)
-	return count
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("store: usage count: %w", err)
+	}
+	return count, nil
 }
 
 // UsageTotals returns aggregated lifetime totals from the materialized
 // usage_totals counter row. This is a single PK lookup — O(1) regardless
-// of how many rows exist in the usage table.
-func (s *PostgresStore) UsageTotals() UsageTotals {
+// of how many rows exist in the usage table. A statement that cannot complete
+// is reported as an error, never as zero totals; a database with no counter
+// row yet (before the usage_totals migration) genuinely has zero totals.
+func (s *PostgresStore) UsageTotals() (UsageTotals, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var t UsageTotals
-	_ = s.pool.QueryRow(ctx,
+	err := s.pool.QueryRow(ctx,
 		`SELECT total_requests, total_prompt_tokens, total_completion_tokens
 		 FROM usage_totals WHERE id = 1`,
 	).Scan(&t.Requests, &t.PromptTokens, &t.CompletionTokens)
-	return t
+	if errors.Is(err, pgx.ErrNoRows) {
+		return UsageTotals{}, nil
+	}
+	if err != nil {
+		return UsageTotals{}, fmt.Errorf("store: usage totals: %w", err)
+	}
+	return t, nil
 }
 
-// UsageTotalsSince returns aggregate usage at or after `since`.
-func (s *PostgresStore) UsageTotalsSince(since time.Time) UsageTotals {
+// UsageTotalsSince returns aggregate usage at or after `since`. A statement
+// that cannot complete is reported as an error, never as zero totals.
+func (s *PostgresStore) UsageTotalsSince(since time.Time) (UsageTotals, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var t UsageTotals
-	_ = s.pool.QueryRow(ctx,
+	if err := s.pool.QueryRow(ctx,
 		`SELECT COUNT(*),
 		        COALESCE(SUM(prompt_tokens), 0),
 		        COALESCE(SUM(completion_tokens), 0)
 		 FROM usage
 		 WHERE created_at >= $1`,
 		since,
-	).Scan(&t.Requests, &t.PromptTokens, &t.CompletionTokens)
-	return t
+	).Scan(&t.Requests, &t.PromptTokens, &t.CompletionTokens); err != nil {
+		return UsageTotals{}, fmt.Errorf("store: usage totals since: %w", err)
+	}
+	return t, nil
 }
 
 // UsageTimeSeries returns usage buckets at or after `since` using a bounded,
 // caller-selected interval so long windows do not return tens of thousands of
-// minute rows.
-func (s *PostgresStore) UsageTimeSeries(since, until time.Time, bucketSize time.Duration) []UsageBucket {
+// minute rows. A statement that cannot complete — including one that times
+// out mid-iteration — is reported as an error, never as a partial series.
+func (s *PostgresStore) UsageTimeSeries(since, until time.Time, bucketSize time.Duration) ([]UsageBucket, error) {
 	since, until, bucketSize = normalizeUsageTimeSeriesRequest(since, until, bucketSize, time.Now())
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -2409,7 +2277,7 @@ func (s *PostgresStore) UsageTimeSeries(since, until time.Time, bucketSize time.
 		usageTimeSeriesMaxBuckets,
 	)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("store: usage time series: %w", err)
 	}
 	defer rows.Close()
 
@@ -2417,11 +2285,14 @@ func (s *PostgresStore) UsageTimeSeries(since, until time.Time, bucketSize time.
 	for rows.Next() {
 		var b UsageBucket
 		if err := rows.Scan(&b.Minute, &b.Requests, &b.PromptTokens, &b.CompletionTokens); err != nil {
-			continue
+			return nil, fmt.Errorf("store: usage time series: scan: %w", err)
 		}
 		buckets = append(buckets, b)
 	}
-	return limitUsageTimeSeriesBuckets(buckets)
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: usage time series: %w", err)
+	}
+	return limitUsageTimeSeriesBuckets(buckets), nil
 }
 
 // rewardLedgerTypesSQLList renders RewardLedgerTypes as a comma-separated list
@@ -2523,62 +2394,6 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 		out = append(out, r)
 	}
 	return out
-}
-
-// NetworkTotals returns aggregated metrics across all earnings for the given
-// time window. Zero `since` means all-time. Totals combine inference work
-// (provider_earnings) with non-inference reward ledger entries (referral_reward,
-// admin_reward), but rewards are only counted for provider accounts (those with
-// inference work in the window) so consumer-only reward recipients don't inflate
-// network provider totals. ActiveAccounts counts distinct provider accounts.
-func (s *PostgresStore) NetworkTotals(since time.Time) NetworkTotalsRow {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// `since`, when set, is bound once as $1 and referenced in the work,
-	// base_reward, providers, and reward subqueries.
-	args := []any{}
-	workWhere := ` WHERE model <> 'base_reward'`
-	baseRewardWhere := ` WHERE model = 'base_reward'`
-	providerSince := ""
-	rewardSince := ""
-	if !since.IsZero() {
-		args = append(args, since)
-		workWhere += ` AND created_at >= $1`
-		baseRewardWhere += ` AND created_at >= $1`
-		providerSince = ` AND created_at >= $1`
-		rewardSince = ` AND le.created_at >= $1`
-	}
-
-	rewardTypes := rewardLedgerTypesSQLList()
-	q := `WITH work AS (
-	          SELECT COALESCE(SUM(amount_micro_usd),0)                  AS work_micro,
-	                 COALESCE(SUM(prompt_tokens + completion_tokens),0) AS tokens,
-		                 COUNT(*)                                           AS jobs
-		          FROM provider_earnings` + workWhere + `
-		      ),
-		      base_reward AS (
-		          SELECT COALESCE(SUM(amount_micro_usd),0) AS reward_micro
-		          FROM provider_earnings` + baseRewardWhere + `
-		      ),
-		      providers AS (
-		          SELECT DISTINCT account_id FROM provider_earnings WHERE account_id != ''` + providerSince + `
-	      ),
-	      reward AS (
-	          SELECT COALESCE(SUM(le.amount_micro_usd),0) AS reward_micro
-	          FROM ledger_entries le
-	          JOIN providers p ON p.account_id = le.account_id
-	          WHERE le.entry_type IN (` + rewardTypes + `)` + rewardSince + `
-	      )
-	      SELECT work.work_micro + base_reward.reward_micro + reward.reward_micro AS earnings_micro,
-	             work.work_micro, base_reward.reward_micro + reward.reward_micro, work.tokens, work.jobs,
-	             (SELECT COUNT(*) FROM providers)        AS active_accounts
-	      FROM work, base_reward, reward`
-
-	var t NetworkTotalsRow
-	_ = s.pool.QueryRow(ctx, q, args...).
-		Scan(&t.EarningsMicroUSD, &t.WorkEarningsMicroUSD, &t.RewardEarningsMicroUSD, &t.Tokens, &t.Jobs, &t.ActiveAccounts)
-	return t
 }
 
 // UsageRecords returns usage records from the database, ordered by creation time.
@@ -2691,70 +2506,74 @@ func nullableCreatedAt(ts time.Time) any {
 	return ts
 }
 
-func creditTx(ctx context.Context, tx pgx.Tx, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) error {
-	_, err := tx.Exec(ctx,
-		`INSERT INTO balances (account_id, balance_micro_usd, updated_at)
-		 VALUES ($1, $2, NOW())
-		 ON CONFLICT (account_id) DO UPDATE SET
-		   balance_micro_usd = balances.balance_micro_usd + $2,
-		   updated_at = NOW()`,
-		accountID, amountMicroUSD,
-	)
-	if err != nil {
+// pgQuerier is the subset of *pgxpool.Pool and pgx.Tx the single-statement
+// ledger helpers need, so one helper serves both a standalone call (pool: one
+// round trip in an implicit transaction) and a caller's open transaction.
+type pgQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// creditBalanceSQL credits an account and records its ledger row in ONE
+// data-modifying CTE — one round trip instead of BEGIN + upsert + SELECT +
+// INSERT + COMMIT. The upsert's RETURNING is the post-credit balance, so
+// balance_after is exactly the value the old in-transaction SELECT read; the
+// ledger INSERT runs exactly once, to completion, under the row lock the
+// upsert took, so concurrent credits/debits on the account still serialize
+// on that one lock and no update is lost. Unknown accounts are created and
+// zero or negative amounts are applied and recorded, exactly as before.
+const creditBalanceSQL = `
+		WITH credit AS (
+			INSERT INTO balances (account_id, balance_micro_usd, updated_at)
+			VALUES ($1, $2, NOW())
+			ON CONFLICT (account_id) DO UPDATE SET
+			  balance_micro_usd = balances.balance_micro_usd + $2,
+			  updated_at = NOW()
+			RETURNING balance_micro_usd
+		), ledger AS (
+			INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
+			SELECT $1, $3, $2, balance_micro_usd, $4, COALESCE($5::timestamptz, NOW())
+			FROM credit
+		)
+		SELECT balance_micro_usd FROM credit`
+
+// creditWithdrawableBalanceSQL is creditBalanceSQL that also raises the
+// withdrawable subset by the same amount.
+const creditWithdrawableBalanceSQL = `
+		WITH credit AS (
+			INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
+			VALUES ($1, $2, $2, NOW())
+			ON CONFLICT (account_id) DO UPDATE SET
+			  balance_micro_usd = balances.balance_micro_usd + $2,
+			  withdrawable_micro_usd = balances.withdrawable_micro_usd + $2,
+			  updated_at = NOW()
+			RETURNING balance_micro_usd
+		), ledger AS (
+			INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
+			SELECT $1, $3, $2, balance_micro_usd, $4, COALESCE($5::timestamptz, NOW())
+			FROM credit
+		)
+		SELECT balance_micro_usd FROM credit`
+
+// creditBalance applies creditBalanceSQL through q (the pool for a standalone
+// credit, or the caller's transaction). A zero createdAt records NOW().
+func creditBalance(ctx context.Context, q pgQuerier, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) error {
+	var balanceAfter int64
+	if err := q.QueryRow(ctx, creditBalanceSQL,
+		accountID, amountMicroUSD, string(entryType), reference, nullableCreatedAt(createdAt),
+	).Scan(&balanceAfter); err != nil {
 		return fmt.Errorf("store: credit balance: %w", err)
 	}
-
-	var balanceAfter int64
-	err = tx.QueryRow(ctx,
-		`SELECT balance_micro_usd FROM balances WHERE account_id = $1`, accountID,
-	).Scan(&balanceAfter)
-	if err != nil {
-		return fmt.Errorf("store: read balance: %w", err)
-	}
-
-	_, err = tx.Exec(ctx,
-		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
-		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))`,
-		accountID, string(entryType), amountMicroUSD, balanceAfter, reference, nullableCreatedAt(createdAt),
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert ledger entry: %w", err)
-	}
-
 	return nil
 }
 
-func creditWithdrawableTx(ctx context.Context, tx pgx.Tx, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) error {
-	_, err := tx.Exec(ctx,
-		`INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
-		 VALUES ($1, $2, $2, NOW())
-		 ON CONFLICT (account_id) DO UPDATE SET
-		   balance_micro_usd = balances.balance_micro_usd + $2,
-		   withdrawable_micro_usd = balances.withdrawable_micro_usd + $2,
-		   updated_at = NOW()`,
-		accountID, amountMicroUSD,
-	)
-	if err != nil {
+// creditWithdrawableBalance applies creditWithdrawableBalanceSQL through q.
+func creditWithdrawableBalance(ctx context.Context, q pgQuerier, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) error {
+	var balanceAfter int64
+	if err := q.QueryRow(ctx, creditWithdrawableBalanceSQL,
+		accountID, amountMicroUSD, string(entryType), reference, nullableCreatedAt(createdAt),
+	).Scan(&balanceAfter); err != nil {
 		return fmt.Errorf("store: credit withdrawable balance: %w", err)
 	}
-
-	var balanceAfter int64
-	err = tx.QueryRow(ctx,
-		`SELECT balance_micro_usd FROM balances WHERE account_id = $1`, accountID,
-	).Scan(&balanceAfter)
-	if err != nil {
-		return fmt.Errorf("store: read balance: %w", err)
-	}
-
-	_, err = tx.Exec(ctx,
-		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
-		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))`,
-		accountID, string(entryType), amountMicroUSD, balanceAfter, reference, nullableCreatedAt(createdAt),
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert ledger entry: %w", err)
-	}
-
 	return nil
 }
 
@@ -2763,17 +2582,9 @@ func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("store: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	if err := creditTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
-		return err
-	}
-
-	return tx.Commit(ctx)
+	// One statement, one round trip: the balance upsert and its ledger row
+	// still commit together or not at all (creditBalanceSQL).
+	return creditBalance(ctx, s.pool, accountID, amountMicroUSD, entryType, reference, time.Time{})
 }
 
 // GetWithdrawableBalance returns the withdrawable balance in micro-USD.
@@ -2812,17 +2623,8 @@ func (s *PostgresStore) CreditWithdrawable(accountID string, amountMicroUSD int6
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("store: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	if err := creditWithdrawableTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
-		return err
-	}
-
-	return tx.Commit(ctx)
+	// One statement, one round trip (creditWithdrawableBalanceSQL).
+	return creditWithdrawableBalance(ctx, s.pool, accountID, amountMicroUSD, entryType, reference, time.Time{})
 }
 
 // CreditWithdrawableOnce credits only if no ledger entry with the same
@@ -2856,7 +2658,7 @@ func (s *PostgresStore) CreditWithdrawableOnce(accountID string, amountMicroUSD 
 	if exists {
 		return false, tx.Commit(ctx)
 	}
-	if err := creditWithdrawableTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
+	if err := creditWithdrawableBalance(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
@@ -3372,6 +3174,19 @@ func scanUser(row interface {
 	return &u, nil
 }
 
+// wrapUserScanError preserves the historical "store: user not found: ..."
+// message for every scan failure, and additionally tags a true miss
+// (pgx.ErrNoRows) with ErrNotFound so callers -- including the read-through
+// cache -- can distinguish "no such user" from a transient DB error with
+// errors.Is. ErrNotFound.Error() is exactly "not found", so the rendered
+// string is byte-for-byte unchanged.
+func wrapUserScanError(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("store: user %w: %w", ErrNotFound, err)
+	}
+	return fmt.Errorf("store: user not found: %w", err)
+}
+
 // GetUserByPrivyID returns the user for a Privy DID.
 func (s *PostgresStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -3382,7 +3197,7 @@ func (s *PostgresStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 	)
 	u, err := scanUser(row)
 	if err != nil {
-		return nil, fmt.Errorf("store: user not found: %w", err)
+		return nil, wrapUserScanError(err)
 	}
 	return u, nil
 }
@@ -3397,7 +3212,7 @@ func (s *PostgresStore) GetUserByAccountID(accountID string) (*User, error) {
 	)
 	u, err := scanUser(row)
 	if err != nil {
-		return nil, fmt.Errorf("store: user not found: %w", err)
+		return nil, wrapUserScanError(err)
 	}
 	return u, nil
 }
@@ -3887,6 +3702,11 @@ func (s *PostgresStore) SetRelease(release *Release) error {
 }
 
 func (s *PostgresStore) ListReleases() []Release {
+	releases, _ := s.ListReleasesWithError()
+	return releases
+}
+
+func (s *PostgresStore) ListReleasesWithError() ([]Release, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -3897,7 +3717,7 @@ func (s *PostgresStore) ListReleases() []Release {
 		 FROM releases ORDER BY created_at DESC`,
 	)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("store: list releases: %w", err)
 	}
 	defer rows.Close()
 
@@ -3907,11 +3727,14 @@ func (s *PostgresStore) ListReleases() []Release {
 		if err := rows.Scan(&r.Version, &r.Platform, &r.Backend, &r.BinaryHash, &r.BundleHash, &r.MetallibHash,
 			&r.PythonHash, &r.RuntimeHash, &r.TemplateHashes,
 			&r.URL, &r.Changelog, &r.Active, &r.CreatedAt); err != nil {
-			continue
+			return nil, fmt.Errorf("store: scan release: %w", err)
 		}
 		releases = append(releases, r)
 	}
-	return releases
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate releases: %w", err)
+	}
+	return releases, nil
 }
 
 func (s *PostgresStore) GetLatestRelease(platform string) *Release {
@@ -4238,9 +4061,25 @@ func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
 	}
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at)
+		`WITH earning AS (INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		 ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING`,
+		 ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
+		 RETURNING account_id, provider_key, model, amount_micro_usd, prompt_tokens, completion_tokens
+		), summaries AS (
+		 SELECT account_id AS key, 'account' AS key_type, model, amount_micro_usd, prompt_tokens, completion_tokens FROM earning WHERE account_id <> ''
+		 UNION ALL
+		 SELECT provider_key, 'provider', model, amount_micro_usd, prompt_tokens, completion_tokens FROM earning WHERE provider_key <> ''
+		)
+		INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
+		SELECT key, key_type, CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
+		 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
+		 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM summaries
+		ON CONFLICT (key, key_type) DO UPDATE SET
+		 total_count = earnings_summary.total_count + EXCLUDED.total_count,
+		 total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
+		 total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
+		 total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
+		 updated_at = NOW()`,
 		earning.AccountID, earning.ProviderID, earning.ProviderKey, earning.JobID,
 		earning.Model, earning.AmountMicroUSD, earning.PromptTokens, earning.CompletionTokens,
 		createdAt,
@@ -4458,7 +4297,7 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 				account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
 			) VALUES ($1, $6, $7, $4, $8, $2, $9, $10, COALESCE($5::timestamptz, NOW()))
 			ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
-			RETURNING account_id, provider_key, amount_micro_usd, prompt_tokens, completion_tokens
+			RETURNING account_id, provider_key, model, amount_micro_usd, prompt_tokens, completion_tokens
 		), credit AS (
 			INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
 			SELECT account_id, amount_micro_usd, amount_micro_usd, NOW() FROM earning
@@ -4473,19 +4312,23 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 			FROM earning e CROSS JOIN credit c
 		), summary_account AS (
 			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT account_id, 'account', 1, amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
+			SELECT account_id, 'account', CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM earning
 			ON CONFLICT (key, key_type) DO UPDATE SET
-			  total_count = earnings_summary.total_count + 1,
+			  total_count = earnings_summary.total_count + EXCLUDED.total_count,
 			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
 			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
 			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
 			  updated_at = NOW()
 		), summary_provider AS (
 			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT provider_key, 'provider', 1, amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
+			SELECT provider_key, 'provider', CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM earning
 			WHERE provider_key <> ''
 			ON CONFLICT (key, key_type) DO UPDATE SET
-			  total_count = earnings_summary.total_count + 1,
+			  total_count = earnings_summary.total_count + EXCLUDED.total_count,
 			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
 			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
 			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
@@ -4528,7 +4371,7 @@ func (s *PostgresStore) CreditProviderWallet(payout *ProviderPayout) error {
 	}
 	defer tx.Rollback(ctx)
 
-	if err := creditWithdrawableTx(ctx, tx, payout.ProviderAddress, payout.AmountMicroUSD, LedgerPayout, payout.JobID, payout.Timestamp); err != nil {
+	if err := creditWithdrawableBalance(ctx, tx, payout.ProviderAddress, payout.AmountMicroUSD, LedgerPayout, payout.JobID, payout.Timestamp); err != nil {
 		return err
 	}
 
@@ -4584,7 +4427,11 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	return upsertProviderRecord(ctx, s.pool, p)
+}
+
+func upsertProviderRecord(ctx context.Context, db providerRecordDB, p ProviderRecord) error {
+	_, err := db.Exec(ctx,
 		`INSERT INTO providers (
 			id, hardware, models, backend, location, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
@@ -4771,10 +4618,13 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			&p.LifetimeStats, &p.LastSessionStats,
 			&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
 		); err != nil {
-			continue
+			return nil, fmt.Errorf("store: scan provider: %w", err)
 		}
 		p.Location = unmarshalProviderLocation(locationRaw)
 		records = append(records, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate providers: %w", err)
 	}
 	if records == nil {
 		return []ProviderRecord{}, nil
@@ -4981,7 +4831,11 @@ func (s *PostgresStore) UpsertReputation(ctx context.Context, providerID string,
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	return upsertReputationRecord(ctx, s.pool, providerID, rep)
+}
+
+func upsertReputationRecord(ctx context.Context, db providerRecordDB, providerID string, rep ReputationRecord) error {
+	_, err := db.Exec(ctx,
 		`INSERT INTO provider_reputation (
 			provider_id, total_jobs, successful_jobs, failed_jobs,
 			total_uptime_seconds, avg_response_time_ms,
@@ -5017,8 +4871,11 @@ func (s *PostgresStore) GetReputation(ctx context.Context, providerID string) (*
 		&rep.TotalUptimeSeconds, &rep.AvgResponseTimeMs,
 		&rep.ChallengesPassed, &rep.ChallengesFailed,
 	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("store: reputation not found: %w", ErrNotFound)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("store: reputation not found: %w", err)
+		return nil, fmt.Errorf("store: read reputation: %w", err)
 	}
 	return &rep, nil
 }
@@ -5030,7 +4887,7 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT se_pubkey, version, attested_at, apns_token FROM code_attestations`)
+		`SELECT se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash, continuous_coverage_until FROM code_attestations`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list code attestations: %w", err)
 	}
@@ -5039,7 +4896,10 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 	var out []CodeAttestation
 	for rows.Next() {
 		var rec CodeAttestation
-		if err := rows.Scan(&rec.SEPubKey, &rec.Version, &rec.AttestedAt, &rec.APNsToken); err != nil {
+		if err := rows.Scan(
+			&rec.SEPubKey, &rec.Version, &rec.AttestedAt,
+			&rec.APNsToken, &rec.NodePublicKey, &rec.BinaryHash, &rec.ContinuousCoverageUntil,
+		); err != nil {
 			return nil, fmt.Errorf("store: scan code attestation: %w", err)
 		}
 		out = append(out, rec)
@@ -5058,11 +4918,20 @@ func (s *PostgresStore) UpsertCodeAttestation(ctx context.Context, rec CodeAttes
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO code_attestations (se_pubkey, version, attested_at, apns_token)
-		 VALUES ($1, $2, $3, $4)
+		`INSERT INTO code_attestations (
+			se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash, continuous_coverage_until
+		 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 ON CONFLICT (se_pubkey) DO UPDATE SET
-			version = $2, attested_at = $3, apns_token = $4`,
-		rec.SEPubKey, rec.Version, rec.AttestedAt, rec.APNsToken,
+			version = $2, attested_at = $3,
+			apns_token = $4, node_public_key = $5, binary_hash = $6,
+			continuous_coverage_until = CASE WHEN code_attestations.attested_at = EXCLUDED.attested_at
+             AND code_attestations.version = EXCLUDED.version AND code_attestations.apns_token = EXCLUDED.apns_token
+             AND code_attestations.node_public_key = EXCLUDED.node_public_key AND code_attestations.binary_hash = EXCLUDED.binary_hash
+             THEN GREATEST(code_attestations.continuous_coverage_until,EXCLUDED.continuous_coverage_until)
+             ELSE EXCLUDED.continuous_coverage_until END
+		 WHERE code_attestations.attested_at <= EXCLUDED.attested_at`,
+		rec.SEPubKey, rec.Version, rec.AttestedAt,
+		rec.APNsToken, rec.NodePublicKey, rec.BinaryHash, rec.ContinuousCoverageUntil,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert code attestation: %w", err)
@@ -5083,14 +4952,240 @@ func (s *PostgresStore) DeleteCodeAttestation(ctx context.Context, seKey string)
 	return nil
 }
 
-// --- Provider trust-reuse cache (DAR-326 Phase 0) ---
+func (s *PostgresStore) ListCodeAttestPushBudgets(ctx context.Context) ([]CodeAttestPushBudget, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	rows, err := s.pool.Query(ctx,
+		`SELECT se_pubkey, token_hash, next_push_at, updated_at, last_clear_at
+		   FROM code_attest_push_budgets`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list code attest push budgets: %w", err)
+	}
+	defer rows.Close()
+	var out []CodeAttestPushBudget
+	for rows.Next() {
+		var rec CodeAttestPushBudget
+		var lastClear *time.Time
+		if err := rows.Scan(
+			&rec.SEPubKey, &rec.TokenHash, &rec.NextPushAt, &rec.UpdatedAt,
+			&lastClear,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan code attest push budget: %w", err)
+		}
+		if lastClear != nil {
+			rec.LastClearAt = *lastClear
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate code attest push budgets: %w", err)
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) UpsertCodeAttestPushBudget(ctx context.Context, rec CodeAttestPushBudget) error {
+	if rec.SEPubKey == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO code_attest_push_budgets (
+			se_pubkey, token_hash, next_push_at, updated_at
+		 ) VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
+			next_push_at = GREATEST(
+				code_attest_push_budgets.next_push_at,
+				EXCLUDED.next_push_at
+			),
+			updated_at = EXCLUDED.updated_at`,
+		rec.SEPubKey, rec.TokenHash, rec.NextPushAt, rec.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert code attest push budget: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) DeleteCodeAttestPushBudget(ctx context.Context, seKey string) error {
+	if seKey == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM code_attest_push_budgets WHERE se_pubkey = $1`, seKey,
+	); err != nil {
+		return fmt.Errorf("store: delete code attest push budget: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) ReserveCodeAttestPushBudget(
+	ctx context.Context,
+	seKey, tokenHash string,
+	now, nextPushAt time.Time,
+) (bool, error) {
+	if seKey == "" || tokenHash == "" || !nextPushAt.After(now) {
+		return false, errors.New("store: invalid code attest push reservation")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	// Token row = per-token cooldown (A-B-A retention). Sentinel row
+	// (token_hash = '') = per-SE-key admission floor: a NOVEL token (no row) is
+	// only admitted once the floor has elapsed, so fabricated fresh tokens
+	// cannot mint fresh budgets (Codex P1).
+	//
+	// Novel-token admission is serialized on the sentinel row itself: the floor
+	// is created-or-advanced FIRST, and only the statement whose ON CONFLICT
+	// guard passes against the row's latest committed version proceeds to
+	// insert the token row. Two blue-green coordinators racing distinct novel
+	// tokens for one SE key therefore cannot both admit — the loser re-checks
+	// the winner's freshly raised floor and returns floor-blocked, even when
+	// neither snapshot saw a sentinel (or a floor block) at statement start.
+	var admitted bool
+	err := s.pool.QueryRow(ctx,
+		`WITH known AS (
+			SELECT 1 FROM code_attest_push_budgets
+			 WHERE se_pubkey = $1 AND token_hash = $2
+		),
+		floor_acquired AS (
+			INSERT INTO code_attest_push_budgets (
+				se_pubkey, token_hash, next_push_at, updated_at
+			)
+			SELECT $1, '', $4, $3
+			 WHERE NOT EXISTS (SELECT 1 FROM known)
+			ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
+				next_push_at = EXCLUDED.next_push_at,
+				updated_at = EXCLUDED.updated_at
+			WHERE code_attest_push_budgets.next_push_at <= $3
+			RETURNING 1
+		),
+		admitted AS (
+			INSERT INTO code_attest_push_budgets (
+				se_pubkey, token_hash, next_push_at, updated_at
+			)
+			SELECT $1, $2, $4, $3
+			 WHERE EXISTS (SELECT 1 FROM known)
+			    OR EXISTS (SELECT 1 FROM floor_acquired)
+			ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
+				next_push_at = EXCLUDED.next_push_at,
+				updated_at = EXCLUDED.updated_at
+			WHERE code_attest_push_budgets.next_push_at <= $3
+			RETURNING 1
+		),
+		floor_raised AS (
+			-- Known-token admissions raise the floor too; novel admissions
+			-- already set it in floor_acquired. The two paths are mutually
+			-- exclusive, so the sentinel row is written at most once here.
+			INSERT INTO code_attest_push_budgets (
+				se_pubkey, token_hash, next_push_at, updated_at
+			)
+			SELECT $1, '', $4, $3
+			  FROM admitted
+			 WHERE EXISTS (SELECT 1 FROM known)
+			ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
+				next_push_at = GREATEST(
+					code_attest_push_budgets.next_push_at,
+					EXCLUDED.next_push_at
+				),
+				updated_at = EXCLUDED.updated_at
+		)
+		SELECT EXISTS (SELECT 1 FROM admitted)`,
+		seKey, tokenHash, now, nextPushAt,
+	).Scan(&admitted)
+	if err != nil {
+		return false, fmt.Errorf("store: reserve code attest push budget: %w", err)
+	}
+	if admitted {
+		// Bound rows per SE key: keep the newest token rows plus the floor
+		// sentinel. Best-effort — a failure only delays GC to the next push.
+		if _, err := s.pool.Exec(ctx,
+			`DELETE FROM code_attest_push_budgets
+			  WHERE se_pubkey = $1 AND token_hash <> ''
+			    AND token_hash NOT IN (
+				SELECT token_hash FROM code_attest_push_budgets
+				 WHERE se_pubkey = $1 AND token_hash <> ''
+				 ORDER BY updated_at DESC, token_hash DESC
+				 LIMIT $2
+			    )`,
+			seKey, CodeAttestPushBudgetMaxTokenRows,
+		); err != nil {
+			return true, nil
+		}
+	}
+	return admitted, nil
+}
+
+// ClearCodeAttestPushFloor drops the per-SE-key novel-token admission floor so
+// a genuinely rotated token can be challenged promptly. Per-token cooldown rows
+// are untouched (A-B-A retention). The clear is compare-and-set on the
+// sentinel's durable last_clear_at: it is honored only when the previous
+// durable clear is at least cooldown old (NULL = never cleared → honored), so
+// the anti-abuse spacing between rotation clears holds across coordinator
+// restarts and blue-green peers — not just within one process. The sentinel row
+// is kept (next_push_at=now lifts the floor; last_clear_at=now starts the next
+// cooldown). Returns the durable last-clear instant (now when honored, the
+// pre-statement one when throttled) and whether the clear was honored.
+func (s *PostgresStore) ClearCodeAttestPushFloor(
+	ctx context.Context, seKey string, now time.Time, cooldown time.Duration,
+) (time.Time, bool, error) {
+	if seKey == "" {
+		return time.Time{}, false, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var (
+		cleared   bool
+		lastClear time.Time
+	)
+	// The outer SELECT sees the pre-statement snapshot (data-modifying CTE
+	// semantics); when the CAS wins the caller's last-clear is `now`, so the
+	// snapshot value is only reported on the throttled path. COALESCE covers
+	// the no-sentinel / never-cleared cases conservatively with `now`.
+	err := s.pool.QueryRow(ctx,
+		`WITH cleared AS (
+			INSERT INTO code_attest_push_budgets (
+				se_pubkey, token_hash, next_push_at, updated_at, last_clear_at
+			) VALUES ($1, '', $2, $2, $2)
+			ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
+				next_push_at = EXCLUDED.next_push_at,
+				updated_at = EXCLUDED.updated_at,
+				last_clear_at = EXCLUDED.last_clear_at
+			WHERE code_attest_push_budgets.last_clear_at IS NULL
+			   OR code_attest_push_budgets.last_clear_at <= $3
+			RETURNING 1
+		)
+		SELECT EXISTS (SELECT 1 FROM cleared),
+		       COALESCE((
+			SELECT last_clear_at FROM code_attest_push_budgets
+			 WHERE se_pubkey = $1 AND token_hash = ''
+		       ), $2)`,
+		seKey, now, now.Add(-cooldown),
+	).Scan(&cleared, &lastClear)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("store: clear code attest push floor: %w", err)
+	}
+	if cleared {
+		lastClear = now
+	}
+	return lastClear, cleared, nil
+}
+
+// --- Durable provider device evidence ---
 
 func (s *PostgresStore) ListProviderTrustReuse(ctx context.Context) ([]ProviderTrustReuse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT se_pubkey, serial, trust_level, binary_hash, sip_enabled, secure_boot_full, mda_udid, verified_at FROM provider_trust_reuse`)
+		`SELECT se_pubkey, serial, trust_level, last_verified_binary_hash,
+		        sip_enabled, secure_boot_full, mda_udid,
+		        hardware_proof_verified_at, application_proof_verified_at,
+		        continuous_coverage_until,
+		        evidence_generation, revocation_generation,
+		        revocation_event_id, revoked_at
+		   FROM provider_trust_reuse`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list provider trust reuse: %w", err)
 	}
@@ -5099,7 +5194,15 @@ func (s *PostgresStore) ListProviderTrustReuse(ctx context.Context) ([]ProviderT
 	var out []ProviderTrustReuse
 	for rows.Next() {
 		var rec ProviderTrustReuse
-		if err := rows.Scan(&rec.SEPubKey, &rec.Serial, &rec.TrustLevel, &rec.BinaryHash, &rec.SIPEnabled, &rec.SecureBootFull, &rec.MDAUDID, &rec.VerifiedAt); err != nil {
+		if err := rows.Scan(
+			&rec.SEPubKey, &rec.Serial, &rec.TrustLevel,
+			&rec.LastVerifiedBinaryHash, &rec.SIPEnabled,
+			&rec.SecureBootFull, &rec.MDAUDID,
+			&rec.HardwareProofVerifiedAt, &rec.ApplicationProofVerifiedAt,
+			&rec.ContinuousCoverageUntil,
+			&rec.EvidenceGeneration, &rec.RevocationGeneration,
+			&rec.RevocationEventID, &rec.RevokedAt,
+		); err != nil {
 			return nil, fmt.Errorf("store: scan provider trust reuse: %w", err)
 		}
 		out = append(out, rec)
@@ -5110,35 +5213,446 @@ func (s *PostgresStore) ListProviderTrustReuse(ctx context.Context) ([]ProviderT
 	return out, nil
 }
 
-func (s *PostgresStore) UpsertProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse) error {
+func (s *PostgresStore) UpsertProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse, expectedRevocationGeneration uint64) (ProviderTrustReuseWriteResult, error) {
 	if rec.SEPubKey == "" {
+		return ProviderTrustReuseWriteResult{}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var result ProviderTrustReuseWriteResult
+	err := s.pool.QueryRow(ctx,
+		`WITH written AS (
+			INSERT INTO provider_trust_reuse (
+				se_pubkey, serial, trust_level, binary_hash,
+				last_verified_binary_hash, sip_enabled, secure_boot_full, mda_udid,
+				verified_at, hardware_proof_verified_at,
+				application_proof_verified_at, continuous_coverage_until,
+				evidence_generation,
+				revocation_generation, revocation_event_id, revoked_at)
+			 VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,$8,$9,$12,1,$10,$11,NULL)
+			 ON CONFLICT (se_pubkey) DO UPDATE SET
+				serial = EXCLUDED.serial,
+				trust_level = EXCLUDED.trust_level,
+				binary_hash = EXCLUDED.binary_hash,
+				last_verified_binary_hash = EXCLUDED.last_verified_binary_hash,
+				sip_enabled = EXCLUDED.sip_enabled,
+				secure_boot_full = EXCLUDED.secure_boot_full,
+				mda_udid = EXCLUDED.mda_udid,
+				verified_at = EXCLUDED.verified_at,
+				hardware_proof_verified_at = EXCLUDED.hardware_proof_verified_at,
+				application_proof_verified_at = EXCLUDED.application_proof_verified_at,
+				continuous_coverage_until = GREATEST(
+					provider_trust_reuse.continuous_coverage_until,
+					EXCLUDED.continuous_coverage_until),
+				evidence_generation = provider_trust_reuse.evidence_generation + 1
+			 WHERE provider_trust_reuse.revoked_at IS NULL
+			   AND provider_trust_reuse.revocation_generation = EXCLUDED.revocation_generation
+			 RETURNING evidence_generation, revocation_generation
+		)
+		SELECT TRUE, evidence_generation, revocation_generation FROM written
+		UNION ALL
+		SELECT FALSE, evidence_generation, revocation_generation
+		  FROM provider_trust_reuse
+		 WHERE se_pubkey = $1 AND NOT EXISTS (SELECT 1 FROM written)
+		LIMIT 1`,
+		rec.SEPubKey, rec.Serial, rec.TrustLevel,
+		rec.LastVerifiedBinaryHash, rec.SIPEnabled, rec.SecureBootFull,
+		rec.MDAUDID, rec.HardwareProofVerifiedAt,
+		rec.ApplicationProofVerifiedAt, expectedRevocationGeneration,
+		rec.RevocationEventID, rec.ContinuousCoverageUntil,
+	).Scan(&result.Applied, &result.EvidenceGeneration, &result.RevocationGeneration)
+	if err != nil {
+		return ProviderTrustReuseWriteResult{}, fmt.Errorf("store: upsert provider trust reuse: %w", err)
+	}
+	return result, nil
+}
+
+func (s *PostgresStore) RecoverProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse, expectedRevocationGeneration uint64) (ProviderTrustReuseWriteResult, error) {
+	if rec.SEPubKey == "" {
+		return ProviderTrustReuseWriteResult{}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var result ProviderTrustReuseWriteResult
+	err := s.pool.QueryRow(ctx,
+		`WITH written AS (
+			INSERT INTO provider_trust_reuse (
+				se_pubkey, serial, trust_level, binary_hash,
+				last_verified_binary_hash, sip_enabled, secure_boot_full, mda_udid,
+				verified_at, hardware_proof_verified_at,
+				application_proof_verified_at, continuous_coverage_until,
+				evidence_generation,
+				revocation_generation, revocation_event_id, revoked_at)
+			 VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,$8,$9,$12,1,$10,$11,NULL)
+			 ON CONFLICT (se_pubkey) DO UPDATE SET
+				serial = EXCLUDED.serial,
+				trust_level = EXCLUDED.trust_level,
+				binary_hash = EXCLUDED.binary_hash,
+				last_verified_binary_hash = EXCLUDED.last_verified_binary_hash,
+				sip_enabled = EXCLUDED.sip_enabled,
+				secure_boot_full = EXCLUDED.secure_boot_full,
+				mda_udid = EXCLUDED.mda_udid,
+				verified_at = EXCLUDED.verified_at,
+				hardware_proof_verified_at = EXCLUDED.hardware_proof_verified_at,
+				application_proof_verified_at = EXCLUDED.application_proof_verified_at,
+				continuous_coverage_until = GREATEST(
+					provider_trust_reuse.continuous_coverage_until,
+					EXCLUDED.continuous_coverage_until),
+				evidence_generation = provider_trust_reuse.evidence_generation + 1,
+				revoked_at = NULL
+			 WHERE provider_trust_reuse.revocation_generation = EXCLUDED.revocation_generation
+			 RETURNING evidence_generation, revocation_generation
+		)
+		SELECT TRUE, evidence_generation, revocation_generation FROM written
+		UNION ALL
+		SELECT FALSE, evidence_generation, revocation_generation
+		  FROM provider_trust_reuse
+		 WHERE se_pubkey = $1 AND NOT EXISTS (SELECT 1 FROM written)
+		LIMIT 1`,
+		rec.SEPubKey, rec.Serial, rec.TrustLevel,
+		rec.LastVerifiedBinaryHash, rec.SIPEnabled, rec.SecureBootFull,
+		rec.MDAUDID, rec.HardwareProofVerifiedAt,
+		rec.ApplicationProofVerifiedAt, expectedRevocationGeneration,
+		rec.RevocationEventID, rec.ContinuousCoverageUntil,
+	).Scan(&result.Applied, &result.EvidenceGeneration, &result.RevocationGeneration)
+	if err != nil {
+		return ProviderTrustReuseWriteResult{}, fmt.Errorf("store: recover provider trust reuse: %w", err)
+	}
+	return result, nil
+}
+
+func (s *PostgresStore) RevokeProviderTrustReuse(ctx context.Context, seKey, revocationEventID string) (ProviderTrustReuse, error) {
+	if seKey == "" || revocationEventID == "" {
+		return ProviderTrustReuse{}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var rec ProviderTrustReuse
+	err := s.pool.QueryRow(ctx,
+		`WITH revoked AS (
+			INSERT INTO provider_trust_reuse (
+				se_pubkey, trust_level, revoked_at, revocation_generation,
+				revocation_event_id)
+			 VALUES ($1, '', NOW(), 1, $2)
+			 ON CONFLICT (se_pubkey) DO UPDATE SET
+				trust_level = '',
+				revoked_at = NOW(),
+				continuous_coverage_until = NULL,
+				revocation_generation = provider_trust_reuse.revocation_generation + 1,
+				revocation_event_id = EXCLUDED.revocation_event_id
+			 WHERE provider_trust_reuse.revocation_event_id
+			       IS DISTINCT FROM EXCLUDED.revocation_event_id
+			 RETURNING se_pubkey, serial, trust_level,
+				last_verified_binary_hash, sip_enabled, secure_boot_full,
+				mda_udid, hardware_proof_verified_at,
+				application_proof_verified_at, continuous_coverage_until,
+				evidence_generation,
+				revocation_generation, revocation_event_id, revoked_at
+		)
+		SELECT se_pubkey, serial, trust_level, last_verified_binary_hash,
+		       sip_enabled, secure_boot_full, mda_udid,
+		       hardware_proof_verified_at, application_proof_verified_at,
+		       continuous_coverage_until,
+		       evidence_generation, revocation_generation,
+		       revocation_event_id, revoked_at
+		  FROM revoked
+		UNION ALL
+		SELECT se_pubkey, serial, trust_level, last_verified_binary_hash,
+		       sip_enabled, secure_boot_full, mda_udid,
+		       hardware_proof_verified_at, application_proof_verified_at,
+		       continuous_coverage_until,
+		       evidence_generation, revocation_generation,
+		       revocation_event_id, revoked_at
+		  FROM provider_trust_reuse
+		 WHERE se_pubkey = $1 AND NOT EXISTS (SELECT 1 FROM revoked)
+		LIMIT 1`,
+		seKey, revocationEventID,
+	).Scan(
+		&rec.SEPubKey, &rec.Serial, &rec.TrustLevel,
+		&rec.LastVerifiedBinaryHash, &rec.SIPEnabled,
+		&rec.SecureBootFull, &rec.MDAUDID,
+		&rec.HardwareProofVerifiedAt, &rec.ApplicationProofVerifiedAt,
+		&rec.ContinuousCoverageUntil,
+		&rec.EvidenceGeneration, &rec.RevocationGeneration,
+		&rec.RevocationEventID, &rec.RevokedAt,
+	)
+	if err != nil {
+		return ProviderTrustReuse{}, fmt.Errorf("store: revoke provider trust reuse: %w", err)
+	}
+	return rec, nil
+}
+
+func (s *PostgresStore) AdvanceProviderTrustReuseCoverage(ctx context.Context, seKeys []string, until time.Time) error {
+	if len(seKeys) == 0 || until.IsZero() {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	// One batched pass; GREATEST keeps the watermark monotonic and a
+	// tombstoned/non-hardware row is never touched (revocation wins).
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_trust_reuse (se_pubkey, serial, trust_level, binary_hash, sip_enabled, secure_boot_full, mda_udid, verified_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		 ON CONFLICT (se_pubkey) DO UPDATE SET
-			serial = $2, trust_level = $3, binary_hash = $4, sip_enabled = $5, secure_boot_full = $6, mda_udid = $7, verified_at = $8`,
-		rec.SEPubKey, rec.Serial, rec.TrustLevel, rec.BinaryHash, rec.SIPEnabled, rec.SecureBootFull, rec.MDAUDID, rec.VerifiedAt,
-	)
+		`UPDATE provider_trust_reuse
+		    SET continuous_coverage_until = GREATEST(continuous_coverage_until, $2::timestamptz)
+		  WHERE se_pubkey = ANY($1)
+		    AND revoked_at IS NULL
+		    AND trust_level = 'hardware'`,
+		seKeys, until)
 	if err != nil {
-		return fmt.Errorf("store: upsert provider trust reuse: %w", err)
+		return fmt.Errorf("store: advance provider trust reuse coverage: %w", err)
 	}
 	return nil
 }
 
-func (s *PostgresStore) DeleteProviderTrustReuse(ctx context.Context, seKey string) error {
-	if seKey == "" {
-		return nil
+// --- Bounded durable MDM/MDA verification scheduler ---
+
+const verificationJobColumns = `se_pubkey, serial, udid, task_kind, task_state,
+	priority, retry_stage, previous_delay_ns, next_attempt_at, last_outcome,
+	reopen_pending, updated_at, claim_owner, claim_expires_at`
+
+type verificationJobScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanVerificationJob(row verificationJobScanner) (VerificationJob, error) {
+	var rec VerificationJob
+	var previousDelayNS int64
+	var nextAttemptAt *time.Time
+	if err := row.Scan(
+		&rec.SEPubKey, &rec.Serial, &rec.UDID, &rec.Kind, &rec.State,
+		&rec.Priority, &rec.RetryStage, &previousDelayNS, &nextAttemptAt,
+		&rec.LastOutcome, &rec.ReopenPending, &rec.UpdatedAt,
+		&rec.ClaimOwner, &rec.ClaimExpiresAt,
+	); err != nil {
+		return VerificationJob{}, err
+	}
+	rec.PreviousDelay = time.Duration(previousDelayNS)
+	if nextAttemptAt != nil {
+		rec.NextAttemptAt = *nextAttemptAt
+	}
+	return rec, nil
+}
+
+func (s *PostgresStore) UpsertVerificationJob(ctx context.Context, rec VerificationJob) (VerificationJob, error) {
+	if rec.SEPubKey == "" || rec.Kind == "" {
+		return VerificationJob{}, errors.New("store: verification job requires SE key and kind")
+	}
+	if rec.LastOutcome == "" {
+		rec.LastOutcome = VerificationOutcomeNone
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	row := s.pool.QueryRow(ctx,
+		`INSERT INTO provider_verification_jobs (
+			se_pubkey, serial, udid, task_kind, task_state, priority,
+			retry_stage, previous_delay_ns, next_attempt_at, last_outcome,
+			updated_at, claim_owner, claim_expires_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'',NULL)
+		 ON CONFLICT (se_pubkey, task_kind) DO UPDATE SET
+			serial = EXCLUDED.serial,
+			udid = CASE WHEN EXCLUDED.udid <> '' THEN EXCLUDED.udid ELSE provider_verification_jobs.udid END,
+			task_state = CASE
+				WHEN provider_verification_jobs.task_state = 'completed' THEN EXCLUDED.task_state
+				WHEN provider_verification_jobs.task_state = 'waiting_challenge'
+				 AND EXCLUDED.task_state = 'pending' THEN 'pending'
+				ELSE provider_verification_jobs.task_state END,
+			priority = CASE
+				WHEN provider_verification_jobs.task_state = 'completed'
+					THEN EXCLUDED.priority
+				ELSE LEAST(provider_verification_jobs.priority, EXCLUDED.priority) END,
+			retry_stage = CASE WHEN provider_verification_jobs.task_state = 'completed'
+				THEN EXCLUDED.retry_stage ELSE provider_verification_jobs.retry_stage END,
+			previous_delay_ns = CASE WHEN provider_verification_jobs.task_state = 'completed'
+				THEN EXCLUDED.previous_delay_ns ELSE provider_verification_jobs.previous_delay_ns END,
+			next_attempt_at = CASE
+				WHEN provider_verification_jobs.task_state = 'completed' THEN EXCLUDED.next_attempt_at
+				WHEN provider_verification_jobs.task_state IN ('waiting_challenge', 'running')
+				 AND EXCLUDED.task_state = 'pending' THEN EXCLUDED.next_attempt_at
+				ELSE provider_verification_jobs.next_attempt_at END,
+			last_outcome = CASE WHEN provider_verification_jobs.task_state = 'completed'
+				THEN EXCLUDED.last_outcome ELSE provider_verification_jobs.last_outcome END,
+			reopen_pending = CASE
+				WHEN provider_verification_jobs.task_state = 'completed' THEN FALSE
+				WHEN provider_verification_jobs.task_state = 'running'
+				 AND EXCLUDED.task_state = 'pending' THEN TRUE
+				ELSE provider_verification_jobs.reopen_pending END,
+			updated_at = EXCLUDED.updated_at,
+			claim_owner = CASE WHEN provider_verification_jobs.task_state = 'completed'
+				THEN '' ELSE provider_verification_jobs.claim_owner END,
+			claim_expires_at = CASE WHEN provider_verification_jobs.task_state = 'completed'
+				THEN NULL ELSE provider_verification_jobs.claim_expires_at END
+		 RETURNING `+verificationJobColumns,
+		rec.SEPubKey, rec.Serial, rec.UDID, rec.Kind, rec.State, rec.Priority,
+		rec.RetryStage, int64(rec.PreviousDelay), nullableVerificationTime(rec.NextAttemptAt),
+		rec.LastOutcome, rec.UpdatedAt,
+	)
+	out, err := scanVerificationJob(row)
+	if err != nil {
+		return VerificationJob{}, fmt.Errorf("store: upsert verification job: %w", err)
+	}
+	return out, nil
+}
 
-	if _, err := s.pool.Exec(ctx, `DELETE FROM provider_trust_reuse WHERE se_pubkey = $1`, seKey); err != nil {
-		return fmt.Errorf("store: delete provider trust reuse: %w", err)
+func nullableVerificationTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
+}
+
+func (s *PostgresStore) GetVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind) (*VerificationJob, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	rec, err := scanVerificationJob(s.pool.QueryRow(ctx,
+		`SELECT `+verificationJobColumns+`
+		   FROM provider_verification_jobs
+		  WHERE se_pubkey = $1 AND task_kind = $2`, seKey, kind))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: get verification job: %w", err)
+	}
+	return &rec, nil
+}
+
+func (s *PostgresStore) ListDueVerificationJobs(
+	ctx context.Context,
+	now time.Time,
+	limit int,
+) ([]VerificationJob, error) {
+	return s.ListDueVerificationJobsPage(ctx, now, limit, 0)
+}
+
+// verificationDuePageHint caps the initial capacity of a due-rows page.
+const verificationDuePageHint = 256
+
+func (s *PostgresStore) ListDueVerificationJobsPage(
+	ctx context.Context,
+	now time.Time,
+	limit, offset int,
+) ([]VerificationJob, error) {
+	if limit <= 0 || offset < 0 {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+verificationJobColumns+`
+		   FROM provider_verification_jobs
+		  WHERE (task_state IN ('pending','backoff')
+		         OR (task_state = 'running' AND claim_expires_at IS NOT NULL
+		             AND claim_expires_at <= $1))
+		    AND next_attempt_at <= $1
+		    AND (claim_owner = '' OR claim_expires_at IS NULL OR claim_expires_at <= $1)
+		  ORDER BY priority, next_attempt_at, se_pubkey, task_kind
+		  LIMIT $2 OFFSET $3`, now, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("store: list due verification jobs: %w", err)
+	}
+	defer rows.Close()
+	// The page is sized for the common case, not the limit: the caller asks
+	// for its whole queue capacity (4,096) every poll while only a few dozen
+	// rows are usually due, and a 4,096-row pre-allocation per poll was 16 %
+	// of all bytes the coordinator allocated. append grows it when needed.
+	out := make([]VerificationJob, 0, min(limit, verificationDuePageHint))
+	for rows.Next() {
+		rec, scanErr := scanVerificationJob(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("store: scan due verification job: %w", scanErr)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate due verification jobs: %w", err)
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) ClaimVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, now, expiresAt time.Time) (VerificationJob, bool, error) {
+	if owner == "" || !expiresAt.After(now) {
+		return VerificationJob{}, false, errors.New("store: invalid verification claim")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	rec, err := scanVerificationJob(s.pool.QueryRow(ctx,
+		`UPDATE provider_verification_jobs
+		    SET task_state = 'running', reopen_pending = FALSE, claim_owner = $3,
+		        claim_expires_at = $5, updated_at = $4
+		  WHERE se_pubkey = $1 AND task_kind = $2
+		    AND (task_state IN ('pending','backoff')
+		         OR (task_state = 'running' AND claim_expires_at IS NOT NULL
+		             AND claim_expires_at <= $4))
+		    AND next_attempt_at <= $4
+		    AND (claim_owner = '' OR claim_expires_at IS NULL OR claim_expires_at <= $4)
+		  RETURNING `+verificationJobColumns,
+		seKey, kind, owner, now, expiresAt))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return VerificationJob{}, false, nil
+	}
+	if err != nil {
+		return VerificationJob{}, false, fmt.Errorf("store: claim verification job: %w", err)
+	}
+	return rec, true, nil
+}
+
+func (s *PostgresStore) ReleaseVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, now time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := s.pool.Exec(ctx,
+		`UPDATE provider_verification_jobs
+		    SET task_state = 'pending', reopen_pending = FALSE,
+		        claim_owner = '', claim_expires_at = NULL, updated_at = $4
+		  WHERE se_pubkey = $1 AND task_kind = $2 AND claim_owner = $3`,
+		seKey, kind, owner, now)
+	if err != nil {
+		return fmt.Errorf("store: release verification job: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) CompleteVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, outcome VerificationOutcome, now time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := s.pool.Exec(ctx,
+		`UPDATE provider_verification_jobs
+		    SET task_state = CASE WHEN reopen_pending THEN 'pending' ELSE 'completed' END,
+		        retry_stage = CASE WHEN reopen_pending THEN retry_stage ELSE 0 END,
+		        previous_delay_ns = CASE WHEN reopen_pending THEN previous_delay_ns ELSE 0 END,
+		        next_attempt_at = CASE WHEN reopen_pending THEN next_attempt_at ELSE NULL END,
+		        last_outcome = CASE WHEN reopen_pending THEN last_outcome ELSE $4 END,
+		        reopen_pending = FALSE, updated_at = $5,
+		        claim_owner = '', claim_expires_at = NULL
+		  WHERE se_pubkey = $1 AND task_kind = $2
+		    AND (claim_owner = '' OR claim_owner = $3)`,
+		seKey, kind, owner, outcome, now)
+	if err != nil {
+		return fmt.Errorf("store: complete verification job: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) RescheduleVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, priority VerificationPriority, retryStage int, previousDelay time.Duration, nextAttemptAt time.Time, outcome VerificationOutcome, now time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := s.pool.Exec(ctx,
+		`UPDATE provider_verification_jobs
+		    SET task_state = CASE WHEN reopen_pending THEN 'pending' ELSE 'backoff' END,
+		        priority = CASE WHEN reopen_pending THEN priority ELSE $4 END,
+		        retry_stage = CASE WHEN reopen_pending THEN retry_stage ELSE $5 END,
+		        previous_delay_ns = CASE WHEN reopen_pending THEN previous_delay_ns ELSE $6 END,
+		        next_attempt_at = CASE WHEN reopen_pending THEN next_attempt_at ELSE $7 END,
+		        last_outcome = CASE WHEN reopen_pending THEN last_outcome ELSE $8 END,
+		        reopen_pending = FALSE, updated_at = $9,
+		        claim_owner = '', claim_expires_at = NULL
+		  WHERE se_pubkey = $1 AND task_kind = $2 AND claim_owner = $3`,
+		seKey, kind, owner, priority, retryStage, int64(previousDelay),
+		nextAttemptAt, outcome, now)
+	if err != nil {
+		return fmt.Errorf("store: reschedule verification job: %w", err)
 	}
 	return nil
 }
@@ -5147,56 +5661,24 @@ func (s *PostgresStore) DeleteProviderTrustReuse(ctx context.Context, seKey stri
 
 const maxLogReportSize = 10 << 20 // 10 MB
 
-func (s *PostgresStore) StoreLogReport(serialNumber, providerID, accountID string, logData []byte) error {
+func (s *PostgresStore) StoreLogReport(accountID string, logData []byte) (int64, error) {
 	if len(logData) > maxLogReportSize {
 		logData = logData[:maxLogReportSize]
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_log_reports (serial_number, provider_id, account_id, log_data, log_size_bytes)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		serialNumber, providerID, accountID, logData, int64(len(logData)),
-	)
+	var reportID int64
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO provider_log_reports (account_id, log_data, log_size_bytes)
+		 VALUES ($1, $2, $3)
+		 RETURNING id`,
+		accountID, logData, int64(len(logData)),
+	).Scan(&reportID)
 	if err != nil {
-		return fmt.Errorf("store: insert log report: %w", err)
+		return 0, fmt.Errorf("store: insert log report: %w", err)
 	}
-	return nil
-}
-
-func (s *PostgresStore) GetLogReports(serialNumber string, limit int) ([]LogReport, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 10
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, serial_number, provider_id, account_id, log_size_bytes, created_at
-		 FROM provider_log_reports
-		 WHERE serial_number = $1
-		 ORDER BY created_at DESC
-		 LIMIT $2`,
-		serialNumber, limit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: list log reports: %w", err)
-	}
-	defer rows.Close()
-
-	var reports []LogReport
-	for rows.Next() {
-		var r LogReport
-		if err := rows.Scan(&r.ID, &r.SerialNumber, &r.ProviderID, &r.AccountID, &r.LogSizeBytes, &r.CreatedAt); err != nil {
-			continue
-		}
-		reports = append(reports, r)
-	}
-	if reports == nil {
-		return []LogReport{}, nil
-	}
-	return reports, nil
+	return reportID, nil
 }
 
 func (s *PostgresStore) GetLogReport(id int64) (*LogReport, error) {
@@ -5205,9 +5687,9 @@ func (s *PostgresStore) GetLogReport(id int64) (*LogReport, error) {
 
 	var r LogReport
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, serial_number, provider_id, account_id, log_data, log_size_bytes, created_at
+		`SELECT id, account_id, log_data, log_size_bytes, created_at
 		 FROM provider_log_reports WHERE id = $1`, id,
-	).Scan(&r.ID, &r.SerialNumber, &r.ProviderID, &r.AccountID, &r.LogData, &r.LogSizeBytes, &r.CreatedAt)
+	).Scan(&r.ID, &r.AccountID, &r.LogData, &r.LogSizeBytes, &r.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("store: log report %d not found: %w", id, err)
 	}
@@ -5291,3 +5773,242 @@ func (s *PostgresStore) CloseOpenProviderSessions(ctx context.Context, staleBefo
 	}
 	return int(tag.RowsAffected()), nil
 }
+
+// System profiler DDL (boot slice). Column names are the snake_case of the
+// RequestProfileRecord / FleetSnapshotRow field names; nullability mirrors Go
+// pointer-ness (pointer and json.RawMessage fields are nullable, everything
+// else is NOT NULL with a zero default so zero values — 0, empty string,
+// false — round-trip as themselves).
+// Per-table autovacuum thresholds are tightened because both tables are
+// insert-heavy with a rolling retention DELETE.
+const (
+	requestProfilesTableDDL = `CREATE TABLE IF NOT EXISTS request_profiles (
+			id BIGSERIAL PRIMARY KEY,
+			coord_request_id TEXT NOT NULL,
+			request_id TEXT NOT NULL,
+			attempt INT NOT NULL,
+			backup_of TEXT NOT NULL DEFAULT '',
+			winning BOOL NOT NULL DEFAULT FALSE,
+			endpoint TEXT NOT NULL DEFAULT '',
+			stream BOOL NOT NULL DEFAULT FALSE,
+			model TEXT NOT NULL DEFAULT '',
+			public_model TEXT NOT NULL DEFAULT '',
+			provider_id TEXT NOT NULL DEFAULT '',
+			provider_version TEXT NOT NULL DEFAULT '',
+			chip_family TEXT NOT NULL DEFAULT '',
+			kv_backend TEXT NOT NULL DEFAULT '',
+			final_status TEXT NOT NULL DEFAULT '',
+			error_reason TEXT NOT NULL DEFAULT '',
+			terminal_cause TEXT NOT NULL DEFAULT '',
+			client_outcome TEXT NOT NULL DEFAULT '',
+			provider_outcome TEXT NOT NULL DEFAULT '',
+			client_gone_phase TEXT NOT NULL DEFAULT '',
+			first_content_budget_ms INT NOT NULL DEFAULT 0,
+			admission_mode TEXT NOT NULL DEFAULT '',
+			predictive_bypass TEXT NOT NULL DEFAULT '',
+			reservation_ttft_ceiling_ms DOUBLE PRECISION,
+			dispatch_budget_ms BIGINT,
+			estimated_prompt_tokens INT NOT NULL DEFAULT 0,
+			requested_max_tokens INT NOT NULL DEFAULT 0,
+			requires_vision BOOL NOT NULL DEFAULT FALSE,
+			has_tools BOOL NOT NULL DEFAULT FALSE,
+			received_at TIMESTAMPTZ NOT NULL,
+
+			auth_done_us BIGINT,
+			ratelimit_done_us BIGINT,
+			sealed_open_us BIGINT,
+			handler_entry_us BIGINT,
+			parsed_us BIGINT,
+			reserved_us BIGINT,
+			media_fetched_us BIGINT,
+			preflight_done_us BIGINT,
+			plan_done_us BIGINT,
+			attempt_start_us BIGINT,
+			reserve_lock_acquired_us BIGINT,
+			reserve_done_us BIGINT,
+			queued_us BIGINT,
+			dequeued_us BIGINT,
+			topup_done_us BIGINT,
+			encrypted_us BIGINT,
+			write_submitted_us BIGINT,
+			write_dequeued_us BIGINT,
+			write_done_us BIGINT,
+			accepted_us BIGINT,
+			first_chunk_ingress_us BIGINT,
+			first_chunk_dequeued_us BIGINT,
+			first_content_ingress_us BIGINT,
+			first_content_us BIGINT,
+			headers_written_us BIGINT,
+			first_flush_us BIGINT,
+			last_flush_us BIGINT,
+			client_gone_us BIGINT,
+			cancel_sent_us BIGINT,
+			complete_ingress_us BIGINT,
+			done_flushed_us BIGINT,
+			finalized_us BIGINT,
+			settle_db_us BIGINT,
+			db_us BIGINT,
+			db_calls INT NOT NULL DEFAULT 0,
+
+			body_bytes INT NOT NULL DEFAULT 0,
+			sealed_body_bytes INT NOT NULL DEFAULT 0,
+			auth_kind TEXT NOT NULL DEFAULT '',
+			auth_db_read BOOL NOT NULL DEFAULT FALSE,
+			reserve_mode TEXT NOT NULL DEFAULT '',
+			media_items INT NOT NULL DEFAULT 0,
+			media_bytes BIGINT NOT NULL DEFAULT 0,
+			preflight_outcome TEXT NOT NULL DEFAULT '',
+			plan_outcome TEXT NOT NULL DEFAULT '',
+			chunks_in INT NOT NULL DEFAULT 0,
+			chunks_out INT NOT NULL DEFAULT 0,
+			bytes_out BIGINT NOT NULL DEFAULT 0,
+			decrypt_us_total BIGINT NOT NULL DEFAULT 0,
+			max_chunk_gap_us BIGINT NOT NULL DEFAULT 0,
+			held_preamble_chunks INT NOT NULL DEFAULT 0,
+			client_write_err BOOL NOT NULL DEFAULT FALSE,
+			attempts_total INT NOT NULL DEFAULT 0,
+			failed_attempts INT NOT NULL DEFAULT 0,
+			failed_attempts_us BIGINT NOT NULL DEFAULT 0,
+			backup_launched BOOL NOT NULL DEFAULT FALSE,
+			backup_won BOOL NOT NULL DEFAULT FALSE,
+			transport_est_us BIGINT,
+			slept_us BIGINT,
+			timing_anomaly BOOL NOT NULL DEFAULT FALSE,
+
+			candidate_set_size INT NOT NULL DEFAULT 0,
+			scanned INT NOT NULL DEFAULT 0,
+			gate_rejections JSONB,
+			runner_up_provider_id TEXT NOT NULL DEFAULT '',
+			runner_up_cost_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+			near_tie_pool_size INT NOT NULL DEFAULT 0,
+			selection_path TEXT NOT NULL DEFAULT '',
+			best_idle_provider_id TEXT NOT NULL DEFAULT '',
+			best_idle_ttft_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+			predicted_ttft_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+			raw_ttft_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+			predicted_decode_tps DOUBLE PRECISION NOT NULL DEFAULT 0,
+			snapshot_age_ms INT NOT NULL DEFAULT 0,
+			pending_for_model INT NOT NULL DEFAULT 0,
+			total_pending INT NOT NULL DEFAULT 0,
+			capacity_rate_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+			cache_discount_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+			shadow_would_shed BOOL,
+			shadow_idle_alternative BOOL,
+			lock_wait_us BIGINT NOT NULL DEFAULT 0,
+			scan_us BIGINT NOT NULL DEFAULT 0,
+			admit_us BIGINT NOT NULL DEFAULT 0,
+			preflight_us BIGINT NOT NULL DEFAULT 0,
+			ttft_calibration_ratio DOUBLE PRECISION NOT NULL DEFAULT 0,
+			prefill_decode_ratio DOUBLE PRECISION NOT NULL DEFAULT 0,
+			queue_position_at_enqueue INT NOT NULL DEFAULT 0,
+			queue_depth_at_enqueue INT NOT NULL DEFAULT 0,
+			drain_trigger TEXT NOT NULL DEFAULT '',
+			candidates JSONB,
+
+			prov_total_us BIGINT,
+			prov_first_delta_us BIGINT,
+			prov_engine_submit_us BIGINT,
+			prov_engine_admitted_us BIGINT,
+			prov_prompt_prep_us BIGINT,
+			prov_load_wait_us BIGINT,
+			prov_load_cold BOOL,
+			prov_running_at_admit INT,
+			prov_waiting_at_admit INT,
+			prov_kv_bytes_in_use_at_admit BIGINT,
+			prov_cancel_stage TEXT NOT NULL DEFAULT '',
+			eng_queue_wait_ns BIGINT,
+			eng_first_token_ns BIGINT,
+			eng_prompt_computed_ns BIGINT,
+			eng_prefill_chunks INT,
+			eng_decode_steps INT,
+			eng_mtp_accepted INT,
+			eng_finish_reason TEXT NOT NULL DEFAULT '',
+			provider_profile JSONB,
+			provider_profile_valid BOOL NOT NULL DEFAULT FALSE,
+			provider_profile_invalid_reason TEXT NOT NULL DEFAULT '',
+			provider_profile_consistent BOOL,
+
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (request_id, attempt)
+		) WITH (autovacuum_vacuum_scale_factor=0.02, autovacuum_analyze_scale_factor=0.01)`
+	requestProfilesCreatedIndexDDL  = `CREATE INDEX IF NOT EXISTS idx_request_profiles_created ON request_profiles(created_at DESC)`
+	requestProfilesCoordIndexDDL    = `CREATE INDEX IF NOT EXISTS idx_request_profiles_coord ON request_profiles(coord_request_id)`
+	requestProfilesProviderIndexDDL = `CREATE INDEX IF NOT EXISTS idx_request_profiles_provider ON request_profiles(provider_id, created_at DESC)`
+
+	fleetSnapshotsTableDDL = `CREATE TABLE IF NOT EXISTS fleet_snapshots (
+			id BIGSERIAL PRIMARY KEY,
+			sampled_at TIMESTAMPTZ NOT NULL,
+			provider_id TEXT NOT NULL,
+			model TEXT NOT NULL DEFAULT '',
+			eligibility_reason TEXT NOT NULL DEFAULT '',
+			slot_state TEXT NOT NULL DEFAULT '',
+			num_running INT NOT NULL DEFAULT 0,
+			num_waiting INT NOT NULL DEFAULT 0,
+			queued_prefill_tokens INT NOT NULL DEFAULT 0,
+			partial_prefill_rows INT NOT NULL DEFAULT 0,
+			active_token_budget_used BIGINT NOT NULL DEFAULT 0,
+			active_token_budget_max BIGINT NOT NULL DEFAULT 0,
+			kv_bytes_in_use BIGINT NOT NULL DEFAULT 0,
+			kv_bytes_capacity BIGINT NOT NULL DEFAULT 0,
+			observed_decode_tps DOUBLE PRECISION NOT NULL DEFAULT 0,
+			observed_prefill_tps DOUBLE PRECISION NOT NULL DEFAULT 0,
+			isolated_prefill_tps DOUBLE PRECISION NOT NULL DEFAULT 0,
+			ewma_initialized BOOL,
+			max_concurrency INT NOT NULL DEFAULT 0,
+			pending_count INT NOT NULL DEFAULT 0,
+			effective_cap INT NOT NULL DEFAULT 0,
+			cooldown_active BOOL NOT NULL DEFAULT FALSE,
+			breaker_open BOOL NOT NULL DEFAULT FALSE,
+			clamp_active BOOL NOT NULL DEFAULT FALSE,
+			ejected BOOL NOT NULL DEFAULT FALSE,
+			gpu_memory_active_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
+			gpu_memory_peak_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
+			free_for_load_gb DOUBLE PRECISION,
+			memory_pressure DOUBLE PRECISION NOT NULL DEFAULT 0,
+			cpu_usage DOUBLE PRECISION NOT NULL DEFAULT 0,
+			thermal_state TEXT NOT NULL DEFAULT '',
+			low_power_mode BOOL,
+			memory_pressure_level TEXT NOT NULL DEFAULT '',
+			steps_executed BIGINT NOT NULL DEFAULT 0,
+			step_wall_ns_total BIGINT NOT NULL DEFAULT 0,
+			decode_rows_total BIGINT NOT NULL DEFAULT 0,
+			prefill_tokens_total BIGINT NOT NULL DEFAULT 0,
+			mtp_rounds_total BIGINT NOT NULL DEFAULT 0,
+			mtp_proposed_total BIGINT NOT NULL DEFAULT 0,
+			mtp_accepted_total BIGINT NOT NULL DEFAULT 0,
+			heartbeat_age_ms INT NOT NULL DEFAULT 0,
+			wedge_suspected BOOL NOT NULL DEFAULT FALSE,
+			eval_in_flight_ms BIGINT NOT NULL DEFAULT 0,
+			requests_served BIGINT NOT NULL DEFAULT 0,
+			tokens_generated BIGINT NOT NULL DEFAULT 0,
+			cancellations_received BIGINT NOT NULL DEFAULT 0,
+			cancellations_before_output BIGINT NOT NULL DEFAULT 0,
+			cancellations_partial_complete BIGINT NOT NULL DEFAULT 0,
+			generation_errors_after_output BIGINT NOT NULL DEFAULT 0,
+			chunk_encryption_errors BIGINT NOT NULL DEFAULT 0,
+			stream_closed_without_terminal BIGINT NOT NULL DEFAULT 0,
+			cancel_during_model_load BIGINT NOT NULL DEFAULT 0,
+			usage_gaps BIGINT NOT NULL DEFAULT 0,
+			cancel_stage_pre_accept_total BIGINT NOT NULL DEFAULT 0,
+			cancel_stage_pre_engine_total BIGINT NOT NULL DEFAULT 0,
+			cancel_stage_prefill_total BIGINT NOT NULL DEFAULT 0,
+			cancel_stage_decode_total BIGINT NOT NULL DEFAULT 0,
+			cancel_stage_post_terminal_total BIGINT NOT NULL DEFAULT 0,
+			tokens_after_cancel_total BIGINT NOT NULL DEFAULT 0,
+			cancel_abort_ns_sum BIGINT NOT NULL DEFAULT 0,
+			queue_depth_total INT NOT NULL DEFAULT 0,
+			queue_depth_by_model JSONB,
+			inflight_requests INT NOT NULL DEFAULT 0,
+			reserve_lock_wait_p95_us BIGINT NOT NULL DEFAULT 0,
+			profile_sink_depth INT NOT NULL DEFAULT 0,
+			profile_sink_dropped_total BIGINT NOT NULL DEFAULT 0,
+			route_sink_dropped_total BIGINT NOT NULL DEFAULT 0,
+			unknown_request_frames_total BIGINT NOT NULL DEFAULT 0,
+			goroutines INT NOT NULL DEFAULT 0,
+			provider_version TEXT NOT NULL DEFAULT '',
+			model_vision BOOL NOT NULL DEFAULT FALSE,
+			template_render_ok BOOL
+		) WITH (autovacuum_vacuum_scale_factor=0.02, autovacuum_analyze_scale_factor=0.01)`
+	fleetSnapshotsSampledIndexDDL  = `CREATE INDEX IF NOT EXISTS idx_fleet_snapshots_sampled ON fleet_snapshots(sampled_at DESC)`
+	fleetSnapshotsProviderIndexDDL = `CREATE INDEX IF NOT EXISTS idx_fleet_snapshots_provider ON fleet_snapshots(provider_id, sampled_at DESC)`
+)

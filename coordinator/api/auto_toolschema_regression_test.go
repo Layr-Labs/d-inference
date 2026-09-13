@@ -155,7 +155,7 @@ func TestAutoToolChoiceForwardsStandardJSONSchema(t *testing.T) {
 			if mode != toolChoiceNone {
 				t.Fatalf("%s: mode = %q, want none", name, mode)
 			}
-			if mode.requiresGrammar() {
+			if mode.requiresInferenceConstraint() {
 				t.Errorf("%s: none demanded an inference-enforcing provider", name)
 			}
 		}
@@ -273,5 +273,5 @@ func TestToolConstraintCapabilityErrorSeparatesPermanentFromTransient(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	failFast(t, false, mode.requiresGrammar(), nil)
+	failFast(t, false, mode.requiresInferenceConstraint(), nil)
 }

@@ -3,7 +3,9 @@ package registry
 import (
 	"fmt"
 	"math"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -31,7 +33,7 @@ func TestProviderPooledTokenBudgetClampsKVByteRate(t *testing.T) {
 	if pool.totalBytes < pool.usedBytes {
 		t.Fatalf("totalBytes %d < usedBytes %d (overflow)", pool.totalBytes, pool.usedBytes)
 	}
-	if got := pool.kvBytesPerToken["a"]; got != maxKVBytesPerToken {
+	if got := pool.kvRateFor("a"); got != maxKVBytesPerToken {
 		t.Fatalf("stored KV rate = %d, want clamp %d (raw absurd rate not clamped)", got, maxKVBytesPerToken)
 	}
 	// Admission must fail-closed for a request that overflows the pool, not
@@ -43,10 +45,10 @@ func TestProviderPooledTokenBudgetClampsKVByteRate(t *testing.T) {
 		pendingBytesKnown:    true,
 		pooledTokenBudget:    pool,
 	}
-	if pooledBudgetAdmits(snap, 10_000_000_000) {
+	if pooledBudgetAdmits(snapPtr(snap), 10_000_000_000) {
 		t.Fatal("admitted a 10B-token request into a finite byte pool (overflow admitted-everything)")
 	}
-	if !pooledBudgetAdmits(snap, 100_000) {
+	if !pooledBudgetAdmits(snapPtr(snap), 100_000) {
 		t.Fatal("rejected a 100k-token request that fits the 200k-token byte headroom")
 	}
 }
@@ -65,7 +67,7 @@ func TestPooledKnownZeroBudgetRejects(t *testing.T) {
 		pendingBytesKnown: true,
 		pooledTokenBudget: pool,
 	}
-	if pooledBudgetAdmits(snap, 1) {
+	if pooledBudgetAdmits(snapPtr(snap), 1) {
 		t.Fatal("known-zero Engine V2 budget admitted a request as if it were an unconstrained legacy slot")
 	}
 	if got := pooledRemainingTokens(pool, 0, 0, true, 800_000); got != 0 {
@@ -74,7 +76,7 @@ func TestPooledKnownZeroBudgetRejects(t *testing.T) {
 
 	legacy := providerPooledTokenBudget([]protocol.BackendSlotCapacity{{Model: "legacy"}})
 	legacySnap := routingSnapshot{pooledTokenBudget: legacy}
-	if !pooledBudgetAdmits(legacySnap, 1) {
+	if !pooledBudgetAdmits(snapPtr(legacySnap), 1) {
 		t.Fatal("legacy slot with no budget or KV rate became constrained")
 	}
 	if got := pooledRemainingTokens(legacy, 0, 0, false, 0); got != -1 {
@@ -108,7 +110,7 @@ func TestPooledZeroBudgetResidentRateStaysSymmetric(t *testing.T) {
 	pool := providerPooledTokenBudget(p.BackendCapacity.Slots)
 	p.mu.Unlock()
 
-	if got := pool.kvBytesPerToken[gemmaBuild]; got != knownZeroRate {
+	if got := pool.kvRateFor(gemmaBuild); got != knownZeroRate {
 		t.Fatalf("zero-budget resident KV rate = %d, want reported %d", got, knownZeroRate)
 	}
 
@@ -286,6 +288,94 @@ func TestPooledAdmissionCoResidencyDoubleSpend(t *testing.T) {
 	}
 }
 
+// TestConcurrentReservationScansCommitPooledBudgetAtomically proves the
+// production primary path can scan different models concurrently without
+// double-spending one provider's cross-model token pool. Both scans rendezvous
+// after seeing the same empty heartbeat snapshot; the short serialized commit
+// must admit exactly one 2k request into the shared 3k pool.
+func TestConcurrentReservationScansCommitPooledBudgetAtomically(t *testing.T) {
+	reg := New(testLogger())
+	p := makeSchedulerProvider(t, reg, "shared-box", gptossBuild, 93)
+	addAdvertisedModel(p, gemmaBuild)
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 3_000
+	p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, protocol.BackendSlotCapacity{
+		Model:                gemmaBuild,
+		State:                "running",
+		ActiveTokenBudgetMax: 3_000,
+	})
+	p.mu.Unlock()
+
+	arrived := make(chan string, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseScans := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseScans()
+	var seenMu sync.Mutex
+	seen := make(map[string]bool, 2)
+	reg.reservationAfterScan = func(model string) {
+		seenMu.Lock()
+		first := !seen[model]
+		seen[model] = true
+		seenMu.Unlock()
+		if !first {
+			return
+		}
+		arrived <- model
+		<-release
+	}
+
+	type result struct {
+		requestID string
+		provider  *Provider
+	}
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	for i, model := range []string{gptossBuild, gemmaBuild} {
+		go func() {
+			<-start
+			requestID := fmt.Sprintf("concurrent-%d", i)
+			provider, _, _ := reg.ReserveProviderWithPlan(model, &PendingRequest{
+				RequestID:             requestID,
+				Model:                 model,
+				EstimatedPromptTokens: 100,
+				RequestedMaxTokens:    1_900,
+			})
+			results <- result{requestID: requestID, provider: provider}
+		}()
+	}
+	close(start)
+
+	entered := make(map[string]bool, 2)
+	for len(entered) < 2 {
+		select {
+		case model := <-arrived:
+			entered[model] = true
+		case <-time.After(2 * time.Second):
+			releaseScans()
+			t.Fatalf("reservation scans serialized before commit; entered=%v", entered)
+		}
+	}
+	releaseScans()
+	reservations := make([]result, 0, 2)
+	admitted := 0
+	for range 2 {
+		res := <-results
+		reservations = append(reservations, res)
+		if res.provider != nil {
+			admitted++
+		}
+	}
+	for _, res := range reservations {
+		if res.provider != nil {
+			res.provider.RemovePending(res.requestID)
+		}
+	}
+	if admitted != 1 {
+		t.Fatalf("concurrent cross-model reservations admitted %d requests, want exactly 1", admitted)
+	}
+}
+
 // TestPooledAdmissionAllowsCoResidentWithinPool is the non-regression control:
 // when the pool has real headroom left, a co-resident model's request IS
 // admitted — the pooled gate only charges what is actually pending.
@@ -443,10 +533,10 @@ func TestPrivateGrantPoolUsesCeilingsWhenLiveUseExceedsReslice(t *testing.T) {
 				pendingBytesKnown: true,
 				pooledTokenBudget: pool,
 			}
-			if !pooledBudgetAdmits(snap, tc.wantRemain) {
+			if !pooledBudgetAdmits(snapPtr(snap), tc.wantRemain) {
 				t.Fatalf("rejected exact remaining capacity %d", tc.wantRemain)
 			}
-			if pooledBudgetAdmits(snap, tc.wantRemain+1) {
+			if pooledBudgetAdmits(snapPtr(snap), tc.wantRemain+1) {
 				t.Fatalf("admitted past remaining capacity %d", tc.wantRemain)
 			}
 		})
@@ -465,11 +555,13 @@ func TestPrivateGrantPoolSaturatesUsedBudgetAddition(t *testing.T) {
 		t.Fatalf("overflowed used budget = {tokens:%d bytes:%d}, want saturated MaxInt64",
 			pool.used, pool.usedBytes)
 	}
-	if pooledBudgetAdmits(routingSnapshot{
+	if pooledBudgetAdmits(snapPtr(routingSnapshot{
 		kvBytesPerToken:   1,
 		pendingBytesKnown: true,
 		pooledTokenBudget: pool,
-	}, 1) {
+	}),
+
+		1) {
 		t.Fatal("overflowed live use left invented private-grant headroom")
 	}
 }
@@ -500,10 +592,10 @@ func TestFreeMemoryAdmitsSingleModelUnchanged(t *testing.T) {
 			pooledTokenBudget:         providerPooledTokenBudget([]protocol.BackendSlotCapacity{slot}),
 		}
 	}
-	if !freeMemoryAdmits(mkSnap(7_000), 0, 5_500) {
+	if !freeMemoryAdmits(snapPtr(mkSnap(7_000)), 0, 5_500) {
 		t.Fatal("request at the exact old boundary (5_500) rejected — pooled check changed single-model behavior")
 	}
-	if freeMemoryAdmits(mkSnap(7_000), 0, 5_501) {
+	if freeMemoryAdmits(snapPtr(mkSnap(7_000)), 0, 5_501) {
 		t.Fatal("request past the old boundary (5_501) admitted — budget admission loosened")
 	}
 }
@@ -524,12 +616,12 @@ func TestFreeMemoryAdmitsPooledRejectsGapDoubleSpend(t *testing.T) {
 		activeTokenBudgetMax:      10_000,
 		pooledTokenBudget:         providerPooledTokenBudget(slots),
 	}
-	if freeMemoryAdmits(snap, 100, 1_900) {
+	if freeMemoryAdmits(snapPtr(snap), 100, 1_900) {
 		t.Fatal("admitted 2k tokens into a pool with 10k already pending to a co-resident model (per-slot double-spend)")
 	}
 	// Same snapshot with only 4k pending across models → admits.
 	snap.pendingMaxTokensAllModels = 4_000
-	if !freeMemoryAdmits(snap, 100, 1_900) {
+	if !freeMemoryAdmits(snapPtr(snap), 100, 1_900) {
 		t.Fatal("rejected 2k tokens although the pool has 6k of headroom")
 	}
 }
@@ -595,11 +687,11 @@ func TestFreeMemoryAdmitsByteNormalizedHeterogeneousKV(t *testing.T) {
 		}
 	}
 	// 90k small-KV tokens pending = 0.9 GB; +0.3 GB request = 1.2 GB > 1 GB.
-	if freeMemoryAdmits(mkSnap(90_000), 100, 2_900) {
+	if freeMemoryAdmits(snapPtr(mkSnap(90_000)), 100, 2_900) {
 		t.Fatal("admitted 0.3 GB of big-KV request into a byte pool with 0.9 GB already pending (token/byte unit confusion)")
 	}
 	// Control: 40k small-KV tokens pending = 0.4 GB; +0.3 GB = 0.7 GB ≤ 1 GB.
-	if !freeMemoryAdmits(mkSnap(40_000), 100, 2_900) {
+	if !freeMemoryAdmits(snapPtr(mkSnap(40_000)), 100, 2_900) {
 		t.Fatal("rejected a request although the byte pool has 0.6 GB of headroom (byte gate over-rejecting)")
 	}
 }
@@ -627,7 +719,7 @@ func TestFreeMemoryAdmitsByteModeCorrectsTokenOverReject(t *testing.T) {
 		pendingBytesKnown:         true,
 		pooledTokenBudget:         providerPooledTokenBudget(slots),
 	}
-	if !pooledBudgetAdmits(snap, 1_000) {
+	if !pooledBudgetAdmits(snapPtr(snap), 1_000) {
 		t.Fatal("rejected 10 MB into a 1 GB byte pool holding 0.6 GB (token-unit over-rejection not corrected)")
 	}
 }
@@ -693,11 +785,11 @@ func TestFreeMemoryAdmitsColdModelChargesPool(t *testing.T) {
 			pooledTokenBudget:         providerPooledTokenBudget(slots),
 		}
 	}
-	if freeMemoryAdmits(mkSnap(10_000), 100, 1_900) {
+	if freeMemoryAdmits(snapPtr(mkSnap(10_000)), 100, 1_900) {
 		t.Fatal("cold request admitted into a pool fully pending to a resident model (cold path skipped the pooled gate)")
 	}
 	// Control: with 4k of the 10k pool pending, the 2k cold request fits.
-	if !freeMemoryAdmits(mkSnap(4_000), 100, 1_900) {
+	if !freeMemoryAdmits(snapPtr(mkSnap(4_000)), 100, 1_900) {
 		t.Fatal("cold request rejected although the pool has 6k of headroom")
 	}
 }
@@ -861,11 +953,11 @@ func TestPooledByteTotalFromLiveUsedNotCommitted(t *testing.T) {
 		pendingBytesKnown:         true,
 		pooledTokenBudget:         pool,
 	}
-	if pooledBudgetAdmits(snap, 12_000) {
+	if pooledBudgetAdmits(snapPtr(snap), 12_000) {
 		t.Fatal("admitted 1.2 GB into a 1 GB byte pool — MaxTokensPotential double-counted as physical KV capacity")
 	}
 	// Control: 8k tokens = 0.8 GB genuinely fits the 1 GB pool.
-	if !pooledBudgetAdmits(snap, 8_000) {
+	if !pooledBudgetAdmits(snapPtr(snap), 8_000) {
 		t.Fatal("rejected 0.8 GB that fits the 1 GB byte pool (byte total under-counted)")
 	}
 }
@@ -942,7 +1034,7 @@ func TestPooledColdUnknownKVChargedInBytes(t *testing.T) {
 		if !pool.byteMode {
 			t.Fatal("pool byteMode = false, want true")
 		}
-		if got := resolvedPooledKVBytesPerToken(pool, 0); got != kvCacheBytesPerToken {
+		if got := resolvedPooledKVBytesPerToken(poolPtr(pool), 0); got != kvCacheBytesPerToken {
 			t.Fatalf("resolved cold KV rate = %d, want conservative default %d", got, kvCacheBytesPerToken)
 		}
 		cold := routingSnapshot{
@@ -952,11 +1044,11 @@ func TestPooledColdUnknownKVChargedInBytes(t *testing.T) {
 		}
 		// 50k tokens: token fallback would admit (50k <= 100k token pool), but
 		// conservative byte pricing is far beyond the 1 GB pool.
-		if pooledBudgetAdmits(cold, 50_000) {
+		if pooledBudgetAdmits(snapPtr(cold), 50_000) {
 			t.Fatal("cold unknown-KV request admitted via token/resident-rate fallback")
 		}
 		// Control: 2k tokens at the default rate remain below 1 GB.
-		if !pooledBudgetAdmits(cold, 2_000) {
+		if !pooledBudgetAdmits(snapPtr(cold), 2_000) {
 			t.Fatal("cold request rejected although its conservative byte charge fits the pool")
 		}
 		wantRemaining := pool.totalBytes / kvCacheBytesPerToken
@@ -972,10 +1064,10 @@ func TestPooledColdUnknownKVChargedInBytes(t *testing.T) {
 			{Model: "m", ActiveTokenBudgetMax: 10_000, KVBytesPerToken: 50_000},
 		})
 		known := routingSnapshot{kvBytesPerToken: 50_000, pendingBytesKnown: true, pooledTokenBudget: pool}
-		if !pooledBudgetAdmits(known, 10_000) {
+		if !pooledBudgetAdmits(snapPtr(known), 10_000) {
 			t.Fatal("known request at the exact 10k boundary rejected")
 		}
-		if pooledBudgetAdmits(known, 10_001) {
+		if pooledBudgetAdmits(snapPtr(known), 10_001) {
 			t.Fatal("known request past the 10k boundary admitted")
 		}
 	})
@@ -997,7 +1089,7 @@ func TestPooledFirstColdRequestUsesConservativeDefault(t *testing.T) {
 		pooledTokenBudget: pool,
 	}
 
-	if pooledBudgetAdmits(snap, 3_000) {
+	if pooledBudgetAdmits(snapPtr(snap), 3_000) {
 		t.Fatal("first cold request priced at resident-only KV max instead of the conservative unknown-model default")
 	}
 	wantRemaining := pool.totalBytes / kvCacheBytesPerToken
@@ -1037,7 +1129,7 @@ func TestPooledPendingColdRequestKeepsByteAccounting(t *testing.T) {
 	if snap.pendingMaxBytesAllModels != wantPendingBytes {
 		t.Errorf("cold pending bytes = %d, want %d at conservative default rate", snap.pendingMaxBytesAllModels, wantPendingBytes)
 	}
-	if pooledBudgetAdmits(snap, 20_000) {
+	if pooledBudgetAdmits(snapPtr(snap), 20_000) {
 		t.Error("subsequent resident request admitted via token fallback after cold pending request consumed byte headroom")
 	}
 	wantRemaining := (snap.pooledTokenBudget.totalBytes - wantPendingBytes) / residentRate
@@ -1052,7 +1144,7 @@ func TestPooledPendingColdRequestKeepsByteAccounting(t *testing.T) {
 	}
 
 	overflowTokens := int64(math.MaxInt64/kvCacheBytesPerToken + 1)
-	if got := addPooledKVByteCharge(0, overflowTokens, resolvedPooledKVBytesPerToken(snap.pooledTokenBudget, 0)); got != math.MaxInt64 {
+	if got := addPooledKVByteCharge(0, overflowTokens, resolvedPooledKVBytesPerToken(poolPtr(snap.pooledTokenBudget), 0)); got != math.MaxInt64 {
 		t.Errorf("overflowing cold pending charge = %d, want saturated MaxInt64", got)
 	}
 }
@@ -1105,7 +1197,7 @@ func TestPooledRemainingTokensMatchesAdmits(t *testing.T) {
 				tc.snap.kvBytesPerToken,
 			)
 			for n := int64(1); n <= rem+50; n++ {
-				if admits, want := pooledBudgetAdmits(tc.snap, n), n <= rem; admits != want {
+				if admits, want := pooledBudgetAdmits(snapPtr(tc.snap), n), n <= rem; admits != want {
 					t.Fatalf("n=%d: pooledBudgetAdmits=%v, but (n<=rem=%d)=%v", n, admits, rem, want)
 				}
 			}
@@ -1124,7 +1216,7 @@ func TestFreeMemoryAdmitsLegacyProviderUnchanged(t *testing.T) {
 		modelSizeGB:               14,
 		pendingMaxTokensAllModels: 1 << 30, // must be ignored on the legacy path
 	}
-	if !freeMemoryAdmits(snap, 100, 1_900) {
+	if !freeMemoryAdmits(snapPtr(snap), 100, 1_900) {
 		t.Fatal("legacy (budget-less) admission changed: loaded model with free memory must admit")
 	}
 }

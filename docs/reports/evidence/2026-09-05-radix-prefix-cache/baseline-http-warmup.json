@@ -1,0 +1,65 @@
+{
+  "events": [
+    {
+      "elapsed_s": 1.0196412910000001,
+      "data": "{\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}],\"created\":1788586060,\"id\":\"chatcmpl_6E78D0AF93CD4CC1981F6669\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+    },
+    {
+      "elapsed_s": 1.62880825,
+      "data": "{\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"index\":0}],\"created\":1788586060,\"id\":\"chatcmpl_6E78D0AF93CD4CC1981F6669\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+    },
+    {
+      "elapsed_s": 1.65866325,
+      "data": "{\"choices\":[{\"delta\":{\"content\":\"!\"},\"index\":0}],\"created\":1788586060,\"id\":\"chatcmpl_6E78D0AF93CD4CC1981F6669\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+    },
+    {
+      "elapsed_s": 1.688028208,
+      "data": "{\"choices\":[{\"delta\":{\"content\":\" How\"},\"index\":0}],\"created\":1788586060,\"id\":\"chatcmpl_6E78D0AF93CD4CC1981F6669\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+    },
+    {
+      "elapsed_s": 1.717546333,
+      "data": "{\"choices\":[{\"delta\":{\"content\":\" can\"},\"index\":0}],\"created\":1788586060,\"id\":\"chatcmpl_6E78D0AF93CD4CC1981F6669\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+    },
+    {
+      "elapsed_s": 1.747291291,
+      "data": "{\"choices\":[{\"delta\":{\"content\":\" I\"},\"index\":0}],\"created\":1788586060,\"id\":\"chatcmpl_6E78D0AF93CD4CC1981F6669\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+    },
+    {
+      "elapsed_s": 1.776716916,
+      "data": "{\"choices\":[{\"delta\":{\"content\":\" help\"},\"index\":0}],\"created\":1788586060,\"id\":\"chatcmpl_6E78D0AF93CD4CC1981F6669\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+    },
+    {
+      "elapsed_s": 1.806373208,
+      "data": "{\"choices\":[{\"delta\":{\"content\":\" you\"},\"index\":0}],\"created\":1788586060,\"id\":\"chatcmpl_6E78D0AF93CD4CC1981F6669\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+    },
+    {
+      "elapsed_s": 1.835651291,
+      "data": "{\"choices\":[{\"delta\":{\"content\":\" today\"},\"index\":0}],\"created\":1788586060,\"id\":\"chatcmpl_6E78D0AF93CD4CC1981F6669\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\"}"
+    },
+    {
+      "elapsed_s": 1.840741583,
+      "data": "{\"choices\":[{\"delta\":{},\"finish_reason\":\"length\",\"index\":0}],\"created\":1788586060,\"id\":\"chatcmpl_6E78D0AF93CD4CC1981F6669\",\"model\":\"EigenLabs/Qwen3.8-27B-4bit-mtp\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":8,\"prompt_tokens\":15,\"total_tokens\":23}}"
+    },
+    {
+      "elapsed_s": 1.84076025,
+      "data": "[DONE]"
+    }
+  ],
+  "text": "Hello! How can I help you today",
+  "reasoning": "",
+  "usage": {
+    "completion_tokens": 8,
+    "prompt_tokens": 15,
+    "total_tokens": 23
+  },
+  "finish_reasons": [
+    "length"
+  ],
+  "done": true,
+  "cancelled": false,
+  "ttft_s": 1.62880825,
+  "last_content_s": 1.835651291,
+  "elapsed_s": 1.84076075,
+  "content_chunks": 8,
+  "client_decode_tps_estimate": 33.84208608690878
+}

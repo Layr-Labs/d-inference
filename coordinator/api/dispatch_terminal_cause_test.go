@@ -38,7 +38,7 @@ func TestShouldStopFailover_TypedAdmissionTimeoutIsTransientCapacity(t *testing.
 
 	// The sanitizer derives a bounded capacity reason. Raw provider prose is
 	// discarded and cannot participate in classification.
-	if kind := classifyRejection(d.lastErrReason, d.lastErr, 0, 0); kind != rejectionTransientCapacity {
+	if kind := classifyRejection(d.lastErrReason, d.lastErr, 0, 0, ""); kind != rejectionTransientCapacity {
 		t.Fatalf("typed admission timeout classified %v, want transient capacity", kind)
 	}
 
@@ -60,6 +60,25 @@ func TestShouldStopFailover_TypedAdmissionTimeoutIsTransientCapacity(t *testing.
 	}
 	if d.terminalClientError {
 		t.Fatal("admission_timeout is capacity, never a terminal client error")
+	}
+}
+
+func TestShouldStopFailover_DeadlineReasonOverridesAdmissionTimeoutCause(t *testing.T) {
+	msg := typedAdmissionTimeoutMsg()
+	msg.ErrorReason = errorReasonDeadlineUnreachable
+	d := &dispatchState{s: newTestServerForDispatch(t), model: "m"}
+	d.setLastInferenceError(nil, msg)
+
+	if d.shouldStopFailover() {
+		t.Fatal("deadline refusal must continue to another untried provider")
+	}
+	if !d.lastFailureDeadline {
+		t.Fatal("deadline refusal was not latched for exhausted-candidate terminal")
+	}
+	if d.capacityRetries != 0 {
+		t.Fatalf(
+			"deadline refusal consumed %d generic capacity retries, want 0",
+			d.capacityRetries)
 	}
 }
 

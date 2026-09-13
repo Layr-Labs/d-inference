@@ -127,12 +127,21 @@ func (s *Server) openRouterEntryForConcrete(
 	}
 
 	registryEntry, hasRegistryEntry := registryByID[modelID]
+	modelType := catalogModel.ModelType
+	if aggregateType, found := aggregateTypeByID[modelID]; found {
+		modelType = aggregateType
+	}
+	var capabilities []string
+	if hasRegistryEntry {
+		capabilities = registryEntry.Capabilities
+	}
+	inputModalities, outputModalities := deriveModalities(modelType, capabilities)
 	entry := types.OpenRouterModel{
 		ID:                modelID,
 		HuggingFaceID:     huggingFaceIDForModel(modelID, registryEntry.Metadata),
 		Name:              openRouterModelName(catalogModel, registryEntry, hasRegistryEntry, modelID),
-		InputModalities:   []string{"text"},
-		OutputModalities:  []string{"text"},
+		InputModalities:   inputModalities,
+		OutputModalities:  outputModalities,
 		SupportedFeatures: []string{},
 		IsReady:           true,
 	}

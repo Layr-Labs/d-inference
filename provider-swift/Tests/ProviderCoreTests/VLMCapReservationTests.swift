@@ -49,7 +49,7 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 @Test func projectedDecodeBytesClampsImageSumToAggregateCap() {
     // Many unreadable-header images each charge the per-image cap; without the
     // aggregate clamp the sum would blow past the request-wide image ceiling
-    // validateMedia enforces. The projection must clamp to maxRequestImagePixels.
+    // buildUserInput enforces. The projection must clamp to maxRequestImagePixels.
     let uri = "data:image/png;base64,QUJD"  // unreadable -> per-image cap each
     let perImageCap = MediaIngest.maxImagePixels
     let aggCap = MediaIngest.maxRequestImagePixels
@@ -63,7 +63,7 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 }
 
 @Test func projectedDecodeBytesChargesVideoAggregateOncePerRequest() {
-    // validateMedia caps the SUM of all videos' frame pixels by
+    // buildUserInput caps the SUM of all videos' frame pixels by
     // maxRequestVideoFramePixels — so the projection charges that aggregate ONCE
     // regardless of video count. Charging per-video would over-reserve by the
     // video count and could falsely 503 a valid multi-video request. (The URI is

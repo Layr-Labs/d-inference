@@ -12,6 +12,12 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
         var tempFilesRemoved = 0
     }
 
+    struct Stats: Sendable, Equatable {
+        var ttlExpired = 0
+        var budgetEvicted = 0
+        var tempFilesRemoved = 0
+    }
+
     static let shared = SSDWholeRootMaintainer()
 
     private struct OwnedFile {
@@ -34,6 +40,11 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
     }
 
     private let maintenanceLock = NSLock()
+    // Heartbeat snapshots must not wait for filesystem traversal or epoch I/O.
+    private let statsLock = NSLock()
+    private var totals = Stats()
+
+    func statsSnapshot() -> Stats { statsLock.withLock { totals } }
     private let tasksLock = NSLock()
     private var periodicTasks: [String: Task<Void, Never>] = [:]
 
@@ -158,6 +169,11 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                 }
             }
             result.bytesAfter = total
+            statsLock.withLock {
+                totals.ttlExpired += result.ttlExpired
+                totals.budgetEvicted += result.budgetEvicted
+                totals.tempFilesRemoved += result.tempFilesRemoved
+            }
             return result
         }
     }
@@ -234,7 +250,9 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                         modelRoot: modelDir,
                         bytes: max(0, values.fileSize ?? 0),
                         modifiedAt: Int64(values.contentModificationDate?.timeIntervalSince1970 ?? 0),
-                        metadataReadable: (try? SSDBlockStore.readMetadataOnly(from: url)) != nil))
+                        metadataReadable: (try? SSDBlockStore.readMetadataOnly(
+                            from: url, maximumMetadataBytes: 1 << 20,
+                            maximumWrappedDEKBytes: 60)) != nil))
                 }
             }
         }

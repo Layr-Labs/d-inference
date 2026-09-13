@@ -34,6 +34,8 @@ extension CoordinatorClient {
             prefixCacheProtocol: prefixCache.protocolVersion,
             prefixCacheV2Models: prefixCache.protocolVersion == 2
                 ? prefixCache.models : nil,
+            prefixCacheMemoryModels: prefixCache.protocolVersion == 2
+                ? prefixCache.memoryModels : nil,
             prefixCacheStatuses: prefixCache.statuses,
             prefixCacheDonationOutcomes: prefixCache.donationOutcomes
         )
@@ -69,7 +71,12 @@ extension CoordinatorClient {
         let isActive = state.inferenceActive
         let activeModel = state.currentModel
         let warmModels = state.warmModels
-        let capacity = state.backendCapacity
+        // Stamp this heartbeat's capacity payload with the next per-connection
+        // capacity_seq and publish it as the quote snapshot (routing v2).
+        // EVERY heartbeat build flows through here — the 5s baseline and the
+        // event-triggered sends — so seq is dense, monotonic, and the
+        // published snapshot is exactly what the coordinator last saw.
+        let capacity = state.stampAndPublishHeartbeatCapacity(state.backendCapacity)
         let prefixCache = state.prefixCacheV2Advertisement()
         let metrics = SystemMetricsCollector.collect(cpuCores: config.hardware.cpuCores.total)
 
@@ -93,8 +100,14 @@ extension CoordinatorClient {
             ? (config.apnsEnvironment ?? "production")
             : config.apnsEnvironment
 
+        // A drain (update / shutdown) outranks serving/idle: the box may still
+        // be decoding in-flight work, but it refuses new work, and the
+        // coordinator must stop selecting it now rather than after enough
+        // 503 bounces trip a cooldown.
+        let status: ProviderStatus = state.refusingNewWork
+            ? .draining : (isActive ? .serving : .idle)
         let message = CoordinatorClientCodec.heartbeatMessage(
-            status: isActive ? .serving : .idle,
+            status: status,
             activeModel: activeModel,
             warmModels: warmModels,
             stats: stats.snapshot(),
@@ -105,8 +118,11 @@ extension CoordinatorClient {
             prefixCacheProtocol: prefixCache.protocolVersion,
             prefixCacheV2Models: prefixCache.protocolVersion == 2
                 ? prefixCache.models : nil,
+            prefixCacheMemoryModels: prefixCache.protocolVersion == 2
+                ? prefixCache.memoryModels : nil,
             prefixCacheStatuses: prefixCache.statuses,
-            prefixCacheDonationOutcomes: prefixCache.donationOutcomes
+            prefixCacheDonationOutcomes: prefixCache.donationOutcomes,
+            idleUnloadMins: config.idleUnloadMins
         )
 
         do {
@@ -117,10 +133,25 @@ extension CoordinatorClient {
             return json
         } catch {
             recordEncodeFailure("heartbeat", error)
-            // Last resort: a valid idle heartbeat keeps the connection alive
+            // Last resort: a minimal valid heartbeat keeps the connection alive
             // rather than shipping malformed bytes the coordinator would drop.
-            return "{\"type\":\"heartbeat\",\"status\":\"idle\",\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"nominal\"}}"
+            // It carries the status computed above — a draining box must not
+            // announce itself idle just because its capacity payload failed to
+            // encode, or the coordinator keeps routing to it.
+            return "{\"type\":\"heartbeat\",\"status\":\"\(status.rawValue)\",\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"nominal\"}}"
         }
+    }
+
+    /// Out-of-band event-triggered heartbeat (routing v2, Phase 1): reuses the
+    /// baseline heartbeat builder verbatim — same payload, same seq stamping,
+    /// same publication — and fires it on the live connection immediately.
+    /// Rate-capping and coalescing happen at the caller (`ProviderLoop`'s
+    /// `CapacityHeartbeatThrottle`); this method only refuses to write into a
+    /// dead or not-yet-registered session, where a heartbeat frame ahead of
+    /// `register` would be a protocol violation.
+    func sendEventHeartbeat() {
+        guard sessionRegistered, let connection = nwConnection else { return }
+        sendTextFrame(buildHeartbeatJSON(), on: connection, identifier: "heartbeat")
     }
 
 }

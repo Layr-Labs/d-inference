@@ -48,6 +48,7 @@ public struct ModelScanner: Sendable {
         "merges.txt",
         "preprocessor_config.json",
         "processor_config.json",
+        "video_preprocessor_config.json",
     ]
 
     // MARK: - Public API
@@ -207,7 +208,10 @@ public struct ModelScanner: Sendable {
         if filename == "chat_template.jinja" || filename == "chat_template.json" {
             return "template"
         }
-        if filename == "preprocessor_config.json" || filename == "processor_config.json" {
+        if filename == "preprocessor_config.json"
+            || filename == "processor_config.json"
+            || filename == "video_preprocessor_config.json"
+        {
             return "preprocessor"
         }
         return "other"

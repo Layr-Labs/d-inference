@@ -33,16 +33,30 @@ public protocol ModelPrefetcher: Sendable {
 public struct CatalogModelPrefetcher: ModelPrefetcher {
     private let catalogClient: ModelCatalogClient
     private let downloader: ModelDownloader
+    private let runtimeCapabilities: Set<ProviderRuntimeCapability>
 
-    public init(coordinatorURL: String, urlSession: URLSession = .shared) {
+    public init(
+        coordinatorURL: String,
+        urlSession: URLSession = .shared,
+        runtimeCapabilities: Set<ProviderRuntimeCapability> = []
+    ) {
         let client = ModelCatalogClient(coordinatorURL: coordinatorURL, urlSession: urlSession)
         self.catalogClient = client
-        self.downloader = ModelDownloader(urlSession: urlSession, catalogClient: client)
+        self.runtimeCapabilities = runtimeCapabilities
+        self.downloader = ModelDownloader(
+            urlSession: urlSession,
+            catalogClient: client,
+            runtimeCapabilities: runtimeCapabilities)
     }
 
-    public init(catalogClient: ModelCatalogClient, downloader: ModelDownloader) {
+    public init(
+        catalogClient: ModelCatalogClient,
+        downloader: ModelDownloader,
+        runtimeCapabilities: Set<ProviderRuntimeCapability> = []
+    ) {
         self.catalogClient = catalogClient
         self.downloader = downloader
+        self.runtimeCapabilities = runtimeCapabilities
     }
 
     public func prefetchToDisk(
@@ -52,6 +66,14 @@ public struct CatalogModelPrefetcher: ModelPrefetcher {
         let catalog = try await catalogClient.fetchCatalog()
         guard let model = catalog.first(where: { $0.id == modelID }) else {
             throw ModelCatalogError.modelNotInCatalog(modelID)
+        }
+        let eligibility = ModelRuntimeRequirements.evaluate(
+            modelID: model.id,
+            catalogRequirements: model.requiredProviderCapabilities,
+            available: runtimeCapabilities)
+        guard eligibility.isEligible else {
+            throw ModelCatalogError.ineligible(
+                ModelRuntimeIneligibleError(eligibility: eligibility).localizedDescription)
         }
         guard model.r2Prefix != nil, model.aggregateSHA256 != nil else {
             throw ModelCatalogError.downloadFailed(

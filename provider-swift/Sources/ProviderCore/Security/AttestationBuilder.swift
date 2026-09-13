@@ -27,12 +27,17 @@ private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "atte
 public struct AttestationBlob: Codable, Sendable {
     public let authenticatedRootEnabled: Bool
     public let binaryHash: String?
+    /// Structured hardware family and live runtime identity are signed here,
+    /// not inferred from unsigned Register siblings at the coordinator.
+    public let chipFamily: String?
     public let chipName: String
     public let encryptionPublicKey: String?
     public let hardwareModel: String
+    public let metallibHash: String?
     public let osVersion: String
     public let publicKey: String
     public let rdmaDisabled: Bool
+    public let runtimeCapabilities: [ProviderRuntimeCapability]?
     public let secureBootEnabled: Bool
     public let secureEnclaveAvailable: Bool
     public let serialNumber: String?
@@ -43,12 +48,15 @@ public struct AttestationBlob: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case authenticatedRootEnabled
         case binaryHash
+        case chipFamily
         case chipName
         case encryptionPublicKey
         case hardwareModel
+        case metallibHash
         case osVersion
         case publicKey
         case rdmaDisabled
+        case runtimeCapabilities
         case secureBootEnabled
         case secureEnclaveAvailable
         case serialNumber
@@ -110,26 +118,62 @@ public struct StatusCanonicalInput: Sendable, Equatable {
     }
 }
 
+private struct StatusCanonicalPayload: Encodable {
+    let nonce: String
+    let timestamp: String
+    let rdmaDisabled: Bool?
+    let sipEnabled: Bool?
+    let secureBootEnabled: Bool?
+    let binaryHash: String?
+    let activeModelHash: String?
+    let pythonHash: String?
+    let runtimeHash: String?
+    let templateHashes: [String: String]?
+    let modelHashes: [String: String]?
+
+    enum CodingKeys: String, CodingKey {
+        case nonce
+        case timestamp
+        case rdmaDisabled = "rdma_disabled"
+        case sipEnabled = "sip_enabled"
+        case secureBootEnabled = "secure_boot_enabled"
+        case binaryHash = "binary_hash"
+        case activeModelHash = "active_model_hash"
+        case pythonHash = "python_hash"
+        case runtimeHash = "runtime_hash"
+        case templateHashes = "template_hashes"
+        case modelHashes = "model_hashes"
+    }
+}
+
 public enum StatusCanonical {
     public static func build(_ input: StatusCanonicalInput) throws -> Data {
-        var object: [String: Any] = [
-            "nonce": input.nonce,
-            "timestamp": input.timestamp,
-        ]
-        if let value = input.rdmaDisabled { object["rdma_disabled"] = value }
-        if let value = input.sipEnabled { object["sip_enabled"] = value }
-        if let value = input.secureBootEnabled { object["secure_boot_enabled"] = value }
-        if let value = nonEmpty(input.binaryHash) { object["binary_hash"] = value }
-        if let value = nonEmpty(input.activeModelHash) { object["active_model_hash"] = value }
-        if let value = nonEmpty(input.pythonHash) { object["python_hash"] = value }
-        if let value = nonEmpty(input.runtimeHash) { object["runtime_hash"] = value }
-        if !input.templateHashes.isEmpty { object["template_hashes"] = input.templateHashes }
-        if !input.modelHashes.isEmpty { object["model_hashes"] = input.modelHashes }
-
-        return try JSONSerialization.data(
-            withJSONObject: object,
-            options: [.sortedKeys, .withoutEscapingSlashes]
+        let payload = StatusCanonicalPayload(
+            nonce: input.nonce,
+            timestamp: input.timestamp,
+            rdmaDisabled: input.rdmaDisabled,
+            sipEnabled: input.sipEnabled,
+            secureBootEnabled: input.secureBootEnabled,
+            binaryHash: nonEmpty(input.binaryHash),
+            activeModelHash: nonEmpty(input.activeModelHash),
+            pythonHash: nonEmpty(input.pythonHash),
+            runtimeHash: nonEmpty(input.runtimeHash),
+            templateHashes: input.templateHashes.isEmpty ? nil : input.templateHashes,
+            modelHashes: input.modelHashes.isEmpty ? nil : input.modelHashes
         )
+
+        // JSONEncoder's sortedKeys ordering matches Go's encoding/json bytewise
+        // string-key ordering, including for mixed-case keys in nested maps.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let encoded = try encoder.encode(payload)
+        // Go escapes these two scalars even with HTML escaping disabled.
+        // Replace actual scalars after encoding, preserving literal backslash-u
+        // text and JSONEncoder's existing string escaping.
+        let canonical = String(decoding: encoded, as: UTF8.self)
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+        return Data(canonical.utf8)
     }
 
     private static func nonEmpty(_ value: String?) -> String? {
@@ -171,17 +215,25 @@ public final class AttestationBuilder: @unchecked Sendable {
     ///     coordinator verifies this matches the expected blessed version.
     public func buildAttestation(
         encryptionPublicKey: String? = nil,
-        binaryHash: String? = nil
+        binaryHash: String? = nil,
+        chipFamily: ChipFamily? = nil,
+        runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
+        metallibHash: String? = nil
     ) throws -> SignedAttestation {
         let blob = AttestationBlob(
             authenticatedRootEnabled: checkAuthenticatedRootEnabled(),
             binaryHash: binaryHash,
+            chipFamily: chipFamily?.rawValue,
             chipName: detectChipName(),
             encryptionPublicKey: encryptionPublicKey,
             hardwareModel: detectHardwareModel(),
+            metallibHash: metallibHash,
             osVersion: detectOSVersion(),
             publicKey: identity.publicKeyBase64,
             rdmaDisabled: checkRDMADisabled(),
+            runtimeCapabilities: runtimeCapabilities.isEmpty
+                ? nil
+                : runtimeCapabilities.sorted(),
             secureBootEnabled: checkSecureBootEnabled(),
             secureEnclaveAvailable: SecureEnclave.isAvailable,
             serialNumber: detectSerialNumber(),
@@ -213,11 +265,17 @@ public final class AttestationBuilder: @unchecked Sendable {
     /// preserve the exact encoding needed for signature verification.
     public func buildAttestationJSON(
         encryptionPublicKey: String? = nil,
-        binaryHash: String? = nil
+        binaryHash: String? = nil,
+        chipFamily: ChipFamily? = nil,
+        runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
+        metallibHash: String? = nil
     ) throws -> Data {
         let signed = try buildAttestation(
             encryptionPublicKey: encryptionPublicKey,
-            binaryHash: binaryHash
+            binaryHash: binaryHash,
+            chipFamily: chipFamily,
+            runtimeCapabilities: runtimeCapabilities,
+            metallibHash: metallibHash
         )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

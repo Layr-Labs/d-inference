@@ -2,6 +2,8 @@
 // myProvider / myProvidersResponse / mySummaryResponse structs in
 // coordinator/internal/api/me_handlers.go.
 
+import type { CapacityTelemetry } from "@/lib/telemetry-types";
+
 export interface MyHardware {
   machine_model?: string;
   chip_name?: string;
@@ -66,9 +68,13 @@ export interface MyBackendSlot {
   // steady state and a regression wearing the same label. This field is what
   // separates them.
   kv_backend_fallback_reason?: string;
+  prefix_cache?: PrefixCacheTelemetry;
+  paged_storage?: PagedStorageTelemetry;
 }
 
 export interface MyBackendCapacity {
+  telemetry?: CapacityTelemetry;
+  prefix_cache_maintenance?: PrefixCacheMaintenanceTelemetry;
   slots: MyBackendSlot[];
   gpu_memory_active_gb: number;
   gpu_memory_peak_gb: number;
@@ -100,7 +106,6 @@ export interface MyProvider {
   models: MyModelInfo[];
   backend?: string;
   version?: string;
-  serial_number?: string;
 
   trust_level: "hardware" | "self_signed" | "none" | string;
   attested: boolean;
@@ -115,9 +120,6 @@ export interface MyProvider {
   secure_boot_enabled: boolean;
   authenticated_root_enabled: boolean;
   system_volume_hash?: string;
-  mda_cert_chain_b64?: string[];
-  mda_serial?: string;
-  mda_udid?: string;
   mda_os_version?: string;
   mda_sepos_version?: string;
 
@@ -130,6 +132,10 @@ export interface MyProvider {
 
   system_metrics?: MySystemMetrics;
   backend_capacity?: MyBackendCapacity;
+  /** Idle-memory policy reported in heartbeats: 0 = always ready (models
+   *  stay loaded), N = unloaded after N idle minutes and reloaded on demand.
+   *  Absent for offline machines and providers too old to report it. */
+  idle_unload_mins?: number;
   warm_models?: string[];
   current_model?: string;
   pending_requests: number;
@@ -154,13 +160,6 @@ export interface MyProvidersResponse {
   min_provider_version: string;
   heartbeat_timeout_seconds: number;
   challenge_max_age_seconds: number;
-}
-
-// Response from DELETE /v1/me/providers/{serial}.
-export interface DeleteProviderResponse {
-  deleted: boolean;
-  serial: string;
-  rows_removed: number;
 }
 
 export interface MyFleetCounts {
@@ -188,4 +187,65 @@ export interface MySummaryResponse {
   counts: MyFleetCounts;
   latest_provider_version: string;
   min_provider_version: string;
+}
+
+export interface PrefixCacheTelemetry {
+  kind: "attention_blocks" | "complete_checkpoint";
+  ttl_expired_total?: number;
+  io?: PrefixCacheIOTelemetry;
+  generation: number;
+  sample_seq: number;
+  sample_age_ms: number;
+  entries: number;
+  disk_bytes: number;
+  staging_bytes: number;
+  stages_total: number;
+  files_written_total: number;
+  written_bytes_total: number;
+  donation_drops_total: number;
+  corrupt_drops_total: number;
+  evictions_total: number;
+}
+
+export interface PrefixCacheIOTelemetry {
+  staging_peak_bytes: number;
+  files_read_total: number;
+  read_bytes_total: number;
+  stage_read_bytes_total: number;
+  donation_read_bytes_total: number;
+  stage_us_total: number;
+  write_us_total: number;
+}
+
+export interface PrefixCacheMaintenanceTelemetry {
+  ttl_expired_total: number;
+  budget_evicted_total: number;
+  temp_removed_total: number;
+}
+
+// Optional queue-captured allocator observation. Overlapping byte gauges must
+// not be summed; missing fields mean uninstrumented, not zero ownership.
+export interface PagedStorageTelemetry {
+  kind: "segmented";
+  generation: number;
+  sample_seq: number;
+  sample_age_ms: number;
+  grant_bytes: number;
+  committed_bytes: number;
+  reserved_page_bytes: number;
+  live_page_bytes: number;
+  poison_bytes: number;
+  slack_bytes: number;
+  over_grant_bytes: number;
+  segment_count: number;
+  address_pages: number;
+  // Padding cannot store KV; allowance is the last settled preparation, not retained memory.
+  allocator_padding_bytes?: number;
+  last_allocation_allowance_bytes?: number;
+  nominal_kv_bytes?: number;
+  physical_floor_overhead_bytes?: number;
+  allocation_failures_total?: number;
+  admission_refusals_total?: number;
+  grant_refusals_total?: number;
+  grant_epoch_retries_total?: number;
 }

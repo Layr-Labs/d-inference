@@ -115,6 +115,7 @@ func TestProviderDedicatedToPatternLocked(t *testing.T) {
 	empty := makeSchedulerProvider(t, reg, "empty", gemmaBuild, 80)
 	empty.mu.Lock()
 	empty.Models = nil
+	empty.syncModelIndexLocked()
 	empty.mu.Unlock()
 	if check(empty) {
 		t.Fatal("provider advertising nothing must NOT be dedicated")

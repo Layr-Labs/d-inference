@@ -126,9 +126,21 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-update known binary hashes and runtime manifest from all active releases.
-	s.SyncBinaryHashes()
-	s.SyncRuntimeManifest()
+	// Auto-update known binary hashes and runtime manifest from all active
+	// releases. The release row has already committed and GET /v1/releases/latest
+	// serves straight from the store, so a transient inventory-read failure must
+	// not strand the policy on the pre-registration snapshot: providers would
+	// install a release the policy can never authorize and — with no background
+	// resync — stay unroutable indefinitely. When the post-mutation re-read
+	// fails, converge the in-memory policy from the committed mutation itself;
+	// registration stays atomic and successful for the caller, and the next
+	// successful sync rebuilds from the full inventory.
+	if err := s.SyncBinaryHashes(); err != nil {
+		s.convergeReleasePolicyWithCommittedRelease(&release, err)
+	}
+	if err := s.SyncRuntimeManifest(); err != nil {
+		s.convergeRuntimeManifestWithCommittedRelease(&release, err)
+	}
 
 	// Invalidate cached version/manifest/release responses so providers and
 	// install.sh see the new release on the next request instead of waiting
@@ -486,7 +498,13 @@ func (s *Server) handleAdminListReleases(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	releases := s.store.ListReleases()
+	releases, err := s.store.ListReleasesWithError()
+	if err != nil {
+		s.logger.Error("admin: release inventory read failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse(
+			"release_inventory_unavailable", "failed to read release inventory"))
+		return
+	}
 	if releases == nil {
 		releases = []store.Release{}
 	}
@@ -516,8 +534,28 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 	if req.Platform == "" {
 		req.Platform = defaultReleasePlatform
 	}
-	if s.binaryHashEnforce && !req.Force {
-		if release, ok := findReleaseForDeactivation(s.store.ListReleases(), req.Version, req.Platform); ok {
+	// In-use protection guards BOTH code-identity gates: the legacy
+	// self-reported binaryHash allowlist (binaryHashEnforce, default false) and
+	// the application-evidence routing gate, which requires active releases
+	// whenever a release inventory has ever been published (snapshot.Required).
+	// Gating the precheck on the legacy flag alone would let an ordinary
+	// force=false delete deactivate a release that still backs connected
+	// providers' evidence — the follow-up sync would clear their evidence and
+	// deroute them. force=true remains the explicit override for intentional
+	// pulls of a compromised release.
+	inUseProtectionActive := s.binaryHashEnforce
+	if snapshot := s.releaseTrustPolicy.Load(); snapshot != nil && snapshot.Required {
+		inUseProtectionActive = true
+	}
+	if inUseProtectionActive && !req.Force {
+		releases, err := s.store.ListReleasesWithError()
+		if err != nil {
+			s.logger.Error("admin: release deactivation precheck failed closed", "error", err)
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse(
+				"release_inventory_unavailable", "failed to read release inventory"))
+			return
+		}
+		if release, ok := findReleaseForDeactivation(releases, req.Version, req.Platform); ok {
 			if activeProviders := s.registry.CountProvidersByBinaryHash(release.BinaryHash); activeProviders > 0 {
 				writeJSON(w, http.StatusConflict, errorResponse(
 					"release_in_use",
@@ -533,17 +571,39 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Re-sync known hashes after deactivation.
-	s.SyncBinaryHashes()
-	s.SyncRuntimeManifest()
+	// Re-sync known hashes and the runtime manifest after deactivation. The
+	// deactivation has already committed, so a post-mutation inventory-read
+	// failure must NOT retain a snapshot that still authorizes the deactivated
+	// release: there is no background resync, and in a force=true emergency
+	// pull of a compromised release the affected providers would keep routing
+	// until an admin happened to retry. Mirror the committed-registration
+	// convergence — fold the known version/platform deactivation into the
+	// retained snapshot, bump the generation, and invalidate/kick the affected
+	// providers. The response still surfaces a warning, and the next
+	// successful sync rebuilds from the exact inventory.
+	var syncWarnings []string
+	if err := s.SyncBinaryHashes(); err != nil {
+		s.convergeReleasePolicyWithCommittedDeactivation(req.Version, req.Platform, err)
+		syncWarnings = append(syncWarnings,
+			"release policy synchronization failed; the policy was converged from the committed deactivation and the next successful sync rebuilds from inventory")
+	}
+	if err := s.SyncRuntimeManifest(); err != nil {
+		s.convergeRuntimeManifestWithCommittedDeactivation(req.Version, req.Platform, err)
+		syncWarnings = append(syncWarnings,
+			"runtime policy synchronization failed; the manifest was converged from the committed deactivation and the next successful sync rebuilds from inventory")
+	}
 	s.invalidateReleaseCaches(req.Platform)
 
 	s.logger.Info("admin: release deactivated", "version", req.Version, "platform", req.Platform)
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"status":   "release_deactivated",
 		"version":  req.Version,
 		"platform": req.Platform,
-	})
+	}
+	if len(syncWarnings) > 0 {
+		resp["warning"] = strings.Join(syncWarnings, "; ")
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func findReleaseForDeactivation(releases []store.Release, version, platform string) (store.Release, bool) {

@@ -294,7 +294,7 @@ final class JinjaSanitizationTests: XCTestCase {
         }
     }
 
-    func testAssistantToolCallWithContentAndThinkingIsRejectedBeforeTemplate() {
+    func testAssistantToolCallWithContentAndThinkingRendersDetachedTurn() throws {
         let toolCalls: [any Sendable] = [
             [
                 "function": ["name": "get_weather"] as [String: any Sendable]
@@ -307,12 +307,11 @@ final class JinjaSanitizationTests: XCTestCase {
             "tool_calls": toolCalls,
         ]]
 
-        // P2: content+thinking sharing a turn with a tool_call is now NORMALIZED
-        // (thinking split into its own preceding assistant turn) rather than rejected.
-        let out = try! ChatTemplateFixes.normalizeMessages(
+        let out = try ChatTemplateFixes.normalizeMessages(
             messages, context: .init(modelId: "gpt-oss-20b"))
         XCTAssertEqual(out.count, 2, "thinking must be split into a standalone turn")
         XCTAssertEqual(out[0]["thinking"] as? String, "need weather")
+        XCTAssertEqual(out[0]["content"] as? String, "")
         XCTAssertNil(out[0]["tool_calls"], "the thinking turn carries no tool_call")
         XCTAssertEqual(out[1]["content"] as? String, "call the tool")
         XCTAssertEqual((out[1]["tool_calls"] as? [any Sendable])?.count, 1)

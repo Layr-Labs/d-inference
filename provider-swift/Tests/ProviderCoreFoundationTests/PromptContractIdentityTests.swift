@@ -87,7 +87,7 @@ struct PromptContractIdentityTests {
         }
     }
 
-    @Test("provider-local time keeps prompt caching cold")
+    @Test("only supported request-owned date calls produce a prompt contract")
     func dynamicTimeTemplateDirectory() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "prompt-contract-dynamic-\(UUID().uuidString)", isDirectory: true)
@@ -100,6 +100,9 @@ struct PromptContractIdentityTests {
         try Data(#"{{ strftime_now("%Y-%m-%d") }}"#.utf8).write(
             to: root.appendingPathComponent("chat_template.jinja"))
 
+        #expect(try PromptContractIdentity.compute(modelDirectory: root).count == 64)
+        try Data(#"{{ strftime_now("%H:%M:%S") }}"#.utf8).write(
+            to: root.appendingPathComponent("chat_template.jinja"))
         #expect(throws: PromptContractIdentity.Error.invalidArtifact) {
             try PromptContractIdentity.compute(modelDirectory: root)
         }

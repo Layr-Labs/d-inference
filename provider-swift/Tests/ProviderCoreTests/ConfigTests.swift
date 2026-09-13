@@ -40,6 +40,53 @@ import Testing
     #expect(decoded.backend.maxModelSlots == 5)
 }
 
+@Test func prefillDeadlineModePreservesAbsentInheritance() throws {
+    let config = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+    """)
+    #expect(config.backend.prefillDeadlineMode == nil)
+    #expect(
+        PrefillDeadlineMode.resolve(
+            configured: config.backend.prefillDeadlineMode,
+            environment: [:]) == .enforce)
+
+    let serialized = ConfigManager.serialize(config)
+    #expect(!serialized.contains("prefill_deadline_mode"))
+    #expect(ConfigManager.parse(serialized).backend.prefillDeadlineMode == nil)
+}
+
+@Test func prefillDeadlineModeParsesAndSerializes() throws {
+    let disabled = ConfigManager.parse("""
+    [backend]
+    prefill_deadline_mode = "off"
+    """)
+    #expect(disabled.backend.prefillDeadlineMode == .off)
+    let enforced = ConfigManager.parse("""
+    [backend]
+    prefill_deadline_mode = "enforce"
+    """)
+    #expect(enforced.backend.prefillDeadlineMode == .enforce)
+
+    let original = ProviderConfig(
+        provider: ProviderSettings(name: "test-provider"),
+        backend: BackendSettings(prefillDeadlineMode: .off),
+        coordinator: CoordinatorSettings())
+    let serialized = ConfigManager.serialize(original)
+    #expect(serialized.contains("prefill_deadline_mode = 'off'"))
+    #expect(
+        ConfigManager.parse(serialized).backend.prefillDeadlineMode == .off)
+
+    let enforcing = ProviderConfig(
+        provider: ProviderSettings(name: "test-provider"),
+        backend: BackendSettings(prefillDeadlineMode: .enforce),
+        coordinator: CoordinatorSettings())
+    let enforcingTOML = ConfigManager.serialize(enforcing)
+    #expect(enforcingTOML.contains("prefill_deadline_mode = 'enforce'"))
+    #expect(
+        ConfigManager.parse(enforcingTOML).backend.prefillDeadlineMode == .enforce)
+}
+
 // v0.8.0 removed KV quantization from the product. Effectively every
 // provider.toml in the field carries `kv_quant` because the serializer used
 // to round-trip it, so an UPGRADING provider must load such a config without
@@ -66,6 +113,7 @@ import Testing
     #expect(config.backend.maxModelSlots == 7)
     #expect(config.backend.idleTimeoutMins == 30)
     #expect(config.backend.engineV2KVBackend == "paged")
+    #expect(config.backend.mtpMode == .on)
     #expect(config.backend.mtp == true)
 }
 
@@ -383,15 +431,15 @@ import Testing
     }
 }
 
-// The guard against the exact failure this release exists to avoid: bumping
-// the default constant without adding a migration step reaches fresh installs
-// only and silently leaves the whole fleet where it was.
-@Test func newestMigrationStepLandsOnTheCurrentDefault() throws {
-    let newest = try #require(ConcurrencyDefaultMigration.steps.last)
-    #expect(newest.toCap == BackendSettings.defaultEngineV2MaxConcurrent)
-    // And it carries the file to the schema version this binary speaks, so no
-    // second boot is needed to finish the job.
-    #expect(newest.toVersion == ProviderConfig.currentConfigVersion)
+// Guard both generated-value migrations against drifting from the defaults
+// and schema generation they are meant to establish.
+@Test func migrationStepsLandOnTheirCurrentPolicies() throws {
+    let newestConcurrency = try #require(ConcurrencyDefaultMigration.steps.last)
+    #expect(newestConcurrency.toCap == BackendSettings.defaultEngineV2MaxConcurrent)
+    #expect(newestConcurrency.toVersion <= ProviderConfig.currentConfigVersion)
+    #expect(
+        MTPModeDefaultMigration.targetConfigVersion
+            == ProviderConfig.currentConfigVersion)
 }
 
 // The stamp has to survive the serializer, or a deliberate cap could never be

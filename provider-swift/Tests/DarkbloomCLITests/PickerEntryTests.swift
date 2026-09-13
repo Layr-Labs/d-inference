@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import ProviderCore
 
@@ -13,14 +14,21 @@ import ProviderCore
 @Suite("Start.buildPickerEntries classification")
 struct PickerEntryTests {
 
-    private func model(_ id: String, sizeGb: Double = 10, minRamGb: Int? = nil) -> CatalogModel {
+    private func model(
+        _ id: String,
+        displayName: String? = nil,
+        sizeGb: Double = 10,
+        minRamGb: Int? = nil,
+        requiredCapabilities: [ProviderRuntimeCapability]? = nil
+    ) -> CatalogModel {
         CatalogModel(
             id: id,
             s3Name: id,
-            displayName: id,
+            displayName: displayName ?? id,
             sizeGb: sizeGb,
             minRamGb: minRamGb,
-            r2Prefix: "v2/\(id)/v1"
+            r2Prefix: "v2/\(id)/v1",
+            requiredProviderCapabilities: requiredCapabilities
         )
     }
 
@@ -37,6 +45,139 @@ struct PickerEntryTests {
             minRamGb: nil,
             downloaded: downloaded
         )
+    }
+
+    private func alias(
+        id: String,
+        displayName: String,
+        desired: String,
+        previous: String? = nil,
+        retired: [String]? = nil,
+        primary: String? = nil
+    ) throws -> CatalogAlias {
+        var object: [String: Any] = [
+            "id": id,
+            "display_name": displayName,
+            "desired_build": desired,
+        ]
+        if let previous {
+            object["previous_build"] = previous
+        }
+        if let retired {
+            object["retired_builds"] = retired
+        }
+        if let primary {
+            object["primary_build"] = primary
+        }
+        let data = try JSONSerialization.data(withJSONObject: object)
+        return try JSONDecoder().decode(CatalogAlias.self, from: data)
+    }
+
+    private func pickerRows(
+        models: [CatalogModel],
+        aliases: [CatalogAlias],
+        runtimeCapabilities: Set<ProviderRuntimeCapability> = []
+    ) -> [Start.PickerCatalogRow] {
+        let catalog = Start.evaluateEligiblePickerCatalog(
+            models: models,
+            aliases: aliases,
+            runtimeCapabilities: runtimeCapabilities)
+        return Start.pickerCatalogRows(catalog: catalog)
+    }
+
+    // MARK: - Runtime eligibility and public aliases
+
+    @Test("protected desired build falls back to the eligible previous build")
+    func protectedDesiredUsesEligiblePrevious() throws {
+        let desiredID = ModelRuntimeRequirements.qwen38ConcreteModelID
+        let previousID = "EigenLabs/Qwen3.8-27B-previous"
+        let publicName = "Qwen 3.8 27B"
+        let rows = pickerRows(
+            models: [model(desiredID), model(previousID)],
+            aliases: [
+                try alias(
+                    id: "qwen-3.8-27b",
+                    displayName: publicName,
+                    desired: desiredID,
+                    previous: previousID,
+                    primary: desiredID),
+            ])
+
+        #expect(rows.map(\.model.id) == [previousID])
+        #expect(rows.map(\.displayName) == [publicName])
+    }
+
+    @Test("when both alias builds are eligible the desired build wins")
+    func bothEligibleUsesDesiredAndHidesPrevious() throws {
+        let desiredID = ModelRuntimeRequirements.qwen38ConcreteModelID
+        let previousID = "EigenLabs/Qwen3.8-27B-previous"
+        let publicName = "Qwen 3.8 27B"
+        let rows = pickerRows(
+            models: [model(desiredID), model(previousID)],
+            aliases: [
+                try alias(
+                    id: "qwen-3.8-27b",
+                    displayName: publicName,
+                    desired: desiredID,
+                    previous: previousID,
+                    primary: desiredID),
+            ],
+            runtimeCapabilities: ModelRuntimeRequirements.qwen38RequiredCapabilities)
+
+        #expect(rows.map(\.model.id) == [desiredID])
+        #expect(rows.map(\.displayName) == [publicName])
+    }
+
+    @Test("an alias is omitted when neither desired nor previous is eligible")
+    func neitherAliasBuildEligibleIsOmitted() throws {
+        let desiredID = ModelRuntimeRequirements.qwen38ConcreteModelID
+        let previousID = "EigenLabs/Qwen3.8-27B-previous"
+        let rows = pickerRows(
+            models: [
+                model(desiredID),
+                model(previousID, requiredCapabilities: [.mlxNAX]),
+            ],
+            aliases: [
+                try alias(
+                    id: "qwen-3.8-27b",
+                    displayName: "Qwen 3.8 27B",
+                    desired: desiredID,
+                    previous: previousID,
+                    primary: desiredID),
+            ])
+
+        #expect(rows.isEmpty)
+    }
+
+    @Test("an unrelated alias still selects its eligible desired build")
+    func unrelatedAliasStillUsesEligibleDesired() throws {
+        let qwenPreviousID = "EigenLabs/Qwen3.8-27B-previous"
+        let otherDesiredID = "EigenLabs/Other-Model-v2"
+        let otherPreviousID = "EigenLabs/Other-Model-v1"
+        let rows = pickerRows(
+            models: [
+                model(ModelRuntimeRequirements.qwen38ConcreteModelID),
+                model(qwenPreviousID, requiredCapabilities: [.mlxNAX]),
+                model(otherDesiredID),
+                model(otherPreviousID),
+            ],
+            aliases: [
+                try alias(
+                    id: "qwen-3.8-27b",
+                    displayName: "Qwen 3.8 27B",
+                    desired: ModelRuntimeRequirements.qwen38ConcreteModelID,
+                    previous: qwenPreviousID,
+                    primary: ModelRuntimeRequirements.qwen38ConcreteModelID),
+                try alias(
+                    id: "other-model",
+                    displayName: "Other Model",
+                    desired: otherDesiredID,
+                    previous: otherPreviousID,
+                    primary: otherDesiredID),
+            ])
+
+        #expect(rows.map(\.model.id) == [otherDesiredID])
+        #expect(rows.map(\.displayName) == ["Other Model"])
     }
 
     // MARK: - resolveFallbackSelection (non-TTY picker won't-fit guard)

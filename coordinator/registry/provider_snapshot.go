@@ -36,7 +36,7 @@ func (r *Registry) ListProviders() []ProviderSnapshot {
 			serial = p.AttestationResult.SerialNumber
 			hardwareModel = p.AttestationResult.HardwareModel
 		}
-		warm := warmServingModel(p)
+		warm := r.warmServingModelLocked(p)
 		out = append(out, ProviderSnapshot{
 			ID:             p.ID,
 			ProviderKey:    p.PublicKey,
@@ -56,29 +56,89 @@ func (r *Registry) ListProviders() []ProviderSnapshot {
 	return out
 }
 
-// warmServingModel returns the model that counts as "loaded for routing" for
-// base-rewards eligibility, using the authoritative backend slot state
-// when present (a slot is warm only in "running"/"idle", matching the scheduler
-// at registry.go's warm check), so a crashed/reloading/idle_shutdown slot with
-// stale legacy fields is NOT treated as serving. Falls back to the reported
-// CurrentModel/WarmModels only for legacy providers that send no BackendCapacity.
-// Caller must hold p.mu.
-func warmServingModel(p *Provider) string {
+// warmServingModelLocked returns a model that is both loaded and currently
+// eligible for routing. Raw heartbeat inventory remains on Provider, but cannot
+// earn base rewards after a catalog capability change. Caller holds r.mu and
+// p.mu.
+func (r *Registry) warmServingModelLocked(p *Provider) string {
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
-			if (slot.State == "running" || slot.State == "idle") && slot.Model != "" {
+			if slotStateModelLoaded(slot.State) &&
+				r.providerServesRoutableModelLocked(p, slot.Model, false) {
 				return slot.Model
 			}
 		}
-		return "" // BackendCapacity present but no warm slot → nothing serving
+		return ""
 	}
-	if p.CurrentModel != "" {
+	if p.CurrentModel != "" &&
+		r.providerServesRoutableModelLocked(p, p.CurrentModel, false) {
 		return p.CurrentModel
 	}
-	if len(p.WarmModels) > 0 {
-		return p.WarmModels[0]
+	for _, modelID := range p.WarmModels {
+		if r.providerServesRoutableModelLocked(p, modelID, false) {
+			return modelID
+		}
 	}
 	return ""
+}
+
+// PublicProviderModelSnapshot is the capability-filtered model view exposed by
+// public provider/statistics surfaces.
+type PublicProviderModelSnapshot struct {
+	Models       []string
+	CurrentModel string
+}
+
+// PublicProviderModels returns detached, live catalog-eligible model state for
+// each connected provider. Catalog hot changes are reflected without rewriting
+// the provider's raw inventory.
+func (r *Registry) PublicProviderModels() map[string]PublicProviderModelSnapshot {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]PublicProviderModelSnapshot, len(r.providers))
+
+	// Every provider's eligible model IDs share ONE backing array instead of
+	// one slice allocation per provider: at fleet scale (~1,260 providers) the
+	// per-provider allocations were the entire cost of this walk, paid as GC
+	// pressure by /v1/stats and /v1/providers/attestation. Each provider's view
+	// is a 3-index sub-slice (cap == len), so a consumer append can never write
+	// into a neighbour's entries. The size pass is only a hint — both passes
+	// take p.mu, but p.Models may change or grow between them (models_update
+	// and provider-model merges mutate and append it in place); append then
+	// reallocates, and views already handed out keep their (unchanged) old
+	// array. A provider with no eligible model still gets a non-nil empty slice:
+	// stats serializes it straight to JSON and must emit [] rather than null.
+	total := 0
+	for _, p := range r.providers {
+		p.mu.Lock()
+		total += len(p.Models)
+		p.mu.Unlock()
+	}
+	buf := make([]string, 0, total)
+
+	for id, p := range r.providers {
+		p.mu.Lock()
+		start := len(buf)
+		current := ""
+		for _, model := range p.Models {
+			if !r.providerModelAllowedByCatalogLocked(p, model) {
+				continue
+			}
+			buf = append(buf, model.ID)
+			// The current model is exposed only when the provider advertises it
+			// as a catalog-eligible entry — the same predicate as the filter.
+			if p.CurrentModel != "" && model.ID == p.CurrentModel {
+				current = p.CurrentModel
+			}
+		}
+		end := len(buf)
+		p.mu.Unlock()
+		out[id] = PublicProviderModelSnapshot{
+			Models:       buf[start:end:end],
+			CurrentModel: current,
+		}
+	}
+	return out
 }
 
 // TrustMeetsMinimum reports whether a trust level satisfies the registry's

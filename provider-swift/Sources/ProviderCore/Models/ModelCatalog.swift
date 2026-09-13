@@ -6,7 +6,8 @@
 /// endpoint is consumed by the console UI and the `darkbloom models`
 /// CLI verb.
 ///
-/// Downloads pull from R2 directly (the coordinator never fronts model
+/// Downloads prefer a pinned Hugging Face artifact when configured, with R2
+/// fallback (the coordinator never fronts model
 /// weights). The model lives in the standard HuggingFace cache layout
 /// at `~/.cache/huggingface/hub/models--{org}--{name}/snapshots/{hash}/`,
 /// matching what `ModelScanner` already discovers.
@@ -34,6 +35,7 @@ public struct CatalogModel: Codable, Sendable, Equatable {
     public let weightHash: String?
     public let version: String?
     public let r2Prefix: String?
+    public let huggingFaceArtifact: HuggingFaceArtifact?
     public let aggregateSHA256: String?
     public let totalSizeBytes: Int64?
     public let fileCount: Int?
@@ -44,6 +46,7 @@ public struct CatalogModel: Codable, Sendable, Equatable {
     public let capabilities: [String]?
     public let runtimeParameters: [String: JSONValue]?
     public let metadata: [String: JSONValue]?
+    public let requiredProviderCapabilities: [ProviderRuntimeCapability]?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -58,6 +61,7 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         case weightHash = "weight_hash"
         case version
         case r2Prefix = "r2_prefix"
+        case huggingFaceArtifact = "hugging_face_artifact"
         case aggregateSHA256 = "aggregate_sha256"
         case totalSizeBytes = "total_size_bytes"
         case fileCount = "file_count"
@@ -68,6 +72,7 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         case capabilities
         case runtimeParameters = "runtime_parameters"
         case metadata
+        case requiredProviderCapabilities = "required_provider_capabilities"
     }
 
     public init(
@@ -83,6 +88,7 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         weightHash: String? = nil,
         version: String? = nil,
         r2Prefix: String? = nil,
+        huggingFaceArtifact: HuggingFaceArtifact? = nil,
         aggregateSHA256: String? = nil,
         totalSizeBytes: Int64? = nil,
         fileCount: Int? = nil,
@@ -92,7 +98,8 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         maxOutputLength: Int? = nil,
         capabilities: [String]? = nil,
         runtimeParameters: [String: JSONValue]? = nil,
-        metadata: [String: JSONValue]? = nil
+        metadata: [String: JSONValue]? = nil,
+        requiredProviderCapabilities: [ProviderRuntimeCapability]? = nil
     ) {
         self.id = id
         self.s3Name = s3Name
@@ -106,6 +113,7 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         self.weightHash = weightHash
         self.version = version
         self.r2Prefix = r2Prefix
+        self.huggingFaceArtifact = huggingFaceArtifact
         self.aggregateSHA256 = aggregateSHA256
         self.totalSizeBytes = totalSizeBytes
         self.fileCount = fileCount
@@ -116,6 +124,7 @@ public struct CatalogModel: Codable, Sendable, Equatable {
         self.capabilities = capabilities
         self.runtimeParameters = runtimeParameters
         self.metadata = metadata
+        self.requiredProviderCapabilities = requiredProviderCapabilities
     }
 }
 
@@ -155,6 +164,7 @@ public enum ModelCatalogError: Error, CustomStringConvertible, LocalizedError, S
     case decodeFailed(String)
     case modelNotInCatalog(String)
     case downloadFailed(String)
+    case ineligible(String)
 
     public var description: String {
         switch self {
@@ -163,6 +173,7 @@ public enum ModelCatalogError: Error, CustomStringConvertible, LocalizedError, S
         case .decodeFailed(let d):          "could not decode catalog response: \(d)"
         case .modelNotInCatalog(let id):    "model '\(id)' is not in the coordinator catalog"
         case .downloadFailed(let d):        "download failed: \(d)"
+        case .ineligible(let d):            d
         }
     }
 

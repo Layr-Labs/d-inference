@@ -102,10 +102,10 @@ func TestDescribeKVPostureNamesProvenance(t *testing.T) {
 	}
 }
 
-// The posture log used to live inside the "a config file was written" branch,
-// so the one run whose backend nobody chose was also the one run that logged
-// no backend at all. That is the shape of the defect this lane fixes.
-func TestPostureLoggedWhenNoConfigIsWritten(t *testing.T) {
+// The default posture still gets a testbed config so updater/watchdog processes
+// cannot outlive the suite, while the log must identify that no KV knobs were
+// selected.
+func TestDefaultPostureIsLoggedAndDisablesPersistentServices(t *testing.T) {
 	t.Setenv("DARKBLOOM_TESTBED_KV_BACKEND", "")
 	t.Setenv("DARKBLOOM_TESTBED_MAX_CONCURRENT", "")
 
@@ -131,7 +131,9 @@ func TestPostureLoggedWhenNoConfigIsWritten(t *testing.T) {
 		!strings.Contains(got, "kv_backend=provider default") {
 		t.Fatalf("default launch logged no KV posture:\n%s", got)
 	}
-	if p.generatedConfig != "" {
-		t.Fatalf("default launch wrote a config: %q", p.generatedConfig)
+	for _, want := range []string{"auto_update = false", "auto_restart = false"} {
+		if !strings.Contains(p.generatedConfig, want) {
+			t.Fatalf("default testbed config missing %q:\n%s", want, p.generatedConfig)
+		}
 	}
 }

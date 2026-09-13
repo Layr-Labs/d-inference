@@ -47,6 +47,7 @@ import (
 type AttestationBlob struct {
 	AuthenticatedRootEnabled bool   `json:"authenticatedRootEnabled"`
 	BinaryHash               string `json:"binaryHash,omitempty"`
+	ChipFamily               string `json:"chipFamily,omitempty"`
 	ChipName                 string `json:"chipName"`
 	EncryptionPublicKey      string `json:"encryptionPublicKey,omitempty"`
 	HardwareModel            string `json:"hardwareModel"`
@@ -55,16 +56,18 @@ type AttestationBlob struct {
 	// keep decoding (non-nil) for marshalSortedJSON to reconstruct the exact
 	// signed bytes. New providers omit it (nil). Remove once the fleet floor
 	// passes v0.6.31.
-	HypervisorActive       *bool  `json:"hypervisorActive,omitempty"`
-	OSVersion              string `json:"osVersion"`
-	PublicKey              string `json:"publicKey"`
-	RDMADisabled           bool   `json:"rdmaDisabled"`
-	SecureBootEnabled      bool   `json:"secureBootEnabled"`
-	SecureEnclaveAvailable bool   `json:"secureEnclaveAvailable"`
-	SerialNumber           string `json:"serialNumber,omitempty"`
-	SIPEnabled             bool   `json:"sipEnabled"`
-	SystemVolumeHash       string `json:"systemVolumeHash,omitempty"`
-	Timestamp              string `json:"timestamp"`
+	HypervisorActive       *bool    `json:"hypervisorActive,omitempty"`
+	MetallibHash           string   `json:"metallibHash,omitempty"`
+	OSVersion              string   `json:"osVersion"`
+	PublicKey              string   `json:"publicKey"`
+	RDMADisabled           bool     `json:"rdmaDisabled"`
+	RuntimeCapabilities    []string `json:"runtimeCapabilities,omitempty"`
+	SecureBootEnabled      bool     `json:"secureBootEnabled"`
+	SecureEnclaveAvailable bool     `json:"secureEnclaveAvailable"`
+	SerialNumber           string   `json:"serialNumber,omitempty"`
+	SIPEnabled             bool     `json:"sipEnabled"`
+	SystemVolumeHash       string   `json:"systemVolumeHash,omitempty"`
+	Timestamp              string   `json:"timestamp"`
 }
 
 // SignedAttestation is a signed attestation blob with a base64-encoded
@@ -103,12 +106,15 @@ type VerificationResult struct {
 	EncryptionPublicKey      string
 	BinaryHash               string
 	HardwareModel            string
+	ChipFamily               string
 	ChipName                 string
 	SerialNumber             string
+	MetallibHash             string
 	SecureEnclaveAvailable   bool
 	SIPEnabled               bool
 	SecureBootEnabled        bool
 	RDMADisabled             bool
+	RuntimeCapabilities      []string
 	AuthenticatedRootEnabled bool
 	SystemVolumeHash         string
 	Timestamp                time.Time
@@ -134,13 +140,16 @@ func Verify(signed SignedAttestation) VerificationResult {
 		PublicKey:                signed.Attestation.PublicKey,
 		EncryptionPublicKey:      signed.Attestation.EncryptionPublicKey,
 		BinaryHash:               signed.Attestation.BinaryHash,
+		ChipFamily:               signed.Attestation.ChipFamily,
 		HardwareModel:            signed.Attestation.HardwareModel,
 		ChipName:                 signed.Attestation.ChipName,
 		SerialNumber:             signed.Attestation.SerialNumber,
+		MetallibHash:             signed.Attestation.MetallibHash,
 		SecureEnclaveAvailable:   signed.Attestation.SecureEnclaveAvailable,
 		SIPEnabled:               signed.Attestation.SIPEnabled,
 		SecureBootEnabled:        signed.Attestation.SecureBootEnabled,
 		RDMADisabled:             signed.Attestation.RDMADisabled,
+		RuntimeCapabilities:      append([]string(nil), signed.Attestation.RuntimeCapabilities...),
 		AuthenticatedRootEnabled: signed.Attestation.AuthenticatedRootEnabled,
 		SystemVolumeHash:         signed.Attestation.SystemVolumeHash,
 	}
@@ -243,13 +252,15 @@ func VerifyJSON(jsonData []byte) (VerificationResult, error) {
 	return Verify(signed), nil
 }
 
-// CheckTimestamp verifies that the attestation timestamp is within the
-// given maximum age. This prevents replay of old attestations.
+// CheckTimestamp verifies that the attestation timestamp is within maxAge of
+// coordinator time in either direction. Bounding future timestamps as well as
+// old ones prevents a clock-ahead attestation from becoming replayable later.
 func CheckTimestamp(result VerificationResult, maxAge time.Duration) bool {
-	if result.Timestamp.IsZero() {
+	if result.Timestamp.IsZero() || maxAge < 0 {
 		return false
 	}
-	return time.Since(result.Timestamp) <= maxAge
+	age := time.Since(result.Timestamp)
+	return age >= -maxAge && age <= maxAge
 }
 
 // ParseP256PublicKey parses a raw P-256 public key point.
@@ -313,11 +324,17 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 
 	// Only include optional fields if set (Swift's JSONEncoder with
 	// .sortedKeys omits nil optionals, so we must match that behavior).
+	if blob.ChipFamily != "" {
+		m["chipFamily"] = blob.ChipFamily
+	}
 	if blob.BinaryHash != "" {
 		m["binaryHash"] = blob.BinaryHash
 	}
 	if blob.EncryptionPublicKey != "" {
 		m["encryptionPublicKey"] = blob.EncryptionPublicKey
+	}
+	if blob.MetallibHash != "" {
+		m["metallibHash"] = blob.MetallibHash
 	}
 	// Legacy fleet compat (< v0.6.31): old providers include the retired
 	// hypervisorActive field in the signed blob — reproduce it EXACTLY when
@@ -327,6 +344,9 @@ func marshalSortedJSON(blob AttestationBlob) ([]byte, error) {
 	}
 	if blob.SerialNumber != "" {
 		m["serialNumber"] = blob.SerialNumber
+	}
+	if len(blob.RuntimeCapabilities) > 0 {
+		m["runtimeCapabilities"] = blob.RuntimeCapabilities
 	}
 	if blob.SystemVolumeHash != "" {
 		m["systemVolumeHash"] = blob.SystemVolumeHash

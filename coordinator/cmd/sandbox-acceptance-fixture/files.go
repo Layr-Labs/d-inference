@@ -11,16 +11,17 @@ import (
 )
 
 type fixturePlan struct {
-	SchemaVersion int       `json:"schema_version"`
-	Status        string    `json:"status"`
-	AccountID     string    `json:"account_id"`
-	HostID        string    `json:"host_id"`
-	APIURL        string    `json:"api_url"`
-	HostURL       string    `json:"host_websocket_url"`
-	BaseImage     string    `json:"base_image_id"`
-	Coordinator   string    `json:"coordinator_binary"`
-	Client        string    `json:"client_binary"`
-	KeyExpiresAt  time.Time `json:"consumer_key_expires_at"`
+	SchemaVersion      int       `json:"schema_version"`
+	Status             string    `json:"status"`
+	AccountID          string    `json:"account_id"`
+	SecondaryAccountID string    `json:"secondary_account_id,omitempty"`
+	HostID             string    `json:"host_id"`
+	APIURL             string    `json:"api_url"`
+	HostURL            string    `json:"host_websocket_url"`
+	BaseImage          string    `json:"base_image_id"`
+	Coordinator        string    `json:"coordinator_binary"`
+	Client             string    `json:"client_binary"`
+	KeyExpiresAt       time.Time `json:"consumer_key_expires_at"`
 }
 
 func readPrivate(name string, limit int64) ([]byte, error) {
@@ -84,7 +85,9 @@ func loadPlan(directory string) (fixturePlan, error) {
 	if err != nil {
 		return plan, err
 	}
-	if json.Unmarshal(data, &plan) != nil || plan.SchemaVersion != 1 || plan.Status != "seeded" {
+	if json.Unmarshal(data, &plan) != nil || (plan.SchemaVersion != 1 && plan.SchemaVersion != 2) || plan.Status != "seeded" ||
+		(plan.SchemaVersion == 1 && plan.SecondaryAccountID != "") ||
+		(plan.SchemaVersion == 2 && (plan.SecondaryAccountID == "" || plan.SecondaryAccountID == plan.AccountID)) {
 		return plan, errors.New("fixture is incomplete or invalid")
 	}
 	return plan, nil

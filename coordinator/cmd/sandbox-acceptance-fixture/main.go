@@ -23,7 +23,7 @@ func main() {
 
 func run(arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("usage: sandbox-acceptance-fixture seed|run-coordinator|run-client|run-acceptance [options]")
+		return errors.New("usage: sandbox-acceptance-fixture seed|run-coordinator|run-client|run-secondary-client|run-acceptance [options]")
 	}
 	flags := flag.NewFlagSet(arguments[0], flag.ContinueOnError)
 	directory := flags.String("directory", "", "new private fixture directory (seed), or existing fixture (run)")
@@ -71,7 +71,7 @@ func run(arguments []string) error {
 		}
 		fmt.Println("Fixture seeded; private credentials and public acceptance configuration are in", options.Directory)
 		return nil
-	case "run-coordinator", "run-client", "run-acceptance":
+	case "run-coordinator", "run-client", "run-secondary-client", "run-acceptance":
 		if !*start {
 			return errors.New("launch requires --confirm-start; seeding never starts services")
 		}

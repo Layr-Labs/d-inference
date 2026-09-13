@@ -74,22 +74,18 @@ func launchCommand(directory string, plan fixturePlan, mode string, arguments []
 		}
 		hash := sha256.Sum256([]byte(strings.TrimSpace(string(token))))
 		hashes, _ := json.Marshal(map[string]string{plan.HostID: hex.EncodeToString(hash[:])})
-		environment = coordinatorEnvironment(directory, databaseURL, plan.AccountID, string(hashes), port)
+		environment = coordinatorEnvironment(directory, databaseURL, plan.allowedAccounts(), string(hashes), port)
 		if !reflect.DeepEqual(environment, stored) {
 			return "", nil, nil, errors.New("coordinator environment differs from the isolated fixture contract")
 		}
 		program = plan.Coordinator
 	} else {
-		if mode != "run-client" || len(arguments) == 0 || strings.HasPrefix(arguments[0], "-") {
+		if (mode != "run-client" && mode != "run-secondary-client") || len(arguments) == 0 || strings.HasPrefix(arguments[0], "-") {
 			return "", nil, nil, errors.New("client launch requires a subcommand; global endpoint overrides are forbidden")
 		}
-		data, err := readPrivate(filepath.Join(directory, "consumer-env.json"), 4096)
+		consumer, err := consumerEnvironment(directory, plan, mode == "run-secondary-client")
 		if err != nil {
 			return "", nil, nil, err
-		}
-		var consumer map[string]string
-		if json.Unmarshal(data, &consumer) != nil || len(consumer) != 2 || consumer["DARKBLOOM_API_URL"] != plan.APIURL || consumer["DARKBLOOM_API_KEY"] == "" {
-			return "", nil, nil, errors.New("invalid isolated consumer environment")
 		}
 		for key, value := range consumer {
 			environment[key] = value
@@ -141,6 +137,14 @@ func acceptanceCommand(directory string, plan fixturePlan, python, harness, evid
 		return "", nil, nil, errors.New("acceptance configuration differs from the seeded fixture")
 	}
 	args := []string{"-B", harness, "--config", configFile, "--output", evidence}
+	if plan.SchemaVersion == 2 {
+		secondary, err := consumerEnvironment(directory, plan, true)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		environment = append(environment, "DARKBLOOM_SECONDARY_API_KEY="+secondary["DARKBLOOM_API_KEY"])
+		args = append(args, "--second-account")
+	}
 	if quota {
 		args = append(args, "--workspace-exhaustion")
 	}

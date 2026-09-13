@@ -39,24 +39,29 @@ func TestFixtureRejectsAmbiguousOrProductionDatabaseTargets(t *testing.T) {
 func TestFixtureUsesRealConsumerAndDedicatedHostAuthentication(t *testing.T) {
 	backend := store.NewMemory(store.Config{})
 	directory, plan, consumer, environment := seedMemoryFixture(t, backend)
+	secondary, err := consumerEnvironment(directory, plan, true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	token, err := readPrivate(filepath.Join(directory, "host-token"), 512)
 	if err != nil {
 		t.Fatal(err)
 	}
 	authenticator, err := sandboxhost.NewAuthenticator(sandboxhost.AuthConfig{TokenSHA256JSON: environment["EIGENINFERENCE_SANDBOX_HOST_TOKEN_SHA256_JSON"]})
-	if err != nil || !authenticator.Authenticate(plan.HostID, strings.TrimSpace(string(token))) || authenticator.Authenticate(plan.HostID, "wrong-token") {
+	if err != nil || !authenticator.Authenticate(plan.HostID, strings.TrimSpace(string(token))) || authenticator.Authenticate(plan.HostID, "wrong-token") ||
+		authenticator.Authenticate(plan.HostID, consumer["DARKBLOOM_API_KEY"]) || authenticator.Authenticate(plan.HostID, secondary["DARKBLOOM_API_KEY"]) {
 		t.Fatalf("host credentials are not real authenticator-compatible: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := api.NewServer(registry.New(logger), store.NewCached(backend, store.CacheConfig{}), api.ServerConfig{
-		SandboxService:  api.SandboxServiceConfig{Enabled: true, AdmissionEnabled: true, AllowedAccountIDs: []string{plan.AccountID}},
+		SandboxService:  api.SandboxServiceConfig{Enabled: true, AdmissionEnabled: true, AllowedAccountIDs: []string{plan.AccountID, plan.SecondaryAccountID}},
 		SandboxHostAuth: sandboxhost.AuthConfig{TokenSHA256JSON: environment["EIGENINFERENCE_SANDBOX_HOST_TOKEN_SHA256_JSON"]},
 	}, logger)
 	defer server.Close()
 	for _, test := range []struct {
 		key    string
 		status int
-	}{{consumer["DARKBLOOM_API_KEY"], http.StatusOK}, {"wrong-key", http.StatusUnauthorized}, {"", http.StatusUnauthorized}} {
+	}{{consumer["DARKBLOOM_API_KEY"], http.StatusOK}, {secondary["DARKBLOOM_API_KEY"], http.StatusOK}, {"wrong-key", http.StatusUnauthorized}, {"", http.StatusUnauthorized}} {
 		request := httptest.NewRequest(http.MethodGet, "/v1/sandboxes", nil)
 		if test.key != "" {
 			request.Header.Set("Authorization", "Bearer "+test.key)

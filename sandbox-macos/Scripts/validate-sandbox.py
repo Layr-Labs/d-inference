@@ -41,6 +41,8 @@ def main():
                         help="run real consumer acceptance against explicit nonproduction JSON configuration")
     parser.add_argument("--workspace-exhaustion", action="store_true",
                         help="include physical guest workspace exhaustion in consumer acceptance")
+    parser.add_argument("--second-account", action="store_true",
+                        help="include two-consumer ownership proof using private DARKBLOOM_SECONDARY_API_KEY")
     parser.add_argument("--lume", type=Path, help="run pinned real-binary contracts")
     parser.add_argument("--live-restore", action="store_true")
     parser.add_argument("--prepare-base", action="store_true")
@@ -53,6 +55,8 @@ def main():
         parser.error("--jobs must be between 1 and 32")
     if args.workspace_exhaustion and not args.consumer_config:
         parser.error("--workspace-exhaustion requires --consumer-config")
+    if args.second_account and not args.consumer_config:
+        parser.error("--second-account requires --consumer-config")
     if (args.prepare_base or args.two_vms) and not (args.lume and args.storage):
         parser.error("VM stages require explicit --lume and --storage")
     if args.prepare_base and not args.ipsw:
@@ -98,6 +102,8 @@ def main():
                    "--config", str(args.consumer_config.absolute()), "--output", str(output / "consumer")]
         if args.workspace_exhaustion:
             command.append("--workspace-exhaustion")
+        if args.second_account:
+            command.append("--second-account")
         stages.append(("consumer_acceptance", command, {}))
     initial_digest = source_digest()
     record = {

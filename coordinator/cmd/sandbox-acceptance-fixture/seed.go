@@ -108,15 +108,17 @@ type seedStore interface {
 }
 
 func writeSeed(options seedOptions, databaseURL string, backend seedStore) error {
-	accountID := "sandbox-acceptance-" + uuid.NewString()
-	user := &store.User{AccountID: accountID, PrivyUserID: "did:privy:fixture-" + uuid.NewString()}
-	if err := backend.CreateUser(user); err != nil {
-		return errors.New("could not create disposable consumer account")
-	}
 	expires := time.Now().UTC().Add(24 * time.Hour)
-	key, _, err := backend.CreateAPIKey(accountID, store.APIKeyCreate{Name: "sandbox physical acceptance", ExpiresAt: &expires})
+	accountID, key, err := seedConsumer(backend, "sandbox physical acceptance primary", expires)
 	if err != nil {
-		return errors.New("could not mint disposable consumer API key")
+		return err
+	}
+	secondaryID, secondaryKey, err := seedConsumer(backend, "sandbox physical acceptance secondary", expires)
+	if err != nil {
+		return err
+	}
+	if secondaryID == accountID || secondaryKey == key {
+		return errors.New("fixture requires distinct consumer identities")
 	}
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
@@ -127,11 +129,12 @@ func writeSeed(options seedOptions, databaseURL string, backend seedStore) error
 	hash := sha256.Sum256([]byte(token))
 	hashes, _ := json.Marshal(map[string]string{hostID: hex.EncodeToString(hash[:])})
 	apiURL := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(options.Port))
-	plan := fixturePlan{SchemaVersion: 1, Status: "seeded", AccountID: accountID, HostID: hostID, APIURL: apiURL, HostURL: strings.Replace(apiURL, "http:", "ws:", 1) + "/ws/sandbox-host",
+	plan := fixturePlan{SchemaVersion: 2, Status: "seeded", AccountID: accountID, SecondaryAccountID: secondaryID, HostID: hostID, APIURL: apiURL, HostURL: strings.Replace(apiURL, "http:", "ws:", 1) + "/ws/sandbox-host",
 		BaseImage: options.BaseImage, Coordinator: options.Coordinator, Client: options.Client, KeyExpiresAt: expires}
-	environment := coordinatorEnvironment(options.Directory, databaseURL, accountID, string(hashes), options.Port)
+	environment := coordinatorEnvironment(options.Directory, databaseURL, plan.allowedAccounts(), string(hashes), options.Port)
 	for name, value := range map[string]any{"coordinator-env.json": environment, "consumer-env.json": map[string]string{"DARKBLOOM_API_KEY": key, "DARKBLOOM_API_URL": apiURL},
-		"consumer-config.json": map[string]any{"environment": "nonproduction", "api_url": apiURL, "allow_insecure_localhost": true, "cli": options.Client, "base_image_id": options.BaseImage, "host_id": hostID, "cpu": 4, "memory_gib": 8, "workspace_gib": 25}} {
+		"secondary-consumer-env.json": map[string]string{"DARKBLOOM_API_KEY": secondaryKey, "DARKBLOOM_API_URL": apiURL},
+		"consumer-config.json":        map[string]any{"environment": "nonproduction", "api_url": apiURL, "allow_insecure_localhost": true, "cli": options.Client, "base_image_id": options.BaseImage, "host_id": hostID, "cpu": 4, "memory_gib": 8, "workspace_gib": 25}} {
 		if err := writePrivateJSON(filepath.Join(options.Directory, name), value); err != nil {
 			return err
 		}

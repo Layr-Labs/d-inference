@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `5c25e79a2`
+> Last updated: 2026-09-13 · commit `f097a7116`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -84,10 +84,16 @@ See the [sandbox CLI workflow](../consumer/sandbox-cli.md) and
 
 `python3 -B sandbox-macos/Scripts/test-sandbox-live-tools.py` tests the live
 consumer harness with fake CLI/REST transports and simulated time. It checks
-command replay, partial upload resumption/abort, changed-revision denial,
+command replay, separate-account denial with owner controls and independent
+cleanup ledgers, partial upload resumption/abort, changed-revision denial,
 running-command expiry assertions and explicit evidence limits. It performs no
 physical acceptance. Follow [isolated sandbox acceptance](sandbox-acceptance.md)
 for the real deployment and retain the separate physical cleanup evidence.
+
+`go test -race ./coordinator/cmd/sandbox-acceptance-fixture` verifies ordinary
+account/key seeding, separate launch environments and relocation of consumer-only
+fixtures through the memory store and real HTTP auth handlers. It does not seed
+PostgreSQL or start network services.
 
 Run prediction telemetry checks from the repository root:
 

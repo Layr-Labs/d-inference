@@ -14,6 +14,7 @@ from sandbox_live_evidence import EvidenceCLI, MAX_CAPTURE, denied, validate_con
 from sandbox_live_suite import LiveSuite
 from sandbox_live_quota import workspace_exhaustion
 from sandbox_live_cases_tests import FileHTTPTests, FileRecoveryTests, ReplayExpiryTests
+from sandbox_live_accounts_tests import AccountIsolationTests
 
 
 def configuration(cli):
@@ -41,9 +42,10 @@ class HarnessTests(unittest.TestCase):
 
     def test_cli_evidence_hashes_raw_output_and_excludes_api_key(self):
         with tempfile.TemporaryDirectory() as temporary:
-            cli = self.fake_cli(temporary, "import json, os\nassert os.environ['DARKBLOOM_API_KEY'] == 'private-key'\nprint(json.dumps({'ok':True}))\n")
+            cli = self.fake_cli(temporary, "import json, os\nassert os.environ['DARKBLOOM_API_KEY'] == 'private-key'\nassert 'DARKBLOOM_SECONDARY_API_KEY' not in os.environ\nassert 'EIGENINFERENCE_DATABASE_URL' not in os.environ\nprint(json.dumps({'ok':True}))\n")
             client = EvidenceCLI(configuration(cli), Path(temporary) / "evidence", "private-key")
-            record, payload = client.call("probe", ["help"])
+            with patch.dict(os.environ, {"DARKBLOOM_SECONDARY_API_KEY": "other-private-key", "EIGENINFERENCE_DATABASE_URL": "private-db"}):
+                record, payload = client.call("probe", ["help"])
             self.assertEqual(payload, {"ok": True})
             self.assertEqual(record["exit_code"], 0)
             self.assertEqual(len(record["stdout"]["sha256"]), 64)
@@ -154,7 +156,7 @@ class HarnessTests(unittest.TestCase):
     def test_summary_names_selection_and_unverified_physical_gates_after_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             suite = LiveSuite(FakeClient(Path(temporary)))
-            with patch.object(suite, "create_two", side_effect=AssertionError("offline fixture failure")), \
+            with patch.object(suite, "create_first", side_effect=AssertionError("offline fixture failure")), \
                     patch.object(suite, "cleanup", return_value=[]):
                 self.assertFalse(suite.run())
             summary = json.loads((suite.client.root / "summary.json").read_text())

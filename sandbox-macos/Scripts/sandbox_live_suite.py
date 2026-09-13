@@ -11,13 +11,16 @@ from sandbox_live_coverage import not_covered
 from sandbox_live_expiry import delete_and_expiry
 from sandbox_live_files import transfer_recovery
 from sandbox_live_replay import command_replay
+from sandbox_live_accounts import account_isolation
 
 TERMINAL = {"succeeded", "failed", "timed_out", "cancelled", "lost"}
 
 
 class LiveSuite:
-    def __init__(self, client):
+    def __init__(self, client, secondary_client=None):
         self.client = client
+        self.secondary_client = secondary_client
+        self.related_evidence = {}
         self.created = []
         self.pending = {}
         self.results = []
@@ -130,16 +133,21 @@ class LiveSuite:
         output = self.execute(sandbox_id, ["/usr/bin/printf", "recovered\n"])
         require(output.get("stdout") == "recovered\n", "recovery positive control failed")
 
-    def create_two(self):
+    def create_first(self):
         record, _ = self.client.call("cli-help", ["help"])
         require(record["exit_code"] == 0 and not record["capture_truncated"], "CLI help unavailable")
         help_text = (self.client.root / record["stdout"]["path"]).read_text()
         require(all(command in help_text for command in ["start|stop|delete|renew", "upload-status", "download"]),
                 "CLI lacks required lifecycle/file commands")
-        for label in ["create-a", "create-b"]:
-            sandbox_id = self.create(label)
-            self.sandboxes.append(sandbox_id)
-            self.wait_state(sandbox_id, "ready")
+        sandbox_id = self.create("create-a")
+        self.sandboxes.append(sandbox_id)
+        self.wait_state(sandbox_id, "ready")
+
+    def create_second(self):
+        require(len(self.sandboxes) == 1, "second primary VM requires exactly one existing primary VM")
+        sandbox_id = self.create("create-b")
+        self.sandboxes.append(sandbox_id)
+        self.wait_state(sandbox_id, "ready")
         require(len(set(self.sandboxes)) == 2, "two distinct sandboxes are required")
 
     def exact_files_and_isolation(self):
@@ -282,13 +290,16 @@ printf 'policy-denied\n'
         return failures
 
     def run(self):
-        cases = [("create_two", self.create_two), ("exact_files_and_isolation", self.exact_files_and_isolation),
+        cases = [("create_first", self.create_first), ("create_second", self.create_second),
+                 ("exact_files_and_isolation", self.exact_files_and_isolation),
                  ("command_idempotency", lambda: command_replay(self)),
                  ("partial_transfer_recovery", lambda: transfer_recovery(self)),
                  ("tenant_identity", self.tenant_identity), ("network_denial", self.network_denial),
                  ("bounded_output", self.bounded_output), ("timeout_cancel_recovery", self.timeout_cancel_recovery),
                  ("workspace_persistence", self.persistence), ("concurrent_jobs", self.concurrent_jobs),
                  ("delete_and_expiry", lambda: delete_and_expiry(self))]
+        if self.secondary_client is not None:
+            cases.insert(1, ("second_account_authorization", lambda: account_isolation(self)))
         if self.client.config.get("workspace_exhaustion", False):
             cases.insert(-1, ("workspace_exhaustion", lambda: workspace_exhaustion(self)))
         failed = False
@@ -307,7 +318,8 @@ printf 'policy-denied\n'
                     failed = True
                     result = {"case": name, "status": "failed", "reason": str(error)}
                 result.update(duration_seconds=time.monotonic() - start,
-                              evidence=[r["evidence_file"] for r in self.client.records[before:]])
+                              evidence=[r["evidence_file"] for r in self.client.records[before:]] +
+                                       self.related_evidence.get(name, []))
                 self.results.append(result)
                 self.client.write("results.json", self.results)
         finally:

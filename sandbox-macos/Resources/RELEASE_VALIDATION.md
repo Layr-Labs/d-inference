@@ -229,6 +229,10 @@ Optional stages:
 - `--consumer-config FILE`: real consumer CLI acceptance against an explicitly
   configured nonproduction deployment; creates two new sandboxes and waits for
   natural lease expiry (currently 30 minutes). No services or hosts are installed.
+- `--second-account` together with `--consumer-config`: also require private
+  `DARKBLOOM_SECONDARY_API_KEY`; create, exercise and delete a second account's
+  sandbox between creation of primary VMs 1 and 2. At most two VMs are allocated
+  concurrently. Without this option, second-account ownership remains untested.
 - `--workspace-exhaustion` together with `--consumer-config`: write up to the
   configured workspace plus 1 GiB inside one newly created guest, require ENOSPC,
   delete only that unique test file, and prove control/upload/read recovery.
@@ -265,9 +269,15 @@ with the explicit disposable deployment. HTTP requires a loopback origin plus
   "memory_gib": 8,
   "workspace_gib": 25,
   "readiness_seconds": 600,
-  "expiry_seconds": 2100
+    "expiry_seconds": 2100
 }
 ```
+
+Add `--second-account` to the standalone command and supply a distinct
+`DARKBLOOM_SECONDARY_API_KEY` privately to select account isolation. The
+[version-2 acceptance fixture](../../docs/developer/sandbox-acceptance.md) seeds
+both ordinary consumers and selects this option automatically. Version-1
+primary-only fixtures remain usable without claiming this gate.
 
 The harness checks multichunk binary round trips, cross-instance denial with
 working positive controls, command replay/conflict without duplicate execution,
@@ -280,6 +290,15 @@ Additional cases verify partial abort without publication, committed-abort denia
 without data loss, and stale download-version rejection after a tenant mutation,
 followed by an exact new-version download. REST probes use the same account key
 and only sandbox IDs owned by the current run; they do not call raw guest operations.
+
+The second-account case requires 404 for inspect, exec, file download, command
+cancellation and deletion against primary VM 1. It also proves successful own
+inspect/exec/upload/download/cancel/delete, then rechecks primary execution and
+file access. Only IDs created by this campaign are used. The second account has
+its own `second-account/ownership.json` create-key ledger and cleanup, including
+uncertain-create replay; the primary key never deletes its resources. Failed
+second-account cleanup blocks primary VM 2 creation. `second-account/account-isolation.json`
+indexes that account's evidence and cleanup status.
 
 Natural expiry leaves the second VM ready and submits a long-running process in
 its final minute. The harness requires a running observation in the final twelve
@@ -298,13 +317,11 @@ the current CLI output omits host ID. Without `--workspace-exhaustion` (or
 `workspace_exhaustion: true` in its explicit configuration), the summary retains
 `workspace_exhaustion` under `not_covered`. Every summary labels its selected
 API/guest observations and retains `production_ready: false`. The closed list in
-`sandbox-macos/Scripts/sandbox_live_coverage.py` also names separate-account authorization,
+`sandbox-macos/Scripts/sandbox_live_coverage.py` names separate-account authorization until
+that selected case and its cleanup pass, together with
 in-flight disconnect recovery, scheduler respawn, broker/host crash and reboot,
 physical removal, renewal/drain, CI build performance, cold boot/contention,
-release and privacy gates that this suite does not prove. The fixture currently
-enrolls one account; separate-account live proof requires a second independently
-seeded consumer and private key, denied access to the first account's resource
-IDs, and successful access to its own resources as a positive control.
+release and privacy gates that this suite does not prove.
 
 `test-sandbox-live-tools.py` exercises harness assertions through fake CLI/REST
 transports and simulated time. Those offline tests never constitute physical

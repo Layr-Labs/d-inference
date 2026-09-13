@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `5c25e79a2`
+> Last updated: 2026-09-13 · commit `f097a7116`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -50,6 +50,7 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 | `sandbox-macos/` | SwiftPM | Standalone `darkbloom-sandboxd` and `darkbloom-sandbox-guest`; pinned Lume build and signed artifact tooling under `Scripts/`. |
 | `host-runtime/` | SwiftPM | Shared machine-ownership library used by inference and sandbox VM processes. |
 | `coordinator/cmd/darkbloom-sandbox/` | Go | Standalone consumer CLI; `make sandbox-client-build` writes `build/darkbloom-sandbox`. |
+| `coordinator/cmd/sandbox-acceptance-fixture/` | Go | Disposable two-consumer seed and private coordinator/client launch environments; [acceptance setup](sandbox-acceptance.md). |
 | `sandbox-macos/Benchmarks/go-ci/runner/` | Go | Standard-library CI benchmark runner, packaged with an explicit local SDK by the [offline CI workload harness](../../sandbox-macos/Benchmarks/go-ci/README.md). |
 | `sandbox-macos/Scripts/test-sandbox-live.py` | Python on the caller's machine | Modular consumer CLI and bounded file REST acceptance; guest Python is not required. See [isolated acceptance](sandbox-acceptance.md). |
 | `console-ui/` | Next.js 16 / React 19 | `npm`; tests with Vitest. |

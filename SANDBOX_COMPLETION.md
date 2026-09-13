@@ -72,8 +72,15 @@ library; integrated restore, billing and public access are not shipped here.
 The live-harness improvements add active-VM natural expiry, file
 resume/abort/version controls, idempotency replay/conflict, and accurate
 coverage exclusions. Their26offline tests, syntax/diff checks and docs283-file
-check pass. Second-account and in-flight transport-disconnect proof remain
-explicitly outside this harness; command timeout can race natural lease expiry.
+check pass. Command timeout can race natural lease expiry. The next fixture/harness tranche
+adds two distinct ordinary account keys and real own-resource controls plus
+cross-account inspect/execute/files/cancel/delete denial, at most2VMs, separate
+ownership/cleanup ledgers. It has30offline Python tests, focused Go fixture
+race/vet and283-file docs validation passing. No reseed-on-populatedDB path.
+Consumer-only fixtures can relocate to caller-owned0700 encrypted remote
+storage without copying coordinator environment, DSN or host token. The
+currently running real fixture still has one account and zero allocations;
+root must create a NEW database/fixture before the two-account campaign.
 
 ## Authorized test Mac and storage
 
@@ -96,11 +103,15 @@ The passphrase is ONLY in the primary FileVault-protected0700 fixture directory,
 owner-only0600 `test-volume-passphrase.txt`; never copy it to remote disk/logs.
 Do not delete that key while the volume is retained.
 
-The new volume root is initially gaj:staff0775. Before broker use, the reviewed
-root setup must make that EXACT root root:wheel0755, then private broker0700
-children. No broker or machine authority exists yet. UID/GID430 and runtime
-GID431 were free at inspection; recheck before creation. Agent prepares a
-root setup script but root must review and explicitly execute it. Review
+The reviewed root setup completed successfully after preflight. The new volume
+root is root:wheel0755. Hidden nonlogin _darkbloom_sandbox UID/GID430 exists
+with disabled authentication, shell /usr/bin/false, home /var/empty, no admin
+or wheel membership. Runtime group431 contains only the broker explicitly.
+Encrypted volume/host/{vms,capacity,credentials} are broker430:430 mode0700.
+Independent root readback passed: authority directory root:431 mode0750,
+empty single-link lock root:431 mode0660, device16777229 inode29088927, noACL.
+Preserve that lock inode. No package/host service/credentials installed yet.
+Private evidence authority-root-readonly.json records the completed setup. Review
 found automatic macOS groups12(everyone),61(localaccounts),701(gaj Public
 Folder sharepoint nesting everyone),100(Print Operator nesting localaccounts).
 The script is being revised to verify this exact measured implicit graph and
@@ -181,14 +192,37 @@ about40seconds into the next cold boot and shut the VM down, whether inspection
 passes or fails. Future SSH retry drivers must bootout/remove that exact job
 before attempting a long new probe, then stage the new inspection job for the
 next cold boot. Never start a second VM owner while a prior driver runs.
-v6 diagnostic probe is running in session55768; inspect it before any next VM
-action. Its signed SHA256 is
-6b72307feaddafcebbef4b6198c5f929e23dbf9934fdde07f8a0a428279440b4.
-v6 removes the prior own inspection job before attempting the reset, then
-stages inspection for the following cold boot. Latest v5 driver session83363
-completed. Evidence retirement-v5-proof.log and
-retirement-v5-final-state.json under REMOTE lab/evidence. Check newest state
-before further actions. Root owns VM lifecycle and all probe signing/transfers.
+Latest completed probes:
+- v6 session55768: reset-attempt/failure/keychain-not-updated flags only; no
+  token/permission/parameter-specific diagnostic. Public password still valid.
+- v7 session81286: bounded redacted transcript reveals the actual Apple CLI
+  failure: SystemConfiguration commitChanges failed. Exit0 still did not
+  change the password. BootC5C417FA-8CC7-4272-A7A2-BB98BC51B401.
+  Signed v7SHAc2ff0e111ed6f024b82bd769703219edf016116602ffaa3359ad2be7d814b559.
+- Metadata-only session59180 completed0 and stopped. Guest-native metadata
+  ruled out wrong ownership/ACL: dslocal/lume/admin/staff/root/nobody/wheel
+  records are root:wheel0600,singlelink,flags0,noACL on writable owners-enabled
+  storage. SystemConfiguration preferences rootwheel0644/noACL. Source of
+  original account is Lume's offline patcher, but no malformed owner is proven.
+  BootD4683C5A-B239-4F9F-8812-26BDBF0793F0. Metadata executable SHA256
+  30b065d24ffc4b4e2c357ae592ed03c0f72ec3dc0757549d32c8912ee9302f34.
+
+IMPORTANT: metadata driver REMOVED the own inspection LaunchDaemon and did NOT
+restage it. The probe VM is stopped; next driver must expect inspection absent.
+Installed retirement executable remains v7. guest_architecture is preparing
+read-only passwordChangeAllowed and a true UID501 own-password API probe, with
+replacement only in process/privatepipe and unchanged verification gates.
+Do not edit private account plists or SecureToken/TCC/SIP to force success.
+
+Actual broker credential probe was executed once via a separate one-shot
+LaunchDaemon. Bootstrap succeeded, but no output/terminal status arrived within
+15seconds; root booted out ONLY its exact label successfully. Qualification is
+false; no group/file-control case ran. Its artifacts are retained under the
+encrypted volume/broker-credential-probe; label/plist is
+io.darkbloom.sandbox.test-credentials-20260913. Root must diagnose launchd
+start/output behavior before another probe. Runtime flock was never acquired.
+Safe remote evidence: lab/evidence/broker-credential-probe-v1.json. Neither
+original CI/provider jobs nor user model/cache state changed during the probe.
 
 Signed release6: source41522b85b, clean source, Developer ID, no sandbox-specific
 profile or notarization, production_ready=false. Guest SHA256

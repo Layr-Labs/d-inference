@@ -394,6 +394,87 @@ class DocsCheckTests(unittest.TestCase):
                 self.assertIn("Page.md: orphan", result.stderr)
                 self.assertNotIn("broken link", result.stderr)
 
+    def test_nested_html_blocks_hide_links_and_missing_targets(self):
+        for prefix, continuation in (
+            ("- > ", "  > "), ("> - > ", ">   > "),
+            ("- > - ", "  >   "), ("> - > - ", ">   >   "),
+        ):
+            for opening, closing in (
+                ("<!--", "-->"), ("<script>", "</script>"),
+                ("<?instruction", "?>"), ("<!DOCTYPE", ">"),
+                ("<![CDATA[", "]]>"), ("<div>", "</div>"),
+                ("<custom>", "</custom>"),
+            ):
+                with self.subTest(prefix=prefix, opening=opening):
+                    block = f"{prefix}{opening}\n{continuation}[hidden](Page.md)\n{continuation}{closing}\n"
+                    result = self.check("\n" + block)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Page.md: orphan", result.stderr)
+                    self.assertNotIn("broken link", result.stderr)
+                    result = self.check("\n[Page](Page.md)\n\n" + block.replace("Page.md", "Missing.md"))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.check("\n- > <!--\n  > [hidden](Page.md)\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Page.md: orphan", result.stderr)
+
+    def test_nested_html_continuations_keep_markdown_opaque(self):
+        for body in (
+            "- > <!--\n  >\n  > [guide]: Page.md\n  > -->",
+            "> - > <!--\n>   > ```\n>   > [guide]: Page.md\n>   > -->",
+            "- > <script>\n  > # heading\n  > [guide]: Page.md\n  > </script>",
+        ):
+            with self.subTest(body=body):
+                result = self.check("\n" + body + "\n\n[guide]\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Page.md: orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+
+    def test_nested_indented_code_hides_links_and_definitions(self):
+        for prefix, continuation in (
+            ("- > ", "  > "), ("> - > ", ">   > "),
+            ("- > - ", "  >   "), ("> - > - ", ">   >   "),
+        ):
+            for content in ("[hidden](Page.md)", "> [hidden](Page.md)", "- [hidden](Page.md)"):
+                with self.subTest(prefix=prefix, content=content):
+                    block = f"{prefix}    {content}\n{continuation}\n{continuation}    [guide]: Page.md\n"
+                    result = self.check("\n" + block + "\n[guide]\n")
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Page.md: orphan", result.stderr)
+                    self.assertNotIn("broken link", result.stderr)
+                    result = self.check("\n[Page](Page.md)\n\n" + block.replace("Page.md", "Missing.md"))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_nested_paragraph_indentation_and_inline_html_remain_visible(self):
+        for prefix, continuation in (
+            ("- > ", "  > "), ("> - > ", ">   > "),
+            ("- > - ", "  >   "), ("> - > - ", ">   >   "),
+        ):
+            for body in (
+                f"{prefix}Paragraph text\n{continuation}    [Page](Page.md)",
+                f"{prefix}   [Page](Page.md)",
+                f"{prefix}Text <span>[Page](Page.md)</span>",
+                f"{prefix}Text\n{continuation}<span>\n{continuation}[Page](Page.md)\n{continuation}</span>",
+            ):
+                with self.subTest(body=body):
+                    result = self.check("\n" + body + "\n")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_nested_literal_blocks_end_before_visible_navigation(self):
+        for body in (
+            "- > <!--\n  > [hidden](Missing.md)\n  > -->\n  > [Page](Page.md)",
+            "> - > <script>\n>   > [hidden](Missing.md)\n>   > </script>\n>   > [Page](Page.md)",
+            "- > <div>\n  > [hidden](Missing.md)\n  > </div>\n\n[Page](Page.md)",
+            "- > <div>\n  > [hidden](Missing.md)\n  >\n  > [Page](Page.md)",
+            "- >     [hidden](Missing.md)\n  >\n  > [Page](Page.md)",
+            "> - >     [hidden](Missing.md)\n\n[Page](Page.md)",
+            "- > -     [hidden](Missing.md)\n  >   [Page](Page.md)",
+            "- >     [hidden](Missing.md)\n- [Page](Page.md)",
+            "- >     [hidden](Missing.md)\n  > [guide]\n\n[guide]: Page.md",
+        ):
+            with self.subTest(body=body):
+                result = self.check("\n" + body + "\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_inline_html_tokens_do_not_create_navigation(self):
         for example in (
             "Text <!-- [guide] --> text",
@@ -551,6 +632,56 @@ class DocsCheckTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(f"broken link -> {target}", result.stderr)
                 self.assertNotIn("orphan", result.stderr)
+
+    def test_inline_destination_nesting_matches_rendered_boundary(self):
+        for depth, renders in ((31, True), (32, True), (33, False)):
+            target = "Page" + "(" * depth + "old" + ")" * depth + ".md"
+            with self.subTest(depth=depth, target="present"):
+                result = self.check(f"\n[guide]({target})\n", page=target)
+                (self.root / "docs" / target).unlink()
+                if renders:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"{target}: orphan", result.stderr)
+                    self.assertNotIn("broken link", result.stderr)
+
+            with self.subTest(depth=depth, target="missing"):
+                missing = target.replace("Page", "Missing", 1)
+                result = self.check(f"\n[Page](Page.md)\n[missing]({missing})\n")
+                (self.root / "docs/Page.md").unlink()
+                if renders:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"broken link -> {missing}", result.stderr)
+                    self.assertNotIn("orphan", result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_destination_nesting_limit_preserves_literal_and_reference_forms(self):
+        target = "Page" + "(" * 33 + "old" + ")" * 33 + ".md"
+        escaped = target.replace("(", r"\(").replace(")", r"\)")
+        for usage in (
+            f"[guide](<{target}>)",
+            f"[guide]({escaped})",
+            f"[guide]\n\n[guide]: {target}",
+        ):
+            with self.subTest(usage=usage):
+                result = self.check("\n" + usage + "\n", page=target)
+                (self.root / "docs" / target).unlink()
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+                missing = usage.replace("Page", "Missing", 1)
+                result = self.check("\n[Page](Page.md)\n" + missing + "\n")
+                (self.root / "docs/Page.md").unlink()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"broken link -> {target.replace('Page', 'Missing', 1)}", result.stderr)
+                self.assertNotIn("orphan", result.stderr)
+
+        missing = target.replace("Page", "Missing", 1)
+        result = self.check(f"\n[Page](Page.md)\n\n[unused]: {missing}\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"broken link -> {missing}", result.stderr)
+        self.assertNotIn("orphan", result.stderr)
 
     def test_unbalanced_destinations_do_not_invent_links(self):
         for usage in (

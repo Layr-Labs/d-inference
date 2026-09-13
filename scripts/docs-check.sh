@@ -276,7 +276,7 @@ reference_suffix = re.compile(rf"\[(?P<reference>{reference_unit}*)\]")
 link_space = re.compile(r"\s*")
 
 
-def link_destination(text, offset):
+def link_destination(text, offset, max_depth=None):
     """Read an angle-wrapped or balanced bare destination and its end offset."""
     enclosed = text[offset:offset + 1] == "<"
     end, depth, target = offset + int(enclosed), 0, []
@@ -298,6 +298,8 @@ def link_destination(text, offset):
                 return None
             if char == "(":
                 depth += 1
+                if max_depth is not None and depth > max_depth:
+                    return None
             elif char == ")":
                 depth -= 1
         target.append(char)
@@ -310,7 +312,9 @@ def link_destination(text, offset):
 def inline_link(text, offset):
     if text[offset:offset + 1] != "(":
         return None
-    destination = link_destination(text, link_space.match(text, offset + 1).end())
+    # The renderer limits bare inline destinations to 32 nested pairs;
+    # reference, angle-wrapped and escaped destinations have no such limit.
+    destination = link_destination(text, link_space.match(text, offset + 1).end(), max_depth=32)
     if destination is None:
         return None
     target, end = destination
@@ -400,16 +404,27 @@ def rendered_targets(text, definitions):
     return targets
 
 
+def project_containers(content, containers):
+    """Consume existing list/quote prefixes without inventing child blocks."""
+    for index, container in enumerate(containers):
+        if container is None:
+            quote = re.match(r"^ {0,3}> ?", content)
+            if not quote:
+                return content, index
+            content = content[quote.end():]
+        elif content.strip():
+            if len(content) - len(content.lstrip(" ")) < container:
+                return content, index
+            content = content[container:]
+    return content, len(containers)
+
+
 def parse(source):
     body, navigation, all_targets = [], [], []
     definitions = {}
-    fence = None
-    fence_containers = []
-    fence_parent = None
-    html_end, html_depth, html_indent = None, 0, 0
-    paragraph_open, quote_depth, list_indents = False, 0, []
-    paragraph_containers = None
-    empty_item = False
+    containers = []
+    paragraph_open, empty_item = False, False
+    literal = None
     list_item = re.compile(r"^ {0,3}(?P<marker>[-+*]|[0-9]{1,9}[.)])(?P<padding> +|$)")
     lines = source.read_text().splitlines()
     skip_through = -1
@@ -417,174 +432,106 @@ def parse(source):
         if line_index <= skip_through:
             continue
         content = line.expandtabs(4)
-        if fence is not None:
-            # Consume only the containers that opened this fence. Additional
-            # quote/list-looking text inside the code stays literal.
-            fenced_content = content
-            closed = False
-            for container in fence_containers:
-                if container is None:
-                    quote = re.match(r"^ {0,3}> ?", fenced_content)
-                    if not quote:
-                        break
-                    fenced_content = fenced_content[quote.end():]
-                elif fenced_content.strip():
-                    if len(fenced_content) - len(fenced_content.lstrip(" ")) < container:
-                        break
-                    fenced_content = fenced_content[container:]
-            else:
-                marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", fenced_content)
-                if not (marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip()):
+        if literal is not None:
+            kind, ending, owners = literal
+            projected, matched = project_containers(content, owners)
+            if matched == len(owners):
+                if kind == "code":
+                    if not projected.strip() or len(projected) - len(projected.lstrip(" ")) >= 4:
+                        continue
+                elif kind == "html":
+                    if ending.search(projected) or ending is html_until_blank and not projected.strip():
+                        literal = None
                     continue
-                closed = True
-            # A fence cannot outlive its list item or quote. Reprocess this
-            # line normally when its container prefix is no longer present.
-            fence = None
-            if fence_parent is not None:
-                quote_depth, list_indents = fence_parent
-            if closed:
-                continue
-        # Indented code starts outside a paragraph. Measure its four columns
-        # from the list/quote content, so ordinary nested links stay visible.
-        quote = re.match(r"^(?: {0,3}> ?)+", content)
-        depth = quote[0].count(">") if quote else 0
-        quote_containers = [None] * depth
-        quote_parent = None
-        if depth > quote_depth and list_indents:
-            # A quote introduced on an indented list continuation still
-            # belongs to that list, even though the quote prefix matches first.
-            parent_content = content
-            for _ in range(quote_depth):
-                parent_quote = re.match(r"^ {0,3}> ?", parent_content)
-                parent_content = parent_content[parent_quote.end():]
-            list_indent = list_indents[-1]
-            if len(parent_content) - len(parent_content.lstrip(" ")) >= list_indent:
-                quote_containers = [None] * quote_depth + [list_indent] + [None] * (depth - quote_depth)
-                quote_parent = (quote_depth, list_indents.copy())
-        if depth != quote_depth:
-            list_indents = []
-            empty_item = False
-            if depth > quote_depth:
-                paragraph_open = False
-        quote_depth = depth
-        if quote:
-            content = content[quote.end():]
-        if html_end is not None and depth < html_depth:
-            html_end = None
-        if not content.strip():
-            # A blank line closes an otherwise empty list item.
-            if empty_item and list_indents:
-                list_indents.pop()
-            empty_item = False
-            body.append("")
-            paragraph_open = False
-            paragraph_containers = None
-            if html_end is html_until_blank:
-                html_end = None
-            continue
-        indent = len(content) - len(content.lstrip(" "))
-        if html_end is not None:
-            if indent >= html_indent:
-                # HTML cannot acquire Markdown child blocks, definitions or
-                # fences. End only at its terminator or its container boundary.
-                if html_end.search(content[html_indent:]):
-                    html_end = None
+                else:
+                    marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", projected)
+                    if marker and marker[1][0] == ending[0] and len(marker[1]) >= len(ending) and not marker[2].strip():
+                        literal = None
+                    continue
+            # A literal block cannot outlive its opening containers. A code
+            # block also ends before its first non-indented content line.
+            literal = None
+
+        content, matched = project_containers(content, containers)
+        if matched < len(containers):
+            # Only an existing paragraph can omit its container prefixes.
+            # A sibling list item or another block starts a new paragraph.
+            sibling_item = containers[matched] is not None and list_item.match(content)
+            interrupts = re.match(
+                rf"(?:{block_start}|{marker_line}|{html_start}| {{0,3}}(?:`{{3,}}(?![^\n]*`)|~{{3,}}))", content
+            )
+            if not (paragraph_open and content.strip() and not sibling_item and not interrupts):
+                containers = containers[:matched]
+                paragraph_open, empty_item = False, False
                 body.append("")
-                paragraph_open = False
-                paragraph_containers = None
-                continue
-            html_end = None
-        was_in_list = bool(list_indents)
-        while list_indents and indent < list_indents[-1]:
-            if paragraph_open and not (
-                list_item.match(content)
-                or re.match(rf"(?:{block_start}|{marker_line}|{html_start})", content)
-            ):
-                break  # A lazy paragraph continuation need not repeat indentation.
-            list_indents.pop()
-        base = list_indents[-1] if list_indents and indent >= list_indents[-1] else 0
-        relative = content[base:]
+        if not content.strip():
+            if empty_item and containers and containers[-1] is not None:
+                containers.pop()
+            paragraph_open, empty_item = False, False
+            body.append("")
+            continue
+
+        # Project every new list and quote before classifying its leaf. The
+        # same ordered chain is retained for continuation and exit handling.
         empty_item = False
-        new_item = False
-        while (item := list_item.match(relative)) and not (
-            re.match(thematic_line, relative) or paragraph_open and re.match(setext_line, relative)
-        ):
-            if paragraph_open and not was_in_list and (
+        while True:
+            quote = re.match(r"^ {0,3}> ?", content)
+            if quote:
+                containers.append(None)
+                content = content[quote.end():]
+                paragraph_open = False
+                body.append("")
+                continue
+            item = list_item.match(content)
+            if item is None or re.match(thematic_line, content) or paragraph_open and re.match(setext_line, content):
+                break
+            if paragraph_open and (
                 item["marker"][0].isdigit() and item["marker"] not in ("1.", "1)")
-                or not relative[item.end():].strip()
+                or not content[item.end():].strip()
             ):
                 break
             padding = len(item["padding"])
-            base += item.start("padding") + (padding if 1 <= padding <= 4 else 1)
-            list_indents.append(base)
-            relative = content[base:]
+            width = item.start("padding") + (padding if 1 <= padding <= 4 else 1)
+            containers.append(width)
+            content = content[width:]
             paragraph_open = False
-            new_item = True
-            empty_item = not relative.strip()
-        if not paragraph_open and len(relative) - len(relative.lstrip(" ")) >= 4:
+            empty_item = not content.strip()
             body.append("")
-            paragraph_containers = None
+        if not content.strip():
+            body.append("")
             continue
-        # Lists may themselves contain quotes (and further lists). Record
-        # those prefixes without treating code inside them as new containers.
-        fenced_content, nested_containers = relative, []
-        while (quote := re.match(r"^ {0,3}> ?", fenced_content)):
-            nested_containers.append(None)
-            fenced_content = fenced_content[quote.end():]
-            while (item := list_item.match(fenced_content)):
-                padding = len(item["padding"])
-                width = item.start("padding") + (padding if 1 <= padding <= 4 else 1)
-                nested_containers.append(width)
-                fenced_content = fenced_content[width:]
-                new_item = True
-        containers = quote_containers + ([base] if base else []) + nested_containers
-        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", fenced_content)
+        if not paragraph_open and len(content) - len(content.lstrip(" ")) >= 4:
+            literal = ("code", None, containers.copy())
+            body.append("")
+            continue
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", content)
         # Backtick fence info strings cannot contain backticks, even escaped
         # ones. An invalid opener remains ordinary Markdown.
         if marker and (marker[1][0] != "`" or "`" not in marker[2]):
-            fence = marker[1]
-            # None records a quote prefix; an integer records list indentation.
-            fence_containers = containers
-            # Retain the surrounding list when a later fence starts in the
-            # same indented quote after this fence closes.
-            fence_parent = quote_parent
-            body.append("")
+            literal = ("fence", marker[1], containers.copy())
             paragraph_open = False
-            paragraph_containers = None
-            empty_item = False
-            while list_indents and base < list_indents[-1]:
-                list_indents.pop()
-            continue
-        html_end = html_block_end(relative, paragraph_open)
-        if html_end is not None:
-            html_depth, html_indent = depth, base
-            if html_end.search(relative):
-                html_end = None
             body.append("")
-            paragraph_open = False
-            paragraph_containers = None
             continue
-        # A list-then-quote prefix can be projected as quote-then-list on its
-        # next line. Retain the actual container chain across that projection
-        # so an existing paragraph cannot become a definition position.
-        continuing_paragraph = paragraph_containers == containers and not new_item
-        if not paragraph_open and not continuing_paragraph:
-            definition = read_definition(lines, line_index, fenced_content, containers)
+        ending = html_block_end(content, paragraph_open)
+        if ending is not None:
+            if not ending.search(content):
+                literal = ("html", ending, containers.copy())
+            paragraph_open = False
+            body.append("")
+            continue
+        if not paragraph_open:
+            definition = read_definition(lines, line_index, content, containers)
             if definition is not None:
                 identifier, target, skip_through = definition
                 definitions.setdefault(identifier, target)
                 all_targets.append(target)
                 body.append("")
-                paragraph_open = False
-                paragraph_containers = None
                 continue
         body.append(line)
-        heading = re.match(r"^ {0,3}#{1,6}(?:[ \t]|$)", relative)
-        ends_paragraph = (heading or re.match(thematic_line, relative)
-                          or paragraph_open and re.match(setext_line, relative)
-                          or re.match(html_start, relative))
-        paragraph_open = bool(relative.strip()) and not ends_paragraph
-        paragraph_containers = containers if paragraph_open else None
+        heading = re.match(r"^ {0,3}#{1,6}(?:[ \t]|$)", content)
+        ends_paragraph = (heading or re.match(thematic_line, content)
+                          or paragraph_open and re.match(setext_line, content))
+        paragraph_open = not ends_paragraph
         if heading:
             # An ATX heading ends on its own line even without a blank.
             body.append("")
@@ -597,7 +544,6 @@ def parse(source):
         if navigates:
             navigation.append(target)
     return all_targets, navigation
-
 
 cache = Path(sys.argv[1])
 for index, filename in enumerate(sys.argv[2:]):

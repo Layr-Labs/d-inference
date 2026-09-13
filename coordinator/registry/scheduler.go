@@ -594,7 +594,8 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 	// scan itself land on the decision as LockWaitUS / ScanUS; ~25 ns each.
 	tScanStart := time.Now()
 	// Snapshot receipt-confirmed cache hints before taking the registry scan lock.
-	// The tracker has its own mutex and must never be nested under r.mu.
+	// Query holders outside the scan lock; the later candidate quarantine check
+	// uses the same registry -> provider -> tracker order as receipt rejection.
 	r.mu.RLock()
 	cacheTracker, cacheMode := r.cacheRouting, r.cacheRoutingMode
 	// Skip digest derivation and holder lookup unless the request can use them.
@@ -916,8 +917,8 @@ func routingDecisionForCandidate(model string, provider *Provider, candidate *ro
 }
 
 // applyCacheRoutingCost reads the candidate's own snapshot (the scan
-// builds it in place; no copy is taken). The caller does NOT hold p.mu (the
-// scan): the hint currency check takes it.
+// builds it in place; no copy is taken). The caller holds r.mu, but not p.mu;
+// the hint currency and affinity quarantine checks take the provider lock.
 func (r *Registry) applyCacheRoutingCost(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate) {
 	hint, present := pr.cacheRoutingHints[p.ID]
 	wantAffinity := pr.CachePlan.affinityKey != ""
@@ -925,9 +926,8 @@ func (r *Registry) applyCacheRoutingCost(p *Provider, model string, pr *PendingR
 		return
 	}
 	p.mu.Lock()
-	if wantAffinity && p.PrefixCacheProtocol >= 2 {
-		candidate.cacheAffinityEligible = capabilityMatchesPlan(p.PrefixCacheV2Models[model], pr.CachePlan) ||
-			capabilityMatchesPlan(p.PrefixCacheMemoryModels[model], pr.CachePlan)
+	if wantAffinity {
+		candidate.cacheAffinityEligible = r.cacheAffinityEligibleLocked(p, model, pr.CachePlan)
 	}
 	if present {
 		r.applyCacheHintLocked(hint, model, candidate)

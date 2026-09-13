@@ -13,7 +13,7 @@ coordinator deployment.
 ### Coordinator
 
 - **Qwen prompt parity** — Match the provider's Qwen-family handling of required and named tool calls, including catalog aliases and Qwen3-VL, to avoid mismatched thinking controls in cache proofs.
-- **Repeated-prefix routing** — Prefer a stable cache-capable provider for repeated prefixes only among otherwise equivalent cost, queue and pending-work candidates. Preserve capacity, deadline, trust and proof gates.
+- **Repeated-prefix routing** — Prefer a stable cache-capable provider for repeated prefixes only among otherwise equivalent cost, queue and pending-work candidates. Exclude capabilities quarantined after a failed cache proof from this preference, even when heartbeats continue advertising them. Preserve ordinary serving when no unfenced cache candidate is available, along with capacity, deadline, trust and proof gates.
 - **Cache opportunity diagnostics** — Report per-model reasons and numerical counts for repeated-prefix demand, usable holders and routing selection. These diagnostics distinguish routing opportunities from actual cache hits and measured latency savings. Add a [consumer guide](docs/consumer/prefix-cache.md) for preserving shared prompt prefixes.
 
 ## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)

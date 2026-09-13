@@ -7,6 +7,26 @@ import (
 	"encoding/binary"
 )
 
+// cacheAffinityEligibleLocked requires the scan's registry lock and p.mu.
+// Quarantine retains the advertised capability, so readiness alone is not
+// sufficient. Follow the same registry -> provider -> tracker lock order as
+// disablePrefixCacheV2Model, using the current capability to check its fence.
+func (r *Registry) cacheAffinityEligibleLocked(p *Provider, model string, plan CachePlan) bool {
+	tracker := r.cacheRouting
+	if p.PrefixCacheProtocol < 2 || tracker == nil || plan.generation != tracker.generation ||
+		tracker.generation.revoked.Load() {
+		return false
+	}
+	for _, tier := range [...]string{"ssd", "memory"} {
+		capability, ok := p.prefixCacheCapabilityLocked(model, tier)
+		if ok && capabilityMatchesPlan(capability, plan) &&
+			!tracker.capabilityRejected(p.ID, model, tier, capability) {
+			return true
+		}
+	}
+	return false
+}
+
 // Affinity never changes the ordinary cost/load equivalence class. Reuse one
 // hash and input buffer for the entire pool rather than allocating per machine.
 func cacheAffinityWinner(pool []*routingCandidate, equivalent func(*routingCandidate) bool, affinity string) *routingCandidate {

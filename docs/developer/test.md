@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `986e82fcd`
+> Last updated: 2026-09-13 · commit `e8510dbf7`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1061,15 +1061,19 @@ This prevents task scheduling from silently changing admission order. Sources: `
 
 Link existence and orphan detection share one Python parsing pass over all
 selected files. The parser handles balanced destination parentheses, escaped
-punctuation, percent-encoded spaces, nested labels and soft line breaks. Reference
+punctuation, percent-encoded spaces, nested labels and soft line breaks. Bare
+inline destinations follow the renderer's 32-level parenthesis limit; angle-wrapped
+and reference destinations retain deeper nesting, and escaped parentheses do not
+consume the limit. Reference
 definitions must lead a paragraph, including inside lists and quotes; their
 continuation titles remain hidden. Blank lines,
 headings, thematic breaks, list starts, quotes, fences, and HTML block starts keep
 those labels apart. Invalid backtick-fence info strings remain ordinary Markdown.
 Fences inside lists and quotes end with their containers, preserving links after
 the code block. Brackets and parentheses inside quoted link titles stay literal.
-Comments, HTML blocks, tag attributes and code examples do
-not create navigation; Markdown around inline tags remains visible. Empty inline
+Comments, HTML blocks, tag attributes and code examples do not create navigation,
+including inside nested lists and quotes. Markdown around inline tags remains
+visible. Empty inline
 destinations stay empty, and backslash pairs preserve link/image meaning.
 Indented code is excluded while paragraph continuations and list navigation
 remain visible. Inner links take precedence over enclosing link syntax;

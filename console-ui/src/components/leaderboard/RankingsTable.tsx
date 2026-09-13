@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Award, Crown, Medal, type LucideIcon } from "lucide-react";
 import type { LeaderboardEntry, LeaderboardMetric } from "./types";
 import {
@@ -86,9 +87,10 @@ function EarningsRows({ entries }: { entries: LeaderboardEntry[] }) {
         <span className="text-right">Rewards / yr</span>
       </div>
       {entries.map((entry) => (
-        <div
+        <Link
           key={`${entry.rank}-${entry.pseudonym}`}
-          className={`${EARNINGS_GRID} border-t border-border-dim px-4 py-3 text-sm ${rankRowTint(entry.rank)}`}
+          href={`/providers/profile/${entry.pseudonym}`}
+          className={`${EARNINGS_GRID} border-t border-border-dim px-4 py-3 text-sm transition-colors hover:bg-bg-secondary/60 ${rankRowTint(entry.rank)}`}
         >
           <RankCell rank={entry.rank} />
           <span className="self-center truncate font-mono text-text-secondary">{entry.pseudonym}</span>
@@ -101,7 +103,7 @@ function EarningsRows({ entries }: { entries: LeaderboardEntry[] }) {
             micro24h={entry.reward_earnings_micro_usd}
             toneClass={rewardToneClass(entry.reward_earnings_micro_usd)}
           />
-        </div>
+        </Link>
       ))}
     </>
   );
@@ -118,16 +120,17 @@ function TokensRows({ entries }: { entries: LeaderboardEntry[] }) {
         <span className="text-right">Tokens · 24h</span>
       </div>
       {entries.map((entry) => (
-        <div
+        <Link
           key={`${entry.rank}-${entry.pseudonym}`}
-          className={`${TOKENS_GRID} border-t border-border-dim px-4 py-3 text-sm ${rankRowTint(entry.rank)}`}
+          href={`/providers/profile/${entry.pseudonym}`}
+          className={`${TOKENS_GRID} border-t border-border-dim px-4 py-3 text-sm transition-colors hover:bg-bg-secondary/60 ${rankRowTint(entry.rank)}`}
         >
           <RankCell rank={entry.rank} />
           <span className="self-center truncate font-mono text-text-secondary">{entry.pseudonym}</span>
           <span className="self-center text-right font-mono font-semibold text-text-primary">
             {formatNumber(entry.tokens)}
           </span>
-        </div>
+        </Link>
       ))}
     </>
   );

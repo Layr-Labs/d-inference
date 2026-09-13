@@ -358,10 +358,49 @@ if [ "$(uname -m)" != "arm64" ]; then
 fi
 
 CHIP=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon")
-MEM=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}')
+MEM_BYTES=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+MEM=$((MEM_BYTES / 1073741824))
 MACOS=$(sw_vers -productVersion 2>/dev/null || echo "?")
 echo "  $CHIP · ${MEM}GB · macOS $MACOS"
 echo ""
+
+# ─── RAM preflight check ─────────────────────────────────────
+# The smallest model on the network currently needs ~30 GB of weights in
+# unified memory.  After subtracting ~4 GB for macOS and background
+# processes, a machine needs at least ~34-36 GB total to reliably serve.
+# Without this gate, underpowered machines complete the full install +
+# MDM enrollment flow, appear "online", but silently fail every inference
+# request — discoverable only via `darkbloom doctor`.
+#
+# Thresholds:
+#   <24 GB total  → hard-fail (cannot serve any current model)
+#   <36 GB total  → warn      (may work for smaller models, not the default)
+USABLE_GB=$((MEM > 4 ? MEM - 4 : 0))
+MIN_MODEL_GB=30  # approximate weight size of the current default model
+
+if [ "$MEM" -lt 24 ]; then
+    echo "  ✗ This Mac has ${MEM} GB RAM (~${USABLE_GB} GB usable after OS overhead)."
+    echo "    The smallest model on the network needs ~${MIN_MODEL_GB} GB."
+    echo "    A Mac with at least 36 GB unified memory is required to serve inference."
+    echo ""
+    echo "    Darkbloom cannot run on this hardware. No files were modified."
+    exit 1
+elif [ "$MEM" -lt 36 ]; then
+    echo "  ⚠ This Mac has ${MEM} GB RAM (~${USABLE_GB} GB usable after OS overhead)."
+    echo "    The default model needs ~${MIN_MODEL_GB} GB. You may experience load failures"
+    echo "    under memory pressure. A Mac with 36 GB+ unified memory is recommended."
+    echo ""
+    if [ "$INTERACTIVE" = true ]; then
+        printf "  Continue anyway? [y/N] "
+        read -r REPLY
+        case "$REPLY" in
+            [yY]*) echo "  Continuing..." ;;
+            *)     echo "  Aborted."; exit 1 ;;
+        esac
+    else
+        echo "  Continuing (non-interactive). Run 'darkbloom doctor' after install to verify."
+    fi
+fi
 
 # ─── Step 1: Fetch latest release ────────────────────────────
 echo "→ [1/5] Fetching latest release from $COORD_URL ..."

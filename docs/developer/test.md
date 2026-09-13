@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `a3e59b161`
+> Last updated: 2026-09-13 · commit `b5e7f220f`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -971,6 +971,10 @@ attention/reference tests, owned-host process fixtures, release-validation
 fixtures, and Git-hook/docs navigation regressions. It launches no Swift, Metal
 or model workload. CI runs the same target in the `Tooling Tests` job.
 
+`scripts/test_git_hooks.py` exercises real isolated Git history, including a
+committed path list larger than 512 KiB. Both new and updated refs must still
+run component checks and reject the push when those checks fail.
+
 The exited-leader fixture in `e2e/testbed/test_provider_host.py` enables a Linux
 child subreaper only in its isolated owner process. It reaps the recorded orphan
 itself, so the test does not depend on container PID 1. The fixture still requires
@@ -1057,9 +1061,12 @@ Link existence and orphan detection share one Python parsing pass over all
 selected files. The parser handles reference definitions, percent-encoded spaces,
 escaped brackets, and soft line breaks inside rendered link labels. Blank lines,
 headings, thematic breaks, list starts, quotes, fences, and HTML block starts keep
-those labels apart; inline HTML remains label text. Unused definitions and image
-targets do not hide orphan pages. `scripts/test_docs_check.py` checks these cases
-and verifies that adding pages does not launch an interpreter per page.
+those labels apart; inline HTML remains label text. Empty inline destinations
+stay empty, and backslash pairs preserve whether an opener is a link or image.
+Indented code is excluded while paragraph continuations and list navigation
+remain visible. Unused definitions and image targets do not hide orphan pages.
+`scripts/test_docs_check.py` checks these cases and verifies that adding pages
+does not launch an interpreter per page.
 
 ```bash
 make docs-check          # scripts/docs-check.sh — stamps, relative links, cited paths, orphans

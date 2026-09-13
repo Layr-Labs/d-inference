@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `a3e59b161`
+> Last updated: 2026-09-13 · commit `b5e7f220f`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -472,7 +472,7 @@ components that changed.
 | [`.githooks/pre-commit`](../../.githooks/pre-commit) | staged `coordinator/**.go` or `e2e/**.go` | `git show :<path>` into `gofmt -d`, checking index bytes even for partially staged files; format and restage failures |
 | | staged `console-ui/**.ts{,x}` | `cd console-ui && npx eslint src/` (fix: `npx eslint --fix src/`) |
 | | Swift | skipped — no enforced formatter |
-| [`.githooks/pre-push`](../../.githooks/pre-push) | any `coordinator/` change in the pushed range | `gofmt -l .` and `go test ./...` from `coordinator/`; inspect every pushed ref, including new branches |
+| [`.githooks/pre-push`](../../.githooks/pre-push) | any `coordinator/` change in the pushed range | `gofmt -l .` and `go test ./...` from `coordinator/`; inspect every pushed ref, including new branches and large file lists |
 | | any `console-ui/` change | `npx eslint --quiet src/` and `npm run build` |
 
 CI runs the fuller set (`gofmt`, `golangci-lint`, `-race` tests, Swift, Rust,

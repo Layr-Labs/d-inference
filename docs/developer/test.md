@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `ec73023e4`
+> Last updated: 2026-09-13 · commit `a1f3c09c8`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -266,7 +266,10 @@ done
 Start from the production owner, then look in the matching folder under
 `provider-swift/Tests/ProviderCoreTests/`. These folders remain one SwiftPM
 target (`provider-swift/Package.swift`, `package`), so existing suite/function
-filters still select the same tests.
+filters still select the same tests. The [inference source map](../architecture/inference.md#code-map)
+locates those owners under `provider-swift/Sources/ProviderCore/Inference/`;
+tests group engine, bridge, factory and scheduler responsibilities together in
+`Inference/Engine`.
 
 | Folder below `ProviderCoreTests` | Responsibility |
 |---|---|
@@ -431,7 +434,7 @@ Explicit Gemma verification, projection, logits and attention diagnostics requir
 untransformed greedy input. Historical baseline binaries retain their greedy
 sampling path; they are not sampled-throughput controls.
 Sampling wiring lives in
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkPrompt.swift`
+`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkPrompt.swift`
 and `scripts/benchmarks/radix-engine/Sources/radix-engine/BenchmarkSampling.swift`.
 
 Run the CPU wrapper tests first:

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `ec73023e4`
+> Last updated: 2026-09-13 · commit `a1f3c09c8`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -59,6 +59,9 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 Provider tests are grouped by subsystem inside their existing SwiftPM targets.
 See [finding provider tests](test.md#finding-provider-tests) for the folder map;
 `provider-swift/Package.swift` (`package`) retains recursive source discovery.
+The [inference source map](../architecture/inference.md#code-map) locates engine,
+memory, caching and request-processing code within the same `ProviderCore`
+target; building these folders requires no separate products or commands.
 
 ## Steps
 
@@ -319,7 +322,7 @@ an XCTest runner may report zero tests before Swift Testing executes its suite.
 It retains the separate post-build live OS/activation headroom gate.
 The mode requires the candidate SSD serving path; it cannot be combined with
 resident reproduction, native-probe-only mode or an explicit grant
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+BenchmarkGrant.swift`,
+(`provider-swift/Sources/ProviderCore/Inference/Engine/Factory/EngineV2Factory+BenchmarkGrant.swift`,
 `benchmarkProductionGrant`; `BenchmarkOptions.swift`).
 
 For explicit envelope controls, use `--kv-budget-gib N`. Without either flag,

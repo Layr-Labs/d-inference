@@ -86,7 +86,7 @@ TOOLING_PYTHON = $(TOOLING_VENV)/bin/python
 TOOLING_REQUIREMENTS = scripts/benchmarks/attention_packet/requirements.txt
 
 $(TOOLING_VENV)/.requirements-installed: $(TOOLING_REQUIREMENTS)
-	python3 -m venv "$(TOOLING_VENV)"
+	python3 -m venv --clear "$(TOOLING_VENV)"
 	"$(TOOLING_PYTHON)" -m pip install -r "$<"
 	touch "$@"
 

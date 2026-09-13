@@ -68,6 +68,56 @@ class DocsCheckTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("broken link -> Missing.md", result.stderr)
 
+    def test_soft_line_breaks_in_link_labels_preserve_navigation(self):
+        for usage in (
+            "[Read the\n guide](Page.md)",
+            "[Read the\n guide][some guide]\n\n[some guide]: Page.md",
+            "[Read][some\n guide]\n\n[some guide]: Page.md",
+            "[some\n guide][]\n\n[some guide]: Page.md",
+            "[some\n guide]\n\n[some guide]: Page.md",
+            "[Read\n#not-heading](Page.md)",
+            "[Read\n-not-list](Page.md)",
+            "[Read\n2. guide](Page.md)",
+            "[Read\n===suffix](Page.md)",
+            "[Read\n***suffix](Page.md)",
+            "[Read\n<span>guide</span>](Page.md)",
+            "[Read\n<custom>guide</custom>](Page.md)",
+        ):
+            with self.subTest(usage=usage):
+                result = self.check(usage + "\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_wrapped_labels_do_not_hide_missing_link_or_image_targets(self):
+        for usage in ("[Read the\n guide](Missing.md)", "![Read the\n guide](Missing.md)"):
+            with self.subTest(usage=usage):
+                result = self.check("[Page](Page.md)\n" + usage + "\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("broken link -> Missing.md", result.stderr)
+
+    def test_block_boundaries_do_not_join_link_labels(self):
+        for usage in (
+            "[Read\n\n guide](Page.md)",
+            "[Read\n \t\n guide](Page.md)",
+            "`[Read\n guide](Page.md)`",
+            "~~~markdown\n[Read\n guide](Page.md)\n~~~",
+            "[Read\n~~~\nexample\n~~~\n guide](Page.md)",
+            "[Read\n# Heading\n guide](Page.md)",
+            "[Read\n- list entry\n guide](Page.md)",
+            "[Read\n> quoted\n guide](Page.md)",
+            "[Read\n1. list entry\n guide](Page.md)",
+            "# [Read\n guide](Page.md)",
+            "[Read\n===\n guide](Page.md)",
+            "[Read\n***\n guide](Page.md)",
+            "[Wrapped\n<div>\nlabel](Page.md)",
+            "[Wrapped\n</DIV>\nlabel](Page.md)",
+            "[Wrapped\n<script>\nlabel](Page.md)",
+            "[Wrapped\n<!-- comment -->\nlabel](Page.md)",
+        ):
+            with self.subTest(usage=usage):
+                result = self.check(usage + "\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Page.md: orphan", result.stderr)
+
     def test_reference_links_and_encoded_spaces_count_as_navigation(self):
         result = self.check("[Guide][guide]\n\n[guide]: Some%20Page.md#details\n", page="Some Page.md")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -143,6 +193,7 @@ class DocsCheckTests(unittest.TestCase):
         (self.root / "docs/asset.svg").write_text("<svg/>")
         for usage in (
             "[![diagram](asset.svg)](Page.md)",
+            "[![diagram\n label](asset.svg)](Page.md)",
             "[![diagram][image]][guide]\n[image]: asset.svg\n[guide]: Page.md",
             "[![image][]][guide]\n[image]: asset.svg\n[guide]: Page.md",
         ):

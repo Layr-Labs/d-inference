@@ -101,9 +101,31 @@ def label(value):
 # An escaped bracket is label text, including inside a clickable image. Keep
 # backslashes out of the ordinary branch so backtracking cannot close early.
 definition_pattern = re.compile(r"^ {0,3}\[((?:\\.|[^\]\\\n])+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))")
+# Labels may wrap within a paragraph, but not across blank lines or another
+# block. Only ordered lists starting at 1 interrupt an existing paragraph.
+block_start = r" {0,3}(?:#{1,6}(?:[ \t]|\n|$)|>|(?:[-+*]|1[.)])[ \t]+)"
+# Setext underlines and thematic breaks occupy a whole line; marker prefixes
+# followed by ordinary text remain part of the label.
+marker_line = r" {0,3}(?:=+|-+|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})[ \t]*(?:\n|$)"
+# CommonMark HTML block starts can interrupt a paragraph. Complete inline or
+# custom tags cannot; treating every '<' as a boundary would lose real links.
+html_block_names = (
+    "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|"
+    "dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|"
+    "hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|"
+    "search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul"
+)
+html_start = (
+    r" {0,3}(?:<(?:!--|\?|![A-Za-z]|!\[CDATA\[)"
+    r"|<(?i:pre|script|style|textarea)(?=[ \t\n>]|$)"
+    rf"|</?(?i:{html_block_names})(?=[ \t\n>]|/>|$))"
+)
+soft_break = rf"\n(?![ \t]*\n|{block_start}|{marker_line}|{html_start})"
+label_unit = rf"(?:\\.|[^\[\]\\\n]|{soft_break})"
+reference_unit = rf"(?:\\.|[^\]\\\n]|{soft_break})"
 links = re.compile(
-    r"(?<!\\)(?P<image>!)?\[(?P<label>(?:\\.|[^\[\]\\\n]|\[(?:\\.|[^\[\]\\\n])*\])*)\]"
-    r"(?:\(\s*(?:<(?P<angle>[^>\n]+)>|(?P<bare>[^\s)]+))[^)]*\)|\[(?P<reference>(?:\\.|[^\]\\\n])*)\])?"
+    rf"(?<!\\)(?P<image>!)?\[(?P<label>(?:{label_unit}|\[{label_unit}*\])*)\]"
+    rf"(?:\(\s*(?:<(?P<angle>[^>\n]+)>|(?P<bare>[^\s)]+))[^)]*\)|\[(?P<reference>{reference_unit}*)\])?"
 )
 
 
@@ -135,6 +157,8 @@ def parse(source):
             continue
         if marker:
             fence = marker[1]
+            # Removing a fenced block must not join labels across paragraphs.
+            body.append("")
             continue
         definition = definition_pattern.match(line)
         if definition:
@@ -143,6 +167,9 @@ def parse(source):
             all_targets.append(target)
         else:
             body.append(line)
+            if re.match(r"^ {0,3}#{1,6}(?:[ \t]|$)", line):
+                # An ATX heading ends on its own line even without a blank.
+                body.append("")
 
     # Backtick spans contain literal examples, not rendered links.
     text = re.sub(r"(?<!`)(`+)(?!`).*?\1(?!`)", "", "\n".join(body), flags=re.DOTALL)

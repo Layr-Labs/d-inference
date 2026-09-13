@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `b5e7f220f`
+> Last updated: 2026-09-13 · commit `382b40ee9`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1059,12 +1059,15 @@ This prevents task scheduling from silently changing admission order. Sources: `
 
 Link existence and orphan detection share one Python parsing pass over all
 selected files. The parser handles reference definitions, percent-encoded spaces,
-escaped brackets, and soft line breaks inside rendered link labels. Blank lines,
+balanced nested labels, escaped brackets, and soft line breaks. Blank lines,
 headings, thematic breaks, list starts, quotes, fences, and HTML block starts keep
-those labels apart; inline HTML remains label text. Empty inline destinations
-stay empty, and backslash pairs preserve whether an opener is a link or image.
+those labels apart. Comments, HTML blocks, tag attributes and code examples do
+not create navigation; Markdown around inline tags remains visible. Empty inline
+destinations stay empty, and backslash pairs preserve link/image meaning.
 Indented code is excluded while paragraph continuations and list navigation
-remain visible. Unused definitions and image targets do not hide orphan pages.
+remain visible. Inner links take precedence over enclosing link syntax;
+clickable images retain the outer link without promoting alt text to navigation.
+Unused definitions and image targets do not hide orphan pages.
 `scripts/test_docs_check.py` checks these cases and verifies that adding pages
 does not launch an interpreter per page.
 

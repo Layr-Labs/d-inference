@@ -2525,6 +2525,15 @@ func (s *PostgresStore) CreditWithdrawableOnce(accountID string, amountMicroUSD 
 	}
 	defer tx.Rollback(ctx)
 
+	applied, err := creditWithdrawableOnceTx(ctx, tx, accountID, amountMicroUSD, entryType, reference)
+	if err != nil {
+		return false, err
+	}
+	return applied, tx.Commit(ctx)
+}
+
+// creditWithdrawableOnceTx applies one idempotent credit in the caller's transaction.
+func creditWithdrawableOnceTx(ctx context.Context, tx pgx.Tx, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) (bool, error) {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, string(entryType)+":"+reference); err != nil {
 		return false, fmt.Errorf("store: advisory lock: %w", err)
 	}
@@ -2540,12 +2549,12 @@ func (s *PostgresStore) CreditWithdrawableOnce(accountID string, amountMicroUSD 
 		return false, fmt.Errorf("store: check ledger reference: %w", err)
 	}
 	if exists {
-		return false, tx.Commit(ctx)
+		return false, nil
 	}
 	if err := creditWithdrawableBalance(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
 		return false, err
 	}
-	return true, tx.Commit(ctx)
+	return true, nil
 }
 
 // Debit subtracts micro-USD from an account. Returns error if insufficient funds.

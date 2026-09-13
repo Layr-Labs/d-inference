@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-09 · commit `aa94fa5d6`
+> Last updated: 2026-09-13 · commit `3cf03209a`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -133,6 +133,13 @@ unreadable existing file and post-write eviction. Error descriptions and paths
 never become metric labels. The legacy `write_failed` still covers unclassified
 producer errors and older providers, so it must not be interpreted as a count
 of physical disk errors.
+
+The complete-checkpoint writer also distinguishes novel-share exhaustion
+(`write_priority_limited`) from total-budget exhaustion (`write_rate_limited`)
+through `SSDWriteRateLimiter.decision`. Both settle the same typed heartbeat
+counter; neither creates a new event field. The [protocol reference](../reference/protocol-messages.md)
+owns the closed outcome vocabulary, and the [SSD reference](../reference/ssd-kv-cache.md#size-and-eviction-rules)
+defines the write policy.
 
 A failed atomic creation that never entered the index does not revoke unrelated
 checkpoints: the next donation can retry after the failure clears. Failure to

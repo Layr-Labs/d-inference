@@ -28,6 +28,10 @@ func preferRoutingCandidates(pool []*routingCandidate, prefer func(*routingCandi
 // they break only exact cost ties. Pools with no cache adjustment retain the
 // existing near-cost load spreading. The pool itself remains immutable.
 func selectRoutingCandidate(pool []*routingCandidate) (winner, runnerUp *routingCandidate, nearTieSize int, path SelectionPath) {
+	return selectRoutingCandidateWithAffinity(pool, "")
+}
+
+func selectRoutingCandidateWithAffinity(pool []*routingCandidate, affinity string) (winner, runnerUp *routingCandidate, nearTieSize int, path SelectionPath) {
 	if len(pool) == 0 {
 		return nil, nil, 0, SelectionNone
 	}
@@ -97,6 +101,11 @@ func selectRoutingCandidate(pool []*routingCandidate) (winner, runnerUp *routing
 			chosen--
 		}
 		path = SelectionRandom
+		if affinity != "" && !hasCacheAdjustment {
+			if preferred := cacheAffinityWinner(pool, isEquivalent, affinity); preferred != nil {
+				winner, path = preferred, SelectionPrefixAffinity
+			}
+		}
 	case nearTieSize == 1:
 		path = SelectionUniqueMin
 	case queueTies > 1:

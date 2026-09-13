@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `c24ccb21a`
+> Last updated: 2026-09-13 · commit `986e82fcd`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1060,8 +1060,10 @@ This prevents task scheduling from silently changing admission order. Sources: `
 ### 7. Docs lint
 
 Link existence and orphan detection share one Python parsing pass over all
-selected files. The parser handles reference definitions, percent-encoded spaces,
-balanced nested labels, escaped brackets, and soft line breaks. Blank lines,
+selected files. The parser handles balanced destination parentheses, escaped
+punctuation, percent-encoded spaces, nested labels and soft line breaks. Reference
+definitions must lead a paragraph, including inside lists and quotes; their
+continuation titles remain hidden. Blank lines,
 headings, thematic breaks, list starts, quotes, fences, and HTML block starts keep
 those labels apart. Invalid backtick-fence info strings remain ordinary Markdown.
 Fences inside lists and quotes end with their containers, preserving links after
@@ -1073,6 +1075,10 @@ Indented code is excluded while paragraph continuations and list navigation
 remain visible. Inner links take precedence over enclosing link syntax;
 clickable images retain the outer link without promoting alt text to navigation.
 Unused definitions and image targets do not hide orphan pages.
+Navigation must reach a page from `docs/README.md`, `docs/AGENTS.md`, or the root
+`README.md`, `CONTRIBUTING.md` or `AGENTS.md`. Self-links and disconnected cycles
+do not satisfy this check; nested indexes must also be reachable. Private docs
+remain exempt, and explicit-file checks skip orphan detection.
 `scripts/test_docs_check.py` checks these cases and verifies that adding pages
 does not launch an interpreter per page.
 

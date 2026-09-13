@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `9e0e9acbf`
+> Last updated: 2026-09-13 · commit `c24ccb21a`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -949,7 +949,8 @@ make landing-test
 
 ### 6. Scripts and release integrity
 
-Prepare and run the CPU tooling checks from the repository root:
+With `mise` activated in your shell, prepare and run the CPU tooling checks from
+the repository root:
 
 ```bash
 make tooling-install  # isolated .venv/tooling with pinned NumPy
@@ -957,9 +958,10 @@ make tooling-test     # also bootstraps the environment if needed
 ```
 
 The environment is reused until `scripts/benchmarks/attention_packet/requirements.txt`
-changes; ordinary test invocations do not run pip or access the package index.
-When requirements change, the environment is cleared and recreated so removed
-packages cannot remain importable. Set `TOOLING_VENV` to choose another dedicated
+or `mise.toml` changes; ordinary test invocations do not run pip or access the package
+index. When either input changes, the environment is cleared and recreated with
+the activated toolchain so removed packages cannot remain importable and an old
+Python pin cannot leave a stale environment. Set `TOOLING_VENV` to choose another dedicated
 environment directory. To rebuild a damaged environment, remove that directory
 and run `make tooling-install` again.
 `scripts/test_make_tooling.py`
@@ -1062,6 +1064,8 @@ selected files. The parser handles reference definitions, percent-encoded spaces
 balanced nested labels, escaped brackets, and soft line breaks. Blank lines,
 headings, thematic breaks, list starts, quotes, fences, and HTML block starts keep
 those labels apart. Invalid backtick-fence info strings remain ordinary Markdown.
+Fences inside lists and quotes end with their containers, preserving links after
+the code block. Brackets and parentheses inside quoted link titles stay literal.
 Comments, HTML blocks, tag attributes and code examples do
 not create navigation; Markdown around inline tags remains visible. Empty inline
 destinations stay empty, and backslash pairs preserve link/image meaning.

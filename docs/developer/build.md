@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `9e0e9acbf`
+> Last updated: 2026-09-13 · commit `c24ccb21a`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -63,11 +63,12 @@ git config core.hooksPath .githooks   # enables pre-commit + pre-push (see "Git 
 make ui-install admin-install tooling-install  # dependencies for aggregate build/test
 ```
 
-`mise` activates the pinned versions per shell; on macOS the system Xcode
+Activate `mise` in your shell to select the pinned versions; on macOS the system Xcode
 `swift` is also acceptable for `provider-swift`. `tooling-install` prepares
 `.venv/tooling` from the pinned attention-packet requirements. `tooling-test`
 prepares it automatically when missing and recreates the environment when the
-requirements file changes, removing dependencies that are no longer declared.
+requirements file or `mise.toml` changes, using the activated toolchain and removing
+dependencies that are no longer declared.
 See [the tooling checks](test.md#6-scripts-and-release-integrity).
 Use `make tooling-test TOOLING_VENV=.venv/tooling-py312` to select a different
 directory (`Makefile`, `TOOLING_VENV`); nested offline bootstrap fixtures retain

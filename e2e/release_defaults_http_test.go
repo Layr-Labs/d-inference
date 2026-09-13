@@ -93,9 +93,19 @@ func runReleaseDefaultHTTP(t *testing.T, capabilities bool) {
 	require.Contains(t, string(actualConfig), `engine_v2_kv_backend = "auto"`)
 	require.Contains(t, string(actualConfig), `mtp_mode = "auto"`)
 	require.NoError(t, os.WriteFile(filepath.Join(root, "provider-config.toml"), actualConfig, 0600))
-	require.Eventually(t, func() bool {
-		return validateReleaseDefaultSlots(connectedSlots(suite, in.Artifact.ModelID), in, expected) == nil
-	}, time.Minute, 100*time.Millisecond, "loaded slot does not prove release defaults")
+	readinessCtx := ctx
+	if deadline, ok := t.Deadline(); ok {
+		// Leave time for the owned provider to stop and the report to be saved.
+		var stopReadiness context.CancelFunc
+		readinessCtx, stopReadiness = context.WithDeadline(ctx, deadline.Add(-time.Minute))
+		defer stopReadiness()
+	}
+	require.NoError(t, waitForReleaseDefaultReadiness(readinessCtx, in, expected,
+		suite.Providers[0].Running, suite.Providers[0].ReadState,
+		func() []connectedSlot { return connectedSlots(suite, in.Artifact.ModelID) },
+		func(ctx context.Context, providerID string) error {
+			return confirmReleaseDefaultAdmission(ctx, suite.Coordinator.Registry, relay, providerID, in.Artifact.ModelID)
+		}))
 	if expected.cache == "ssd" {
 		_, _, supervisor, _ := startExactCacheSidecar(t, suite, fixture, in.Artifact.ModelID, in.Artifact.PromptContractID)
 		suite.Coordinator.Server.SetPromptSupervisor(supervisor)

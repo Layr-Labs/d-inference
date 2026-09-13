@@ -759,15 +759,16 @@ func (r *Registry) commitProviderReservation(
 	}
 	r.applyCacheRoutingCostPLocked(p, model, pr, candidate)
 
-	// Another reservation changed this winner after the shared scan. Re-scan the
-	// fleet so cost ranking observes that debit instead of herding the whole scan
-	// cohort onto the formerly-cheapest provider. The counters compared here
+	// Another reservation or cache quarantine changed this winner after the
+	// shared scan. Re-scan before committing stale cost or affinity preference.
+	// Quarantine can change affinity without changing any cost. The counters here
 	// were read under the p.mu this section still holds, so a concurrent commit
 	// on the same provider is either fully before (and visible) or fully after.
 	if snapshot.pendingForModel != selected.snapshot.pendingForModel ||
 		snapshot.totalPending != selected.snapshot.totalPending ||
 		candidate.effectiveQueue != selected.effectiveQueue ||
-		candidate.costMs != selected.costMs {
+		candidate.costMs != selected.costMs ||
+		candidate.cacheAffinityEligible != selected.cacheAffinityEligible {
 		return nil, nil, reservationNeedsRescan, RoutingDecision{}
 	}
 
@@ -920,23 +921,21 @@ func routingDecisionForCandidate(model string, provider *Provider, candidate *ro
 // builds it in place; no copy is taken). The caller holds r.mu, but not p.mu;
 // the hint currency and affinity quarantine checks take the provider lock.
 func (r *Registry) applyCacheRoutingCost(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate) {
-	hint, present := pr.cacheRoutingHints[p.ID]
-	wantAffinity := pr.CachePlan.affinityKey != ""
-	if !present && !wantAffinity {
+	_, present := pr.cacheRoutingHints[p.ID]
+	if !present && pr.CachePlan.affinityKey == "" {
 		return
 	}
 	p.mu.Lock()
-	if wantAffinity {
-		candidate.cacheAffinityEligible = r.cacheAffinityEligibleLocked(p, model, pr.CachePlan)
-	}
-	if present {
-		r.applyCacheHintLocked(hint, model, candidate)
-	}
+	r.applyCacheRoutingCostPLocked(p, model, pr, candidate)
 	p.mu.Unlock()
 }
 
-// applyCacheRoutingCostPLocked is the reservation path, already holding p.mu.
+// applyCacheRoutingCostPLocked is shared by scan and reservation; both hold
+// r.mu and p.mu so capability/quarantine checks use the current provider state.
 func (r *Registry) applyCacheRoutingCostPLocked(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate) {
+	if pr.CachePlan.affinityKey != "" {
+		candidate.cacheAffinityEligible = r.cacheAffinityEligibleLocked(p, model, pr.CachePlan)
+	}
 	r.applyCacheHintLocked(pr.cacheRoutingHints[p.ID], model, candidate)
 }
 

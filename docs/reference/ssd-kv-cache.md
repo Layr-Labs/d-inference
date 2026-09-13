@@ -1,6 +1,6 @@
 # SSD KV cache reference
 
-> Last updated: 2026-09-12 · commit `06518dc93`
+> Last updated: 2026-09-13 · commit `d66a38b77`
 
 Exact on-disk format, paths, identity binding, environment knobs, size and
 eviction rules, and per-family reuse capability of the provider's encrypted SSD
@@ -193,7 +193,7 @@ All constants are code constants of `SSDPrefixCachePolicy` and
 | TTL | `defaultTTLSeconds = 900`, `maxTTLSeconds = 900`, sliding on hit | `SSDPrefixCachePolicy.swift` |
 | Daily write cap | `defaultMaxWriteBytesPerDay = 150 * 1_000_000_000` | `SSDPrefixCachePolicy.swift` |
 | Complete-checkpoint repeat reserve | Novel checkpoint tags use a 90% burst/refill sub-budget; tags observed again within the cache TTL can use the full shared budget. Both debit the original total cap; unlimited mode stays unlimited. The 4,096-entry volatile tag history supplies priority only; durable duplicates authenticate and bypass write consumption. Novel-share exhaustion reports `write_priority_limited`; total-budget exhaustion remains `write_rate_limited`. | `SSDCheckpointDemand.swift`, `SSDHybridCheckpointStore+Write.swift`, `SSDWriteRateLimiter.swift` |
-| Complete-checkpoint maintenance | Owned deletion reconciles missing index entries inside the same epoch barrier; later reconciliation cannot rotate the epoch again solely for those entries. A genuine deletion still revokes the model epoch. | `SSDHybridCheckpointStore+Maintenance.swift` |
+| Complete-checkpoint maintenance | Whole-root external deletion reconciles missing index entries inside the same epoch barrier; later reconciliation cannot rotate the epoch again solely for those entries. Targeted eviction and corrupt-file removal update only their known index entries through `performIndexedDestructiveChange`, avoiding a full filesystem scan per victim. A genuine deletion still revokes the model epoch. | `SSDHybridCheckpointStore+Maintenance.swift`, `performExternalDestructiveChange`, `reconcileExternalRemovals` |
 | Low-disk write stop | `lowDiskFloorBytes = lowDiskAbsoluteFloorBytes = 20 * 1_073_741_824` (20 GiB), independent of total disk capacity; reads continue; ENOSPC starts `enospcCooldownSeconds = 600` | `SSDPrefixCachePolicy.swift` |
 | Payload/staging cap | `defaultMaxStageBytes = 1024 * 1_048_576`; `defaultMaxStageMillis = 1000` at `conservativeStageBytesPerSecond = 1_500_000_000` | `SSDPrefixCachePolicy.swift` |
 | Attention donation floor | `prefixTokens > adoptionBoundTokens + minEffectiveTokens`, whole blocks only; `defaultMinEffectiveTokens = 1024`, raised to 1_536 for `.frozenFullReplay` with bound ≥ 25_600 | `SSDPrefixCache.swift` (`donate`), `PrefixCachePolicy.swift` |

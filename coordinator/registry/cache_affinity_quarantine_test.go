@@ -100,3 +100,56 @@ func TestCacheAffinityQuarantinePreservesOtherModel(t *testing.T) {
 		t.Fatal("proof quarantine on one model disabled affinity for another")
 	}
 }
+
+func TestCacheAffinityQuarantineBetweenScanAndCommit(t *testing.T) {
+	for _, tier := range []string{"ssd", "memory"} {
+		for _, withPeer := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/peer=%t", tier, withPeer), func(t *testing.T) {
+				r, _, capability := exactTestRegistry(t)
+				removeTestProvider(r, "provider-a")
+				providers := []*Provider{checkpointTestProvider(t, r, "machine-a", capability)}
+				if withPeer {
+					providers = append(providers, checkpointTestProvider(t, r, "machine-b", capability))
+				}
+				if tier == "memory" {
+					for _, p := range providers {
+						memory := []protocol.PrefixCacheV2Capability{capability}
+						if _, err := r.UpdatePrefixCacheSnapshot(p.ID, true, 2, nil, &memory, nil, nil); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				plan := boundTestCachePlan(r, exactTestPlan(exactTestAnchor(2, "c")))
+				plan.affinityKey = "repeat-between-scan-and-commit"
+				pr := &PendingRequest{RequestID: "quarantine-at-commit", Model: "model", CachePlan: plan,
+					EstimatedPromptTokens: plan.PromptTokenCount, RequestedMaxTokens: 128}
+				scan := r.scanProviderReservation("model", pr)
+				if scan.selected == nil || !scan.selected.cacheAffinityEligible {
+					t.Fatal("positive control did not scan an affinity-eligible candidate")
+				}
+				fenced := scan.selected.provider
+				r.disablePrefixCacheV2Model(fenced.ID, "model", tier, fenced, r.cacheRouting, capability)
+				if p, _, outcome, _ := r.commitProviderReservation("model", pr, scan); p != nil || outcome != reservationNeedsRescan {
+					t.Fatalf("stale affinity committed after quarantine: provider=%v outcome=%v", p != nil, outcome)
+				}
+				if pr.ProviderID != "" {
+					t.Fatal("rescan assigned the request before fresh selection")
+				}
+				p, decision := r.ReserveProviderEx("model", pr)
+				if p == nil {
+					t.Fatal("rescan lost ordinary serving")
+				}
+				defer p.RemovePending(pr.RequestID)
+				if withPeer && (p == fenced || decision.SelectionPath != SelectionPrefixAffinity) {
+					t.Fatal("rescan did not prefer the healthy peer")
+				}
+				if !withPeer && (p != fenced || decision.SelectionPath == SelectionPrefixAffinity) {
+					t.Fatal("sole provider could not serve without affinity")
+				}
+				if decision.CacheDiscountMs != 0 || pr.CacheSelectionSelected {
+					t.Fatal("quarantine rescan manufactured cache credit")
+				}
+			})
+		}
+	}
+}

@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-13 · commit `a62e2948d`
+> Last updated: 2026-09-13 · commit `d66a38b77`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -509,6 +509,8 @@ keyed ranking to seed an observed repeated prefix on a cache-capable candidate.
 against the tracker's proof quarantine while holding the current provider
 snapshot. Re-advertising the same rejected capability cannot restore its
 affinity preference; a changed capability is checked against its own identity.
+Reservation repeats the same check under the provider lock and rescans if
+affinity eligibility changed since selection, even when service cost is equal.
 If no candidate has an unfenced matching capability, ordinary routing continues.
 Busy or more expensive machines still lose. A real cache cost adjustment takes
 precedence over this tie breaker, and all admission/identity/proof checks are

@@ -192,6 +192,24 @@ func TestProviderWireRelayPreservesTransport(t *testing.T) {
 	require.Equal(t, json.RawMessage("true"), events[0].Fields["encrypted_body_present"])
 	require.Equal(t, events[0].Connection, events[1].Connection)
 }
+
+func TestProviderWireRelayCapacityObservationsRemainNarrow(t *testing.T) {
+	for _, tc := range []struct {
+		frame string
+		want  string
+	}{
+		{`{"type":"capacity_probe","quote_id":"random-probe","model":"model","prompt_tokens_bucket":512,"max_output_tokens":1,"auth_token":"secret","prompt":"secret","encrypted_body":"secret"}`, `{"quote_id":"random-probe","model":"model"}`},
+		{`{"type":"capacity_quote","quote_id":"random-probe","capacity_seq":5,"admissible_now":false,"rejection_reason":"slot_state","ttft_p90_ms":200,"auth_token":"secret","prompt":"secret","cache_scope":"secret"}`, `{"quote_id":"random-probe","capacity_seq":5,"admissible_now":false,"rejection_reason":"slot_state"}`},
+	} {
+		event, ok := summarizeProviderFrame([]byte(tc.frame))
+		require.True(t, ok)
+		raw, err := json.Marshal(event.Fields)
+		require.NoError(t, err)
+		require.JSONEq(t, tc.want, string(raw))
+		require.NotContains(t, string(raw), "secret")
+	}
+}
+
 func TestProviderWireRelayRedactsAnchorsAndBounds(t *testing.T) {
 	relay := &ProviderWireRelay{}
 	for i := 0; i < 4097; i++ {

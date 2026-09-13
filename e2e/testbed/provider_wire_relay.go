@@ -208,6 +208,10 @@ func summarizeProviderFrame(data []byte) (ProviderWireEvent, bool) {
 		copyFields("status_code", "terminal_cause", "failure_code")
 		copyProfileFields(event.Fields, raw)
 	case "cancel", "inference_accepted":
+	case "capacity_probe":
+		copyFields("quote_id", "model")
+	case "capacity_quote":
+		copyFields("quote_id", "capacity_seq", "admissible_now", "rejection_reason")
 	case "register":
 		copyFields("version", "prefix_cache_protocol", "prefix_cache_v2_models", "template_hashes", "encrypted_response_chunks")
 		present("auth_token")

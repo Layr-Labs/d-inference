@@ -61,7 +61,7 @@ jobs:
       - name: Run testbed unit tests (CPU only)
         run: go test -race ./e2e/testbed/... -count=1
       - name: Check integration fixture policy (CPU only)
-        run: go test -race ./e2e/ -run '^Test(Qwen38|IntegrationWorkflow)' -count=1
+        run: go test -race ./e2e/ -run '^Test(Qwen38|IntegrationWorkflow|ExactCacheRoutingFixture|ReleaseDefault|ReleaseCapability)' -count=1
       - name: Check formatting
         run: |
           set -o pipefail

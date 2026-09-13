@@ -28,8 +28,9 @@ enum BaseGuestInstallation {
         guard staging.directory.lastPathComponent.hasPrefix("bootstrap-"),
               UUID(uuidString: String(staging.directory.lastPathComponent.dropFirst(10))) != nil,
               staging.hashes == release.hashes else { throw BaseGuestPreparationError.invalidRelease }
-        return try SandboxGuestCommandRequest(idempotencyKey: UUID(), executable: "/usr/bin/sudo",
-            arguments: ["-n", "/bin/zsh", "-f", "-c", script, "darkbloom-base-install",
+        return try SandboxGuestCommandRequest(idempotencyKey: UUID(), executable: "/bin/zsh",
+            arguments: ["-f", "-c", rootInvocation, "darkbloom-bootstrap-auth",
+                script, "darkbloom-base-install",
                 staging.directory.lastPathComponent,
                 release.hashes["darkbloom-sandbox-guest"]!,
                 release.hashes["darkbloom-sandbox-bootstrap.sh"]!,
@@ -37,6 +38,17 @@ enum BaseGuestInstallation {
                 release.hashes["install-sandbox-guest.sh"]!],
             workingDirectory: "/Users/lume", timeoutSeconds: 300)
     }
+
+    // The pinned unattended preset uses this public, temporary credential.
+    // It is used only after checking the known VM bootstrap identity, sent on
+    // stdin to sudo, and retired by the fixed installation script before any
+    // tenant is admitted. This never requests a physical host's credentials.
+    static let rootInvocation = #"""
+    set -euo pipefail
+    [[ $(/usr/sbin/sysctl -n kern.hv_vmm_present) == 1 ]] || exit 70
+    [[ $(/usr/bin/id -u) == 501 && $(/usr/bin/id -un) == lume ]] || exit 70
+    /usr/bin/printf '%s\n' 'lume' | /usr/bin/sudo -S -p '' /bin/zsh -f -c "$@"
+    """#
 
     // This is fixed operator-owned provisioning code. Values are individual
     // argv entries, never interpolated into executable shell source.

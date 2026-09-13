@@ -47,8 +47,11 @@ signature, rejects identity collisions, creates the nonadmin UID/GID 2001, and
 stages a LaunchDaemon without starting it. The script refuses physical hosts.
 It retires only the expected `lume` UID 501 bootstrap account, removes its known
 passwordless sudo rule, and disables SSH on future boots. Unexpected users or
-sudo policy fail closed. The provisioning session may finish; shut down the
-prepared base before cloning it for tenants.
+sudo policy fail closed. Automated base preparation verifies the expected
+virtualized `lume` UID501 identity, then passes the pinned unattended preset's
+public temporary password to sudo on stdin. It does not assume passwordless
+sudo or request a host password. The provisioning session may finish; shut down
+the prepared base before cloning it for tenants.
 Installation stages a one-column `workspace` manifest under `/etc/synthetic.d`.
 macOS synthesizes this empty root mountpoint at the next boot; the installer
 does not attempt to create a physical directory on the sealed root filesystem.

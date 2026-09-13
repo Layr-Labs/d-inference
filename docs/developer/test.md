@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `69454529a`
+> Last updated: 2026-09-13 · commit `ec73023e4`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -1056,6 +1056,17 @@ This prevents task scheduling from silently changing admission order. Sources: `
 
 ### 7. Docs lint
 
+The historical-link regression checks run in isolated temporary Git repositories:
+
+```bash
+python3 scripts/test-docs-check-historical-links.py
+```
+
+Docs Lint also runs these checks before validating the documentation tree.
+Frozen source references resolve against the exact stamped commit when the
+file has moved; current missing links still fail. See
+[historical source references](historical-references.md).
+
 ```bash
 make docs-check          # scripts/docs-check.sh — stamps, relative links, cited paths, orphans
 make docs-stamp FILES="docs/developer/test.md"   # refresh a stamp after editing
@@ -1312,7 +1323,7 @@ the gate and does not assert that it passed.
 
 The focused construction and load-policy suites are `GPTOSSDefaultPrefixCacheWiringTests`,
 `PrefixCachePolicyTests` and `PrefixCacheLoadHashTests` in
-`provider-swift/Tests/ProviderCoreTests/`. They cover exact-ID activation, disabled
+`provider-swift/Tests/ProviderCoreTests/Inference/PrefixCache/`. They cover exact-ID activation, disabled
 and unsupported backends, fresh load hashes and identity rejection. A passing
 construction suite does not replace the real-checkpoint fixture above. Live test
 skips must be reported as unrun qualification.

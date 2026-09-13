@@ -68,6 +68,56 @@ class DocsCheckTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("broken link -> Missing.md", result.stderr)
 
+    def test_balanced_nested_labels_preserve_links_and_clickable_images(self):
+        (self.root / "docs/Asset.png").touch()
+        for usage in (
+            "[Outer [middle [inner]]](Page.md)",
+            "[Outer [middle [inner]]][guide]\n\n[guide]: Page.md",
+            "[Outer [middle\n [inner]]](Page.md)",
+            "[" * 16 + "inner" + "]" * 16 + "(Page.md)",
+            "[![Outer [middle [inner]]](Asset.png)](Page.md)",
+            "[![Outer [middle [inner]]][asset]][guide]\n\n[asset]: Asset.png\n[guide]: Page.md",
+            r"[Outer \[middle \[inner\]\]][guide]" + "\n\n[guide]: Page.md",
+            r"[guide][Outer \[middle \[inner\]\]]" + "\n\n"
+            + r"[Outer \[middle \[inner\]\]]: Page.md",
+        ):
+            with self.subTest(usage=usage):
+                result = self.check("\n" + usage + "\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_balanced_nested_labels_do_not_hide_missing_targets(self):
+        for usage, missing in (
+            ("[Outer [middle [inner]]](Missing.md)", "Missing.md"),
+            ("[![Outer [middle [inner]]](Missing.png)](Page.md)", "Missing.png"),
+        ):
+            with self.subTest(usage=usage):
+                result = self.check("\n[Page](Page.md)\n" + usage + "\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"broken link -> {missing}", result.stderr)
+                self.assertNotIn("orphan", result.stderr)
+
+    def test_nested_links_resolve_inner_references_without_promoting_alt_text(self):
+        (self.root / "docs/Asset.png").touch()
+        for usage, navigates in (
+            ("[Outer [middle [inner]]]\n\n[inner]: Page.md", True),
+            ("[Outer [middle [inner]]](Page.md)\n\n[inner]: Asset.png", False),
+            ("[guide][Outer [middle [inner]]]\n\n[guide]: Page.md", False),
+            ("![Outer [middle [inner]]](Page.md)", False),
+            ("[![Outer [middle [inner]]](Page.md)](https://example.com)", False),
+            ("![alt [inside](Page.md)](Asset.png)", False),
+            ("[![alt [inside](Asset.png)](Asset.png)](Page.md)", False),
+        ):
+            with self.subTest(usage=usage):
+                result = self.check("\n" + usage + "\n")
+                if navigates:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Page.md: orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+        result = self.check("\n[Page](Page.md)\n![alt [inside](Missing.md)](Asset.png)\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_soft_line_breaks_in_link_labels_preserve_navigation(self):
         for usage in (
             "[Read the\n guide](Page.md)",
@@ -154,6 +204,117 @@ class DocsCheckTests(unittest.TestCase):
         result = self.check("[guide]\n```\n[guide]: Page.md\n```\n")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Page.md: orphan", result.stderr)
+
+    def test_html_blocks_do_not_create_navigation(self):
+        for example in (
+            "<!-- [guide] -->",
+            "<!-- [unused] --> [guide]",
+            "<!--\n[guide]\n-->",
+            "<!--\n\n[guide]\n-->",
+            "<script>\n[guide]\n</script>",
+            "<PRE>\n[guide]\n</PRE>",
+            "<style>\n[guide]\n</style>",
+            "<textarea>\n[guide]\n</textarea>",
+            "<?instruction\n[guide]\n?>",
+            "<!DOCTYPE\n[guide]\n>",
+            "<![CDATA[\n[guide]\n]]>",
+            "<div>\n[guide]\n</div>",
+            "</DIV>\n[guide]",
+            "<span>\n[guide]\n</span>",
+            "<custom data-example='text'>\n[guide]\n</custom>",
+            "> <!--\n> [guide]\n> -->",
+            "- <div>\n  [guide]\n  </div>",
+            "<div>\n```\n[guide]\n</div>",
+        ):
+            with self.subTest(example=example):
+                result = self.check("\n" + example + "\n\n[guide]: Page.md\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Page.md: orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+
+    def test_inline_html_tokens_do_not_create_navigation(self):
+        for example in (
+            "Text <!-- [guide] --> text",
+            "Text <!--\n[guide]\n--> text",
+            '<span title="[guide]">Text</span>',
+            "Text <? [guide] ?> text",
+            "Text <![CDATA[[guide]]]> text",
+            "Text <!EXAMPLE [guide]> text",
+            "Text <!-- ` [guide] --> text",
+        ):
+            with self.subTest(example=example):
+                result = self.check("\n" + example + "\n\n[guide]: Page.md\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Page.md: orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+
+    def test_html_block_definitions_cannot_resolve_a_reference(self):
+        for example in (
+            "<!--\n[guide]: Page.md\n-->",
+            "<div>\n[guide]: Page.md\n</div>",
+            "<script>\n[guide]: Page.md\n</script>",
+            "<span>\n[guide]: Page.md\n</span>",
+        ):
+            with self.subTest(example=example):
+                result = self.check("\n" + example + "\n\n[guide]\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Page.md: orphan", result.stderr)
+
+    def test_inline_html_comment_definitions_stay_hidden(self):
+        result = self.check("\nText <!--\n[guide]: Page.md\n--> text\n\n[guide]\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Page.md: orphan", result.stderr)
+        result = self.check("\nText <!--\n[unused]: Missing.md\n--> text\n\n[Page](Page.md)\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_deferred_definitions_preserve_label_continuation(self):
+        (self.root / "docs/Asset.png").write_bytes(b"fixture")
+        result = self.check("\n[Read\n[guide]: Asset.png\nlabel](Page.md)\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unmatched_backtick_runs_do_not_hide_navigation(self):
+        for example in ("`` [guide] `", "Text ``` [guide] ``", "Text ```` [guide] ```"):
+            with self.subTest(example=example):
+                result = self.check("\n" + example + "\n\n[guide]: Page.md\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_hidden_html_links_are_not_checked_as_missing_files(self):
+        for example in (
+            "<!-- [hidden](Missing.md) -->",
+            "Text <!-- [hidden](Missing.md) --> text",
+            "<div>\n[hidden](Missing.md)\n[hidden]: Missing.md\n</div>",
+            '<span title="[hidden](Missing.md)">Text</span>',
+        ):
+            with self.subTest(example=example):
+                result = self.check("\n" + example + "\n\n[Page](Page.md)\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_markdown_around_inline_html_and_after_blocks_stays_navigation(self):
+        for example in (
+            "Text <!-- hidden --> [guide]",
+            "<span>[guide]</span>",
+            "Text\n<span>\n[guide]\n</span>",
+            "[gui<!-- hidden -->de](Page.md)",
+            "[Read <span>guide</span>](Page.md)",
+            "[Read <!-- [hidden] --> guide][guide]",
+            "<!-- hidden -->\n[guide]",
+            "<script>hidden</script>\n[guide]",
+            "<?instruction?>\n[guide]",
+            "<!EXAMPLE>\n[guide]",
+            "<![CDATA[hidden]]>\n[guide]",
+            "<div>\nhidden\n</div>\n\n[guide]",
+            "<span>\nhidden\n</span>\n\n[guide]",
+            "> <div>\n> hidden\n[guide]",
+            "- <div>\n  hidden\n[guide]",
+            r"Text \<!-- [guide] -->",
+            "`<!--` [guide]",
+            "```html\n<!--\n```\n[guide]",
+            "<!-->\n[guide]",
+            "<!--->\n[guide]",
+        ):
+            with self.subTest(example=example):
+                result = self.check("\n" + example + "\n\n[guide]: Page.md\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_inline_link_and_reference_targets_stay_independent(self):
         result = self.check("[guide](Page.md)\n[guide]: Missing.md\n")

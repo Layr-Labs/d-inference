@@ -122,38 +122,160 @@ html_start = (
     r"|<(?i:pre|script|style|textarea)(?=[ \t\n>]|$)"
     rf"|</?(?i:{html_block_names})(?=[ \t\n>]|/>|$))"
 )
+# HTML tags are opaque inline tokens: their attributes are not Markdown, while
+# text between inline tags still is. A standalone complete tag starts a block
+# only outside a paragraph (the seventh CommonMark HTML block form).
+html_attribute = r"[A-Za-z_:][A-Za-z0-9_.:-]*(?:[ \t\n]*=[ \t\n]*(?:\"[^\"]*\"|'[^']*'|[^ \t\n\"'=<>`]+))?"
+html_tag = (
+    rf"(?:<[A-Za-z][A-Za-z0-9-]*(?:[ \t\n]+{html_attribute})*[ \t\n]*/?>"
+    r"|</[A-Za-z][A-Za-z0-9-]*[ \t\n]*>)"
+)
+html_inline = re.compile(
+    rf"(?:<!--(?:-?>|.*?-->)|<\?.*?\?>|<!\[CDATA\[.*?\]\]>|<![A-Za-z][^>]*>|{html_tag})",
+    re.DOTALL,
+)
+html_until_blank = re.compile(r"^$")
+html_block_markers = (
+    (r" {0,3}<(?i:pre|script|style|textarea)(?=[ \t>]|$)", r"</(?i:pre|script|style|textarea)>"),
+    (r" {0,3}<!--", r"-->|^ {0,3}<!---?>"),
+    (r" {0,3}<\?", r"\?>"),
+    (r" {0,3}<![A-Za-z]", r">"),
+    (r" {0,3}<!\[CDATA\[", r"\]\]>"),
+)
+
+
+def html_block_end(text, paragraph_open):
+    for start, end in html_block_markers:
+        if re.match(start, text):
+            return re.compile(end)
+    if re.match(rf" {{0,3}}</?(?i:{html_block_names})(?=[ \t>]|/>|$)", text) or (
+        not paragraph_open and re.fullmatch(rf" {{0,3}}{html_tag}[ \t]*", text)
+    ):
+        return html_until_blank
+    return None
+
+
+def inline_literal_end(text, offset):
+    """Skip one code/HTML token without changing bytes in surrounding labels."""
+    unmatched_end = None
+    if text[offset] == "`":
+        opener = re.match(r"`+", text[offset:])[0]
+        # An unmatched run is literal as a whole. Retrying at its second tick
+        # could invent a shorter code span and hide a real link.
+        unmatched_end = offset + len(opener)
+        closing = re.search(rf"(?<!`){opener}(?!`)", text[offset + len(opener):])
+        end = offset + len(opener) + closing.end() if closing else None
+    elif text[offset] == "<":
+        match = html_inline.match(text, offset)
+        end = match.end() if match else None
+    else:
+        return None
+    if end is not None and not re.search(
+        rf"\n(?=[ \t]*\n|{block_start}|{marker_line}|{html_start})", text[offset:end]
+    ):
+        return end
+    return unmatched_end
+
+
+def collect_definitions(body):
+    # Defer collection until inline literals are known. A definition-shaped
+    # line inside a multiline HTML comment is not a reference definition.
+    text = "\n".join(body)
+    definitions, targets = {}, []
+    cursor, offset = 0, 0
+    for index, line in enumerate(body):
+        definition = definition_pattern.match(line)
+        if definition:
+            while cursor < offset:
+                if text[cursor] == "\\":
+                    cursor += 2
+                else:
+                    cursor = inline_literal_end(text, cursor) or cursor + 1
+            if cursor <= offset:
+                target = definition[2] or definition[3]
+                definitions.setdefault(label(definition[1]), target)
+                targets.append(target)
+                body[index] = None
+                cursor = offset + len(line) + 1
+        offset += len(line) + 1
+    body[:] = [line for line in body if line is not None]
+    return definitions, targets
+
+
 soft_break = rf"\n(?![ \t]*\n|{block_start}|{marker_line}|{html_start})"
-label_unit = rf"(?:\\.|[^\[\]\\\n]|{soft_break})"
-reference_unit = rf"(?:\\.|[^\]\\\n]|{soft_break})"
-# Backslash pairs are literal; only an unmatched final slash escapes an opener.
-links = re.compile(
-    rf"(?<!\\)(?:\\\\)*(?P<image>!)?\[(?P<label>(?:{label_unit}|\[{label_unit}*\])*)\]"
-    rf"(?:\((?![^)]*\n[ \t]*\n)\s*(?:<(?P<angle>[^>\n]*)>|(?P<bare>[^\s)]*))[^)]*\)|\[(?P<reference>{reference_unit}*)\])?"
+soft_break_pattern = re.compile(soft_break)
+# Visible labels balance arbitrary bracket depth; reference identifiers only
+# permit escaped brackets. Keep destination matching separate from that stack.
+reference_unit = rf"(?:\\.|[^\[\]\\\n]|{soft_break})"
+link_suffix = re.compile(
+    rf"\((?![^)]*\n[ \t]*\n)\s*(?:<(?P<angle>[^>\n]*)>|(?P<bare>[^\s)]*))[^)]*\)"
+    rf"|\[(?P<reference>{reference_unit}*)\]"
 )
 
 
 def rendered_targets(text, definitions):
-    for match in links.finditer(text):
-        # A link label may itself be an image: [![alt](image)](page). Check
-        # the image destination too, but only the outer link navigates.
-        if not match["image"]:
-            for target, _ in rendered_targets(match["label"], definitions):
-                yield target, False
-        if match["angle"] is not None:
-            target = match["angle"]
-        elif match["bare"] is not None:
-            target = match["bare"]
+    openers, targets = [], []
+    offset = 0
+    while offset < len(text):
+        char = text[offset]
+        if char == "\\":
+            # Pairs are literal; an unmatched slash escapes the next marker.
+            offset += 1 if text[offset + 1:offset + 2] == "\n" else 2
+            continue
+        literal_end = inline_literal_end(text, offset)
+        if literal_end is not None:
+            offset = literal_end
+            continue
+        if char == "\n" and not soft_break_pattern.match(text, offset):
+            openers.clear()
+        image = text.startswith("![", offset)
+        if image or char == "[":
+            offset += 2 if image else 1
+            openers.append({"start": offset, "image": image, "active": True,
+                            "result_start": len(targets)})
+            continue
+        if char != "]" or not openers:
+            offset += 1
+            continue
+        opener = openers.pop()
+        visible_label = text[opener["start"]:offset]
+        offset += 1
+        if not opener["active"]:
+            continue
+        suffix = link_suffix.match(text, offset)
+        if suffix and suffix["angle"] is not None:
+            target = suffix["angle"]
+        elif suffix and suffix["bare"] is not None:
+            target = suffix["bare"]
+        elif suffix:
+            target = definitions.get(label(suffix["reference"] or visible_label))
+        elif text[offset:offset + 1] == "[":
+            # An invalid explicit reference suppresses shortcut fallback.
+            target = None
         else:
-            # Full [text][id], collapsed [id][], and shortcut [id] references.
-            reference = match["reference"] or match["label"]
-            target = definitions.get(label(reference))
-        if target is not None:
-            yield target, not match["image"]
+            target = definitions.get(label(visible_label))
+        if target is None:
+            continue
+        if suffix:
+            offset = suffix.end()
+        if opener["image"]:
+            # Image alt text may contain link syntax, but those inner targets
+            # are rendered as alt text, not independent links or images.
+            del targets[opener["result_start"]:]
+        else:
+            # Links cannot contain links. An inner resolved link takes
+            # precedence over each earlier link opener, including across alt.
+            for earlier in openers:
+                if not earlier["image"]:
+                    earlier["active"] = False
+        targets.append((target, not opener["image"]))
+    return targets
 
 
 def parse(source):
-    definitions, body, all_targets, navigation = {}, [], [], []
+    body, navigation = [], []
     fence = None
+    html_end, html_depth, html_indent = None, 0, 0
     paragraph_open, quote_depth, list_indents = False, 0, []
     empty_item = False
     list_item = re.compile(r"^ {0,3}(?P<marker>[-+*]|[0-9]{1,9}[.)])(?P<padding> +|$)")
@@ -163,17 +285,6 @@ def parse(source):
             if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
                 fence = None
             continue
-        if marker:
-            fence = marker[1]
-            # Removing a fenced block must not join labels across paragraphs.
-            body.append("")
-            paragraph_open = False
-            empty_item = False
-            fence_indent = len(line) - len(line.lstrip(" "))
-            while list_indents and fence_indent < list_indents[-1]:
-                list_indents.pop()
-            continue
-
         # Indented code starts outside a paragraph. Measure its four columns
         # from the list/quote content, so ordinary nested links stay visible.
         content = line.expandtabs(4)
@@ -187,6 +298,8 @@ def parse(source):
         quote_depth = depth
         if quote:
             content = content[quote.end():]
+        if html_end is not None and depth < html_depth:
+            html_end = None
         if not content.strip():
             # A blank line closes an otherwise empty list item.
             if empty_item and list_indents:
@@ -194,8 +307,30 @@ def parse(source):
             empty_item = False
             body.append("")
             paragraph_open = False
+            if html_end is html_until_blank:
+                html_end = None
             continue
         indent = len(content) - len(content.lstrip(" "))
+        if html_end is not None:
+            if indent >= html_indent:
+                # HTML cannot acquire Markdown child blocks, definitions or
+                # fences. End only at its terminator or its container boundary.
+                if html_end.search(content[html_indent:]):
+                    html_end = None
+                body.append("")
+                paragraph_open = False
+                continue
+            html_end = None
+        if marker:
+            fence = marker[1]
+            # Removing a fenced block must not join labels across paragraphs.
+            body.append("")
+            paragraph_open = False
+            empty_item = False
+            fence_indent = len(line) - len(line.lstrip(" "))
+            while list_indents and fence_indent < list_indents[-1]:
+                list_indents.pop()
+            continue
         was_in_list = bool(list_indents)
         while list_indents and indent < list_indents[-1]:
             if paragraph_open and not (
@@ -224,13 +359,16 @@ def parse(source):
         if not paragraph_open and len(relative) - len(relative.lstrip(" ")) >= 4:
             body.append("")
             continue
-        definition = definition_pattern.match(line)
-        if definition:
-            target = definition[2] or definition[3]
-            definitions.setdefault(label(definition[1]), target)
-            all_targets.append(target)
-        else:
-            body.append(line)
+        html_end = html_block_end(relative, paragraph_open)
+        if html_end is not None:
+            html_depth, html_indent = depth, base
+            if html_end.search(relative):
+                html_end = None
+            body.append("")
+            paragraph_open = False
+            continue
+        body.append(line)
+        if not definition_pattern.match(line):
             heading = re.match(r"^ {0,3}#{1,6}(?:[ \t]|$)", relative)
             ends_paragraph = (heading or re.match(thematic_line, relative)
                               or paragraph_open and re.match(setext_line, relative)
@@ -240,8 +378,10 @@ def parse(source):
                 # An ATX heading ends on its own line even without a blank.
                 body.append("")
 
-    # Backtick spans contain literal examples, not rendered links.
-    text = re.sub(r"(?<!`)(`+)(?!`).*?\1(?!`)", "", "\n".join(body), flags=re.DOTALL)
+    # Inline code and HTML are skipped during scanning, preserving their raw
+    # bytes inside an enclosing label instead of joining unrelated syntax.
+    definitions, all_targets = collect_definitions(body)
+    text = "\n".join(body)
     for target, navigates in rendered_targets(text, definitions):
         all_targets.append(target)
         if navigates:

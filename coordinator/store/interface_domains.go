@@ -177,9 +177,23 @@ type TelemetryStore interface {
 	// request attempt. Best-effort; failures must not block inference.
 	RecordInferenceRoute(record *InferenceRouteRecord) error
 
+	// RecordInferenceRoutes persists a batch of routing decision snapshots with
+	// exactly the per-row semantics of RecordInferenceRoute (upsert on
+	// request_id/attempt, zero CreatedAt/UpdatedAt defaulted to now), issued as
+	// one multi-row statement per chunk instead of one round trip per record.
+	// Records are applied in slice order; a duplicate (request_id, attempt) key
+	// within the slice starts a new statement so the later record refreshes the
+	// earlier one exactly as sequential calls would. Nil records are skipped.
+	RecordInferenceRoutes(records []*InferenceRouteRecord) error
+
 	// UpdateInferenceRouteOutcome updates the attempt with final outcome data
 	// (tokens, timing, error). Best-effort; failures must not block inference.
 	UpdateInferenceRouteOutcome(requestID string, attempt int, outcome *InferenceRouteOutcome) error
+
+	// UpdateInferenceRouteOutcomes applies a batch of outcome updates in slice
+	// order with exactly the per-row semantics of UpdateInferenceRouteOutcome,
+	// pipelined as one round trip. Updates with a nil Outcome are skipped.
+	UpdateInferenceRouteOutcomes(updates []InferenceRouteOutcomeUpdate) error
 
 	// InferenceRouteRecordsSince returns routing records created at or after the
 	// given time. Zero since returns all records.
@@ -631,11 +645,20 @@ type ProviderStore interface {
 	// UpsertProvider creates or updates a provider record.
 	UpsertProvider(ctx context.Context, p ProviderRecord) error
 
+	// UpsertProviderWithReputation atomically publishes a completed provider record
+	// with the reputation that the next reconnect will read.
+	UpsertProviderWithReputation(ctx context.Context, p ProviderRecord, rep ReputationRecord) error
+
 	// GetProviderRecord returns a provider record by ID.
 	GetProviderRecord(ctx context.Context, id string) (*ProviderRecord, error)
 
 	// GetProviderBySerial returns a provider record by serial number.
 	GetProviderBySerial(ctx context.Context, serial string) (*ProviderRecord, error)
+
+	// GetProviderForRestore returns the newest historical record for a verified
+	// serial, falling back to the verified SE key only when no serial record exists.
+	// excludeIDs removes all live/in-progress sessions from the candidate set. No match returns (nil, nil); failures return errors.
+	GetProviderForRestore(ctx context.Context, serial, seKey string, excludeIDs []string) (*ProviderRecord, error)
 
 	// GetMDAChainBySerial returns the newest NON-EMPTY Apple MDA cert chain stored
 	// for a serial, or (nil, nil) if none. A reconnecting provider gets a new row

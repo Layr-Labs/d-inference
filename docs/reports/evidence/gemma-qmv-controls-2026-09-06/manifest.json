@@ -1,0 +1,667 @@
+{
+  "schema": 1,
+  "scope": "Gemma QAT4 cache-off B1 controls on corrected53f3 runtime",
+  "source": {
+    "c": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+    "core": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+    "native": "de30ef9892cbd247b219cfde891f180ffbf5f47a",
+    "parent": "53f3c3d0c0d0a09f4d89fe4346aa72ebdecbe4e6",
+    "swift": "c06149b4f7defa1b958c1e175f6c9a12c86c8a4f"
+  },
+  "original_results_manifest_sha256": "37025c3266481899bb011dd068ccb1bc3c28fa315e8b9f1cd10d8092d4486dea",
+  "archive": {
+    "path": "payloads.tar.gz",
+    "sha256": "0d5e62a5e5d013151c32db90e609ca1ebc55d9ba12be01b564488c9a5ea2aa59",
+    "bytes": 526586
+  },
+  "files": {
+    "RESULTS.md": {
+      "sha256": "d46bd822e4ef841a6e4512c1f3d2c378d17850e55457b45b4034340b1e0160db",
+      "bytes": 4816
+    },
+    "actual-model-results.json": {
+      "sha256": "7b707a722628c385c5eda4826e5440b7c560c9bf65921070aefc60db6c0e6c07",
+      "bytes": 55402
+    },
+    "analyze_captures.py": {
+      "sha256": "e10b0f226da60fc81010fc7b62fbe691d64d7983abfa9a7ca0181b6c9b97619c",
+      "bytes": 7917
+    },
+    "automatic-cross-backend.json": {
+      "sha256": "e7e27f08f5d86624dcc6dd5f855ddcd3e95b8c649a019f07c266aca941b491eb",
+      "bytes": 415
+    },
+    "compare_complete.py": {
+      "sha256": "6a0291890d094fbd9a1eaa38592542f9731d892d702db405a9a76ddabc5e7b56",
+      "bytes": 4074
+    },
+    "contiguous-automatic-vs-off.json": {
+      "sha256": "e3619e607aedc36a871b8702716d8abe81deca58b795edb53f61a1e65e86b924",
+      "bytes": 1362
+    },
+    "contiguous-index30-arithmetic-revision.json": {
+      "sha256": "5c30db8b5c48a583f570a2f155ad3cd2ca9780ad24fa41f9d920b8d52b448030",
+      "bytes": 3151
+    },
+    "contiguous-serial-vs-off.json": {
+      "sha256": "271d30a33393455dde94098c35211df12d1bc0e7061c0d574e8554f780764adf",
+      "bytes": 185422
+    },
+    "corrected-complete-comparison.json": {
+      "sha256": "6f25219ab64b9f9d8ddeee44b52db512713bdfc75d14f925f4c189b0c17620ff",
+      "bytes": 273292
+    },
+    "execution-results-manifest.json": {
+      "sha256": "37025c3266481899bb011dd068ccb1bc3c28fa315e8b9f1cd10d8092d4486dea",
+      "bytes": 29223
+    },
+    "first-ordinary-before-after.json": {
+      "sha256": "7019ce1f337518fff364d626759d2c3e35264d62eb8d0fc002e067aa320de291",
+      "bytes": 576
+    },
+    "live-status.json": {
+      "sha256": "9a6352bc87dd40f445e1bfab254d6ce138549cf6b0a2963a09ec0c94c0f8c060",
+      "bytes": 5299
+    },
+    "paged-automatic-vs-off.json": {
+      "sha256": "30a18b7481b034542eb5131467da81f39d763e438ff2125115c8a7e09faaf4a1",
+      "bytes": 1613
+    },
+    "paged-off-vs-contiguous-off.json": {
+      "sha256": "ccfcc6466be5e7cb133e4250c253ff95858b007348b252ae977208d66368b708",
+      "bytes": 680
+    },
+    "paged-serial-vs-off.json": {
+      "sha256": "1df0f3ce59d2bcf13cde490c63f81dfdf703f99c9dd5afd003db72f86198c0a5",
+      "bytes": 836
+    },
+    "projection-native-byte-validation.json": {
+      "sha256": "82c9a2dd30f034b5dc5b5f10de786c387ba83dd4743db45730e17dbf5bd7451c",
+      "bytes": 20906
+    },
+    "remaining-cause-diagnosis.md": {
+      "sha256": "7e5bc07e4a5c68575d3c28aa8ae5898100f82dade27ed6fd06cfa7407746bb11",
+      "bytes": 6519
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/engine.log": {
+      "sha256": "16a97aab278019bbbe0b0b892c6f63e4992d064855aac1b6b022bc4870e70315",
+      "bytes": 752
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/environment.json": {
+      "sha256": "61636161b6c38d06502af8de498cbfca08870eaeb05bcaf91688bac01ccb24b6",
+      "bytes": 711
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/events.jsonl": {
+      "sha256": "bd760e146c34f4f644c3ea2c22062378e9b731ffe0fccc852310a779055ca779",
+      "bytes": 3931
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/input.json": {
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080",
+      "bytes": 72541
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/inventory.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/inventory.stdout": {
+      "sha256": "20fbc2a7524cd7554bd9b1a51670e5d2438e7979f73cbf4e978004035b5788af",
+      "bytes": 1658
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/local-process.json": {
+      "sha256": "d8baf342a3ad77af9e0787c81d549f4b5f8917472b8aea018ec1fe36fb94aab9",
+      "bytes": 921
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/manifest.json": {
+      "sha256": "140acb63dfdfb12209964ab7ad53a0dff048f8f4965336dc4fb078e9c09ad3d3",
+      "bytes": 1861
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/metadata.json": {
+      "sha256": "111683553d0469f90f27c718c43cbeb2f7af639099b0dc69f5141097df9c327d",
+      "bytes": 2110
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/native-argv.json": {
+      "sha256": "2c729d714458f4f9cb16515cfe186e372af0dd732bb367eed30df2a5a5a67d38",
+      "bytes": 859
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/postflight.json": {
+      "sha256": "cf5d5b1b40cdce40c91ab3dceda29f0af769b9f4d5853793ffac75e8dd705ca5",
+      "bytes": 4234
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/preflight.json": {
+      "sha256": "9bd1982c7117c93ed66914e5443343e5dc5ce8e2f44acb39eb2e83871d041da7",
+      "bytes": 4225
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/report.json": {
+      "sha256": "9680b63cb7dc3c2a30fec572b6a47fdeea0c033ad84ed5350f51b8a87220dca9",
+      "bytes": 721354
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/ssh-live.json": {
+      "sha256": "1e5131781ae88fd6970240def28fdbcafbe9e8286bd9cff6a00eb586c218974d",
+      "bytes": 805
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/ssh.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/summary.json": {
+      "sha256": "312328b559d11f633ba9658695e003d5a66ee4927d69a391f9535d3d1375ef7e",
+      "bytes": 286
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/telemetry-live.json": {
+      "sha256": "e13a0d5b23ee80861f56ebb9b62040439d29bfb57a944ec79ca4d280e57ee175",
+      "bytes": 36
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/telemetry.jsonl": {
+      "sha256": "e5261d8ee580d5375e653775e733d7c85b2c6e2befbe6a6c2d091d67372234e2",
+      "bytes": 97773
+    },
+    "results/gemma-qat4-contiguous-automatic-b1-output128/terminal.json": {
+      "sha256": "9241e1ff77b6f09a265ab51e542eb02c8b2369bccc57510d2233409cfcb58f9f",
+      "bytes": 229
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/engine.log": {
+      "sha256": "1bcc9012c806e220f9669202d4705bc9f247fd91481c310192c85dda45eec6a9",
+      "bytes": 750
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/environment.json": {
+      "sha256": "8b96a40e367a7250cec132e858d5ed26cd25a0a94b98ea0205ed6510b73308c1",
+      "bytes": 705
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/events.jsonl": {
+      "sha256": "601e04828e1a2b24c4c0a4dd8d303432247902b07363e3d544e5ea721a620046",
+      "bytes": 5049
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/input.json": {
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080",
+      "bytes": 72541
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/inventory.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/inventory.stdout": {
+      "sha256": "541eee6db80e658f7d73200a454ada60bf37cab722ef87472ca3be553a4bedc7",
+      "bytes": 1659
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/local-process.json": {
+      "sha256": "099fc0f8432ce7556e32df4c4ece4c8de0ddad9d3d2fa6b8ff22005c4c591511",
+      "bytes": 915
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/manifest.json": {
+      "sha256": "1aff59e8f1e129f2604b6e01d37fcf06f8529dc8df61ac46411b2e5b295af6c2",
+      "bytes": 1862
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/metadata.json": {
+      "sha256": "05481db3eecc36c142856dc69f0a36ebcccc4e9c4db6e39fc02ad5271865025c",
+      "bytes": 2038
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/native-argv.json": {
+      "sha256": "c227262c224481d1538b5d0c1ad712f418eb8fcdedf0e4bb9c8313d3d33a8da3",
+      "bytes": 803
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/postflight.json": {
+      "sha256": "474dd4f287805e452c24c0ceb8afa14ee7d56d87afc7e14c117f11e1fb20aabe",
+      "bytes": 4233
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/preflight.json": {
+      "sha256": "f4f31f6bc81c81145d1010427adec0399a242c2cfcfb5c5e3804083bdbf0bc77",
+      "bytes": 4232
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/report.json": {
+      "sha256": "4ed2a534d4999ba094b0e4e5a15d8df779afe66749485102c8f0cc295c3a1cd5",
+      "bytes": 721042
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/ssh-live.json": {
+      "sha256": "0f1208b266dbe2722b220b294e86da609690d59913e215d9cd2cb6e89d76c847",
+      "bytes": 799
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/ssh.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/summary.json": {
+      "sha256": "d00e7a97057a961e0b67c1c15d8fe198966c4e67c98a9d5762774f57dcf3e48f",
+      "bytes": 280
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/telemetry-live.json": {
+      "sha256": "a65830c44c532a9111e651f68e7dd9f6a15320403111fa4b658c42c934dd3ac0",
+      "bytes": 36
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/telemetry.jsonl": {
+      "sha256": "3fdf48ad00c2990a73852f1b000d36842e161d13c14d94669fc0f5a73d362a08",
+      "bytes": 136195
+    },
+    "results/gemma-qat4-contiguous-off-b1-output128/terminal.json": {
+      "sha256": "757ee2c6f6675918b3c05928a52bffb712b1eab931349fa9957a9a123d6a1cc3",
+      "bytes": 229
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/engine.log": {
+      "sha256": "4a096f816354c1651b3d6110fea072d9401c07c2718d3a5a7d5c789a4445bca9",
+      "bytes": 752
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/environment.json": {
+      "sha256": "c51094989f172b5b11fb8512564c0ffbd7ba537038efacb274f565aafc391a09",
+      "bytes": 715
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/events.jsonl": {
+      "sha256": "caa8c6b5809009119ca68b112f5ecf53cbddae760b8fab45ca8adcda396be798",
+      "bytes": 5607
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/input.json": {
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080",
+      "bytes": 72541
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/inventory.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/inventory.stdout": {
+      "sha256": "3a47e26d6ece15034206815615229200c1d51c2c2bfd294b3ee3413838ac2813",
+      "bytes": 1659
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/local-process.json": {
+      "sha256": "5276515021af5a434130af63ad460aa11ec0e1a484a03b4734ceb7865ea53994",
+      "bytes": 925
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/manifest.json": {
+      "sha256": "2cc31981df62aa350e80833c99813b8cd6170fe2d31454af23c210f16d784a17",
+      "bytes": 1862
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/metadata.json": {
+      "sha256": "7189c79add71503272cc06bd7a287b069659125a57069f6453a2144a3d88eadc",
+      "bytes": 2130
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/native-argv.json": {
+      "sha256": "f8a2690ae4282073569b917b538fc99122ecb31088bcacfed8a633645b5d19e3",
+      "bytes": 871
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/postflight.json": {
+      "sha256": "a4ac87af5cd52f1d45afa6a320ac94b02f69f1a468c21ffca9a595d23cb6b2a2",
+      "bytes": 4234
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/preflight.json": {
+      "sha256": "637327b1b9c0ead1568273183644ab2d27ba2e31f58073af8cc523f8afac5599",
+      "bytes": 4235
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/report.json": {
+      "sha256": "c06fb78805ed13893cabb614a5e96a6b9dcabeea0344006010bc522e2bae9d9e",
+      "bytes": 721459
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/ssh-live.json": {
+      "sha256": "0b6c03bbf274bdc1511bdd9c468118a22636ea11b97c0b5832b258565e0717dd",
+      "bytes": 809
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/ssh.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/summary.json": {
+      "sha256": "39726d56f8ece84c2d9ff7d70c50be97ec1657c54c73067dc92de8d8a4e1cd06",
+      "bytes": 290
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/telemetry-live.json": {
+      "sha256": "fefa27a5687df0e093a1a85530912e363cee004ea709eff58c516dfc67d28691",
+      "bytes": 36
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/telemetry.jsonl": {
+      "sha256": "01f16b5894d12b8c4e322c0ff362c793f729763e9d8f294cf06b856171f2b3d0",
+      "bytes": 158434
+    },
+    "results/gemma-qat4-contiguous-serial-target-b1-output128/terminal.json": {
+      "sha256": "8b72235deee71594646e167afc0f120b7876ff321de8e66fa87e51f52f1746c4",
+      "bytes": 229
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/engine.log": {
+      "sha256": "222d56efbc5271d9c621fbb02619ec85a858836116ccf92c693d0f91a862a1dc",
+      "bytes": 752
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/environment.json": {
+      "sha256": "df4aea171ec3a3a3b6f188449e88b9cbda87526623f98fe7a3704dcded7863f0",
+      "bytes": 706
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/events.jsonl": {
+      "sha256": "0180afd0a272d30a14bc787ad0807c3fb1866b4970c6fdd5b7ebe09d62723236",
+      "bytes": 5337
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/input.json": {
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080",
+      "bytes": 72541
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/inventory.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/inventory.stdout": {
+      "sha256": "ad10b42aa1870b9b50fe7d40fcf75b4d0d3c13b03d0a12a3485e3efa356d2acb",
+      "bytes": 1659
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/local-process.json": {
+      "sha256": "8f11cd66d9b75391f24515d08bbca9c16963f67436a39db8e66d4449431c0096",
+      "bytes": 916
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/manifest.json": {
+      "sha256": "0027fc8fbf377acb306289524a6f79eca6933026e2094689729c1b2fe3bd8f6d",
+      "bytes": 1862
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/metadata.json": {
+      "sha256": "1d732f36d7a07a6fb8cd5d3a2a7a4b17c84bcde4e33f4f951ee7f61b95a3a5fe",
+      "bytes": 2085
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/native-argv.json": {
+      "sha256": "42ef431f1d6e7878f5398803219dbb553a5ada265703716356e2da360f907b09",
+      "bytes": 844
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/postflight.json": {
+      "sha256": "abd0bad2065f1c86b61444ea4bea7d3b410d8545d0189486299b932956671540",
+      "bytes": 4231
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/preflight.json": {
+      "sha256": "c0bc76f6140b3ec9fb8c0be5c32074ca7d4b99885547494424c70f0c67a1b74f",
+      "bytes": 4233
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/report.json": {
+      "sha256": "99ab1dae89e59e4fa87a411cd4847db21cf28af1ebd94372fff7e8a69f308132",
+      "bytes": 729829
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/ssh-live.json": {
+      "sha256": "65a83802dd5d574607a8045d5f3083fd5621b94906885719c44f0dde6d2b9e4b",
+      "bytes": 800
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/ssh.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/summary.json": {
+      "sha256": "cfb73ebc802facc39a5eefae0ffdb3201518046fbf77146219a229f8f4cc036f",
+      "bytes": 281
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/telemetry-live.json": {
+      "sha256": "d1943102bdef96aec60aef2f3a3a4eac0c5a3d594a5c39145641ecb782f2acf0",
+      "bytes": 36
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/telemetry.jsonl": {
+      "sha256": "23fafce3bdb9132f12ac6b68f77c28a5a548366b85a22d539979bc5c34bb01c8",
+      "bytes": 149021
+    },
+    "results/gemma-qat4-paged-automatic-b1-output128/terminal.json": {
+      "sha256": "5fd98aa10eb9e6814668f5cc41cf707f73d8fdabb72df9b5a29032fd898fd2dd",
+      "bytes": 235
+    },
+    "results/gemma-qat4-paged-off-b1-output128/engine.log": {
+      "sha256": "fbab87c2787b70198c9b2aa88f0fabf9af40342e2c3ea40bb48ca9a15e48f1b2",
+      "bytes": 752
+    },
+    "results/gemma-qat4-paged-off-b1-output128/environment.json": {
+      "sha256": "daab8b14277f5dcb2b6190360ce193815e86dc33596f6576278f0479b9ce3b4a",
+      "bytes": 700
+    },
+    "results/gemma-qat4-paged-off-b1-output128/events.jsonl": {
+      "sha256": "170ab5fd4a728a1994fd6151f59455d68ec2f943a84164c77cf1fd4e70f45d0c",
+      "bytes": 5047
+    },
+    "results/gemma-qat4-paged-off-b1-output128/input.json": {
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080",
+      "bytes": 72541
+    },
+    "results/gemma-qat4-paged-off-b1-output128/inventory.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "results/gemma-qat4-paged-off-b1-output128/inventory.stdout": {
+      "sha256": "a9f3b9c2aa5dfda7f19a26d800399d404f9c094f53437ffb82a274e785600642",
+      "bytes": 1659
+    },
+    "results/gemma-qat4-paged-off-b1-output128/local-process.json": {
+      "sha256": "260a4585eb1c32f7d16d9ae31fa057ea267860f15ea799e403db1787891867a3",
+      "bytes": 910
+    },
+    "results/gemma-qat4-paged-off-b1-output128/manifest.json": {
+      "sha256": "5625901aee31c9530f4c38270551ed03b9189599c442e79ce8ae8af89304c13a",
+      "bytes": 1862
+    },
+    "results/gemma-qat4-paged-off-b1-output128/metadata.json": {
+      "sha256": "61729878807dbb5683b311bbbfd81623f52f1bdf83879731aadaa57c02478d6d",
+      "bytes": 2013
+    },
+    "results/gemma-qat4-paged-off-b1-output128/native-argv.json": {
+      "sha256": "b331ab7a531800b5b75ac4ca74310ea3a62095dcdbdd3486b113c534b0480b8f",
+      "bytes": 788
+    },
+    "results/gemma-qat4-paged-off-b1-output128/postflight.json": {
+      "sha256": "909fb40fa6ac59ba3d294499a513ba9541bbaa54141906e9123fc28464a4760d",
+      "bytes": 4235
+    },
+    "results/gemma-qat4-paged-off-b1-output128/preflight.json": {
+      "sha256": "dc5e90314428c08c8ac9c36ce254df85cc88cef61c9778cc2ad4adc3f4d39f80",
+      "bytes": 4225
+    },
+    "results/gemma-qat4-paged-off-b1-output128/report.json": {
+      "sha256": "7527235a9ef27b85a533a99f5f83a51de41bf3e53c891009656144b002f2e347",
+      "bytes": 729492
+    },
+    "results/gemma-qat4-paged-off-b1-output128/ssh-live.json": {
+      "sha256": "33d98cf1bd8a77bfd2f462a017065fce9984defc96b0560e624a8f8b01d45fe3",
+      "bytes": 794
+    },
+    "results/gemma-qat4-paged-off-b1-output128/ssh.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "results/gemma-qat4-paged-off-b1-output128/summary.json": {
+      "sha256": "066b1f8207c6654ae267ad54d7ed8b3307ba124b43c7cdfe06ba23d1fc1ba79c",
+      "bytes": 275
+    },
+    "results/gemma-qat4-paged-off-b1-output128/telemetry-live.json": {
+      "sha256": "6aad2d2041bcd125ba0218544a4b886786c082258967c2174073c499d381856e",
+      "bytes": 36
+    },
+    "results/gemma-qat4-paged-off-b1-output128/telemetry.jsonl": {
+      "sha256": "8709651c51bffdf5d2443364e8d4fb300cd25e90830158e633edb961bbedc50f",
+      "bytes": 137108
+    },
+    "results/gemma-qat4-paged-off-b1-output128/terminal.json": {
+      "sha256": "aa8f30426ae58a0fd9ebe2e95f2ba58fbdfbdb048dd3a105a2c028531b9adc3f",
+      "bytes": 234
+    },
+    "results/gemma-qat4-paged-projection-529-62203/engine.log": {
+      "sha256": "f293bbcce2d8715453ba8a4d8222acfd69de474e817a722c792547475570802c",
+      "bytes": 751
+    },
+    "results/gemma-qat4-paged-projection-529-62203/environment.json": {
+      "sha256": "c313378b937017676b2c1773385f3fb73dec532a699831806555c3964aae3a62",
+      "bytes": 704
+    },
+    "results/gemma-qat4-paged-projection-529-62203/events.jsonl": {
+      "sha256": "627610d68e6744e809045cba16b09c0ad07011bdcb0a80f675d64f6b01f82f8a",
+      "bytes": 5326
+    },
+    "results/gemma-qat4-paged-projection-529-62203/input.json": {
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080",
+      "bytes": 72541
+    },
+    "results/gemma-qat4-paged-projection-529-62203/inventory.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "results/gemma-qat4-paged-projection-529-62203/inventory.stdout": {
+      "sha256": "4b8c0854476830f70b853137d8a34a1372d5de768dfe6a8791eb28647c678ae1",
+      "bytes": 3287
+    },
+    "results/gemma-qat4-paged-projection-529-62203/local-process.json": {
+      "sha256": "a1a94ecfdfaeda249629636155e264fee4a76fba65aa5a30b554792cf7149eb8",
+      "bytes": 914
+    },
+    "results/gemma-qat4-paged-projection-529-62203/manifest.json": {
+      "sha256": "11d5fca2f6998bf3be8c4b6935709baea3fd45a0e2c1f7e37943d0683b99321e",
+      "bytes": 3798
+    },
+    "results/gemma-qat4-paged-projection-529-62203/metadata.json": {
+      "sha256": "c9fc17f663eacfce1aa96aa589fde1f1b4bc72d3162323035c3d9a0dc854d123",
+      "bytes": 2127
+    },
+    "results/gemma-qat4-paged-projection-529-62203/native-argv.json": {
+      "sha256": "b64d25e749a9e0d6e96a931293f1c3c0de0ce435864fc2681435626fa9766b27",
+      "bytes": 886
+    },
+    "results/gemma-qat4-paged-projection-529-62203/postflight.json": {
+      "sha256": "60aa8326ccf5c54a68942c5d8e8f6547a0e783b21424d57b1f3ef61ae82968b5",
+      "bytes": 4231
+    },
+    "results/gemma-qat4-paged-projection-529-62203/preflight.json": {
+      "sha256": "26e897bcbadb370db544aa1e0c88ef3fa8d0a8ea91a516b5c3151269163f11d6",
+      "bytes": 4235
+    },
+    "results/gemma-qat4-paged-projection-529-62203/report.gemma-projection/m1.embedding.bin": {
+      "sha256": "5ec926b351eb512eb4cf45ea3333b9c766c3c1b9956f2952d74930a7a86993cf",
+      "bytes": 5632
+    },
+    "results/gemma-qat4-paged-projection-529-62203/report.gemma-projection/m1.k.bin": {
+      "sha256": "056497b696a36efad03b62511c7d1f920e9120e9b594d52e3d1c66d298b8a71c",
+      "bytes": 4096
+    },
+    "results/gemma-qat4-paged-projection-529-62203/report.gemma-projection/m1.normalized.bin": {
+      "sha256": "28b084cf4a54b93b8683c62094fdef2d98d0a0050d1f48599182e9c84b24655f",
+      "bytes": 5632
+    },
+    "results/gemma-qat4-paged-projection-529-62203/report.gemma-projection/m1.q.bin": {
+      "sha256": "4478e5819d45cf4b09ce3b8a52c11e336f3922b6d02e5fd6be30bd97b625d53f",
+      "bytes": 8192
+    },
+    "results/gemma-qat4-paged-projection-529-62203/report.gemma-projection/m1.v.bin": {
+      "sha256": "f7e5f715d2be8ce75651be308b59d6d847481c0f00d7ed8d2190073509486fcd",
+      "bytes": 4096
+    },
+    "results/gemma-qat4-paged-projection-529-62203/report.gemma-projection/m2.embedding.bin": {
+      "sha256": "61000e5bda7eb6719a8281b9cc7b2e49d6d985bb05301133da22632ea9e2aeee",
+      "bytes": 11264
+    },
+    "results/gemma-qat4-paged-projection-529-62203/report.gemma-projection/m2.k.bin": {
+      "sha256": "a29c1e6f3192a56bc0248398de8388c1475a9201bd6b272e45aaea668e80d857",
+      "bytes": 8192
+    },
+    "results/gemma-qat4-paged-projection-529-62203/report.gemma-projection/m2.normalized.bin": {
+      "sha256": "4366cec0528ca0383dcb979888aa7777ca45b539ff3e5a35d21cd87acc474f52",
+      "bytes": 11264
+    },
+    "results/gemma-qat4-paged-projection-529-62203/report.gemma-projection/m2.q.bin": {
+      "sha256": "9c756dd1718aa3dbe0e5f840f92ce5fc552263c37c55e4e4cec526ae4d4e095e",
+      "bytes": 16384
+    },
+    "results/gemma-qat4-paged-projection-529-62203/report.gemma-projection/m2.v.bin": {
+      "sha256": "6f8e5c2ac4ee53415ac5f089fbac420073b51d56f38560651887f21e1339f99b",
+      "bytes": 8192
+    },
+    "results/gemma-qat4-paged-projection-529-62203/report.gemma-projection/projection.json": {
+      "sha256": "caf605fc955ad1ddfb187e6acd9d24a62142beb1535f0a7a29cd38aa54773ed0",
+      "bytes": 9026
+    },
+    "results/gemma-qat4-paged-projection-529-62203/report.json": {
+      "sha256": "47e64381a292f788da9ab9ce689ac420cccc96efbcbbd2390eba7b79fbd0a8b4",
+      "bytes": 739763
+    },
+    "results/gemma-qat4-paged-projection-529-62203/ssh-live.json": {
+      "sha256": "f3d95a0779efc2994633220e5e997f3e63dc0105f943226e26af22015dc465ef",
+      "bytes": 798
+    },
+    "results/gemma-qat4-paged-projection-529-62203/ssh.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "results/gemma-qat4-paged-projection-529-62203/summary.json": {
+      "sha256": "776fc34142ac865dbb47ef3ee4e927d8c5c153cc17dd609a6f1c0bde49ba29c8",
+      "bytes": 279
+    },
+    "results/gemma-qat4-paged-projection-529-62203/telemetry-live.json": {
+      "sha256": "3c4c032caa18fc4f2fdf886e74038fc5609416c9704853727d9a68cf7604bc43",
+      "bytes": 36
+    },
+    "results/gemma-qat4-paged-projection-529-62203/telemetry.jsonl": {
+      "sha256": "d58ea477589ad1e7684d9b28ac6aab2956b6d67b0375fccb739228cdea449080",
+      "bytes": 149634
+    },
+    "results/gemma-qat4-paged-projection-529-62203/terminal.json": {
+      "sha256": "07f1e4a84261989bafb2d475f4969215fa254c413862f5aaf39a3a746d9fb8ca",
+      "bytes": 234
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/engine.log": {
+      "sha256": "102b52f8bf6ba8af80da33ad68b3b5933bbd6cdc8934cca090d46c1a3bf72141",
+      "bytes": 752
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/environment.json": {
+      "sha256": "c47cc57212aec001f1763320958f665e800c47c2134028c43dd69f0a7458058c",
+      "bytes": 710
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/events.jsonl": {
+      "sha256": "2134a3edbbac314b0e578661a5f2eda5ece22a4149f25371118b31064a4073e5",
+      "bytes": 5053
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/input.json": {
+      "sha256": "1abb54db891314531df0b6ddfbe3cc3418c29fd014133cdf3837133c9e9a3080",
+      "bytes": 72541
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/inventory.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/inventory.stdout": {
+      "sha256": "e9c2988f082f5e861c8deef354e7ef05ae2b170d1125c1b29ca8a660b825624b",
+      "bytes": 1659
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/local-process.json": {
+      "sha256": "f52326d4c5d17f1955ccff2cfd4c5edf1d596b63467bc9048b2a42d364395dc5",
+      "bytes": 920
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/manifest.json": {
+      "sha256": "d995fcee3f3db7b36677eea3a6f3c985b10f70700c7a517884db8838bb1f45da",
+      "bytes": 1862
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/metadata.json": {
+      "sha256": "0b6846f6ec05da2048ea23e6591b67b29fbb0164a54d745183dc58eb2e108abc",
+      "bytes": 2105
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/native-argv.json": {
+      "sha256": "7c41ae1422166fd0db8f532005fda65592322d7745fcaa2d8c0c5eb3b86d605f",
+      "bytes": 856
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/postflight.json": {
+      "sha256": "0b31e700acfd601bced7550de158c2e4610fa745d3c46c1f8e01d862cb2cc63a",
+      "bytes": 4234
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/preflight.json": {
+      "sha256": "a8f096c2b38bd5dee05192f03b874911678255ec7b0e03ce3236abd6596ed973",
+      "bytes": 4235
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/report.json": {
+      "sha256": "6484261915890f57212fbafe9db7b7a1439fcfb357504b1207bd6b2f502a35a3",
+      "bytes": 729889
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/ssh-live.json": {
+      "sha256": "bd79b0d220d4e17a7f1ed2db3a2c22cb003ab60373793b8481742bc23695ac35",
+      "bytes": 804
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/ssh.stderr": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/summary.json": {
+      "sha256": "f20f51189cad7b7cc636b6f3d0042ec6b7682bc284055a8f7d3bea727c197376",
+      "bytes": 285
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/telemetry-live.json": {
+      "sha256": "011722e280c79d3d48419216c043d9a3102e8c937f0c492a06e4b5b03751ac42",
+      "bytes": 36
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/telemetry.jsonl": {
+      "sha256": "a63a3dff085bd29e205f56458134e47002cd8cc428193da37e4d608698df9fa7",
+      "bytes": 136401
+    },
+    "results/gemma-qat4-paged-serial-target-b1-output128/terminal.json": {
+      "sha256": "cee32da9514a823efcfb46e208997d0960fef421254ea4ca12e1c184c95a6787",
+      "bytes": 229
+    },
+    "root-review.json": {
+      "sha256": "90bda2200c4ad47ad2f1ff8afef82a7f8bd92438935d0c5dcad165d9ac745196",
+      "bytes": 921
+    }
+  }
+}

@@ -1,6 +1,6 @@
 # Darkbloom documentation
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-07 · commit `5ce1d0cd0`
 
 > Darkbloom is a decentralized private-inference network: an OpenAI- and
 > Anthropic-compatible HTTP API served by a Go coordinator that routes each
@@ -36,12 +36,13 @@
 - [`architecture/scheduling.md`](architecture/scheduling.md): per-model queues, slot states, token-budget admission, model swaps, warm pool, heartbeat and eviction.
 - [`architecture/cache-aware-routing.md`](architecture/cache-aware-routing.md): provider-confirmed exact prefix-cache routing and its kill switch.
 - [`architecture/inference.md`](architecture/inference.md): the CBv2 engine — request lifecycle and `CBv2RequestTiming`, scheduler and lease defaults, deadlines, MTP, sampling, tool parsers, vision constraints, supported families.
-- [`architecture/prefix-cache.md`](architecture/prefix-cache.md): KV layouts (contiguous default, paged), block hashing, the prefix-reuse plan per model family, RAM staging plus the encrypted SSD tier, and why a default box builds no SSD cache.
+- [`architecture/prefix-cache.md`](architecture/prefix-cache.md): KV layouts, encrypted SSD checkpoint streaming, exact prefix reuse by model family, and explicit resident-cache modes.
 - [`architecture/prompt-contract-sidecar.md`](architecture/prompt-contract-sidecar.md): the Rust sidecar that derives token boundaries for cache routing, and its failure isolation.
 - [`architecture/model-registry.md`](architecture/model-registry.md): model manifests, aliases, publishing, and provider downloads.
 - [`architecture/storage.md`](architecture/storage.md): coordinator persistence — Postgres schema, memory store, retention.
 - [`architecture/billing.md`](architecture/billing.md): pricing, reservations, ledger, the platform fee (stated only here), Stripe deposits and payouts, referrals, base rewards.
 - [`architecture/telemetry.md`](architecture/telemetry.md): what telemetry exists, how the Go/Swift/TS mirrors stay symmetric, where it goes.
+- [`architecture/request-accounting.md`](architecture/request-accounting.md): unsampled incoming-request evidence, coverage, revision semantics, and normalized codes.
 - [`architecture/request-outcome-observability.md`](architecture/request-outcome-observability.md): the closed outcome taxonomy for client, provider, and billing dimensions.
 - [`architecture/system-profiler.md`](architecture/system-profiler.md): per-attempt request profiles and fleet snapshots — schema, clocks, validation.
 - [`architecture/hardware-support.md`](architecture/hardware-support.md): the memory model — unified-memory cap, activation floors, load gate, KV budget and re-slice; platform and hardware gates.
@@ -115,6 +116,8 @@
 
 - [`design/README.md`](design/README.md): plans and decisions, each with a status saying whether it shipped.
 - [`reports/README.md`](reports/README.md): dated incident analyses, measurements, and migration records.
+- [Streamed SSD prefix-cache validation](reports/2026-09-05-ssd-prefix-cache-model-check.md): normal-MTP Qwen output parity, SSD reuse latency, memory accounting, and validation limits.
+- [Coordinator/provider cleanup checkpoint](reports/2026-09-04-coordinator-provider-modularization.md): modularization, deletion versus relocation, and Go/Swift validation through `7ae06021f`.
 - [`releases/v0.8.0-notes.md`](releases/v0.8.0-notes.md): the v0.8.0 notes, kept as the record of the paged-KV release that v0.8.1 reverted; current history is `CHANGELOG.md` at the repository root.
 
 ## Legal

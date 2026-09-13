@@ -1,0 +1,1 @@
+../../../libs/mlx-swift-lm/Tests/MLXLMTests/CBv2ModelTests.swift

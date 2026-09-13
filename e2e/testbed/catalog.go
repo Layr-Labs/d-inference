@@ -8,6 +8,8 @@ import (
 
 // CatalogModel is a complete test-only registry row and immutable manifest.
 // Suites seed it into their isolated store before providers connect.
+// Entry uses store.ModelRegistryEntry JSON, not the public API catalog
+// projection (which also includes version and UI-only fields).
 type CatalogModel struct {
 	Entry    store.ModelRegistryEntry
 	Manifest store.ModelManifest

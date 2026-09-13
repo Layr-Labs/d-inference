@@ -88,6 +88,51 @@ async fn concurrent_cold_contract_load_is_singleflight() {
 }
 
 #[tokio::test]
+async fn ambiguous_raw_keys_are_rejected_before_endpoint_lowering() {
+    let fixture = Fixture::new();
+    let planner = Planner::new(fixture.root(), 1, 1, 200_000);
+    let mut request = fixture.request("hello");
+    request.body.as_object_mut().unwrap().insert(
+        "response_format".into(),
+        serde_json::json!({"json_schema":{"schema":{"properties":{
+            "é":{"type":"string"},"e\u{301}":{"type":"integer"}}}}}),
+    );
+    assert!(matches!(
+        planner.plan(request).await,
+        Err(PlanError::Render(
+            promptsidecar::render::RenderError::UnsupportedInput
+        ))
+    ));
+    assert_eq!(
+        planner.status().metrics.contract_loads.cold,
+        0,
+        "ambiguous raw request reached artifact work before eligibility rejection"
+    );
+}
+
+#[tokio::test]
+async fn encoded_argument_parser_depth_refusal_is_cold_before_artifact_load() {
+    let fixture = Fixture::new();
+    let planner = Planner::new(fixture.root(), 1, 1, 200_000);
+    let mut request = fixture.request("hello");
+    // Valid JSON embedded inside a string bypasses the outer request parser's
+    // depth limit. Foundation need not share serde's inner parser limit.
+    let encoded = format!("{}0{}", "{\"nested\":".repeat(160), "}".repeat(160));
+    assert!(serde_json::from_str::<serde_json::Value>(&encoded).is_err());
+    request.body["messages"] = json!([{
+        "role":"assistant",
+        "tool_calls":[{"type":"function","function":{"name":"f","arguments":encoded}}]
+    }]);
+    assert!(matches!(
+        planner.plan(request).await,
+        Err(PlanError::Render(
+            promptsidecar::render::RenderError::UnsupportedInput
+        ))
+    ));
+    assert_eq!(planner.status().metrics.contract_loads.cold, 0);
+}
+
+#[tokio::test]
 async fn preloads_four_contracts_sequentially_and_idempotently() {
     let fixture = Fixture::new();
     let mut contract_ids = vec![fixture.contract_id.clone()];

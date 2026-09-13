@@ -85,7 +85,10 @@ func newPostgresWithPoolConfig(ctx context.Context, scfg Config, tune func(*pgxp
 	}
 
 	// Verify connectivity.
-	if err := pool.Ping(ctx); err != nil {
+	pingStarted := time.Now()
+	pingErr := pool.Ping(ctx)
+	logStartupMigration("connect", pingStarted, pingErr)
+	if err := pingErr; err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("store: ping postgres: %w", err)
 	}
@@ -147,6 +150,7 @@ END $$`
 // migrate runs the schema creation statements.
 func (s *PostgresStore) migrate(ctx context.Context) error {
 	migrations := []string{
+		globalPayoutSchema,
 		// schema_migrations records one-time data migrations that must run at most
 		// once rather than on every boot. Idempotent DDL (CREATE/ALTER ... IF [NOT]
 		// EXISTS) does not need this; it exists to gate destructive one-shot DML
@@ -448,6 +452,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			metadata JSONB NOT NULL DEFAULT '{}',
 			UNIQUE(model_id, version)
 		)`,
+		`ALTER TABLE model_versions ADD COLUMN IF NOT EXISTS hugging_face_artifact JSONB`,
 		`DO $$ BEGIN
 			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS max_context_length INTEGER NOT NULL DEFAULT 0;
 		EXCEPTION WHEN others THEN NULL;
@@ -671,23 +676,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			PRIMARY KEY (key, key_type)
 		)`,
 
-		// Backfill earnings_summary from existing provider_earnings rows.
-		// The INSERT ... ON CONFLICT DO NOTHING ensures this only runs once per key.
-		`INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		 SELECT account_id, 'account', COUNT(*), COALESCE(SUM(amount_micro_usd), 0),
-		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), NOW()
-		 FROM provider_earnings
-		 WHERE account_id != ''
-		 GROUP BY account_id
-		 ON CONFLICT (key, key_type) DO NOTHING`,
-
-		`INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		 SELECT provider_key, 'provider', COUNT(*), COALESCE(SUM(amount_micro_usd), 0),
-		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), NOW()
-		 FROM provider_earnings
-		 WHERE provider_key != ''
-		 GROUP BY provider_key
-		 ON CONFLICT (key, key_type) DO NOTHING`,
+		earningsSummaryBackfillPendingDDL,
 
 		// Provider payouts — wallet-based payout history for unlinked providers
 		`CREATE TABLE IF NOT EXISTS provider_payouts (
@@ -1008,6 +997,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// row's empty hash marks a legacy identity-less proof, which never
 		// authorizes a release-transition resume (real APNs challenge instead).
 		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS binary_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS continuous_coverage_until TIMESTAMPTZ`,
 		// Durable APNs admission state is deliberately separate from successful
 		// attestation evidence. Spending a push budget never creates trust.
 		`CREATE TABLE IF NOT EXISTS code_attest_push_budgets (
@@ -1155,6 +1145,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// index on these tables must be built CONCURRENTLY outside this loop
 		// (see ensureProviderEarningsJobIndex). The request_waterfall view is NOT
 		// here — it is applied by hand from store/migrations/request_waterfall.sql.
+		requestOutcomesTableDDL,
+		`CREATE INDEX IF NOT EXISTS idx_request_outcomes_received ON request_outcomes (received_at, coord_request_id)`,
 		requestProfilesTableDDL,
 		requestProfilesCreatedIndexDDL,
 		requestProfilesCoordIndexDDL,
@@ -1171,6 +1163,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS requested_max_tokens INT NOT NULL DEFAULT 0; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS requires_vision BOOL NOT NULL DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS has_tools BOOL NOT NULL DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS predictive_bypass TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS reservation_ttft_ceiling_ms DOUBLE PRECISION; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS dispatch_budget_ms BIGINT; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS provider_version TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		// free_for_load_gb became nullable (nil = provider did not report it); idempotent.
 		`ALTER TABLE fleet_snapshots ALTER COLUMN free_for_load_gb DROP NOT NULL`,
@@ -1179,10 +1174,20 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		fleetSnapshotsProviderIndexDDL,
 	}
 
-	for _, m := range migrations {
-		if _, err := s.pool.Exec(ctx, m); err != nil {
-			return fmt.Errorf("migration failed: %w", err)
+	for i, m := range migrations {
+		started := time.Now()
+		_, err := s.pool.Exec(ctx, m)
+		logStartupMigration(fmt.Sprintf("schema_statement_%03d", i), started, err)
+		if err != nil {
+			return fmt.Errorf("migration statement %d failed: %w", i, err)
 		}
+	}
+
+	if err := s.migrateEarningsSummary(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureProviderRestoreIndexes(ctx); err != nil {
+		return err
 	}
 
 	if err := s.migrateUsageTotals(ctx); err != nil {
@@ -1791,8 +1796,6 @@ func (s *PostgresStore) RecordUsageFullWithPublicModel(providerID, consumerKey, 
 	)
 }
 
-const inferenceRouteErrorReasonUpsertAssignment = "error_reason = COALESCE(NULLIF(EXCLUDED.error_reason, ''), inference_routes.error_reason)"
-
 const inferenceRouteSelectColumns = `
 			id,
 			request_id, attempt, provider_id, model, public_model, consumer_key_hash, key_id, outcome,
@@ -1812,184 +1815,6 @@ const inferenceRouteSelectColumns = `
 			provider_region, consumer_region,
 			parse_ms, reserve_ms, route_ms, encrypt_ms, queue_wait_ms, dispatch_ms, actual_decode_tps,
 			admitted_but_failed, used_backup, backup_won, error_reason`
-
-// RecordInferenceRoute writes the routing decision snapshot for a request
-// attempt. Callers keep this best-effort by logging returned errors off the
-// request path rather than blocking inference.
-func (s *PostgresStore) RecordInferenceRoute(record *InferenceRouteRecord) error {
-	if record == nil {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	now := time.Now().UTC()
-	createdAt := record.CreatedAt
-	if createdAt.IsZero() {
-		createdAt = now
-	}
-	updatedAt := record.UpdatedAt
-	if updatedAt.IsZero() {
-		updatedAt = now
-	}
-
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO inference_routes (
-			request_id, attempt, provider_id, model, public_model, consumer_key_hash, key_id, outcome,
-			cost_ms, state_ms, queue_ms, pending_ms, backlog_ms, this_req_ms, health_ms, ttft_ms, best_ttft_ms,
-			effective_queue, candidate_count, capacity_rejections, model_too_large_rejections, vision_rejections, ttft_rejections,
-			effective_tps, static_tps, provider_status, provider_trust_level, provider_version,
-			hardware_chip, hardware_chip_family, hardware_tier, memory_gb, gpu_cores, cpu_cores,
-			system_memory_pressure, system_cpu_usage, system_thermal_state,
-			gpu_memory_active_gb, gpu_memory_peak_gb, gpu_memory_cache_gb,
-			slot_state, backend_running, backend_waiting,
-			active_token_budget_used, active_token_budget_max, queued_token_budget,
-			estimated_prompt_tokens, requested_max_tokens,
-			requires_vision, has_tools, self_route_only, prefer_owner,
-			created_at, updated_at,
-			provider_region, consumer_region, error_reason
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8,
-			$9, $10, $11, $12, $13, $14, $15, $16, $17,
-			$18, $19, $20, $21, $22, $23,
-			$24, $25, $26, $27, $28,
-			$29, $30, $31, $32, $33, $34,
-			$35, $36, $37,
-			$38, $39, $40,
-			$41, $42, $43,
-			$44, $45, $46,
-			$47, $48,
-			$49, $50, $51, $52,
-			$53, $54,
-			$55, $56, $57
-		) ON CONFLICT (request_id, attempt) DO UPDATE SET
-			provider_id = EXCLUDED.provider_id,
-			model = EXCLUDED.model,
-			public_model = EXCLUDED.public_model,
-			consumer_key_hash = EXCLUDED.consumer_key_hash,
-			key_id = EXCLUDED.key_id,
-			outcome = EXCLUDED.outcome,
-			cost_ms = EXCLUDED.cost_ms,
-			state_ms = EXCLUDED.state_ms,
-			queue_ms = EXCLUDED.queue_ms,
-			pending_ms = EXCLUDED.pending_ms,
-			backlog_ms = EXCLUDED.backlog_ms,
-			this_req_ms = EXCLUDED.this_req_ms,
-			health_ms = EXCLUDED.health_ms,
-			ttft_ms = EXCLUDED.ttft_ms,
-			best_ttft_ms = EXCLUDED.best_ttft_ms,
-			effective_queue = EXCLUDED.effective_queue,
-			candidate_count = EXCLUDED.candidate_count,
-			capacity_rejections = EXCLUDED.capacity_rejections,
-			model_too_large_rejections = EXCLUDED.model_too_large_rejections,
-			vision_rejections = EXCLUDED.vision_rejections,
-			ttft_rejections = EXCLUDED.ttft_rejections,
-			effective_tps = EXCLUDED.effective_tps,
-			static_tps = EXCLUDED.static_tps,
-			provider_status = EXCLUDED.provider_status,
-			provider_trust_level = EXCLUDED.provider_trust_level,
-			provider_version = EXCLUDED.provider_version,
-			hardware_chip = EXCLUDED.hardware_chip,
-			hardware_chip_family = EXCLUDED.hardware_chip_family,
-			hardware_tier = EXCLUDED.hardware_tier,
-			memory_gb = EXCLUDED.memory_gb,
-			gpu_cores = EXCLUDED.gpu_cores,
-			cpu_cores = EXCLUDED.cpu_cores,
-			system_memory_pressure = EXCLUDED.system_memory_pressure,
-			system_cpu_usage = EXCLUDED.system_cpu_usage,
-			system_thermal_state = EXCLUDED.system_thermal_state,
-			gpu_memory_active_gb = EXCLUDED.gpu_memory_active_gb,
-			gpu_memory_peak_gb = EXCLUDED.gpu_memory_peak_gb,
-			gpu_memory_cache_gb = EXCLUDED.gpu_memory_cache_gb,
-			slot_state = EXCLUDED.slot_state,
-			backend_running = EXCLUDED.backend_running,
-			backend_waiting = EXCLUDED.backend_waiting,
-			active_token_budget_used = EXCLUDED.active_token_budget_used,
-			active_token_budget_max = EXCLUDED.active_token_budget_max,
-			queued_token_budget = EXCLUDED.queued_token_budget,
-			estimated_prompt_tokens = EXCLUDED.estimated_prompt_tokens,
-			requested_max_tokens = EXCLUDED.requested_max_tokens,
-			requires_vision = EXCLUDED.requires_vision,
-			has_tools = EXCLUDED.has_tools,
-			self_route_only = EXCLUDED.self_route_only,
-			prefer_owner = EXCLUDED.prefer_owner,
-			provider_region = EXCLUDED.provider_region,
-			consumer_region = EXCLUDED.consumer_region,
-			`+inferenceRouteErrorReasonUpsertAssignment+`,
-			updated_at = EXCLUDED.updated_at`,
-		record.RequestID, record.Attempt, record.ProviderID, record.Model, record.PublicModel, record.ConsumerKeyHash, record.KeyID, record.Outcome,
-		record.CostMs, record.StateMs, record.QueueMs, record.PendingMs, record.BacklogMs, record.ThisReqMs, record.HealthMs, record.TTFTMs, record.BestTTFTMs,
-		record.EffectiveQueue, record.CandidateCount, record.CapacityRejections, record.ModelTooLargeRejections, record.VisionRejections, record.TTFTRejections,
-		record.EffectiveTPS, record.StaticTPS, record.ProviderStatus, record.ProviderTrustLevel, record.ProviderVersion,
-		record.HardwareChip, record.HardwareChipFamily, record.HardwareTier, record.MemoryGB, record.GPUCores, record.CPUCores,
-		record.SystemMemoryPressure, record.SystemCPUUsage, record.SystemThermalState,
-		record.GPUMemoryActiveGB, record.GPUMemoryPeakGB, record.GPUMemoryCacheGB,
-		record.SlotState, record.BackendRunning, record.BackendWaiting,
-		record.ActiveTokenBudgetUsed, record.ActiveTokenBudgetMax, record.QueuedTokenBudget,
-		record.EstimatedPromptTokens, record.RequestedMaxTokens,
-		record.RequiresVision, record.HasTools, record.SelfRouteOnly, record.PreferOwner,
-		createdAt, updatedAt,
-		record.ProviderRegion, record.ConsumerRegion, record.ErrorReason,
-	)
-	if err != nil {
-		return fmt.Errorf("store: record inference route: %w", err)
-	}
-	return nil
-}
-
-// UpdateInferenceRouteOutcome updates the attempt with final outcome data
-// (tokens, timing, error). Callers keep this best-effort by logging returned
-// errors off the request path rather than blocking inference.
-func (s *PostgresStore) UpdateInferenceRouteOutcome(requestID string, attempt int, outcome *InferenceRouteOutcome) error {
-	if outcome == nil {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
-		`UPDATE inference_routes SET
-			final_status = COALESCE(NULLIF($3, ''), final_status),
-			error_code = CASE WHEN $4 <> 0 THEN $4 ELSE error_code END,
-			error_class = COALESCE(NULLIF($5, ''), error_class),
-			error_reason = COALESCE(NULLIF($6, ''), error_reason),
-			prompt_tokens = CASE WHEN $7 <> 0 THEN $7 ELSE prompt_tokens END,
-			-- $24 (CompletionTokensSet) force-writes the count even when 0 so a
-			-- terminal cancel/error/timeout row persists 0 instead of NULL; the
-			-- OR $8 <> 0 keeps the legacy non-zero write path (mirrors the memory
-			-- store's mergeInferenceRouteOutcome exactly).
-			completion_tokens = CASE WHEN $24 OR $8 <> 0 THEN $8 ELSE completion_tokens END,
-			reasoning_tokens = CASE WHEN $9 <> 0 THEN $9 ELSE reasoning_tokens END,
-			cost_micro_usd = CASE WHEN $10 <> 0 THEN $10 ELSE cost_micro_usd END,
-			actual_ttft_ms = CASE WHEN $11 <> 0 THEN $11 ELSE actual_ttft_ms END,
-			dispatch_to_first_chunk_ms = CASE WHEN $12 <> 0 THEN $12 ELSE dispatch_to_first_chunk_ms END,
-			total_duration_ms = CASE WHEN $13 <> 0 THEN $13 ELSE total_duration_ms END,
-			parse_ms = CASE WHEN $14 <> 0 THEN $14 ELSE parse_ms END,
-			reserve_ms = CASE WHEN $15 <> 0 THEN $15 ELSE reserve_ms END,
-			route_ms = CASE WHEN $16 <> 0 THEN $16 ELSE route_ms END,
-			encrypt_ms = CASE WHEN $17 <> 0 THEN $17 ELSE encrypt_ms END,
-			queue_wait_ms = CASE WHEN $18 <> 0 THEN $18 ELSE queue_wait_ms END,
-			dispatch_ms = CASE WHEN $19 <> 0 THEN $19 ELSE dispatch_ms END,
-			actual_decode_tps = CASE WHEN $20 <> 0 THEN $20 ELSE actual_decode_tps END,
-			admitted_but_failed = COALESCE(admitted_but_failed, FALSE) OR $21,
-			used_backup = COALESCE(used_backup, FALSE) OR $22,
-			backup_won = COALESCE(backup_won, FALSE) OR $23,
-			updated_at = NOW()
-		 WHERE request_id = $1 AND attempt = $2`,
-		requestID, attempt,
-		outcome.FinalStatus, outcome.ErrorCode, outcome.ErrorClass, outcome.ErrorReason, outcome.PromptTokens, outcome.CompletionTokens, outcome.ReasoningTokens,
-		outcome.CostMicroUSD, outcome.ActualTTFTMs, outcome.DispatchToFirstChunkMs, outcome.TotalDurationMs,
-		outcome.ParseMs, outcome.ReserveMs, outcome.RouteMs, outcome.EncryptMs, outcome.QueueWaitMs, outcome.DispatchMs, outcome.ActualDecodeTPS,
-		outcome.AdmittedButFailed, outcome.UsedBackup, outcome.BackupWon,
-		outcome.CompletionTokensSet,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update inference route outcome: %w", err)
-	}
-	return nil
-}
 
 // InferenceRouteRecordsSince returns routing records created at or after the
 // given time. Zero since returns all records.
@@ -2565,70 +2390,74 @@ func nullableCreatedAt(ts time.Time) any {
 	return ts
 }
 
-func creditTx(ctx context.Context, tx pgx.Tx, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) error {
-	_, err := tx.Exec(ctx,
-		`INSERT INTO balances (account_id, balance_micro_usd, updated_at)
-		 VALUES ($1, $2, NOW())
-		 ON CONFLICT (account_id) DO UPDATE SET
-		   balance_micro_usd = balances.balance_micro_usd + $2,
-		   updated_at = NOW()`,
-		accountID, amountMicroUSD,
-	)
-	if err != nil {
+// pgQuerier is the subset of *pgxpool.Pool and pgx.Tx the single-statement
+// ledger helpers need, so one helper serves both a standalone call (pool: one
+// round trip in an implicit transaction) and a caller's open transaction.
+type pgQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// creditBalanceSQL credits an account and records its ledger row in ONE
+// data-modifying CTE — one round trip instead of BEGIN + upsert + SELECT +
+// INSERT + COMMIT. The upsert's RETURNING is the post-credit balance, so
+// balance_after is exactly the value the old in-transaction SELECT read; the
+// ledger INSERT runs exactly once, to completion, under the row lock the
+// upsert took, so concurrent credits/debits on the account still serialize
+// on that one lock and no update is lost. Unknown accounts are created and
+// zero or negative amounts are applied and recorded, exactly as before.
+const creditBalanceSQL = `
+		WITH credit AS (
+			INSERT INTO balances (account_id, balance_micro_usd, updated_at)
+			VALUES ($1, $2, NOW())
+			ON CONFLICT (account_id) DO UPDATE SET
+			  balance_micro_usd = balances.balance_micro_usd + $2,
+			  updated_at = NOW()
+			RETURNING balance_micro_usd
+		), ledger AS (
+			INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
+			SELECT $1, $3, $2, balance_micro_usd, $4, COALESCE($5::timestamptz, NOW())
+			FROM credit
+		)
+		SELECT balance_micro_usd FROM credit`
+
+// creditWithdrawableBalanceSQL is creditBalanceSQL that also raises the
+// withdrawable subset by the same amount.
+const creditWithdrawableBalanceSQL = `
+		WITH credit AS (
+			INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
+			VALUES ($1, $2, $2, NOW())
+			ON CONFLICT (account_id) DO UPDATE SET
+			  balance_micro_usd = balances.balance_micro_usd + $2,
+			  withdrawable_micro_usd = balances.withdrawable_micro_usd + $2,
+			  updated_at = NOW()
+			RETURNING balance_micro_usd
+		), ledger AS (
+			INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
+			SELECT $1, $3, $2, balance_micro_usd, $4, COALESCE($5::timestamptz, NOW())
+			FROM credit
+		)
+		SELECT balance_micro_usd FROM credit`
+
+// creditBalance applies creditBalanceSQL through q (the pool for a standalone
+// credit, or the caller's transaction). A zero createdAt records NOW().
+func creditBalance(ctx context.Context, q pgQuerier, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) error {
+	var balanceAfter int64
+	if err := q.QueryRow(ctx, creditBalanceSQL,
+		accountID, amountMicroUSD, string(entryType), reference, nullableCreatedAt(createdAt),
+	).Scan(&balanceAfter); err != nil {
 		return fmt.Errorf("store: credit balance: %w", err)
 	}
-
-	var balanceAfter int64
-	err = tx.QueryRow(ctx,
-		`SELECT balance_micro_usd FROM balances WHERE account_id = $1`, accountID,
-	).Scan(&balanceAfter)
-	if err != nil {
-		return fmt.Errorf("store: read balance: %w", err)
-	}
-
-	_, err = tx.Exec(ctx,
-		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
-		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))`,
-		accountID, string(entryType), amountMicroUSD, balanceAfter, reference, nullableCreatedAt(createdAt),
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert ledger entry: %w", err)
-	}
-
 	return nil
 }
 
-func creditWithdrawableTx(ctx context.Context, tx pgx.Tx, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) error {
-	_, err := tx.Exec(ctx,
-		`INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
-		 VALUES ($1, $2, $2, NOW())
-		 ON CONFLICT (account_id) DO UPDATE SET
-		   balance_micro_usd = balances.balance_micro_usd + $2,
-		   withdrawable_micro_usd = balances.withdrawable_micro_usd + $2,
-		   updated_at = NOW()`,
-		accountID, amountMicroUSD,
-	)
-	if err != nil {
+// creditWithdrawableBalance applies creditWithdrawableBalanceSQL through q.
+func creditWithdrawableBalance(ctx context.Context, q pgQuerier, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) error {
+	var balanceAfter int64
+	if err := q.QueryRow(ctx, creditWithdrawableBalanceSQL,
+		accountID, amountMicroUSD, string(entryType), reference, nullableCreatedAt(createdAt),
+	).Scan(&balanceAfter); err != nil {
 		return fmt.Errorf("store: credit withdrawable balance: %w", err)
 	}
-
-	var balanceAfter int64
-	err = tx.QueryRow(ctx,
-		`SELECT balance_micro_usd FROM balances WHERE account_id = $1`, accountID,
-	).Scan(&balanceAfter)
-	if err != nil {
-		return fmt.Errorf("store: read balance: %w", err)
-	}
-
-	_, err = tx.Exec(ctx,
-		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
-		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))`,
-		accountID, string(entryType), amountMicroUSD, balanceAfter, reference, nullableCreatedAt(createdAt),
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert ledger entry: %w", err)
-	}
-
 	return nil
 }
 
@@ -2637,17 +2466,9 @@ func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("store: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	if err := creditTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
-		return err
-	}
-
-	return tx.Commit(ctx)
+	// One statement, one round trip: the balance upsert and its ledger row
+	// still commit together or not at all (creditBalanceSQL).
+	return creditBalance(ctx, s.pool, accountID, amountMicroUSD, entryType, reference, time.Time{})
 }
 
 // GetWithdrawableBalance returns the withdrawable balance in micro-USD.
@@ -2686,17 +2507,8 @@ func (s *PostgresStore) CreditWithdrawable(accountID string, amountMicroUSD int6
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("store: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	if err := creditWithdrawableTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
-		return err
-	}
-
-	return tx.Commit(ctx)
+	// One statement, one round trip (creditWithdrawableBalanceSQL).
+	return creditWithdrawableBalance(ctx, s.pool, accountID, amountMicroUSD, entryType, reference, time.Time{})
 }
 
 // CreditWithdrawableOnce credits only if no ledger entry with the same
@@ -2730,7 +2542,7 @@ func (s *PostgresStore) CreditWithdrawableOnce(accountID string, amountMicroUSD 
 	if exists {
 		return false, tx.Commit(ctx)
 	}
-	if err := creditWithdrawableTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
+	if err := creditWithdrawableBalance(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
@@ -3246,6 +3058,19 @@ func scanUser(row interface {
 	return &u, nil
 }
 
+// wrapUserScanError preserves the historical "store: user not found: ..."
+// message for every scan failure, and additionally tags a true miss
+// (pgx.ErrNoRows) with ErrNotFound so callers -- including the read-through
+// cache -- can distinguish "no such user" from a transient DB error with
+// errors.Is. ErrNotFound.Error() is exactly "not found", so the rendered
+// string is byte-for-byte unchanged.
+func wrapUserScanError(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("store: user %w: %w", ErrNotFound, err)
+	}
+	return fmt.Errorf("store: user not found: %w", err)
+}
+
 // GetUserByPrivyID returns the user for a Privy DID.
 func (s *PostgresStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -3256,7 +3081,7 @@ func (s *PostgresStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 	)
 	u, err := scanUser(row)
 	if err != nil {
-		return nil, fmt.Errorf("store: user not found: %w", err)
+		return nil, wrapUserScanError(err)
 	}
 	return u, nil
 }
@@ -3271,7 +3096,7 @@ func (s *PostgresStore) GetUserByAccountID(accountID string) (*User, error) {
 	)
 	u, err := scanUser(row)
 	if err != nil {
-		return nil, fmt.Errorf("store: user not found: %w", err)
+		return nil, wrapUserScanError(err)
 	}
 	return u, nil
 }
@@ -4120,9 +3945,25 @@ func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
 	}
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at)
+		`WITH earning AS (INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		 ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING`,
+		 ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
+		 RETURNING account_id, provider_key, model, amount_micro_usd, prompt_tokens, completion_tokens
+		), summaries AS (
+		 SELECT account_id AS key, 'account' AS key_type, model, amount_micro_usd, prompt_tokens, completion_tokens FROM earning WHERE account_id <> ''
+		 UNION ALL
+		 SELECT provider_key, 'provider', model, amount_micro_usd, prompt_tokens, completion_tokens FROM earning WHERE provider_key <> ''
+		)
+		INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
+		SELECT key, key_type, CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
+		 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
+		 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM summaries
+		ON CONFLICT (key, key_type) DO UPDATE SET
+		 total_count = earnings_summary.total_count + EXCLUDED.total_count,
+		 total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
+		 total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
+		 total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
+		 updated_at = NOW()`,
 		earning.AccountID, earning.ProviderID, earning.ProviderKey, earning.JobID,
 		earning.Model, earning.AmountMicroUSD, earning.PromptTokens, earning.CompletionTokens,
 		createdAt,
@@ -4340,7 +4181,7 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 				account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
 			) VALUES ($1, $6, $7, $4, $8, $2, $9, $10, COALESCE($5::timestamptz, NOW()))
 			ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
-			RETURNING account_id, provider_key, amount_micro_usd, prompt_tokens, completion_tokens
+			RETURNING account_id, provider_key, model, amount_micro_usd, prompt_tokens, completion_tokens
 		), credit AS (
 			INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
 			SELECT account_id, amount_micro_usd, amount_micro_usd, NOW() FROM earning
@@ -4355,19 +4196,23 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 			FROM earning e CROSS JOIN credit c
 		), summary_account AS (
 			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT account_id, 'account', 1, amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
+			SELECT account_id, 'account', CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM earning
 			ON CONFLICT (key, key_type) DO UPDATE SET
-			  total_count = earnings_summary.total_count + 1,
+			  total_count = earnings_summary.total_count + EXCLUDED.total_count,
 			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
 			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
 			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
 			  updated_at = NOW()
 		), summary_provider AS (
 			INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-			SELECT provider_key, 'provider', 1, amount_micro_usd, prompt_tokens, completion_tokens, NOW() FROM earning
+			SELECT provider_key, 'provider', CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END, amount_micro_usd,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
+			 CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END, NOW() FROM earning
 			WHERE provider_key <> ''
 			ON CONFLICT (key, key_type) DO UPDATE SET
-			  total_count = earnings_summary.total_count + 1,
+			  total_count = earnings_summary.total_count + EXCLUDED.total_count,
 			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
 			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
 			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
@@ -4410,7 +4255,7 @@ func (s *PostgresStore) CreditProviderWallet(payout *ProviderPayout) error {
 	}
 	defer tx.Rollback(ctx)
 
-	if err := creditWithdrawableTx(ctx, tx, payout.ProviderAddress, payout.AmountMicroUSD, LedgerPayout, payout.JobID, payout.Timestamp); err != nil {
+	if err := creditWithdrawableBalance(ctx, tx, payout.ProviderAddress, payout.AmountMicroUSD, LedgerPayout, payout.JobID, payout.Timestamp); err != nil {
 		return err
 	}
 
@@ -4466,7 +4311,11 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	return upsertProviderRecord(ctx, s.pool, p)
+}
+
+func upsertProviderRecord(ctx context.Context, db providerRecordDB, p ProviderRecord) error {
+	_, err := db.Exec(ctx,
 		`INSERT INTO providers (
 			id, hardware, models, backend, location, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
@@ -4653,10 +4502,13 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			&p.LifetimeStats, &p.LastSessionStats,
 			&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
 		); err != nil {
-			continue
+			return nil, fmt.Errorf("store: scan provider: %w", err)
 		}
 		p.Location = unmarshalProviderLocation(locationRaw)
 		records = append(records, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate providers: %w", err)
 	}
 	if records == nil {
 		return []ProviderRecord{}, nil
@@ -4863,7 +4715,11 @@ func (s *PostgresStore) UpsertReputation(ctx context.Context, providerID string,
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	return upsertReputationRecord(ctx, s.pool, providerID, rep)
+}
+
+func upsertReputationRecord(ctx context.Context, db providerRecordDB, providerID string, rep ReputationRecord) error {
+	_, err := db.Exec(ctx,
 		`INSERT INTO provider_reputation (
 			provider_id, total_jobs, successful_jobs, failed_jobs,
 			total_uptime_seconds, avg_response_time_ms,
@@ -4899,8 +4755,11 @@ func (s *PostgresStore) GetReputation(ctx context.Context, providerID string) (*
 		&rep.TotalUptimeSeconds, &rep.AvgResponseTimeMs,
 		&rep.ChallengesPassed, &rep.ChallengesFailed,
 	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("store: reputation not found: %w", ErrNotFound)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("store: reputation not found: %w", err)
+		return nil, fmt.Errorf("store: read reputation: %w", err)
 	}
 	return &rep, nil
 }
@@ -4912,7 +4771,7 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash FROM code_attestations`)
+		`SELECT se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash, continuous_coverage_until FROM code_attestations`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list code attestations: %w", err)
 	}
@@ -4923,7 +4782,7 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 		var rec CodeAttestation
 		if err := rows.Scan(
 			&rec.SEPubKey, &rec.Version, &rec.AttestedAt,
-			&rec.APNsToken, &rec.NodePublicKey, &rec.BinaryHash,
+			&rec.APNsToken, &rec.NodePublicKey, &rec.BinaryHash, &rec.ContinuousCoverageUntil,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan code attestation: %w", err)
 		}
@@ -4944,13 +4803,19 @@ func (s *PostgresStore) UpsertCodeAttestation(ctx context.Context, rec CodeAttes
 
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO code_attestations (
-			se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash
-		 ) VALUES ($1, $2, $3, $4, $5, $6)
+			se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash, continuous_coverage_until
+		 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 ON CONFLICT (se_pubkey) DO UPDATE SET
 			version = $2, attested_at = $3,
-			apns_token = $4, node_public_key = $5, binary_hash = $6`,
+			apns_token = $4, node_public_key = $5, binary_hash = $6,
+			continuous_coverage_until = CASE WHEN code_attestations.attested_at = EXCLUDED.attested_at
+             AND code_attestations.version = EXCLUDED.version AND code_attestations.apns_token = EXCLUDED.apns_token
+             AND code_attestations.node_public_key = EXCLUDED.node_public_key AND code_attestations.binary_hash = EXCLUDED.binary_hash
+             THEN GREATEST(code_attestations.continuous_coverage_until,EXCLUDED.continuous_coverage_until)
+             ELSE EXCLUDED.continuous_coverage_until END
+		 WHERE code_attestations.attested_at <= EXCLUDED.attested_at`,
 		rec.SEPubKey, rec.Version, rec.AttestedAt,
-		rec.APNsToken, rec.NodePublicKey, rec.BinaryHash,
+		rec.APNsToken, rec.NodePublicKey, rec.BinaryHash, rec.ContinuousCoverageUntil,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert code attestation: %w", err)
@@ -5824,6 +5689,9 @@ const (
 			client_gone_phase TEXT NOT NULL DEFAULT '',
 			first_content_budget_ms INT NOT NULL DEFAULT 0,
 			admission_mode TEXT NOT NULL DEFAULT '',
+			predictive_bypass TEXT NOT NULL DEFAULT '',
+			reservation_ttft_ceiling_ms DOUBLE PRECISION,
+			dispatch_budget_ms BIGINT,
 			estimated_prompt_tokens INT NOT NULL DEFAULT 0,
 			requested_max_tokens INT NOT NULL DEFAULT 0,
 			requires_vision BOOL NOT NULL DEFAULT FALSE,

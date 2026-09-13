@@ -1,0 +1,278 @@
+[
+  {
+    "buffer": 121832,
+    "gpuMs": 277.379416,
+    "kernels": [
+      {
+        "name": "block_softmax_float32",
+        "grid": [
+          65536,
+          1,
+          1
+        ],
+        "logicalOp": 5
+      },
+      {
+        "name": "g2_Multiplyfloat32",
+        "grid": [
+          2880,
+          8192,
+          1
+        ],
+        "logicalOp": 28
+      },
+      {
+        "name": "col_reduce_small_1_reduce_sumfloat32",
+        "grid": [
+          23,
+          2048,
+          1
+        ],
+        "logicalOp": 28
+      },
+      {
+        "name": "v_copybfloat16float32",
+        "grid": [
+          2880,
+          1,
+          1
+        ],
+        "logicalOp": 9
+      },
+      {
+        "name": "vvn_Addfloat32",
+        "grid": [
+          2949120,
+          1,
+          1
+        ],
+        "logicalOp": 8
+      },
+      {
+        "name": "rmsfloat32",
+        "grid": [
+          1507328,
+          1,
+          1
+        ],
+        "logicalOp": 9
+      },
+      {
+        "name": "affine_qmm_t_float_gs_64_b_8_alN_true_batch_0",
+        "grid": [
+          6284,
+          64,
+          1
+        ],
+        "logicalOp": 10
+      }
+    ]
+  },
+  {
+    "buffer": 245762,
+    "gpuMs": 279.292791,
+    "kernels": [
+      {
+        "name": "block_softmax_float32",
+        "grid": [
+          65536,
+          1,
+          1
+        ],
+        "logicalOp": 5
+      },
+      {
+        "name": "g2_Multiplyfloat32",
+        "grid": [
+          2880,
+          8192,
+          1
+        ],
+        "logicalOp": 28
+      },
+      {
+        "name": "col_reduce_small_1_reduce_sumfloat32",
+        "grid": [
+          23,
+          2048,
+          1
+        ],
+        "logicalOp": 28
+      },
+      {
+        "name": "v_copybfloat16float32",
+        "grid": [
+          2880,
+          1,
+          1
+        ],
+        "logicalOp": 9
+      },
+      {
+        "name": "vvn_Addfloat32",
+        "grid": [
+          2949120,
+          1,
+          1
+        ],
+        "logicalOp": 8
+      },
+      {
+        "name": "rmsfloat32",
+        "grid": [
+          1507328,
+          1,
+          1
+        ],
+        "logicalOp": 9
+      },
+      {
+        "name": "affine_qmm_t_float_gs_64_b_8_alN_true_batch_0",
+        "grid": [
+          6284,
+          64,
+          1
+        ],
+        "logicalOp": 10
+      }
+    ]
+  },
+  {
+    "buffer": 369727,
+    "gpuMs": 273.51275,
+    "kernels": [
+      {
+        "name": "block_softmax_float32",
+        "grid": [
+          65536,
+          1,
+          1
+        ],
+        "logicalOp": 5
+      },
+      {
+        "name": "g2_Multiplyfloat32",
+        "grid": [
+          2880,
+          8192,
+          1
+        ],
+        "logicalOp": 28
+      },
+      {
+        "name": "col_reduce_small_1_reduce_sumfloat32",
+        "grid": [
+          23,
+          2048,
+          1
+        ],
+        "logicalOp": 28
+      },
+      {
+        "name": "v_copybfloat16float32",
+        "grid": [
+          2880,
+          1,
+          1
+        ],
+        "logicalOp": 9
+      },
+      {
+        "name": "vvn_Addfloat32",
+        "grid": [
+          2949120,
+          1,
+          1
+        ],
+        "logicalOp": 8
+      },
+      {
+        "name": "rmsfloat32",
+        "grid": [
+          1507328,
+          1,
+          1
+        ],
+        "logicalOp": 9
+      },
+      {
+        "name": "affine_qmm_t_float_gs_64_b_8_alN_true_batch_0",
+        "grid": [
+          6284,
+          64,
+          1
+        ],
+        "logicalOp": 10
+      }
+    ]
+  },
+  {
+    "buffer": 493690,
+    "gpuMs": 270.508125,
+    "kernels": [
+      {
+        "name": "block_softmax_float32",
+        "grid": [
+          65536,
+          1,
+          1
+        ],
+        "logicalOp": 5
+      },
+      {
+        "name": "g2_Multiplyfloat32",
+        "grid": [
+          2880,
+          8192,
+          1
+        ],
+        "logicalOp": 28
+      },
+      {
+        "name": "col_reduce_small_1_reduce_sumfloat32",
+        "grid": [
+          23,
+          2048,
+          1
+        ],
+        "logicalOp": 28
+      },
+      {
+        "name": "v_copybfloat16float32",
+        "grid": [
+          2880,
+          1,
+          1
+        ],
+        "logicalOp": 9
+      },
+      {
+        "name": "vvn_Addfloat32",
+        "grid": [
+          2949120,
+          1,
+          1
+        ],
+        "logicalOp": 8
+      },
+      {
+        "name": "rmsfloat32",
+        "grid": [
+          1507328,
+          1,
+          1
+        ],
+        "logicalOp": 9
+      },
+      {
+        "name": "affine_qmm_t_float_gs_64_b_8_alN_true_batch_0",
+        "grid": [
+          6284,
+          64,
+          1
+        ],
+        "logicalOp": 10
+      }
+    ]
+  }
+]

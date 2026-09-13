@@ -1,4 +1,5 @@
 import CryptoKit
+import CoreFoundation
 import Foundation
 import Logging
 import ProviderCoreFoundation
@@ -324,23 +325,27 @@ enum SpecDecStore {
         else {
             return rejectInline("config.json is not a JSON object: \(configURL.path)")
         }
-        guard let inline = root["mtplx_mtp"] as? [String: Any],
-            inline["included"] as? Bool == true
-        else {
-            return rejectInline(
-                "config.json does not declare mtplx_mtp.included=true — not an inline-MTP checkpoint: \(configURL.path)")
-        }
-        guard root["mtplx_mtp_quantization"] as? [String: Any] != nil else {
-            return rejectInline(
-                "config.json is missing the mtplx_mtp_quantization object: \(configURL.path)")
-        }
         guard let index = try? JSONDecoder().decode(InlineWeightIndex.self, from: indexData)
         else {
             return rejectInline(
                 "model.safetensors.index.json does not decode (weight_map): \(indexURL.path)")
         }
 
-        let prefix = (inline["prefix"] as? String) ?? "mtp."
+        let prefix: String
+        if let inline = root["mtplx_mtp"] as? [String: Any],
+            inline["included"] as? Bool == true
+        {
+            guard root["mtplx_mtp_quantization"] as? [String: Any] != nil else {
+                return rejectInline(
+                    "config.json is missing the mtplx_mtp_quantization object: \(configURL.path)")
+            }
+            prefix = (inline["prefix"] as? String) ?? "mtp."
+        } else if declaresNemotronLightningMTP(root) {
+            prefix = "mtp."
+        } else {
+            return rejectInline(
+                "config.json does not declare mtplx_mtp.included=true or retained Nemotron Lightning MTP — not an inline-MTP checkpoint: \(configURL.path)")
+        }
         guard !prefix.isEmpty, prefix.utf8.count <= 128,
             prefix.utf8.allSatisfy({
                 (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
@@ -442,12 +447,30 @@ enum SpecDecStore {
             data.count <= Self.inlineProbeMaximumConfigBytes,
             let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return .undeterminable }
-        guard let inline = root["mtplx_mtp"] as? [String: Any],
+        if let inline = root["mtplx_mtp"] as? [String: Any],
             inline["included"] as? Bool == true
-        else { return .absent }
-        return .declared
+        {
+            return .declared
+        }
+        if declaresNemotronLightningMTP(root) {
+            return .declared
+        }
+        return .absent
     }
 
+    /// Lightning must explicitly declare the retained attention/MoE MTP head.
+    static func declaresNemotronLightningMTP(_ root: [String: Any]) -> Bool {
+        guard root["model_type"] as? String == "nemotron_h",
+            let declaration = root["darkbloom_embedded_mtp"] as? [String: Any],
+            declaration["architecture"] as? String == "nemotron_h_attention_moe",
+            let version = declaration["version"] as? NSNumber,
+            CFGetTypeID(version) != CFBooleanGetTypeID(), version.doubleValue == 1,
+            let layers = root["num_nextn_predict_layers"] as? NSNumber,
+            CFGetTypeID(layers) != CFBooleanGetTypeID(), layers.doubleValue == 1,
+            root["mtp_layers_block_type"] as? [String] == ["attention", "moe"]
+        else { return false }
+        return true
+    }
     private static func rejectInline(
         _ reason: String
     ) -> Result<SpecDecArtifact, InlineArtifactRejection> {

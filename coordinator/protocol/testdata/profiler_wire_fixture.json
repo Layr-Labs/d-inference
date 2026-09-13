@@ -95,6 +95,18 @@
         "prefix_lookup_ns": 95000,
         "prefix_adoption_ns": 0,
         "finish_reason": "stop"
+      },
+      "deadline_decision": {
+        "verdict": "accepted",
+        "projection": "bounded",
+        "observed_us": 41250,
+        "remaining_us": 28499950,
+        "submit_remaining_us": 28502200,
+        "projected_service_us": 3500000,
+        "projected_prefill_tokens": 812,
+        "projected_decode_tokens": 256,
+        "prefill_tps": 827.6,
+        "decode_tps": 19.25
       }
     }
   },
@@ -254,6 +266,65 @@
       "gpu_memory_peak_gb": 18.4,
       "gpu_memory_cache_gb": 1.1,
       "total_memory_gb": 64.0
+    }
+  },
+  "inference_error_deadline": {
+    "type": "inference_error",
+    "request_id": "5d9e7a1c-3b2f-4e6d-8c0a-1f2e3d4c5b6c",
+    "error": "first content deadline cannot be met",
+    "status_code": 429,
+    "error_reason": "deadline_unreachable",
+    "failure_code": "capacity",
+    "terminal_cause": "admission_timeout",
+    "profile": {
+      "schema": 1,
+      "wall_ms": 1788307200123,
+      "engine_submit_us": 10000,
+      "terminal_built_us": 12300,
+      "total_us": 12400,
+      "deadline_mode": "projected",
+      "deadline_decision": {
+        "verdict": "deadline_unreachable",
+        "projection": "bounded",
+        "observed_us": 12000,
+        "remaining_us": 88000,
+        "submit_remaining_us": 90000,
+        "projected_service_us": 200000,
+        "projected_prefill_tokens": 100,
+        "projected_decode_tokens": 2,
+        "prefill_tps": 1000,
+        "decode_tps": 20
+      }
+    }
+  },
+  "inference_error_accepted_expired": {
+    "type": "inference_error",
+    "request_id": "5d9e7a1c-3b2f-4e6d-8c0a-1f2e3d4c5b6d",
+    "error": "first content deadline cannot be met",
+    "status_code": 429,
+    "error_reason": "deadline_unreachable",
+    "failure_code": "capacity",
+    "terminal_cause": "admission_timeout",
+    "profile": {
+      "schema": 1,
+      "wall_ms": 1788307200123,
+      "engine_submit_us": 10000,
+      "terminal_built_us": 12300,
+      "total_us": 12400,
+      "deadline_mode": "projected",
+      "deadline_decision": {
+        "verdict": "accepted",
+        "projection": "bounded",
+        "observed_us": 12000,
+        "remaining_us": 0,
+        "submit_remaining_us": 1000,
+        "projected_service_us": 200000,
+        "projected_prefill_tokens": 100,
+        "projected_decode_tokens": 2,
+        "prefill_tps": 1000,
+        "decode_tps": 20,
+        "continuation": "expired"
+      }
     }
   }
 }

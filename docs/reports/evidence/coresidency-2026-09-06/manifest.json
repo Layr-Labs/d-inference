@@ -1,0 +1,10 @@
+{
+  "files": {
+    "evidence.json": {
+      "sha256": "61b66b456e51f422135f3c09cfb437d120d411a2fd0fb86e263597e55aa437d1",
+      "bytes": 43499
+    }
+  },
+  "source_capsule": "coresidency-evidence1",
+  "root_live_review_sha256": "d1b255d2eece3a1b5a1db3c1b46d9d533c6bb19a9070ccd04f78401816e935a6"
+}

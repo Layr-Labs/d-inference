@@ -61,7 +61,7 @@ private let mtpFloorTargetWeightBytes =
     - (2 * mtpFloorGiB)
 private let mtpFloorNewWeightBytes = mtpFloorTargetWeightBytes - mtpFloorExistingWeightBytes
 
-private struct MTPFloorTokenizer: MLXLMCommon.Tokenizer {
+struct MTPFloorTokenizer: MLXLMCommon.Tokenizer {
     func encode(text: String, addSpecialTokens: Bool) -> [Int] { [0] }
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "" }
     func convertTokenToId(_ token: String) -> Int? { nil }
@@ -87,7 +87,7 @@ private struct MTPFloorProcessor: UserInputProcessor {
     func prepare(input: UserInput) async throws -> LMInput { throw CancellationError() }
 }
 
-private func mtpFloorContainer() -> ModelContainer {
+func mtpFloorContainer() -> ModelContainer {
     ModelContainer(context: ModelContext(
         configuration: ModelConfiguration(id: "test/mtp-floor"),
         model: MTPFloorTarget(),
@@ -194,14 +194,14 @@ private final class MTPFloorDrafter: CBv2MTPDrafter, @unchecked Sendable {
     }
 }
 
-private final class MTPFloorAssistantLoadCounter: @unchecked Sendable {
+final class MTPFloorAssistantLoadCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
     var count: Int { lock.withLock { value } }
     func increment() { lock.withLock { value += 1 } }
 }
 
-private struct MTPFloorAssistantLoader: ProviderMTPAssistantLoading {
+struct MTPFloorAssistantLoader: ProviderMTPAssistantLoading {
     let counter: MTPFloorAssistantLoadCounter?
 
     init(counter: MTPFloorAssistantLoadCounter? = nil) {
@@ -218,7 +218,7 @@ private struct MTPFloorAssistantLoader: ProviderMTPAssistantLoading {
     }
 }
 
-private func mtpFloorArtifact() throws -> SpecDecArtifact {
+func mtpFloorArtifact() throws -> SpecDecArtifact {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("mtp-floor-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -229,7 +229,7 @@ private func mtpFloorArtifact() throws -> SpecDecArtifact {
     return try #require(SpecDecStore.inspectLocalArtifact(path: directory.path))
 }
 
-private func mtpFloorSizing(weightsGiB: UInt64) -> SlotSizingSnapshot {
+func mtpFloorSizing(weightsGiB: UInt64) -> SlotSizingSnapshot {
     mtpFloorSizing(weightsBytes: weightsGiB * mtpFloorGiB)
 }
 
@@ -252,9 +252,10 @@ private struct MTPFloorFailingAssistantLoader: ProviderMTPAssistantLoading {
     }
 }
 
-private func mtpFloorLoop(
+func mtpFloorLoop(
     models: [ModelInfo] = [],
-    mtpDrafterPath: String? = nil
+    mtpDrafterPath: String? = nil,
+    mtpMode: MTPMode? = nil
 ) throws -> ProviderLoop {
     try ProviderLoop(
         config: ProviderLoopConfig(
@@ -271,7 +272,8 @@ private func mtpFloorLoop(
                 backend: .init(
                     idleTimeoutMins: 0,
                     maxModelSlots: 3,
-                    mtp: mtpDrafterPath != nil,
+                    mtp: mtpMode == nil ? mtpDrafterPath != nil : nil,
+                    mtpMode: mtpMode ?? .auto,
                     mtpDrafterPath: mtpDrafterPath),
                 coordinator: .init(heartbeatIntervalSecs: 60))),
         purgeLegacyFiles: false,
@@ -332,8 +334,8 @@ struct MTPResliceFallbackTests {
             engineV2: existingBridge,
             sizing: existingSizing,
             modelType: "gemma4")
-        await loop.reservePendingLoadForTesting(
-            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes)
+        #expect(await loop.reservePendingLoadForTesting(
+            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes))
 
         let newcomer = EngineV2NewcomerBox(mtpFloorContainer())
         let build = try await loop.resliceAndBuildEngineV2BundleForTesting(
@@ -395,8 +397,8 @@ struct MTPResliceFallbackTests {
             tokenizer: TokenizerHandle(MTPFloorTokenizer()),
             sizing: existingSizing,
             modelType: "gemma4")
-        await server.reservePendingLoadForTesting(
-            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes)
+        #expect(await server.reservePendingLoadForTesting(
+            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes))
 
         let newcomer = EngineV2NewcomerBox(mtpFloorContainer())
         let build = try await server.resliceAndBuildMTPBundleForTesting(
@@ -437,8 +439,8 @@ struct MTPResliceFallbackTests {
 
         // The load path charged the drafter's bytes at admission; the
         // assistant then fail-opens INSIDE the bundle build (load failure).
-        await loop.reservePendingLoadForTesting(
-            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes)
+        #expect(await loop.reservePendingLoadForTesting(
+            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes))
 
         // Small weights: the re-slice floor must NOT trigger — this test
         // isolates the prepare-stage fail-open, whose fallback previously
@@ -476,8 +478,8 @@ struct MTPResliceFallbackTests {
             physicalMemoryBytes: mtpFloorPhysical,
             assistantLoader: MTPFloorFailingAssistantLoader(),
             makeEngine: { _, grant in MTPFloorEngine(capacityBytes: grant) }))
-        await server.reservePendingLoadForTesting(
-            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes)
+        #expect(await server.reservePendingLoadForTesting(
+            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes))
 
         let newcomer = EngineV2NewcomerBox(mtpFloorContainer())
         let build = try await server.resliceAndBuildMTPBundleForTesting(

@@ -45,9 +45,9 @@ public enum ModelLoadAdmission {
     ///     MLX-only view. The result is clamped to this so the gate can never
     ///     count memory the OS or other processes have already taken — the fix
     ///     for the OOM hole where `total − MLX.active − MLX.cache` over-reports.
-    ///   - outstandingReservationBytes: KV bytes already promised to in-flight
-    ///     requests (`GlobalKVCacheBudget`). Subtracted so a concurrent load
-    ///     can't claim memory a mid-decode request is counting on.
+    ///   - outstandingReservationBytes: outstanding unmaterialized commitments
+    ///     (C-M) from one coherent process-ledger snapshot. Do not pass total C:
+    ///     already materialized backing is included in the GPU usage above.
     public static func freeForLoadGb(
         totalBytes: UInt64,
         systemAvailableBytes: UInt64 = .max,
@@ -130,21 +130,6 @@ public enum ModelLoadAdmission {
     ) -> Bool {
         guard availableGb.isFinite, reclaimableGb.isFinite, requiredGb.isFinite else { return false }
         return max(0, availableGb) + max(0, reclaimableGb) >= requiredGb
-    }
-
-    /// Allocation-time re-check of the load gate, run AFTER this load's own
-    /// pending reservation sits in the shared ledger. `availableNetOfLedgerGb`
-    /// is the free-for-load figure (which nets out EVERY ledger entry), so
-    /// the load's own reservation is added back before comparing — the same
-    /// view the admission gate had — rather than double-counting the target
-    /// against itself. `requiredGb` is resolved by the caller after its last
-    /// suspension (`requiredToLoadGb` with the live headroom).
-    public static func fitsAtAllocation(
-        availableNetOfLedgerGb: Double, ownReservationBytes: UInt64, requiredGb: Double
-    ) -> Bool {
-        guard availableNetOfLedgerGb.isFinite, requiredGb.isFinite else { return false }
-        let restored = availableNetOfLedgerGb + Double(ownReservationBytes) / 1_073_741_824.0
-        return restored.isFinite && restored >= requiredGb
     }
 
     /// Whether a model with the given weight footprint can be loaded now.

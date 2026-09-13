@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-08 · commit `0c162cdae`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -12,6 +12,8 @@ gets only pipeline-health counters. Wire shapes of the heartbeat sub-objects:
 [`../reference/protocol-messages.md`](../reference/protocol-messages.md); the
 outcome vocabularies the rows carry:
 [`request-outcome-observability.md`](request-outcome-observability.md).
+
+The separate [incoming-request ledger](request-accounting.md) uses compact lifecycle evidence even when heavy profiling is disabled. Its records are unsampled; this profiler's rows remain sampled and must not supply the full traffic denominator.
 
 ## Context
 
@@ -110,6 +112,15 @@ sequenceDiagram
     W-->>H: complete_ingress_us → finalized_us (both halves done)
 ```
 
+### Prediction and refusal evidence
+
+The [prediction telemetry reference](../reference/prediction-decision-telemetry.md)
+defines coordinator policy/bypass, the actual writer-envelope budget, and the
+provider's optional `deadline_decision`. Returned engine evidence is recorded
+before immediate continuation checks, so a refusal can be separated from an
+acceptance followed by expiry. Existing enablement/sampling and accepted-only
+stamps remain unchanged.
+
 ### The provider `profile` object
 
 Go `protocol.InferenceProfile` (`coordinator/protocol/profile.go`) ↔ Swift
@@ -204,13 +215,13 @@ JSON-encoded on the sink worker.
 
 | Column(s) | Definition | Where |
 |---|---|---|
-| `scanned` | providers the candidate loop visited | `ReserveProviderEx` |
-| `candidate_set_size` | `scanned − gate_rejections.not_serving_model`; exclude/allowlist drops happen before the catalog check and count as advertising | `scheduler.go` |
-| `gate_rejections` JSONB `{reason: count}` | per-`GateReason` tally, uint16-saturating; keys are `gateReasonNames` (`coordinator/registry/gate_reason.go`): `offline`, `untrusted`, `trust_floor`, `private_only`, `runtime_unverified`, `private_text`, `challenge_stale`, `trait_floor`, `dedicated`, `dispatch_load_cooldown`, `error_cooldown`, `capacity_cooldown`, `breaker`, `ejection`, `slot_crashed`, `slot_reloading`, `thermal_critical`, `no_headroom`, `model_too_large`, `free_memory`, `vision`, `ttft_ceiling`, `excluded`, `allowlist`, `not_serving_model`. `allowlist` absorbs exclusive self-route-not-owned and serial allowlist misses; `excluded` is the caller's exclude list. Meaning of each gate: [`routing.md`](routing.md) | `buildCandidateGateLocked` |
+| `scanned` | providers the candidate loop visited. Since the per-model provider index (`coordinator/registry/model_index.go`) the loop visits only providers **advertising** the requested model, so `scanned` is the advertising count, not the fleet size, and `gate_rejections.not_serving_model` is 0 unless an advertiser still fails the catalog rule (off-catalog model on a public route); the `allowlist` / `excluded` tallies likewise count only advertisers. Records written before the index landed have `scanned == fleet size`; fleet size is available from `fleet_snapshots` | `ReserveProviderEx` |
+| `candidate_set_size` | `scanned − gate_rejections.not_serving_model` (unchanged in meaning by the index); exclude/allowlist drops happen before the catalog check and count as advertising | `scheduler.go` |
+| `gate_rejections` JSONB `{reason: count}` | per-`GateReason` tally, uint16-saturating; keys are `gateReasonNames` (`coordinator/registry/gate_reason.go`): `offline`, `untrusted`, `trust_floor`, `private_only`, `runtime_unverified`, `private_text`, `challenge_stale`, `trait_floor`, `dedicated`, `dispatch_load_cooldown`, `error_cooldown`, `capacity_cooldown`, `breaker`, `ejection`, `slot_crashed`, `slot_reloading`, `thermal_critical`, `no_headroom`, `model_too_large`, `free_memory`, `vision`, `ttft_ceiling`, `excluded`, `allowlist`, `not_serving_model`, `state_restoring`. `allowlist` absorbs exclusive self-route-not-owned and serial allowlist misses; `excluded` is the caller's exclude list. Meaning of each gate: [`routing.md`](routing.md) | `buildCandidateInto` |
 | `candidates` JSONB (≤ 4 rows) | `Top[0]` is the winner, then the lowest-cost other candidates ascending; each row is a `CandidateSummary` (cost + terms, `ttft_ms`, `effective_tps`, `effective_queue`, `total_pending`, `backend_running/waiting`, `active_token_budget_used/max`, `queued_prefill_tokens`, folded `slot_state`, `hb_age_ms`) | `CandidateSummary` (`gate_reason.go`) |
-| `runner_up_provider_id`, `runner_up_cost_ms` | lowest-cost candidate of the narrowed pool other than the winner; absent with one candidate | `lowestCostOther` |
+| `runner_up_provider_id`, `runner_up_cost_ms` | lowest-cost candidate of the narrowed pool other than the winner; absent with one candidate | `selectRoutingCandidate` (`coordinator/registry/candidate_selection.go`) |
 | `best_idle_provider_id`, `best_idle_ttft_ms` | lowest-TTFT candidate with the model resident and `backend_running + backend_waiting == 0`, computed over every gate-passing candidate before pool narrowing | `scheduler.go` |
-| `near_tie_pool_size`, `selection_path` | candidates within `nearTieCostWindowMs` of the minimum; branch of `selectRoutingCandidate`: `none`, `unique_min`, `tie_queue`, `tie_pending`, `cache_tiebreak`, `random` (`selectionPathNames`) | `selectRoutingCandidate` |
+| `near_tie_pool_size`, `selection_path` | retained cost candidates: exact minima in positive-cache pools, otherwise within `nearTieCostWindowMs`; current branches `none`, `unique_min`, `tie_queue`, `tie_pending`, `random` (`selectionPathNames`). Historical rows may retain `cache_tiebreak` | `selectRoutingCandidate` |
 | `snapshot_age_ms`, per-candidate `hb_age_ms` | `now − LastHeartbeat` when the routing snapshot was taken; observability only | `heartbeatAgeMs` |
 | `predicted_ttft_ms`, `raw_ttft_ms`, `ttft_calibration_ratio`, `prefill_decode_ratio`, `predicted_decode_tps` | calibrated vs raw estimate, the (model, chip) ratio applied, the decode→prefill fallback multiplier, `projectedPerRequestDecodeTPS` | `scheduler.go` |
 | `pending_for_model`, `total_pending` | winner's coordinator-side pending counts before this reservation | `scheduler.go` |
@@ -260,7 +271,7 @@ saturated to int32 by `ClampFleetRowInts`. The sampler's lock discipline: one
 short `r.mu.RLock` copies the provider list; phase A reads each provider under
 `p.mu` only; phase B takes a brief `r.mu.RLock` per provider for breaker,
 ejection, cooldown, clamp and eligibility through the real routing gates
-(`snapshotProviderReasonLockedEx`, `buildCandidateGateLocked`); a provider
+(`snapshotProviderIntoLockedEx`, `buildCandidateInto`); a provider
 replaced between phases is dropped. `registry/routingsim`
 (`coordinator/registry/routingsim/fleet_ndjson.go`, `LoadFleetNDJSON`) rebuilds
 a fleet from these rows, capability columns included.
@@ -273,6 +284,13 @@ row `reserve_lock_wait_p95_us` (inserted and scanned, never assigned). All
 `kv_backend`, `transport_est_us`, `slept_us`, the request-shape columns and the
 heartbeat-derived fleet fields are `NULL`/0 for a provider older than the
 profiler build.
+
+The separate optional `slots[].paged_storage` observations are available in
+live backend snapshots and Datadog through `recordPagedStorageTelemetry`
+(`coordinator/api/provider_paged_storage_telemetry.go`); they are not columns in
+`fleet_snapshots`. The [wire reference](../reference/protocol-messages.md#slotspaged_storage)
+defines their overlapping memory gauges, counter scopes, freshness and current
+producer status.
 
 ### Sampling, sink, retention
 
@@ -352,7 +370,7 @@ to the replication set, and accepts the hourly retention DELETE volume.
    returned by value from fixed-size fields inside the existing scan loops (0
    allocations, no new lock under `r.mu`; `BenchmarkReserveProviderEx_350x2`,
    `coordinator/registry/reserve_bench_test.go`); per chunk on the WS read loop
-   = 1 clock read + 2 atomic adds; provider ≤ 30 lock ops per request, no
+   = 1 clock read + 2 atomic adds; provider ≤ 32 lock ops per request, no
    per-token lock; engine ≤ 8 clock reads per step and no added allocation.
 5. **Two knobs only.** Kill switch and sample rate; retention, cadence, batch
    sizes and always-record thresholds are constants.
@@ -437,6 +455,8 @@ ring or `DaemonState` mirror.
 | Engine side | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2RequestTiming+Stamps.swift` |
 
 ## Related
+
+- [`../reports/2026-09-03-perf-pr-b-body.md`](../reports/2026-09-03-perf-pr-b-body.md) — the routing-scan landing (per-model provider index) that changed the meaning of `scanned` above.
 
 - [`../reference/protocol-messages.md`](../reference/protocol-messages.md) — `profile` row, heartbeat `telemetry` sub-objects
 - [`request-outcome-observability.md`](request-outcome-observability.md) — `final_status`, `error_class`, `terminal_cause` vocabularies

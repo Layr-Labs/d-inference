@@ -1,0 +1,28 @@
+{
+  "source_commit": "544cfa5eef9c6a02021d81f0054a5bbe624e89d3",
+  "source_archive_sha256": "6448aea754dbdd58f6fb2c6e3180f2a7a513762d6e443823d83fc84b154b54b7",
+  "reverified_tokenizer_source_paths": 51,
+  "host": "Darwin Mac 25.4.0 Darwin Kernel Version 25.4.0: Thu Mar 19 19:26:07 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6031 arm64",
+  "lima_version": "limactl version 2.2.0",
+  "guest": "Alpine3.23.4, Linux6.18.22-0-virt, aarch64,4vCPU,4GiB,16GiBdisk",
+  "rust_toolchain": "1.88.0 (6b00bc388 2025-06-23)",
+  "cargo": "1.88.0 (873a06493 2025-05-10)",
+  "binary_sha256": {
+    "promptsidecar-linux-arm64": "3137e7f913a435e6899262a8e650b34fe7241326226736b4f4c843f43db85236",
+    "promptsidecarloadproof-linux-arm64": "3bf53805288070f802a0e0caae8f4cf1e92b7a0b5a85f7453b8e7ca7f5d0a6b6"
+  },
+  "go_build_command": "GOTOOLCHAIN=go1.25.0 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o <output> ./coordinator/cmd/promptsidecarloadproof",
+  "native_build_seconds": 41.67,
+  "proof_observer_seconds": 19.455510014000083,
+  "scope": "One local native ARM Linux diagnostic, no native amd64 CI result or platform-comparative performance claim. VM shut down after artifact capture.",
+  "go_env": {
+    "CGO_ENABLED": "0",
+    "GOARCH": "arm64",
+    "GOFLAGS": "",
+    "GOOS": "linux",
+    "GOVERSION": "go1.25.0",
+    "GOWORK": ""
+  },
+  "go_binary_info": "/tmp/darkbloom-release-090/linux-validation/promptsidecarloadproof-linux-arm64: go1.25.0\n\tpath\tgithub.com/eigeninference/d-inference/coordinator/cmd/promptsidecarloadproof\n\tmod\tgithub.com/eigeninference/d-inference\t(devel)\t\n\tdep\tgolang.org/x/sys\tv0.45.0\th1:dO4czNzziLiiXplLQgBCEpCvXQ3dnkn0SdaZSYdQ+FY=\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\tCGO_ENABLED=0\n\tbuild\tGOARCH=arm64\n\tbuild\tGOOS=linux\n\tbuild\tGOARM64=v8.0\n",
+  "rust_channel_sha256": "431b7c5c0b9a511d8e31d29b378bbc74124e8521f14beb92d3a5a5f7e7e55449"
+}

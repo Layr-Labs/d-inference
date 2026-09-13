@@ -1,5 +1,231 @@
 # Changelog
 
+## Unreleased — doctor and attestation reliability
+
+- Prevent large process lists from blocking `doctor` and `verify`. Capture contention and sleep-probe output without pipe backpressure and apply an execution deadline; preserve diagnostic output and failure handling.
+- Match the coordinator's canonical status bytes for mixed-case model IDs and template names, including Unicode separators. Preserve signed fields, omission rules and signature verification.
+
+## Release candidate v0.9.2 — Gemma QAT caching, adaptive MTP and Nemotron Lightning (not shipped; 2026-09-10)
+
+Source changes since `v0.9.1`. Provider changes require a new signed bundle.
+The provider wire protocol remains compatible with the 0.9.1 coordinator;
+coordinator and console changes below require their own deployments. The
+[rollout review](docs/reports/2026-09-10-provider-092-rollout-review.md) records
+compatibility checks and outstanding runtime qualification.
+
+### Provider
+
+- **Gemma QAT SSD prefix caching** — Enable authenticated complete paged checkpoints by default for exact `gemma-4-26b-qat-4bit`. Preserve tenant, model, prompt, binary, metallib and numerical-state identity checks, the global cache disable and cold fallback. Other Gemma artifacts remain opt-in. A new binary starts a new checkpoint identity; existing 0.9.1 checkpoints are not reused across the upgrade.
+- **GPT-OSS 20B SSD prefix caching** — Enable authenticated complete paged checkpoints by default for exact `gpt-oss-20b`. Restore native full-attention rows and sliding-window state under the existing tenant, model, prompt and runtime identity gates. Keep resident retention opt-in; global cache disable and contiguous fallback serve cold. Other GPT-OSS IDs remain opt-in.
+- **Adaptive Gemma MTP** — Automatically resolve the catalog assistant for that exact QAT target and select ordinary decode or one draft token from measured committed output and elapsed time. Include seed work, reset workload learning when requests finish or IDs are reused, and track compilation warmup by exact verification shape. Support target-prefix sampling for temperature/top-p/top-k/min-p, with ordinary decode for unsupported transforms and explicit diagnostic verification controls retained.
+- **Assistant activation while serving** — Download and verify the optional assistant while the current engine serves. Reserve staging memory and retain its target against eviction; publish reduced capacity immediately and restore survivor KV grants after discarded preparation. After network rollout jitter, close only that model's new admissions, advertise `reloading`, and finish accepted work before swapping. Racing requests receive transient 503 `slot_state` refusals. Timeout or cancellation discards the candidate and reopens the original engine without cancelling accepted requests. Standalone follows the same bounded drain without fleet jitter; insufficient memory preserves target-only serving.
+- **Assistant download sources** — Honor catalog-declared immutable Hugging Face assistant revisions with checksum-verified R2 fallback and jittered fetch retries. Existing R2-only metadata remains valid; shipping this binary does not apply the separate catalog patch. Standalone uses its configured coordinator catalog authority.
+- **Nemotron Lightning serving** — Admit the three explicitly qualified registry/Hugging Face IDs on the existing network and standalone paths; reject other `nemotron_h` artifacts. Enable native paged KV and complete encrypted prefix reuse with native activation/KV precision and FP32 persistent Mamba state. Declared embedded MTP uses request-owned assistant state, exact prefix checkpoints and adaptive depth up to seven; checkpoints include Nemotron numerical controls.
+- **Native reasoning and tools** — Separate Nemotron reasoning before tool parsing and validate required/named calls before publishing them through the existing encrypted response stream. Keep Gemma grammar enforcement and explicit per-model capability advertisement. Fix standalone Lightning admission to use the model's exact identity before the existing memory gate.
+- **Shared inference dependencies** — Pin the merged MLX core, C, Swift and SDK chain for explicit mutable Metal-kernel inputs, request-owned paged MTP, recurrent rollback, checkpoint ownership and typed native generation events. Release CI includes nonzero/no-skip synthetic SDK gates; real-model gates remain separately identified.
+
+### Companion coordinator and console changes
+
+- **Warm-pool headroom** — Grow warm replicas from measured headroom before a failed request, using measured occupancy growth, per-model headroom limits and bounded load bursts. Requires a coordinator deployment; the provider release does not activate this policy.
+- **Earnings navigation** — Keep earnings accessible after removing all linked Macs and display the supported payout-coverage notice. Requires a console deployment.
+
+### Qualification and rollout
+
+The reviewed source has passing component and integration evidence, but final
+combined-artifact model qualification remains incomplete. The amended Gemma
+admission-drain path still needs matched B1 on/off, B4 branched-prefix and real
+HTTP activation/download-failure checks. Earlier greedy MTP coding outputs
+show a repeated source-ID correctness defect absent from the ordinary-decode
+controls on that prompt; no general answer-quality equivalence or cache
+corruption conclusion is claimed. Published-chain Nemotron connected-serving
+and restart qualification also remain open. See the rollout review before
+fleet publication; source compatibility alone is not a release-ready verdict.
+
+## v0.9.1 — cache reliability and recovery (shipped; 2026-09-09)
+
+Source changes since `v0.9.0`. Provider changes require a new signed bundle;
+coordinator and console changes require their own deployments.
+
+### Provider
+
+- **Request completion during recovery** — Keep completion/error delivery working after cache shutdown or deallocation, deliver each terminal once, and drain accepted cache evidence before its terminal. Preserve secondary-tier terminal suppression.
+- **Duplicate checkpoint reuse** — Keep an existing complete checkpoint when another request reaches the same prefix with a different valid prefill chunk size. Reauthenticate its original bytes, metadata and complete encrypted payload; preserve identity, tenant, state-layout and corruption checks.
+- **Checkpoint write recovery** — Preserve unrelated valid checkpoints when atomic creation of a new checkpoint fails, allowing a later donation to retry without an unnecessary cache-epoch reset. Existing files that fail reauthentication still revoke their cache evidence.
+- **SSD disk budget** — Size the shared cache at half of currently available disk space without a fixed 100 GiB ceiling. Keep a fixed 20 GiB low-disk write reserve instead of 5% of the whole disk, and check the full pending donation against space above the reserve. Preserve encryption, eviction, daily write limits and ENOSPC handling.
+- **Cache failure attribution** — Distinguish complete-checkpoint host-memory, epoch, maintenance, disk-space, unsafe-path, I/O and eviction outcomes in bounded provider/coordinator telemetry.
+- **Telemetry shutdown** — Stop queued slot-posture callbacks after cancellation and wait for the sampler during shutdown, preventing telemetry after teardown returns.
+- **Deadline diagnostics** — Report the received prediction policy, reservation ceiling and encoded deadline budget alongside the provider's prediction and decision, distinguishing refusal from acceptance followed by expiry.
+
+### Companion coordinator and console changes
+
+- **Cache prompt parity** — Match provider JSON response-format instructions and Qwen/Harmony system-turn folding in cache planning so structured-output requests do not generate false prompt-anchor mismatches. Exercise the real service preparation path in shared tokenizer/hash parity tests.
+- **Per-model cache reporting** — Add internal breakdowns of provider-reported hits/misses, cached and avoided-prefill tokens, accepted V2 proofs, cache-selected terminals and timing samples. Measure saved-prefill percentages with matched prompt-token denominators for each population; retain invalid/missing usage separately from misses. Add bounded receipt rejection and prompt-length/hash mismatch diagnostics while preserving aggregate public status.
+- **Cache evidence continuity** — Preserve unchanged models' holders and receipts when another model loads or changes, retain proof-mismatch fences across unrelated capability updates, and distinguish proof mismatch from ordinary holder changes.
+- **APNs reconnect recovery** — Persist verified same-process continuity for bounded coordinator reconnects without refreshing the original Apple proof timestamp. Preserve encrypted resume challenges, token/process/binary binding, new-process freshness checks and Apple push budgets. Stamp final continuity after the socket is offline while keeping periodic updates online-only.
+- **Indexed startup recovery** — Recover history through indexed identity lookups instead of scanning every historical session before serving. Select the newest prior session, exclude live/incomplete records and late async writes, preserve live attestation requirements, and publish provider records and reputation atomically. Retry transient store failures within a shared deadline; pending recovery cannot route, and exhausted recovery closes the new registration before evicting an existing session. Preserve legacy missing-reputation behavior while refusing failed reads.
+- **Earnings-summary preparation** — Pin missing history before the durable attempt marker and resume per-key additions safely alongside live settlement. Keep base-reward money separate from inference counts/tokens and maintain summaries on record-only inserts as well as account settlement. Add a database-only migration command for approved pre-cutover preparation.
+- **Startup measurements** — Add startup phase timings and a read-only post-stop observer that separates candidate health/readiness and per-model routable capacity from optional disposable-test inference. Keep successful inference distinct from answer correctness and omit response text, usage and credentials from reports.
+- **Routing deadlines and admission** — Refresh remaining time after registry/provider lock waits before reserving a retained backup, skip expired reservations and shrink an enabled prediction ceiling. Estimate unreflected pending prefill from each request's own prompt size, excluding requests that already produced content, while preserving the proxy for unknown cache work and reflected queues.
+- **Incoming request accounting** — Add an unsampled request-outcome ledger and bounded admin inspection with explicit coverage and completion evidence. Record recovered HTTP errors and parsed streaming mode, and distinguish completed, incomplete and error response terminals after successful writes while preserving contradictory evidence and earlier content progress.
+- **Partial network geography** — Keep the stats overview available when request-location or route analytics time out. Refresh geography independently, expose unavailable sections, preserve valid empty maps and restore geography after recovery.
+
+## Unreleased — stats request-flow refresh
+
+- Restore Stats refreshes on large usage windows by aggregating request origins before looking up provider locations. Preserve weighted coordinates, request/token counts, and the top-50 flow limit while avoiding large temporary sorts.
+
+## Unreleased — provider console entry
+
+- Open the provider workspace directly from the console home page, removing the Consumer/Provider selection page. Keep chat and API access in workspace navigation.
+
+## Unreleased — international bank withdrawals
+
+- Add a Stripe Global Payouts route enabled by default in the next production release for additional bank-payout countries, including India, alongside existing Connect withdrawals. Providers review a local-currency estimate before confirming.
+- Keep Connect withdrawals independent of browser confirmation storage. Stop automatic retries for ambiguous payouts requiring manual review and show their reserved-funds status in history.
+- Show recipient deposit limits and retain quoted Stripe fees for operator review. Continue reconciling existing payouts after funding-account changes and safely release unsubmitted confirmations when payouts are paused.
+- Use one earned-balance ledger across both routes, recover confirmations after browser reloads, preserve definitive rejections across refund failures, and reconcile bank returns exactly once. Prune expired unconfirmed quotes. Display sent transfers separately from bank receipt.
+
+## Unreleased — GPT-OSS prefill and decode
+
+- Skip unused GPT-OSS prefill vocabulary projections, fuse compatible 20B expert gate/up weights with bounded load materialization, reuse unchanged quantized constants, and enable the measured width-2880 MXFP4 decode path on M4 Max. Keep rollback controls and unsupported-shape fallbacks.
+
+- Add sequential, provenance-pinned GPT-OSS profiling with full-shape warmups, raw decode token timing, memory measurements, common-window aggregate B=2/B=4 decode rates, and mixed-length arrival workloads. Preserve failed and diagnostic runs separately from valid baseline measurements; raw evidence and paired comparisons distinguish measurement from optimization.
+
+## Unreleased — Hugging Face model downloads
+
+- Add an optional, commit-pinned Hugging Face artifact to each registry version. Foreground model downloads and background prefetch prefer HF, verify the existing per-file SHA-256 and aggregate hashes, and fall back to R2 on download or integrity failure. Existing registry entries keep using R2.
+
+## Unreleased — Qwen non-thinking streaming
+
+- Stream Qwen answers as they are generated when the rendered prompt already closes its thinking block, including image and video requests that default thinking off. Preserve incremental reasoning, explicit parser overrides, and token usage.
+
+## Release candidate v0.9.0 — paged attention and Qwen caching (not shipped)
+
+- Preserve provider startup and process diagnostics in the connected cache-routing test, so a two-provider registration failure remains diagnosable before any request runs.
+
+- Prepare automatic paged attention for the three Qwen artifacts, GPT-OSS 20B and Gemma 4 QAT. Scope default SSD caching to Qwen independently of the attention backend; preserve explicit cache opt-in and all backend rollback controls. Model acceptance and operational release validation remain incomplete.
+
+- Verify explicitly enabled Gemma 4 QAT draft tokens with ordinary target-forward shapes to avoid the observed width-dependent token change. Keep assistant drafting and explicit offline rectangular diagnostics; the serialized verification can reduce speculative throughput.
+
+- Retain two-pass attention numerator partials in FP32 through final normalization, avoiding low-precision cancellation and intermediate overflow. Update the shader ABI and generated Swift sources together; model regression validation remains pending.
+
+- Fix recurrent target scoring to use request-owned state and normal peak admission on both KV backends. Preserve ordinary serving dispatch and release state, KV and capacity after failed diagnostics.
+
+- Accumulate affine quantized matrix-vector bias inputs in the wider accumulator type. Regenerate the embedded shader source alongside the Metal library; GPU regressions cover low-precision input cancellation across quantization widths and dispatch shapes.
+
+- Add manual signing/notarization validation without deployment environments or release publication, and exclude the 0.9.0 validation branch from console UI Git deployments. Keep signing/runtime/model approval gates separate.
+
+- Bind GPT-OSS and Gemma optimization settings to SSD checkpoint identities, so changing an optimization or rollback control cannot reuse a checkpoint from the previous numerical configuration.
+
+- Add bounded exact-token ordinary scoring through `darkbloom benchmark --teacher-forced-input`, with explicit model/backend identity, repeated numerical observations and instrumentation controls. These observations do not certify model quality or speculative verification.
+
+- Bound speculative draft depth by useful remaining output slots for every fixed, adaptive and exploration offer. Avoid drafting when only the next target token can be emitted; preserve carry/history and rollback handling.
+
+- Add production-derived single-slot benchmark grants and a cancellation probe that requires a completed donor, actual SSD restoration and exact recovery output. Preserve explicit envelope controls and complete failure evidence.
+
+- Preserve measured SSD restore costs across later Ready estimates for the same checkpoint, without extending measurement freshness or crossing provider/capability changes.
+
+- Add complete native paged checkpoint restore for recurrent Qwen and historical attention windows, with bounded direct export, explicit metadata/auxiliary ownership and cancellation-safe retirement. Real-model release validation remains pending.
+
+- Include excess SSD restore time in coordinator routing costs, so an expensive cache holder can lose to a faster cold peer. Preserve useful-hit discounts, full-request admission and positive-benefit telemetry.
+
+- Expose native allocator padding and released reservation allowance in provider telemetry; avoid scanning unrelated SSD checkpoints on prefix lookup. Verify real allocator ownership and exact capacity refusal.
+
+- Add immutable allocator sizing projections for admission without allocation, locks or error callbacks.
+
+- Reserve native paged allocations using allocator-owned per-buffer bounds, then settle to measured backing bytes. Preserve shared backing ownership, rollback and completion-before-refund checks; provider SSD integration and model performance validation remain pending.
+
+- Add native checkpoint page adoption with typed stage ownership, atomic grant publication and generation-safe retirement. Atomically reserve model loads and bind optional native memory owners to the shared process ledger; production codec and serving-factory integration remain in progress.
+
+- Reject runtime KV dtype mismatches before paged writes and propagate evaluation faults through normal request retirement, preserving native precision and ownership cleanup.
+
+- Report coherent process-memory commitments, materialization, debt and owner counts through optional heartbeat observations. Preserve capture age on replay, validate accounting identities and emit bounded diagnostic metrics without changing routing or capacity authority.
+
+- Capture active, cached and peak MLX memory counters under one allocator lock, so admission can read a coherent accounting snapshot without synchronizing streams.
+
+- Keep live memory reservations charged during prolonged capacity rejection. Remove age-based refunds while preserving bounded diagnostics and background allocator-cache reclamation.
+
+- Report queue-captured paged ownership and allocator refusals through provider heartbeats, coordinator metrics and console types. Preserve capture age, optional instrumentation and reload-safe counter deltas; grant-only updates cannot freshen allocator observations.
+- Add private native-page checkpoint filling and bounded byte-preserving export across BF16, FP16 and FP32. Live SSD adoption and the complete paged codec remain under implementation.
+
+- Add runtime B1/B2/B4 benchmark controls with explicit production-bounded KV grants, complete row outcomes, sampled capacity/memory, and strict comparison checks.
+
+- Add an opt-in segmented KV store with native BF16/FP16/FP32 pages, transactional growth, stable buffer identities, and bounded Metal bindings. Verify transfer, allocation rollback, sliding-window and multi-bucket attention mechanics; production backend selection remains unchanged while model and capacity validation continues.
+- Account segmented native buffers under each engine's admission budget, including grant shrink, private growth and retirement. Evaluate first-prefill page writes through the normal step roots so native storage is released before its budget is refunded.
+- Measure loaded models' native KV types before explicit paged construction and preserve per-layer precision in storage and slot sizing. Enable gated segmented Qwen execution with recurrent/MTP rollback coverage; default selection and complete SSD restore remain contiguous.
+
+## Unreleased — SSD prefix checkpoints
+
+- Preserve native SSD lookup receipts and cache usage when a streamed request is canceled after output; settle only delivered tokens.
+
+- Retain prefix receipts through the provider event pump so successful submission cannot discard routing evidence before durable publication. Preserve terminal and cancellation cleanup.
+
+- Record strict normal-Qwen3.5 paged SSD comparisons at output caps32 and128 after the useful-tail policy. Preserve exact same-budget output identity, natural stopping and the remaining cross-budget numerical difference.
+
+- Record a strict initial Qwen3.6 paged B1 SSD pair with coherent idle observations and normal MTP. Preserve the failed earlier snapshots and distinguish original-native measurements from the later useful-tail policy.
+
+- Reconstruct connected-test reasoning once when SSE includes equivalent compatibility aliases. Reject conflicting values and replay captured streams with different chunk boundaries without weakening output equality.
+
+- Observe published idle snapshots at known benchmark retirement boundaries with a bounded deadline. Preserve timeout/cancellation evidence and keep observation waits outside request latency measurements.
+
+- Record strict initial paged B1 SSD-cache pairs for exact Qwen3.8, GPT-OSS 20B and Gemma 4 26B artifacts. Preserve setup failures, correct the documented local assistant layout, and retain the remaining five-model release gates.
+
+- Require actual off/on cache pairs and retirement evidence in both benchmark arms. Preserve the first Qwen3.6 paged SSD semantic pair and the stricter rejection of stale control snapshots; remaining release gates are pending.
+
+- Bind isolated benchmark cache roots and requested key mode explicitly, reject mismatched actual key mode, and retain cache-construction status on refusal. Preserve production key and native eligibility guards.
+
+- Add an opt-in connected HTTP cache gate using real provider transport and the Rust prompt sidecar. Verify routing, native reuse, tenant isolation, continuation, tools, cold vision, restored cancellation and recovery with exact-artifact paired reports. Helper tests pass; real-model HTTP results remain pending.
+
+- Let production segmented paging use the normal admitted slot KV grant and follow shrink/regrow updates. Delete obsolete eager-pool fractions, caps and minimum checks while preserving native buffer limits, live ownership and shared memory admission.
+
+- Bind complete paged SSD checkpoints to loaded Qwen recurrent and GPT-OSS/Gemma historical-attention capabilities, with exact native storage identity, shared process admission and bounded host I/O ownership. Keep resident payload caching opt-in and paged rollout gated on real-model validation.
+
+- Bind cache plans and prepared receipt owners to one configuration generation. Revoke queued cache scope on reconfiguration or cancellation while preserving ordinary encrypted inference, deadline budgets and authenticated late-receipt cleanup.
+
+- Raise the default shared SSD cache ceiling to 100 GiB, limited to half the volume’s currently available space. Preserve explicit disk-budget overrides and the low-disk write guard.
+
+- Store eligible complete dense Qwen prefix checkpoints on encrypted SSD by default, including supported affine-quantized models, when verified runtime identity and the cache key are available. Preserve attention KV, recurrent state, and normal MTP history. Stream only the matched checkpoint into memory reserved for the active request, with bounded transfer buffers and no retained cache tensors while idle.
+- Extend the complete-checkpoint codec to Qwen MoE targets with the same validated attention and recurrent state layout. Add native dtype, fresh-engine restore, branch, isolation and provider wiring tests; full-size model rollout validation remains pending.
+- Capture one UTC template date per request across coordinator planning, provider rendering and retries, enabling exact GPT-OSS prompt contracts. Keep unsupported clock formats cold and version the shared normalization and renderer semantics.
+- Correct Qwen tool-result grouping and preserve boolean tool arguments. Align coordinator JSON rendering and decimal parsing with the provider, version the renderer contract, and verify exact prompt tokens across all five release models and additional Gemma variants.
+- Share immutable parsed tokenizers across verified prompt contracts, while preserving per-contract integrity checks and releasing unused tokenizers. Reduce sidecar memory and construction work without changing prompt tokens or contract identities.
+- Bind durable checkpoints to verified weights, prompt contract, runtime, and numerical settings. Validate checkpoint geometry and authenticated segments before adoption; cancelled or incomplete donations cannot publish ready evidence.
+- Index verified prefix holders by content across machine epochs, so lookup visits matching holders and enforces the configured per-tier machine limit. Preserve tenant, artifact, expiry, restart and capacity checks.
+- Suppress resident cache routing evidence when the provider selects complete SSD checkpoints, including temporary gaps in durable readiness.
+- Price verified cache reuse by saved prefill time after staging, capped by the request's prefill work. Preserve load, queue, decode, health and capacity costs; select the cheapest adjusted candidate when cache credit applies. Optional credit caps distinguish absence from explicit zero.
+- Route using actual committed checkpoint endpoints, including endpoints below the full prompt boundary. Negotiate the new receipt semantics with the coordinator and preserve compatibility with older peers.
+- Allow operators to restrict network prefix caching to exact model, weight, and prompt-contract identities before planning or issuing reusable cache scope. Preserve existing eligibility when the optional list is absent; an explicitly empty list disables participation.
+- Report SSD cache use, I/O, donation outcomes and maintenance through typed heartbeat telemetry, with sample age and reload-safe counter deltas. Expose aggregate artifact-list status and keep heartbeat snapshots independent of filesystem sweeps.
+- Require `DARKBLOOM_PREFIX_CACHE_MEMORY=1` for resident recurrent checkpoints or paged KV sharing. Retain bounded checkpoint compaction and useful-prefix SSD selection for these explicit memory modes.
+- Stream eligible attention-only SSD blocks into evaluated native tensors with bounded decryption buffers and explicit staging reservations.
+
+## Unreleased — coordinator and provider hot-path cleanup
+
+- Rank routing candidates without temporary lists and assemble streamed tool arguments without repeatedly copying accumulated output. Share SSE sanitization framing and remove unreachable accumulator repair paths.
+- Decode provider chat-template controls once, sharing the local request decoder and eliminating batch item reserialization.
+- Skip standalone SSD-only weight hashes for known configurations that cannot reuse durable prefixes. Preserve verified pre/post-load hashes for complete Qwen SSD checkpoints, connected attestation, and conservative fallback for unknown configurations.
+- Separate inference event handling from token accounting, share terminal cleanup, reuse chosen-token logprob decoding, and remove the unused incremental KV reservation API.
+
+## Unreleased — stats location refresh
+
+- Restore public stats refreshes on large usage tables by aggregating locations per provider before combining location totals. Preserve distinct-provider and token counts and request-weighted coordinates without sorting every usage row. Keep the selective cutoff's query plan local to the analytics transaction.
+
+## Unreleased — coordinator performance Tiers 2 and 3
+
+- Cache repeated user and model lookups, batch route telemetry writes, and credit balances in one database statement. Invalidate model caches without allowing older in-flight reads to republish stale entries.
+- Coalesce streaming output within a byte cap and parse request bodies once.
+- Reduce routing scan work with per-model provider indexes, maintained medians, reusable snapshots, bounded version memoization, and coalesced swap and queue-drain planning.
+- Commit reservations under the registry read lock and the selected provider's lock. Keep fault tracking on per-identity gates, with validated rebind and sweep handling; retain `EIGENINFERENCE_RESERVE_COMMIT_MODE=global` as the reservation rollback switch.
+- Preserve newer rejection state when capacity-accept bookkeeping arrives late.
+- Make scheduler, attestation timestamp, and reputation persistence test fixtures deterministic.
+
+## Unreleased — provider lifecycle and bounded coordinator work
+
+- Keep genuine provider 502 faults across version changes; only coordinator-marked disconnect flushes are eligible for reset. Count first-scan TTFT rejections in request outcome telemetry.
+- Evict capped zombie tracker entries in constant time, preserving recent activity without per-insertion full-map scans.
+- Fragment large provider WebSocket messages, bound queue-drain work, and keep control traffic responsive.
+- Fence typed draining refusals at ingress before releasing the request slot; preserve newer recovery heartbeats. Graceful restarts remain health-neutral, and late disconnect errors follow identity enrichment without re-quarantining an upgraded provider.
+- Correlate cancel sends and terminals atomically, bound version history and telemetry tags, and retain MLX metrics on HTTP-only Datadog deployments.
+
 ## Unreleased (2026-09-04) — console redesign
 
 - Provider onboarding specifies macOS 26 or later.

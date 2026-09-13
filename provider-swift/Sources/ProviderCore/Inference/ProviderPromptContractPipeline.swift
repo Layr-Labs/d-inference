@@ -9,7 +9,7 @@ enum ProviderPromptContractPipeline {
         modelType: String?
     ) throws -> [Int] {
         let request = try ProviderLoop.decodeOpenAIRequest(body)
-        let templateControls = ProviderLoop.extractChatTemplateControls(from: body)
+        let templateControls = ProviderLoop.extractChatTemplateControls(from: body).resolvingPromptDate()
         let prepared = try ToolChoicePromptPolicy.prepare(request)
         return try tokenize(
             prepared: prepared,

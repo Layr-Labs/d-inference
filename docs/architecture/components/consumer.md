@@ -1,6 +1,6 @@
 # Consumer surface
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `7ae06021f`
 
 The consumer surface is the coordinator's OpenAI- and Anthropic-compatible request pipeline: it speaks OpenAI Chat Completions, OpenAI Responses, Anthropic Messages and legacy Completions to clients and turns each request into one provider job through a single pipeline in `handleChatCompletions` (`coordinator/api/consumer.go`), with an endpoint-specific lowering step before it and a re-shaping step after it. This page is for engineers changing or debugging that pipeline: it explains what "compatible" means concretely, walks the stages, and lists the invariants and failure modes that follow. The exact routes, headers, and JSON shapes are in [`../../reference/api-contracts.md`](../../reference/api-contracts.md).
 
@@ -40,7 +40,7 @@ Stages in the order `handleChatCompletions` runs them. Each stage either advance
 | 11 | Capacity admission: can any eligible provider take this prompt now? | `runInferenceAdmission` | 429, 503, 413 `payload_too_large` |
 | 12 | Plan: cache-aware route plan for the prompt | `planCacheRoute` (`coordinator/api/prompt_artifacts.go`); see [`../cache-aware-routing.md`](../cache-aware-routing.md) | — |
 | 13 | Dispatch: select a provider from the scheduler plan, encrypt, send, wait for first content, race a speculative backup, fail over, commit | `dispatchState.run` → `dispatchPrimary`, `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover`, `commitFirstContent`, `writeCommittedResponse` (`coordinator/api/dispatch.go`); selection through `registry.Queue`, scoring in [`../routing.md`](../routing.md); payload encryption with `e2e.GenerateSessionKeys` / `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`), model in [`../security/encryption.md`](../security/encryption.md) | 429 on capacity or first-content deadline, 502/503/504 `provider_error`, 503 `model_unavailable` (`preContentTerminal`, `coordinator/api/dispatch_terminal_write.go`; exhausted branch of `dispatchState.run`) |
-| 14 | Relay: stream or assemble the provider's chunks | `handleStreamingResponseWithFirstChunk`, `handleNonStreamingResponseWithFirstChunk`, `handleResponsesStreamingResponseWithFirstChunk` | Terminal SSE `error` event (status already 200) |
+| 14 | Relay: stream or assemble the provider's chunks | `handleStreamingResponseWithFirstChunkAndError`, `handleResponsesStreamingResponseWithFirstChunk` (`coordinator/api/consumer_stream.go`); `handleNonStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_response.go`) | Terminal SSE `error` event (status already 200) |
 | 15 | Settle: charge the account from provider-reported usage, record usage, credit the provider | `handleCompleteAt` (`coordinator/api/provider.go`): `claimSettlement`, `ledger.Charge`, `store.RecordUsageFullWithPublicModel`, `store.CreditProviderAccount`; rules in [`../billing.md`](../billing.md) | — |
 
 Provider-side execution between stages 13 and 14 — the WebSocket `inference_request` → `inference_response_chunk` → `inference_complete` exchange (`coordinator/protocol/messages.go`) and the engine behind it — is described in [`../inference.md`](../inference.md) and [`provider.md`](provider.md). The whole journey as a sequence diagram is in [`../data-flow.md`](../data-flow.md).
@@ -66,8 +66,8 @@ Provider-side execution between stages 13 and 14 — the WebSocket `inference_re
 | 503 `machine_offline` / `model_not_loaded` + `Retry-After` | Self-route: the account's machine is offline or has not loaded the model | `selfRouteUnavailable` (`coordinator/api/self_route.go`) |
 | 502 / 503 / 504 `provider_error` | Dispatch exhausted on a genuine provider fault: the provider's own status is passed through (a typed provider 504 — safety deadline or backpressure timeout — stays 504; an untyped 504 becomes the 429 above) | Exhausted branch of `dispatchState.run` (`coordinator/api/dispatch.go`), `isTypedTimeout504Cause` (`coordinator/api/terminal_cause.go`) |
 | 4xx `invalid_request_error` (`code: model_capability` or `payload_too_large`) | Every provider rejected the request deterministically with the same client error; surfaced once with the provider's status | `terminalClientError` handling in the exhausted branch |
-| 504 `timeout` | Non-streaming only: `inferenceTimeout` elapsed after commit while waiting for the response or its usage | `handleChatCompletions` non-streaming relay (`coordinator/api/consumer.go`) |
-| 200 then `data: {"error": …}` + `[DONE]` | Provider failed after commit; the status line was already sent | `writeChatStreamProviderError` (`coordinator/api/consumer.go`), `writeChatStreamTerminalError` (`coordinator/api/chat_metadata_stream.go`) |
+| 504 `timeout` | Non-streaming only: `inferenceTimeout` elapsed after commit while waiting for the response or its usage | `handleNonStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_response.go`) |
+| 200 then `data: {"error": …}` + `[DONE]` | Provider failed after commit; the status line was already sent | `writeChatStreamProviderError` (`coordinator/api/consumer_stream.go`), `writeChatStreamTerminalError` (`coordinator/api/chat_metadata_stream.go`) |
 | 413 `payload_too_large` | Prompt larger than any eligible provider accepts | `runInferenceAdmission` |
 | 402 | Balance or key budget exhausted; `error.type` and `code` per [`billing.md`](../billing.md#payment-required-responses) | `reserveInferenceBalance` |
 | No response, 499 in logs | Client disconnected before commit | `emitClientGone` |
@@ -76,7 +76,9 @@ Provider-side execution between stages 13 and 14 — the WebSocket `inference_re
 
 | Concern | Files |
 |---|---|
-| Pipeline entry, streaming/non-streaming relay, health/version/balance handlers | `coordinator/api/consumer.go` |
+| Pipeline entry, health/version/balance handlers | `coordinator/api/consumer.go` |
+| Streaming and buffered response orchestration | `coordinator/api/consumer_stream.go`, `coordinator/api/consumer_response.go` |
+| Chat/Responses shaping and SSE event handling | `coordinator/api/chat_response.go`, `coordinator/api/responses_response.go`, `coordinator/api/chat_stream_terminal.go`, `coordinator/api/stream_message.go`, `coordinator/api/sse_events.go`, `coordinator/api/sse_normalize.go` |
 | Prelude parsing, body cap, vision fail-fast | `coordinator/api/inference_preprocess.go` |
 | Request traits and routing-field stripping | `coordinator/api/request_introspection.go` |
 | Balance reservation and capacity admission | `coordinator/api/inference_admission.go` |

@@ -42,6 +42,7 @@ public struct PrefixCacheReadyResult: Sendable, Equatable {
     public let tier: PrefixCacheTier
     public let stageMs: Double?
     public let finalAnchor: PrefixCacheAnchor?
+    public let readyAnchors: [PrefixCacheAnchor]
 
     public init(
         readyTokens: Int,
@@ -49,7 +50,8 @@ public struct PrefixCacheReadyResult: Sendable, Equatable {
         expectedPrefillTokensSaved: Int,
         tier: PrefixCacheTier = .ssd,
         stageMs: Double? = nil,
-        finalAnchor: PrefixCacheAnchor? = nil
+        finalAnchor: PrefixCacheAnchor? = nil,
+        readyAnchors: [PrefixCacheAnchor] = []
     ) {
         self.readyTokens = max(0, readyTokens)
         self.requiredRecomputeTokens = max(0, requiredRecomputeTokens)
@@ -61,6 +63,7 @@ public struct PrefixCacheReadyResult: Sendable, Equatable {
             self.stageMs = nil
         }
         self.finalAnchor = finalAnchor
+        self.readyAnchors = readyAnchors
     }
 }
 
@@ -181,14 +184,28 @@ struct RemotePrefixCacheContext: Sendable, Equatable {
 }
 
 enum PrefixCacheReceiptEmitter {
+    typealias Callbacks = (
+        lookup: (@Sendable (PrefixCacheLookupResult) -> Void)?,
+        ready: (@Sendable (PrefixCacheReadyResult) -> Void)?
+    )
+
+    /// A loaded complete-checkpoint slot cannot translate exact endpoints into
+    /// the old count-only contract. Settle its legacy attempt cold before any
+    /// engine lookup, then retire both callbacks. V2 uses its separate echo gate.
+    static func suppressLegacyCheckpointReceipts(
+        protocolVersion: Int?, callbacks: inout Callbacks,
+        finalizer: PrefixCacheLookupReceiptFinalizer
+    ) {
+        guard protocolVersion != 2 else { return }
+        finalizer.finalize(failure: .policy, tier: .ssd)
+        callbacks = (nil, nil)
+    }
+
     static func callbacks(
         requestID: String,
         nonce: String?,
         send: SendHandle
-    ) -> (
-        lookup: (@Sendable (PrefixCacheLookupResult) -> Void)?,
-        ready: (@Sendable (PrefixCacheReadyResult) -> Void)?
-    ) {
+    ) -> Callbacks {
         guard let nonce else { return (nil, nil) }
         let lookup: @Sendable (PrefixCacheLookupResult) -> Void = { result in
             let message = OutboundMessage.prefixCacheLookup(

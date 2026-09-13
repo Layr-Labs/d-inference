@@ -42,6 +42,7 @@ type Store interface {
 	APIKeyStore
 	UsageStore
 	TelemetryStore
+	RequestOutcomeStore
 	LedgerStore
 	BillingStore
 	ModelRegistryStore
@@ -234,6 +235,24 @@ type InferenceRouteOutcome struct {
 	// is loud rather than silent. json:"-" keeps it out of every API payload and
 	// neither store impl persists it.
 	InvalidTTFT bool `json:"-"`
+
+	// QueueExit is a transient (never-persisted) marker on the terminal outcome
+	// of a request that left the coordinator queue without a provider attempt
+	// being dispatched (client gone, queue_deadline, queue_timeout,
+	// ttft_too_slow, tool-constraint unavailable). The route-outcome funnel
+	// counts such an exit on inference.queue_outcome instead of
+	// inference.attempt_outcome, so the per-model attempt denominator only
+	// counts attempts a provider actually received.
+	QueueExit bool `json:"-"`
+}
+
+// InferenceRouteOutcomeUpdate is one outcome update addressed to a route row,
+// used by the batched UpdateInferenceRouteOutcomes path. It carries exactly the
+// arguments of UpdateInferenceRouteOutcome; Outcome nil is skipped.
+type InferenceRouteOutcomeUpdate struct {
+	RequestID string
+	Attempt   int
+	Outcome   *InferenceRouteOutcome
 }
 
 // RejectionRecord captures a single rejected inbound inference request (4xx/5xx)
@@ -629,18 +648,19 @@ type ModelRegistryEntry struct {
 
 // ModelVersion is an uploaded manifest version for a registered model.
 type ModelVersion struct {
-	ID              int64          `json:"id"`
-	ModelID         string         `json:"model_id"`
-	Version         string         `json:"version"`
-	R2Prefix        string         `json:"r2_prefix"`
-	AggregateSHA256 string         `json:"aggregate_sha256"`
-	TotalSizeBytes  int64          `json:"total_size_bytes"`
-	FileCount       int            `json:"file_count"`
-	Status          string         `json:"status"`
-	UploadedBy      string         `json:"uploaded_by,omitempty"`
-	UploadedAt      time.Time      `json:"uploaded_at"`
-	PromotedAt      *time.Time     `json:"promoted_at,omitempty"`
-	Metadata        map[string]any `json:"metadata"`
+	HuggingFaceArtifact *HuggingFaceArtifact `json:"hugging_face_artifact,omitempty"`
+	ID                  int64                `json:"id"`
+	ModelID             string               `json:"model_id"`
+	Version             string               `json:"version"`
+	R2Prefix            string               `json:"r2_prefix"`
+	AggregateSHA256     string               `json:"aggregate_sha256"`
+	TotalSizeBytes      int64                `json:"total_size_bytes"`
+	FileCount           int                  `json:"file_count"`
+	Status              string               `json:"status"`
+	UploadedBy          string               `json:"uploaded_by,omitempty"`
+	UploadedAt          time.Time            `json:"uploaded_at"`
+	PromotedAt          *time.Time           `json:"promoted_at,omitempty"`
+	Metadata            map[string]any       `json:"metadata"`
 }
 
 // ModelVersionFile is one file in a model version manifest.
@@ -962,16 +982,18 @@ type ReputationRecord struct {
 //
 // SECURITY: the row is written ONLY after a full, verified code-identity
 // round-trip; it is never created from an unverified heartbeat token. On read,
-// the reuse decision still re-applies the version gate and freshness window, so a
-// persisted row can only ever let the coordinator skip a redundant push — never
-// extend or fabricate trust.
+// reuse still checks exact identity and either proof freshness or coordinator-
+// observed same-process continuity. Coverage never changes AttestedAt or grants
+// trust: a fresh encrypted process-possession challenge is always required.
 type CodeAttestation struct {
-	SEPubKey      string    `json:"se_pubkey"`       // base64 Secure Enclave P-256 public key (bound at registration)
-	Version       string    `json:"version"`         // provider binary version that attested
-	AttestedAt    time.Time `json:"attested_at"`     // instant of the successful round-trip
-	APNsToken     string    `json:"apns_token"`      // APNs token the proof was bound to; empty legacy rows require a fresh real push.
-	NodePublicKey string    `json:"node_public_key"` // registration X25519 process key; protected-capability reuse requires exact match
-	BinaryHash    string    `json:"binary_hash"`     // SE-attested binary identity (SHA-256 hex) the proof was earned under; empty legacy rows never authorize a release-transition resume
+	// Coordinator-observed continuity of this exact verified application process.
+	ContinuousCoverageUntil *time.Time `json:"continuous_coverage_until,omitempty"`
+	SEPubKey                string     `json:"se_pubkey"`       // base64 Secure Enclave P-256 public key (bound at registration)
+	Version                 string     `json:"version"`         // provider binary version that attested
+	AttestedAt              time.Time  `json:"attested_at"`     // instant of the successful round-trip
+	APNsToken               string     `json:"apns_token"`      // APNs token the proof was bound to; empty legacy rows require a fresh real push.
+	NodePublicKey           string     `json:"node_public_key"` // registration X25519 process key; protected-capability reuse requires exact match
+	BinaryHash              string     `json:"binary_hash"`     // SE-attested binary identity (SHA-256 hex) the proof was earned under; empty legacy rows never authorize a release-transition resume
 }
 
 // CodeAttestPushBudget is durable APNs admission metadata, not evidence. It

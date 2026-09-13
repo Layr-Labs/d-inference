@@ -16,27 +16,30 @@ import (
 // fields are nullable columns, every other field is NOT NULL with a zero
 // default, so a value of 0/""/false round-trips as itself and nil as NULL.
 type RequestProfileRecord struct {
-	CoordRequestID       string `json:"coord_request_id"`
-	RequestID            string `json:"request_id"` // attempt UUID (joins inference_routes)
-	Attempt              int    `json:"attempt"`
-	BackupOf             string `json:"backup_of,omitempty"`
-	Winning              bool   `json:"winning"`
-	Endpoint             string `json:"endpoint"` // mux pattern
-	Stream               bool   `json:"stream"`
-	Model                string `json:"model"`
-	PublicModel          string `json:"public_model"`
-	ProviderID           string `json:"provider_id"`
-	ProviderVersion      string `json:"provider_version"`
-	ChipFamily           string `json:"chip_family"`
-	KVBackend            string `json:"kv_backend"`
-	FinalStatus          string `json:"final_status"`
-	ErrorReason          string `json:"error_reason"`
-	TerminalCause        string `json:"terminal_cause"`
-	ClientOutcome        string `json:"client_outcome"`
-	ProviderOutcome      string `json:"provider_outcome"`
-	ClientGonePhase      string `json:"client_gone_phase"`
-	FirstContentBudgetMs int    `json:"first_content_budget_ms"`
-	AdmissionMode        string `json:"admission_mode"`
+	CoordRequestID           string   `json:"coord_request_id"`
+	RequestID                string   `json:"request_id"` // attempt UUID (joins inference_routes)
+	Attempt                  int      `json:"attempt"`
+	BackupOf                 string   `json:"backup_of,omitempty"`
+	Winning                  bool     `json:"winning"`
+	Endpoint                 string   `json:"endpoint"` // mux pattern
+	Stream                   bool     `json:"stream"`
+	Model                    string   `json:"model"`
+	PublicModel              string   `json:"public_model"`
+	ProviderID               string   `json:"provider_id"`
+	ProviderVersion          string   `json:"provider_version"`
+	ChipFamily               string   `json:"chip_family"`
+	KVBackend                string   `json:"kv_backend"`
+	FinalStatus              string   `json:"final_status"`
+	ErrorReason              string   `json:"error_reason"`
+	TerminalCause            string   `json:"terminal_cause"`
+	ClientOutcome            string   `json:"client_outcome"`
+	ProviderOutcome          string   `json:"provider_outcome"`
+	ClientGonePhase          string   `json:"client_gone_phase"`
+	FirstContentBudgetMs     int      `json:"first_content_budget_ms"`
+	AdmissionMode            string   `json:"admission_mode"`
+	PredictiveBypass         string   `json:"predictive_bypass"`
+	ReservationTTFTCeilingMs *float64 `json:"reservation_ttft_ceiling_ms"`
+	DispatchBudgetMs         *int64   `json:"dispatch_budget_ms"`
 	// Request shape as the router saw it (the estimate, not the tokenizer's
 	// count): what routingsim replays an arrival from.
 	EstimatedPromptTokens int       `json:"estimated_prompt_tokens"`
@@ -269,7 +272,7 @@ var requestProfileColumns = []string{
 	"coord_request_id", "request_id", "attempt", "backup_of", "winning", "endpoint", "stream",
 	"model", "public_model", "provider_id", "provider_version", "chip_family", "kv_backend",
 	"final_status", "error_reason", "terminal_cause", "client_outcome", "provider_outcome", "client_gone_phase",
-	"first_content_budget_ms", "admission_mode",
+	"first_content_budget_ms", "admission_mode", "predictive_bypass", "reservation_ttft_ceiling_ms", "dispatch_budget_ms",
 	"estimated_prompt_tokens", "requested_max_tokens", "requires_vision", "has_tools", "received_at",
 
 	"auth_done_us", "ratelimit_done_us", "sealed_open_us", "handler_entry_us", "parsed_us", "reserved_us", "media_fetched_us",
@@ -316,7 +319,7 @@ func requestProfileValues(r *RequestProfileRecord, createdAt time.Time) []any {
 		r.CoordRequestID, r.RequestID, r.Attempt, r.BackupOf, r.Winning, r.Endpoint, r.Stream,
 		r.Model, r.PublicModel, r.ProviderID, r.ProviderVersion, r.ChipFamily, r.KVBackend,
 		r.FinalStatus, r.ErrorReason, r.TerminalCause, r.ClientOutcome, r.ProviderOutcome, r.ClientGonePhase,
-		r.FirstContentBudgetMs, r.AdmissionMode,
+		r.FirstContentBudgetMs, r.AdmissionMode, r.PredictiveBypass, r.ReservationTTFTCeilingMs, r.DispatchBudgetMs,
 		r.EstimatedPromptTokens, r.RequestedMaxTokens, r.RequiresVision, r.HasTools, r.ReceivedAt,
 
 		r.AuthDoneUS, r.RatelimitDoneUS, r.SealedOpenUS, r.HandlerEntryUS, r.ParsedUS, r.ReservedUS, r.MediaFetchedUS,
@@ -356,7 +359,7 @@ func requestProfileScanTargets(r *RequestProfileRecord, gate, candidates, provid
 		&r.CoordRequestID, &r.RequestID, &r.Attempt, &r.BackupOf, &r.Winning, &r.Endpoint, &r.Stream,
 		&r.Model, &r.PublicModel, &r.ProviderID, &r.ProviderVersion, &r.ChipFamily, &r.KVBackend,
 		&r.FinalStatus, &r.ErrorReason, &r.TerminalCause, &r.ClientOutcome, &r.ProviderOutcome, &r.ClientGonePhase,
-		&r.FirstContentBudgetMs, &r.AdmissionMode,
+		&r.FirstContentBudgetMs, &r.AdmissionMode, &r.PredictiveBypass, &r.ReservationTTFTCeilingMs, &r.DispatchBudgetMs,
 		&r.EstimatedPromptTokens, &r.RequestedMaxTokens, &r.RequiresVision, &r.HasTools, &r.ReceivedAt,
 
 		&r.AuthDoneUS, &r.RatelimitDoneUS, &r.SealedOpenUS, &r.HandlerEntryUS, &r.ParsedUS, &r.ReservedUS, &r.MediaFetchedUS,

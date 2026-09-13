@@ -250,6 +250,7 @@ public struct InferenceProfile: Codable, Sendable, Equatable {
 
     // Engine sub-object (slice 3)
     public var engine: EngineProfile?
+    public var deadlineDecision: DeadlineDecisionProfile?
 
     enum CodingKeys: String, CodingKey {
         case schema
@@ -308,6 +309,7 @@ public struct InferenceProfile: Codable, Sendable, Equatable {
         case thermalState = "thermal_state"
         case cancelStage = "cancel_stage"
         case engine
+        case deadlineDecision = "deadline_decision"
     }
 
     public init(schema: Int? = InferenceProfile.currentSchema, wallMs: Int64? = nil) {
@@ -381,6 +383,7 @@ public struct InferenceProfile: Codable, Sendable, Equatable {
         p.mlxActiveBytesAtFinish = b(p.mlxActiveBytesAtFinish)
         p.mlxPeakBytes = b(p.mlxPeakBytes)
         p.engine = p.engine?.saturatedToWireRanges()
+        p.deadlineDecision = p.deadlineDecision?.saturatedToWireRanges()
         return p
     }
 }
@@ -509,6 +512,7 @@ public struct CapacityTelemetry: Codable, Sendable, Equatable {
     public var inAdmission: Int64?
     /// Detached inference tasks registered (`inflightTasks`).
     public var inflightTasks: Int64?
+    public var processMemory: ProcessMemoryTelemetry?
 
     enum CodingKeys: String, CodingKey {
         case lowPowerMode = "low_power_mode"
@@ -516,6 +520,7 @@ public struct CapacityTelemetry: Codable, Sendable, Equatable {
         case mlxNumResources = "mlx_num_resources"
         case inAdmission = "in_admission"
         case inflightTasks = "inflight_tasks"
+        case processMemory = "process_memory"
     }
 
     public init(
@@ -523,12 +528,14 @@ public struct CapacityTelemetry: Codable, Sendable, Equatable {
         memoryPressureLevel: MemoryPressureLevelWire? = nil,
         mlxNumResources: Int64? = nil,
         inAdmission: Int64? = nil,
-        inflightTasks: Int64? = nil
+        inflightTasks: Int64? = nil,
+        processMemory: ProcessMemoryTelemetry? = nil
     ) {
         self.lowPowerMode = lowPowerMode
         self.memoryPressureLevel = memoryPressureLevel
         self.mlxNumResources = mlxNumResources
         self.inAdmission = inAdmission
         self.inflightTasks = inflightTasks
+        self.processMemory = processMemory
     }
 }

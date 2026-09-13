@@ -1,0 +1,394 @@
+{
+  "status": "QWEN_B2_B4_STRUCTURAL_AND_BOUNDED_SEMANTIC_ACCEPTANCE",
+  "cells": [
+    {
+      "cell": "qwen35-retained-b2-r1-contiguous-cache-off",
+      "report_sha256": "b10ec7ba9b4301662a475fceb0e37c140bb64276108a5c2229611684da7cd882",
+      "responses": 4,
+      "completion_tokens": [
+        79,
+        79,
+        79,
+        79
+      ],
+      "all_stop": true,
+      "repeat_hits": 0,
+      "saved_prefix_tokens": [
+        0,
+        0
+      ],
+      "ssd_bytes_read_total_including_controls": 0
+    },
+    {
+      "cell": "qwen35-retained-b2-r1-paged-cache-off",
+      "report_sha256": "6352baca9333cf8523d322c688d03c41fb8bd6c8d43c9eacdf26a4d12939909f",
+      "responses": 4,
+      "completion_tokens": [
+        79,
+        78,
+        79,
+        78
+      ],
+      "all_stop": true,
+      "repeat_hits": 0,
+      "saved_prefix_tokens": [
+        0,
+        0
+      ],
+      "ssd_bytes_read_total_including_controls": 0
+    },
+    {
+      "cell": "qwen35-retained-b2-r1-paged-cache-on",
+      "report_sha256": "463fa5f4cb0e602ffc651162f0844131d01d4117988e0c0f4be09c22e0ba6b02",
+      "responses": 4,
+      "completion_tokens": [
+        79,
+        78,
+        79,
+        78
+      ],
+      "all_stop": true,
+      "repeat_hits": 2,
+      "saved_prefix_tokens": [
+        5120,
+        5120
+      ],
+      "ssd_bytes_read_total_including_controls": 876072392
+    },
+    {
+      "cell": "qwen35-retained-b4-r1-contiguous-cache-off",
+      "report_sha256": "275c353abe66c5d7fbf80d6489125b888f648699d3384ed78f4e9ef3b2d07629",
+      "responses": 8,
+      "completion_tokens": [
+        79,
+        79,
+        79,
+        79,
+        79,
+        79,
+        79,
+        79
+      ],
+      "all_stop": true,
+      "repeat_hits": 0,
+      "saved_prefix_tokens": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "ssd_bytes_read_total_including_controls": 0
+    },
+    {
+      "cell": "qwen35-retained-b4-r1-paged-cache-off",
+      "report_sha256": "52e95cf91d1b3ef38ea66d13056bafe27c9888c60cee862b552cd31b74147c4f",
+      "responses": 8,
+      "completion_tokens": [
+        79,
+        78,
+        78,
+        78,
+        79,
+        78,
+        78,
+        78
+      ],
+      "all_stop": true,
+      "repeat_hits": 0,
+      "saved_prefix_tokens": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "ssd_bytes_read_total_including_controls": 0
+    },
+    {
+      "cell": "qwen35-retained-b4-r1-paged-cache-on",
+      "report_sha256": "f497740e215c078bd132df00d4626af105b76aa61b1dd5061932e52d2876b1ab",
+      "responses": 8,
+      "completion_tokens": [
+        79,
+        78,
+        78,
+        78,
+        79,
+        78,
+        78,
+        78
+      ],
+      "all_stop": true,
+      "repeat_hits": 4,
+      "saved_prefix_tokens": [
+        5120,
+        5120,
+        5120,
+        5120
+      ],
+      "ssd_bytes_read_total_including_controls": 1536584598
+    },
+    {
+      "cell": "qwen36-retained-b2-r1-contiguous-cache-off",
+      "report_sha256": "61aff1b1bb67816e3d5b627cae895dc7313dce2b3457721aa6dc1cdc6fa35dcf",
+      "responses": 4,
+      "completion_tokens": [
+        78,
+        82,
+        78,
+        82
+      ],
+      "all_stop": true,
+      "repeat_hits": 0,
+      "saved_prefix_tokens": [
+        0,
+        0
+      ],
+      "ssd_bytes_read_total_including_controls": 0
+    },
+    {
+      "cell": "qwen36-retained-b2-r1-paged-cache-off",
+      "report_sha256": "bd982deace794cd6880cbeb2e6497ddeb8a2c51c26ce6a731d3550f07268e4ad",
+      "responses": 4,
+      "completion_tokens": [
+        83,
+        78,
+        83,
+        78
+      ],
+      "all_stop": true,
+      "repeat_hits": 0,
+      "saved_prefix_tokens": [
+        0,
+        0
+      ],
+      "ssd_bytes_read_total_including_controls": 0
+    },
+    {
+      "cell": "qwen36-retained-b2-r1-paged-cache-on",
+      "report_sha256": "e22850c0017cb51b463178dcf19b629503afe5228e5f8ce9b84a8364402cacb1",
+      "responses": 4,
+      "completion_tokens": [
+        83,
+        78,
+        82,
+        78
+      ],
+      "all_stop": true,
+      "repeat_hits": 2,
+      "saved_prefix_tokens": [
+        5120,
+        5120
+      ],
+      "ssd_bytes_read_total_including_controls": 876072392
+    },
+    {
+      "cell": "qwen36-retained-b4-r1-contiguous-cache-off",
+      "report_sha256": "b5909874d065e7128fac91f6fad886aeace549b97074f677504f404fc2a0cd22",
+      "responses": 8,
+      "completion_tokens": [
+        78,
+        82,
+        82,
+        82,
+        78,
+        82,
+        82,
+        82
+      ],
+      "all_stop": true,
+      "repeat_hits": 0,
+      "saved_prefix_tokens": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "ssd_bytes_read_total_including_controls": 0
+    },
+    {
+      "cell": "qwen36-retained-b4-r1-paged-cache-off",
+      "report_sha256": "9617fe022e69b907d07ad319d5a5efb4cc1eb7110f29e8dffd8c9c2e8fc6d292",
+      "responses": 8,
+      "completion_tokens": [
+        83,
+        78,
+        78,
+        78,
+        83,
+        78,
+        78,
+        78
+      ],
+      "all_stop": true,
+      "repeat_hits": 0,
+      "saved_prefix_tokens": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "ssd_bytes_read_total_including_controls": 0
+    },
+    {
+      "cell": "qwen36-retained-b4-r1-paged-cache-on",
+      "report_sha256": "99d1f8174034e56960355bf59bd89bb70dd96ccaf3bdcc351428b50e5e8412bb",
+      "responses": 8,
+      "completion_tokens": [
+        78,
+        83,
+        78,
+        78,
+        78,
+        82,
+        78,
+        78
+      ],
+      "all_stop": true,
+      "repeat_hits": 4,
+      "saved_prefix_tokens": [
+        5120,
+        5120,
+        5120,
+        5120
+      ],
+      "ssd_bytes_read_total_including_controls": 1536584598
+    }
+  ],
+  "all12_actual_forward_widths_verified": true,
+  "all8_structural_comparisons_pass": true,
+  "generation_comparison_policy": "record",
+  "exact_generated_tokens_not_universal_gate": true,
+  "semantic_review": {
+    "reviewer": "root",
+    "unique_main_response_texts": 6,
+    "main_responses": 72,
+    "outcome": "All six unique summaries preserve proposed infrastructure work and council request for costs/schedules/downstream risk. Variants differ in wording without a material change of task answer.",
+    "response_groups": [
+      {
+        "text": "Engineers have proposed a three-part infrastructure plan involving staged upgrades to pumping stations, maintenance of canals, and the implementation of acoustic leak detection systems. This work aims to address rising agricultural demand and ensure system efficiency following the recovery of reservoir levels from spring rains. The council has subsequently requested detailed cost estimates, project schedules, and a specific assessment of risks to downstream users during the construction phase.<|im_end|>",
+        "sha256": "b99513eed12164aaea4786a0221048e0954d147cfa60a10aa33968cfb5a6fdf8",
+        "rows": [
+          "qwen35-retained-b2-r1-contiguous-cache-off/long-first-b0",
+          "qwen35-retained-b2-r1-contiguous-cache-off/long-first-b1",
+          "qwen35-retained-b2-r1-contiguous-cache-off/long-repeat-b0",
+          "qwen35-retained-b2-r1-contiguous-cache-off/long-repeat-b1",
+          "qwen35-retained-b2-r1-paged-cache-off/long-first-b0",
+          "qwen35-retained-b2-r1-paged-cache-off/long-repeat-b0",
+          "qwen35-retained-b2-r1-paged-cache-on/long-first-b0",
+          "qwen35-retained-b2-r1-paged-cache-on/long-repeat-b0",
+          "qwen35-retained-b4-r1-contiguous-cache-off/long-first-b0",
+          "qwen35-retained-b4-r1-contiguous-cache-off/long-first-b1",
+          "qwen35-retained-b4-r1-contiguous-cache-off/long-first-b2",
+          "qwen35-retained-b4-r1-contiguous-cache-off/long-first-b3",
+          "qwen35-retained-b4-r1-contiguous-cache-off/long-repeat-b0",
+          "qwen35-retained-b4-r1-contiguous-cache-off/long-repeat-b1",
+          "qwen35-retained-b4-r1-contiguous-cache-off/long-repeat-b2",
+          "qwen35-retained-b4-r1-contiguous-cache-off/long-repeat-b3",
+          "qwen35-retained-b4-r1-paged-cache-off/long-first-b0",
+          "qwen35-retained-b4-r1-paged-cache-off/long-repeat-b0",
+          "qwen35-retained-b4-r1-paged-cache-on/long-first-b0",
+          "qwen35-retained-b4-r1-paged-cache-on/long-repeat-b0"
+        ]
+      },
+      {
+        "text": "Engineers have proposed a three-part infrastructure plan involving staged upgrades to pumping stations, maintenance of canals, and the implementation of acoustic leak detection systems. This work aims to address rising agricultural demand and ensure system efficiency following the recovery of reservoir levels from spring rains. The council has subsequently requested detailed cost estimates, project schedules, and an assessment of risks to downstream users before proceeding with construction.<|im_end|>",
+        "sha256": "71edb701bab81b30eb772c1d54bd07b5daaeec76cc86e8bfc388c5d733a6a72a",
+        "rows": [
+          "qwen35-retained-b2-r1-paged-cache-off/long-first-b1",
+          "qwen35-retained-b2-r1-paged-cache-off/long-repeat-b1",
+          "qwen35-retained-b2-r1-paged-cache-on/long-first-b1",
+          "qwen35-retained-b2-r1-paged-cache-on/long-repeat-b1",
+          "qwen35-retained-b4-r1-paged-cache-off/long-first-b1",
+          "qwen35-retained-b4-r1-paged-cache-off/long-first-b2",
+          "qwen35-retained-b4-r1-paged-cache-off/long-first-b3",
+          "qwen35-retained-b4-r1-paged-cache-off/long-repeat-b1",
+          "qwen35-retained-b4-r1-paged-cache-off/long-repeat-b2",
+          "qwen35-retained-b4-r1-paged-cache-off/long-repeat-b3",
+          "qwen35-retained-b4-r1-paged-cache-on/long-first-b1",
+          "qwen35-retained-b4-r1-paged-cache-on/long-first-b2",
+          "qwen35-retained-b4-r1-paged-cache-on/long-first-b3",
+          "qwen35-retained-b4-r1-paged-cache-on/long-repeat-b1",
+          "qwen35-retained-b4-r1-paged-cache-on/long-repeat-b2",
+          "qwen35-retained-b4-r1-paged-cache-on/long-repeat-b3"
+        ]
+      },
+      {
+        "text": "Engineers have proposed a comprehensive maintenance and upgrade plan for the regional water infrastructure, which includes staged pumping station upgrades, canal maintenance, and the implementation of acoustic leak detection. This proposal was developed in response to recovering reservoir levels following spring rains and a concurrent rise in agricultural demand. The council has requested detailed costs, schedules, and a risk assessment for downstream users before proceeding with these improvements.<|im_end|>",
+        "sha256": "2e6596dbfc40d79608a138c991307bf0158c4e0dc1e97a19f2c269f2c79b1d56",
+        "rows": [
+          "qwen36-retained-b2-r1-contiguous-cache-off/long-first-b0",
+          "qwen36-retained-b2-r1-contiguous-cache-off/long-repeat-b0",
+          "qwen36-retained-b4-r1-contiguous-cache-off/long-first-b0",
+          "qwen36-retained-b4-r1-contiguous-cache-off/long-repeat-b0"
+        ]
+      },
+      {
+        "text": "Engineers have proposed a comprehensive maintenance and upgrade plan for regional water infrastructure, which includes staged pumping station upgrades, canal maintenance, and the implementation of acoustic leak detection. This proposal was developed in response to recovering reservoir levels following spring rains and a concurrent rise in agricultural water demand. The council has subsequently requested detailed information regarding the project's costs, schedules, and potential risks to downstream users during the construction phase.<|im_end|>",
+        "sha256": "7cbcb1a579c460a028daf10228b6e2a8e066e2fc9088c150bc489b18f8438cf3",
+        "rows": [
+          "qwen36-retained-b2-r1-contiguous-cache-off/long-first-b1",
+          "qwen36-retained-b2-r1-contiguous-cache-off/long-repeat-b1",
+          "qwen36-retained-b2-r1-paged-cache-on/long-repeat-b0",
+          "qwen36-retained-b4-r1-contiguous-cache-off/long-first-b1",
+          "qwen36-retained-b4-r1-contiguous-cache-off/long-first-b2",
+          "qwen36-retained-b4-r1-contiguous-cache-off/long-first-b3",
+          "qwen36-retained-b4-r1-contiguous-cache-off/long-repeat-b1",
+          "qwen36-retained-b4-r1-contiguous-cache-off/long-repeat-b2",
+          "qwen36-retained-b4-r1-contiguous-cache-off/long-repeat-b3",
+          "qwen36-retained-b4-r1-paged-cache-on/long-repeat-b1"
+        ]
+      },
+      {
+        "text": "Engineers have proposed a comprehensive maintenance and upgrade plan for the regional water infrastructure, which includes staged pumping station upgrades, canal maintenance, and the implementation of acoustic leak detection. This proposal was developed in response to recovering reservoir levels following spring rains and a concurrent rise in agricultural water demand. The council has subsequently requested detailed costs, schedules, and a risk assessment for downstream users to evaluate the impact of these construction activities.<|im_end|>",
+        "sha256": "5bf10fa7df410e3843061038ec3a99619574c1bee4c385ff246b0f1d01f3c645",
+        "rows": [
+          "qwen36-retained-b2-r1-paged-cache-off/long-first-b0",
+          "qwen36-retained-b2-r1-paged-cache-off/long-repeat-b0",
+          "qwen36-retained-b2-r1-paged-cache-on/long-first-b0",
+          "qwen36-retained-b4-r1-paged-cache-off/long-first-b0",
+          "qwen36-retained-b4-r1-paged-cache-off/long-repeat-b0",
+          "qwen36-retained-b4-r1-paged-cache-on/long-first-b1"
+        ]
+      },
+      {
+        "text": "Engineers have proposed a comprehensive maintenance and upgrade plan for regional water infrastructure, which includes staged pumping station upgrades, canal maintenance, and the implementation of acoustic leak detection. This proposal was developed in response to recovering reservoir levels following spring rains and a concurrent rise in agricultural water demand. The council has requested detailed costs, schedules, and a risk assessment for downstream users before proceeding with these improvements.<|im_end|>",
+        "sha256": "56e3427150a37d83c457490da503776232076b52280275096a75b827103d5d8b",
+        "rows": [
+          "qwen36-retained-b2-r1-paged-cache-off/long-first-b1",
+          "qwen36-retained-b2-r1-paged-cache-off/long-repeat-b1",
+          "qwen36-retained-b2-r1-paged-cache-on/long-first-b1",
+          "qwen36-retained-b2-r1-paged-cache-on/long-repeat-b1",
+          "qwen36-retained-b4-r1-paged-cache-off/long-first-b1",
+          "qwen36-retained-b4-r1-paged-cache-off/long-first-b2",
+          "qwen36-retained-b4-r1-paged-cache-off/long-first-b3",
+          "qwen36-retained-b4-r1-paged-cache-off/long-repeat-b1",
+          "qwen36-retained-b4-r1-paged-cache-off/long-repeat-b2",
+          "qwen36-retained-b4-r1-paged-cache-off/long-repeat-b3",
+          "qwen36-retained-b4-r1-paged-cache-on/long-first-b0",
+          "qwen36-retained-b4-r1-paged-cache-on/long-first-b2",
+          "qwen36-retained-b4-r1-paged-cache-on/long-first-b3",
+          "qwen36-retained-b4-r1-paged-cache-on/long-repeat-b0",
+          "qwen36-retained-b4-r1-paged-cache-on/long-repeat-b2",
+          "qwen36-retained-b4-r1-paged-cache-on/long-repeat-b3"
+        ]
+      }
+    ]
+  },
+  "original_manifest_sha256": "8ec5de4cd367a08e65226e22e99142a543f4c31bcb7e5f628890e6e356c2eabc",
+  "verified_selected_original_files": 516,
+  "excluded_encrypted_cache_files": 44,
+  "full_remote_archive": {
+    "bytes": 5621727149,
+    "not_downloaded_or_rehashed_by_projection": true,
+    "path": "/Users/gaj/autoresearch/radix-prefix-cache/141-qwen-batches-final2/run/evidence.tar.gz",
+    "sha256_from_original_verified_collection": "379e775a2ebdb7003be1d219db80a0df6572ae4e0d70bb746c0a3143bb39be4a"
+  },
+  "runtime_review_sha256": "0294038647e97e98398c516bb6df6c52914c49c1897726a9fffd00064c2e86ee",
+  "limits": [
+    "One fixed summary workload, not general capability or performance qualification.",
+    "No persistent production-key restart evidence; ephemeral keys used.",
+    "Original strict127 failure retained; new record-mode run is separate.",
+    "Sustained, connected capabilities/routing and final review remain separate."
+  ],
+  "reviewed_unix": 1788744494.3583791
+}

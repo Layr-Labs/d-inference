@@ -60,7 +60,7 @@ struct RequestProfileBuilderTests {
         #expect(second.wallMs == builder.wallMs)
     }
 
-    @Test func fullLifecycleStaysWithinThirtyLockAcquisitions() {
+    @Test func fullLifecycleStaysWithinThirtyTwoLockAcquisitions() {
         // Mirrors the production call sequence site-for-site, including the
         // cancel path and the SSD-abandon reserve retry (worst case).
         let builder = RequestProfileBuilder()
@@ -100,6 +100,21 @@ struct RequestProfileBuilderTests {
             f.set(.partialPrefillCap, 1)
             f.deadlineMode = .projected
         }
+        let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 30_000)
+        builder.beginDeadlineDecision(
+            deadline: deadline,
+            admission: CBv2FirstTokenDeadlineAdmission(
+                deadline: deadline.instant,
+                conservativePrefillTokensPerSecond: 1_000,
+                conservativeDecodeTokensPerSecond: 100),
+            bypassReason: nil)
+        builder.observeDeadlineDecision(
+            .accepted,
+            work: .bounded(
+                work: CBv2FirstTokenScheduledWork(
+                    prefillTokens: 812, decodeTokens: 256, scheduledSteps: 8, mixedSteps: 2),
+                serviceDuration: .milliseconds(3_500)),
+            deadline: deadline)
         builder.update { f, now in
             f.mark(.engineAdmitted, offsetUs: now)
             f.set(.projectedPrefillTokens, 812)
@@ -148,11 +163,13 @@ struct RequestProfileBuilderTests {
         let wire = builder.wireObject()
 
         // The count read itself is one more acquisition.
-        #expect(builder.lockAcquisitionCount <= 30)
+        #expect(builder.lockAcquisitionCount <= 32)
         #expect(wire.tokensAfterCancel == 7)
         #expect(wire.cancelStage == .decode)
         #expect(wire.kvReserveUs != nil)
         #expect(wire.engine == nil)
+        #expect(wire.deadlineDecision?.verdict == .accepted)
+        #expect(wire.deadlineDecision?.projectedPrefillTokens == 812)
     }
 
     @Test func wireObjectWithEveryBuilderFieldEncodesWithin4096Bytes() throws {

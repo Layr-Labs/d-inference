@@ -14,7 +14,7 @@ func hasPendingLoad(r *Registry, providerID string) bool {
 func pendingLoadExpiry(r *Registry, providerID, modelID string) (time.Time, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	exp, ok := r.pendingModelLoads[modelLoadKey(providerID, modelID)]
+	exp, ok := r.pendingModelLoads[modelLoadKey{ProviderID: providerID, ModelID: modelID}]
 	return exp, ok
 }
 
@@ -60,7 +60,7 @@ func TestHasPendingModelLoadMatchesExactUnexpiredCommand(t *testing.T) {
 	}
 
 	r.mu.Lock()
-	r.pendingModelLoads[modelLoadKey("p1", "m1")] = time.Now().Add(-time.Second)
+	r.pendingModelLoads[modelLoadKey{ProviderID: "p1", ModelID: "m1"}] = time.Now().Add(-time.Second)
 	r.mu.Unlock()
 	if r.HasPendingModelLoad("p1", "m1") {
 		t.Fatal("expired command reported as pending")
@@ -203,7 +203,7 @@ func TestDisconnectClearsPendingModelLoad(t *testing.T) {
 		t.Fatal("Disconnect did not clear the provider's pending model load")
 	}
 	r.mu.RLock()
-	_, startedLeft := r.pendingModelLoadStarted[modelLoadKey("p1", "m1")]
+	_, startedLeft := r.pendingModelLoadStarted[modelLoadKey{ProviderID: "p1", ModelID: "m1"}]
 	r.mu.RUnlock()
 	if startedLeft {
 		t.Fatal("Disconnect left a dangling pendingModelLoadStarted entry")

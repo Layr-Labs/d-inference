@@ -6,10 +6,17 @@ import dynamic from "next/dynamic";
 const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID || "";
 const IS_PRIVY_CONFIGURED = PRIVY_APP_ID && PRIVY_APP_ID !== "placeholder";
 
+/** The identity fields consumed by the console; the lazy SDK may provide more. */
+export interface ConsoleUser {
+  id: string;
+  userId?: string;
+  email?: { address: string };
+}
+
 export interface AuthState {
   ready: boolean;
   authenticated: boolean;
-  user: unknown;
+  user: ConsoleUser | null;
   login: () => void;
   logout: () => Promise<void>;
   getAccessToken: () => Promise<string | null>;

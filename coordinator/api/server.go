@@ -53,6 +53,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
+	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
 	"golang.org/x/sync/singleflight"
 )
@@ -157,7 +158,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.8.16"
+var LatestProviderVersion = "0.9.2"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -388,12 +389,6 @@ type Server struct {
 	// Set from CORS_ORIGIN env var. Empty defaults to the production console domain.
 	corsOrigin string
 
-	// storedProviders is a lookup table of persisted provider records, indexed
-	// by serial number and SE public key. When a provider reconnects after a
-	// coordinator restart, this table is checked to restore trust/reputation.
-	// Populated once at startup from the store.
-	storedProviders map[string]*store.ProviderRecord
-
 	// geoResolver resolves provider and consumer request locations from IP
 	// addresses or trusted reverse-proxy headers. Nil when GeoIP is not configured.
 	geoResolver providerGeoResolver
@@ -413,19 +408,18 @@ type Server struct {
 	// and used by internal counters/histograms. Never nil.
 	metrics *Metrics
 
-	// telemetryLimiter throttles telemetry ingestion per submitter.
-	telemetryLimiter *telemetryLimiter
-
 	// readCache memoizes pre-serialized JSON for read-heavy aggregation
 	// endpoints (stats, leaderboard, model catalog, etc.). TTLs are
 	// per-key. Never nil.
 	readCache *ttlCache
-	// statsRefresh owns the stats:v1 readCache entry (stats.go);
+	// statsRefresh owns stats:v1 (stats.go), statsGeographyRefresh owns
+	// stats:geography:v1 (stats_geography.go);
 	// networkTotalsRefresh owns one network_totals:<window> entry per window
-	// (network_totals.go). Both are driven by the refresher machinery in
+	// (network_totals.go). All are driven by the refresher machinery in
 	// cache_refresher.go.
 	summaryWindowsFlights singleflight.Group
 	statsRefresh          cacheRefresher
+	statsGeographyRefresh cacheRefresher
 	networkTotalsRefresh  struct {
 		queryMu sync.Mutex
 		mu      sync.Mutex
@@ -439,7 +433,8 @@ type Server struct {
 
 	// dd is the Datadog integration client for DogStatsD metrics and
 	// Logs API event forwarding. Nil when DD is not configured.
-	dd *datadog.Client
+	dd          *datadog.Client
+	queueGauges queueGaugeState
 
 	// apiKeyCache memoizes ValidateKeyFull results so repeated requests
 	// with the same API key skip the DB round trip. Entries expire after
@@ -499,7 +494,8 @@ type Server struct {
 
 	// profiler owns the per-request profile records and their dedicated sink
 	// (system profiler). Nil on a Server built without NewServer.
-	profiler *profiler
+	profiler        *profiler
+	requestOutcomes *requestOutcomeSink
 	// unknownRequestFrames counts provider frames for requests the coordinator
 	// no longer tracks (zombie streams); exported on the fleet coordinator row.
 	unknownRequestFrames atomic.Int64
@@ -824,7 +820,6 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		mux:                      http.NewServeMux(),
 		knownRuntimeManifest:     &RuntimeManifest{},
 		metrics:                  NewMetrics(),
-		telemetryLimiter:         newTelemetryLimiter(),
 		readCache:                newTTLCache(),
 		geoResolver:              newProviderGeoResolverFromEnv(logger),
 		apiKeyCache:              make(map[string]apiKeyCacheEntry),
@@ -869,13 +864,17 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		s.trustReplayInFlight = make(map[string]struct{})
 	}
 	reg.SetRuntimeCapabilitiesPromotedHook(s.handleRuntimeCapabilitiesPromoted)
+	// The per-identity gate locks that replaced the request-path registry
+	// write lock (registry/gate_state.go) report any acquisition wait above
+	// 1 ms here, tagged by recorder site, so the new locks stay observable.
+	reg.SetGateWaitObserver(func(site string, wait time.Duration) {
+		s.ddHistogram("registry.gate.wait_ms", float64(wait.Microseconds())/1000, []string{"site:" + site})
+	})
 	s.profiler = newProfilerFromEnv(s)
+	s.requestOutcomes = newRequestOutcomeSink(s, defaultTelemetrySinkCapacity)
 	s.registerDefaultGauges()
 	s.routes()
 
-	// Load stored provider records into a lookup table for matching
-	// reconnecting providers to their persisted state.
-	s.storedProviders = reg.LoadStoredProviders()
 	// Apply server configuration from ServerConfig.
 	// TODO(auth): storing admin emails in the server struct is an antipattern.
 	// Move admin verification to an external auth service (Privy or IDP) so that
@@ -944,6 +943,7 @@ func (s *Server) Close() {
 		s.trustCoverageCancel()
 	}
 	s.finalTrustCoverageSweep()
+	s.sweepCodeAttestCoverage()
 	if s.trustReplayCancel != nil {
 		s.trustReplayCancel()
 	}
@@ -957,7 +957,16 @@ func (s *Server) Close() {
 		s.promptArtifacts.Close()
 	}
 	if s.routeTelemetry != nil {
-		s.routeTelemetry.close()
+		// Bounded flush: buffered route rows are written before main's deferred
+		// store Close (registered earlier, so it runs after this) tears down the
+		// pool. A stuck store cannot hold shutdown past the deadline; whatever
+		// is still unwritten then is counted as dropped by the sink.
+		if !s.routeTelemetry.closeAndWait(telemetrySinkShutdownFlush) && s.logger != nil {
+			s.logger.Warn("routing telemetry sink did not finish flushing before the shutdown deadline",
+				"deadline", telemetrySinkShutdownFlush,
+				"dropped_total", s.routeTelemetry.dropped.Load(),
+			)
+		}
 	}
 	s.trustAuthorityMu.Lock()
 	if s.trustAuthority != nil {
@@ -965,6 +974,9 @@ func (s *Server) Close() {
 		s.trustAuthority = nil
 	}
 	s.trustAuthorityMu.Unlock()
+	if s.requestOutcomes != nil {
+		s.requestOutcomes.close()
+	}
 	if s.profiler != nil {
 		s.profiler.close()
 	}
@@ -1289,6 +1301,15 @@ func (s *Server) invalidateCatalogCache() {
 			s.readCache.Invalidate(modelCatalogCacheKey(typeFilter, includeAliases))
 		}
 	}
+	// /v1/models entry memo + list bodies (both include_builds values) and the
+	// OpenRouter feed are derived from the same catalog; drop them too so an
+	// admin alias/registry change is visible on the next request instead of
+	// after their 2s/5s TTLs (which remain the bound for out-of-band DB edits).
+	for _, includeBuilds := range []bool{false, true} {
+		s.readCache.Invalidate(modelEntriesCacheKey(includeBuilds))
+		s.readCache.Invalidate(modelListBodyCacheKey(includeBuilds))
+	}
+	s.readCache.Invalidate(openRouterFeedCacheKey)
 	// stats:v1 is deliberately NOT evicted here: the stats refresher recomputes
 	// it every minute, and evicting it made every concurrent /v1/stats request
 	// rerun the multi-second usage analytics statements.
@@ -2846,10 +2867,13 @@ func (s *Server) routes() {
 	// Wallet balance
 	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
 
+	// A single bank withdrawal experience, with separate payout lifecycles.
+	s.mux.HandleFunc("POST /v1/billing/stripe/quote", s.requirePrivyAuth(s.rateLimitFinancial(s.handleGlobalPayoutQuote)))
+	s.mux.HandleFunc("POST /v1/billing/stripe/global/webhook", s.handleGlobalPayoutWebhook)
 	// Stripe Payouts (Connect Express) — bank/card withdrawals.
-	s.mux.HandleFunc("POST /v1/billing/stripe/onboard", s.requireAuth(s.handleStripeOnboard))
+	s.mux.HandleFunc("POST /v1/billing/stripe/onboard", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeOnboard)))
 	s.mux.HandleFunc("GET /v1/billing/stripe/status", s.requireAuth(s.handleStripeStatus))
-	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requireAuth(s.handleStripeWithdraw))
+	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeWithdraw)))
 	s.mux.HandleFunc("GET /v1/billing/stripe/withdrawals", s.requireAuth(s.handleStripeWithdrawals))
 	// requirePrivyAuth (not requireAuth): both of these are account-management
 	// operations — a leaked inference API key must not be able to detach the
@@ -2973,6 +2997,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/routes", s.handleAdminRoutes)
 	s.mux.HandleFunc("GET /v1/admin/routes/export", s.handleAdminRoutesExport)
 	s.mux.HandleFunc("GET /v1/admin/profiles", s.handleAdminProfiles)
+	s.mux.HandleFunc("GET /v1/admin/request-outcomes", s.handleAdminRequestOutcomes)
 	s.mux.HandleFunc("GET /v1/admin/profiles/export", s.handleAdminProfilesExport)
 	s.mux.HandleFunc("GET /v1/admin/snapshots", s.handleAdminSnapshots)
 	s.mux.HandleFunc("GET /v1/admin/snapshots/export", s.handleAdminSnapshotsExport)
@@ -3025,9 +3050,12 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 				enforced = 1.0
 			}
 			s.ddGauge("attestation.code_enforced", enforced, nil)
-			for model, count := range s.registry.ModelProviderSnapshot() {
+			perModel := s.registry.ModelProviderSnapshot()
+			for model, count := range perModel {
 				s.ddGauge("providers.per_model", float64(count), []string{"model:" + model})
 			}
+			// Per-model queue depth/age (fleet_gauges.go).
+			s.emitPerModelQueueGauges(perModel)
 			for ver, count := range s.registry.ProviderCountByVersion() {
 				s.ddGauge("providers.per_version", float64(count), []string{"version:" + ver})
 			}
@@ -3049,6 +3077,7 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
 			}
 			s.emitExactCacheDDGauges()
+			s.emitStoreCacheGauges()
 			// Network utilization — demand/capacity across the warm-serving and
 			// token-budget axes, plus a per-model breakdown.
 			util := s.registry.NetworkUtilizationSnapshot()
@@ -3125,11 +3154,11 @@ func (s *Server) handleUnimplementedEndpoint(w http.ResponseWriter, r *http.Requ
 // Handler returns the root http.Handler with global middleware applied.
 // Middleware order (outside-in):
 //
-//	cors → recover → logging → mux
+//	cors → request outcome (inference POSTs only) → recover → logging → mux
 //
 // Recover must sit outside logging so a panic during logging doesn't leak.
 func (s *Server) Handler() http.Handler {
-	return s.corsMiddleware(s.recoverMiddleware(s.loggingMiddleware(s.bodyLimitMiddleware(s.mux))))
+	return s.corsMiddleware(s.observeRequestOutcome(s.recoverMiddleware(s.loggingMiddleware(s.bodyLimitMiddleware(s.mux))).ServeHTTP))
 }
 
 // bodyLimitMiddleware caps every request body at maxRequestBodyBytes so an
@@ -3176,6 +3205,7 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 				if recErr, ok := rec.(error); ok && errors.Is(recErr, http.ErrAbortHandler) {
 					panic(rec)
 				}
+				markOutcomePanic(r)
 				stack := string(debug.Stack())
 				s.logger.Error("panic in HTTP handler",
 					"error", fmt.Sprintf("%v", rec),
@@ -3264,6 +3294,7 @@ func (s *Server) invalidateAllAPIKeyCache() {
 // identity is stored in the request context for downstream use.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		setOutcomeStage(r, "auth")
 		token := extractBearerToken(r)
 		if token == "" {
 			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "missing credentials — use Authorization: Bearer <token>"))
@@ -3458,6 +3489,7 @@ func (s *Server) rateLimitWith(getLimiter func() *ratelimit.Limiter, next http.H
 // rejections in dashboards.
 func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		setOutcomeStage(r, "rate_limit")
 		// Per-key RPM override applies to inference (consumer) traffic and is
 		// enforced regardless of whether the account-level limiter is set.
 		if tier == "consumer" {
@@ -3582,10 +3614,10 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), ctxKeyRequestID, reqID)
 		// Profiler correlation id is ALWAYS coordinator-minted (the client-supplied
 		// X-Request-ID above is echoed and logged but never persisted).
-		if s.profilerEnabled() {
+		if requestMetaFromContext(ctx) == nil && (s.profilerEnabled() || inferenceOutcomeEndpoint(r)) {
 			meta := &requestMeta{coordID: reqID, start: start}
-			if r.Header.Get("X-Request-ID") != "" {
-				meta.coordID = newRequestID()
+			if inferenceOutcomeEndpoint(r) || r.Header.Get("X-Request-ID") != "" {
+				meta.coordID = uuid.NewString()
 			}
 			ctx = context.WithValue(ctx, requestMetaKey{}, meta)
 		}

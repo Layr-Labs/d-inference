@@ -34,7 +34,7 @@ export interface GeographyData {
 const MAX_MAP_LOCATIONS = 120;
 const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
 export const formatGeoCount = (value: number) => compact.format(value);
-const validCount = (value: number | undefined) => Number.isFinite(value) ? Math.max(0, value ?? 0) : 0;
+const validCount = (value: number | null | undefined) => Number.isFinite(value) ? Math.max(0, value ?? 0) : 0;
 const normalized = (value: string | undefined) => (value ?? "").trim().toLowerCase();
 
 function locationIdentity(bucket: LocationBucket): string {

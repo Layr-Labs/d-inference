@@ -3,6 +3,8 @@ package registry
 import (
 	"strings"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // Per-provider (node-health) circuit breaker.
@@ -21,7 +23,7 @@ import (
 // target and keeps feeding it (one box failed 99/99 for 15+ minutes in prod).
 //
 // This breaker is keyed by NODE only (across every model and shape), via the
-// stable fault key (faultKeyLocked: serial/SE-key when attestation has bound
+// stable fault key (faultKeyForSession: serial/SE-key when attestation has bound
 // one, the session id otherwise) so its state survives reconnect churn: a
 // node returning faults for ~all requests is sick regardless of cause, so it is
 // quarantined fleet-wide, re-probed after an exponential cooldown, and
@@ -34,8 +36,9 @@ import (
 // with the breaker bypassed (see selectBestCandidateLockedFull) so routing can
 // never be zeroed out — mirroring servability.go's fail-open philosophy.
 //
-// r.mu discipline, opportunistic >1024 map sweep, and the transition-bool
-// return all mirror error_cooldown.go.
+// State lives on the identity's gateState (gate_state.go) under gate.mu; the
+// old opportunistic >1024 map sweep is the periodic gate sweep. The
+// transition-bool return mirrors error_cooldown.go.
 const (
 	// providerBreakerConsecTrip: consecutive FAULT outcomes (no success in
 	// between) that open the breaker. A node failing this many in a row is
@@ -68,6 +71,16 @@ const (
 type providerHealthOutcome struct {
 	ts time.Time
 	ok bool
+	// flush marks a disconnect-flush (502) fault so a version-changed
+	// reconnect can drop exactly those entries (version_reset.go).
+	flush bool
+}
+
+// recordFault appends one FAULT outcome, tagging it as a disconnect flush
+// when it came from the registry's pending-request flush (status 502).
+func (w *providerHealthWindow) recordFault(now time.Time, flush bool) {
+	w.record(false, now)
+	w.outcomes[(w.head+providerHealthRingSize-1)%providerHealthRingSize].flush = flush
 }
 
 // providerHealthWindow is a fixed-size ring of the most recent
@@ -185,46 +198,38 @@ func (w *providerHealthWindow) windowStats(now time.Time, window time.Duration) 
 //   - Fault (COUNTED): 500/502/504 always; a 503 whose message indicates a real
 //     fault, and — by default — any 503 not recognized as a capacity shed.
 //   - Success (ok==true): clears the breaker if it had tripped.
-func (r *Registry) RecordProviderOutcome(providerID string, ok bool, statusCode int, errStr string) (opened bool, closed bool) {
+//
+// State lives on the identity's gate (gate_state.go): keyed by the stable
+// fault key (serial/SE-key when bound, session id otherwise) so it survives
+// reconnect churn — a zombie that bounces its connection between faults must
+// keep accumulating. Only gate.mu is taken; never r.mu.
+func (r *Registry) RecordProviderOutcome(providerID string, ok bool, statusCode int, errStr string, causes ...protocol.CoordinatorInferenceErrorCause) (opened bool, closed bool) {
 	if providerID == "" {
 		return false, false
 	}
-
-	hold := r.lockWrite("breaker")
+	flush := !ok && isDisconnectFlush(statusCode, causes)
+	var source disconnectSource
+	if flush {
+		source = r.captureDisconnectSource(providerID)
+	}
+	hold := r.lockGate(r.gateForSession(providerID), "breaker")
 	defer hold.unlock()
-	now := time.Now()
-	// Key by the stable fault key (serial/SE-key when bound, session id
-	// otherwise) so breaker state survives reconnect churn — a zombie that
-	// bounces its connection between faults must keep accumulating.
-	providerID = r.faultKeyLocked(providerID)
+	g := hold.g
+	if flush && source.supersededBy(g) {
+		return false, false
+	}
 
-	// Opportunistic sweep (mirrors error_cooldown.go): churned identities are
-	// never re-keyed — bound the maps by dropping expired/idle entries once
-	// they grow.
-	if len(r.providerBreakerOpenUntil) > 1024 {
-		for id, until := range r.providerBreakerOpenUntil {
-			if !now.Before(until) {
-				delete(r.providerBreakerOpenUntil, id)
-				delete(r.providerBreakerTrips, id)
-			}
-		}
-	}
-	if len(r.providerOutcomes) > 1024 {
-		for id, w := range r.providerOutcomes {
-			if total, _ := w.windowStats(now, providerBreakerWindow); total == 0 {
-				delete(r.providerOutcomes, id)
-			}
-		}
-	}
+	now := time.Now()
+	defer g.updatedLocked(now)
 
 	// SUCCESS: a served request proves the node is healthy. Record it, reset the
 	// consecutive-fault counter, and CLOSE the breaker (clearing the exponential
 	// backoff) if it had ever tripped — this is the auto-re-admit on recovery.
 	if ok {
-		r.providerHealthWindowLocked(providerID).record(true, now)
-		if _, had := r.providerBreakerOpenUntil[providerID]; had {
-			delete(r.providerBreakerOpenUntil, providerID)
-			delete(r.providerBreakerTrips, providerID)
+		g.healthWindowLocked().record(true, now)
+		if !g.breakerUntil.IsZero() {
+			g.breakerUntil = time.Time{}
+			g.breakerTrips = 0
 			return false, true
 		}
 		return false, false
@@ -236,13 +241,13 @@ func (r *Registry) RecordProviderOutcome(providerID string, ok bool, statusCode 
 	if !providerOutcomeIsFault(statusCode, errStr) {
 		return false, false
 	}
-	w := r.providerHealthWindowLocked(providerID)
-	w.record(false, now)
+	w := g.healthWindowLocked()
+	w.recordFault(now, flush)
 
 	// Already open: the gate is derouting new traffic. In-flight faults are
 	// still recorded above, but must not re-arm until the cooldown elapses
 	// (the half-open probe handles that below).
-	if until, had := r.providerBreakerOpenUntil[providerID]; had && now.Before(until) {
+	if now.Before(g.breakerUntil) {
 		return false, false
 	}
 
@@ -252,7 +257,7 @@ func (r *Registry) RecordProviderOutcome(providerID string, ok bool, statusCode 
 	//     still bad, so re-arm with the next, larger backoff.
 	//   - closed: trip on either the consecutive-fault or the sustained
 	//     fail-rate threshold.
-	trips := r.providerBreakerTrips[providerID]
+	trips := g.breakerTrips
 	halfOpen := trips > 0
 	total, fails := w.windowStats(now, providerBreakerWindow)
 	rateTrip := total >= providerBreakerMinVolume && float64(fails) > providerBreakerFailRate*float64(total)
@@ -260,20 +265,18 @@ func (r *Registry) RecordProviderOutcome(providerID string, ok bool, statusCode 
 		return false, false
 	}
 
-	r.providerBreakerOpenUntil[providerID] = now.Add(providerBreakerBackoff(trips))
-	r.providerBreakerTrips[providerID] = trips + 1
+	g.breakerUntil = now.Add(providerBreakerBackoff(trips))
+	g.breakerTrips = trips + 1
 	return true, false
 }
 
-// providerHealthWindowLocked returns the provider's health ring, creating it on
-// first use. Caller holds r.mu.
-func (r *Registry) providerHealthWindowLocked(providerID string) *providerHealthWindow {
-	w := r.providerOutcomes[providerID]
-	if w == nil {
-		w = &providerHealthWindow{}
-		r.providerOutcomes[providerID] = w
+// healthWindowLocked returns the gate's node-health ring, creating it on first
+// use. Caller holds g.mu.
+func (g *gateState) healthWindowLocked() *providerHealthWindow {
+	if g.outcomes == nil {
+		g.outcomes = &providerHealthWindow{}
 	}
-	return w
+	return g.outcomes
 }
 
 // providerBreakerBackoff returns the cooldown for a provider that has already
@@ -290,24 +293,19 @@ func providerBreakerBackoff(trips int) time.Duration {
 	return cooldown
 }
 
-// providerBreakerOpenLocked reports whether routing should skip this provider
-// because its node-health breaker is OPEN. True iff now is before the open
-// expiry; once now >= expiry it returns false so the next request is allowed
-// through as a half-open probe. READ-ONLY (no lazy delete) so it is safe under
-// r.mu held in either mode — mirrors inferenceErrorCooldownActiveLocked. Caller
-// holds r.mu.
-func (r *Registry) providerBreakerOpenLocked(providerID string, now time.Time) bool {
-	until, ok := r.providerBreakerOpenUntil[r.faultKeyLocked(providerID)]
-	return ok && now.Before(until)
+// breakerOpen reports whether routing should skip this provider because its
+// node-health breaker is OPEN. True iff now is before the open expiry; once
+// now >= expiry it returns false so the next request is allowed through as a
+// half-open probe. Resolves the session's gate; the scan itself reads the
+// cached p.gate atomically (gateState.breakerOpenAt) and never comes here.
+func (r *Registry) breakerOpen(providerID string, now time.Time) bool {
+	return r.lookupGateForSession(providerID).breakerOpenAt(now.UnixNano())
 }
 
 // ProviderBreakerOpen reports whether the per-provider node-health breaker is
-// currently quarantining the provider. Exposed for tests/observability; the
-// routing hot path uses providerBreakerOpenLocked under the already-held r.mu.
+// currently quarantining the provider. Exposed for tests/observability.
 func (r *Registry) ProviderBreakerOpen(providerID string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.providerBreakerOpenLocked(providerID, time.Now())
+	return r.breakerOpen(providerID, time.Now())
 }
 
 // providerOutcomeIsFault classifies a FAILED provider terminal (ok==false) for

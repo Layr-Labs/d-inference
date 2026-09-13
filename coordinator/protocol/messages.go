@@ -87,6 +87,24 @@ const (
 // provider-swift/Sources/ProviderCore/Protocol/Types.swift.
 const ProviderDrainingForUpdate = "provider draining for update"
 
+// HeartbeatStatusDraining is the HeartbeatMessage.Status a provider reports
+// while it refuses new work ahead of a restart/update (the update drain, a
+// shutdown drain). The coordinator skips a draining provider in routing and
+// counts it as transient capacity (429 / queue material, never "no
+// providers"). Additive: older coordinators ignore unknown status strings and
+// older providers never send it. Mirrored in
+// provider-swift/Sources/ProviderCore/Protocol/ (ProviderStatus).
+const HeartbeatStatusDraining = "draining"
+
+// InferenceErrorReasonDraining is the InferenceErrorMessage.ErrorReason a
+// provider attaches (with failure_code "capacity", status 503) to an inference
+// request it refuses BECAUSE it is draining. The coordinator fails the request
+// over without consuming its transient-capacity retry allowance, derates no
+// gray-box capacity state for the pair, and marks the provider draining so
+// the next scan skips it even when the heartbeat status has not caught up.
+// Mirrored in provider-swift/Sources/ProviderCore/Protocol/ (InferenceErrorReason).
+const InferenceErrorReasonDraining = "draining"
+
 // PrefetchModelStatus is the lifecycle state reported by a provider in
 // response to a PrefetchModelMessage. Unlike a load, a prefetch only
 // downloads + verifies the model on disk; it does NOT load weights into
@@ -153,8 +171,12 @@ type ModelInfo struct {
 	ToolConstraintTemplateHash string `json:"tool_constraint_template_hash,omitempty"`
 }
 
+const PrefixCacheReadyBoundaryCheckpoint = "checkpoint"
+
 // PrefixCacheV2Capability binds one live model slot to the exact artifacts and
-// SSD cache generation for which protocol-v2 evidence is valid.
+// cache generation for which protocol-v2 evidence is valid. The containing
+// snapshot names the tier: prefix_cache_v2_models is durable SSD, while the
+// additive prefix_cache_memory_models snapshot describes ephemeral resident KV.
 type PrefixCacheV2Capability struct {
 	ModelID            string `json:"model_id"`
 	ModelAggregateHash string `json:"model_aggregate_hash"`
@@ -164,6 +186,9 @@ type PrefixCacheV2Capability struct {
 	CacheEpoch         string `json:"cache_epoch"`
 	Enabled            bool   `json:"enabled"`
 	Ready              bool   `json:"ready"`
+	// Empty retains legacy durable coverage through the prompt floor.
+	// Checkpoint mode advertises only explicitly committed input endpoints.
+	ReadyBoundaryMode string `json:"ready_boundary_mode,omitempty"`
 }
 
 // PrefixCacheModelStatus is a content-free status for one concrete loaded
@@ -207,6 +232,7 @@ type RegisterMessage struct {
 	PrivateOnly                 bool                               `json:"private_only,omitempty"`              // when true, this machine serves only its owner's self-route requests, never the public fleet
 	PrefixCacheProtocol         int                                `json:"prefix_cache_protocol,omitempty"`     // provider-confirmed prefix-cache protocol version
 	PrefixCacheV2Models         []PrefixCacheV2Capability          `json:"prefix_cache_v2_models,omitempty"`
+	PrefixCacheMemoryModels     []PrefixCacheV2Capability          `json:"prefix_cache_memory_models,omitempty"`
 	PrefixCacheStatuses         *[]PrefixCacheModelStatus          `json:"prefix_cache_statuses,omitempty"`
 	PrefixCacheDonationOutcomes *[]PrefixCacheDonationOutcomeCount `json:"prefix_cache_donation_outcomes,omitempty"`
 	ToolConstraintProtocol      int                                `json:"tool_constraint_protocol,omitempty"` // inference-time forced-tool enforcement protocol version
@@ -253,8 +279,9 @@ type HeartbeatMessage struct {
 	BackendCapacity *BackendCapacity `json:"backend_capacity,omitempty"` // live backend capacity (nil for old providers)
 	// Pointer preserves the distinction between an old provider that omitted
 	// v2 capabilities and a v2 provider authoritatively clearing its live set.
-	PrefixCacheProtocol int                        `json:"prefix_cache_protocol,omitempty"`
-	PrefixCacheV2Models *[]PrefixCacheV2Capability `json:"prefix_cache_v2_models,omitempty"`
+	PrefixCacheProtocol     int                        `json:"prefix_cache_protocol,omitempty"`
+	PrefixCacheV2Models     *[]PrefixCacheV2Capability `json:"prefix_cache_v2_models,omitempty"`
+	PrefixCacheMemoryModels *[]PrefixCacheV2Capability `json:"prefix_cache_memory_models,omitempty"`
 	// Optional pointers preserve old-provider omission versus an authoritative
 	// empty snapshot/counter set from a current provider.
 	PrefixCacheStatuses         *[]PrefixCacheModelStatus          `json:"prefix_cache_statuses,omitempty"`
@@ -385,7 +412,9 @@ type BackendSlotCapacity struct {
 	// omission and an empty object stay distinct. Clamped by
 	// registry.clampBackendCapacity, cloned by canonicalHeartbeatModelState.
 	// MEASUREMENT ONLY — routing is NOT gated on it.
-	Telemetry *SlotTelemetry `json:"telemetry,omitempty"`
+	Telemetry    *SlotTelemetry         `json:"telemetry,omitempty"`
+	PrefixCache  *PrefixCacheTelemetry  `json:"prefix_cache,omitempty"`
+	PagedStorage *PagedStorageTelemetry `json:"paged_storage,omitempty"`
 }
 
 // MLXCacheReclaimerTelemetry reports cumulative provider allocator-reclaim
@@ -431,7 +460,8 @@ type BackendCapacity struct {
 	CapacitySeq uint64 `json:"capacity_seq,omitempty"`
 	// Telemetry is the system-profiler machine-level sub-object (nil on
 	// providers that predate it). Same rules as BackendSlotCapacity.Telemetry.
-	Telemetry *CapacityTelemetry `json:"telemetry,omitempty"`
+	Telemetry              *CapacityTelemetry               `json:"telemetry,omitempty"`
+	PrefixCacheMaintenance *PrefixCacheMaintenanceTelemetry `json:"prefix_cache_maintenance,omitempty"`
 }
 
 // SystemMetrics contains live resource utilization reported by a provider.
@@ -555,8 +585,10 @@ type PrefixCacheLookupV2Message struct {
 	StageMs                    float64            `json:"stage_ms,omitempty"`
 }
 
-// PrefixCacheReadyV2Message is emitted only after durable SSD settlement.
-// ReadyAnchors is bounded to the input prompt anchor and final continuation.
+// PrefixCacheReadyV2Message reports a published reusable boundary. SSD evidence
+// requires durable settlement and is bounded to the prompt and continuation.
+// Memory evidence requires a separately advertised resident capability and may
+// name up to 16 actually reusable, coordinator-verified input prompt boundaries.
 type PrefixCacheReadyV2Message struct {
 	Type                       string              `json:"type"`
 	RequestID                  string              `json:"request_id"`
@@ -696,6 +728,9 @@ type InferenceRequestMessage struct {
 	CacheReceiptNonce    string `json:"cache_receipt_nonce,omitempty"`
 	CacheScope           string `json:"cache_scope,omitempty"`
 	PrefixCacheProtocol  int    `json:"prefix_cache_protocol,omitempty"`
+	// Echoed only for a negotiated checkpoint receipt attempt. An older
+	// coordinator omits this, so new providers suppress checkpoint receipts.
+	CacheReceiptBoundaryMode string `json:"cache_receipt_boundary_mode,omitempty"`
 	// ToolSchemaMetadataProtocol authenticates coordinator-owned schema
 	// metadata carried inside the encrypted body. Version 1 means the
 	// coordinator rejected client-forged reserved keys before normalization.
@@ -921,6 +956,18 @@ type ProviderMessage struct {
 	Payload any // one of: *RegisterMessage, *HeartbeatMessage, etc.
 }
 
+// DecodeProviderMessage decodes one provider→coordinator frame into pm. It is
+// the provider read loop's entry point and accepts exactly the inputs
+// json.Unmarshal(data, pm) accepts, producing the same values — minus the
+// whole-document validation pass encoding/json runs before invoking
+// UnmarshalJSON. That pass is redundant here: every branch of UnmarshalJSON
+// either validates the bytes it consumes itself (the chunk fast path) or hands
+// the complete frame to encoding/json, which validates it.
+// FuzzChunkFrameDecode holds the equivalence against json.Unmarshal.
+func DecodeProviderMessage(data []byte, pm *ProviderMessage) error {
+	return pm.UnmarshalJSON(data)
+}
+
 // UnmarshalJSON reads the "type" field first, then unmarshals the full object
 // into the appropriate concrete struct.
 //
@@ -931,6 +978,16 @@ type ProviderMessage struct {
 // non-string value, malformed input, missing key) it falls back to the
 // envelope decode, preserving the original error behavior.
 func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
+	// Fast path for the per-token chunk frame: a hand-written single-pass
+	// decoder (chunk_scan.go) that never calls encoding/json. It bails on any
+	// shape it is not certain about, in which case the frame takes the
+	// generic path below exactly as before.
+	if msg, ok := scanChunkFrame(data); ok {
+		pm.Type = TypeInferenceResponseChunk
+		pm.Payload = msg
+		return nil
+	}
+
 	msgType, ok := scanTopLevelString(data, "type")
 	if !ok {
 		var envelope struct {

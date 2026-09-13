@@ -11,69 +11,84 @@ import (
 // error_cooldown_test.go and provider_breaker_test.go) ---
 
 func capacityCooldownActiveAt(r *Registry, providerID, modelID string, now time.Time) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.capacityCooldownActiveLocked(providerID, modelID, now)
+	return r.capacityCooled(providerID, modelID, now)
 }
 
-func capacityCooldownExpiryOf(r *Registry, providerID, modelID string) (time.Time, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	e, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]
-	if !ok {
-		return time.Time{}, false
+func capacityCooldownExpiryOf(r *Registry, providerID, modelID string) (expiry time.Time, ok bool) {
+	readGateForSession(r, providerID, func(g *gateState) {
+		if g == nil {
+			return
+		}
+		if e, has := g.capacityCooldowns[modelID]; has {
+			expiry, ok = e.expiry, true
+		}
+	})
+	return expiry, ok
+}
+
+// claimCapacityProbe claims the pair's half-open probe as the reservation
+// commit would (check-and-claim under gate.mu); returns whether the claim
+// went through (false = the gate was closed to this request).
+func claimCapacityProbe(r *Registry, providerID, modelID string) bool {
+	if p := r.sessionProvider(providerID); p != nil {
+		return r.tryClaimCapacityProbe(p, modelID, time.Now())
 	}
-	return e.expiry, true
-}
-
-// claimCapacityProbe claims the pair's half-open probe as ReserveProviderEx
-// would at reservation commit (under the r.mu write lock).
-func claimCapacityProbe(r *Registry, providerID, modelID string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.claimCapacityProbeLocked(providerID, modelID, time.Now())
+	return r.claimCapacityProbeRef(r.gateForSession(providerID), modelID, time.Now())
 }
 
 // ageCapacityProbeClaim rewinds the pair's probe claim by d, simulating a
 // probe whose outcome never landed (stale claim) without sleeping.
 func ageCapacityProbeClaim(r *Registry, providerID, modelID string, d time.Duration) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if e, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]; ok && !e.probeAt.IsZero() {
-		e.probeAt = e.probeAt.Add(-d)
-	}
+	withGateForSession(r, providerID, func(g *gateState) {
+		if e, ok := g.capacityCooldowns[modelID]; ok && !e.probeAt.IsZero() {
+			e.probeAt = e.probeAt.Add(-d)
+		}
+	})
 }
 
-func capacityCooldownTripsOf(r *Registry, providerID, modelID string) int {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.capacityCooldownTrips[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]
+func capacityCooldownTripsOf(r *Registry, providerID, modelID string) (trips int) {
+	readGateForSession(r, providerID, func(g *gateState) {
+		if g != nil {
+			trips = g.capacityCooldownTrips[modelID]
+		}
+	})
+	return trips
 }
 
 // expireCapacityCooldown rewinds the pair's cooldown expiry into the past
 // (and clears any probe claim), simulating the TTL elapsing (active ->
 // half-open, probe unclaimed) without sleeping.
 func expireCapacityCooldown(r *Registry, providerID, modelID string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if e, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]; ok {
-		e.expiry = time.Now().Add(-time.Second)
-		e.probeAt = time.Time{}
-	}
+	withGateForSession(r, providerID, func(g *gateState) {
+		if e, ok := g.capacityCooldowns[modelID]; ok {
+			e.expiry = time.Now().Add(-time.Second)
+			e.probeAt = time.Time{}
+		}
+	})
 }
 
 // ageCapacityStrikes rewinds every recorded reject strike for the pair by d,
 // simulating the passage of time without sleeping.
 func ageCapacityStrikes(r *Registry, providerID, modelID string, d time.Duration) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	key := capacityRejectKey{ProviderID: providerID, ModelID: modelID}
-	strikes := r.capacityRejectStrikes[key]
-	aged := make([]time.Time, len(strikes))
-	for i, ts := range strikes {
-		aged[i] = ts.Add(-d)
-	}
-	r.capacityRejectStrikes[key] = aged
+	withGateForSession(r, providerID, func(g *gateState) {
+		strikes := g.capacityRejectStrikes[modelID]
+		aged := make([]time.Time, len(strikes))
+		for i, ts := range strikes {
+			aged[i] = ts.Add(-d)
+		}
+		g.capacityRejectStrikes[modelID] = aged
+	})
+}
+
+// capacityCooldownEntryOf returns the pair's cooldown entry pointer (nil when
+// none), for tests that inspect the probe claim directly.
+func capacityCooldownEntryOf(r *Registry, providerID, modelID string) (entry *capacityCooldownEntry) {
+	readGateForSession(r, providerID, func(g *gateState) {
+		if g != nil {
+			entry = g.capacityCooldowns[modelID]
+		}
+	})
+	return entry
 }
 
 // Regression for the 2026-07 black-hole incident: 7 providers capacity-rejected
@@ -450,43 +465,43 @@ func TestCapacityCooldownHalfOpenExactlyOneProbe(t *testing.T) {
 	}
 }
 
-// Map-bound sweep: expired cooldowns and idle strike lists are dropped once the
-// maps grow past the bound, so per-session UUID keys cannot leak forever.
+// Gate sweep: identities whose only capacity state is an expired cooldown and
+// aged-out strikes are idle, so once no live session references them and the
+// idle grace has passed the periodic sweep drops their gates — per-session
+// UUID keys cannot leak forever.
 func TestCapacityCooldownMapsBounded(t *testing.T) {
 	r := New(nil)
 	const model = "gemma-4-26b-8bit"
 	cfg := r.capacityCooldownCfg
 
-	// Seed >1024 expired cooldowns and stale strike lists directly.
-	r.mu.Lock()
+	// Seed >1024 dead identities with expired cooldowns and stale strikes.
 	past := time.Now().Add(-time.Hour)
 	for i := 0; i < 1100; i++ {
-		key := capacityRejectKey{ProviderID: fmt.Sprintf("dead-%d", i), ModelID: model}
-		r.capacityCooldowns[key] = &capacityCooldownEntry{expiry: past}
-		r.capacityCooldownTrips[key] = 1
-		r.capacityRejectStrikes[key] = []time.Time{past.Add(-cfg.Window)}
+		withGateForKey(r, fmt.Sprintf("dead-%d", i), func(g *gateState) {
+			g.capacityCooldowns[model] = &capacityCooldownEntry{expiry: past}
+			g.capacityCooldownTrips[model] = 1
+			g.capacityRejectStrikes[model] = []time.Time{past.Add(-cfg.Window)}
+			g.touched = past
+		})
 	}
-	r.mu.Unlock()
-
-	r.RecordCapacityReject("prov-live", model)
-
-	r.mu.RLock()
-	cooldowns, strikes := len(r.capacityCooldowns), len(r.capacityRejectStrikes)
-	r.mu.RUnlock()
-	if cooldowns > 8 {
-		t.Fatalf("expired cooldowns not swept: %d entries remain", cooldowns)
+	if n := r.gateCount(); n < 1100 {
+		t.Fatalf("setup produced too few gates: %d", n)
 	}
-	if strikes > 8 {
-		t.Fatalf("stale strike lists not swept: %d entries remain", strikes)
+
+	r.sweepGates(time.Now())
+
+	if n := r.gateCount(); n > 8 {
+		t.Fatalf("idle identities not swept: %d gates remain", n)
 	}
 }
 
-// Regression (PR #510 Codex P2): the >1024 bound sweep must NOT delete a
-// half-open entry whose probe claim is still fresh. In that state expiry is
-// deliberately in the past and probeAt is the only thing holding the gate
-// closed while the single probe's outcome pends — sweeping it (triggered by a
-// reject on ANY other pair) reopened the gate to a thundering herd mid-probe
-// and dropped the pair's exponential-backoff state.
+// Regression (PR #510 Codex P2): the sweep must NOT delete a half-open entry
+// whose probe claim is still fresh. In that state expiry is deliberately in the
+// past and probeAt is the only thing holding the gate closed while the single
+// probe's outcome pends — sweeping it reopened the gate to a thundering herd
+// mid-probe and dropped the pair's exponential-backoff state. With per-identity
+// gates the same rule holds twice over: a gate with a live session is never
+// dropped, and a fresh claim keeps even a disconnected identity's gate non-idle.
 func TestCapacityCooldownSweepPreservesFreshProbeClaims(t *testing.T) {
 	r := New(nil)
 	const provider, model = "prov-probed", "gemma-4-26b-8bit"
@@ -497,37 +512,41 @@ func TestCapacityCooldownSweepPreservesFreshProbeClaims(t *testing.T) {
 		r.RecordCapacityReject(provider, model)
 	}
 	expireCapacityCooldown(r, provider, model)
-	claimCapacityProbe(r, provider, model)
+	if !claimCapacityProbe(r, provider, model) {
+		t.Fatal("setup: the first post-expiry claim must succeed")
+	}
 	if !capacityCooldownActiveAt(r, provider, model, time.Now()) {
 		t.Fatal("setup: pending probe should hold the gate closed")
 	}
+	// Age every other tracker the rejects armed (strikes, the gray-box clamp
+	// and rate window) out of their windows and backdate the identity's last
+	// activity, so the fresh probe claim is the ONLY thing keeping the gate.
+	ageCapacityStrikes(r, provider, model, cfg.Window+time.Second)
+	ageBudgetClamp(r, provider, model, r.budgetClampCfg.TTL+time.Second)
+	ageCapacityRateRejects(r, provider, model, capacityRateWindow+time.Second)
+	withGateForSession(r, provider, func(g *gateState) { g.touched = time.Now().Add(-time.Hour) })
 
-	// Grow the map past the sweep bound with long-expired junk entries.
-	r.mu.Lock()
+	// Grow the index past the high-water mark with long-idle junk identities.
 	for i := 0; i < 1100; i++ {
-		key := capacityRejectKey{ProviderID: fmt.Sprintf("junk-%d", i), ModelID: model}
-		r.capacityCooldowns[key] = &capacityCooldownEntry{expiry: time.Now().Add(-time.Hour)}
-		r.capacityCooldownTrips[key] = 1
+		withGateForKey(r, fmt.Sprintf("junk-%d", i), func(g *gateState) {
+			g.capacityCooldowns[model] = &capacityCooldownEntry{expiry: time.Now().Add(-time.Hour)}
+			g.capacityCooldownTrips[model] = 1
+			g.touched = time.Now().Add(-time.Hour)
+		})
 	}
-	r.mu.Unlock()
 
-	// A reject on an unrelated pair triggers the opportunistic sweep.
-	r.RecordCapacityReject("prov-other", model)
+	r.sweepGates(time.Now())
 
-	key := capacityRejectKey{ProviderID: provider, ModelID: model}
-	r.mu.RLock()
-	_, probedAlive := r.capacityCooldowns[key]
-	trips := r.capacityCooldownTrips[key]
-	size := len(r.capacityCooldowns)
-	r.mu.RUnlock()
-	if !probedAlive {
+	entry := capacityCooldownEntryOf(r, provider, model)
+	trips := capacityCooldownTripsOf(r, provider, model)
+	if entry == nil {
 		t.Fatal("sweep deleted the half-open entry with a fresh probe claim")
 	}
 	if trips == 0 {
 		t.Fatal("sweep dropped the pair's backoff state mid-probe")
 	}
-	if size > 8 {
-		t.Fatalf("junk entries not bounded by the sweep: %d remain", size)
+	if n := r.gateCount(); n > 8 {
+		t.Fatalf("junk identities not bounded by the sweep: %d remain", n)
 	}
 	if !capacityCooldownActiveAt(r, provider, model, time.Now()) {
 		t.Fatal("gate reopened to the herd mid-probe after the sweep")
@@ -536,18 +555,10 @@ func TestCapacityCooldownSweepPreservesFreshProbeClaims(t *testing.T) {
 	// A STALE claim (outcome never landed) must still be sweepable — the
 	// liveness bound, not the claim itself, decides retention.
 	ageCapacityProbeClaim(r, provider, model, capacityProbeOutcomeWindow+time.Second)
-	r.mu.Lock()
-	for i := 0; i < 1100; i++ {
-		key := capacityRejectKey{ProviderID: fmt.Sprintf("junk2-%d", i), ModelID: model}
-		r.capacityCooldowns[key] = &capacityCooldownEntry{expiry: time.Now().Add(-time.Hour)}
-	}
-	r.mu.Unlock()
-	r.RecordCapacityReject("prov-other-2", model)
-	r.mu.RLock()
-	_, staleAlive := r.capacityCooldowns[key]
-	r.mu.RUnlock()
-	if staleAlive {
-		t.Fatal("sweep retained an entry whose probe claim went stale")
+	withGateForSession(r, provider, func(g *gateState) { g.touched = time.Now().Add(-time.Hour) })
+	r.sweepGates(time.Now())
+	if rawGateForKey(r, provider) != nil {
+		t.Fatal("sweep retained an identity whose probe claim went stale")
 	}
 }
 

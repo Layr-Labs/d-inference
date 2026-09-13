@@ -10,9 +10,11 @@ import { STRIPE_CONNECT_COUNTRIES } from "@/lib/stripe-countries";
 export function CountryPicker({
   value,
   onChange,
+  options,
 }: {
   value: string;
   onChange: (code: string) => void;
+  options?: { code: string; name: string }[];
 }) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
@@ -27,7 +29,8 @@ export function CountryPicker({
     return () => document.removeEventListener("mousedown", handleClick);
   }, [open]);
 
-  const selected = STRIPE_CONNECT_COUNTRIES.find((c) => c.code === value);
+  const countries = (options ?? STRIPE_CONNECT_COUNTRIES).map(c => ({ ...c, flag: String.fromCodePoint(...[...c.code].map(letter => letter.charCodeAt(0) + 127397)) })).sort((a,b) => a.name.localeCompare(b.name));
+  const selected = countries.find((c) => c.code === value);
 
   return (
     <div className="relative mb-4" ref={ref}>
@@ -69,7 +72,7 @@ export function CountryPicker({
             </div>
           </div>
           <div className="max-h-64 overflow-y-auto">
-            {STRIPE_CONNECT_COUNTRIES.filter((c) => {
+            {countries.filter((c) => {
               const q = filter.toLowerCase();
               return !q || c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q);
             }).map((c) => (

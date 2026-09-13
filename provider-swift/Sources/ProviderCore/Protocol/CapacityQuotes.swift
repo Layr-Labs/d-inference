@@ -65,6 +65,8 @@ extension CapacityRejectionReason {
             self = .kvHeadroom
         case .modelLoad:
             self = .memoryCap
+        case .draining:
+            self = .slotState
         case .deadlineUnreachable:
             self = .deadline
         case .jinjaChannelTags, .jinjaNullBridge, .jinjaTemplate:

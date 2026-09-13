@@ -6,9 +6,7 @@ import (
 )
 
 func cooldownActive(r *Registry, providerID, modelID string, now time.Time) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.dispatchLoadCooldownActiveLocked(providerID, modelID, now)
+	return r.dispatchLoadCooled(providerID, modelID, now)
 }
 
 // Regression for the prod fleet outage: providers wedged on "insufficient
@@ -102,27 +100,24 @@ func TestDispatchLoadCooldownSurvivesRegister(t *testing.T) {
 
 func TestDispatchLoadCooldownSweepBoundsMap(t *testing.T) {
 	r := New(testLogger())
-	// Insert >1024 entries, then force them all past expiry by recording a
-	// fresh failure after the TTL — the opportunistic sweep must drop them.
+	// >1024 identity-less sessions record a load failure and vanish. Once the
+	// cooldowns expire and the idle grace passes, the gate sweep must drop
+	// every one of their gates; a connected provider's gate always survives.
 	for i := 0; i < 1100; i++ {
 		r.RecordDispatchLoadFailure("dead-provider-"+string(rune('a'+i%26))+string(rune('0'+i%10))+string(rune('0'+(i/10)%10))+string(rune('0'+(i/100)%10)), "m")
 	}
-	r.mu.Lock()
-	for k := range r.dispatchLoadCooldowns {
-		r.dispatchLoadCooldowns[k] = time.Now().Add(-time.Second)
+	if n := r.gateCount(); n < 1000 {
+		t.Fatalf("setup produced too few distinct gates: %d", n)
 	}
-	size := len(r.dispatchLoadCooldowns)
-	r.mu.Unlock()
-	if size < 1000 {
-		t.Fatalf("setup produced too few distinct entries: %d", size)
+	live := makeSchedulerProvider(t, r, "live", "m", 50)
+	r.RecordDispatchLoadFailure(live.ID, "m")
+
+	r.sweepGates(time.Now().Add(gateIdleGrace + dispatchLoadCooldownTTL + time.Second))
+
+	if after := r.gateCount(); after != 1 {
+		t.Fatalf("sweep should leave only the live provider's gate, got %d", after)
 	}
-
-	r.RecordDispatchLoadFailure("live", "m")
-
-	r.mu.Lock()
-	after := len(r.dispatchLoadCooldowns)
-	r.mu.Unlock()
-	if after != 1 {
-		t.Fatalf("sweep should leave only the live entry, got %d", after)
+	if rawGateForKey(r, live.ID) == nil {
+		t.Fatal("the connected provider's gate must never be swept")
 	}
 }

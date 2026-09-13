@@ -244,7 +244,10 @@ SELECT
     r.provider_region,
     r.consumer_region,
     r.created_at AS route_created_at,
-    r.updated_at AS route_updated_at
+    r.updated_at AS route_updated_at,
+    p.predictive_bypass,
+    p.reservation_ttft_ceiling_ms,
+    p.dispatch_budget_ms
 FROM request_profiles p
 LEFT JOIN inference_routes r
        ON r.request_id = p.request_id

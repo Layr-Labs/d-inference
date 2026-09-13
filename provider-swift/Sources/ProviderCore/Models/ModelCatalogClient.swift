@@ -236,6 +236,8 @@ public struct ModelCatalogClient: Sendable {
             model.id, model.s3Name, model.displayName, model.modelType,
             model.architecture, model.description, model.weightHash, model.version,
             model.r2Prefix, model.aggregateSHA256, model.family, model.quantization,
+            model.huggingFaceArtifact?.repoID, model.huggingFaceArtifact?.revision,
+            model.huggingFaceArtifact?.pathPrefix,
         ].compactMap { $0 }
         guard strings.allSatisfy({ $0.utf8.count <= maximumJSONStringBytes }),
             (model.capabilities?.count ?? 0) <= maximumJSONCollectionCount,

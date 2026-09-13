@@ -21,13 +21,9 @@ beforeEach(() => {
 });
 
 describe("Console navigation", () => {
-  it("keeps the entrance and device approval free of workspace navigation", () => {
-    environment.pathname = "/";
-    const view = render(<AppShell><p>Choose a workspace</p></AppShell>);
-    expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
-    expect(screen.getByText("Choose a workspace")).toBeVisible();
+  it("keeps device approval free of workspace navigation", () => {
     environment.pathname = "/link";
-    view.rerender(<AppShell><p>Approve device</p></AppShell>);
+    render(<AppShell><p>Approve device</p></AppShell>);
     expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
     expect(screen.getByText("Approve device")).toBeVisible();
   });

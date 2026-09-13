@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-08 · commit `efb5517fc`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -182,6 +182,102 @@ Keys in `model_registry.metadata` the coordinator reads
 | `openrouter_slug` | `openrouter-slug` action | OpenRouter marketplace slug in the feed |
 | `deprecation_date` | `deprecation` action | `YYYY-MM-DD`; OpenRouter deprecation metadata |
 
+## Hugging Face download artifact
+
+`registerModelRequest.hugging_face_artifact` is an optional object stored on
+`model_versions.hugging_face_artifact` (nullable JSONB) and emitted on each
+public catalog model by `catalogModelFromRegistryRecord`. Its fields are
+validated by `HuggingFaceArtifact.Validate` in
+`coordinator/store/hugging_face_artifact.go`:
+
+| Field | Rule |
+|---|---|
+| `repo_id` | `owner/repository`, at most 192 bytes; repository components use ASCII letters, digits, `_`, `-`, `.` and start with a letter, digit, or `_`; no `..` |
+| `revision` | Full 40-character lowercase hexadecimal HF commit SHA; branches and tags are rejected |
+| `path_prefix` | Optional directory relative to the repository root, at most 1024 bytes; same component rules; no empty or traversal components |
+
+Example registration field (substitute the commit of your published artifact):
+
+```json
+"hugging_face_artifact": {
+  "repo_id": "EigenLabs/your-model",
+  "revision": "0123456789abcdef0123456789abcdef01234567",
+  "path_prefix": "mlx"
+}
+```
+
+The artifact is independent of `metadata.hugging_face_id`, which identifies the
+upstream model for feeds. Use a public, ungated repository whose files match the
+registered manifest, including any modified templates and configs. Provider
+requests carry no HF credentials. Missing, gated, unavailable, or mismatched
+files fall back to R2 individually. HF gets one attempt with a 30-second idle
+request timeout; R2 retains the existing three-attempt policy. Every accepted
+file must pass size and SHA-256 checks, then the complete snapshot must pass the
+aggregate hash (`provider-swift/Sources/ProviderCore/Models/ModelDownloader+Sources.swift`,
+`downloadManifestFileWithResume`). No speed comparison or automatic source race
+is performed. The manifest and checksum authority remain the coordinator/R2.
+
+Omitting the field or sending `null` on re-registration clears the source for
+that version. Existing entries and older providers continue using R2. Adding or
+clearing it on an existing version uses the normal registration endpoint;
+production registration still requires approval.
+
+### Pinned assistant download artifact
+
+`metadata.spec_dec.hugging_face_artifact` accepts the same optional
+`repo_id`, immutable `revision`, and `path_prefix` fields for a separately
+published MTP assistant. It is independent of the target's top-level artifact.
+`SpecDecMetadata.pinnedHuggingFaceArtifact` validates it before network work;
+missing or `null` preserves the existing R2-only assistant path. Malformed
+locators, branches and tags make the assistant unavailable, preserving target
+serving (`provider-swift/Sources/ProviderCore/SpecDec/SpecDecMetadata+HuggingFace.swift`).
+
+An assistant prefetch has a 15-minute total deadline, with the existing
+per-source idle timeout and cancellation checks. Downloads run while the
+target continues serving; an expired attempt removes its private staging
+files and retries later with backoff
+(`provider-swift/Sources/ProviderCore/SpecDec/SpecDecResolver.swift`).
+
+`SpecDecResolver.downloadArtifact` fetches and validates the registry manifest
+against `spec_dec.manifest_sha256`, then uses the same per-file HF-first/R2
+fallback helper as ordinary weights. Both sources must match that manifest's
+size and SHA-256 for every file. The existing complete-artifact validation and
+immutable staging publication remain required. Cancellation does not initiate
+R2 fallback; existing verified local artifacts need no download
+(`provider-swift/Sources/ProviderCore/SpecDec/SpecDecResolver.swift`).
+
+The [Gemma QAT assistant catalog patch](../operations/artifacts/gemma-qat-assistant-hugging-face.patch.json)
+adds only the pinned assistant locator to a current public catalog-model JSON
+object, with JSON Patch `test` operations guarding the exact target and existing
+assistant identity. It is a review artifact, not an HTTP request body: the
+coordinator has no generic JSON Patch endpoint. Apply it locally to the current
+catalog object, then use the existing registration workflow with the resulting
+metadata and all current registration fields/prices preserved. Re-registration
+sets model status to `beta`; preserve or restore the intended status through
+the existing status action. Validate on dev before an approved production
+metadata update. This source change requires no assistant republish, target
+version change, or weight replacement. Remove the optional locator to return
+future downloads to R2; already verified assistant bytes remain usable.
+
+The pinned HF files were fully streamed and hashed on 2026-09-08, and the R2
+manifest was independently fetched with provider request headers. All bytes
+match the existing catalog declaration:
+
+| Artifact | Immutable identity |
+|---|---|
+| HF repository | `mlx-community/gemma-4-26B-A4B-it-qat-assistant-4bit` |
+| HF revision | `bb94eae1b70a80dac16cbf959bb4b7d56bd1fb8c` |
+| Registry manifest SHA-256 | `8b7c00b7f131345156f5f20fa9c94a895c5340f16d9331bafb9e59628bf45bf2` |
+| `config.json` | 2,961 bytes; SHA-256 `0cd54ff36e53a258532c5c1433bc44b88ba758cfe9b59bb4e6eecfd5453fabcf` |
+| `model.safetensors` | 236,124,704 bytes; SHA-256 `3c4d43863abbbf455ec537c726eff7abeb88bb361e3ab23ff0d2d6006f620f74` |
+
+After rollout, a cold assistant download should fetch its pinned manifest from
+R2 and both files from the exact HF revision. A failed HF file should fall back
+to its declared R2 object and still verify; a failed checksum on both sources
+must leave no published assistant. Inspect the provider's assistant revision
+and active MTP metrics after loading; downloading alone does not prove the
+assistant has been installed in a serving engine.
+
 ## Admin actions
 
 `POST /v1/admin/models/{model_id}/{action}` — `handleAdminModelRegistryAction`
@@ -263,7 +359,7 @@ fans out `desired_models`), and returns `{"status":"ok","alias": <ModelAlias>}`.
 
 ### Resolution precedence
 
-`ResolveModelConstrainedWithTraits` (`coordinator/registry/registry.go`),
+`ResolveModelConstrainedWithTraits` (`coordinator/registry/model_aliases.go`),
 called from `resolveRequestedModel` (`coordinator/api/consumer.go`):
 
 1. Not an alias → the id is used as a concrete build.
@@ -307,7 +403,7 @@ Defined in `coordinator/protocol/messages.go`; full field tables in
 |---|---|---|
 | `desired_models` | coordinator → provider | `{"type","models":[{"model_name","desired_build","previous_build"}]}` (`DesiredModelsMessage`); only to Swift providers ≥ `minProviderVersionForDesiredModels = "0.5.17"` (`coordinator/api/server.go`) |
 | `prefetch_model_status` | provider → coordinator | `status` ∈ `started`, `downloading`, `verified`, `failed`; `bytes_done`, `bytes_total`, `error` |
-| `models_update` | provider → coordinator | full `ModelInfo` (with `weight_hash`) for newly verified builds; merged only when the hash matches the catalog (`mergeProviderModels`, `coordinator/registry/registry.go`) |
+| `models_update` | provider → coordinator | full `ModelInfo` (with `weight_hash`) for newly verified builds; merged only when the hash matches the catalog (`mergeProviderModels`, `coordinator/registry/provider_models.go`) |
 
 ## Authentication
 
@@ -342,7 +438,8 @@ Catalog model fields (`catalogModelFromRegistryRecord`): `id`, `s3_name`
 (= `aggregate_sha256`), `family`, `quantization`, `max_context_length`,
 `max_output_length`, `capabilities`, `required_provider_capabilities`,
 `runtime_parameters`, `metadata`, `status`, `created`, `version`, `r2_prefix`,
-`aggregate_sha256`, `total_size_bytes`, `file_count`, plus the
+`aggregate_sha256`, `total_size_bytes`, `file_count`, optional
+`hugging_face_artifact`, plus the
 OpenRouter-shaped `name`, `hugging_face_id`, `input_modalities`,
 `output_modalities`, `supported_features`, `supported_sampling_parameters`.
 
@@ -356,8 +453,8 @@ build; aliases with neither are omitted).
 | Tool | Interface | Notes |
 |---|---|---|
 | `darkbloom-publish hash <dir> --id <model_id> --version <version> [-o manifest.json]` | `provider-swift/Sources/darkbloom-publish/HashCommand.swift` | validates id/version before hashing; writes to stdout without `-o` |
-| `scripts/publish-model.sh` | interactive; env `R2_ACCOUNT_ID` (required), `R2_BUCKET` (`darkbloom-models`), `R2_ACCESS_KEY_SECRET` / `R2_SECRET_KEY_SECRET` (GCP Secret Manager names `darkbloom-r2-access-key-id`, `darkbloom-r2-secret-access-key`) | runs the hasher via `swift run -c release`, uploads files with concurrency 8, uploads `manifest.json` last, prints a `gh workflow run register-model.yml` command; defaults `required_provider_capabilities` to `apple_m5,mlx_nax` for `EigenLabs/Qwen3.8-27B-4bit` |
-| `.github/workflows/register-model.yml` | `workflow_dispatch` inputs mirroring the registration request (`capabilities_csv` and `required_provider_capabilities` are comma-separated; `runtime_parameters_json`, `metadata_json` are JSON objects; `coordinator_url` defaults to `https://api.darkbloom.dev`) | builds the payload with `jq` and POSTs with `Authorization: Bearer ${{ secrets.MODEL_REGISTRY_PUBLISHING_KEY }}` |
+| `scripts/publish-model.sh` | interactive; env `R2_ACCOUNT_ID` (required), `R2_BUCKET` (`darkbloom-models`), `R2_ACCESS_KEY_SECRET` / `R2_SECRET_KEY_SECRET` (GCP Secret Manager names `darkbloom-r2-access-key-id`, `darkbloom-r2-secret-access-key`) | runs the hasher via `swift run -c release`, uploads files with concurrency 8, uploads `manifest.json` last; optional env `HUGGING_FACE_ARTIFACT_JSON` validates an existing public HF artifact and passes it into the printed registration command; prints a `gh workflow run register-model.yml` command; defaults `required_provider_capabilities` to `apple_m5,mlx_nax` for `EigenLabs/Qwen3.8-27B-4bit` |
+| `.github/workflows/register-model.yml` | `workflow_dispatch` inputs mirroring the registration request (`capabilities_csv` and `required_provider_capabilities` are comma-separated; `runtime_parameters_json`, `metadata_json` are JSON objects; `hugging_face_artifact_json` is an artifact object or `null`; `coordinator_url` defaults to `https://api.darkbloom.dev`) | builds the payload with `jq` and POSTs with `Authorization: Bearer ${{ secrets.MODEL_REGISTRY_PUBLISHING_KEY }}` |
 
 ## Related
 

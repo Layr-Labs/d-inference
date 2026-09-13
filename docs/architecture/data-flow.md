@@ -1,6 +1,6 @@
 # Data flow: one request end to end
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `7ae06021f`
 
 A consumer request travels consumer → coordinator → provider → coordinator → consumer. This page shows that journey once — as a sequence diagram and a stage table naming the code that owns each step — for anyone tracing a request through the coordinator.
 
@@ -68,7 +68,7 @@ Two things the diagram makes visible. First, the consumer receives no bytes unti
 | 17 | **Provider executes** | Decrypts, loads or reuses the model, streams `inference_response_chunk`, ends with `inference_complete` or `inference_error` | [`inference.md`](inference.md), [`components/provider.md`](components/provider.md) |
 | 18 | Wait for first content | Chunks buffered ([`chunkBufferSize`](../reference/api-contracts.md#timeouts-and-constants)); a speculative backup may race; failover on error or deadline | `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover` (`coordinator/api/dispatch.go`) |
 | 19 | Commit | Status, headers and the first frame are written; from here the status cannot change | `commitFirstContent`, `writeCommittedResponse` (`coordinator/api/dispatch.go`), `writeSSEResponseHeader` (`coordinator/api/sse_response.go`), `writeCommittedProviderHeaders` (`coordinator/api/response_metadata.go`) |
-| 20 | Relay | Each chunk normalised and forwarded as one SSE event; usage/finish frames held to the end; single `[DONE]` | `handleStreamingResponseWithFirstChunk`, `normalizeSSEChunk`, `stripSSEDoneEvents` (`coordinator/api/consumer.go`) |
+| 20 | Relay | Each chunk normalised and forwarded as one SSE event; usage/finish frames held to the end; single `[DONE]` | `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_stream.go`); `normalizeSSEChunk` (`coordinator/api/sse_normalize.go`); `stripSSEDoneEvents` (`coordinator/api/sse_events.go`) |
 | 21 | Settle | Charge the account from provider-reported usage, record usage against the alias, credit the provider | `handleCompleteAt` → `claimSettlement`, `ledger.Charge`, `store.RecordUsageFullWithPublicModel`, `store.CreditProviderAccount` (`coordinator/api/provider.go`); [`billing.md`](billing.md) |
 | 22 | Client gone | Disconnect before commit records 499 and sends `cancel` to the provider | `emitClientGone` (`coordinator/api/dispatch.go`), `sendProviderCancel` (`coordinator/api/consumer.go`) |
 
@@ -87,7 +87,7 @@ The platform fee applied at stage 21 is stated once, in [`billing.md#invariants`
 3. **Funds are reserved before dispatch and settled from provider-reported usage** — `reserveInferenceBalance` (`coordinator/api/inference_admission.go`), `handleCompleteAt` (`coordinator/api/provider.go`).
 4. **Every job body is sealed with fresh session keys to the provider's public key** — `e2e.GenerateSessionKeys`, `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`).
 5. **The response echoes the alias the client sent** even though the provider ran the concrete build — `resolveRequestedModel` (`coordinator/api/consumer.go`).
-6. **Once committed the status cannot change**; usage and finish frames are held to the end and exactly one `[DONE]` is written — `handleStreamingResponseWithFirstChunk`, `stripSSEDoneEvents` (`coordinator/api/consumer.go`).
+6. **Once committed the status cannot change**; usage and finish frames are held to the end and exactly one `[DONE]` is written — `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_stream.go`), `stripSSEDoneEvents` (`coordinator/api/sse_events.go`).
 7. **A client that leaves before commit cancels the job**: 499 is recorded and the provider receives `cancel` — `emitClientGone` (`coordinator/api/dispatch.go`), `sendProviderCancel` (`coordinator/api/consumer.go`).
 
 ## Failure modes
@@ -101,7 +101,7 @@ Each row is the stage at which a request can end early and what the consumer see
 | 10 | 402 when the worst-case cost cannot be reserved — taxonomy in [`billing.md`](billing.md#payment-required-responses) | `reserveInferenceBalance` |
 | 12 | 429 / 503 / 413 when no eligible provider can accept the prompt now | `runInferenceAdmission` |
 | 18 | First-content deadline missed on every attempt → 429 with `Retry-After`; provider faults fail over to the next candidate, a speculative backup may win the race | `waitFirstChunk`, `runSpeculative`, `runRace`, `shouldStopFailover` (`coordinator/api/dispatch.go`) |
-| 20 | Provider fails after commit → in-band `error` event, status already 200 | `handleStreamingResponseWithFirstChunk` (`coordinator/api/consumer.go`) |
+| 20 | Provider fails after commit → in-band `error` event, status already 200 | `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consumer_stream.go`) |
 | 22 | Client disconnects before commit → 499 in logs, `cancel` to the provider | `emitClientGone`, `sendProviderCancel` |
 
 ## Code map
@@ -112,7 +112,8 @@ Each row is the stage at which a request can end early and what the consumer see
 | Drain gate | `coordinator/api/drain.go` — `drainGate` |
 | Sealed client transport | `coordinator/api/sender_encryption.go` — `sealedTransport` |
 | Prelude parsing and validation | `coordinator/api/inference_preprocess.go` — `parseInferencePrelude`; `coordinator/api/tool_constraints.go` — `validateToolConstraintPolicy` |
-| Model resolution, first-content deadline, relay, cancel | `coordinator/api/consumer.go` — `resolveRequestedModel`, `FirstContentDeadline`, `shedIfModelRejected`, `handleStreamingResponseWithFirstChunk`, `normalizeSSEChunk`, `stripSSEDoneEvents`, `sendProviderCancel` |
+| Model resolution, first-content deadline, cancel | `coordinator/api/consumer.go` — `resolveRequestedModel`, `FirstContentDeadline`, `shedIfModelRejected`, `sendProviderCancel` |
+| Response relay and SSE | `coordinator/api/consumer_stream.go` — `handleStreamingResponseWithFirstChunkAndError`; `coordinator/api/sse_normalize.go` — `normalizeSSEChunk`; `coordinator/api/sse_events.go` — `stripSSEDoneEvents` |
 | Reservation and capacity admission | `coordinator/api/inference_admission.go` — `reserveInferenceBalance`, `runInferenceAdmission` |
 | Remote media | `coordinator/api/media_resolve.go` — `resolveRemoteMedia` |
 | Cache route plan | `coordinator/api/prompt_artifacts.go` — `planCacheRoute` |

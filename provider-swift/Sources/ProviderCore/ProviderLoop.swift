@@ -186,6 +186,7 @@ public actor ProviderLoop {
     internal let state: ProviderState
     internal let cancellationRegistry: InferenceCancellationRegistry
     internal let kvBudget: GlobalKVCacheBudget
+    var processMemoryTelemetrySampler = ProcessMemoryTelemetrySampler()
     /// Phase 3: global disk accountant (process-wide, shared across models).
     internal let powerAssertion: InferencePowerAssertion
     internal let preloadTaskStarted: (@Sendable (String) -> Void)?
@@ -247,6 +248,7 @@ public actor ProviderLoop {
     /// eviction decisions and overcommit memory.
     internal var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     internal var modelsLoading: Set<String> = []
+    internal var pendingLoadLeases: [String: PendingModelLoadLease] = [:]
     /// Models being retired (failed self-test) — a tombstone held across the
     /// retirement's unload drain. Prefetch must not re-advertise a tombstoned
     /// id: with the slot still resident during the drain, `prefetchPreCheck`
@@ -308,6 +310,12 @@ public actor ProviderLoop {
     internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false
+    internal var mtpStagingReservations = MTPStagingReservations()
+    internal var mtpAdmissionDrains = MTPAdmissionDrains()
+    internal var mtpUpgradeMonitorTask: Task<Void, Never>?
+    internal var mtpUpgradeTransitions: Set<String> = []
+    internal var mtpUpgradeWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+
 
     /// Phase of a graceful auto-update cycle. Drives admission: in `.draining`
     /// we refuse new requests (503 reroute) so in-flight work can finish before
@@ -619,7 +627,7 @@ public actor ProviderLoop {
                 ineligibleModelIds.append(model.id)
                 continue
             }
-            if EngineV2SupportedModels.isSupported(modelType: model.modelType) {
+            if EngineV2SupportedModels.isSupported(model: model) {
                 advertised[model.id] = model
             } else {
                 unsupportedModelIds.append(model.id)

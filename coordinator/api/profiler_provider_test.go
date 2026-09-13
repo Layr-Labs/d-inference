@@ -75,7 +75,7 @@ func newProviderProfileTestServer(logs io.Writer) *Server {
 }
 
 func TestDecodeInferenceProfileFixtureIsValidAndLossless(t *testing.T) {
-	for _, frame := range []string{"inference_complete_full", "inference_error_minimal"} {
+	for _, frame := range []string{"inference_complete_full", "inference_error_minimal", "inference_error_deadline", "inference_error_accepted_expired"} {
 		t.Run(frame, func(t *testing.T) {
 			raw := fixtureProfile(t, frame)
 			stored, valid, reason, folded := decodeInferenceProfile(raw, fixtureReceivedAt)
@@ -122,7 +122,8 @@ func TestDecodeInferenceProfileFixtureIsValidAndLossless(t *testing.T) {
 // and compare key sets. This catches a field added to the wire struct but
 // forgotten in decodeInferenceProfile, independent of fixture coverage.
 func TestDecodeInferenceProfileCoversEveryWireField(t *testing.T) {
-	fill := func(v reflect.Value) {
+	var fill func(reflect.Value)
+	fill = func(v reflect.Value) {
 		for i := 0; i < v.NumField(); i++ {
 			f := v.Field(i)
 			switch f.Kind() {
@@ -133,9 +134,10 @@ func TestDecodeInferenceProfileCoversEveryWireField(t *testing.T) {
 					elem.Elem().SetBool(true)
 				case reflect.Int, reflect.Int64:
 					elem.Elem().SetInt(1)
+				case reflect.Float64:
+					elem.Elem().SetFloat(1)
 				case reflect.Struct:
-					// Engine sub-object: filled by the caller.
-					continue
+					fill(elem.Elem())
 				default:
 					t.Fatalf("unexpected pointer elem %s on %s", elem.Elem().Kind(), v.Type().Field(i).Name)
 				}
@@ -151,6 +153,14 @@ func TestDecodeInferenceProfileCoversEveryWireField(t *testing.T) {
 					f.SetString(string(protocol.CancelStageNone))
 				case reflect.TypeOf(protocol.EngineFinishReason("")):
 					f.SetString(string(protocol.EngineFinishStop))
+				case reflect.TypeOf(protocol.DeadlineVerdict("")):
+					f.SetString(string(protocol.DeadlineVerdictAccepted))
+				case reflect.TypeOf(protocol.DeadlineContinuation("")):
+					f.SetString(string(protocol.DeadlineContinuationExpired))
+				case reflect.TypeOf(protocol.DeadlineProjection("")):
+					f.SetString(string(protocol.DeadlineProjectionBounded))
+				case reflect.TypeOf(protocol.DeadlineProjectionReason("")):
+					f.SetString(string(protocol.DeadlineProjectionModeOff))
 				default:
 					t.Fatalf("unexpected string field %s", v.Type().Field(i).Name)
 				}
@@ -161,8 +171,6 @@ func TestDecodeInferenceProfileCoversEveryWireField(t *testing.T) {
 	}
 	var wire protocol.InferenceProfile
 	fill(reflect.ValueOf(&wire).Elem())
-	wire.Engine = &protocol.EngineProfile{}
-	fill(reflect.ValueOf(wire.Engine).Elem())
 	schema := protocol.InferenceProfileSchema
 	wire.Schema = &schema
 	wallMS := fixtureReceivedAt.UnixMilli()

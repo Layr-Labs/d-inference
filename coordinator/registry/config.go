@@ -20,14 +20,16 @@ type Config struct {
 }
 
 type CacheRoutingConfig struct {
-	Mode            string
-	ActivationPct   float64
-	MaxPlanQPS      float64
-	TTL             time.Duration
-	MaxHolders      int
-	MaxDiscountMs   float64
-	MaxCostFraction float64
-	MasterKey       string
+	AllowedArtifacts    []CacheRoutingArtifact
+	artifactConfigError error
+	Mode                string
+	ActivationPct       float64
+	MaxPlanQPS          float64
+	TTL                 time.Duration
+	MaxHolders          int
+	MaxDiscountMs       *float64
+	MaxCostFraction     *float64
+	MasterKey           string
 }
 
 // QualityCapConfig governs the per-provider admission concurrency cap derived
@@ -79,8 +81,34 @@ type WarmPoolConfig struct {
 	// size the representative request for the E[S] service-time estimate, and
 	// FallbackQualityConcurrency is the per-provider concurrency used when the
 	// floor/rates/caps are unknown.
-	DecodeFloorTPS             float64
-	BurstBuffer                int
+	DecodeFloorTPS float64
+	BurstBuffer    int
+	// HeadroomEnabled turns the proactive warm-capacity floor on (default true).
+	// When false the controller is purely reactive: the pool can only grow after a
+	// capacity_reject / ttft_miss / cold_dispatch, then at +1 provider per tick.
+	// EIGENINFERENCE_WARM_POOL_HEADROOM.
+	HeadroomEnabled bool
+	// HeadroomProviders is a per-model OVERRIDE map, e.g.
+	// EIGENINFERENCE_WARM_POOL_HEADROOM_PROVIDERS="gpt-oss-20b=9,gemma-4-26b-qat-4bit=33".
+	// Unlisted models use the DERIVED floor (measured occupancy ramp / qc), which
+	// is the intended normal operation — the right value is a property of a
+	// model's traffic shape, and measured across the live fleet it spans 2..33
+	// providers. Use an entry only to pin a build whose measurement is not yet
+	// trustworthy.
+	//
+	// NOTE: values must be >= 1. envModelIntMap (shared with MIN_WARM) drops
+	// non-positive entries, so "model=0" is silently ignored rather than pinning a
+	// model to zero headroom — to exempt one model, set HEADROOM_MAX_PROVIDERS or
+	// disable the floor fleet-wide instead.
+	HeadroomProviders map[string]int
+	// HeadroomMaxProviders caps any single model's DERIVED floor so a pathological
+	// ramp cannot demand the whole fleet. Overrides are not capped — an operator
+	// naming a number means it. <= 0 is uncapped.
+	HeadroomMaxProviders int
+	// HeadroomLoadWindows is how many control intervals of demand growth the floor
+	// should cover, approximating cold-load time (prod: 30s interval, ~20-30s
+	// load, so ~1). <= 0 falls back to 1.
+	HeadroomLoadWindows        float64
 	FallbackQualityConcurrency int
 	AssumedPromptTokens        int
 	AssumedCompletionTokens    int
@@ -115,6 +143,7 @@ func (c WarmPoolConfig) perTickCeiling() int {
 
 // ReadConfig reads registry configuration from environment variables.
 func ReadConfig() Config {
+	artifacts, artifactsErr := readCacheRoutingArtifacts()
 	return Config{
 		MinTrustLevel: os.Getenv(env.EnvPrefix + "_MIN_TRUST"),
 		WarmPool: WarmPoolConfig{
@@ -133,6 +162,10 @@ func ReadConfig() Config {
 
 			DecodeFloorTPS:             env.EnvFloat(env.EnvPrefix+"_WARM_POOL_DECODE_FLOOR_TPS", 15),
 			BurstBuffer:                env.EnvInt(env.EnvPrefix+"_WARM_POOL_BURST_BUFFER", 1),
+			HeadroomEnabled:            env.EnvBool(env.EnvPrefix+"_WARM_POOL_HEADROOM", true),
+			HeadroomProviders:          envModelIntMap(env.EnvPrefix + "_WARM_POOL_HEADROOM_PROVIDERS"),
+			HeadroomMaxProviders:       env.EnvInt(env.EnvPrefix+"_WARM_POOL_HEADROOM_MAX_PROVIDERS", 64),
+			HeadroomLoadWindows:        env.EnvFloat(env.EnvPrefix+"_WARM_POOL_HEADROOM_LOAD_WINDOWS", 1.0),
 			FallbackQualityConcurrency: env.EnvInt(env.EnvPrefix+"_WARM_POOL_FALLBACK_QUALITY_CONCURRENCY", 4),
 			AssumedPromptTokens:        env.EnvInt(env.EnvPrefix+"_WARM_POOL_ASSUMED_PROMPT_TOKENS", 512),
 			AssumedCompletionTokens:    env.EnvInt(env.EnvPrefix+"_WARM_POOL_ASSUMED_COMPLETION_TOKENS", 256),
@@ -144,14 +177,16 @@ func ReadConfig() Config {
 			MaxGlobalPendingLoads:  env.EnvInt(env.EnvPrefix+"_WARM_POOL_MAX_GLOBAL_PENDING_LOADS", 16),
 		},
 		CacheRouting: CacheRoutingConfig{
-			Mode:            strings.ToLower(strings.TrimSpace(os.Getenv(env.EnvPrefix + "_CACHE_ROUTING_MODE"))),
-			ActivationPct:   envStrictFloat(env.EnvPrefix+"_CACHE_ROUTING_PERCENT", defaultCacheRoutingActivationPct),
-			MaxPlanQPS:      envStrictFloat(env.EnvPrefix+"_CACHE_ROUTING_MAX_PLAN_QPS", defaultCacheRoutingMaxPlanQPS),
-			TTL:             envDuration(env.EnvPrefix+"_CACHE_ROUTING_TTL", defaultCacheRoutingTTL),
-			MaxHolders:      env.EnvInt(env.EnvPrefix+"_CACHE_ROUTING_MAX_HOLDERS", defaultCacheRoutingMaxHolders),
-			MaxDiscountMs:   env.EnvFloat(env.EnvPrefix+"_CACHE_ROUTING_MAX_DISCOUNT_MS", defaultCacheRoutingMaxDiscountMs),
-			MaxCostFraction: env.EnvFloat(env.EnvPrefix+"_CACHE_ROUTING_MAX_COST_FRACTION", defaultCacheRoutingMaxCostFraction),
-			MasterKey:       strings.TrimSpace(os.Getenv(env.EnvPrefix + "_CACHE_MASTER_KEY")),
+			AllowedArtifacts:    artifacts,
+			artifactConfigError: artifactsErr,
+			Mode:                strings.ToLower(strings.TrimSpace(os.Getenv(env.EnvPrefix + "_CACHE_ROUTING_MODE"))),
+			ActivationPct:       envStrictFloat(env.EnvPrefix+"_CACHE_ROUTING_PERCENT", defaultCacheRoutingActivationPct),
+			MaxPlanQPS:          envStrictFloat(env.EnvPrefix+"_CACHE_ROUTING_MAX_PLAN_QPS", defaultCacheRoutingMaxPlanQPS),
+			TTL:                 envDuration(env.EnvPrefix+"_CACHE_ROUTING_TTL", defaultCacheRoutingTTL),
+			MaxHolders:          env.EnvInt(env.EnvPrefix+"_CACHE_ROUTING_MAX_HOLDERS", defaultCacheRoutingMaxHolders),
+			MaxDiscountMs:       optionalCacheScoreLimit(env.EnvPrefix + "_CACHE_ROUTING_MAX_DISCOUNT_MS"),
+			MaxCostFraction:     optionalCacheScoreLimit(env.EnvPrefix + "_CACHE_ROUTING_MAX_COST_FRACTION"),
+			MasterKey:           strings.TrimSpace(os.Getenv(env.EnvPrefix + "_CACHE_MASTER_KEY")),
 		},
 		QualityCap: QualityCapConfig{
 			Enabled:    env.EnvBool(env.EnvPrefix+"_QUALITY_CONCURRENCY_CAP", true),
@@ -204,6 +239,12 @@ func (c Config) Check() error {
 }
 
 func (c CacheRoutingConfig) Check() error {
+	if c.artifactConfigError != nil {
+		return fmt.Errorf("registry: %s: %w", cacheArtifactAllowlistEnv, c.artifactConfigError)
+	}
+	if _, err := newCacheArtifactAllowlist(c.AllowedArtifacts); err != nil {
+		return fmt.Errorf("registry: %s: %w", cacheArtifactAllowlistEnv, err)
+	}
 	mode := c.Mode
 	if mode == "" {
 		mode = CacheRoutingOff
@@ -225,10 +266,10 @@ func (c CacheRoutingConfig) Check() error {
 	if c.MaxHolders < 1 || c.MaxHolders > 32 {
 		return fmt.Errorf("registry: cache routing max holders must be between 1 and 32")
 	}
-	if math.IsNaN(c.MaxDiscountMs) || math.IsInf(c.MaxDiscountMs, 0) || c.MaxDiscountMs < 0 || c.MaxDiscountMs > 10_000 {
+	if !validCacheScoreLimit(c.MaxDiscountMs, 10_000) {
 		return fmt.Errorf("registry: cache routing max discount must be between 0 and 10000ms")
 	}
-	if math.IsNaN(c.MaxCostFraction) || math.IsInf(c.MaxCostFraction, 0) || c.MaxCostFraction < 0 || c.MaxCostFraction > 1 {
+	if !validCacheScoreLimit(c.MaxCostFraction, 1) {
 		return fmt.Errorf("registry: cache routing max cost fraction must be between 0 and 1")
 	}
 	if mode != CacheRoutingOff {
@@ -296,7 +337,7 @@ func (c WarmPoolConfig) Check() error {
 	if c.MaxLoadsPerTick < 0 || c.MaxGlobalPendingLoads < 0 || c.MaxLoadsPerTickCeiling < 0 {
 		return fmt.Errorf("registry: warm pool load limits must be >= 0")
 	}
-	if c.DecodeFloorTPS < 0 || c.BurstBuffer < 0 || c.RampGapFraction < 0 {
+	if c.DecodeFloorTPS < 0 || c.BurstBuffer < 0 || c.RampGapFraction < 0 || c.HeadroomMaxProviders < 0 || c.HeadroomLoadWindows < 0 {
 		return fmt.Errorf("registry: warm pool target tunables must be >= 0")
 	}
 	if c.AssumedPromptTokens < 0 || c.AssumedCompletionTokens < 0 {

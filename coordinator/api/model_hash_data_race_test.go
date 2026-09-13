@@ -69,8 +69,12 @@ func TestHandlersDoNotRaceModelHashRefresh(t *testing.T) {
 		// key each iteration so every call misses the cache and actually reads
 		// p.Models — otherwise reverting ONLY the stats fix would not reliably
 		// trip -race.
-		if path == "/v1/stats" {
+		switch path {
+		case "/v1/stats":
 			srv.readCache.Invalidate("stats:v1")
+		case "/v1/providers/attestation":
+			// Same reasoning: the attestation body is cached for 2s.
+			srv.readCache.Invalidate(providerAttestationCacheKey)
 		}
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		w := httptest.NewRecorder()

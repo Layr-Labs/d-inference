@@ -16,9 +16,19 @@ import (
 // capacityRatePenaltyOf reads the pair's penalty and rate under the lock, as
 // buildCandidateWithReason does.
 func capacityRatePenaltyOf(r *Registry, providerID, model string) (penaltyMs, rate float64) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.capacityRatePenaltyLocked(providerID, model, time.Now())
+	return r.capacityRatePenalty(providerID, model, time.Now())
+}
+
+// rateHistoryOf returns copies of the pair's windowed reject/accept histories.
+func rateHistoryOf(r *Registry, providerID, model string) (rejects, accepts []time.Time) {
+	readGateForSession(r, providerID, func(g *gateState) {
+		if g == nil {
+			return
+		}
+		rejects = append([]time.Time(nil), g.capacityRateRejects[model]...)
+		accepts = append([]time.Time(nil), g.capacityRateAccepts[model]...)
+	})
+	return rejects, accepts
 }
 
 // seedRateOutcomes drives the real entry points in reject-first order. Other
@@ -34,15 +44,14 @@ func seedRateOutcomes(r *Registry, providerID, model string, rejects, accepts in
 
 // ageCapacityRateRejects rewinds the pair's reject outcomes by d.
 func ageCapacityRateRejects(r *Registry, providerID, model string, d time.Duration) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: model}
-	outcomes := r.capacityRateRejects[key]
-	aged := make([]time.Time, len(outcomes))
-	for i, ts := range outcomes {
-		aged[i] = ts.Add(-d)
-	}
-	r.capacityRateRejects[key] = aged
+	withGateForSession(r, providerID, func(g *gateState) {
+		outcomes := g.capacityRateRejects[model]
+		aged := make([]time.Time, len(outcomes))
+		for i, ts := range outcomes {
+			aged[i] = ts.Add(-d)
+		}
+		g.capacityRateRejects[model] = aged
+	})
 }
 
 // Below the minimum sample no penalty may apply, no matter how bad the rate —
@@ -135,10 +144,8 @@ func TestCapacityRateDecays(t *testing.T) {
 	// observationally inert; accept history must not be deleted just because the
 	// last reject expired.
 	r.RecordCapacityAcceptOutcome(provider, model, true)
-	r.mu.RLock()
-	key := capacityRejectKey{ProviderID: provider, ModelID: model}
-	accepts := countInWindow(r.capacityRateAccepts[key], time.Now())
-	r.mu.RUnlock()
+	_, acceptHistory := rateHistoryOf(r, provider, model)
+	accepts := countInWindow(acceptHistory, time.Now())
 	if accepts != 7 {
 		t.Fatalf("recent accept history = %d, want 7 after the new accept", accepts)
 	}
@@ -161,9 +168,12 @@ func TestCapacityRateAcceptsDoNotResetRejects(t *testing.T) {
 	}
 	// The cooldown strike streak WAS cleared by those accepts (its designed
 	// discriminator) — proving the two trackers are decoupled.
-	r.mu.RLock()
-	strikes := len(r.capacityRejectStrikes[capacityRejectKey{ProviderID: provider, ModelID: model}])
-	r.mu.RUnlock()
+	strikes := -1
+	readGateForSession(r, provider, func(g *gateState) {
+		if g != nil {
+			strikes = len(g.capacityRejectStrikes[model])
+		}
+	})
 	if strikes != 0 {
 		t.Fatalf("cooldown strikes = %d after accepts, want 0 (accept-reset is the cooldown's contract)", strikes)
 	}

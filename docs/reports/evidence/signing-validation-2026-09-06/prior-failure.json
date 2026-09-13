@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "run_id": 34030878981,
+  "run_attempt": 1,
+  "workflow_sha": "8cc56074ae7a6dd6553fe3cd3692af1ba58ed9a2",
+  "referenced_callee_sha": "8cc56074ae7a6dd6553fe3cd3692af1ba58ed9a2",
+  "source_sha": "f91fe843b0cb22e2d1b2a85c0652982f3a8ff146",
+  "version": "0.8.16",
+  "status": "FAILED_SIGNING_IDENTITY_LOOKUP_UNSIGNED_ARTIFACT_VERIFIED",
+  "normal_jobs_all_skipped": true,
+  "build_job": {
+    "id": 101480022729,
+    "conclusion": "success"
+  },
+  "notarization": "NOT_RUN",
+  "signed_artifact": "NOT_PRODUCED",
+  "diagnosis": "Valid identity and actual certificate subject were not listed; import success alone does not establish usability. Existing release activates the temporary user keychain search list; 8cc isolated workflow omitted it. Neither a display-name change nor a particular trust-chain fault is proven.",
+  "signing_job": {
+    "id": 101481039004,
+    "conclusion": "failure",
+    "failed_step": "Sign and statically verify the app",
+    "error": "Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL): no identity found",
+    "error_at_utc": "2026-09-06T11:47:53.2858760Z",
+    "cleanup_step": "success"
+  }
+}

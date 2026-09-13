@@ -9,15 +9,13 @@ import { workspaceForPath, type Workspace, type ProviderAccount } from "./worksp
 
 type ConsoleExperience = {
   mode: Workspace;
-  lastWorkspace: Workspace | null;
   chooseWorkspace: (mode: Workspace) => void;
   providerAccount: ProviderAccount;
-  retryProviders: () => void;
 };
 
 const ExperienceContext = createContext<ConsoleExperience>({
-  mode: "consumer", lastWorkspace: null, chooseWorkspace: () => {},
-  providerAccount: { status: "guest", total: 0, online: 0 }, retryProviders: () => {},
+  mode: "consumer", chooseWorkspace: () => {},
+  providerAccount: { status: "guest", total: 0, online: 0 },
 });
 
 export function ConsoleExperienceProvider({ children }: { children: React.ReactNode }) {
@@ -39,8 +37,8 @@ export function ConsoleExperienceProvider({ children }: { children: React.ReactN
   useEffect(() => { if (routeMode) chooseWorkspace(routeMode); }, [routeMode, chooseWorkspace]);
 
   const mode = routeMode ?? lastWorkspace ?? "consumer";
-  const { account, retry } = useProviderAccount(pathname === "/" || mode === "provider");
-  return <ExperienceContext.Provider value={{ mode, lastWorkspace, chooseWorkspace, providerAccount: account, retryProviders: retry }}>{children}</ExperienceContext.Provider>;
+  const { account } = useProviderAccount(mode === "provider");
+  return <ExperienceContext.Provider value={{ mode, chooseWorkspace, providerAccount: account }}>{children}</ExperienceContext.Provider>;
 }
 
 export const useConsoleExperience = () => useContext(ExperienceContext);

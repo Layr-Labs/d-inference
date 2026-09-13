@@ -1,0 +1,43 @@
+{
+  "read_only": true,
+  "remote_mutations": false,
+  "publication_head": "9a4992d2614df9e73b99f2f2fe01c5d6548dca94",
+  "publication_tree": "1adf0128b4a107e813272035cceb76c868eab81d",
+  "publication_clean": true,
+  "source_manifest_sha256": "da88c7aabccd399e20544a73dc182775493a0d4b5db5568b34a8169ffae54bbf",
+  "repositories": [
+    {
+      "repository": "mlx",
+      "default_branch": "main",
+      "observed_unix": 1788741912.6990201,
+      "latest_commit": "6005bca7a3ee99f81c043299b1f73327d3755c9c",
+      "latest_tree": "df4b285773679f28847d646519a8498b8b6238cf",
+      "current_compiled_gitlink": "6cdd2a2548f184dcdc1561807b508adff1e73ac4",
+      "same_tree_as_current_compiled_pin": true,
+      "exact133_manifest_all_file_hashes_bytes_verified": 947,
+      "regular_git_modes_verified": 946,
+      "symlink_target_bytes_verified": [
+        "CLAUDE.md"
+      ],
+      "source_manifest_key": "core"
+    },
+    {
+      "repository": "mlx-c",
+      "default_branch": "main",
+      "observed_unix": 1788741913.1137989,
+      "latest_commit": "9aaf7ff4fb0c2f13b7894d1f7c556850e891559b",
+      "latest_tree": "71ccf05281b04f3519a50a2da593ab3d62e09bc2",
+      "current_compiled_gitlink": "8bdeb0f3c5793c54139e86c5437b09abc9ab9b42",
+      "same_tree_as_current_compiled_pin": true,
+      "exact133_manifest_all_file_hashes_bytes_verified": 132,
+      "regular_git_modes_verified": 132,
+      "symlink_target_bytes_verified": [],
+      "source_manifest_key": "c"
+    }
+  ],
+  "current_parent_gitlinks": [
+    "160000 commit 0a725e3000edabc4911cde345270ca950bfa152f\tlibs/mlx",
+    "160000 commit d1d40d0ee2de101c5d9a04eb66d9e1b4299c6074\tlibs/mlx-swift",
+    "160000 commit 138abee8eea74b7cc72805f4e10195ba4dad4b71\tlibs/mlx-swift-lm"
+  ]
+}

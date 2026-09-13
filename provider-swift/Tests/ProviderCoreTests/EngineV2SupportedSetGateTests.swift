@@ -40,6 +40,21 @@ private func modelInfo(id: String, modelType: String?) -> ModelInfo {
 
 @Suite("EngineV2 supported-set advertise gate")
 struct EngineV2SupportedSetGateTests {
+    @Test("Lightning exact variants are supported without admitting shared-type Nano", arguments: [
+        "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit",
+        "nvidia-nemotron-3.5-lightning",
+        "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+    ])
+    func lightningVariantGate(modelID: String) async throws {
+        let lightning = modelInfo(id: modelID, modelType: "nemotron_h")
+        let nano = modelInfo(id: "mlx-community/NVIDIA-Nemotron-Nano", modelType: "nemotron_h")
+        #expect(EngineV2SupportedModels.isSupported(model: lightning))
+        #expect(!EngineV2SupportedModels.isSupported(model: nano))
+        #expect(!EngineV2SupportedModels.isSupported(modelType: "nemotron_h"))
+        let loop = try makeGateLoop(models: [lightning, nano])
+        #expect(await loop.isModelAdvertised(lightning.id))
+        #expect(!(await loop.isModelAdvertised(nano.id)))
+    }
 
     @Test("init drops unsupported families from the advertised set; supported ones stay")
     func initGateFiltersAdvertisedSet() async throws {

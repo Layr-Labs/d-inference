@@ -65,6 +65,7 @@ type rejectionInfo struct {
 // request path when the caller did not already do so. Best-effort: it never
 // blocks or fails the request.
 func (s *Server) recordRejection(info rejectionInfo) {
+	annotateOutcomeRejection(info)
 	if s == nil || s.store == nil {
 		return
 	}
@@ -121,6 +122,10 @@ func (s *Server) recordRejection(info rejectionInfo) {
 			model = info.requestedModel
 		}
 		s.recordRequestOutcome(model, newUnknownKVBackendAttribution(), orUptimeClassForRejection(info.httpStatus))
+		// OR-view mirror of the pre-dispatch arm (the dispatch-stage exhausted
+		// rejection is counted by run()'s tail). Resolved model only: the raw
+		// requested name is client-controlled and must not mint tag values.
+		s.recordRequestOutcomeORView(info.resolvedModel, orUptimeClassForRejection(info.httpStatus))
 	}
 
 	// Seed the counterfactual from whatever the caller already computed.

@@ -1,6 +1,6 @@
 # Coordinator
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `7ae06021f`
 
 The coordinator is Darkbloom's control plane: one Go HTTP/WebSocket service
 (binary `coordinator/cmd/coordinator`) that authenticates consumers, picks a
@@ -142,7 +142,7 @@ flowchart TD
    (`coordinator/saferun/saferun.go`).
 4. **Only trusted, current providers receive traffic.** Routing passes
    through one chokepoint that checks trust level, version floor, health
-   ejection and release-policy evidence (`coordinator/registry/registry.go`,
+   ejection and release-policy evidence (`coordinator/registry/attestation_policy.go`,
    `providerSupportsPrivateTextLocked`).
 5. **Shutdown drains before it disconnects.** New requests get 429 with
    `Retry-After` while in-flight streams finish, bounded by the drain grace

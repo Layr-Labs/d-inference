@@ -4,10 +4,9 @@ import Foundation
 ///
 /// Every `darkbloom benchmark` mode that constructs an engine records one of
 /// these, because every one of them can measure a backend nobody selected:
-/// `--kv-backend auto` resolves CONTIGUOUS as of v0.8.1, so a run that
-/// meant to measure paged and forgot the flag measures the other arm, and
-/// an explicit `paged` can still be vetoed by the fleet kill switch or
-/// degraded to contiguous by it. A phase that cannot name its
+/// `--kv-backend auto` follows model eligibility and can fall back to
+/// contiguous, while explicit `paged` can still be vetoed by policy or
+/// the fleet kill switch. A phase that cannot name its
 /// backend produces numbers that belong to no arm.
 ///
 /// One shape across the sweep, the scheduler-prefill run, and the arrival

@@ -23,6 +23,10 @@ func ValidatePrefixCacheRegistration(msg *protocol.RegisterMessage) error {
 	}
 	_, err = validatePrefixCacheCapabilities(
 		msg.PrefixCacheProtocol, msg.PrefixCacheV2Models, models)
+	if err == nil {
+		_, err = validateMemoryPrefixCacheCapabilities(
+			msg.PrefixCacheProtocol, msg.PrefixCacheMemoryModels, models)
+	}
 	return err
 }
 
@@ -69,6 +73,19 @@ func validatePrefixCacheCapabilities(
 	return result, nil
 }
 
+func validateMemoryPrefixCacheCapabilities(
+	version int,
+	capabilities []protocol.PrefixCacheV2Capability,
+	models map[string]protocol.ModelInfo,
+) (map[string]protocol.PrefixCacheV2Capability, error) {
+	for _, capability := range capabilities {
+		if capability.ReadyBoundaryMode != "" {
+			return nil, fmt.Errorf("%w: durable boundary mode on resident capability", errInvalidPrefixCacheCapability)
+		}
+	}
+	return validatePrefixCacheCapabilities(version, capabilities, models)
+}
+
 func validatePrefixCacheCapability(
 	capability protocol.PrefixCacheV2Capability,
 	models map[string]protocol.ModelInfo,
@@ -99,6 +116,10 @@ func validatePrefixCacheCapability(
 	if !capability.Enabled || !capability.Ready {
 		return fmt.Errorf(
 			"%w: advertised v2 model %q is not enabled and ready", errInvalidPrefixCacheCapability, capability.ModelID)
+	}
+	if capability.ReadyBoundaryMode != "" &&
+		capability.ReadyBoundaryMode != protocol.PrefixCacheReadyBoundaryCheckpoint {
+		return fmt.Errorf("%w: unsupported ready boundary mode", errInvalidPrefixCacheCapability)
 	}
 	return nil
 }
@@ -162,7 +183,8 @@ func equalPrefixCacheCapabilities(
 }
 
 // UpdatePrefixCacheCapabilities atomically replaces the live connection
-// capability set. Any change invalidates all connection-scoped cache evidence.
+// capability set. Changed models lose their evidence; other models retain it.
+// Protocol changes invalidate all connection-scoped evidence.
 func (r *Registry) UpdatePrefixCacheCapabilities(
 	providerID string,
 	version int,
@@ -175,32 +197,7 @@ func (r *Registry) UpdatePrefixCacheCapabilities(
 		capabilities,
 		nil,
 		nil,
+		nil,
 	)
 	return err
-}
-
-func prefixCacheCapabilityRemovalReason(
-	previous, current map[string]protocol.PrefixCacheV2Capability,
-) cacheHolderRemovalReason {
-	if len(previous) == 0 || len(previous) != len(current) {
-		return cacheHolderRemovalCapabilityChange
-	}
-	epochChanged := false
-	for modelID, before := range previous {
-		after, ok := current[modelID]
-		if !ok {
-			return cacheHolderRemovalCapabilityChange
-		}
-		if before.CacheEpoch != after.CacheEpoch {
-			epochChanged = true
-			before.CacheEpoch = after.CacheEpoch
-		}
-		if before != after {
-			return cacheHolderRemovalCapabilityChange
-		}
-	}
-	if epochChanged {
-		return cacheHolderRemovalEpochChange
-	}
-	return cacheHolderRemovalCapabilityChange
 }

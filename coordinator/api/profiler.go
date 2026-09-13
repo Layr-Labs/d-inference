@@ -130,11 +130,13 @@ func (s *Server) profilerEnabled() bool {
 
 // newRequestProfile creates the request-level profile at inference-handler
 // entry (lazily, never in the middleware) and copies the pre-handler stamps.
-// Returns nil when the profiler is off, so every call site is nil-safe.
+// With heavy profiling off, only accounted inference requests create compact
+// lifecycle evidence. Other call sites remain nil-safe and allocation-free.
 func (s *Server) newRequestProfile(r *http.Request, model, publicModel string, stream bool) *registry.RequestProfile {
-	if !s.profilerEnabled() || r == nil {
+	if r == nil || (!s.profilerEnabled() && requestOutcomeFromContext(r.Context()) == nil) {
 		return nil
 	}
+	setOutcomeStage(r, "validation")
 	m := requestMetaFromContext(r.Context())
 	t0 := time.Now()
 	coordID := ""
@@ -142,7 +144,17 @@ func (s *Server) newRequestProfile(r *http.Request, model, publicModel string, s
 		t0 = m.start
 		coordID = m.coordID
 	}
-	rp := registry.NewRequestProfile(t0, coordID, s.finalizeAttemptProfile, profileFallbackGrace)
+	o := requestOutcomeFromContext(r.Context())
+	rp := registry.NewRequestProfile(t0, coordID, func(rp *registry.RequestProfile, ap *registry.AttemptProfile) {
+		o.attemptFinalized(rp, ap)
+		s.finalizeAttemptProfile(rp, ap)
+	}, profileFallbackGrace)
+	rp.CompactOnly = !s.profilerEnabled()
+	if o != nil {
+		o.mu.Lock()
+		o.profile = rp
+		o.mu.Unlock()
+	}
 	rp.Endpoint = httpPathLabel(r.Pattern)
 	rp.Stream = stream
 	rp.Model = model

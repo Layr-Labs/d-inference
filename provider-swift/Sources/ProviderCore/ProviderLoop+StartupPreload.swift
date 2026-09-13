@@ -416,14 +416,14 @@ extension ProviderLoop {
         // routed request admitted in it would only be cancelled by the
         // `.disconnected` handler. Raised here, actor-isolated, before any
         // suspension; lifted by the `.connected` event of the new session.
-        isReconnectingAfterRetirement = true
+        setRetirementReconnectBarrier(true)
         if hasInflightWork {
             // Work landed in the hop after the drain observed empty: let it
             // ride out under the barrier (nothing new is admitted), then close.
             _ = await waitForInflightDrain(
                 timeout: Self.shutdownDrainTimeout, reason: "retirement reconnect")
             if isShuttingDown || Task.isCancelled {
-                isReconnectingAfterRetirement = false
+                setRetirementReconnectBarrier(false)
                 return
             }
         }

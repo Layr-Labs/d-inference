@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-04 · commit `ac60c5ada`
+> Last updated: 2026-09-10 · commit `5f021ba4d`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -9,12 +9,100 @@ build, sign, notarize, hash, upload, and register the bundle. The coordinator
 verifies every registered artifact by re-downloading it, so a release either
 lands fully or not at all.
 
+The prepared version is **0.9.2**; its source changes since `v0.9.1` are
+collected in [`CHANGELOG.md`](../../CHANGELOG.md). The version bump prepares
+the source for the provider bundle. Publication and coordinator deployment remain
+separate operations; the bump alone does not change the registered release
+returned by `GET /v1/releases/latest`.
+
+### Provider-only 0.9.2 rollout
+
+A coordinator binary upgrade is not required solely to register 0.9.2. The
+0.9.1 coordinator already validates and stores the release, refreshes active
+binary/metallib trust, preserves other active releases and serves the new
+version through `GET /v1/releases/latest`. `LatestProviderVersion` is a display
+fallback, not an exact-version admission pin (`coordinator/api/release_handlers.go`,
+`handleRegisterRelease`; `coordinator/api/server.go`, `SyncBinaryHashes` and
+`SyncRuntimeManifest`).
+
+The 0.9.2 assistant transition uses existing slot state `reloading`, capacity
+quotes and 503 `slot_state` refusals; accepted requests keep their old engine
+until the swap (`provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`,
+`beginMTPUpgradeDrain` and `rejectIfDrainingForMTP`). It can temporarily reduce
+Gemma capacity. Rollout jitter spreads attempts but does not guarantee fleet
+headroom. Coordinator warm-pool headroom changes are a separate deployment.
+
+Before fleet publication, complete the outstanding checks in the
+[0.9.2 rollout review](../reports/2026-09-10-provider-092-rollout-review.md)
+on the exact signed candidate against the existing coordinator. Verify mixed
+0.9.1/0.9.2 trust, real requests during assistant download/drain/swap, cache
+identity changes and restart. Preserve existing cache-routing controls: local
+Gemma SSD reuse does not enable coordinator holder selection, and HF-first
+assistant downloads require the separate catalog metadata update.
+
+After an approved provider-only publication, verify the registered version
+and actual inference separately. `/health` should retain the previous
+coordinator `build_commit`; its build `version` can remain 0.9.1 while
+`/v1/releases/latest` returns 0.9.2. Registration exposes the release to
+provider auto-update; it is not a limited canary rollout by itself.
+
+## Environment-free signing validation
+
+[`provider-signing-validation.yml`](../../.github/workflows/provider-signing-validation.yml)
+is a separate manual workflow for a reviewed full `source_sha` and its existing
+`version`. It has no GitHub `environment` field or environment selector and no
+coordinator registration, R2 upload, GitHub Release, tag or deployment step.
+Its token has only `contents: read` and `actions: read`.
+
+The build job has no signing secrets. It checks the source's verified commit
+signature and version parity, builds the exact provider and metallib, then stages
+an unsigned app with the existing SwiftPM resource helper. A new runner downloads
+that same run's artifact, verifies its inventory/source/version, rejects unsafe
+archive paths and links, and checks the candidate entitlements against the
+reviewed workflow tooling (`scripts/provider-signing-validation.py`).
+
+Unpacking limits the compressed archive and total declared member bytes to
+2 GiB, each member to 512 MiB, and the archive to 16,384 members. Normalized
+duplicate paths, including case aliases, are refused. The app's bundle ID,
+executable name and both version fields must match the expected source before
+signing and when the final receipt is written.
+
+The signing job uses repository-scoped `APPLE_CERTIFICATE_P12`,
+`APPLE_CERTIFICATE_PASSWORD`, `PROVISIONING_PROFILE_BASE64`, `APPLE_ID` and
+`APPLE_APP_PASSWORD`. It imports an isolated temporary keychain, validates the
+profile's team, keychain group, production APNs grant, expiry and declared
+application identity (`scripts/provider-signing-validation.py`, `profile`). Both
+`com.apple.application-identifier` and `application-identifier` are checked when
+present: each must name the exact provider team/app or a wildcard that covers
+it. Profiles may omit those declarations; conflicting, malformed or unrelated
+declarations fail validation. The job signs the normal app components, then
+checks the signed CLI's keychain group, APNs entitlement and disabled debug-task
+entitlement. It checks Apple notarization and a stapled ticket, and emits
+post-sign file hashes. Keychain material is removed even on failure. Only explicit Actions
+artifacts and non-secret notarization diagnostics are retained for three days.
+
+The normal APNs entitlement retains its required `production` value; this is a
+static signing entitlement, not a GitHub environment or a provider registration.
+The workflow never executes the candidate CLI, helper, model or inference server.
+Signed runtime smoke, installation, model correctness and release approval remain
+separate gates. The original release workflow's `validation_only` option still
+selects a deployment environment and is not this isolated path.
+
+Review and make the new manual workflow available before authorizing a dispatch.
+Source preparation and the CPU helper tests do not claim a completed signing run:
+
+```bash
+python3 scripts/test-provider-signing-validation.py
+```
+
 ## When to use
 
 - Shipping a provider release to the fleet (production coordinator
   `api.darkbloom.dev`).
 - Publishing a dev build to the dev coordinator for testing
   (`workflow_dispatch` with `environment=dev`).
+- Building a signed, notarized validation bundle for isolated tests
+  (`environment=dev`, `validation_only=true`).
 
 Coordinator deploys are a separate runbook:
 [`coordinator-deploy.md`](coordinator-deploy.md).
@@ -52,8 +140,8 @@ Coordinator deploys are a separate runbook:
 
 The provider and coordinator versions must be identical strings:
 
-- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.8.16"`
-- `coordinator/api/server.go` — `var LatestProviderVersion = "0.8.16"`
+- `provider-swift/Sources/ProviderCore/ProviderCore.swift` — `public static let version = "0.9.2"`
+- `coordinator/api/server.go` — `var LatestProviderVersion = "0.9.2"`
 
 ```bash
 ./scripts/check-release-version.sh          # provider == coordinator, semver
@@ -61,8 +149,8 @@ The provider and coordinator versions must be identical strings:
 ```
 
 `check-release-version.sh` accepts an optional expected version
-(`check-release-version.sh v0.8.17`) and an optional reported string from a
-built binary (`darkbloom 0.8.17` or `0.8.17`); the workflow calls it in all
+(`check-release-version.sh v0.9.2`) and an optional reported string from a
+built binary (`darkbloom 0.9.2` or `0.9.2`); the workflow calls it in all
 three forms. CI job "Release Integrity" runs the two commands above on every
 push. Do not touch `minProviderVersionForDesiredModels` (`"0.5.17"`, same file)
 for a routine release; it is the floor for desired-model fan-out, not the
@@ -91,24 +179,24 @@ change that is not fixture-synced will fail the release, not just CI.
 
 ```bash
 git checkout master && git pull --ff-only
-git tag -a v0.8.17 -m "v0.8.17 — <one-line theme>
+git tag -a v0.9.2 -m "v0.9.2 — <one-line theme>
 
 <body: the changelog bullets for this release>"
-git push origin v0.8.17
+git push origin v0.9.2
 ```
 
 Accepted tag patterns (`on.push.tags`): `v*.*.*`, `v*-swift`, `v*-swift.*`.
 Tags containing `-dev.` are rejected by `resolve-env` ("`-dev` tags are
 unsupported by the exact-version release contract"); use step 5 for dev.
 The version is derived from the tag (`v` stripped, `-swift*` suffix stripped)
-and must equal the source constants, or `resolve-env` fails **before** the
-environment approval is requested ("Fail before approval on version drift").
+and must equal the source constants. `scripts/resolve-provider-release.sh` checks
+this before writing job outputs or requesting environment approval.
 
 ### 5. Dev release (manual dispatch)
 
 ```bash
 gh workflow run release-swift.yml --ref <branch> -f environment=dev
-# optional: -f version_override=0.8.17
+# optional: -f version_override=0.9.2
 ```
 
 Without a tag the version is read from `ProviderCore.swift` (or
@@ -116,6 +204,29 @@ Without a tag the version is read from `ProviderCore.swift` (or
 without a tag is refused ("Production publication requires a source-matching
 release tag"). Dev releases use `DEV_*` secrets, register with the dev
 coordinator, and create no GitHub Release.
+
+### Signed validation bundle
+
+To test a source revision before release registration, dispatch the same signing,
+notarization and final-bundle smoke pipeline in validation mode:
+
+```bash
+gh workflow run release-swift.yml --ref <branch> -f environment=dev -f validation_only=true
+gh run download <run-id> --name darkbloom-signed-validation-<commit>-<attempt> --dir <new-directory>
+```
+
+The branch and recursive submodule commits must be available to CI. Source version
+checks and the dev environment's approval rules still apply. This mode needs the
+Apple signing/profile/notarization secrets; it skips publication-secret resolution,
+R2 uploads, release registration and GitHub Release creation. The default remains
+`validation_only=false` for ordinary releases.
+
+The Actions artifact contains the final signed tarball and
+`darkbloom-validation-identity.json`, with source/submodule revisions and final
+bundle, executable and metallib hashes. Retention is 14 days. Verify those hashes
+before an isolated model or persistent-cache restart test, and retain the artifact
+with that test's evidence. A successful artifact build does not establish restart
+durability or authorize rollout.
 
 ### 6. Approve the environment deployment
 
@@ -146,14 +257,14 @@ The registration payload (`coordinator/api/release_handlers.go`,
 
 ```json
 {
-  "version": "0.8.17",
+  "version": "0.9.2",
   "platform": "macos-arm64",
   "backend": "mlx-swift",
   "binary_hash": "<sha256 of bin/darkbloom>",
   "bundle_hash": "<sha256 of the tar.gz>",
   "metallib_hash": "<sha256 of mlx.metallib>",
-  "url": "<R2_PUBLIC_URL>/releases/v0.8.17/darkbloom-bundle-macos-arm64.tar.gz",
-  "changelog": "<tag subject + body, or 'Release v0.8.17'>"
+  "url": "<R2_PUBLIC_URL>/releases/v0.9.2/darkbloom-bundle-macos-arm64.tar.gz",
+  "changelog": "<tag subject + body, or 'Release v0.9.2'>"
 }
 ```
 
@@ -165,7 +276,7 @@ validates semver/platform/hex, requires `metallib_hash` when `backend` is
 2-minute timeout), checks `bundle_hash`, extracts `bin/darkbloom` and checks
 `binary_hash` (`verifyReleaseArtifact`). Only then does it `SetRelease`,
 resync the binary-hash policy (`SyncBinaryHashes`, `SyncRuntimeManifest`), and
-invalidate the cached `/v1/version` and `/v1/releases/latest` responses.
+invalidate the cached `/api/version` and `/v1/releases/latest` responses.
 Response: `{"status":"release_registered","release":{…}}`.
 
 Registration is safe against the live fleet: the rebuilt runtime manifest is
@@ -181,7 +292,7 @@ hashes leave the manifest only when that release is deactivated
 ```bash
 COORD=https://api.darkbloom.dev
 curl -fsS "$COORD/v1/releases/latest?platform=macos-arm64" | jq .   # version, hashes, url, changelog
-curl -fsS "$COORD/v1/version" | jq .                                # same row (falls back to LatestProviderVersion when no release exists)
+curl -fsS "$COORD/api/version" | jq .                                # same row (falls back to LatestProviderVersion when no release exists)
 curl -fsS "$COORD/v1/admin/releases" -H "Authorization: Bearer $ADMIN_KEY" | jq '.releases[] | {version, active, created_at}'
 ```
 
@@ -218,7 +329,7 @@ it** so the previous active version becomes "latest" again.
    ```bash
    curl -fsS -X DELETE "$COORD/v1/admin/releases" \
      -H "Authorization: Bearer $ADMIN_KEY" -H "Content-Type: application/json" \
-     -d '{"version":"0.8.17","platform":"macos-arm64"}'
+     -d '{"version":"0.9.2","platform":"macos-arm64"}'
    ```
 
    `handleAdminDeleteRelease` answers `409 release_in_use` while connected
@@ -228,7 +339,7 @@ it** so the previous active version becomes "latest" again.
    immediately (e.g. compromised); providers on it lose routing until they
    downgrade.
 2. `GET /v1/releases/latest` now serves the highest remaining active version;
-   `/v1/version` follows within its 1-minute cache TTL.
+   `/api/version` follows within its 1-minute cache TTL.
 3. Repoint the convenience objects in R2, which the workflow overwrote:
 
    ```bash
@@ -241,7 +352,7 @@ it** so the previous active version becomes "latest" again.
    (`install.sh` uses the versioned URL from `/v1/releases/latest`; the
    `latest/` objects are for legacy clients.)
 4. Mark the GitHub Release as a pre-release or delete it
-   (`gh release delete v0.8.17`), and record the outcome in `CHANGELOG.md` as
+   (`gh release delete v0.9.2`), and record the outcome in `CHANGELOG.md` as
    `## Release candidate vX.Y.Z (not shipped; …)`.
 5. Do **not** re-register the same version with a different artifact. Fix
    forward with a new patch version.
@@ -252,4 +363,4 @@ it** so the previous active version becomes "latest" again.
 - [`../developer/test.md`](../developer/test.md) — the CI gates a release depends on.
 - [`coordinator-deploy.md`](coordinator-deploy.md) — shipping the coordinator half of a version bump.
 - [`release-policy-rollout.md`](release-policy-rollout.md) — how registered releases feed the routing gate.
-- [`../reference/api-contracts.md`](../reference/api-contracts.md) — `/v1/releases/latest`, `/v1/version` shapes.
+- [`../reference/api-contracts.md`](../reference/api-contracts.md) — `/v1/releases/latest`, `/api/version` shapes.

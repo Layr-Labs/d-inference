@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-04 · commit `d574bd5af`
+> Last updated: 2026-09-09 · commit `4c77fc285`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -9,6 +9,14 @@ does not, and which files an operator may touch. Configuration values are
 listed once in [`../reference/configuration.md`](../reference/configuration.md);
 the SSD cache file format is in
 [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md).
+
+Model versions also store the optional `hugging_face_artifact` as nullable JSONB
+(`coordinator/store/postgres.go`). `SetModelVersion` replaces it and invalidates
+the existing model read-through cache; [artifact schema](../reference/model-registry-format.md#hugging-face-download-artifact).
+
+Attempt decision fields are additive columns and existing provider JSONB;
+[prediction telemetry](../reference/prediction-decision-telemetry.md#storage-and-rollout)
+defines migration, historical NULLs and the separately applied waterfall view.
 
 ## Context
 
@@ -25,14 +33,15 @@ Keychain. Nothing prompt-derived is stored on either side.
 
 ### The store interface
 
-`Store` (`coordinator/store/interface.go`) is the union of twelve domain
+`Store` (`coordinator/store/interface.go`) is the union of thirteen domain
 interfaces declared in `coordinator/store/interface_domains.go`. Callers depend
-on the narrow slice they need; both implementations satisfy all twelve.
+on the narrow slice they need; both implementations satisfy all thirteen.
 
 | Sub-interface | Owns |
 |---|---|
 | `APIKeyStore` | Consumer API keys: create, seed, validate, per-key limits and counts. |
 | `UsageStore` | Usage events and settled payments plus the totals, time-series, geo and leaderboard aggregations behind `/v1/stats`. |
+| `RequestOutcomeStore` | Versioned unsampled `request_outcomes`, unique on coordinator UUID, with bounded compact attempt evidence; see [incoming request accounting](request-accounting.md). |
 | `TelemetryStore` | Routing-decision snapshots (`inference_routes`), rejection records and the profiler's `request_profiles`/`fleet_snapshots`; prompt-free by construction. |
 | `LedgerStore` | The double-entry balance ledger; every amount is micro-USD. |
 | `BillingStore` | Referrals, deposit sessions, per-account model prices and Stripe Connect withdrawals. |
@@ -73,11 +82,16 @@ the only connection-level knob; there is no separate host/user/password set.
 
 ### Migrations run inside the process, at every boot
 
-There is no migration tool and no versioned migration directory for the
+`coordinator --migrate-only` applies the same migrations and exits before admin
+key seeding, listeners, or background workers. It requires a PostgreSQL URL;
+there is no memory-store fallback or schema-skip mode. Normal startup still
+checks every migration. There is no versioned migration directory for the
 schema. `PostgresStore.migrate` (`coordinator/store/postgres.go`) executes an
 ordered slice of idempotent statements — `CREATE TABLE IF NOT EXISTS`,
 `ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `DROP TABLE IF EXISTS`
-for retired tables — on every start, then three post-loop steps:
+for retired tables — on every start, followed by:
+`migrateEarningsSummary` (`postgres_earnings_summary_migration.go`),
+`ensureProviderRestoreIndexes` (`postgres_startup.go`),
 `migrateUsageTotals` (`postgres_usage_totals_migration.go`),
 `migrateWithdrawableBalance` (`postgres_withdrawable_migration.go`) and
 `ensureProviderEarningsJobIndex`. One-shot *data* migrations are gated by a row
@@ -91,6 +105,86 @@ table and kept the coordinator from binding its port) and
 behind a long query's lock). `coordinator/deploy/start.sh` does not touch the
 database; it only prepares the persistent disk and MicroMDM before `exec
 coordinator`.
+
+The earnings-summary backfill pins a `REPEATABLE READ` snapshot before publishing
+its attempted-plan marker on a separate, bounded database connection. Missing
+account and provider keys, and their historical earnings, are read from that
+same pinned snapshot. An old writer committing before or after the attempt
+marker remains outside the captured history if it committed after the snapshot.
+The plan commits its historical deltas to `earnings_summary_backfill_pending`
+alongside the ready-plan marker. Existing counters at the pinned snapshot are
+preserved. A short transaction adds one pending key to its live counter and
+removes the pending item atomically; the final `backfill_earnings_summary_v1`
+marker is recorded only after the queue is empty.
+
+Retries resume committed progress without rescanning history or double-adding
+applied keys. Migration runners serialize on a session advisory lock using one
+leased connection; serving writers do not participate in that lock. Only initial
+planning opens the extra marker connection; it does not wait for a second pool
+slot. A failed or uncertain marker write aborts planning. If the attempt marker
+committed but the ready plan did not, retry refuses to replan against potentially
+partial counters. The coordinator remains unready until explicit reconciliation;
+an already committed plan continues automatically from its pending keys.
+
+The existing `CreditProviderAccount` and `SettleProviderFloorDraw` SQL statements
+insert earnings and update both summaries atomically. A live writer that creates
+a counter after the planning snapshot retains its increment when the captured
+historical delta is added. Historical scans take no writer-blocking table locks,
+and per-key application never holds an account row while waiting on a provider
+row. Offline imports or an old record-only writer without atomic summary updates
+must be quiesced during preparation. Already inconsistent counters at the
+planning snapshot are not recomputed or silently repaired.
+
+`RecordProviderEarning` and `CreditProviderAccount` maintain new summaries from
+inserted earning rows, so duplicate non-empty job IDs never increment twice.
+`base_reward` contributes money but zero inference count/tokens, matching floor
+draw settlement and MemoryStore. The record-only method does not credit balances
+or create ledger entries.
+
+Normal upgrades do not require subtracting historical base rewards from existing
+summaries: `SettleProviderFloorDraw` has atomically maintained both summary rows
+with zero work since base rewards were introduced, and the former startup
+backfill used `ON CONFLICT DO NOTHING`. Its all-row count therefore did not
+overwrite those maintained summaries. Imported earnings or manually deleted and
+rebuilt summaries can have different provenance and require evidence-backed
+reconciliation. Neither subtracting every retained base reward nor replacing
+lifetime counters from retained detail rows is a safe general repair; the
+upgrade regression in `coordinator/store/earnings_summary_legacy_upgrade_test.go`
+checks the production sequence and preservation of lifetime totals.
+
+Postgres startup logs connection time and individual schema statement durations
+as bounded phase labels, plus named backfills/index phases. Logs omit SQL and
+parameters. The first boot that installs the new marker still performs the
+historical aggregation; preparing migrations before the drain moves that work
+out of the cutover window. Concurrent index creation can still wait for old
+transactions. See the [deployment procedure](../operations/coordinator-deploy.md)
+for the approval and compatibility boundary.
+
+Provider history is recovered on demand after successful live SE attestation,
+using `GetProviderForRestore` with the verified serial first, then SE key if
+no serial record exists. Ordered partial indexes on each identity plus
+`last_seen DESC, id DESC` select the newest prior session. Every currently registered session is excluded, and a returned row is checked
+again for sessions arriving during lookup. Until history lookup/restoration
+finishes, persisted rows omit the indexed serial and SE key, including late writes
+from a registration that already disconnected. Provider-record and reputation persistence share a mutex, and pending reputation
+writes are skipped. Completed records publish together with their reputation in
+one Postgres transaction or MemoryStore lock (`UpsertProviderWithReputation`,
+`coordinator/store/provider_record_write.go`), so an older zero snapshot cannot
+overwrite the completed state and no completed identity appears without its
+reputation. Registration retries history/reputation reads up to three times,
+within one five-second deadline shared with `RestoreProviderStateContext`.
+Verified identities still awaiting restoration fail `state_restoring` in routing,
+capacity and model-loading gates; owner self-route cannot bypass it. Exhaustion
+ends the new registration with WebSocket close code 1013 before account lookup,
+MDM scheduling or duplicate-session eviction. Normal reconnect can retry against
+preserved history. Missing legacy reputation is allowed; a failed read never
+marks restoration complete. `NewServer` does not scan historical providers.
+The existing `RestoreProviderState` trust cap and independent newest-nonempty-MDA
+chain re-verification remain in force.
+Store errors are logged and do not grant hardware trust. Reputation is still
+loaded by the selected historical record ID. `ListProviderRecords` remains an
+explicit administrative store operation and now returns scan/iteration errors
+instead of a partial-success list.
 
 ```mermaid
 flowchart LR
@@ -112,11 +206,19 @@ Roughly forty tables; grouped by what would be lost if the family vanished.
 | Family | Tables | Notes |
 |---|---|---|
 | Identity and access | `api_keys`, `users`, `device_codes`, `provider_tokens`, `publishing_api_keys`, `invite_codes`, `invite_redemptions` | Keys are stored as hashes with a display prefix; `users` carries the Stripe Connect fields. |
-| Money | `balances`, `ledger_entries`, `billing_sessions`, `model_prices`, `referrers`, `referrals`, `stripe_withdrawals`, `provider_earnings`, `earnings_summary`, `provider_payouts`, `provider_floor_draws`, `payments` (legacy) | The ledger is append-only; `balances` is the materialised view of it. Semantics in [`billing.md`](billing.md). |
-| Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter kept by `migrateUsageTotals`. |
-| Provider fleet and trust | `providers`, `provider_reputation`, `provider_sessions`, `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets`, `provider_log_reports` | Trust reuse and code attestations are durable so a redeploy does not re-challenge the whole fleet; see [`security/attestation.md`](security/attestation.md). `provider_log_reports.serial_number` is kept empty by trigger. |
+| Money | `balances`, `ledger_entries`, `billing_sessions`, `model_prices`, `referrers`, `referrals`, `stripe_withdrawals`, `global_payout_recipients`, `global_payout_withdrawals`, `provider_earnings`, `earnings_summary`, `provider_payouts`, `provider_floor_draws`, `payments` (legacy) | The ledger is append-only; `balances` is the materialised view of it. Semantics in [`billing.md`](billing.md). |
+| Usage and routing telemetry | `usage`, `usage_totals`, `inference_routes`, `request_rejections`, `request_profiles`, `fleet_snapshots`, `request_outcomes` | Row per request, per dispatched attempt, per rejection, per profiled attempt, per fleet sample; `usage_totals` is a single-row counter kept by `migrateUsageTotals`. |
+| Provider fleet and trust | `providers`, `provider_reputation`, `provider_sessions`, `provider_trust_reuse`, `provider_verification_jobs`, `code_attestations`, `code_attest_push_budgets`, `provider_log_reports` | Trust reuse and code attestations are durable. `code_attestations.continuous_coverage_until` is compare-and-updated only for the exact original proof tuple; it never refreshes `attested_at` or inserts proof. This allows bounded same-process resume after a redeploy; see [`security/attestation.md`](security/attestation.md). `provider_log_reports.serial_number` is kept empty by trigger. |
 | Models and releases | `model_registry`, `model_versions`, `model_version_files`, `model_active_versions`, `model_aliases`, `releases` | The catalog the registry syncs at boot; see [`model-registry.md`](model-registry.md). |
-| Bookkeeping | `schema_migrations` | Markers for one-shot data migrations. |
+| Bookkeeping | `schema_migrations`, `earnings_summary_backfill_pending` | Completion/plan markers and resumable per-key historical deltas. |
+
+### Global Payouts state
+
+Payouts marked `manual_reconciliation_required` without an external payment ID are excluded from automatic scans and claims; their pending row and debit are retained. A verified external ID permits readback reconciliation to resume (`coordinator/store/global_payouts.go`, `GlobalPayout.RequiresManualReconciliation`).
+
+Global Payouts uses separate recipient and withdrawal tables with immutable request data, persisted dispatch counts, definitive rejection records, an indexed quote expiry and a unique external-payment index. `GlobalPayoutStore` is accessed through `store.As` so decorators preserve the capability. These mutations do not write the cached users table. The migration creates the payout tables and adds/backfills indexed quote expiry for an earlier Global Payouts schema (`coordinator/store/global_payouts_postgres.go`, `globalPayoutSchema`). Cleanup locks and removes only expired, never-confirmed quotes in bounded batches; confirmed payout and ledger records are retained (`coordinator/store/global_payouts_maintenance.go`, `PruneExpiredGlobalPayoutQuotes`).
+
+Quote invalidation is serialized with confirmation. An invalidation flag prevents an earlier request timestamp from admitting a canceled quote; an already-confirmed payout is returned unchanged for reconciliation (`coordinator/store/global_payouts_quote_expiry.go`, `ExpireGlobalPayoutQuote`).
 
 ### Retention and pruning
 
@@ -124,7 +226,7 @@ The store keeps most business rows forever; the loops that exist are narrow.
 
 | Loop | Where | What it bounds |
 |---|---|---|
-| Profiler retention sweep, hourly | `coordinator/api/profiler_fleet.go` (`StartProfilerLoops` → `PruneTelemetry`) | `request_profiles` and `fleet_snapshots` older than their retention windows ([telemetry-inventory](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres)), in batches; runs even when the profiler is off. |
+| Profiler retention sweep, hourly | `coordinator/api/profiler_fleet.go` (`StartProfilerLoops` → `PruneTelemetry`) | `request_outcomes` by receipt time, plus `request_profiles` and `fleet_snapshots` older than their retention windows ([telemetry-inventory](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres)), in batches; runs even when the profiler is off. |
 | Memory-store pruner, every 15 minutes | `coordinator/cmd/coordinator/main.go` (`memory_store_pruner`, `MemoryStore.Prune`) | Append-only history slices to `DefaultPruneMaxEntries` (100 000); memory store only. |
 | Session reconciliation, once at boot | `coordinator/cmd/coordinator/main.go` (`CloseOpenProviderSessions`) | Closes `provider_sessions` rows whose last heartbeat is more than 3 minutes old, so a blue-green cutover does not truncate live sessions. |
 | Read-cache janitor, every minute | `coordinator/api/server.go` (`StartReadCacheJanitor`) | In-process response cache, not a table. |
@@ -168,9 +270,10 @@ KV blocks under a per-model key, not tokens.
    in `PostgresStore.migrate` can run on an already-migrated database; the
    process serves traffic only after the whole slice succeeds
    (`coordinator/store/postgres.go`).
-3. **One-shot data migrations run at most once.** They test and insert their
-   marker in `schema_migrations` inside the same statement
-   (`coordinator/store/postgres.go`).
+3. **Committed migration progress is not applied twice.** Small migrations
+   commit their marker with their update. Earnings backfill commits its plan,
+   then each delta with pending-row deletion, before recording completion
+   (`coordinator/store/postgres_earnings_summary_backfill.go`).
 4. **Boot never holds a long lock on a hot table.** The
    `provider_earnings(job_id)` unique index is built `CONCURRENTLY`, only after
    a duplicate check, and skipped when already valid; the dedupe that violated

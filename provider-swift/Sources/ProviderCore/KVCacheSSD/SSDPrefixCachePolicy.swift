@@ -154,14 +154,14 @@ enum SSDPrefixCachePolicy {
 
     // MARK: - Low-disk guard
 
-    /// Writes stop when volume free space drops under
-    /// `max(20 GiB, 5% of capacity)`. Reads are unaffected.
+    /// Writes stop below a fixed 20 GiB free-space reserve. The reserve does
+    /// not grow with the physical disk: large volumes with ample free bytes
+    /// must not lose caching solely because their free percentage is small.
+    /// Reads are unaffected.
     static let lowDiskAbsoluteFloorBytes = 20 * 1_073_741_824
-    static let lowDiskCapacityFraction = 0.05
 
-    static func lowDiskFloorBytes(volumeCapacityBytes: Int) -> Int {
-        let fromFraction = Int(Double(max(0, volumeCapacityBytes)) * lowDiskCapacityFraction)
-        return max(lowDiskAbsoluteFloorBytes, fromFraction)
+    static func lowDiskFloorBytes(volumeCapacityBytes _: Int) -> Int {
+        lowDiskAbsoluteFloorBytes
     }
 
     /// Cooldown after an ENOSPC mid-write before writes are retried.

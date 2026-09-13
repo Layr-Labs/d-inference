@@ -71,12 +71,23 @@ func reserveOnce(r *Registry, model, requestID string) (*Provider, RoutingDecisi
 // ageBudgetClamp rewinds the pair's clamp time by d (simulating TTL passage
 // without sleeping), keyed by the pair's CURRENT fault key.
 func ageBudgetClamp(r *Registry, providerID, model string, d time.Duration) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: model}
-	if e, ok := r.budgetClamps[key]; ok {
-		e.clampedAt = e.clampedAt.Add(-d)
-	}
+	withGateForSession(r, providerID, func(g *gateState) {
+		if e, ok := g.budgetClamps[model]; ok {
+			e.clampedAt = e.clampedAt.Add(-d)
+		}
+	})
+}
+
+// clampEntryUnderKey reports whether the identity filed under key holds a
+// clamp entry for model (the old budgetClamps[key] presence check).
+func clampEntryUnderKey(r *Registry, key, model string) bool {
+	found := false
+	readGateForKey(r, key, func(g *gateState) {
+		if g != nil {
+			_, found = g.budgetClamps[model]
+		}
+	})
+	return found
 }
 
 // One capacity-503 must IMMEDIATELY stop admission for a request that fit
@@ -337,15 +348,26 @@ func TestBudgetClampAndRateStateMigrateOnFirstBind(t *testing.T) {
 	// Attestation binds session → serial; state must migrate.
 	setAttestationAndBind(t, r, p, "SER-MIG-CLAMP")
 
-	r.mu.RLock()
-	sessKey := capacityRejectKey{ProviderID: "migrate-sess", ModelID: model}
-	serialKey := capacityRejectKey{ProviderID: "serial:SER-MIG-CLAMP", ModelID: model}
-	_, sessClamp := r.budgetClamps[sessKey]
-	_, serialClamp := r.budgetClamps[serialKey]
-	sessRejects := len(r.capacityRateRejects[sessKey])
-	serialRejects := len(r.capacityRateRejects[serialKey])
-	serialAccepts := len(r.capacityRateAccepts[serialKey])
-	r.mu.RUnlock()
+	// The session-keyed gate is gone after the bind (its state moved); read
+	// the raw index so a forwarded pointer cannot mask leftover residue.
+	var sessClamp bool
+	var sessRejects int
+	if g := rawGateForKey(r, "migrate-sess"); g != nil {
+		g.mu.Lock()
+		_, sessClamp = g.budgetClamps[model]
+		sessRejects = len(g.capacityRateRejects[model])
+		g.mu.Unlock()
+	}
+	var serialClamp bool
+	var serialRejects, serialAccepts int
+	readGateForKey(r, "serial:SER-MIG-CLAMP", func(g *gateState) {
+		if g == nil {
+			return
+		}
+		_, serialClamp = g.budgetClamps[model]
+		serialRejects = len(g.capacityRateRejects[model])
+		serialAccepts = len(g.capacityRateAccepts[model])
+	})
 
 	if sessClamp || sessRejects > 0 {
 		t.Fatal("session-keyed gray-box state orphaned after the identity bind")
@@ -437,10 +459,7 @@ func TestBudgetClampReleasedEntryDoesNotReviveOnReconnect(t *testing.T) {
 		if r.BudgetClampActive(p1.ID, model) {
 			t.Fatal("setup: clamp must have released")
 		}
-		r.mu.RLock()
-		_, lingering := r.budgetClamps[capacityRejectKey{ProviderID: "serial:" + serial, ModelID: model}]
-		r.mu.RUnlock()
-		if lingering {
+		if clampEntryUnderKey(r, "serial:"+serial, model) {
 			t.Fatal("released clamp entry must be deleted, not linger in budgetClamps")
 		}
 
@@ -513,10 +532,7 @@ func TestBudgetClampHeartbeatReleaseSurvivesDisconnectRace(t *testing.T) {
 	r.Disconnect("rel-race-1")
 	r.releaseBudgetClampsOnHeartbeat("rel-race-1", heartbeatAt, capacity)
 
-	r.mu.RLock()
-	_, lingering := r.budgetClamps[capacityRejectKey{ProviderID: "serial:" + serial, ModelID: model}]
-	r.mu.RUnlock()
-	if lingering {
+	if clampEntryUnderKey(r, "serial:"+serial, model) {
 		t.Fatal("release proof voided by the disconnect race — the sweep must evaluate the heartbeat's own snapshot")
 	}
 
@@ -540,10 +556,7 @@ func TestBudgetClampInactiveEntriesAreDeleted(t *testing.T) {
 	const model = "gemma-4-26b-qat-4bit"
 
 	clampEntryExists := func(r *Registry, providerID string) bool {
-		r.mu.RLock()
-		defer r.mu.RUnlock()
-		_, ok := r.budgetClamps[capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: model}]
-		return ok
+		return clampEntryUnderKey(r, r.faultKeyForSession(providerID), model)
 	}
 
 	t.Run("TTL-expired entry dropped on the next accept", func(t *testing.T) {
@@ -648,10 +661,7 @@ func TestBudgetClampLifecycleMissWithStaleBudgetSnapshotDoesNotClamp(t *testing.
 	if r.BudgetClampActive(p.ID, model) {
 		t.Fatal("a lifecycle cold-404 must not arm a gating clamp from the stale budget snapshot")
 	}
-	r.mu.RLock()
-	_, armed := r.budgetClamps[capacityRejectKey{ProviderID: r.faultKeyLocked(p.ID), ModelID: model}]
-	r.mu.RUnlock()
-	if armed {
+	if clampEntryUnderKey(r, r.faultKeyForSession(p.ID), model) {
 		t.Fatal("a lifecycle cold-404 must not touch the clamp map at all")
 	}
 	if sel, _ := reserveOnce(r, model, "rewarm"); sel == nil {

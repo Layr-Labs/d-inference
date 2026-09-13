@@ -263,6 +263,7 @@ struct GemmaToolCallLiveTests {
             switch event {
             case .toolCall(let call): calls.append(call)
             case .content(let text): visible += text
+            case .parsed(let parsed): visible += parsed.content
             case .info: break
             }
         }

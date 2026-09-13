@@ -1,0 +1,231 @@
+{
+  "schema": 1,
+  "scope": "Five exact fleet target-only KV observations, ordered Qwen3.6 then3.5 then3.8 then GPT-OSS then Gemma. Cache-off/MTP-off; no serving engine/SSD/backend throughput claim.",
+  "source_milestone": "825696740",
+  "native_commit": "02acd0e52d3dc88257dca5f3db4257aeda4db48e",
+  "semantic_evidence_manifest": "../paged-native-types-2026-09-05/manifest-api.json",
+  "semantic_evidence_sha256": "ae85f26269df8e7eb3f7d55ce9f0f9e98eb7e8038d59bd6ec184d263dffb0af0",
+  "binary_sha256": "216adc9b7f0131c7143f1317a5500a5ed2d58c1bc748b6e3b93aa4c6e8dca8c5",
+  "artifact_manifest_sha256": "5a935ce5c6073af71669c222b5e69ff88dbc7f6dd6c62a6aae2ff4940367e834",
+  "models": 5,
+  "observations": 180,
+  "files": [
+    {
+      "path": "run1/gemma-4-26b/engine.log.gz",
+      "bytes": 177,
+      "sha256": "f6b91b6234a41aa9dbe8dbc84a4953d8d53325c95464d70a76b9a4710af8ef47",
+      "uncompressed_bytes": 512,
+      "uncompressed_sha256": "e0702d11feb9cb162a01702f4a9fb24e27c432052c5553b1c68340d07cbaa525"
+    },
+    {
+      "path": "run1/gemma-4-26b/metadata.json.gz",
+      "bytes": 506,
+      "sha256": "55d7527769db5f70d605d2509f8915d280d656b31289b28f4574ab349a7bb942",
+      "uncompressed_bytes": 1405,
+      "uncompressed_sha256": "39b02f0dce6f4752773aea5a42cf6a78991cb76086382f087b64ded4bcef12e8"
+    },
+    {
+      "path": "run1/gemma-4-26b/report.json.gz",
+      "bytes": 1197,
+      "sha256": "84d32e36f056a1a4778abc4d548051274287024f44161bf31e42d489eaa8e694",
+      "uncompressed_bytes": 20898,
+      "uncompressed_sha256": "3461fb7149e15401d9c06ebe85e586f1bacc9036ff63c6afd49113a7967e0ec3"
+    },
+    {
+      "path": "run1/gemma-4-26b/telemetry.jsonl.gz",
+      "bytes": 10431,
+      "sha256": "d3fd72f602102584ff29f16a1c1f1be6fa416f1c6fec5523ddfbbb5bc105e06b",
+      "uncompressed_bytes": 70233,
+      "uncompressed_sha256": "2493d79a03485a732ceb20962e0ef1b73000267cc1c5244e808aee235e8c1b2f"
+    },
+    {
+      "path": "run1/gpt-oss-20b/engine.log.gz",
+      "bytes": 176,
+      "sha256": "f7a0aaece442b4ccd9a6a56588d4741bc6754e4f1e7302f4152b0c8f1a268e54",
+      "uncompressed_bytes": 512,
+      "uncompressed_sha256": "f48fecbc3163e2223d73de7b6460646d9cb4f92104fc6a29b1eca0ad0b8bf171"
+    },
+    {
+      "path": "run1/gpt-oss-20b/metadata.json.gz",
+      "bytes": 507,
+      "sha256": "96b13a9c4ea53f3e21475cefd43972eb62e33f500f28fbeeb6f8f23d29dd03b3",
+      "uncompressed_bytes": 1290,
+      "uncompressed_sha256": "8212a39da911ec49db735d57365bcaee06dc17382757c7eadfc14fdb7a5622b0"
+    },
+    {
+      "path": "run1/gpt-oss-20b/report.json.gz",
+      "bytes": 1083,
+      "sha256": "90ad302e9ff5a6e9727ce7055469dd56e6ceb6c61d7def8f054d682e78d55e56",
+      "uncompressed_bytes": 16725,
+      "uncompressed_sha256": "51ca3783bc339182c14a84f422458cd37ca3fa44f07bb71666a49576933a04ea"
+    },
+    {
+      "path": "run1/gpt-oss-20b/telemetry.jsonl.gz",
+      "bytes": 4307,
+      "sha256": "a652c79de6a65323842d05d453d8f52f831fa460ef1516d8cc8fc4af610e7b4b",
+      "uncompressed_bytes": 27001,
+      "uncompressed_sha256": "03792d1731742c1fa4d330de19117c59271ae0474c500ca3981169f5c753beda"
+    },
+    {
+      "path": "run1/qwen35/engine.log.gz",
+      "bytes": 181,
+      "sha256": "7decb936fab9d5c723e12ef9ad71bd281ce601c3feb77f63712887fed6b1e1c5",
+      "uncompressed_bytes": 528,
+      "uncompressed_sha256": "e100257e1f4bd583de553eadd43413d40819e94abb82989afa0fe124fa84f76c"
+    },
+    {
+      "path": "run1/qwen35/metadata.json.gz",
+      "bytes": 512,
+      "sha256": "f522fa3610405c2d824215252148b95cb8af096defd72592fda5c212fa322ca2",
+      "uncompressed_bytes": 1127,
+      "uncompressed_sha256": "61bf27bf45fd54476fe3a590b7c8535836f9a3061d3e59d4b0f18e005ea123b5"
+    },
+    {
+      "path": "run1/qwen35/report.json.gz",
+      "bytes": 878,
+      "sha256": "0541226025fe84c640af3a8f387f3c31a3ce40fc0ebb6bdacaec6e1968e67afa",
+      "uncompressed_bytes": 7750,
+      "uncompressed_sha256": "df34737eb4117dc2519ac2e892ff10166850925528bebc2d414639c9089505f2"
+    },
+    {
+      "path": "run1/qwen35/telemetry.jsonl.gz",
+      "bytes": 7894,
+      "sha256": "f5dd35d532f4998df51a4769c038c77b726d004005ea6f6a0bc2e66e2953b0bb",
+      "uncompressed_bytes": 51548,
+      "uncompressed_sha256": "d1841e84093e2fa9c56120c58a8f96df8391ceaf087f7b76e5d66b668620a918"
+    },
+    {
+      "path": "run1/qwen36/engine.log.gz",
+      "bytes": 192,
+      "sha256": "3716ec253761dbe4d0d237094933c6ec96205d556dc02eeade61168b1b189f92",
+      "uncompressed_bytes": 580,
+      "uncompressed_sha256": "7b9969c19f0a7701b02db5884f81f53c9fd639506f270fdb9d0659369fbc59bf"
+    },
+    {
+      "path": "run1/qwen36/metadata.json.gz",
+      "bytes": 519,
+      "sha256": "2f0a9086f31bb03cf7989d396033bd6baea6ce030f030f868af7e6d2e8b9bd93",
+      "uncompressed_bytes": 1141,
+      "uncompressed_sha256": "4eb9328b6ece555736dab8015f19d8df834bf68e1c193f7d84632757f2403c6a"
+    },
+    {
+      "path": "run1/qwen36/report.json.gz",
+      "bytes": 889,
+      "sha256": "9a71febe0be2a87fe3b5b81b8f4e4c22c9c4cfc322c60fc8abe94a02ba1580a7",
+      "uncompressed_bytes": 7776,
+      "uncompressed_sha256": "b4fcf64cb40b5f47cbe64e50c40da69ca7d3e887f0c71d3281865190378f714c"
+    },
+    {
+      "path": "run1/qwen36/telemetry.jsonl.gz",
+      "bytes": 8897,
+      "sha256": "ddd6eb1648ef9efc5158db90fa0e6f49c734c69cc8b46f692403badcb3543b1f",
+      "uncompressed_bytes": 56640,
+      "uncompressed_sha256": "b9ca3680a40531feba9f6dfc0b44edb7ed2d0640b571ed01458d65ab9bd90217"
+    },
+    {
+      "path": "run1/qwen38/engine.log.gz",
+      "bytes": 199,
+      "sha256": "1592ab56ac497309e4034b074ae1e3933b9e256986ade818a5efb234b09ffb7a",
+      "uncompressed_bytes": 588,
+      "uncompressed_sha256": "5b03a96b0b0bb5c16104b8d3cc30898f8c514e3825ede7383ce892e6c1dc5fb8"
+    },
+    {
+      "path": "run1/qwen38/metadata.json.gz",
+      "bytes": 551,
+      "sha256": "51c64fee4c5cf92816ba79bfc9a9bc3c8d5410351dddb5e8f2c43a485dda42de",
+      "uncompressed_bytes": 1235,
+      "uncompressed_sha256": "331603185850491a4371499bb55994cfd986fbdc2e4b353647541e1981eef343"
+    },
+    {
+      "path": "run1/qwen38/report.json.gz",
+      "bytes": 995,
+      "sha256": "6d429b9bc7afa31a224440d5ba30b646cf90f920684b18b63f6d2ed83736b997",
+      "uncompressed_bytes": 11731,
+      "uncompressed_sha256": "2e9b5155da1d92a6109504faf4e3d05a9633214bd738d3fa50d8bcefd1203d69"
+    },
+    {
+      "path": "run1/qwen38/telemetry.jsonl.gz",
+      "bytes": 6195,
+      "sha256": "1e532b9fce976b2f4cb90e1fe9059868c3da40190512bf4b12ef3c580c482a70",
+      "uncompressed_bytes": 38647,
+      "uncompressed_sha256": "0c88f412c330f27011585d8ba078f6912e00983a04c5c8cb6e53b4e73c8eb84a"
+    },
+    {
+      "path": "run1/summary.json.gz",
+      "bytes": 1424,
+      "sha256": "6be184ee183d2dda27ae6a911f960dd12ea90368b7d2f8eafd1b55eb5b80a2ce",
+      "uncompressed_bytes": 7521,
+      "uncompressed_sha256": "58b67dcda3cba662ae86c6be1b9a2a0f5a1cdf7c148b2ccc150ecfa58c4352c1"
+    },
+    {
+      "path": "run1/verification.json.gz",
+      "bytes": 1181,
+      "sha256": "1fb4fd07e77a70e468f5f041a04c2efc44b930bb3d1dff15e822983f5c3e4c90",
+      "uncompressed_bytes": 3163,
+      "uncompressed_sha256": "21907c32323ee59ebf9ae37de3c4c2f226c8d23ac810a7136a6f6652c3940f2b"
+    },
+    {
+      "path": "inputs/gemma-4-26b.json.gz",
+      "bytes": 201,
+      "sha256": "86ccfac188f4dce66f8a6ed1d9a313d7488c52ff9921eb3ef39e183f2bead6bd",
+      "uncompressed_bytes": 343,
+      "uncompressed_sha256": "e4a39b669999f5d5c179b1583a5c40b5efb4aa400c9c08bb38804bc4b23bb8d6"
+    },
+    {
+      "path": "inputs/gpt-oss-20b.json.gz",
+      "bytes": 199,
+      "sha256": "f991fb935682b6e6c2f979793d6faa238156ab1d2ce4ea9e77b828b651e57f3d",
+      "uncompressed_bytes": 343,
+      "uncompressed_sha256": "c7ceabb79ea1380d6e5e055d864e71d8abb88662046678127b4ed7ec1ed27caf"
+    },
+    {
+      "path": "inputs/qwen35.json.gz",
+      "bytes": 203,
+      "sha256": "7132f6ef5c041c5b7e0e7852da3cdce1092ab3585dfa06dd683a0ccea89cd00e",
+      "uncompressed_bytes": 347,
+      "uncompressed_sha256": "6dd063d8ec1ec91a75a0e4f5427773c5e2a1e188914d248fa540ceb01b0966c3"
+    },
+    {
+      "path": "inputs/qwen36.json.gz",
+      "bytes": 214,
+      "sha256": "69d36478a2edf5fcf14078fbf1e9048f857ec3477112862c223ffcb50729328e",
+      "uncompressed_bytes": 360,
+      "uncompressed_sha256": "33f0c10001083ee88d303848570e3173091cf5c1347ff2007451c0eb8f10efeb"
+    },
+    {
+      "path": "inputs/qwen38.json.gz",
+      "bytes": 218,
+      "sha256": "77c9de01f6a868ffca8ee608d5e7c2be0d80c6e93da92ea1a8436b4699655bd6",
+      "uncompressed_bytes": 362,
+      "uncompressed_sha256": "986258aec4b8377e1c9a7ea893bf60547871361580e1186dee9978a1dd954c00"
+    },
+    {
+      "path": "run_probes.py.gz",
+      "bytes": 1958,
+      "sha256": "ba5e75739ec64e34903df9c93df17257abdb238b7b5de15993de5f3f64d444cf",
+      "uncompressed_bytes": 4112,
+      "uncompressed_sha256": "94cdfba544d83a9df5d0ad19a3f6283a1488ea492c59dfa94c537cf2175e4c28"
+    },
+    {
+      "path": "remote-files-and-hardware.json.gz",
+      "bytes": 1292,
+      "sha256": "cd821c007f9122b61bd25f51d851728aed8684b8ab6f32a98022a48b11bc2ee8",
+      "uncompressed_bytes": 3241,
+      "uncompressed_sha256": "4381a37f67d9771a3d2854b64568446fe6ab8d9e7e38bd9cd9fd8f5f2d0c34c5"
+    },
+    {
+      "path": "run1-console.log.gz",
+      "bytes": 72,
+      "sha256": "944743f7c51e77ddf59c520312dd7cbcf6498659de1f8ce0179ff9dbb0937b08",
+      "uncompressed_bytes": 105,
+      "uncompressed_sha256": "bdf97f51e647de076dfb4c7235adcd172d098c74655d2f50ae778ca822e63bd7"
+    },
+    {
+      "path": "artifact-manifest.json.gz",
+      "bytes": 1022,
+      "sha256": "2e36676360299fa6bdf35960e73eb5faeab683f9f2a2b816b907cd26d89e43b2",
+      "uncompressed_bytes": 2046,
+      "uncompressed_sha256": "5a935ce5c6073af71669c222b5e69ff88dbc7f6dd6c62a6aae2ff4940367e834"
+    }
+  ]
+}

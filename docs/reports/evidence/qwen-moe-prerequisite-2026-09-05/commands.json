@@ -1,0 +1,17 @@
+{
+  "worktree": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated",
+  "provider_build": "swift build --package-path provider-swift --build-tests --jobs 4 --disable-automatic-resolution",
+  "provider_tests": "swift test --package-path provider-swift --skip-build --filter 'PrefixCacheLoadHashTests|QwenVLMTargetExtractionTests|PrefixCachePolicyTests'",
+  "native_setup": "cd libs/mlx-swift-lm; swift package --scratch-path ../../provider-swift/.build --skip-update edit --path ../mlx-swift mlx-swift",
+  "native_build": "cd libs/mlx-swift-lm; swift build --scratch-path ../../provider-swift/.build --build-tests --jobs 4 --disable-automatic-resolution",
+  "native_suite": "cd libs/mlx-swift-lm; MLX_METALLIB_PATH=$INTEGRATED/provider-swift/.build/arm64-apple-macosx/debug/mlx.metallib ../../scripts/run-nested-suite.sh <suite> --scratch-path ../../provider-swift/.build",
+  "native_suites": [
+    "Qwen35MoECompleteCheckpointTests",
+    "Qwen35MTPDraftTrimTests",
+    "Qwen35CBv2ConfigurationTests",
+    "CBv2CompleteCheckpointEngineTests",
+    "CBv2CompleteCheckpointTests"
+  ],
+  "metallib_sha256": "4ffbbac48a99b495916c3fa0921ce813eb554de1a09aff408d9b5a5a8053e6b0",
+  "scope": "Contiguous complete-checkpoint MoE prerequisite. These results do not establish paged Qwen support or real-model equivalence."
+}

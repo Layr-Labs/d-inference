@@ -237,7 +237,10 @@ func TestProfile_RequestProfilesRecorded(t *testing.T) {
 		require.NotNil(t, r.ProvFirstDeltaUS)
 		require.NotNil(t, r.ProvEngineSubmitUS)
 		require.NotNil(t, r.TransportEstUS, "transport estimate needs write_done, complete_ingress and provider total")
-		require.GreaterOrEqual(t, *r.TransportEstUS, int64(0))
+		// This is a difference of independently measured spans, not a direct
+		// network-latency measurement. Preserve negative values and verify the
+		// stored arithmetic, as TestApplyProviderProfileTransportEstimateArithmetic does.
+		require.Equal(t, (*r.CompleteIngressUS-*r.WriteDoneUS)-*r.ProvTotalUS, *r.TransportEstUS)
 		// Engine sub-object (slice 3).
 		require.NotNil(t, r.EngFirstTokenNS, "engine first_token_ns")
 		require.NotNil(t, r.EngPrefillChunks, "engine prefill chunks")

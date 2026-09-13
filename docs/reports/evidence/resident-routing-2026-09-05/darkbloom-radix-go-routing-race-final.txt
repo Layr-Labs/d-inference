@@ -1,0 +1,3 @@
+ok  	github.com/eigeninference/d-inference/coordinator/registry	23.203s
+ok  	github.com/eigeninference/d-inference/coordinator/registry/routingsim	3.807s
+ok  	github.com/eigeninference/d-inference/coordinator/protocol	1.893s

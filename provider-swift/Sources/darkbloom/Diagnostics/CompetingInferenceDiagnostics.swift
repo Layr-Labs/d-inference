@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCore
 
 /// Snapshot of non-Darkbloom inference that can steal unified memory / ports.
 /// Injectable for pure unit tests (see `DoctorChecksTests`).
@@ -40,20 +41,11 @@ struct LocalContentionSnapshot: Equatable, Sendable {
         )
     }
 
-    private static func runCapture(_ path: String, args: [String]) -> String? {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: path)
-        p.arguments = args
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = FileHandle.nullDevice
-        do {
-            try p.run()
-            p.waitUntilExit()
-        } catch {
-            return nil
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    static func runCapture(_ path: String, args: [String], timeout: TimeInterval = 5) -> String? {
+        guard let data = try? BoundedProcess.runCapturingStandardOutput(
+            URL(fileURLWithPath: path), arguments: args, timeout: timeout,
+            requireSuccessfulExit: false
+        ) else { return nil }
         return String(data: data, encoding: .utf8)
     }
 }

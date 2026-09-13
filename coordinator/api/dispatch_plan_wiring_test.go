@@ -299,11 +299,19 @@ func TestGovernorAllowKeepsLegacyBackupPath(t *testing.T) {
 	if !ok {
 		t.Fatalf("store = %T", d.s.store)
 	}
+	// The route row is persisted off the request path by the batching
+	// telemetry sink (flushed within its group window), so poll briefly.
 	backupRouted := false
-	for _, route := range st.InferenceRouteRecordsSince(time.Time{}) {
-		if route.ProviderID == "idle-backup" {
-			backupRouted = true
-			break
+	deadline := time.Now().Add(2 * time.Second)
+	for !backupRouted && time.Now().Before(deadline) {
+		for _, route := range st.InferenceRouteRecordsSince(time.Time{}) {
+			if route.ProviderID == "idle-backup" {
+				backupRouted = true
+				break
+			}
+		}
+		if !backupRouted {
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 	if !backupRouted {

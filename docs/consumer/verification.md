@@ -1,6 +1,6 @@
 # Verifying provider attestation
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-13 · commit `1f52a71fb`
 
 How a consumer reads the coordinator's trust verdict about the provider that
 served a request, and what that verdict does and does not prove. The verdict is
@@ -47,6 +47,13 @@ The grant and loss conditions for each level are tabulated in
 the challenge cadence is in [Layer 2](../architecture/security/attestation.md#layer-2--periodic-challenge)
 and the routing freshness window is
 [`challengeFreshnessMaxAge`](../architecture/routing.md#challenge-freshness).
+
+The coordinator verifies `status_signature` by reconstructing the exact signed
+bytes (`coordinator/attestation/attestation.go`, `VerifyStatusSignature`). The
+provider's canonical encoder matches mixed-case hash-map key ordering and
+U+2028/U+2029 escaping to that format; see [Layer 2](../architecture/security/attestation.md#layer-2--periodic-challenge).
+This byte compatibility changes neither the trust levels nor the public fields,
+routing gates or per-response signals described here.
 
 `mda_verified: true` adds that Apple issued a Managed Device Attestation whose
 certificate chain verifies to the Apple Enterprise Attestation Root CA and
@@ -110,6 +117,11 @@ switched on (`APNS_ENFORCE_AFTER`) a provider without it is excluded from
 private-text routing, so a served response implies it passed. See
 [`../design/apns-code-attestation.md`](../design/apns-code-attestation.md) and
 [`../architecture/security/attestation.md`](../architecture/security/attestation.md#flag--apns-code-identity).
+
+A coordinator reconnect still requires a fresh process-possession challenge before
+private routing. Recorded code-verified continuity can avoid another Apple push
+for the same process; it does not grant hardware trust or bypass verification.
+See [APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity).
 
 ## Related
 

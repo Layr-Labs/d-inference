@@ -1,6 +1,6 @@
 # Roll out the release-policy routing gate (shadow → enforce)
 
-> Last updated: 2026-09-04 · commit `fcecc3675`
+> Last updated: 2026-09-04 · commit `7ae06021f`
 
 Runbook for the two production changes that involve the coordinator's
 release-policy routing gate: (1) deploying a coordinator that contains the gate
@@ -67,7 +67,7 @@ platform, backend), and that row's `metallib_hash` matches the provider's
 reported metallib. Nothing else — per-model template hashes were removed after
 the incident.
 
-Where the gate lives: `coordinator/registry/registry.go`
+Where the gate lives: `coordinator/registry/attestation_policy.go`
 (`providerSupportsPrivateTextModeLocked`, the single routing chokepoint;
 `releasePolicyEnforcedLocked`, mode + enforce-after predicate;
 `SetReleasePolicyGeneration`, sweep that re-proves or clears evidence;

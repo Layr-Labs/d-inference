@@ -1,0 +1,31 @@
+{
+  "metadata": {
+    "sha256": "e840951f2eb268704b0a0b367f81dab2c7a1e60e3da5cf2135b66dcaf68fc0e4",
+    "bytes": 1981468,
+    "mode": 420
+  },
+  "runtime": {
+    "sha256": "31a42e0d8c864e7076404a9fa2616ec5828ef9170a65168a1e89a994bed5d451",
+    "bytes": 112208223,
+    "mode": 420
+  },
+  "source": {
+    "c": "d4328f2d8d54d711d5419e07ab9fa2f07b512a48",
+    "core": "fab0f39f69140393b454c32d6f4bf7a9b32f9dcc",
+    "native": "f2d79145e040bbc28c6e0e355a19bc8923a70434",
+    "parent": "56fa3950160bb9e58d6702e9b751f2b0747ae3de",
+    "swift": "9561227d55a07db29f70a78aadc5d6b5aaeb10bf",
+    "unused_top_level_mlx": "0a725e3000edabc4911cde345270ca950bfa152f"
+  },
+  "observation": {
+    "hardware_model": "Mac17,6",
+    "memory_bytes": 137438953472,
+    "gpu_temperature_c": 30.118303298950195,
+    "load1": 3.1484375,
+    "free_bytes": 295441027072,
+    "unexpected_processes": [],
+    "owned_processes": []
+  },
+  "collector_pid": 3735,
+  "at_unix": 1788709514.901977
+}

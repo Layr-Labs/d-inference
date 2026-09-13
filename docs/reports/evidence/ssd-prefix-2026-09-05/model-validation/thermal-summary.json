@@ -1,0 +1,101 @@
+{
+  "ssd-build1-startup-binding-failure": {
+    "entry_gpu_temp_c": 25.034225463867188,
+    "samples": 111,
+    "minimum_gpu_temp_c": 26.206844329833984,
+    "median_gpu_temp_c": 28.891368865966797,
+    "maximum_gpu_temp_c": 29.330915451049805,
+    "includes_model_loading_and_hashing": true,
+    "ranked_job_at_end": false
+  },
+  "ssd-build2-persistent-eligibility-failure": {
+    "entry_gpu_temp_c": 25.355655670166016,
+    "samples": 111,
+    "minimum_gpu_temp_c": 26.62723159790039,
+    "median_gpu_temp_c": 29.104909896850586,
+    "maximum_gpu_temp_c": 29.438243865966797,
+    "includes_model_loading_and_hashing": true,
+    "ranked_job_at_end": false
+  },
+  "ssd-build2-ephemeral-eligibility-failure": {
+    "entry_gpu_temp_c": 26.8980655670166,
+    "samples": 105,
+    "minimum_gpu_temp_c": 27.897321701049805,
+    "median_gpu_temp_c": 29.712797164916992,
+    "maximum_gpu_temp_c": 29.9300594329834,
+    "includes_model_loading_and_hashing": true,
+    "ranked_job_at_end": false
+  },
+  "ssd-build3-persistent-attempt": {
+    "entry_gpu_temp_c": 25.021577835083008,
+    "samples": 116,
+    "minimum_gpu_temp_c": 26.052827835083008,
+    "median_gpu_temp_c": 28.972469329833984,
+    "maximum_gpu_temp_c": 30.081100463867188,
+    "includes_model_loading_and_hashing": true,
+    "ranked_job_at_end": false
+  },
+  "ssd-build3-ephemeral-gptoss": {
+    "entry_gpu_temp_c": 39.4992561340332,
+    "samples": 83,
+    "minimum_gpu_temp_c": 38.7180061340332,
+    "median_gpu_temp_c": 39.47321319580078,
+    "maximum_gpu_temp_c": 39.89025115966797,
+    "includes_model_loading_and_hashing": true,
+    "ranked_job_at_end": false
+  },
+  "ssd-build3-ephemeral-smoke": {
+    "entry_gpu_temp_c": 27.245534896850586,
+    "samples": 379,
+    "minimum_gpu_temp_c": 28.0394344329834,
+    "median_gpu_temp_c": 70.09486389160156,
+    "maximum_gpu_temp_c": 81.72396087646484,
+    "includes_model_loading_and_hashing": true,
+    "ranked_job_at_end": false
+  },
+  "ssd-build3-off-smoke": {
+    "entry_gpu_temp_c": 37.568450927734375,
+    "samples": 427,
+    "minimum_gpu_temp_c": 36.19959259033203,
+    "median_gpu_temp_c": 77.0210189819336,
+    "maximum_gpu_temp_c": 85.87127685546875,
+    "includes_model_loading_and_hashing": true,
+    "ranked_job_at_end": false
+  },
+  "ssd-build3-ephemeral-expanded": {
+    "entry_gpu_temp_c": 31.425594329833984,
+    "samples": 450,
+    "minimum_gpu_temp_c": 32.25446319580078,
+    "median_gpu_temp_c": 75.17522430419922,
+    "maximum_gpu_temp_c": 85.25297546386719,
+    "includes_model_loading_and_hashing": true,
+    "ranked_job_at_end": false
+  },
+  "ssd-build3-ephemeral-long": {
+    "entry_gpu_temp_c": 32.35044479370117,
+    "samples": 666,
+    "minimum_gpu_temp_c": 32.980655670166016,
+    "median_gpu_temp_c": 82.44140625,
+    "maximum_gpu_temp_c": 88.15959930419922,
+    "includes_model_loading_and_hashing": true,
+    "ranked_job_at_end": false
+  },
+  "integrated-ssd-build1-ephemeral-smoke": {
+    "entry_gpu_temp_c": 28.587797164916992,
+    "samples": 387,
+    "minimum_gpu_temp_c": 29.13020896911621,
+    "median_gpu_temp_c": 70.98716735839844,
+    "maximum_gpu_temp_c": 82.39118194580078,
+    "includes_model_loading_and_hashing": true,
+    "ranked_job_at_end": false
+  },
+  "integrated-ssd-build1-ephemeral-http": {
+    "entry_gpu_temp_c": 30.433780670166016,
+    "samples": 213,
+    "minimum_gpu_temp_c": 30.88541603088379,
+    "median_gpu_temp_c": 32.36979293823242,
+    "maximum_gpu_temp_c": 72.6664810180664,
+    "includes_model_loading_and_hashing": true,
+    "ranked_job_at_end": false
+  }
+}

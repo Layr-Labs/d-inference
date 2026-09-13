@@ -1,0 +1,41 @@
+{
+  "comparisons": [
+    {
+      "name": "common98",
+      "candidate": "/tmp/darkbloom-release-090/qwen-parity-final/common-final-depth-v3-vectors.json",
+      "reference": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/fixtures/prompt-contract/v1/production_vectors.json",
+      "identical": true,
+      "candidate_sha256": "7bda5110dac22a0ab24d0b28a6502935de70d2571037a58dd77f3cad17cc0430",
+      "reference_sha256": "7bda5110dac22a0ab24d0b28a6502935de70d2571037a58dd77f3cad17cc0430",
+      "model_entries": 7,
+      "unique_contracts": 6,
+      "cases": 98
+    },
+    {
+      "name": "original56",
+      "candidate": "/tmp/darkbloom-release-090/qwen-parity-final/original-final-depth-v3-vectors.json",
+      "reference": "/tmp/darkbloom-release-090/qwen-parity-final/original-v3-vectors.json",
+      "identical": true,
+      "candidate_sha256": "6174b27c1fdf9a82f84b31d8d0e34394996884332c5a60d585aac26261349bbb",
+      "reference_sha256": "6174b27c1fdf9a82f84b31d8d0e34394996884332c5a60d585aac26261349bbb",
+      "model_entries": 4,
+      "unique_contracts": 3,
+      "cases": 56
+    }
+  ],
+  "source_files_reverified": 37,
+  "binaries": {
+    "generator": {
+      "path": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/coordinator/promptsidecar/target/debug/prompt-fixtures",
+      "sha256": "6e6b37d3c038e71fd4173a41f8a99a380968978619c53b1389ef902315913ef3"
+    },
+    "sidecar_release": {
+      "path": "/Users/gaj/Documents/DarkbloomDev/wt/optimizations-integrated/coordinator/promptsidecar/target/release/promptsidecar",
+      "sha256": "80ba1b36cdeb86a44ef67e5c3cd1017f9f79580df910bc9a9bf654e9690522c9"
+    },
+    "loadproof": {
+      "path": "/tmp/darkbloom-090-qwen-jinja-probe/promptsidecarloadproof",
+      "sha256": "3c786f8fad036ac9d4fdc1919081255a9c048345c46dee15b63d66fb7d1d07ea"
+    }
+  }
+}

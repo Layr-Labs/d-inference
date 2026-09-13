@@ -6,6 +6,13 @@ created: "2026-05-14"
 # disk) — see docs/architecture/security/encryption.md and identity-binding.md.
 # Every other entry still reflects the 2026-05-14 review and has not been
 # re-verified.
+# SSD disk policy re-checked 2026-09-08 against PR #866 (base 4be02331e):
+# default available-disk/2 without a fixed ceiling, 20 GiB unknown-space
+# budget fallback, and a fixed 20 GiB pre-write reserve including the pending
+# donation payload. This does not re-verify the surrounding cache threat claims.
+# Status-signature canonicalization in TB-009 re-verified 2026-09-13 against
+# commit 1f52a71fb: provider byte compatibility, with signature/trust policy
+# unchanged. This does not re-verify the remaining threat entries.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -501,8 +508,9 @@ trust_boundaries:
 
       MDA verification (provider.go): the coordinator computes
       sha256(SE_public_key_bytes) and sends this as a nonce to Apple via
-      SendDeviceAttestationCommand(). Apple returns a plist containing DER-encoded
-      certificate chain entries. The coordinator parses the chain, verifies it against
+      mdm.Client.RequestDeviceAttestation(), which binds an exclusive waiter before
+      sendDeviceAttestationWithNonce queues the raw MDM command. Apple returns a plist
+      containing DER-encoded certificate chain entries. The coordinator parses the chain, verifies it against
       the embedded Apple Enterprise Attestation Root CA (P-384, valid 2022–2047) using
       Go's standard x509.Verify() with ExtKeyUsageAny. Custom OIDs are extracted from
       the leaf certificate: device serial number (1.2.840.113635.100.8.9.1), UDID
@@ -745,13 +753,25 @@ trust_boundaries:
       and the next fully passing challenge restores it to online (RecordChallengeSuccess).
       Signature/SIP/hash failures are never auto-recovered and still require a reconnect.
 
-      Status signature (attestation.go): an extended canonical JSON payload
-      covering nonce, timestamp, and all security status fields is signed separately.
-      VerifyStatusSignature() checks this signature. If the status_signature field is
-      absent, ErrStatusSignatureMissing is returned; the caller treats this as advisory
-      (not a failure) for compatibility with providers older than v0.3.11. Negative
-      status reports (SIP=false) are always acted on immediately regardless of whether
-      the status_signature is present.
+      Status signature: nonce, timestamp and the reported fields in
+      StatusCanonicalInput are signed separately. StatusCanonical.build in
+      provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift uses a
+      typed JSONEncoder payload with sorted keys, including mixed-case keys inside
+      model_hashes and template_hashes, to match BuildStatusCanonical in
+      coordinator/attestation/attestation.go byte-for-byte. Actual U+2028/U+2029
+      scalars are escaped as \u2028/\u2029; literal backslash-u text stays distinct.
+      Nonce and timestamp remain present; absent optional flags, empty optional hash
+      strings and empty maps are omitted, while explicit false remains signed.
+
+      VerifyStatusSignature in coordinator/attestation/attestation.go checks the
+      P-256 DER signature over SHA-256 of those canonical bytes. Byte compatibility
+      fixes false signature failures without changing the signed field set or trust
+      policy. Malformed or mismatching signatures remain challenge failures in
+      coordinator/api/provider.go (verifyChallengeResponse). If status_signature is
+      absent, ErrStatusSignatureMissing is returned; the caller treats the fields as
+      advisory for compatibility with providers older than v0.3.11. Negative status
+      reports (SIP=false) are still acted on regardless of whether the status_signature
+      is present. Canonical mechanism: docs/architecture/security/attestation.md.
     current_limitations:
       - "status_signature is optional for pre-v0.3.11 providers. A compromised provider
         running OS-level code can report a valid (nonce, timestamp) signature from the
@@ -1692,8 +1712,13 @@ threats:
         (b) The at-rest window is bounded by a 15-MINUTE sliding TTL
             (DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS can only shorten it;
             sliding on hit; opportunistic sweep on write + periodic task);
-            a 20 GiB box-wide LRU disk budget (DARKBLOOM_PREFIX_CACHE_DISK_GB,
-            min'd with free-disk/2) unlinks oldest-by-last-hit.
+            a default box-wide LRU disk budget of half the currently available
+            disk space, with no fixed ceiling, unlinks oldest-by-last-hit.
+            Unknown available space uses a 20 GiB budget fallback.
+            DARKBLOOM_PREFIX_CACHE_DISK_GB overrides that default budget.
+            The separate fixed 20 GiB pre-write free-space reserve includes
+            the pending donation payload; it does not reserve OS disk blocks
+            against unrelated concurrent writers.
         (c) File crypto is the reviewed legacy scheme unchanged: per-file
             random DEK wrapped AES-256-GCM under the SE-rooted KEK,
             HKDF-derived per-chunk nonces ("dbkv-chunk-v3"), canonical
@@ -1768,7 +1793,10 @@ threats:
         status: implemented
       - description: >
           SSD tier at-rest window bound: 15-minute sliding TTL (env can only
-          shorten), 20 GiB box-wide LRU disk budget, verified weightHash in
+          shorten), default available-disk/2 box-wide LRU disk budget without
+          a fixed ceiling (20 GiB fallback when unavailable;
+          DARKBLOOM_PREFIX_CACHE_DISK_GB overrides), a fixed 20 GiB pre-write
+          free-space reserve including the pending donation payload, verified weightHash in
           coordinator mode (model-ID fallback in standalone) + layoutEpoch
           fail-closed bindings, and KEK-wipe purge (files become unreadable AND
           unfindable — K_lookup derives from the KEK).
@@ -1956,7 +1984,8 @@ threats:
       the E_K(nonce) challenge with its in-memory key K and sign the nonce with its
       registration-bound SE key — re-proved on every WebSocket connection, either by
       a fresh APNs push or, when a durable proof for the same SE key + APNs token
-      younger than the 30-minute reuseWindow exists, by a NaCl-sealed resume challenge
+      is younger than the 30-minute reuseWindow, or coordinator-observed code-verified
+      continuity covers the exact same process within 120 seconds, by a NaCl-sealed resume challenge
       over the WebSocket (code_attestation_resume_challenge, 30 s) that costs no APNs
       budget. Pushes are throttled (20 min background / 75 s alert cooldown per device,
       3 attempts per loop, 300 s challenge validity; code_attest_throttle.go).
@@ -1969,6 +1998,19 @@ threats:
       - provider-swift/Sources/ProviderCore/ProviderLoop.swift
       - provider-swift/Sources/darkbloom/ProviderAppKitHost.swift
     mitigations:
+      - description: >
+          Same-process code continuity is observed only on online hardware-trusted
+          connections with CodeAttested and FreshCodeAttested, matching SE key,
+          token, process key, version and binary. Only final disconnect stamping may
+          accept the just-offlined connection with all those checks intact; periodic
+          and shutdown sweeps cannot refresh offline coverage, and untrusted
+          providers are always rejected. Conditional coverage writes match
+          the original APNs proof instant, never create rows or refresh attested_at,
+          and cannot resurrect deleted or replaced proof. Future or expired coverage
+          refuses reuse. Process-key/version changes cannot inherit continuity;
+          every resume still decrypts a fresh sealed nonce and signs it with the
+          registration-bound SE key. Hardware-only liveness cannot seed code continuity.
+        status: implemented
       - description: >
           APNs code-identity round-trip: coordinator pushes E_K(nonce) to the
           registration-bound device token; provider decrypts with K and replies

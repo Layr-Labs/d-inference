@@ -25,6 +25,7 @@ type countingStatsStore struct {
 	store.Store
 	locationCalls atomic.Int64
 	flowCalls     atomic.Int64
+	coreCalls     atomic.Int64
 	totalsCalls   atomic.Int64
 	fail          atomic.Bool
 	flowFail      atomic.Bool
@@ -42,6 +43,7 @@ type countingStatsStore struct {
 var errUsageStatementTimeout = errors.New("store: usage statement: timeout: context deadline exceeded")
 
 func (c *countingStatsStore) UsageTotals() (store.UsageTotals, error) {
+	c.coreCalls.Add(1)
 	if c.usageTotalsFail.Load() {
 		return store.UsageTotals{}, errUsageStatementTimeout
 	}
@@ -129,6 +131,7 @@ func newStatsRefresherFixture(t *testing.T) (*Server, *registry.Registry, *count
 	for i := 0; i < minRequestsPerCityBucket+2; i++ {
 		mem.RecordUsageWithCostAndLocation("provider-sf", "consumer", "model", "req", 10, 20, 0, nyc)
 	}
+	srv.refreshStatsGeography()
 	return srv, reg, st
 }
 
@@ -204,11 +207,11 @@ func TestStatsRefresherOwnsEntryUnderConcurrentRequests(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	before := st.locationCalls.Load()
+	before := st.coreCalls.Load()
 	start := time.Now()
 	fireConcurrentStats(t, ts.URL+"/v1/stats", 50)
 	elapsed := time.Since(start)
-	after := st.locationCalls.Load()
+	after := st.coreCalls.Load()
 	// Every statement executed during the burst is attributable to a tick,
 	// never to a handler: at most ceil(elapsed/interval)+1 of them.
 	if maxTicks := int64(elapsed/interval) + 1; after-before > maxTicks {
@@ -217,15 +220,15 @@ func TestStatsRefresherOwnsEntryUnderConcurrentRequests(t *testing.T) {
 
 	// Ticks keep computing on their own cadence...
 	time.Sleep(3 * interval)
-	if got := st.locationCalls.Load(); got < before+2 {
+	if got := st.coreCalls.Load(); got < before+2 {
 		t.Fatalf("refresher ticks ran %d statements over 3 intervals, want >= 2", got-before)
 	}
 	// ...and stop with the context.
 	cancel()
 	<-done
-	stopped := st.locationCalls.Load()
+	stopped := st.coreCalls.Load()
 	time.Sleep(3 * interval)
-	if got := st.locationCalls.Load(); got != stopped {
+	if got := st.coreCalls.Load(); got != stopped {
 		t.Fatalf("statements after cancel = %d, want none", got-stopped)
 	}
 }
@@ -238,8 +241,8 @@ func TestStatsColdMissCoalescesConcurrentRequests(t *testing.T) {
 	defer ts.Close()
 
 	fireConcurrentStats(t, ts.URL+"/v1/stats", 50)
-	if got := st.locationCalls.Load(); got != 1 {
-		t.Fatalf("analytics statements for 50 concurrent cold misses = %d, want 1 (coalesced)", got)
+	if got := st.coreCalls.Load(); got != 1 {
+		t.Fatalf("core statements for 50 concurrent cold misses = %d, want 1 (coalesced)", got)
 	}
 	if got := st.flowCalls.Load(); got != 1 {
 		t.Fatalf("flow statements for 50 concurrent cold misses = %d, want 1 (coalesced)", got)
@@ -257,12 +260,9 @@ func TestStatsRefreshQueryFailures(t *testing.T) {
 		name string
 		flag *atomic.Bool
 	}{
-		{"locations", &st.fail},
-		{"flows", &st.flowFail},
 		{"lifetime", &st.usageTotalsFail},
 		{"last24h", &st.usageTotalsSinceFail},
 		{"series", &st.usageTimeSeriesFail},
-		{"count", &st.usageCountFail},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -311,6 +311,7 @@ func TestStatsRefreshAcceptsEmptyAnalytics(t *testing.T) {
 		t.Fatal("fixture must contain located traffic")
 	}
 	st.empty.Store(true)
+	srv.refreshStatsGeography()
 	body, ok := srv.refreshStats()
 	var empty struct {
 		Locations []publicRequestLocationBucket `json:"request_locations"`

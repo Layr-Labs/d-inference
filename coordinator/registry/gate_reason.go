@@ -45,6 +45,7 @@ const (
 	GateExcluded
 	GateAllowlist
 	GateNotServingModel
+	GateStateRestoring
 	// GateReasonCount is the number of reasons; it sizes the tally arrays and
 	// is not itself a reason.
 	GateReasonCount
@@ -78,6 +79,7 @@ var gateReasonNames = [GateReasonCount]string{
 	GateExcluded:             "excluded",
 	GateAllowlist:            "allowlist",
 	GateNotServingModel:      "not_serving_model",
+	GateStateRestoring:       "state_restoring",
 }
 
 // String returns the snake_case name of the reason ("unknown" for an
@@ -108,9 +110,6 @@ const (
 	// SelectionTiePending: several near-ties with equal effectiveQueue; the
 	// lowest totalPending won.
 	SelectionTiePending
-	// SelectionCacheTiebreak: several queue/pending-equivalent candidates and a
-	// bounded exact-cache discount resolved the tie by adjusted cost.
-	SelectionCacheTiebreak
 	// SelectionRandom: several queue/pending-equivalent candidates (and no
 	// decisive cache discount); one was chosen uniformly at random.
 	SelectionRandom
@@ -118,12 +117,11 @@ const (
 )
 
 var selectionPathNames = [selectionPathCount]string{
-	SelectionNone:          "none",
-	SelectionUniqueMin:     "unique_min",
-	SelectionTieQueue:      "tie_queue",
-	SelectionTiePending:    "tie_pending",
-	SelectionCacheTiebreak: "cache_tiebreak",
-	SelectionRandom:        "random",
+	SelectionNone:       "none",
+	SelectionUniqueMin:  "unique_min",
+	SelectionTieQueue:   "tie_queue",
+	SelectionTiePending: "tie_pending",
+	SelectionRandom:     "random",
 }
 
 // String returns the snake_case name of the path.

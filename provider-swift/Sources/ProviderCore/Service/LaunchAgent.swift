@@ -300,6 +300,7 @@ public enum LaunchAgent: Sendable {
 
     static let passthroughEnvKeys = [
         "DARKBLOOM_PREFIX_CACHE",
+        "DARKBLOOM_PREFIX_CACHE_MEMORY",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
         "DARKBLOOM_KV_BACKEND_GUARD",

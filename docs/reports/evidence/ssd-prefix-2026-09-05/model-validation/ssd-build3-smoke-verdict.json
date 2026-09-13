@@ -1,0 +1,40 @@
+{
+  "passed": true,
+  "errors": [],
+  "rows": [
+    {
+      "id": "p8192-r0-first",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 6.093860625,
+      "candidate_ttft_s": 6.091325208,
+      "saved_tokens": 0,
+      "cache_outcome": "miss",
+      "baseline_terminal_tail_s": 4.9624999999942077e-05,
+      "candidate_terminal_tail_s": 0.11369587500000033
+    },
+    {
+      "id": "p8192-r0-repeat",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 6.577656375,
+      "candidate_ttft_s": 1.835913083,
+      "saved_tokens": 4096,
+      "cache_outcome": "hit",
+      "baseline_terminal_tail_s": 4.787499999991951e-05,
+      "candidate_terminal_tail_s": 6.345799999962765e-05
+    },
+    {
+      "id": "decode-0",
+      "token_ids_equal": true,
+      "baseline_ttft_s": 0.093108833,
+      "candidate_ttft_s": 0.091493084,
+      "saved_tokens": 0,
+      "cache_outcome": "miss",
+      "baseline_terminal_tail_s": 5.104199999994563e-05,
+      "candidate_terminal_tail_s": 5.045800000047507e-05
+    }
+  ],
+  "generated_token_ids_compared": true,
+  "cancellation_cache_policy": "cancelled hybrid donor must not publish",
+  "baseline_decode_tps": 55.532737528762695,
+  "candidate_decode_tps": 57.835571768416166
+}

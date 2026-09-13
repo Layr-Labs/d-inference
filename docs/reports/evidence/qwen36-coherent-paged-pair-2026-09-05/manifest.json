@@ -1,0 +1,275 @@
+{
+  "scope": "Q36 exact-artifact normal-MTP build5 initial paged B1 cache-off/SSD pair. All current strict semantic/cache/idle gates pass. No repeated performance, contiguous, B2/B4, full context/lifecycle, HTTP, persistent restart or release acceptance.",
+  "source_commit": "9e49059a1806e265fd9ceab420c1b82216a5d785",
+  "native_source": "aafe2069bcdeadef9250530eb511c598649c0355",
+  "probe_sha256": "eee66c9aaefa1b01dc696c551f8b98e7e89515b9389f4d53324c2302ccd3fa11",
+  "archive": {
+    "path": "payloads.tar.gz",
+    "bytes": 148978,
+    "sha256": "4b9ffed2dd25520de4594fa25b7f2b67c73f7024183c30ba1b615c5ac54f5b9d"
+  },
+  "payload_count": 52,
+  "payload_bytes": 2048459,
+  "files": {
+    "pair/PROVENANCE.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/PROVENANCE.json",
+      "bytes": 722,
+      "sha256": "06105c984f421694799d1566fba1432b2fe75189b445f8877d33407b81ac1bfa"
+    },
+    "pair/input/plan.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/input/plan.json",
+      "bytes": 3526,
+      "sha256": "14deee3b01b166dac3215714bfce1552c10d0336ce8eecdf4b53bf41ec657e46"
+    },
+    "pair/input/qwen36.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/input/qwen36.json",
+      "bytes": 72577,
+      "sha256": "b20d2572cc1bed80da07a4f9fa3a338379ffd5b26fcb0500bc1c5fe0fd3c7cf8"
+    },
+    "pair/manifest.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/manifest.json",
+      "bytes": 13782,
+      "sha256": "ead88a383e2f221c743aec192c7eaf3efc696dfba33f57cc214b3c49830d8f6a"
+    },
+    "pair/provenance/darkbloom-0.9-validation/matrix.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/provenance/darkbloom-0.9-validation/matrix.json",
+      "bytes": 30277,
+      "sha256": "2430cd9897aaa89ebe112833f9b3aa626f822eb27c338cf2f170482bea12028e"
+    },
+    "pair/provenance/darkbloom-final-serving-build5/artifact-manifest.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/provenance/darkbloom-final-serving-build5/artifact-manifest.json",
+      "bytes": 1459,
+      "sha256": "74901f9397598dd62d9d227fa7b4c8fd3f09fc898610946970a41830d3a2b820"
+    },
+    "pair/provenance/darkbloom-final-serving-build5/manifest.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/provenance/darkbloom-final-serving-build5/manifest.json",
+      "bytes": 8089,
+      "sha256": "b8bdefc7667267305c694c597b7b2a439a0d1a001bce7fd1551765a05a0237e4"
+    },
+    "pair/provenance/tmp/run-final-model-cell-smoke2-build5.py": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/provenance/tmp/run-final-model-cell-smoke2-build5.py",
+      "bytes": 4596,
+      "sha256": "be15ae80b1d35a83dd151d10ec383e94c35f96528ded265125aab241b3cd4765"
+    },
+    "pair/raw/qwen36-paged-cache-off-b1-smoke2-build5/cache-file-summary.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-off-b1-smoke2-build5/cache-file-summary.json",
+      "bytes": 36,
+      "sha256": "4e3696189ea31d79393dcfbbcb54ce8eff66dc3550ed6c9b62e12bc6bcdf9b90"
+    },
+    "pair/raw/qwen36-paged-cache-off-b1-smoke2-build5/command.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-off-b1-smoke2-build5/command.json",
+      "bytes": 1622,
+      "sha256": "845285e5f6a3ae237a08e5499a66d543908ecf0c043b942844da029e38139b07"
+    },
+    "pair/raw/qwen36-paged-cache-off-b1-smoke2-build5/engine.log": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-off-b1-smoke2-build5/engine.log",
+      "bytes": 784,
+      "sha256": "8cc48760fb08ced8e76d28a77909e88f7c9a59f8bcbe39946220ab0d64eb1b71"
+    },
+    "pair/raw/qwen36-paged-cache-off-b1-smoke2-build5/execution.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-off-b1-smoke2-build5/execution.json",
+      "bytes": 53,
+      "sha256": "637cd849460f3240099ba46e33a9236b89d1d17d7b56888bb05895b84e78614f"
+    },
+    "pair/raw/qwen36-paged-cache-off-b1-smoke2-build5/input.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-off-b1-smoke2-build5/input.json",
+      "bytes": 72673,
+      "sha256": "f56eb4028526a23784b852f5583d6f0b4f15346cefe5aa6e14ef27dfb6ef7f06"
+    },
+    "pair/raw/qwen36-paged-cache-off-b1-smoke2-build5/integrity-verdict.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-off-b1-smoke2-build5/integrity-verdict.json",
+      "bytes": 37,
+      "sha256": "76aa3b58148d89cc797ae408eba304f008308b708476e2db124fcf4e5d1c7a2e"
+    },
+    "pair/raw/qwen36-paged-cache-off-b1-smoke2-build5/manifest.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-off-b1-smoke2-build5/manifest.json",
+      "bytes": 1717,
+      "sha256": "a0cdc82296d68ec41a32585f540f46f6b3af62dc2ffcb2770d00641086b631d6"
+    },
+    "pair/raw/qwen36-paged-cache-off-b1-smoke2-build5/metadata.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-off-b1-smoke2-build5/metadata.json",
+      "bytes": 2434,
+      "sha256": "80d5d3a6c6a228f0e79fafc3a75f891ab43e5a291d8da73cb7f6ac0e333924fe"
+    },
+    "pair/raw/qwen36-paged-cache-off-b1-smoke2-build5/remote-files.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-off-b1-smoke2-build5/remote-files.json",
+      "bytes": 706,
+      "sha256": "b3616f025a9ad5bf5221680b9c54998838eb0748e15bc58d8fc32460adf1923c"
+    },
+    "pair/raw/qwen36-paged-cache-off-b1-smoke2-build5/report.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-off-b1-smoke2-build5/report.json",
+      "bytes": 697472,
+      "sha256": "ea8ba70930d982aea24ccd0900289cbf7971f2eac0e0f2a74a3ec5a73bda53fa"
+    },
+    "pair/raw/qwen36-paged-cache-off-b1-smoke2-build5/ssh-run.log": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-off-b1-smoke2-build5/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "pair/raw/qwen36-paged-cache-off-b1-smoke2-build5/summary.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-off-b1-smoke2-build5/summary.json",
+      "bytes": 1067,
+      "sha256": "90db2b39dd78d5698d4a530f3792157b4851139efa58108097b5ea924010cda2"
+    },
+    "pair/raw/qwen36-paged-cache-off-b1-smoke2-build5/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-off-b1-smoke2-build5/telemetry.jsonl",
+      "bytes": 129223,
+      "sha256": "d7fdd64a61eff3bfc65db3b4d166a1d950b3bec8e420e4901310933de3d80891"
+    },
+    "pair/raw/qwen36-paged-cache-on-b1-smoke2-build5/cache-file-summary.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-on-b1-smoke2-build5/cache-file-summary.json",
+      "bytes": 45,
+      "sha256": "8a2caf893159a71923af1b581075149e51f4a3b434f94c9104df678800d41455"
+    },
+    "pair/raw/qwen36-paged-cache-on-b1-smoke2-build5/command.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-on-b1-smoke2-build5/command.json",
+      "bytes": 1620,
+      "sha256": "fa07769f282cfbad5c36403e89a0bca3949b859e058a35dc096a8bf9a867f9f7"
+    },
+    "pair/raw/qwen36-paged-cache-on-b1-smoke2-build5/engine.log": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-on-b1-smoke2-build5/engine.log",
+      "bytes": 778,
+      "sha256": "506b4648eacc8e5c775db01de8d0b92ee1e5177d83e7b01f6ad6449d74fc66d6"
+    },
+    "pair/raw/qwen36-paged-cache-on-b1-smoke2-build5/execution.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-on-b1-smoke2-build5/execution.json",
+      "bytes": 54,
+      "sha256": "2a79be68a79a399807bf3d325de87ca7c4c7c6a34284a6265267860cde8b0dce"
+    },
+    "pair/raw/qwen36-paged-cache-on-b1-smoke2-build5/input.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-on-b1-smoke2-build5/input.json",
+      "bytes": 72673,
+      "sha256": "f56eb4028526a23784b852f5583d6f0b4f15346cefe5aa6e14ef27dfb6ef7f06"
+    },
+    "pair/raw/qwen36-paged-cache-on-b1-smoke2-build5/integrity-verdict.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-on-b1-smoke2-build5/integrity-verdict.json",
+      "bytes": 37,
+      "sha256": "76aa3b58148d89cc797ae408eba304f008308b708476e2db124fcf4e5d1c7a2e"
+    },
+    "pair/raw/qwen36-paged-cache-on-b1-smoke2-build5/manifest.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-on-b1-smoke2-build5/manifest.json",
+      "bytes": 1717,
+      "sha256": "87dbdfe7e3e02ab01e128d93f8c245d2099ad279f1697ec4983ebc969745fa6a"
+    },
+    "pair/raw/qwen36-paged-cache-on-b1-smoke2-build5/metadata.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-on-b1-smoke2-build5/metadata.json",
+      "bytes": 2430,
+      "sha256": "ee526b091c62b2ba9baf9e762dccc92f70a23548a08317081cad6237320b67f1"
+    },
+    "pair/raw/qwen36-paged-cache-on-b1-smoke2-build5/remote-files.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-on-b1-smoke2-build5/remote-files.json",
+      "bytes": 706,
+      "sha256": "381438ac45313fcba606df955035daea1113fa589e47895853442586e1b9de02"
+    },
+    "pair/raw/qwen36-paged-cache-on-b1-smoke2-build5/report.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-on-b1-smoke2-build5/report.json",
+      "bytes": 715551,
+      "sha256": "1a52673d6099f66ab140af2547cf0d2408a6634b8a3204e8dd10823734b29653"
+    },
+    "pair/raw/qwen36-paged-cache-on-b1-smoke2-build5/ssh-run.log": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-on-b1-smoke2-build5/ssh-run.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "pair/raw/qwen36-paged-cache-on-b1-smoke2-build5/summary.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-on-b1-smoke2-build5/summary.json",
+      "bytes": 1054,
+      "sha256": "52c051950dc9c358cd816d1e433949fbcf923cf09bfaae63d835ae0fb619dee3"
+    },
+    "pair/raw/qwen36-paged-cache-on-b1-smoke2-build5/telemetry.jsonl": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/raw/qwen36-paged-cache-on-b1-smoke2-build5/telemetry.jsonl",
+      "bytes": 109549,
+      "sha256": "1c965bdf33db5171e916794457d187f5ff9383eb394b15a26dcbfa741b4815e5"
+    },
+    "pair/support/archive.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/support/archive.json",
+      "bytes": 104,
+      "sha256": "10efc561f17c49082831f23790a4915bb93accc1aa054519000de4e27a693bf1"
+    },
+    "pair/support/driver-proof.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/support/driver-proof.json",
+      "bytes": 602,
+      "sha256": "72f37889f2d176f94d6d761cdeb1dd2cfb212ab9e54fb6b976ada4978db42787"
+    },
+    "pair/support/matrix-before-q36-pass-de8107697aaae9769dd91071037d4e6183f5c96dad77aa2659b49275ef48b5e0.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/support/matrix-before-q36-pass-de8107697aaae9769dd91071037d4e6183f5c96dad77aa2659b49275ef48b5e0.json",
+      "bytes": 29295,
+      "sha256": "de8107697aaae9769dd91071037d4e6183f5c96dad77aa2659b49275ef48b5e0"
+    },
+    "pair/support/q36-off-preflight.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/support/q36-off-preflight.json",
+      "bytes": 197,
+      "sha256": "fb2ae22d1b87daeb2a6bfb5d86f3499ab32fda97844f7b933251422b5335330e"
+    },
+    "pair/support/q36-off-strict-verdict.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/support/q36-off-strict-verdict.json",
+      "bytes": 443,
+      "sha256": "06c6359a38987db2a577a82ddd6eeb9c9e72159ea66c4bcc4c71e14387ec9bfd"
+    },
+    "pair/support/q36-on-preflight.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/support/q36-on-preflight.json",
+      "bytes": 194,
+      "sha256": "1eecbb500c5f979c2283964e3ff687bb8d8b549d2c77d8843b09cefaa40a11e0"
+    },
+    "pair/support/remote-verification.stderr": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/support/remote-verification.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "pair/support/remote-verification.stdout": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/support/remote-verification.stdout",
+      "bytes": 390,
+      "sha256": "0eb74f15fad4b5662a607f5d283a385b5d2d5d7bda19c7e882bcdcd0432d7b16"
+    },
+    "pair/verdicts/darkbloom-build5-q36-hardened-comparator/command.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/verdicts/darkbloom-build5-q36-hardened-comparator/command.json",
+      "bytes": 517,
+      "sha256": "cf9dd0a528c2c0cda43323cc5982ae4e67e31aa8b80268cbdc37575d857ab43c"
+    },
+    "pair/verdicts/darkbloom-build5-q36-hardened-comparator/compare_radix_engine.py": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/verdicts/darkbloom-build5-q36-hardened-comparator/compare_radix_engine.py",
+      "bytes": 13154,
+      "sha256": "b33922deda8f21128873a8b71b639a0626005d449e3cc603cb35e2d660a253cc"
+    },
+    "pair/verdicts/darkbloom-build5-q36-hardened-comparator/manifest.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/verdicts/darkbloom-build5-q36-hardened-comparator/manifest.json",
+      "bytes": 1544,
+      "sha256": "0ad2e116db3d4a42bc336e51a7aa50ef4ff233ae22b503738828d9b543c69273"
+    },
+    "pair/verdicts/darkbloom-build5-q36-hardened-comparator/radix_engine_evidence.py": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/verdicts/darkbloom-build5-q36-hardened-comparator/radix_engine_evidence.py",
+      "bytes": 15658,
+      "sha256": "e0f57723d4be3f1a00068b9870f70a6bc9a0174b76fdea285d33f0f4eb658e4e"
+    },
+    "pair/verdicts/darkbloom-build5-q36-hardened-comparator/stderr.txt": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/verdicts/darkbloom-build5-q36-hardened-comparator/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "pair/verdicts/darkbloom-build5-q36-hardened-comparator/verdict.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/verdicts/darkbloom-build5-q36-hardened-comparator/verdict.json",
+      "bytes": 899,
+      "sha256": "b15451627ab75b656cbffdaab44dacc8b956a375225ea6abad9e911600d429f4"
+    },
+    "pair/verdicts/darkbloom-build5-q36-pair/manifest.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/verdicts/darkbloom-build5-q36-pair/manifest.json",
+      "bytes": 6697,
+      "sha256": "9084f7ed36274a67dbb463a406b154e96d85d22a14d6efda01056fbb2c7d45e2"
+    },
+    "pair/verdicts/darkbloom-build5-q36-pair/observations.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/verdicts/darkbloom-build5-q36-pair/observations.json",
+      "bytes": 27317,
+      "sha256": "d07c93642b9d0b0145f05a9794e21e2097e5145f20aa44bba8e9a700f85299c8"
+    },
+    "pair/verdicts/darkbloom-build5-q36-pair/strict-comparator-verdict.json": {
+      "source": "/tmp/darkbloom-build5-q36-freeze1/verdicts/darkbloom-build5-q36-pair/strict-comparator-verdict.json",
+      "bytes": 899,
+      "sha256": "b15451627ab75b656cbffdaab44dacc8b956a375225ea6abad9e911600d429f4"
+    },
+    "root-review.json": {
+      "source": "/tmp/darkbloom-build5-q36-root-review.json",
+      "bytes": 1483,
+      "sha256": "e2a49f64fecf6cab0c61d390fdebf5bb8b39ad84703a37b5a57ea617eca01c1b"
+    }
+  }
+}

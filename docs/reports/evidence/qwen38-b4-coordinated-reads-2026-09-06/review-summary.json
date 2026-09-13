@@ -1,0 +1,363 @@
+{
+  "cohort": "qwen38-retained-b4-r1",
+  "comparisons": {
+    "backend": {
+      "errors": [],
+      "passed": true
+    },
+    "cache": {
+      "errors": [],
+      "passed": true
+    }
+  },
+  "completed_arms": [
+    "contiguous-cache-off",
+    "paged-cache-off",
+    "paged-cache-on"
+  ],
+  "forward_shape_errors": {
+    "contiguous-cache-off": [],
+    "paged-cache-off": [],
+    "paged-cache-on": []
+  },
+  "full_archive": {
+    "bytes": 2637722385,
+    "path": "/Users/gaj/autoresearch/radix-prefix-cache/102-qwen38-b4-pilot1/attempt-1/evidence.tar.gz",
+    "sha256": "b39ac77013899785cb40935b39e25a17c4062214c101d5afa4b5fa3aa6046bd5",
+    "verified_on_host": true
+  },
+  "postflight": {
+    "known_pids": [
+      12235,
+      12237,
+      12239,
+      12285,
+      12301,
+      12307,
+      12571,
+      12587,
+      12593,
+      12875,
+      12892,
+      12898
+    ],
+    "known_pids_present": [],
+    "observation": {
+      "free_bytes": 270054420480,
+      "gpu_temperature_c": 36.511905670166016,
+      "hardware_model": "Mac17,6",
+      "load1": 1.41943359375,
+      "memory_bytes": 137438953472,
+      "owned_processes": [],
+      "unexpected_processes": []
+    },
+    "observed_unix": 1788715572.038765,
+    "read_only": true
+  },
+  "report_errors": {
+    "contiguous-cache-off": [],
+    "paged-cache-off": [],
+    "paged-cache-on": []
+  },
+  "required_width": 4,
+  "rows": {
+    "contiguous-cache-off": [
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-first-b0",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 6.646533375
+      },
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-first-b1",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 13.788458042
+      },
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-first-b2",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 20.886741959
+      },
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-first-b3",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 27.506206792
+      },
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-repeat-b0",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 7.412051333
+      },
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-repeat-b1",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 14.74044125
+      },
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-repeat-b2",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 28.672426708
+      },
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-repeat-b3",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 21.973099208
+      }
+    ],
+    "paged-cache-off": [
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-first-b0",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 6.717455375
+      },
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-first-b1",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 13.993755917
+      },
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-first-b2",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 21.20385125
+      },
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-first-b3",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 27.91214225
+      },
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-repeat-b0",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 7.490894459
+      },
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-repeat-b1",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 14.93493325
+      },
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-repeat-b2",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 29.039251792
+      },
+      {
+        "cache_outcome": "disabled",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-repeat-b3",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "not_attempted",
+        "ssd_stage_ms": 0,
+        "ttft_s": 22.256823291
+      }
+    ],
+    "paged-cache-on": [
+      {
+        "cache_outcome": "miss",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-first-b0",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "miss_absent",
+        "ssd_stage_ms": 0.129917,
+        "ttft_s": 6.732872416
+      },
+      {
+        "cache_outcome": "miss",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-first-b1",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "miss_absent",
+        "ssd_stage_ms": 0.126458,
+        "ttft_s": 21.238490375
+      },
+      {
+        "cache_outcome": "miss",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-first-b2",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "miss_absent",
+        "ssd_stage_ms": 0.129875,
+        "ttft_s": 27.947275083
+      },
+      {
+        "cache_outcome": "miss",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-first-b3",
+        "prompt_tokens": 5523,
+        "saved_tokens": 0,
+        "ssd_stage_disposition": "miss_absent",
+        "ssd_stage_ms": 0.12175,
+        "ttft_s": 14.0317005
+      },
+      {
+        "cache_outcome": "hit",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-repeat-b0",
+        "prompt_tokens": 5523,
+        "saved_tokens": 5120,
+        "ssd_stage_disposition": "staged",
+        "ssd_stage_ms": 900.61925,
+        "ttft_s": 2.016875333
+      },
+      {
+        "cache_outcome": "hit",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-repeat-b1",
+        "prompt_tokens": 5523,
+        "saved_tokens": 5120,
+        "ssd_stage_disposition": "staged",
+        "ssd_stage_ms": 1546.492833,
+        "ttft_s": 2.652559791
+      },
+      {
+        "cache_outcome": "hit",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-repeat-b2",
+        "prompt_tokens": 5523,
+        "saved_tokens": 5120,
+        "ssd_stage_disposition": "staged",
+        "ssd_stage_ms": 161.695167,
+        "ttft_s": 0.739167833
+      },
+      {
+        "cache_outcome": "hit",
+        "completion_tokens": 74,
+        "finish": "stop",
+        "id": "long-repeat-b3",
+        "prompt_tokens": 5523,
+        "saved_tokens": 5120,
+        "ssd_stage_disposition": "staged",
+        "ssd_stage_ms": 313.682375,
+        "ttft_s": 1.381264209
+      }
+    ]
+  },
+  "safe_capsule": {
+    "bytes": 5864052,
+    "path": "/Users/gaj/autoresearch/radix-prefix-cache/102-qwen38-b4-pilot1/review-capsule.tar.gz",
+    "sha256": "33eac5d9c5857fa8a9bd64ba95a5edd1da800fbbc945cf9cab7476eddaf6fafd"
+  },
+  "scope": "One retained B4 triad only; failed or missing gates remain unaccepted.",
+  "source_parent": "35fea6d0e3b05ff65d60d9675ab480159913ac62",
+  "terminal": {
+    "accepted": true,
+    "auto_http_validated": false,
+    "external_caller_control": {
+      "alive": false,
+      "last_ping_monotonic": 488.933038041,
+      "last_ping_unix": 1788715512.996244,
+      "lease_seconds": 30,
+      "reason": "supervision finished",
+      "received_pings": 242,
+      "requires_external_pings": true
+    },
+    "failure": null,
+    "gpu_ready": false,
+    "matrix_expanded": false,
+    "missing_post_audits": [],
+    "no_automatic_rerun": true,
+    "production_default_validated": false,
+    "supervisor_exit_code": 0
+  },
+  "unrun_arms": []
+}

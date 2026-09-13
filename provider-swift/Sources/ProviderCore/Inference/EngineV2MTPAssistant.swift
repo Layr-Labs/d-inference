@@ -53,6 +53,15 @@ struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
             }
         }
 
+        if let nemotron = target as? NemotronH35Model {
+            do {
+                let assistant = try NemotronH35MTPAssistant.load(from: artifact.directory, target: nemotron)
+                return ProviderMTPAssistantHandle(owner: assistant, drafter: assistant)
+            } catch {
+                throw ProviderMTPAssistantLoadError.loadFailed(String(describing: error))
+            }
+        }
+
         guard let gemmaTarget = target as? Gemma4TextModel else {
             throw ProviderMTPAssistantLoadError.targetIncompatible(
                 String(describing: type(of: target)))
@@ -77,19 +86,13 @@ struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
 
 func providerMTPVerificationPolicy(
     for drafter: (any CBv2MTPDrafter)?,
-    modelID: String? = nil,
-    benchmarkVerification: EngineV2BenchmarkMTPVerification? = nil,
     automaticRectangularTokens: Int
 ) -> (mode: CBv2MTPVerificationMode, automaticRectangularTokens: Int) {
     if let required = drafter?.requiredVerificationMode {
         return (required, required == .automatic ? automaticRectangularTokens : 0)
     }
-    // Same-state QAT verification changes target logits with rectangular width.
-    // Keep assistant drafting and acceptance, but score its columns with the
-    // ordinary target shape. Explicit offline controls retain their bounded
-    // automatic baseline and undergo the usual target/drafter validation.
-    if drafter != nil, modelID == "gemma-4-26b-qat-4bit", benchmarkVerification == nil {
-        return (.serialTarget, 0)
-    }
+    // Verify a bounded window in one target traversal. Drafter-required
+    // modes retain priority; the engine checks storage support and rolls
+    // back rejected suffixes. Wider evaluation can change rounding and wording.
     return (.automatic, automaticRectangularTokens)
 }

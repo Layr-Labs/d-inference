@@ -20,6 +20,9 @@ struct EngineV2KVBackendPolicyTests {
     @Test(arguments: [
         "qwen3.5-35b-a3b", "qwen3.6-35b-a3b-vl-mtp-mxfp8",
         "EigenLabs/Qwen3.8-27B-4bit-mtp", "gpt-oss-20b", "gemma-4-26b-qat-4bit",
+        "nvidia-nemotron-3.5-lightning",
+        "EigenLabs/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp",
+        "mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit",
     ])
     func exactReleaseArtifactAutoPolicy(modelID: String) {
         let parsed = EngineV2KVBackendPolicy.parseSelection(
@@ -54,6 +57,8 @@ struct EngineV2KVBackendPolicyTests {
         " qwen3.5-35b-a3b", "qwen3.5-35b-a3b ", "org/qwen3.5-35b-a3b",
         "qwen3.5-35b-a3b-other", "qwen3.6-35b-a3b-vl-mtp-mxfp8-other",
         "EigenLabs/Qwen3.8-27B-4bit-mtp-other",
+        "nvidia-nemotron-3.5-lightning-other", "NVIDIA-NEMOTRON-3.5-LIGHTNING",
+        "nvidia-nemotron-3.5-lightning ", "arbitrary/Nemotron-MTP",
     ] as [String?])
     func otherIDsRemainContiguous(modelID: String?) {
         #expect(EngineV2KVBackendPolicy.preferredBackend(

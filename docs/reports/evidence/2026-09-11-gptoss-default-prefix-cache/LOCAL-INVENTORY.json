@@ -1,0 +1,57 @@
+[
+  {
+    "path": "receipts/host.txt",
+    "bytes": 97,
+    "sha256": "02fb460840276da5c44560740ceede37eb431a672bea365fead22db344ffeef3"
+  },
+  {
+    "path": "receipts/toolchain.txt",
+    "bytes": 134,
+    "sha256": "185515bbbac98db70faa219934add95f56fa3fbc69c1ccbe61a3d46f7c842cbe"
+  },
+  {
+    "path": "receipts/http-attempt1-retirement.json",
+    "bytes": 195,
+    "sha256": "e879357664d94974ef524dcd90afd1e7296a55abbe091d175ba8b74d3e8f8ac2"
+  },
+  {
+    "path": "receipts/http-helper-final-tests.log",
+    "bytes": 2331,
+    "sha256": "7ff6ba1e38aaf74bd87ea9640dfe4ec44e6a6e20f5e769a0574a58b964ca95ea"
+  },
+  {
+    "path": "receipts/validator-final-tests.log",
+    "bytes": 1564,
+    "sha256": "d519de14ff1415bfb0ba56d518304b4adcf32975b6aa1be6f551f6c2436a86ec"
+  },
+  {
+    "path": "receipts/threat-review-49b62bfe6.log",
+    "bytes": 19758,
+    "sha256": "89bd6b41be3ef445e71fc93f8f97d8f0341517ace738be2c4b67fdb9fa6a5814"
+  },
+  {
+    "path": "http-default-cache-1-launch.log",
+    "bytes": 3453,
+    "sha256": "32aeaef05a7c92d1e3f3dda4593ef34d939f67ba8d0862dc17860854e0cca3ff"
+  },
+  {
+    "path": "http-default-cache-2-launch.log",
+    "bytes": 830,
+    "sha256": "816cc5ecbe297feb635bec0af2c9d90ac5232a79adf3b9913714d893f0091aa3"
+  },
+  {
+    "path": "http-default-cache-3-launch.log",
+    "bytes": 110,
+    "sha256": "4d1fd86da0f5d587f818d4dbf7d7e161adde6b50c2fc4cf0049e2bd613f0f23a"
+  },
+  {
+    "path": "results/b1-validation-initial.json",
+    "bytes": 16812,
+    "sha256": "a7a12e87a44e19199b1294e4d0889328a46427b712cfc5378bd467b15a9723d1"
+  },
+  {
+    "path": "results/b1-validation-harmony-fixed.json",
+    "bytes": 16473,
+    "sha256": "ad277d1b2ffb44fee247c8f89cb25c7024cc82e7e37a912c971d7a47d6a183bc"
+  }
+]

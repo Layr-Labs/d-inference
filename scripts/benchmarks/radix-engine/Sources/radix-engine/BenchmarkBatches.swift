@@ -29,9 +29,7 @@ enum BenchmarkBatches {
             for index in 0..<count {
                 group.addTask {
                     let rowStart = DispatchTime.now().uptimeNanoseconds
-                    let copy = Input(name: input.name + "-b\(index)", kind: input.kind,
-                                     tokens: input.tokens, maxTokens: input.maxTokens,
-                                     promptRenderDate: input.promptRenderDate)
+                    let copy = input.renamed(input.name + "-b\(index)")
                     var value: [String: Any]
                     do {
                         value = try await RadixBenchmark.generate(
@@ -43,6 +41,7 @@ enum BenchmarkBatches {
                         value = ["id": copy.name, "kind": copy.kind,
                                  "outcome": "failed", "error": String(describing: error),
                                  "prompt_token_ids": copy.tokens,
+                                 "sampling": BenchmarkSampling.record(copy.sampling),
                                  "elapsed_s": RadixBenchmark.seconds(
                                     DispatchTime.now().uptimeNanoseconds - rowStart)]
                     }

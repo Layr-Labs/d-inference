@@ -292,6 +292,7 @@ enum EngineV2SlotFactory {
         assemblyOverrides: AssemblyOverrides = AssemblyOverrides(),
         environment: [String: String] = ProcessInfo.processInfo.environment,
         persistentTestNamespace: SSDPersistentTestKeyNamespace? = nil,
+        startServingTelemetry: Bool = true,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngineOverride: (@Sendable (String, Int) throws -> any CBv2Engine)? = nil,
         assistantLoader: any ProviderMTPAssistantLoading = ProductionProviderMTPAssistantLoader(),
@@ -372,15 +373,16 @@ enum EngineV2SlotFactory {
             environment: environment)
         let mtpVerification = providerMTPVerificationPolicy(
             for: assistantHandle?.drafter,
-            modelID: modelId,
-            benchmarkVerification: assemblyOverrides.gemmaMTPVerification,
             automaticRectangularTokens: automaticRectangularTokens)
-        let fixedDraftTokens = MTPAutomaticVerificationPolicy.fixedDraftTokens(
+        let draftDepth = MTPAutomaticVerificationPolicy.draftDepthPolicy(
             usesRequestStatefulDrafter:
-                assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter)
+                assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter,
+            modelID: modelId,
+            hasBenchmarkVerificationOverride: assemblyOverrides.gemmaMTPVerification != nil)
         var mtpConfig = CBv2MTPConfig(
             enabled: assistantHandle != nil,
-            fixedDraftTokens: fixedDraftTokens,
+            maxDraftTokens: draftDepth.maximum,
+            fixedDraftTokens: draftDepth.fixed,
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens)
         if let verification = assemblyOverrides.gemmaMTPVerification {
@@ -703,8 +705,9 @@ enum EngineV2SlotFactory {
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
 
-        await bridge.startSSDPrefixCacheStatsLogger()
-        await bridge.configureMTPStatus(mtpStatus)
+        if startServingTelemetry { await bridge.startSSDPrefixCacheStatsLogger() }
+        await bridge.configureMTPStatus(mtpStatus,
+            metricsInterval: startServingTelemetry ? .seconds(60) : .zero)
         if let gemmaModel = servingModel as? Gemma4TextModel {
             // One load-time snapshot only. Never arm the benchmark counters in
             // production: the QMM hot path remains free of counter atomics.

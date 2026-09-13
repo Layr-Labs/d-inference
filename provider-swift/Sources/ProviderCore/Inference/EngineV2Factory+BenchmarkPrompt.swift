@@ -7,6 +7,7 @@ extension EngineV2Factory {
     public struct BenchmarkPrompt: Sendable {
         public let tokens: [Int]
         public let renderDate: String
+        public let sampling: CBv2SamplingParams
     }
 
     /// Preserve request-owned date and the HTTP body's production normalization.
@@ -23,10 +24,26 @@ extension EngineV2Factory {
         let supplied = ProviderLoop.extractChatTemplateControls(from: body)
         let controls = supplied.promptDate == nil ? supplied.withPromptDate(defaultDate) : supplied
         let prepared = try ToolChoicePromptPolicy.prepare(request)
+        let overrides = ProviderLoop.extractSamplingOverrides(from: body)
+        let logprobs = ProviderLoop.extractLogprobsSpec(from: body)
+        let translated = MultiModelBatchSchedulerEngine.translate(
+            openAIRequest: request, defaultMaxTokens: request.maxTokens ?? 1,
+            logprobs: logprobs?.requested, topLogprobs: logprobs?.topLogprobs,
+            logitBias: overrides?.logitBias, seed: overrides?.seed)
+        let sampling = EngineV2Translation.samplingParams(from: translated)
+        guard request.stop?.isEmpty != false, request.responseFormat == nil else {
+            throw BenchmarkPromptError.outputControlsRequireHTTP
+        }
+        // Preserve existing greedy tool-template diagnostics; they make no
+        // HTTP enforcement claim. Sampled throughput inputs cannot silently
+        // bypass a forced tool constraint.
+        guard sampling.temperature == 0 || !prepared.requiresToolCall else {
+            throw BenchmarkPromptError.outputControlsRequireHTTP
+        }
         let tokens = try ProviderPromptContractPipeline.tokenize(
             prepared: prepared, request: request, tokenizer: tokenizer,
             modelType: modelType, templateControls: controls)
-        return BenchmarkPrompt(tokens: tokens, renderDate: controls.promptDate!.value)
+        return BenchmarkPrompt(tokens: tokens, renderDate: controls.promptDate!.value, sampling: sampling)
     }
 
     @_spi(Benchmarking)
@@ -41,5 +58,5 @@ extension EngineV2Factory {
         return result
     }
 
-    enum BenchmarkPromptError: Error { case mediaRequiresHTTP }
+    enum BenchmarkPromptError: Error { case mediaRequiresHTTP, outputControlsRequireHTTP }
 }

@@ -207,6 +207,34 @@ struct SpecDecArtifactFunnelTests {
         #expect(await catalog.calls == 0)
     }
 
+    @Test("automatic QAT resolves a local assistant and preserves off, kill, and invalid-artifact fallbacks")
+    func automaticQATUsesValidatedFunnel() async throws {
+        let local = try makeLocalAssistant()
+        defer { try? FileManager.default.removeItem(at: local) }
+        let catalog = FunnelCatalog(nil)
+        let artifactFunnel = funnel(catalog: catalog, root: FileManager.default.temporaryDirectory)
+        let modelID = "gemma-4-26b-qat-4bit"
+        for (mode, path, environment, reason) in [
+            (MTPMode.auto, local.path, [:], nil),
+            (MTPMode.off, local.path, [:], MTPFallbackReason.configDisabled),
+            (MTPMode.auto, local.path, ["DARKBLOOM_CBV2_MTP": "0"], .killSwitchDisabled),
+            (MTPMode.auto, "/definitely/missing", [:], .localArtifactInvalid),
+        ] as [(MTPMode, String, [String: String], MTPFallbackReason?)] {
+            let prepared = await artifactFunnel.prepare(.init(
+                modelId: modelID, modelType: "gemma4",
+                enabled: mode.enablesMTP(
+                    forModelType: "gemma4", embeddedArtifactDeclared: false, modelID: modelID),
+                localPath: path, allowDownload: false, environment: environment))
+            #expect(prepared.status.reason == reason)
+            if reason == nil {
+                #expect(prepared.artifact?.source == .local)
+            } else {
+                #expect(prepared.artifact == nil)
+            }
+        }
+        #expect(await catalog.calls == 0)
+    }
+
     @Test("invalid local override does not silently activate catalog assistant")
     func invalidLocalDoesNotFallThrough() async {
         let catalog = FunnelCatalog(funnelModel(metadata: [
@@ -545,6 +573,26 @@ struct SpecDecArtifactFunnelTests {
         #expect(killed.status == .disabled(.killSwitchDisabled, configured: true))
         #expect(bothOff.status == .disabled(.killSwitchDisabled, configured: false))
         #expect(await catalog.calls == 0)
+    }
+
+    @Test("failed asynchronous fetches back off instead of retrying on every readiness poll")
+    func failedPrefetchPollingBacksOff() async throws {
+        let catalog = FunnelCatalog(nil)
+        let artifactFunnel = funnel(catalog: catalog, root: FileManager.default.temporaryDirectory)
+        let request = SpecDecArtifactFunnel.Request(
+            modelId: "gemma-4-26b-qat-4bit", modelType: "gemma4", enabled: true,
+            localPath: nil, allowDownload: true, environment: [:])
+        _ = await artifactFunnel.prepare(request)
+        for _ in 0..<100 {
+            if await catalog.calls == 1, await artifactFunnel.prefetchInFlightForTesting == 0 { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await catalog.calls == 1)
+        #expect(await artifactFunnel.prefetchInFlightForTesting == 0)
+        for _ in 0..<20 { _ = await artifactFunnel.prepare(request) }
+        #expect(await catalog.calls == 1)
+        await artifactFunnel.shutdown()
+        #expect(await artifactFunnel.prefetchInFlightForTesting == 0)
     }
 
     @Test("missing and malformed metadata return stable fail-open reasons")

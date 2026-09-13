@@ -70,6 +70,75 @@ struct BenchmarkProductionInputTests {
         }
     }
 
+    @Test("benchmark preserves production sampling and raw-body seed and bias overlays")
+    func productionSampling() throws {
+        let body = Data(#"""
+        {"model":"gemma-4-26b-qat-4bit","messages":[{"role":"user","content":"hello"}],
+         "temperature":0.7,"top_p":0.9,"top_k":32,"min_p":0.15,"seed":12345,
+         "repetition_penalty":1.1,"frequency_penalty":0.2,"presence_penalty":0.3,
+         "logit_bias":{"42":2.5},"logprobs":true,"top_logprobs":4}
+        """#.utf8)
+        let prompt = try EngineV2Factory.benchmarkPrompt(
+            body: body, tokenizer: BenchmarkInputTokenizer(), modelType: "gemma4",
+            defaultDate: PromptRenderDate("2026-09-08")!)
+        #expect(prompt.sampling.temperature == 0.7)
+        #expect(prompt.sampling.topP == 0.9)
+        #expect(prompt.sampling.topK == 32)
+        // The serving translator does not expose min_p; do not invent a
+        // benchmark-only API behavior for that unknown request field.
+        #expect(prompt.sampling.minP == 0)
+        #expect(prompt.sampling.seed == 12345)
+        #expect(prompt.sampling.repetitionPenalty == 1.1)
+        #expect(prompt.sampling.frequencyPenalty == 0.2)
+        #expect(prompt.sampling.presencePenalty == 0.3)
+        #expect(prompt.sampling.logitBias == [42: 2.5])
+        #expect(prompt.sampling.topLogprobs == 4)
+    }
+
+    @Test("omitted sampling remains greedy with no transforms or seed")
+    func defaultSampling() throws {
+        let prompt = try EngineV2Factory.benchmarkPrompt(
+            body: Data(#"{"model":"gemma","messages":[{"role":"user","content":"hello"}]}"#.utf8),
+            tokenizer: BenchmarkInputTokenizer(), modelType: "gemma4",
+            defaultDate: PromptRenderDate("2026-09-08")!)
+        #expect(prompt.sampling.temperature == 0)
+        #expect(prompt.sampling.topP == 1)
+        #expect(prompt.sampling.topK == 0)
+        #expect(prompt.sampling.minP == 0)
+        #expect(prompt.sampling.seed == nil)
+        #expect(prompt.sampling.repetitionPenalty == 1)
+        #expect(prompt.sampling.frequencyPenalty == 0)
+        #expect(prompt.sampling.presencePenalty == 0)
+        #expect(prompt.sampling.logitBias.isEmpty)
+        #expect(prompt.sampling.topLogprobs == 0)
+    }
+
+    @Test("native throughput inputs reject omitted HTTP output controls")
+    func rejectsOutputControls() throws {
+        for extra in [#""stop":"END""#, #""stop":["END"]"#,
+                      #""response_format":{"type":"json_object"}"#] {
+            let body = Data((#"{"model":"gemma","messages":[{"role":"user","content":"hello"}],"#
+                + extra + "}").utf8)
+            #expect(throws: EngineV2Factory.BenchmarkPromptError.self) {
+                try EngineV2Factory.benchmarkPrompt(body: body, tokenizer: BenchmarkInputTokenizer(),
+                    modelType: "gemma4", defaultDate: PromptRenderDate("2026-09-08")!)
+            }
+        }
+        let forced = #"{"model":"gemma","messages":[{"role":"user","content":"call"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false}}}],"tool_choice":"required","temperature":TEMP}"#
+        #expect(throws: EngineV2Factory.BenchmarkPromptError.self) {
+            try EngineV2Factory.benchmarkPrompt(
+                body: Data(forced.replacingOccurrences(of: "TEMP", with: "0.7").utf8),
+                tokenizer: BenchmarkInputTokenizer(), modelType: "gemma4",
+                defaultDate: PromptRenderDate("2026-09-08")!)
+        }
+        // Historical greedy tool-template probes remain available and do
+        // not claim HTTP token-constraint enforcement.
+        _ = try EngineV2Factory.benchmarkPrompt(
+            body: Data(forced.replacingOccurrences(of: "TEMP", with: "0").utf8),
+            tokenizer: BenchmarkInputTokenizer(), modelType: "gemma4",
+            defaultDate: PromptRenderDate("2026-09-08")!)
+    }
+
     @Test("offline Gemma override keeps ordinary file verification and no silent MTP fallback")
     func assistantPreparation() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

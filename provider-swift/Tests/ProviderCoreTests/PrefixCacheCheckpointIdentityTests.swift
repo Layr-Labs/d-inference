@@ -68,6 +68,13 @@ struct PrefixCacheCheckpointIdentityTests {
         "DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY",
         "DARKBLOOM_GEMMA4_PREFILL_TAIL_MIN_CHUNK",
         "DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS",
+        "DARKBLOOM_QWEN_MTP_MAX_DRAFT",
+        "DARKBLOOM_NEMOTRON35_MTP_CAPTURE_VERIFY",
+        "DARKBLOOM_NEMOTRON35_MTP_KV_ONLY_HISTORY",
+        "DARKBLOOM_NEMOTRON35_MTP_BATCHED_M1",
+        "DARKBLOOM_NEMOTRON35_MTP_WINDOW_SSM",
+        "DARKBLOOM_NEMOTRON35_MTP_COMPILED_MOE",
+        "DARKBLOOM_NEMOTRON35_MTP_MAX_DRAFT_TOKENS",
     ])
     func modelOptimizationChanges(key: String) throws {
         let base = try #require(identity())
@@ -80,6 +87,9 @@ struct PrefixCacheCheckpointIdentityTests {
         case "DARKBLOOM_GEMMA4_PREFILL_TAIL_MIN_CHUNK":
             optimized = "128"
             rollback = "256"
+        case "DARKBLOOM_QWEN_MTP_MAX_DRAFT", "DARKBLOOM_NEMOTRON35_MTP_MAX_DRAFT_TOKENS":
+            optimized = "5"
+            rollback = "4"
         default:
             optimized = "1"
             rollback = "0"

@@ -303,6 +303,27 @@ jobs:
         # green under.
         timeout-minutes: 10
         run: ../../scripts/run-nested-suite.sh CBv2KVSharingParityTests
+      - name: Run Nemotron production SDK gates
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        timeout-minutes: 20
+        run: |
+          # Each filter has its own nonzero/no-skip tripwire. Continue after a
+          # failure so one broken suite cannot hide another unexecuted gate.
+          onboarding_failed=0
+          for suite in SSMDecodeBoundsTests NemotronHTests \
+                       NemotronH35BackendParityTests NemotronH35StorageParityTests \
+                       NemotronH35MTPTests NemotronH35MTPPrimingTests \
+                       MutableInputKernelTests MutableInputExportTests \
+                       CBv2QwenMTPIntegrationTests CBv2MTPDepthControllerTests \
+                       PagedMTPBatchedColumnsTests CBv2CompleteCheckpointEngineTests \
+                       NemotronH35ProductionDefaultsTests \
+                       OpenAIServiceTests ToolCallParserIntegrationTests; do
+            if ! ../../scripts/run-nested-suite.sh "$suite"; then
+              onboarding_failed=1
+            fi
+          done
+          exit "$onboarding_failed"
       - name: Run atomic installer artifact tests
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh

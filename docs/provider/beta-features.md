@@ -1,6 +1,6 @@
 # Beta features
 
-> Last updated: 2026-09-06 · commit `615d96328`
+> Last updated: 2026-09-08 · commit `4431b31c5`
 
 Turn experimental engine behaviour on or off per machine with `darkbloom beta`,
 which writes keys into `provider.toml` so every serve path (LaunchAgent daemon,
@@ -69,7 +69,7 @@ so an environment-variable toggle would silently no-op for the normal daemon
 |---|---|---|---|---|
 | `gemma-prefill-layer18` | `[gemma_optimizations] prefill_layer18` | `true` | yes | Submit Gemma prefill work every 18 layers. Disable to restore the legacy one-final-submission prefill. Projected into the process as `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18` / `0` |
 | `gemma-weighted-r1` | `[gemma_optimizations] weighted_r1` | `true` | yes | Coupled weighted-unsort + safe exact-shape R1 expert paths for Gemma MoE; neither half can be selected alone. Projected as `MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1/0` and `MLX_GATHER_QMM_EXPERT_SLICES=trust/0` |
-| `mtp` | `[backend] mtp_mode` | `auto` | yes | Multi-token prediction (speculative decoding) on CBv2 targets. `auto` turns MTP on for Qwen 3.5-family checkpoints (`qwen3_5`, `qwen3_5_moe`) whose `config.json` declares an embedded head after artifact validation, and leaves other models target-only. `enable` writes `on` (required for separately published catalog assistants and `mtp_drafter_path` overrides); `disable` writes `off`. Resolution and load fail open to target-only decode |
+| `mtp` | `[backend] mtp_mode` | `auto` | yes | Multi-token prediction (speculative decoding) on CBv2 targets. `auto` turns MTP on for Qwen 3.5-family checkpoints (`qwen3_5`, `qwen3_5_moe`) whose `config.json` declares an embedded head after artifact validation, and resolves the external assistant for exact `gemma-4-26b-qat-4bit`. Other models stay target-only. `enable` writes `on` for other supported targets; `disable` writes `off`. Resolution and load fail open to target-only decode |
 
 `darkbloom beta list` shows `auto (model-aware)` for MTP until you pin it;
 `darkbloom status` prints the resulting per-slot MTP and KV posture.

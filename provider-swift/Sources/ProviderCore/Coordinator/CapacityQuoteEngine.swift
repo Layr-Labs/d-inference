@@ -45,8 +45,9 @@ enum CapacityQuoteEngine {
         /// Device vision-tower limits (`VisionTowerBudget.liveLimits` in
         /// production; synthetic in tests).
         let visionLimits: VisionTowerBudget.Limits
-        /// True when the provider is draining for update or shutting down —
-        /// the same conditions the live gate rejects with a bare 503 today.
+        /// True when the provider refuses work, or this requested model is
+        /// draining accepted requests before an assistant swap. This live
+        /// mirror closes quotes before the next heartbeat is published.
         let refusingNewWork: Bool
     }
 

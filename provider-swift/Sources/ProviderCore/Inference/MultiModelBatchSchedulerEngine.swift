@@ -741,7 +741,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             toolHandler: toolHandler,
             prepared: prepared,
             releaseBox: releaseBox,
-            reasoningPrefix: reasoningPrefix
+            reasoningPrefix: reasoningPrefix,
+            nativeReasoningPrefix: ToolChoiceEnforcementPolicy.nativeStructuredTarget(
+                ChatTemplateFixContext(modelId: modelId, modelType: modelType))
+                ? (ReasoningPromptProbe.streamingPrefix(forPromptTail:
+                    tokenizer.inner.decode(tokenIds: Array(promptTokens.suffix(ReasoningPromptProbe.tailTokenCount)),
+                                           skipSpecialTokens: false)) ?? "<think></think>") : nil
         )
     }
 
@@ -771,7 +776,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         toolHandler: BatchedToolStreamHandler?,
         prepared: ToolChoicePromptPolicy.Prepared,
         releaseBox: OneShotRelease,
-        reasoningPrefix: String? = nil
+        reasoningPrefix: String? = nil,
+        nativeReasoningPrefix: String? = nil
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -786,7 +792,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             toolHandler: toolHandler,
             prepared: prepared,
             releaseBox: releaseBox,
-            reasoningPrefix: reasoningPrefix)
+            reasoningPrefix: reasoningPrefix,
+            nativeReasoningPrefix: nativeReasoningPrefix)
         do {
             try checkFirstContentDeadline()
             return stream
@@ -809,7 +816,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         toolHandler: BatchedToolStreamHandler?,
         prepared: ToolChoicePromptPolicy.Prepared,
         releaseBox: OneShotRelease,
-        reasoningPrefix: String? = nil
+        reasoningPrefix: String? = nil,
+        nativeReasoningPrefix: String? = nil
     ) -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -824,6 +832,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // carrying the cause + reconciled usage so they survive the
                 // throw instead of being flattened into a string by `failed`.
                 var failedTerminal: MultiModelBatchSchedulerEngineError?
+                var router = NativeToolStreamRouter(handler: toolHandler,
+                    requiresToolCall: prepared.requiresToolCall, nativePrefix: nativeReasoningPrefix)
                 startedAt = Date()
 
                 // Restore the prompt-side reasoning state in the downstream
@@ -831,7 +841,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // and bypasses the tool handler because it is not generated
                 // output. Real content and usage continue through the normal
                 // event handling below.
-                if let reasoningPrefix {
+                if let reasoningPrefix, !router.usesNativeChannels {
                     continuation.yield(.content(reasoningPrefix))
                 }
 
@@ -847,36 +857,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         if firstTokenAt == nil { firstTokenAt = Date() }
                         lastTokenAt = Date()
                         if !text.isEmpty {
-                            if let handler = toolHandler {
-                                if let visible = handler.processChunk(text),
-                                    !visible.isEmpty
-                                {
-                                    if prepared.requiresToolCall {
-                                        let policy =
-                                            switch prepared.mode {
-                                            case .named: "named"
-                                            case .required: "required"
-                                            case .auto, .none: "constrained"
-                                            }
-                                        await cancelUpstream()
-                                        await releaseBox.fire()
-                                        continuation.finish(
-                                            throwing: MultiModelBatchSchedulerEngineError
-                                                .toolChoiceViolation(
-                                                    "\(policy) tool_choice produced visible text before a tool call"
-                                                ))
-                                        return
-                                    }
-                                    // Auto prose remains genuinely streaming. Tool-call bytes
-                                    // stay withheld and parsed calls are emitted only after the
-                                    // validation boundary below; a later invalid call therefore
-                                    // becomes a normal in-band stream error without exposing the
-                                    // invalid call. Buffering this prose would turn every
-                                    // tool-enabled auto stream into a non-streaming response.
-                                    continuation.yield(.content(visible))
-                                }
-                            } else {
-                                continuation.yield(.content(text))
+                            do {
+                                for routed in try router.process(text) { continuation.yield(routed) }
+                            } catch {
+                                await cancelUpstream()
+                                await releaseBox.fire()
+                                continuation.finish(throwing: error)
+                                return
                             }
                         }
                     case .info(let p, let c, _, let reason):
@@ -939,12 +926,19 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // sampler-constrained; Qwen required/named are prompt-forced
                 // and fail closed here before a call is exposed. This remains
                 // defense in depth for every mode.
+                do {
+                    for routed in try router.finishText() { continuation.yield(routed) }
+                } catch {
+                    await releaseBox.fire()
+                    continuation.finish(throwing: error)
+                    return
+                }
                 let toolCalls = toolHandler?.finish() ?? []
                 if prepared.mode == .auto,
                     let residual = toolHandler?.takeResidualText(),
                     !residual.isEmpty
                 {
-                    continuation.yield(.content(residual))
+                    continuation.yield(router.visibleEvent(residual))
                 }
                 if prepared.mode == .auto, (toolHandler?.parseFailureCount ?? 0) > 0 {
                     emitToolConstraintTelemetry(

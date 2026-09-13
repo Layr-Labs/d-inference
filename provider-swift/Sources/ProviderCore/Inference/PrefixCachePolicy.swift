@@ -1,6 +1,6 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Production prefix-cache policy. Encrypted SSD defaults on for exact Qwen artifacts;
+// Production prefix-cache policy. Encrypted SSD defaults on for exact qualified artifacts;
 // retaining resident KV between requests requires an explicit local opt-in.
 
 import Foundation

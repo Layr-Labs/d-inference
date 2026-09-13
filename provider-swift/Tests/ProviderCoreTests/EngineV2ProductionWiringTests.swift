@@ -287,6 +287,7 @@ private func makeOpenAIRequest(model: String = "gemma-4-26b-qat-4bit") -> OpenAI
 /// Collect a server-engine event stream into a comparable shape.
 private enum RecordedServerEvent: Equatable {
     case content(String)
+    case parsed(ParsedReasoning)
     case info(prompt: Int, completion: Int)
 }
 
@@ -298,6 +299,8 @@ private func recordServerStream(
         switch event {
         case .content(let text):
             events.append(.content(text))
+        case .parsed(let parsed):
+            events.append(.parsed(parsed))
         case .info(let info):
             events.append(.info(prompt: info.promptTokens, completion: info.completionTokens))
         case .toolCall:
@@ -312,15 +315,38 @@ private func recordServerStream(
 @Suite("EngineV2 production wiring: v2-only slot build")
 struct EngineV2SlotBuildTests {
 
-    @Test("production selects adaptive depth only for request-stateful assistants")
+    @Test("production bounds adaptive Gemma QAT depth without widening other stateless models")
     func productionMTPDepthModeFollowsDrafterCapability() {
-        #expect(
-            MTPAutomaticVerificationPolicy.fixedDraftTokens(
-                usesRequestStatefulDrafter: true) == nil)
-        #expect(
-            MTPAutomaticVerificationPolicy.fixedDraftTokens(
-                usesRequestStatefulDrafter: false)
-                == MTPAutomaticVerificationPolicy.initialDraftTokens)
+        for modelID in [nil, "gemma-4-26b-qat-4bit", "qwen3.8-27b"] as [String?] {
+            let stateful = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+                usesRequestStatefulDrafter: true, modelID: modelID)
+            #expect(stateful.fixed == nil)
+            #expect(stateful.maximum == CBv2MTPConfig.testedMaxDraftTokens)
+        }
+        let qat = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+            usesRequestStatefulDrafter: false, modelID: "gemma-4-26b-qat-4bit")
+        #expect(qat.fixed == nil)
+        #expect(qat.maximum == 1)
+        for modelID in [nil, "gemma-4-26b-8bit", "gemma-4-26b-qat-4bit-copy",
+            "GEMMA-4-26B-QAT-4BIT", " gemma-4-26b-qat-4bit "] as [String?]
+        {
+            let stateless = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+                usesRequestStatefulDrafter: false, modelID: modelID)
+            #expect(stateless.fixed == MTPAutomaticVerificationPolicy.initialDraftTokens)
+            #expect(stateless.maximum == CBv2MTPConfig.testedMaxDraftTokens)
+        }
+    }
+
+    @Test("explicit QAT verification benchmark retains fixed depth one")
+    func benchmarkMTPDepthRetainsFixedControl() {
+        let policy = MTPAutomaticVerificationPolicy.draftDepthPolicy(
+            usesRequestStatefulDrafter: false, modelID: "gemma-4-26b-qat-4bit",
+            hasBenchmarkVerificationOverride: true)
+        let configuration = CBv2MTPConfig(
+            enabled: true, maxDraftTokens: policy.maximum, fixedDraftTokens: policy.fixed)
+        #expect(configuration.enabled)
+        #expect(configuration.fixedDraftTokens == 1)
+        #expect(configuration.maxDraftTokens == CBv2MTPConfig.testedMaxDraftTokens)
     }
 
     @Test("slot build is unconditional: builds, registers, and streams translated events")
@@ -1342,7 +1368,7 @@ struct EngineV2RequestRoutingTests {
         } catch let error as MultiModelBatchSchedulerEngineError {
             #expect(
                 error == .toolChoiceViolation(
-                    "required tool_choice produced visible text before a tool call"))
+                    "forced tool_choice produced visible text before a validated call"))
         }
         #expect(emitted.isEmpty)
         #expect(engine.submitted.count == 1)
@@ -1419,7 +1445,7 @@ struct EngineV2RequestRoutingTests {
         #expect(engine.submitted[0].tokenConstraint == nil)
     }
 
-    @Test("required Qwen tool choice rejects a non-XML parser before submit")
+    @Test("required Qwen tool choice rejects an unframed JSON parser before submit")
     func requiredQwenToolChoiceRejectsParserOverride() async throws {
         let engine = WiringScriptedEngine(script: .stream([]))
         let bridge = makeBridge(engine: engine)
@@ -1444,7 +1470,7 @@ struct EngineV2RequestRoutingTests {
             Issue.record("expected Qwen parser mismatch rejection")
         } catch let error as MultiModelBatchSchedulerEngineError {
             #expect(error == .invalidToolPayload(
-                "inference-enforced Qwen tool_choice requires the qwen3_coder tool parser"))
+                "inference-enforced structured tool_choice requires an XML or Nemotron tool parser"))
         }
         #expect(engine.submitted.isEmpty)
     }
@@ -1519,7 +1545,7 @@ struct EngineV2RequestRoutingTests {
         } catch let error as MultiModelBatchSchedulerEngineError {
             #expect(
                 error == .toolChoiceViolation(
-                    "named tool_choice produced visible text before a tool call"))
+                    "forced tool_choice produced visible text before a validated call"))
         }
         #expect(emitted.isEmpty)
     }

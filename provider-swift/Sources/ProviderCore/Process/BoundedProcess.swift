@@ -3,7 +3,7 @@ import Foundation
 import Darwin
 #endif
 
-enum BoundedProcess {
+public enum BoundedProcess {
     enum Failure: Error, LocalizedError, CustomStringConvertible {
         case exited(status: Int32, stderrTail: String? = nil)
         case signalled(signal: Int32)
@@ -43,14 +43,15 @@ enum BoundedProcess {
             captureStderrTail: captureStderrTail)
     }
 
-    /// Run a bounded child while retaining stdout for signed-artifact
-    /// assertions. A temporary file avoids the pipe backpressure deadlock that
-    /// would otherwise let a verbose child fill its pipe before termination.
-    static func runCapturingStandardOutput(
+    /// Capture stdout without pipe backpressure or waiting for descendants to
+    /// close an inherited pipe. A successful exit is required by default;
+    /// best-effort diagnostic probes can retain output from a nonzero exit.
+    public static func runCapturingStandardOutput(
         _ executable: URL,
         arguments: [String],
         environment: [String: String]? = nil,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        requireSuccessfulExit: Bool = true
     ) throws -> Data {
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("darkbloom-child-\(UUID().uuidString).stdout")
@@ -69,7 +70,8 @@ enum BoundedProcess {
             environment: environment,
             standardOutput: output,
             timeout: timeout,
-            captureStderrTail: 0)
+            captureStderrTail: 0,
+            requireSuccessfulExit: requireSuccessfulExit)
         try output.synchronize()
         try output.close()
         return try Data(contentsOf: outputURL)
@@ -81,7 +83,8 @@ enum BoundedProcess {
         environment: [String: String]?,
         standardOutput: Any,
         timeout: TimeInterval,
-        captureStderrTail: Int
+        captureStderrTail: Int,
+        requireSuccessfulExit: Bool = true
     ) throws {
         let process = Process()
         process.executableURL = executable
@@ -148,6 +151,7 @@ enum BoundedProcess {
         }
         process.waitUntilExit()
 
+        guard requireSuccessfulExit else { return }
         guard process.terminationReason == .exit else {
             throw Failure.signalled(signal: process.terminationStatus)
         }

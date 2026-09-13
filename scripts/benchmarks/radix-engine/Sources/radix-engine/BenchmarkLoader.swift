@@ -56,7 +56,7 @@ enum BenchmarkLoader {
                 throw RadixBenchmark.Failure.message("loaded artifact hash does not match the pinned model")
             }
             let input = try await container.perform { context in
-                try inputs(report, context: context, modelType: modelType)
+                try inputs(report, context: context, modelType: modelType, options: options)
             }
             var effectiveEnvironment = environment ?? ProcessInfo.processInfo.environment
             effectiveEnvironment["DARKBLOOM_PREFIX_CACHE"] = options.cacheEnabled ? "1" : "0"
@@ -106,7 +106,7 @@ enum BenchmarkLoader {
                 enabled: options.mtpEnabled, fixedDraftTokens: nil, verificationMode: verification,
                 maxAutomaticRectangularTokens: verification == .automatic
                     ? MTPAutomaticVerificationPolicy.maxRectangularTokens() : 0)
-            let input = try inputs(report, context: context, modelType: modelType)
+            let input = try inputs(report, context: context, modelType: modelType, options: options)
             #if RADIX_CANDIDATE
             let hybrid = cacheEnabled ? CBv2HybridPrefixCacheConfig(
                 maximumBytes: 1_073_741_824, maximumEntries: 32, maximumCheckpointsPerRequest: 2,
@@ -140,14 +140,14 @@ enum BenchmarkLoader {
         let eos: Set<Int>
     }
 
-    private static func inputs(_ report: HTTPReport, context: ModelContext, modelType: String?) throws -> PreparedInput {
+    private static func inputs(_ report: HTTPReport, context: ModelContext, modelType: String?, options: BenchmarkOptions) throws -> PreparedInput {
         let rendering = templateContext()
         func prepare(name: String, kind: String, body: Data, maxTokens: Int) throws -> Input {
             #if RADIX_CANDIDATE
             let prompt = try EngineV2Factory.benchmarkPrompt(body: body, tokenizer: context.tokenizer,
                 modelType: modelType, defaultDate: PromptRenderDate(rendering.date!)!)
             return Input(name: name, kind: kind, tokens: prompt.tokens, maxTokens: maxTokens,
-                         promptRenderDate: prompt.renderDate)
+                         promptRenderDate: prompt.renderDate, sampling: prompt.sampling)
             #else
             guard let raw = try JSONSerialization.jsonObject(with: body) as? [String: Any],
                   let messages = raw["messages"] as? [[String: String]] else {
@@ -163,6 +163,11 @@ enum BenchmarkLoader {
             try prepare(name: row.case.id, kind: row.case.kind,
                 body: JSONEncoder().encode(row.request.body), maxTokens: row.request.max_tokens)
         }
+        #if RADIX_CANDIDATE
+        let diagnostics = options.gemmaMTPVerification != nil || options.logitDiagnostic != nil
+            || options.attentionMetadata != nil || options.attentionPacket != nil
+        try BenchmarkSampling.requireGreedyDiagnostics(inputs, enabled: diagnostics)
+        #endif
         let warmupBody: [String: Any] = ["model": report.rows[0].request.model,
             "messages": [["role": "user", "content": "Say hello."]], "max_tokens": 8,
             "chat_template_kwargs": ["enable_thinking": false],

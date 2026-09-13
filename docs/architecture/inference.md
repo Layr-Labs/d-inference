@@ -1,9 +1,9 @@
 # Provider inference engine
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-11 · commit `ef7b5a9aa`
 
 How a chat-completion request is served inside the `darkbloom` provider
-process in v0.8.16: one in-process engine (`mlx-swift-lm`
+process in v0.9.1: one in-process engine (`mlx-swift-lm`
 ContinuousBatchingV2, "CBv2"), one `EngineV2Bridge` per resident model, no
 legacy engine and no subprocess. For the memory model see
 [`hardware-support.md`](hardware-support.md); for KV/prefix caching see
@@ -135,22 +135,131 @@ by `deadlineProjectionRateHaircut = 0.5`. `WedgeMonitor.suspectStallSeconds =
 | Target | Drafter | Activation |
 |---|---|---|
 | Qwen3.5 family (`qwen3_5`, `qwen3_5_moe`) | Embedded head (`Qwen35InlineMTPAssistant`, request-stateful) | `mtp_mode = "auto"` (default) when the checkpoint declares the embedded artifact |
-| Gemma 4 | Separate assistant checkpoint (`Gemma4AssistantDraftModel`, stateless) | Requires `mtp_mode = "on"`; `SpecDecArtifactFunnel` resolves the catalog-declared `spec_dec` artifact, with `mtp_drafter_path` as a directory override |
+| Nemotron 3.5 Lightning (`nemotron_h`) | Embedded head (`NemotronH35MTPAssistant`, request-stateful) | The MTP artifact must retain the embedded module and declare it; the non-MTP artifact remains target-only |
+| Gemma 4 | Separate assistant checkpoint (`Gemma4AssistantDraftModel`, stateless) | Defaults to `auto` for exact `gemma-4-26b-qat-4bit`; other Gemma IDs require `on`. `SpecDecArtifactFunnel` resolves the catalog-declared `spec_dec` artifact, with `mtp_drafter_path` as a directory override |
+
+The shared `MTPMode.enablesMTP` policy receives the exact model ID from both
+`ProviderLoop.specDecPreparation` and `StandaloneServer.specDecPreparation`.
+Startup catalog prewarm includes the automatic QAT target; ordinary slot loads
+remain local-only and optional artifact prefetch remains asynchronous.
+A provider or standalone server whose first QAT slot starts target-only monitors assistant
+readiness asynchronously. It stages a verified assistant and an unregistered
+replacement over the retained target, with a separate pending-memory lease and
+only the minimum serviceable KV grant. Static fleet grants and network capacity
+clamps reserve the candidate's assistant and KV bytes; if the original target
+is concurrently unloaded, its retained weight basis stays counted until discard. Identity follows the shared
+model container, so publishing a new bridge over that same target does not count
+the weights twice. Preparation pins the target before its first asynchronous lookup;
+model-load feasibility, LRU eviction and idle eviction exclude pinned targets.
+Explicit retirement may still unload a slot, while retained weights remain charged.
+Discard releases the actual target references before removing that charge and
+regrowing survivor KV grants under the reslice/load gate. Network capacity quotes
+refresh at staging changes and reject snapshots from older staging generations.
+Reservations follow the load generation, so delayed cleanup cannot release a
+new candidate's budget.
+
+Once preparation succeeds, network providers keep serving during a random delay
+from `UpdateJitter.delay`, using the existing
+[`[provider] update_jitter_seconds`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)
+setting. This staggers independent providers; it does not reserve fleet capacity
+or guarantee that another provider remains available. Standalone serving skips
+this fleet delay.
+
+`MTPIdleUpgrade.run` then closes new admissions for this model through
+`beginDrain`, while accepted network requests and local reservations finish on
+the original engine. The admission fence is separate from the final publication
+gate: accepted requests can still pass `ensureModelLoaded` and reach completion.
+Network capacity advertises the existing `reloading` slot state and rejects
+racing admissions with transient 503 `rejection_reason: slot_state` refusals. Other models remain
+eligible; this does not put the whole provider into its update-draining state.
+Standalone new acquisitions also receive 503 during the model drain.
+
+The helper makes up to 120 idle checks with 500 ms pauses: about 60 seconds of
+waiting plus actor-call latency, rather than a strict wall-clock deadline.
+`commitIfIdle` requires no accepted work, queued engine requests or reserved KV
+before taking the final swap gate. It publishes the replacement and releases the
+old idle pool before regrowing grants; `finishDrain` reopens admission. On timeout,
+cancellation or failure before publication, the helper discards the candidate
+and reopens the original engine without force-cancelling accepted work. Target
+replacement and insufficient staging memory also preserve the current owner;
+no model is evicted for this optional upgrade. The readiness loop polls with
+10–15 second jitter and retries unsuccessful staging after five minutes. Failed
+artifact fetches independently back off exponentially with jitter, capped at
+five minutes (`provider-swift/Sources/ProviderCore/Inference/MTPIdleUpgrade.swift`,
+`MTPIdleUpgrade.run`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`,
+`waitBeforeMTPUpgradeDrain`, `beginMTPUpgradeDrain`;
+`provider-swift/Sources/ProviderCore/ProviderLoop+MTPUpgrade.swift`, `commitMTPUpgradeIfIdle`;
+`provider-swift/Sources/ProviderCore/Server/StandaloneServer+MTPUpgrade.swift`,
+`commitMTPUpgradeIfIdle`).
+
+```mermaid
+flowchart LR
+  A[Target serves] --> B[Download, verify and prepare candidate]
+  B --> C[Network: waitBeforeDrain jitter while serving]
+  B -->|Standalone| D[beginDrain: close new model admissions]
+  C --> D
+  D --> E[Accepted work finishes on original engine]
+  E --> F{commitIfIdle within check budget?}
+  F -->|Yes| G[Separate swap gate: publish replacement]
+  F -->|No, failure or cancellation| H[Discard candidate, retain original]
+  G --> I[finishDrain: reopen model admissions]
+  H --> I
+```
+
+Standalone uses the same coordinator catalog authority as the provider CLI
+(`coordinator.url`), downloads in the background, and retains explicit local
+assistant overrides. Transition logs report preparation duration, draining accepted work,
+installation and fallback without repeating every readiness poll. Unpublished
+candidates suppress periodic serving posture/cache logs; these start after the
+old engine shuts down at commit, and closed bridges reject queued posture ticks. Missing, incompatible, or
+memory-ineligible assistants preserve target-only serving; explicit `off` and
+`DARKBLOOM_CBV2_MTP=0` disable MTP
+(`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`,
+`provider-swift/Sources/ProviderCore/ProviderLoop+MTP.swift`,
+`provider-swift/Sources/ProviderCore/Server/StandaloneServer+MTP.swift`).
 
 `MTPAutomaticVerificationPolicy`: `initialDraftTokens = 1`;
-`fixedDraftTokens = nil` for request-stateful drafters (engine controller, 0…4)
-and `1` for the stateless Gemma drafter; `maxRectangularTokens = 8` on
+`fixedDraftTokens = nil` for request-stateful drafters (controller bounded by
+the assistant: Qwen 0…4, Nemotron 0…7)
+and exact stateless `gemma-4-26b-qat-4bit` (controller bounded to 0…1).
+Other stateless assistants and explicit offline Gemma verification controls
+retain fixed depth `1`; `maxRectangularTokens = 8` on
 M3/M4/M5 and `4` on M1/M2/unknown, lowered only by
 `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`
 (`provider-swift/Sources/ProviderCore/Inference/MTPAutomaticVerificationPolicy.swift`).
-For the exact `gemma-4-26b-qat-4bit` artifact, an enabled assistant uses serial
-target verification: drafting and acceptance remain enabled, but each target column
-uses the ordinary forward shape. This avoids the measured width-dependent
-logit difference and gives up rectangular target amortization. Explicit offline
-Gemma verification controls retain their bounded automatic baseline and the
-existing target/drafter checks. Drafter-required modes retain priority
-(`provider-swift/Sources/ProviderCore/Inference/EngineV2MTPAssistant.swift`,
+Gemma uses bounded rectangular target verification: one target traversal scores
+its seed and draft columns, while ordered attention and speculative transactions
+preserve causal visibility and discard rejected suffixes. The depth controller
+compares ordinary decode's chained commit intervals with actual committed output
+across bounded eight-round MTP learning windows. Each round streams immediately
+and retains the ordinary cancellation, output-budget and capacity gates. Adaptive
+stateless Gemma pairs seed time with seed output,
+excludes the first positive-shape compilation from its steady estimate while
+retaining that work in telemetry. Warmup is keyed by exact verification row count
+and draft depth, so three and four rows do not share a cold-shape exemption.
+Learning resets when request membership changes or a participating request finishes,
+even if its numeric ID is reused. Launch-generation checks discard late cost,
+baseline and acceptance observations from older work. It selects ordinary decode when that is faster and periodically probes
+again (`CBv2MTPCommittedGoodputClock`, `CBv2MTPCommittedWindow`,
+`CBv2MTPDepthController` in
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/`). Wider evaluation
+can change floating-point rounding and generated wording; acceptance remains
+target-authoritative. Supported sampling uses the target distribution and an
+output-indexed RNG stream. Penalties, bias, logprobs, stop strings and token
+constraints retain their ordinary-decode exclusions. Explicit offline serial
+verification remains available as a diagnostic oracle; drafter-required modes
+retain priority (`provider-swift/Sources/ProviderCore/Inference/EngineV2MTPAssistant.swift`,
 `providerMTPVerificationPolicy`).
+Nemotron's assistant uses one speculative request and adaptive depth up to
+seven proposed tokens. Captured target verification, batched M=1 projections
+and KV-only trusted-history priming default on, with separate rollback controls.
+Its verifier builds a layer-major window while retaining native one-token
+recurrence and every-prefix state. These controls do not establish
+a fleet-readiness claim. Target activations retain the
+checkpoint's native dtype and persistent Mamba SSM state remains FP32
+(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP.swift`,
+`NemotronH35MTPAssistant`; controls in the
+[configuration reference](../reference/configuration.md)).
 Engine contract: `CBv2MTPConfig` with `testedMaxDraftTokens` (≤ 7) and
 `testedMaxSpeculativeBatch = 8`
 (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift`).
@@ -173,6 +282,16 @@ uses `CBv2MTPPrefixCheckpointDrafter` and retains its existing compact-publicati
 and conservative reservation behavior. Resident model measurements do not yet
 validate the streamed SSD path; exact gates and validation scope are in
 [`prefix-cache.md`](prefix-cache.md).
+The Nemotron embedded assistant implements the same explicit checkpoint
+contract using exact shifted post-norm target history and frontier
+(`libs/mlx-swift-lm/Libraries/MLXLLM/Models/NemotronH35MTP+PrefixCheckpoint.swift`,
+`capturePrefixCheckpoint`, `restorePrefixCheckpoint`). At a committed prefill
+boundary, the complete checkpoint pairs target attention KV and Mamba state
+with immutable trusted assistant history. Restoring it creates fresh
+request-owned assistant pages and primes them before drafting; speculative
+draft KV is never shared. This is prompt-prefix reuse, not persistence of an
+in-flight speculative round. The ordinary attention-only prefix index remains
+disabled for this hybrid model.
 
 ### Sampling parameters
 
@@ -195,6 +314,11 @@ validate the streamed SSD path; exact gates and validation scope are in
 | `n`, `best_of` | **Not represented**: one alternative | — |
 
 ### Streaming reasoning state
+
+`NativeChannelSplitter` treats tool payloads as opaque while routing reasoning
+markers. It emits unclosed-frame payload incrementally and retains only a
+possible closing-marker suffix; it does not buffer an entire unfinished tool
+call (`provider-swift/Sources/ProviderCore/Inference/NativeChannelSplitter.swift`).
 
 `ReasoningPromptProbe.streamingPrefix` in
 `provider-swift/Sources/ProviderCore/Inference/ReasoningPromptProbe.swift`
@@ -226,7 +350,8 @@ Resolution happens before submit so a bad parser name never orphans a request.
 | `gpt_oss` | `.harmony` | `HarmonyToolCallParser` |
 | prefix `gemma` (`gemma4`, `gemma4_text`) | `.gemma` | `GemmaFunctionParser` |
 | prefix `qwen3_5` | `.qwen35` | `Qwen35ToolCallParser` (XML first, framed-JSON fallback) |
-| prefix `qwen3_next`, prefix `nemotron` | `.xmlFunction` | `XMLFunctionParser` |
+| prefix `qwen3_next` | `.xmlFunction` | `XMLFunctionParser` |
+| prefix `nemotron` | `.nemotron` | Native Nemotron tool-frame parser |
 | `llama` with `vocab_size ≥ 128000` or `rope_scaling.rope_type == "llama3"` | `.llama3` | `Llama3ToolCallParser` |
 | prefix `lfm2` / `glm4` / `mistral3` | `.lfm2` / `.glm4` / `.mistral` | `PythonicToolCallParser` / `GLM4ToolCallParser` / `MistralToolCallParser` |
 | anything else, including `qwen3_vl_moe` | `nil` → `.json` | `JSONToolCallParser` (`<tool_call>…</tool_call>`) |
@@ -291,12 +416,13 @@ records tiny-model correctness and remaining release gates.
 
 | `model_type` | Family | Notes |
 |---|---|---|
-| `gpt_oss` | GPT-OSS | Harmony tool format; loaded paged historical complete checkpoints; measured activation floor ([`hardware-support.md`](hardware-support.md)) |
+| `gpt_oss` | GPT-OSS | Harmony tool format; loaded paged historical complete checkpoints [default on for exact `gpt-oss-20b`](prefix-cache.md#kv-layouts); contiguous fallback serves cold; measured activation floor ([`hardware-support.md`](hardware-support.md)) |
 | `gemma4` | Gemma 4 VLM wrapper | Served through its text tower + vision prefill; historical complete SSD is text-only and requires the loaded paged capability |
 | `gemma4_text` | Gemma 4 text target | Assistant checkpoints share the prefix; never advertised |
 | `qwen3_5` | Dense Qwen 3.5/3.8, recurrent state | Embedded MTP head; complete streamed SSD checkpoints on native contiguous or segmented paged KV; explicit paging requires observed native types; resident bank is opt-in |
 | `qwen3_5_moe` | Qwen 3.5/3.6 MoE, recurrent state | Same complete-checkpoint and segmented-native paging gates as dense Qwen |
 | `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; `cbv2Capabilities` all `false` (no prefix reuse, paged, compiled decode, packed prefill or MTP) |
+| `nemotron_h` | Nemotron 3.5 Lightning | Advertisement is limited to `EngineV2SupportedModels.isNemotron35ListingModelID`, not every checkpoint sharing this type. Native Mamba/MoE/attention target; `nemotron35LightningModelID` is target-only and `nemotron35LightningMTPModelID` retains the embedded head. Listing eligibility is not registry publication or performance qualification |
 
 Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `8bit`|`q8`|`int8` → `8bit`; `3bit`|`q3` → `3bit`; `bf16`; `fp16`|`f16`; else
@@ -305,6 +431,17 @@ Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `detectQuantization`). KV quantization was retired in v0.8.0. Memory sizing
 (the `1.2` padded estimate and the load gate) is in
 [`hardware-support.md`](hardware-support.md).
+
+### Coordinator-serving native channels
+
+Coordinator requests construct `MultiModelBatchSchedulerEngine` inside
+`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`
+(`handleInferenceRequest`). Native Nemotron output passes through
+`NativeToolStreamRouter` and the SDK's typed `.parsed` event, so tool arguments
+are not reparsed as reasoning markers. `MLXOpenAIService.streamChatCompletionFrames`
+serializes SSE frames; the provider encrypts and sends them back over the
+coordinator connection. This integration does not start a local HTTP endpoint
+or change consumer/OpenRouter routing.
 
 ## Invariants
 

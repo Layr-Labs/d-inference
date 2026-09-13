@@ -1,12 +1,12 @@
 # Provider CLI reference
 
-> Last updated: 2026-09-06 · commit `2eebb5412`
+> Last updated: 2026-09-11 · commit `ef7b5a9aa`
 
 Reference for the `darkbloom` command-line tool: every subcommand and flag, the
 files and identifiers it creates, the `provider.toml` keys it reads with their
 defaults, the environment variables it forwards to the daemon, and its runtime
 constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
-version `ProviderCore.version` = `0.8.16` in
+version `ProviderCore.version` = `0.9.1` in
 `provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 
@@ -169,7 +169,7 @@ Exit 1 (and `{}` in JSON mode) when no live local server is recorded
 | Backend parity | `--parity`, `--assistant-model <id>` (`String?`), `--parity-max-tokens` (`48`), `--parity-prefix-tokens` (`28672`) (`BenchmarkCommand+Parity.swift`) |
 
 `--kv-backend auto` uses the candidate's
-[exact five-artifact allowlist](../architecture/prefix-cache.md#kv-layouts): eligible
+[exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts): eligible
 cohort models try paged, all other IDs use contiguous, and automatic paged
 failures or the version-bound crash-loop guard fall back to contiguous.
 Explicit `--kv-backend paged` refuses construction failures rather than measuring
@@ -416,7 +416,7 @@ Two of the detailed checks cover the KV-backend rollout:
 
 `auto` never fails this check — it promises nothing, so whichever backend it
 lands on is honoured by definition. Candidate `auto` can report paged for the
-[exact five-artifact cohort](../architecture/prefix-cache.md#kv-layouts), or contiguous
+[exact qualified-artifact cohort](../architecture/prefix-cache.md#kv-layouts), or contiguous
 after fallback; non-cohort `auto` remains contiguous. None is a posture fault
 or validation of the candidate rollout. Explicit `paged` construction failures
 refuse the load; a policy veto that serves contiguous instead still fails the
@@ -573,7 +573,7 @@ darkbloom beta disable <feature>    # turn off
 |---------|--------|
 | `gemma-prefill-layer18` | Default-on layer-18 prefill submission; disable and restart for legacy submission behavior |
 | `gemma-weighted-r1` | Default-on atomic weighted-unsort + safe-R1 pair; disable and restart to roll back both |
-| `mtp` | MTP policy. Default `auto` drafts automatically for Qwen 3.5-family checkpoints that embed their head (`mtplx_mtp` in `config.json`); explicit on additionally enables catalog `spec_dec` assistants and local `mtp_drafter_path` overrides; explicit off is the rollback |
+| `mtp` | MTP policy. Default `auto` drafts automatically for Qwen 3.5-family checkpoints that embed their head (`mtplx_mtp` in `config.json`); auto also enables the catalog `spec_dec` assistant for exact `gemma-4-26b-qat-4bit`; explicit on enables other supported targets; explicit off is the rollback |
 
 `enable`/`disable` read-modify-write the TOML config and report whether a restart
 is required. Restart is the activation boundary for process-wide optimization
@@ -581,9 +581,14 @@ state. The durable locked write and restart instruction are implemented in
 `provider-swift/Sources/darkbloom/BetaCommand.swift:201-235`. See
 [Beta Features](beta-features.md) for the full guide. `darkbloom beta list` also
 accepts `--json`. Under the default `auto` mode a served checkpoint that embeds its MTP head
-drafts without any beta toggle; checkpoints without an embedded declaration
-stay target-only. Local parity results are not a blanket M1-M3/unknown-chip
-certification.
+drafts without any beta toggle. Exact `gemma-4-26b-qat-4bit` also resolves its
+external assistant automatically; other checkpoints without an embedded
+declaration stay target-only. Missing or invalid assistants fall back to ordinary
+decode. Standalone serving also downloads the verified assistant in the background,
+using the configured `coordinator.url` catalog, and activates it only when the
+current engine is idle. Existing requests keep their engine; insufficient memory
+or preparation failure preserves target-only serving. Local parity results are not
+a blanket M1-M3/unknown-chip certification.
 The published assistant metadata is visible in the
 [public production catalog](https://api.darkbloom.dev/v1/models/catalog?type=text)
 under `gemma-4-26b-qat-4bit.metadata.spec_dec`.
@@ -751,12 +756,12 @@ override `provider.toml` for one process, are in
 | `[provider] memory_reserve_gb` | `4` | Unified memory withheld from model admission |
 | `[provider] auto_update` | `true` | Startup + periodic self-update |
 | `[provider] auto_restart` | `true` | Arm the watchdog LaunchAgent |
-| `[provider] update_jitter_seconds` | `300` | Max random delay before an automatic install |
+| `[provider] update_jitter_seconds` | `300` | Max random delay before an automatic install or a network provider drains a model for a prepared MTP replacement; serving continues during the delay. `0` disables jitter; capped at `3600`. Standalone MTP upgrades skip this delay. Random staggering provides no fleet availability guarantee (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, `updateJitterSeconds`; `provider-swift/Sources/ProviderCore/Update/UpdateJitter.swift`, `delay`; `provider-swift/Sources/ProviderCore/ProviderLoop+MTPDrain.swift`, `waitBeforeMTPUpgradeDrain`) |
 | `[backend] enabled_models` | `[]` | Advertise only these ids; empty = all serveable |
 | `[backend] idle_timeout_mins` | `60` | Unload a model idle this long; `0` disables |
 | `[backend] max_model_slots` | `3` | Resident models |
 | `[backend] engine_v2_max_concurrent` | `4` (clamped to `[1, 8]`) | Concurrent requests per engine |
-| `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Candidate `auto` tries paged only for the [exact five-artifact allowlist](../architecture/prefix-cache.md#kv-layouts), with contiguous fallback; all other IDs remain contiguous (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
+| `[backend] engine_v2_kv_backend` | `"auto"` | `auto` / `paged` / `contiguous`; per-model table `engine_v2_kv_backend_by_model` takes precedence. Candidate `auto` tries paged only for the [exact qualified-artifact allowlist](../architecture/prefix-cache.md#kv-layouts), with contiguous fallback; all other IDs remain contiguous (`EngineV2KVBackendPolicy.parseSelection`, `preferredBackend`) |
 | `[backend] mtp_mode` | `auto` | Written by `darkbloom beta enable|disable mtp` |
 | `[backend] startup_preload` | `true` | Load advertised models at start |
 | `[coordinator] url` | `"wss://api.darkbloom.dev/ws/provider"` | |
@@ -775,8 +780,9 @@ provider plist's `EnvironmentVariables`
 `passthroughEnvironment`). Every other variable — including `PATH` and all the
 media, SSD-prefix and memory-cap tunables — reaches the engine only under
 `darkbloom start --foreground` or `--local`. The `DARKBLOOM_PREFIX_CACHE` switch
-defaults to enabled for the three exact Qwen artifacts in the
-[release cohort](../design/release-090-paged-qwen-cache.md). Other models need an
+defaults to enabled for the exact Qwen and Nemotron Lightning artifacts and
+Gemma 4 26B QAT (`gemma-4-26b-qat-4bit`) and GPT-OSS 20B (`gpt-oss-20b`); see
+[prefix-cache defaults](../architecture/prefix-cache.md#kv-layouts). Other models need an
 explicit affirmative value for SSD caching. Resident payload retention requires
 `DARKBLOOM_PREFIX_CACHE_MEMORY=1`; both switches are forwarded to the daemon,
 and the global disable wins (`PrefixCachePolicy.isEnabled`, `isMemoryEnabled`). Coordinator cache preference separately requires

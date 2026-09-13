@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-08 · commit `501320342`
+> Last updated: 2026-09-13 · commit `1f52a71fb`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -163,6 +163,10 @@ includes the MLX tree SHA, toolchain hash and deployment target) and
 compiled at SDK/deployment target ≥ 26.2). The script fails if required kernel
 symbols (`_nax`, `gemv`, the `affine_qmv_wide_*` variants) are missing from the
 produced library.
+
+After changing doctor subprocess capture or status canonicalization, rebuild
+the Swift test targets with `cd provider-swift && swift build --build-tests`.
+Then run the [focused capture and canonical-byte regressions](test.md#doctor-capture-and-attestation-canonical-bytes).
 
 #### Instrumented candidate benchmarks
 
@@ -488,3 +492,9 @@ ls console-ui/.next
 - [../operations/provider-release.md](../operations/provider-release.md) — provider release runbook.
 - [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md) — container build and deploy on GCP.
 - [`../architecture/components/mlx-swift.md`](../architecture/components/mlx-swift.md) — why the metallib must match the MLX source.
+
+Candidate native prefix-cache benchmarks must build ProviderCore and
+`scripts/benchmarks/radix-engine` from the same source revision: the benchmark
+prompt SPI carries production sampling parameters into each engine request.
+See [native benchmark validation](test.md#resident-prefix-benchmark-validation)
+for sampling scope, regression filters and diagnostic restrictions.

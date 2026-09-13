@@ -137,6 +137,73 @@ class DocsCheckTests(unittest.TestCase):
                 result = self.check("\n" + usage + "\n")
                 self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_wrapped_container_links_preserve_navigation_and_target_checks(self):
+        for prefix, continuation in (
+            ("> ", "> "), ("- ", "  "), ("> > ", "> > "),
+            ("- > ", "  > "), ("> - ", ">   "),
+            ("> - > ", ">   > "), ("- > - ", "  >   "),
+        ):
+            for wrapped in (
+                f"{prefix}[Read\n{continuation}guide](Page.md)",
+                f"{prefix}[Read][some\n{continuation}guide]\n\n[some guide]: Page.md",
+                f"{prefix}[some\n{continuation}guide][]\n\n[some guide]: Page.md",
+                f"{prefix}[Read](\n{continuation}Page.md)",
+            ):
+                with self.subTest(wrapped=wrapped):
+                    result = self.check("\n" + wrapped + "\n")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+            with self.subTest(prefix=prefix, target="missing"):
+                wrapped = f"{prefix}[Read\n{continuation}guide](Missing.md)"
+                result = self.check("\n[Page](Page.md)\n\n" + wrapped + "\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("broken link -> Missing.md", result.stderr)
+                self.assertNotIn("orphan", result.stderr)
+
+    def test_projected_container_text_does_not_join_distinct_blocks(self):
+        for wrapped in (
+            "> [Read\n>\n> guide](Page.md)",
+            "- [Read\n- guide](Page.md)",
+            "> [Read\n> - guide](Page.md)",
+            "- > [Read\n  > > guide](Page.md)",
+            "> [Read\n# guide](Page.md)",
+            "> [Read\n> ~~~\n> guide](Page.md)\n> ~~~",
+            "> [Read\n> <div>\n> guide](Page.md)",
+            "> [Read\n> ---\n> guide](Page.md)",
+        ):
+            with self.subTest(wrapped=wrapped):
+                result = self.check("\n" + wrapped + "\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Page.md: orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+
+    def test_projected_wrapped_inline_tokens_keep_their_original_meaning(self):
+        (self.root / "docs/Asset.svg").write_text("<svg/>")
+        for wrapped in (
+            '> [Read](Page.md "title\n> with [fake](Missing.md)")',
+            "> Text <!--\n> [fake](Missing.md)\n> --> [Page](Page.md)",
+            "> `[fake](Missing.md)\n> literal` [Page](Page.md)",
+            "> [![alt](Asset.svg)\n> caption](Page.md)",
+        ):
+            with self.subTest(wrapped=wrapped):
+                result = self.check("\n" + wrapped + "\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.check("\n> ![some\n> guide](Page.md)\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Page.md: orphan", result.stderr)
+        self.assertNotIn("broken link", result.stderr)
+
+    def test_inline_projection_preserves_tabs_after_container_prefixes(self):
+        (self.root / "docs/Asset\tname.svg").write_text("<svg/>")
+        for wrapped in (
+            "> [asset](<Asset\tname.svg>)",
+            "> [wrapped\n> asset](<Asset\tname.svg>)",
+        ):
+            with self.subTest(wrapped=wrapped):
+                result = self.check("\n[Page](Page.md)\n\n" + wrapped + "\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.check("\n>\t[Read\n>\tguide](Page.md)\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_wrapped_labels_do_not_hide_missing_link_or_image_targets(self):
         for usage in ("[Read the\n guide](Missing.md)", "![Read the\n guide](Missing.md)"):
             with self.subTest(usage=usage):
@@ -474,6 +541,81 @@ class DocsCheckTests(unittest.TestCase):
             with self.subTest(body=body):
                 result = self.check("\n" + body + "\n")
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_non_declarations_preserve_navigation_and_missing_targets(self):
+        # GitHub GFM differs from newer CommonMark here: a lowercase opener
+        # is text, and inline declaration names require uppercase plus space.
+        for usage in (
+            "<!foo> [Page](Page.md)",
+            "<!doctype html> [Page](Page.md)",
+            "Text <!foo [Page](Page.md)>",
+            "Text <!Foo [Page](Page.md)>",
+            "Text <!FOO[Page](Page.md)>",
+            "Text <!FOO1 [Page](Page.md)>",
+            "<!foo\n[Page](Page.md)\n>",
+            "<!É> [Page](Page.md)",
+        ):
+            with self.subTest(usage=usage, target="present"):
+                result = self.check("\n" + usage + "\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+            with self.subTest(usage=usage, target="missing"):
+                result = self.check("\n[Page](Page.md)\n\n" + usage.replace("Page.md", "Missing.md") + "\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("broken link -> Missing.md", result.stderr)
+                self.assertNotIn("orphan", result.stderr)
+
+    def test_uppercase_declarations_keep_html_contents_opaque(self):
+        for usage in (
+            "<!F> [hidden](Page.md)",
+            "<!Foo> [hidden](Page.md)",
+            "<!DOCTYPE html [hidden](Page.md)>",
+            "<!Foo\n[hidden](Page.md)\n>",
+            "Text <!FOO [hidden](Page.md)>",
+            "Text <!DOCTYPE\n [hidden](Page.md)>",
+        ):
+            with self.subTest(usage=usage, target="present"):
+                result = self.check("\n" + usage + "\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Page.md: orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+            with self.subTest(usage=usage, target="missing"):
+                result = self.check("\n[Page](Page.md)\n\n" + usage.replace("Page.md", "Missing.md") + "\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_declaration_case_controls_wrapped_label_boundaries(self):
+        for declaration, renders in (("<!foo>", True), ("<!Foo>", False)):
+            usage = f"[Wrapped\n{declaration}\n label](Page.md)"
+            with self.subTest(declaration=declaration, target="present"):
+                result = self.check("\n" + usage + "\n")
+                if renders:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Page.md: orphan", result.stderr)
+                self.assertNotIn("broken link", result.stderr)
+            with self.subTest(declaration=declaration, target="missing"):
+                result = self.check("\n[Page](Page.md)\n\n" + usage.replace("Page.md", "Missing.md") + "\n")
+                if renders:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("broken link -> Missing.md", result.stderr)
+                    self.assertNotIn("orphan", result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_declaration_terminators_preserve_following_navigation(self):
+        for usage in (
+            "<!Foo>\n[Page](Page.md)",
+            "<!DOCTYPE\n html>\n[Page](Page.md)",
+            "Text <!FOO hidden> [Page](Page.md)",
+        ):
+            with self.subTest(usage=usage, target="present"):
+                result = self.check("\n" + usage + "\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+            with self.subTest(usage=usage, target="missing"):
+                result = self.check("\n[Page](Page.md)\n\n" + usage.replace("Page.md", "Missing.md") + "\n")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("broken link -> Missing.md", result.stderr)
+                self.assertNotIn("orphan", result.stderr)
 
     def test_inline_html_tokens_do_not_create_navigation(self):
         for example in (

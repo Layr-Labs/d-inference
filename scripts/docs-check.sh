@@ -116,7 +116,7 @@ html_block_names = (
     "search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul"
 )
 html_start = (
-    r" {0,3}(?:<(?:!--|\?|![A-Za-z]|!\[CDATA\[)"
+    r" {0,3}(?:<(?:!--|\?|![A-Z]|!\[CDATA\[)"
     r"|<(?i:pre|script|style|textarea)(?=[ \t\n>]|$)"
     rf"|</?(?i:{html_block_names})(?=[ \t\n>]|/>|$))"
 )
@@ -128,8 +128,10 @@ html_tag = (
     rf"(?:<[A-Za-z][A-Za-z0-9-]*(?:[ \t\n]+{html_attribute})*[ \t\n]*/?>"
     r"|</[A-Za-z][A-Za-z0-9-]*[ \t\n]*>)"
 )
+# GFM inline declarations require an uppercase name followed by whitespace;
+# its block declaration rule only requires an uppercase first letter.
 html_inline = re.compile(
-    rf"(?:<!--(?:-?>|.*?-->)|<\?.*?\?>|<!\[CDATA\[.*?\]\]>|<![A-Za-z][^>]*>|{html_tag})",
+    rf"(?:<!--(?:-?>|.*?-->)|<\?.*?\?>|<!\[CDATA\[.*?\]\]>|<![A-Z]+[ \t\r\n\f\v][^>]*>|{html_tag})",
     re.DOTALL,
 )
 html_until_blank = re.compile(r"^$")
@@ -137,7 +139,7 @@ html_block_markers = (
     (r" {0,3}<(?i:pre|script|style|textarea)(?=[ \t>]|$)", r"</(?i:pre|script|style|textarea)>"),
     (r" {0,3}<!--", r"-->|^ {0,3}<!---?>"),
     (r" {0,3}<\?", r"\?>"),
-    (r" {0,3}<![A-Za-z]", r">"),
+    (r" {0,3}<![A-Z]", r">"),
     (r" {0,3}<!\[CDATA\[", r"\]\]>"),
 )
 
@@ -431,7 +433,8 @@ def parse(source):
     for line_index, line in enumerate(lines):
         if line_index <= skip_through:
             continue
-        content = line.expandtabs(4)
+        expanded_line = line.expandtabs(4)
+        content = expanded_line
         if literal is not None:
             kind, ending, owners = literal
             projected, matched = project_containers(content, owners)
@@ -527,7 +530,19 @@ def parse(source):
                 all_targets.append(target)
                 body.append("")
                 continue
-        body.append(line)
+        # Inline parsing needs the projected paragraph, without repeated
+        # container markers. Remove only that prefix from the original line:
+        # tab expansion is for indentation, not for changing link/label bytes.
+        inline_content = line
+        prefix_columns = len(expanded_line) - len(content)
+        if prefix_columns:
+            column = 0
+            for offset, char in enumerate(line):
+                column += 4 - column % 4 if char == "\t" else 1
+                if column >= prefix_columns:
+                    inline_content = " " * (column - prefix_columns) + line[offset + 1:]
+                    break
+        body.append(inline_content)
         heading = re.match(r"^ {0,3}#{1,6}(?:[ \t]|$)", content)
         ends_paragraph = (heading or re.match(thematic_line, content)
                           or paragraph_open and re.match(setext_line, content))

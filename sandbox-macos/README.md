@@ -3,8 +3,8 @@
 This package implements Darkbloom's opt-in macOS CPU sandbox service. The
 coordinator owns account access, durable leases, idempotent operations and
 command history. A separate signed host daemon owns VM admission and cleanup;
-it does not link MLX or the inference engine. Tenant programs run as a fixed
-non-admin guest user inside a dedicated macOS VM.
+it does not link MLX or the inference engine. Tenant programs run as fixed
+unregistered numeric UID/GID 2001 inside a dedicated macOS VM.
 
 ```mermaid
 flowchart LR
@@ -26,6 +26,24 @@ and revision-bound downloads. Each VM has its own boot disk and credential.
 The device profile has no IP network interface, shared host folders, clipboard,
 audio or input devices. Dependency installation therefore uses uploaded files;
 there is no package-download gateway or GPU capability in this profile.
+
+The CPU profile never creates a tenant user or group record. Startup and each
+execution require successful password/group database lookups proving UID/GID
+2001 remain absent; resolver errors and occupied IDs reject work. Privilege
+dropping and workspace ownership use kernel numeric credentials. Apple's
+`crontab` and `at` require a resolvable user before accepting submissions, so
+the supervisor does not modify protected scheduler spools or unload system
+schedulers. Launchd-domain cleanup and tenant-process checks remain required.
+These checks are specific controls, not a claim that every OS service or
+delegated queue has been cancelled; the dedicated VM remains the outer boundary.
+
+Account-dependent software is not assumed compatible. `whoami`, passwd/group
+lookups, SSH clients and Node's `os.userInfo()` may fail without a registered
+account; Python's `pwd` lookup likewise has no tenant record. `HOME=/workspace`
+and `TMPDIR=/workspace/.tmp` support ordinary file-based tools but do not create
+a username. Actual required build tools must pass guest acceptance tests before
+a release is declared ready; username-dependent workflows need explicit product
+support rather than registering an account behind this policy.
 
 The guest root supervisor authenticates the host session over Virtio sockets,
 drops user/group privileges irreversibly for tenant commands, and verifies
@@ -236,6 +254,11 @@ authority. Widening is rejected by default and requires an explicit adoption
 against the current durable policy revision; it never clears an existing
 drain. Admission can resume only after all leases are cleaned up and an
 operator explicitly returns the empty host to `sandbox_dedicated`.
+The doctor's 300 GiB free-space floor qualifies a host for initial provisioning.
+Service startup reports low or unavailable free space on the configured VM
+storage volume as a warning so that expired VM cleanup can still run. Reopening
+capacity under low space drains the host and preserves existing leases; every
+new reservation still requires the live storage capacity check below.
 Reservation and VM creation both require the configured
 storage directory's live descriptor-bound filesystem capacity to cover all
 reserved growth plus operator-configured headroom. Every fenced operation

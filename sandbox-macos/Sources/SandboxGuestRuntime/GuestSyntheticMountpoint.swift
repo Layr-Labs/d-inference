@@ -4,8 +4,10 @@ import SandboxGuestProtocol
 import SandboxRuntime
 
 public enum GuestBootstrapInstallation {
-    public static func disablePersistentSchedulers() async throws {
-        try await GuestSchedulerPolicy.provision()
+    public static func validateNumericIdentity() throws {
+        try GuestBootstrapDiagnostic.run(.virtualizedRoot) { try GuestConfiguration.requireVirtualizedRoot() }
+        _ = try GuestBootstrapDiagnostic.run(.guestIdentity) { try GuestConfiguration.signedExecutable() }
+        try GuestBootstrapDiagnostic.run(.numericIdentity) { try GuestNumericIdentity.validate() }
     }
 
     /// macOS synthesizes this empty root mountpoint at the next boot. No

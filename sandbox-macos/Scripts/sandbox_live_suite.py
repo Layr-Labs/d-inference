@@ -173,10 +173,12 @@ class LiveSuite:
 /usr/bin/id -g
 /usr/bin/id -G
 test ! -r /var/db/darkbloom-sandbox/instance.json
-test -x /usr/bin/sudo && test -x /usr/bin/crontab && test -x /usr/bin/atq
+test -x /usr/bin/sudo && test -x /usr/bin/crontab && test -x /usr/bin/atq && test -x /usr/bin/at
 if /usr/bin/sudo -n /usr/bin/true >/dev/null 2>&1; then exit 91; fi
 if /usr/bin/crontab -l >/dev/null 2>&1; then exit 92; fi
 if /usr/bin/atq >/dev/null 2>&1; then exit 93; fi
+if printf '* * * * * /usr/bin/true\\n' | /usr/bin/env USER=root LOGNAME=root /usr/bin/crontab - >/dev/null 2>&1; then exit 94; fi
+if printf '/usr/bin/true\\n' | /usr/bin/env USER=root LOGNAME=root /usr/bin/at now + 1 minute >/dev/null 2>&1; then exit 95; fi
 printf 'policy-denied\n'
 """
         for sandbox_id in self.sandboxes:

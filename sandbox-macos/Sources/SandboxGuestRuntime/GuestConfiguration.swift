@@ -39,19 +39,10 @@ public struct GuestConfiguration: Codable, Sendable {
         let bytes = try GuestDescriptor.read(descriptor, count: Int(info.st_size))
         let result = try JSONDecoder().decode(Self.self, from: bytes)
         guard result.version == 1, result.credential.count == 32,
-              result.tenantUID == 2001, result.tenantGID == 2001,
-              result.workspacePath == "/workspace",
-              let account = getpwuid(result.tenantUID),
-              String(cString: account.pointee.pw_name) == "darkbloomtenant",
-              account.pointee.pw_gid == result.tenantGID
+              result.tenantUID == GuestNumericIdentity.uid, result.tenantGID == GuestNumericIdentity.gid,
+              result.workspacePath == "/workspace"
         else { throw GuestProtocolError.invalidConfiguration }
-        var count: Int32 = 64
-        var groups = [Int32](repeating: 0, count: Int(count))
-        guard getgrouplist("darkbloomtenant", Int32(result.tenantGID), &groups, &count) >= 0,
-              // Darwin may report its implicit everyone/localaccounts groups.
-              // Every supplementary group is removed before tenant execution.
-              groups.prefix(Int(count)).allSatisfy({ [Int32(result.tenantGID), 12, 61].contains($0) })
-        else { throw GuestProtocolError.invalidConfiguration }
+        try GuestNumericIdentity.validate()
         return result
     }
 

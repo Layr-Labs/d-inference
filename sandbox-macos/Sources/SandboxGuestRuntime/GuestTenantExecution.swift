@@ -35,7 +35,7 @@ public struct GuestTenantExecutor: GuestCommandExecuting {
 
     public func execute(_ command: GuestCommand, id: UUID) async throws -> GuestResponse {
         try command.validate()
-        try await GuestSchedulerPolicy.validate()
+        try GuestNumericIdentity.validate()
         let encoded = try GuestWorkerPayload.encode(command)
         let process = try SandboxProcessRunner().start(
             executable: executable,
@@ -120,6 +120,8 @@ public enum GuestTenantWorker {
         guard getuid() == 0, geteuid() == 0, let action = arguments.first else {
             throw GuestProtocolError.invalidConfiguration
         }
+        try GuestConfiguration.requireVirtualizedRoot()
+        try GuestNumericIdentity.validate()
         if action == "tenant-cleanup", arguments.count == 1 {
             try dropIdentity()
             guard kill(-1, SIGKILL) == 0 || errno == ESRCH else {

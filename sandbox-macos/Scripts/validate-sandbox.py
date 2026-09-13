@@ -69,6 +69,8 @@ def main():
         ("release_tool_contracts", [sys.executable, str(PACKAGE / "Scripts/test-sandbox-release-tools.py")], {}),
         ("consumer_harness_contracts", [sys.executable, str(PACKAGE / "Scripts/test-sandbox-live-tools.py")], {}),
         ("benchmark_contracts", [sys.executable, str(PACKAGE / "Scripts/test-sandbox-benchmarks.py")], {}),
+        ("ci_benchmark_contracts", [sys.executable, str(PACKAGE / "Scripts/test-sandbox-ci.py")], {}),
+        ("ci_benchmark_runner_contracts", [sys.executable, str(PACKAGE / "Scripts/test-sandbox-ci-runner.py")], {}),
         ("publication_contracts", ["/bin/bash", str(PACKAGE / "Scripts/run-lume-publication-contract-tests.sh")], {}),
         ("host_runtime_ownership", ["xcrun", "swift", "test", "--package-path", str(PACKAGE.parent / "host-runtime"), "-j", str(args.jobs)], {}),
         ("swift_unit", swift, {}),

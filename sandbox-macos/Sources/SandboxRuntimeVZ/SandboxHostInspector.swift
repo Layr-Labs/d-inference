@@ -45,6 +45,7 @@ public struct SandboxHostInspectionPolicy: Sendable {
     public let requireVirtualizationEntitlement: Bool
     public let requireAquaSession: Bool
     public let requireSecureEnclave: Bool
+    public let requireAvailableDiskCapacity: Bool
 
     public init(
         minimumCPUCount: Int = 10,
@@ -52,7 +53,8 @@ public struct SandboxHostInspectionPolicy: Sendable {
         minimumAvailableDiskBytes: Int64 = 300 * Int64(SandboxResourcePolicy.gibibyte),
         requireVirtualizationEntitlement: Bool = true,
         requireAquaSession: Bool = true,
-        requireSecureEnclave: Bool = true
+        requireSecureEnclave: Bool = true,
+        requireAvailableDiskCapacity: Bool = true
     ) {
         self.minimumCPUCount = minimumCPUCount
         self.minimumMemoryBytes = minimumMemoryBytes
@@ -60,20 +62,28 @@ public struct SandboxHostInspectionPolicy: Sendable {
         self.requireVirtualizationEntitlement = requireVirtualizationEntitlement
         self.requireAquaSession = requireAquaSession
         self.requireSecureEnclave = requireSecureEnclave
+        self.requireAvailableDiskCapacity = requireAvailableDiskCapacity
     }
 }
 
 public struct SandboxHostInspector: Sendable {
-    public init() {}
+    private let availableCapacity: @Sendable (URL) -> Int64
+
+    public init() { availableCapacity = Self.availableDiskBytes }
+
+    package init(availableCapacity: @escaping @Sendable (URL) -> Int64) {
+        self.availableCapacity = availableCapacity
+    }
 
     public func inspect(
-        policy: SandboxHostInspectionPolicy = SandboxHostInspectionPolicy()
+        policy: SandboxHostInspectionPolicy = SandboxHostInspectionPolicy(),
+        storageDirectory: URL = URL(fileURLWithPath: "/", isDirectory: true)
     ) -> SandboxHostReport {
         let process = ProcessInfo.processInfo
         let architecture = Self.architecture
         let cpuCount = process.activeProcessorCount
         let memoryBytes = process.physicalMemory
-        let availableDiskBytes = Self.availableDiskBytes()
+        let availableDiskBytes = availableCapacity(storageDirectory)
         let consoleUser = Self.consoleUser()
 
         var checks: [SandboxHostCheck] = []
@@ -108,12 +118,7 @@ public struct SandboxHostInspector: Sendable {
             success: "\(memoryBytes) memory bytes satisfy the proof floor",
             failure: "\(memoryBytes) memory bytes are below the \(policy.minimumMemoryBytes)-byte proof floor"
         ))
-        checks.append(Self.check(
-            id: "disk_capacity",
-            condition: availableDiskBytes >= policy.minimumAvailableDiskBytes,
-            success: "\(availableDiskBytes) available disk bytes satisfy the proof floor",
-            failure: "\(availableDiskBytes) available disk bytes are below the \(policy.minimumAvailableDiskBytes)-byte proof floor"
-        ))
+        checks.append(Self.diskCapacityCheck(availableBytes: availableDiskBytes, policy: policy))
 
         let hasAquaSession = consoleUser != nil && consoleUser != "loginwindow"
         checks.append(Self.requirementCheck(
@@ -173,9 +178,16 @@ public struct SandboxHostInspector: Sendable {
             && supported == 1
     }
 
-    private static func availableDiskBytes() -> Int64 {
-        let root = URL(fileURLWithPath: "/", isDirectory: true)
-        let values = try? root.resourceValues(forKeys: [
+    package static func diskCapacityCheck(availableBytes: Int64, policy: SandboxHostInspectionPolicy) -> SandboxHostCheck {
+        requirementCheck(id: "disk_capacity",
+            condition: availableBytes >= policy.minimumAvailableDiskBytes,
+            required: policy.requireAvailableDiskCapacity,
+            success: "\(availableBytes) available disk bytes satisfy the proof floor",
+            failure: "\(availableBytes) available disk bytes are below the \(policy.minimumAvailableDiskBytes)-byte proof floor")
+    }
+
+    private static func availableDiskBytes(at directory: URL) -> Int64 {
+        let values = try? directory.resourceValues(forKeys: [
             .volumeAvailableCapacityForImportantUsageKey
         ])
         return values?.volumeAvailableCapacityForImportantUsage ?? -1

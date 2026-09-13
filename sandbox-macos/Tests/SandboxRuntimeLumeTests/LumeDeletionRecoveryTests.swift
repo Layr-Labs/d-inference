@@ -6,6 +6,41 @@ import SandboxRuntime
 import XCTest
 
 final class LumeDeletionRecoveryTests: XCTestCase, @unchecked Sendable {
+    func testLowDiskRestartDrainsAndDeletesExpiredVMWhileNewAdmissionStillRejects() async throws {
+        let fixture = try FakeLumeFixture(initialState: "running")
+        defer { try? fixture.remove() }
+        let clock = LumeTestWallClock(Date(timeIntervalSince1970: 2_000_000_000))
+        let available = LumeTestStorageAvailability(UInt64.max)
+        let capacity = try fixture.makeCapacityArbiter(clock: clock,
+            availableStorageBytes: { available.available() })
+        let lease = try reserve(fixture, capacity: capacity, clock: clock)
+        XCTAssertEqual(lease.bootDiskBytes, 100 * SandboxResourcePolicy.gibibyte)
+        available.set(SandboxResourcePolicy.gibibyte)
+        clock.set(lease.expiresAt)
+
+        let reopened = try capacity.initialize()
+        XCTAssertEqual(reopened.mode, .draining)
+        XCTAssertEqual(reopened.leases, [lease])
+        let runtime = try fixture.makeLeaseFencedRuntime(capacityArbiter: capacity)
+        let recovery = try await runtime.reconcileExpiredLeases()
+        XCTAssertEqual(recovery.map(\.outcome), [.released])
+        XCTAssertTrue(try capacity.snapshot().leases.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.virtualMachineDirectory.path))
+
+        // Even an explicit reactivation cannot bypass the live volume check.
+        _ = try capacity.setMode(.sandboxDedicated)
+        XCTAssertThrowsError(try capacity.reserve(sandboxID: SandboxID(),
+            generation: SandboxGeneration(rawValue: 1)!, virtualMachineName: fixture.virtualMachineName,
+            resources: SandboxResourceSpecification.macOSSmall(), expiresAt: clock.now().addingTimeInterval(60))) { error in
+            guard case .insufficientHostStorage(let needed, let bytes) = error as? SandboxCapacityError else {
+                return XCTFail("expected the live storage admission failure, received \(error)")
+            }
+            XCTAssertEqual(bytes, SandboxResourcePolicy.gibibyte)
+            XCTAssertGreaterThan(needed, 100 * SandboxResourcePolicy.gibibyte)
+        }
+        XCTAssertTrue(try capacity.snapshot().leases.isEmpty)
+    }
+
     func testPartialDeletionBeforeExpiryRetainsCapacityAndFreshBrokerRetries() async throws {
         let fixture = try FakeLumeFixture()
         defer { try? fixture.remove() }

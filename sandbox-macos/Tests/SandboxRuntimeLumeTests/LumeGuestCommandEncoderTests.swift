@@ -305,6 +305,74 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         )
     }
 
+    func testLongDeadlineImmediateFailureReturnsEnvelopeWithinTenSeconds() async throws {
+        let request = try SandboxGuestCommandRequest(idempotencyKey: UUID(), executable: "/bin/zsh",
+            arguments: ["-f", "-c", "print -u2 -- 'immediate helper failure'; exit 78"],
+            workingDirectory: FileManager.default.temporaryDirectory.path, timeoutSeconds: 300)
+        let runner = SandboxProcessRunner()
+        let started = ContinuousClock.now
+        let process: SandboxProcessResult
+        do {
+            process = try await runner.run(executable: URL(fileURLWithPath: "/bin/zsh"),
+                arguments: ["-f", "-c", LumeGuestCommandEncoder.encode(request)],
+                timeoutSeconds: 10, maximumOutputBytes: LumeGuestCommandEnvelope.maximumEnvelopeBytes)
+        } catch {
+            _ = try? await runner.run(executable: URL(fileURLWithPath: "/bin/zsh"),
+                arguments: ["-f", "-c", LumeGuestCommandEncoder.encodeCancellation(idempotencyKey: request.idempotencyKey)],
+                timeoutSeconds: 5)
+            throw error
+        }
+        XCTAssertLessThan(started.duration(to: .now), .seconds(10))
+        XCTAssertEqual(process.exitCode, 0)
+        let result = try LumeGuestCommandResultDecoder.decode(process.standardOutput)
+        XCTAssertEqual(result.exitCode, 78)
+        XCTAssertFalse(result.timedOut)
+        XCTAssertEqual(String(decoding: result.standardError, as: UTF8.self), "immediate helper failure\n")
+    }
+
+    func testLongDeadlineNativeAsyncGuardFailureReturnsEnvelopeWithinTenSeconds() async throws {
+        guard getuid() != 0 else { throw XCTSkip("native failure control requires an unprivileged test process") }
+        let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let source = package.appendingPathComponent(".build/debug/darkbloom-sandbox-guest")
+        let staging = FileManager.default.temporaryDirectory.appendingPathComponent("native-guard-repro-\(UUID())")
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let executable: URL
+        if let configured = ProcessInfo.processInfo.environment["DARKBLOOM_SANDBOX_TEST_GUEST_EXECUTABLE"] {
+            executable = URL(fileURLWithPath: configured)
+        } else {
+            // Keep user-folder file-access authorization outside this I/O
+            // control by staging the owned executable outside the checkout.
+            executable = staging.appendingPathComponent("darkbloom-sandbox-guest")
+            try FileManager.default.copyItem(at: source, to: executable)
+        }
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: executable.path))
+        let request = try SandboxGuestCommandRequest(idempotencyKey: UUID(), executable: executable.path,
+            arguments: ["validate-tenant-identity"],
+            workingDirectory: FileManager.default.temporaryDirectory.path, timeoutSeconds: 300)
+        let runner = SandboxProcessRunner(), started = ContinuousClock.now
+        let process: SandboxProcessResult
+        do {
+            process = try await runner.run(executable: URL(fileURLWithPath: "/bin/zsh"),
+                arguments: ["-f", "-c", LumeGuestCommandEncoder.encode(request)],
+                timeoutSeconds: 10, maximumOutputBytes: LumeGuestCommandEnvelope.maximumEnvelopeBytes)
+        } catch {
+            _ = try? await runner.run(executable: URL(fileURLWithPath: "/bin/zsh"),
+                arguments: ["-f", "-c", LumeGuestCommandEncoder.encodeCancellation(idempotencyKey: request.idempotencyKey)],
+                timeoutSeconds: 5)
+            throw error
+        }
+        XCTAssertLessThan(started.duration(to: .now), .seconds(10))
+        XCTAssertEqual(process.exitCode, 0)
+        let result = try LumeGuestCommandResultDecoder.decode(process.standardOutput)
+        XCTAssertEqual(result.exitCode, 78)
+        XCTAssertFalse(result.timedOut)
+        XCTAssertEqual(String(decoding: result.standardError, as: UTF8.self),
+            "darkbloom-sandbox-guest: guest_bootstrap.virtualized_root.policy_mismatch\n")
+    }
+
     func testDeadlineAndCompletionUseOneAtomicTerminalClaim() throws {
         let request = try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),

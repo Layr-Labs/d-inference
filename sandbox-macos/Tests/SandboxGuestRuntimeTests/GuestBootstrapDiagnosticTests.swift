@@ -12,24 +12,24 @@ final class GuestBootstrapDiagnosticTests: XCTestCase {
             XCTAssertEqual((error as? GuestBootstrapDiagnostic)?.code,
                            "guest_bootstrap.workspace_mountpoint.unsafe_authority")
         }
-        XCTAssertThrowsError(try GuestBootstrapDiagnostic.run(.schedulerSpool) {
-            throw SandboxAuthorityFileSystemError.io(EACCES)
+        XCTAssertThrowsError(try GuestBootstrapDiagnostic.run(.numericIdentity) {
+            throw GuestNumericIdentityError.lookupFailed(EACCES)
         }) { error in
             XCTAssertEqual((error as? GuestBootstrapDiagnostic)?.code,
-                           "guest_bootstrap.scheduler_spool.filesystem_io errno=13")
+                           "guest_bootstrap.numeric_identity.lookup_failed errno=13")
         }
     }
 
-    func testArbitraryUnderlyingErrorContentsAreNeverFormatted() async {
+    func testArbitraryUnderlyingErrorContentsAreNeverFormatted() {
         do {
-            let _: Void = try await GuestBootstrapDiagnostic.runAsync(.schedulerValidation) {
+            let _: Void = try GuestBootstrapDiagnostic.run(.numericIdentity) {
                 throw NSError(domain: "credential=private", code: 7,
                               userInfo: [NSLocalizedDescriptionKey: "instance.json contains secret bytes"])
             }
             XCTFail("expected a diagnostic")
         } catch {
             XCTAssertEqual((error as? GuestBootstrapDiagnostic)?.code,
-                           "guest_bootstrap.scheduler_validation.unavailable")
+                           "guest_bootstrap.numeric_identity.unavailable")
         }
     }
 

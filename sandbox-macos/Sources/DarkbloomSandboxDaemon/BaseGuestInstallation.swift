@@ -76,12 +76,7 @@ enum BaseGuestInstallation {
     [[ $(hash_file /Library/LaunchDaemons/io.darkbloom.sandbox.guest.plist) == "$4" ]] || exit 70
     users=$(/usr/bin/dscl . -list /Users)
     if print -r -- "$users" | /usr/bin/grep -qx lume; then exit 70; fi
-    [[ $(/usr/bin/id -u darkbloomtenant) == 2001 ]] || exit 70
-    [[ $(/usr/bin/id -g darkbloomtenant) == 2001 ]] || exit 70
-    for group in admin wheel operator; do
-      membership=$(/usr/bin/dsmemberutil checkmembership -U darkbloomtenant -G "$group")
-      [[ $membership == *'is not a member'* ]] || exit 70
-    done
+    /usr/local/libexec/darkbloom-sandbox-guest validate-tenant-identity
     for destination in /usr/local/libexec/darkbloom-sandbox-guest /usr/local/libexec/darkbloom-sandbox-bootstrap.sh /Library/LaunchDaemons/io.darkbloom.sandbox.guest.plist; do
       [[ ! -L $destination && $(/usr/bin/stat -f %u "$destination") == 0 ]] || exit 70
       mode=$(/usr/bin/stat -f %Lp "$destination")

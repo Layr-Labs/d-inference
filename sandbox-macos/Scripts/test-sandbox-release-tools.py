@@ -172,7 +172,7 @@ class ArtifactTests(unittest.TestCase):
 
 class HostConfigurationTests(unittest.TestCase):
     def settings(self):
-        return {"coordinatorURL": "wss://coordinator.example/v1/sandbox-hosts/ws",
+        return {"coordinatorURL": "wss://coordinator.example/ws/sandbox-host",
                 "hostID": "60f6a1b2-77db-40d2-bf27-98fce61c8b0d",
                 "tokenFile": "/var/db/dbsandbox/host.token", "storageDirectory": "/var/db/dbsandbox/vms",
                 "capacityDirectory": "/var/db/dbsandbox/capacity", "baseImageIDs": ["base-v1"],
@@ -184,6 +184,42 @@ class HostConfigurationTests(unittest.TestCase):
         self.assertEqual(args[args.index("--token-file") + 1], "/var/db/dbsandbox/host.token")
         self.assertNotIn("--allow-insecure-loopback", args)
         self.assertNotIn("--development-ad-hoc-lume", args)
+
+    def test_coordinator_route_query_fragment_and_malformed_authority_are_rejected(self):
+        bad = [
+            "wss://coordinator.example/v1/sandbox-hosts/ws",
+            "wss://coordinator.example/ws/sandbox-host/",
+            "wss://coordinator.example/%77s/sandbox-host",
+            "wss://coordinator.example/ws/sandbox-host?token=swordfish",
+            "wss://coordinator.example/ws/sandbox-host?",
+            "wss://coordinator.example/ws/sandbox-host#fragment",
+            "wss://coordinator.example/ws/sandbox-host#",
+            "wss://@coordinator.example/ws/sandbox-host",
+            "wss://coordinator.example:65536/ws/sandbox-host",
+            "wss://coordinator.example:0/ws/sandbox-host",
+            "wss://coordinator.example:abc/ws/sandbox-host",
+            "wss://coordinator.example:/ws/sandbox-host",
+            "wss://bad host/ws/sandbox-host",
+            "wss://-host.example/ws/sandbox-host",
+            "wss://999.999.999.999/ws/sandbox-host",
+            "wss://coordinator.\nexample/ws/sandbox-host",
+            "wss://[not-ipv6]/ws/sandbox-host",
+            "wss://[::1]extra/ws/sandbox-host",
+            "wss://[::1]extra:443/ws/sandbox-host",
+            "wss://[fe80::1%en0]/ws/sandbox-host",
+        ]
+        for url in bad:
+            value = self.settings(); value["coordinatorURL"] = url
+            with self.subTest(url=url), self.assertRaises(ValueError) as error:
+                prepare_host.host_arguments(value, Path("/Library/Sandbox"))
+            self.assertNotIn("swordfish", str(error.exception))
+
+    def test_valid_dns_ipv4_and_ipv6_urls_reach_the_generated_host_arguments(self):
+        for url in ["wss://coordinator.example/ws/sandbox-host", "wss://127.0.0.1:443/ws/sandbox-host",
+                    "wss://[2001:db8::1]:8443/ws/sandbox-host", "wss://[::1]/ws/sandbox-host"]:
+            value = self.settings(); value["coordinatorURL"] = url
+            args = prepare_host.host_arguments(value, Path("/Library/Sandbox"))
+            self.assertEqual(args[args.index("--coordinator") + 1], url)
 
     def test_activation_removes_keepalive_before_exclusive_mode_change(self):
         commands = prepare_host.activation_commands(self.settings(), Path("/Library/Sandbox"))

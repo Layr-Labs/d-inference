@@ -13,17 +13,11 @@ enum ServeCommand {
         let hostRuntimeLease = try HostRuntimeAuthority.system.acquireSandbox()
         defer { withExtendedLifetime(hostRuntimeLease) {} }
         let report = SandboxHostInspector().inspect(
-            policy: SandboxHostInspectionPolicy(
-                requireVirtualizationEntitlement:
-                    !options.developmentAdHocLume
-            )
+            policy: hostInspectionPolicy(developmentAdHocLume: options.developmentAdHocLume),
+            storageDirectory: options.storageDirectory
         )
-        guard report.isEligible,
-              report.cpuCount >= Int(options.maximumCPUCount),
-              report.memoryBytes >= options.maximumMemoryBytes
-        else {
-            throw DaemonCLIError.hostIneligible
-        }
+        try requireEligibleHost(report, maximumCPUCount: options.maximumCPUCount,
+                                maximumMemoryBytes: options.maximumMemoryBytes)
 
         let policy = try SandboxCapacityPolicy(
             maximumReservedCPUCount: options.maximumCPUCount,
@@ -132,6 +126,20 @@ enum ServeCommand {
             throw error
         }
         try await runtime.stopAllForShutdown()
+    }
+
+    static func hostInspectionPolicy(developmentAdHocLume: Bool) -> SandboxHostInspectionPolicy {
+        // The doctor's provisioning floor must not stop recovery after VMs
+        // consume their reserved storage. The arbiter checks actual configured
+        // volume headroom at admission and drains low-storage hosts on reopen.
+        SandboxHostInspectionPolicy(requireVirtualizationEntitlement: !developmentAdHocLume,
+                                    requireAvailableDiskCapacity: false)
+    }
+
+    static func requireEligibleHost(_ report: SandboxHostReport, maximumCPUCount: UInt16,
+                                    maximumMemoryBytes: UInt64) throws {
+        guard report.isEligible, report.cpuCount >= Int(maximumCPUCount),
+              report.memoryBytes >= maximumMemoryBytes else { throw DaemonCLIError.hostIneligible }
     }
 
     private static func sysctlString(_ name: String) -> String? {

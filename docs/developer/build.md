@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-13 · commit `2ee8a4c87`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -43,13 +43,14 @@ Go/Swift fixture and focused checks are described in [test.md](test.md) and
 
 | Path | Toolchain | Notes |
 |---|---|---|
-| `go.mod` (repo root) | Go | Single module `github.com/eigeninference/d-inference`; contains `coordinator/...` and `e2e/...`. There is no `go.work` and no nested `go.mod`. |
+| `go.mod` (repo root) | Go | Main module `github.com/eigeninference/d-inference`; contains `coordinator/...` and `e2e/...`. There is no `go.work`; the standalone benchmark runner has its own module. |
 | `coordinator/cmd/coordinator/` | Go | The coordinator binary (`main.go`). |
 | `coordinator/promptsidecar/` | Rust | Crate `promptsidecar`, edition 2024, `Cargo.lock` committed; built with `--locked`. |
 | `provider-swift/` | SwiftPM | Products: `darkbloom` (CLI), `darkbloom-enclave`, `darkbloom-fan-helper`, `darkbloom-publish`; libraries `ProviderCore`, `ProviderCoreFoundation`, `DarkbloomFan*`. Platform `macOS 14+`. |
 | `sandbox-macos/` | SwiftPM | Standalone `darkbloom-sandboxd` and `darkbloom-sandbox-guest`; pinned Lume build and signed artifact tooling under `Scripts/`. |
 | `host-runtime/` | SwiftPM | Shared machine-ownership library used by inference and sandbox VM processes. |
 | `coordinator/cmd/darkbloom-sandbox/` | Go | Standalone consumer CLI; `make sandbox-client-build` writes `build/darkbloom-sandbox`. |
+| `sandbox-macos/Benchmarks/go-ci/runner/` | Go | Standard-library CI benchmark runner, packaged with an explicit local SDK by the [offline CI workload harness](../../sandbox-macos/Benchmarks/go-ci/README.md). |
 | `console-ui/` | Next.js 16 / React 19 | `npm`; tests with Vitest. |
 | `admin-ui/` | Next.js 16 / React 19 | `npm`; dev/start on port `4001`. |
 | `landing/` | static HTML/JS | No build step; `earn-calculator-core.test.js` runs with `node --test`. |

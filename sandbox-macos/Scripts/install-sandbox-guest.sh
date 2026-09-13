@@ -58,19 +58,6 @@ for ancestor in /usr /usr/local /usr/local/libexec /Library /Library/LaunchDaemo
   fi
 done
 
-/usr/bin/dscl . -create /Groups/darkbloomtenant
-/usr/bin/dscl . -create /Groups/darkbloomtenant PrimaryGroupID 2001
-/usr/bin/dscl . -create /Users/darkbloomtenant
-/usr/bin/dscl . -create /Users/darkbloomtenant UniqueID 2001
-/usr/bin/dscl . -create /Users/darkbloomtenant PrimaryGroupID 2001
-/usr/bin/dscl . -create /Users/darkbloomtenant UserShell /usr/bin/false
-/usr/bin/dscl . -create /Users/darkbloomtenant NFSHomeDirectory /var/empty
-/usr/bin/dscl . -create /Users/darkbloomtenant IsHidden 1
-/usr/bin/dscl . -create /Users/darkbloomtenant Password '*'
-for group in admin wheel operator; do
-  membership=$(/usr/bin/dsmemberutil checkmembership -U darkbloomtenant -G "$group")
-  [[ $membership == *'is not a member'* ]] || fail "forbidden group: $group"
-done
 /usr/bin/install -d -o root -g wheel -m 0755 /usr/local/libexec
 /usr/bin/install -o root -g wheel -m 0755 "$source_dir/darkbloom-sandbox-guest" /usr/local/libexec/darkbloom-sandbox-guest
 /usr/bin/install -o root -g wheel -m 0755 "$source_dir/darkbloom-sandbox-bootstrap.sh" /usr/local/libexec/darkbloom-sandbox-bootstrap.sh
@@ -80,7 +67,7 @@ done
 # Only stage a one-column synthetic manifest. The sealed root exposes this
 # empty mountpoint at the next clone boot, after base-image shutdown.
 /usr/local/libexec/darkbloom-sandbox-guest provision-workspace-mountpoint
-/usr/local/libexec/darkbloom-sandbox-guest disable-persistent-schedulers
+/usr/local/libexec/darkbloom-sandbox-guest validate-tenant-identity
 if (( has_lume == 1 )); then
   # The existing provisioning SSH session may finish; future boots cannot start sshd.
   /bin/launchctl disable system/com.openssh.sshd

@@ -3,7 +3,7 @@
         coordinator-test coordinator-build coordinator-build-linux coordinator \
         prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
         provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
-        sandbox-build sandbox-test sandbox sandbox-client-build sandbox-client-test \
+        sandbox-build sandbox-test sandbox-ci-test sandbox sandbox-client-build sandbox-client-test \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
         docs-check docs-stamp \
@@ -82,12 +82,16 @@ provider: provider-build provider-test ## Build + test provider
 sandbox-build: ## Build the isolated macOS sandbox host runtime
 	swift build --package-path sandbox-macos
 
-sandbox-test: ## Run macOS sandbox host runtime tests
+sandbox-test: sandbox-ci-test ## Run macOS sandbox host runtime tests
 	swift test --package-path host-runtime
 	swift test --package-path sandbox-macos
 	python3 sandbox-macos/Scripts/test-sandbox-release-tools.py
 	python3 sandbox-macos/Scripts/test-sandbox-benchmarks.py
 	python3 sandbox-macos/Scripts/test-sandbox-live-tools.py
+
+sandbox-ci-test: ## Test Go CI benchmark tooling offline without a VM or API
+	python3 sandbox-macos/Scripts/test-sandbox-ci.py
+	python3 sandbox-macos/Scripts/test-sandbox-ci-runner.py
 
 sandbox-client-build: ## Build the standalone sandbox consumer CLI
 	mkdir -p build

@@ -5,11 +5,13 @@ No account, ownership, process, VM, or service mutations are performed.
 """
 
 import argparse
+import ipaddress
 import json
 import os
 from pathlib import Path
 import plistlib
 import pwd
+import re
 import shlex
 import stat
 import sys
@@ -56,10 +58,38 @@ def validate_package(path: Path):
     return manifest
 
 
+def validate_coordinator_url(value):
+    message = "coordinatorURL must be WSS with a valid host/port and exact /ws/sandbox-host path, without credentials, query or fragment"
+    if not isinstance(value, str) or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ValueError(message)
+    try:
+        coordinator = urllib.parse.urlsplit(value)
+        host, port = coordinator.hostname, coordinator.port
+        if coordinator.scheme != "wss" or not host or coordinator.path != "/ws/sandbox-host" \
+                or coordinator.username is not None or coordinator.password is not None \
+                or "?" in value or "#" in value or coordinator.netloc.endswith(":") \
+                or port is not None and not 1 <= port <= 65535:
+            raise ValueError(message)
+        if ":" in host:
+            if not re.fullmatch(r"\[[0-9A-Fa-f:.]+\](?::[0-9]+)?", coordinator.netloc):
+                raise ValueError(message)
+            ipaddress.IPv6Address(host)
+        else:
+            try:
+                ipaddress.IPv4Address(host)
+            except ipaddress.AddressValueError:
+                if all(c in "0123456789." for c in host):
+                    raise ValueError(message)
+                encoded = host.encode("idna").decode("ascii").removesuffix(".")
+                labels = encoded.split(".")
+                if len(encoded) > 253 or any(not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) for label in labels):
+                    raise ValueError(message)
+    except (ValueError, UnicodeError):
+        raise ValueError(message) from None
+
+
 def host_arguments(configuration: dict, install_root: Path):
-    coordinator = urllib.parse.urlsplit(configuration["coordinatorURL"])
-    if coordinator.scheme != "wss" or not coordinator.hostname or coordinator.username or coordinator.password:
-        raise ValueError("coordinatorURL must be WSS without embedded credentials")
+    validate_coordinator_url(configuration["coordinatorURL"])
     host_id = str(uuid.UUID(configuration["hostID"]))
     paths = {}
     for key in ["tokenFile", "storageDirectory", "capacityDirectory"]:

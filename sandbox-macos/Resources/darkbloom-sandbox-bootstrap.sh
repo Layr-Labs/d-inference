@@ -89,10 +89,7 @@ if [[ -n $mounted && $mounted != /workspace ]]; then
 fi
 /usr/sbin/diskutil mount -mountPoint /workspace "$workspace" >/dev/null
 [[ $(/usr/bin/stat -f %d /workspace) != $(/usr/bin/stat -f %d /) ]] || fail 'workspace is not separate from boot volume'
-for group in admin wheel operator; do
-  membership=$(/usr/bin/dsmemberutil checkmembership -U darkbloomtenant -G "$group")
-  [[ $membership == *'is not a member'* ]] || fail "forbidden tenant group: $group"
-done
+/usr/local/libexec/darkbloom-sandbox-guest validate-tenant-identity
 /usr/bin/codesign --verify --strict "-R=$requirement" /usr/local/libexec/darkbloom-sandbox-guest
 /usr/bin/install -o root -g wheel -m 0600 "$configuration" "$scratch/instance.json"
 /bin/mv -f "$scratch/instance.json" "$state/instance.json"

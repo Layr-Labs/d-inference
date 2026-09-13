@@ -9,13 +9,7 @@ public struct GuestBootstrapDiagnostic: Error, Sendable {
         case virtualizedRoot = "virtualized_root"
         case guestIdentity = "guest_identity"
         case workspaceMountpoint = "workspace_mountpoint"
-        case schedulerAlias = "scheduler_alias"
-        case schedulerSpool = "scheduler_spool"
-        case disableCron = "disable_cron"
-        case disableAt = "disable_at"
-        case unloadCron = "unload_cron"
-        case unloadAt = "unload_at"
-        case schedulerValidation = "scheduler_validation"
+        case numericIdentity = "numeric_identity"
     }
 
     private let stage: Stage
@@ -32,16 +26,18 @@ public struct GuestBootstrapDiagnostic: Error, Sendable {
         catch { throw classify(error, stage: stage) }
     }
 
-    static func runAsync<T: Sendable>(_ stage: Stage, _ operation: () async throws -> T) async throws -> T {
-        do { return try await operation() }
-        catch { throw classify(error, stage: stage) }
-    }
-
     private static func classify(_ error: Error, stage: Stage) -> GuestBootstrapDiagnostic {
         if let diagnostic = error as? GuestBootstrapDiagnostic { return diagnostic }
         let reason: String
         var systemError: Int32?
-        if let filesystem = error as? SandboxAuthorityFileSystemError {
+        if let identity = error as? GuestNumericIdentityError {
+            switch identity {
+            case .userRegistered: reason = "user_registered"
+            case .groupRegistered: reason = "group_registered"
+            case .lookupFailed(let code): reason = "lookup_failed"; systemError = code
+            case .lookupExceedsBound: reason = "lookup_exceeds_bound"
+            }
+        } else if let filesystem = error as? SandboxAuthorityFileSystemError {
             switch filesystem {
             case .unsafePath: reason = "unsafe_authority"
             case .io(let value): reason = "filesystem_io"; systemError = value

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-13 · commit `1f52a71fb`
+> Last updated: 2026-09-13 · commit `2ee8a4c87`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -66,8 +66,15 @@ make test   # coordinator-test prompt-sidecar-test provider-test ui-test benchma
 
 ### 2. Coordinator (Go)
 
-`make sandbox-test` runs the shared machine-ownership tests, sandbox host/guest
-tests, and release-tool contracts. `make sandbox-client-test` exercises the
+`make sandbox-ci-test` runs the offline Go CI benchmark's bundle/evidence tests
+and portable runner race tests using private temporary caches. It requires the
+repository Go toolchain and does not run a VM or contact an API. The same gate
+runs in macOS sandbox CI and default `validate-sandbox.py` validation. See the
+[CI workload benchmark](../../sandbox-macos/Benchmarks/go-ci/README.md) for
+explicit host-only and paired measurement commands.
+
+`make sandbox-test` includes that gate and runs the shared machine-ownership
+tests, sandbox host/guest tests, and release-tool contracts. `make sandbox-client-test` exercises the
 consumer workflow against an isolated HTTP fixture, including upload replay,
 version-pinned downloads and cancellation. These checks do not boot a VM or
 establish physical isolation. The `macOS Sandbox Tests` CI job separately builds

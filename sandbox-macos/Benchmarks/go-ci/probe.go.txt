@@ -1,0 +1,19 @@
+package main
+
+import (
+	"encoding/json"
+	"os"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/sandboxcontrol"
+	"github.com/eigeninference/d-inference/coordinator/sandboxhost"
+)
+
+func main() {
+	resources := protocol.SandboxResources{CPUCount: 2, MemoryBytes: 4 << 30, WorkspaceBytes: 25 << 30, CommandTimeoutSeconds: 900}
+	if err := protocol.ValidateSandboxResources(resources); err != nil { panic(err) }
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+		"workload": "darkbloom_sandbox_ci_v1", "protocol_version": protocol.SandboxProtocolVersion,
+		"command_timeout_seconds": sandboxcontrol.CommandTimeoutSeconds, "host_id_header": sandboxhost.HostIDHeader,
+	})
+}

@@ -43,7 +43,7 @@ Re-signing an unchanged guest binary can change its hash and is not reuse.
 
 Copy the complete `guest` directory into a fresh, disposable macOS VM and run
 `/bin/zsh install-sandbox-guest.sh --install --retire-lume-bootstrap` as guest root. It verifies the guest
-signature, rejects identity collisions, creates the nonadmin UID/GID 2001, and
+signature, rejects identity collisions, leaves UID/GID 2001 unregistered, and
 stages a LaunchDaemon without starting it. The script refuses physical hosts.
 It retires only the expected `lume` UID 501 bootstrap account, removes its known
 passwordless sudo rule, and disables SSH on future boots. Unexpected users or
@@ -56,10 +56,15 @@ Installation stages a one-column `workspace` manifest under `/etc/synthetic.d`.
 macOS synthesizes this empty root mountpoint at the next boot; the installer
 does not attempt to create a physical directory on the sealed root filesystem.
 Conflicting workspace symlink definitions or duplicate manifests are rejected.
-The signed installer disables and unloads `com.vix.cron` and `com.apple.atrun`,
-and provisions root-owned `cron.allow` and `at.allow` containing only `root`.
-The guest verifies both allowlists, the explicit launchd disabled overrides,
-and absent scheduler services before admitting commands. Tenant cleanup removes
+The signed installer never creates tenant Directory Services records and does
+not alter cron/at spools or system scheduler services. Its native identity check
+uses reentrant password/group lookups, with buffers bounded at 1 MiB: only
+successful absent results permit UID/GID 2001. Lookup errors and registered IDs
+fail closed. The same check runs at agent startup, before every command and
+inside the privileged worker before it drops credentials. Apple's cron/at
+submission tools require a resolvable password-database identity; verify both
+list and actual submission denial, including forged `USER` and `LOGNAME`, on
+each supported guest OS. Tenant cleanup removes
 only `gui/2001` (the login-domain alias) and `user/2001`, then kills tenant UID
 processes and verifies quiescence. The GUI domain must be absent. macOS lazily
 recreates an empty user domain when queried: only after successful user-domain
@@ -67,8 +72,16 @@ bootout and zero tenant processes, a strictly parsed `user/2001` domain with
 empty services, unmanaged-process and endpoint blocks is also accepted. Unknown,
 truncated, malformed or nonempty launchctl output fails closed;
 this output format and a submitted-job respawn probe require qualification on
-each supported guest OS. No physical-host scheduler configuration is changed.
+each supported guest OS. This does not establish cancellation of every possible
+system service or delegated queue; VM stop/delete remains the outer boundary.
+No physical-host scheduler configuration is changed.
 There is no Python, package manager, or Xcode dependency inside the guest.
+The offline CPU profile intentionally has no tenant username. Account-dependent
+APIs such as Node `os.userInfo()`, Python `pwd`, `whoami`, and SSH client identity
+lookup cannot be assumed compatible. `HOME=/workspace` is explicit, but is not
+a password-database entry. Qualification must execute the real required build
+tools, file operations, cancellation, and restart under the unregistered UID;
+successful `id -u` alone is insufficient.
 Native installation helpers report fixed `guest_bootstrap.<stage>.<reason>`
 diagnostics, with a numeric errno for filesystem failures. They never print
 configuration contents. `/etc`, `/var` and `/tmp` use only their known physical
@@ -132,7 +145,7 @@ configuration and an installation plan; it creates no account or service.
 
 ```json
 {
-  "coordinatorURL": "wss://your-coordinator/v1/sandbox-hosts/ws",
+  "coordinatorURL": "wss://your-coordinator/ws/sandbox-host",
   "hostID": "assigned host UUID",
   "tokenFile": "/var/db/darkbloom-sandbox/host.token",
   "storageDirectory": "/var/db/darkbloom-sandbox/vms",

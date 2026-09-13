@@ -5,7 +5,7 @@ import SandboxRuntime
 
 enum GuestBootstrapValidation {
     static func validate() async throws {
-        try await GuestSchedulerPolicy.validate()
+        try GuestNumericIdentity.validate()
         let users = try await SandboxProcessRunner().run(
             executable: URL(fileURLWithPath: "/usr/bin/dscl"),
             arguments: [".", "-list", "/Users"], timeoutSeconds: 5, maximumOutputBytes: 65536)

@@ -205,6 +205,25 @@ class DocsCheckTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Page.md: orphan", result.stderr)
 
+    def test_invalid_backtick_fence_info_does_not_hide_links(self):
+        for opener, closer, renders_links in (
+            ("``` bad`tick", "", True),
+            ("``` bad`tick", "```", True),
+            ("```` bad`tick", "```", True),
+            (r"``` bad\`tick", "", True),
+            ("``` markdown", "```", False),
+            ("~~~ bad`tick", "~~~", False),
+        ):
+            with self.subTest(opener=opener, closer=closer):
+                result = self.check(f"\n{opener}\n[Page](Page.md)\n[Broken](Missing.md)\n{closer}\n")
+                self.assertNotEqual(result.returncode, 0)
+                if renders_links:
+                    self.assertIn("broken link -> Missing.md", result.stderr)
+                    self.assertNotIn("orphan", result.stderr)
+                else:
+                    self.assertIn("Page.md: orphan", result.stderr)
+                    self.assertNotIn("broken link", result.stderr)
+
     def test_html_blocks_do_not_create_navigation(self):
         for example in (
             "<!-- [guide] -->",

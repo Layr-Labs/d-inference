@@ -321,7 +321,9 @@ def parse(source):
                 paragraph_open = False
                 continue
             html_end = None
-        if marker:
+        # Backtick fence info strings cannot contain backticks, even escaped
+        # ones. An invalid opener remains ordinary Markdown.
+        if marker and (marker[1][0] != "`" or "`" not in marker[2]):
             fence = marker[1]
             # Removing a fenced block must not join labels across paragraphs.
             body.append("")

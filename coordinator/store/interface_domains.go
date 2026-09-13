@@ -388,10 +388,12 @@ type BillingStore interface {
 	// ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a
 	// withdrawal whose own payout failed: status back to "transferred",
 	// payout ID detached, failure reason recorded, FeeRefunded OR-ed in —
-	// but only while the row is not refunded and not terminally failed
+	// but only while its payout ID equals the non-empty expectedPayoutID,
+	// the row is not refunded and not terminally failed
 	// (a concurrent transfer.reversed wins; its refund must never be
-	// overwritten back to sweep-eligible). Returns whether it was applied.
-	ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason string, feeRefunded bool) (bool, error)
+	// overwritten back to sweep-eligible). A stale failure cannot detach a
+	// newer payout or reopen a later sweep settlement. Returns whether applied.
+	ReopenStripeWithdrawalAfterPayoutFailure(id, expectedPayoutID, failureReason string, feeRefunded bool) (bool, error)
 
 	// ListStripeWithdrawalsBySweepPayoutID returns the withdrawals a given
 	// automatic sweep payout claimed (SweepPayoutID stamp). Used to reopen

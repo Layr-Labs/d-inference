@@ -2441,9 +2441,9 @@ func (s *MemoryStore) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayout
 
 // ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a bounced
 // withdrawal for sweep retry under the store lock (see interface doc).
-func (s *MemoryStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason string, feeRefunded bool) (bool, error) {
-	if id == "" {
-		return false, errors.New("stripe withdrawal id is required")
+func (s *MemoryStore) ReopenStripeWithdrawalAfterPayoutFailure(id, expectedPayoutID, failureReason string, feeRefunded bool) (bool, error) {
+	if id == "" || expectedPayoutID == "" {
+		return false, errors.New("stripe withdrawal id and expected payout id are required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2451,8 +2451,8 @@ func (s *MemoryStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason
 	if !ok {
 		return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
 	}
-	if w.Refunded || w.Status == "failed" {
-		return false, nil // a concurrent reversal terminalized it — never reopen
+	if w.Refunded || w.Status == "failed" || w.PayoutID != expectedPayoutID {
+		return false, nil // reversal or a different payout owns the current state
 	}
 	if w.PayoutID != "" {
 		delete(s.stripeWithdrawalsByPayoutID, w.PayoutID)

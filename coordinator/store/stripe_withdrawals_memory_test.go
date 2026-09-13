@@ -219,7 +219,7 @@ func TestMemoryReopenStripeWithdrawalAfterPayoutFailureGuards(t *testing.T) {
 	}
 
 	mk("wd-ro-ok", "paid", "po_ro1", false)
-	applied, err := s.ReopenStripeWithdrawalAfterPayoutFailure("wd-ro-ok", "payout_failed: bounce", true)
+	applied, err := s.ReopenStripeWithdrawalAfterPayoutFailure("wd-ro-ok", "po_ro1", "payout_failed: bounce", true)
 	if err != nil || !applied {
 		t.Fatalf("live row: applied=%v err=%v, want applied", applied, err)
 	}
@@ -233,11 +233,11 @@ func TestMemoryReopenStripeWithdrawalAfterPayoutFailureGuards(t *testing.T) {
 	}
 
 	mk("wd-ro-refunded", "transferred", "po_ro2", true)
-	if applied, _ := s.ReopenStripeWithdrawalAfterPayoutFailure("wd-ro-refunded", "x", false); applied {
+	if applied, _ := s.ReopenStripeWithdrawalAfterPayoutFailure("wd-ro-refunded", "po_ro2", "x", false); applied {
 		t.Error("refunded row must not reopen (reversal owns it)")
 	}
 	mk("wd-ro-failed", "failed", "", false)
-	if applied, _ := s.ReopenStripeWithdrawalAfterPayoutFailure("wd-ro-failed", "x", false); applied {
+	if applied, _ := s.ReopenStripeWithdrawalAfterPayoutFailure("wd-ro-failed", "po_ro3", "x", false); applied {
 		t.Error("failed row must not reopen")
 	}
 }

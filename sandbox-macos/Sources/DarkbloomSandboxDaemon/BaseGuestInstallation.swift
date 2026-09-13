@@ -82,19 +82,8 @@ enum BaseGuestInstallation {
       mode=$(/usr/bin/stat -f %Lp "$destination")
       (( (8#$mode & 8#022) == 0 )) || exit 70
     done
-    receipt=/var/db/darkbloom-sandbox/base-installation.json
-    [[ ! -e $receipt && ! -L $receipt ]] || exit 70
-    /usr/bin/plutil -create json "$receipt"
-    /usr/bin/plutil -insert schemaVersion -integer 1 "$receipt"
-    /usr/bin/plutil -insert guestSHA256 -string "$2" "$receipt"
-    /usr/bin/plutil -insert bootstrapSHA256 -string "$3" "$receipt"
-    /usr/bin/plutil -insert launchdSHA256 -string "$4" "$receipt"
-    /usr/bin/plutil -insert installerSHA256 -string "$5" "$receipt"
-    /usr/bin/plutil -insert guestOperatingSystemVersion -string "$(/usr/bin/sw_vers -productVersion)" "$receipt"
-    /usr/bin/plutil -insert guestArchitecture -string "$(/usr/bin/uname -m)" "$receipt"
-    /usr/bin/plutil -insert bootstrapRetired -bool true "$receipt"
-    /bin/chmod 0600 "$receipt"
-    /bin/sync
-    /bin/cat "$receipt"
+    \#(BaseGuestInstallationReceiptWriter.shellFunction)
+    write_base_installation_receipt /var/db/darkbloom-sandbox/base-installation.json \
+      "$2" "$3" "$4" "$5" "$(/usr/bin/sw_vers -productVersion)" "$(/usr/bin/uname -m)"
     """#
 }

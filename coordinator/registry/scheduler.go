@@ -211,6 +211,7 @@ type routingSnapshot struct {
 }
 
 type routingCandidate struct {
+	cacheAffinityEligible bool
 	// Exact base-score work eligible for a cache credit; never includes load or decode.
 	pricedPromptTokens int
 	prefillCostMs      float64
@@ -607,8 +608,9 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 	}
 	r.mu.RUnlock()
 	pr.cacheRoutingHints = nil
+	pr.CacheOpportunity = CacheOpportunity{}
 	if wantHints {
-		pr.cacheRoutingHints = r.cacheRoutingHints(
+		pr.cacheRoutingHints, pr.CacheOpportunity = r.cacheRoutingHintsWithObservation(
 			model, pr.CachePlan, cacheTracker, cacheRouteKey, cacheMode, time.Now())
 	}
 	pr.CacheSelectionMode = ""
@@ -629,6 +631,7 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 		r.cacheRouting != cacheTracker {
 		pr.cacheRoutingHints = nil
 		pr.CacheSelectionMode = ""
+		pr.CacheOpportunity = CacheOpportunity{}
 	}
 	selected, candidates := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
 	if r.reservationAfterScan != nil {
@@ -917,11 +920,18 @@ func routingDecisionForCandidate(model string, provider *Provider, candidate *ro
 // scan): the hint currency check takes it.
 func (r *Registry) applyCacheRoutingCost(p *Provider, model string, pr *PendingRequest, candidate *routingCandidate) {
 	hint, present := pr.cacheRoutingHints[p.ID]
-	if !present {
+	wantAffinity := pr.CachePlan.affinityKey != ""
+	if !present && !wantAffinity {
 		return
 	}
 	p.mu.Lock()
-	r.applyCacheHintLocked(hint, model, candidate)
+	if wantAffinity && p.PrefixCacheProtocol >= 2 {
+		candidate.cacheAffinityEligible = capabilityMatchesPlan(p.PrefixCacheV2Models[model], pr.CachePlan) ||
+			capabilityMatchesPlan(p.PrefixCacheMemoryModels[model], pr.CachePlan)
+	}
+	if present {
+		r.applyCacheHintLocked(hint, model, candidate)
+	}
 	p.mu.Unlock()
 }
 
@@ -1324,7 +1334,23 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 		return nil, scan
 	}
 
-	winner, runnerUp, nearTieSize, path := selectRoutingCandidate(scan.pool)
+	affinity := ""
+	if pr.CacheSelectionMode == "active" && r.cacheRouting != nil &&
+		pr.CachePlan.generation == r.cacheRouting.generation && !r.cacheRouting.generation.revoked.Load() {
+		affinity = pr.CachePlan.affinityKey
+	}
+	pr.CacheOpportunity.UsableCandidates = 0
+	pr.CacheOpportunity.CreditedCandidates = 0
+	for _, candidate := range scan.pool {
+		if candidate.cacheTier != "" {
+			pr.CacheOpportunity.UsableCandidates++
+			if candidate.breakdown.CacheDiscountMs > 0 {
+				pr.CacheOpportunity.CreditedCandidates++
+			}
+		}
+	}
+	winner, runnerUp, nearTieSize, path := selectRoutingCandidateWithAffinity(scan.pool, affinity)
+	pr.CacheOpportunity.AffinityApplied = path == SelectionPrefixAffinity
 	scan.runnerUp = candidateSummaryOf(runnerUp)
 	scan.nearTieSize = clampInt32(nearTieSize)
 	scan.path = path

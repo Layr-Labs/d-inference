@@ -41,11 +41,28 @@ extension SSDHybridCheckpointStore: SSDEvictableStore, DurablePrefixCacheEvidenc
         }
         guard accepted else { return false }
         defer { lock.withLock { destructiveChange = false } }
+        // Reconcile while this SAME destructive epoch barrier is owned.
+        // Otherwise whole-root maintenance deletes files, then reconcileAll
+        // rotates the epoch again merely to remove stale RAM-index entries.
         if let epochStore = config.epochStore {
-            return epochStore.performOwnedDestructiveChange(body) != nil
+            let completed: Void? = epochStore.performOwnedDestructiveChange {
+                body()
+                self.reconcileIndexWithoutEpoch()
+            }
+            return completed != nil
         }
         body()
+        reconcileIndexWithoutEpoch()
         return true
+    }
+
+    private func reconcileIndexWithoutEpoch() {
+        for tag in index.allTags() {
+            let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: tag.hexString)
+            if SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) != .regular {
+                _ = index.remove(tag16: tag)
+            }
+        }
     }
 
     func removeCorrupt(_ tag: Data) {

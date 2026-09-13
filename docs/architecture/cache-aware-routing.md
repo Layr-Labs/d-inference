@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-10 · commit `05f987729`
+> Last updated: 2026-09-12 · commit `06518dc93`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -491,6 +491,48 @@ selected-holder precision and actual cached-read success without using an
 identifier as a metric tag (`PendingRequest` in
 `coordinator/registry/pending_request.go`; `cacheSelectionTerminalTags` in
 `coordinator/api/provider.go`).
+
+### Observed demand and soft prefix affinity
+
+After a successful exact plan, `cache_demand.go` remembers keyed, tenant/build/
+contract-scoped demand at geometric block boundaries and the final boundary.
+The volatile index is capped at 10,000 entries with the routing TTL. It stores
+no prompt text or token IDs and grants no cache credit. `RepeatedPrefixTokens`
+means that an earlier plan shared a sampled boundary; it is not a hit, proof of
+ownership, or a complete census of repeated traffic. Expiry, sampling, planning
+limits, and bounded eviction can all hide repeats.
+
+When ordinary candidates tie within the existing service-cost window, queue
+and pending-work criteria, `selectRoutingCandidateWithAffinity` uses a stable
+keyed ranking to seed an observed repeated prefix on a cache-capable candidate.
+Busy or more expensive machines still lose. A real cache cost adjustment takes
+precedence over this tie breaker, and all admission/identity/proof checks are
+unchanged. No extra request or replica is generated. Providers may still miss;
+affinity alone never produces cached-token usage or a cache discount.
+
+The existing once-only cache terminal event now emits per-model
+`routing.cache_model.opportunity` counters. This is an attempt-terminal
+population, including parked completions, not a unique-client success rate.
+
+| Reason | Meaning |
+|---|---|
+| `no_repeat_observed` | No usable holder matched, and bounded demand history did not observe this sampled prefix previously. |
+| `repeat_without_holder` | Repeat demand was observed, but there is no current matching holder proof. This does not distinguish never-written from evicted data. |
+| `holder_evidence_unusable` | Matching records exist, but capability, epoch, connection, tier selection or quarantine prevents using them. |
+| `holder_unavailable` | Valid hints exist, but none survives the request's candidate gates/preferences with executable cache pricing. |
+| `holder_no_positive_credit` | Executable cache candidates exist, but none has positive allowed cache-cost credit. Staging may cost more than recomputing. |
+| `holder_not_selected` | At least one executable cache candidate survived; ordinary ranking or commit-time revalidation selected otherwise. |
+| `selected` | Reservation selected a provider with positive validated cache credit. Actual reuse is still reported independently. |
+
+Companion `opportunity_repeated_prefix_tokens`, `opportunity_matching_holders`,
+`opportunity_valid_holders`, `opportunity_usable_candidates`, and
+`opportunity_credited_candidates` counters sum
+numeric observations in the same population. `opportunity_affinity` counts
+terminals whose latest reservation scan used the soft affinity tie breaker.
+Combine these with existing receipt rejection, donation outcome, hit/miss,
+saved-token, and measured TTFT data. No scope, prefix digest, request identifier,
+or provider identifier is exported by these new metrics
+(`coordinator/api/cache_opportunity_telemetry.go`).
 
 ### Configuration and rollback
 

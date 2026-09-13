@@ -60,15 +60,11 @@ pub fn normalize(
         tools = tools.map(crate::gemma4::normalize_tools);
     }
 
-    let forced_qwen_tool = requires_tool_call
-        && (model_id == "EigenLabs/Qwen3.8-27B-4bit"
-            || model_type.is_some_and(|value| {
-                value
-                    .trim()
-                    .to_ascii_lowercase()
-                    .replace('-', "_")
-                    .starts_with("qwen3_5")
-            }));
+    // Use the same family predicate as the provider's
+    // templateAdditionalContext. Catalog IDs and qwen3_vl_moe aliases must
+    // force the identical tool-only prompt, even without model metadata.
+    let forced_qwen_tool =
+        requires_tool_call && crate::leading_system::qwen_applies(&model_id, model_type);
     let mut additional_context = template_additional_context(&body, forced_qwen_tool)?;
     // Match the provider's existing GPTOSSHarmonyTemplateFix serving policy.
     if harmony

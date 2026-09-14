@@ -10,7 +10,7 @@ import (
 
 const trustReuseDeleteAttempts = 3
 
-var trustReuseDeleteRetryBackoff = 200 * time.Millisecond
+const trustReuseDeleteRetryBackoff = 200 * time.Millisecond
 
 // Invalidate drops a device's reuse record in-memory and installs a
 // durable tombstone. Wired as the registry's hard-untrust hook, so every

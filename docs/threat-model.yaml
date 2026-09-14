@@ -13,6 +13,8 @@ created: "2026-05-14"
 # Status-signature canonicalization in TB-009 re-verified 2026-09-13 against
 # commit 1f52a71fb: provider byte compatibility, with signature/trust policy
 # unchanged. This does not re-verify the remaining threat entries.
+# HTTP credential ownership in TB-001 re-verified against ded9dbe71; the
+# remaining trust boundaries retain their earlier verification scope.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -198,18 +200,24 @@ trust_boundaries:
     name: consumer_to_coordinator
     description: >
       Consumer applications (OpenAI SDK, curl, console UI) call the coordinator's
-      OpenAI-compatible HTTP API over TLS. Two credential types are accepted: long-lived
-      coordinator API keys (eigeninference-* prefix) and short-lived Privy JWTs for
-      interactive sessions. The coordinator is trusted; consumers are not.
+      OpenAI-compatible HTTP API over TLS. Credentials include coordinator API keys
+      (sk-db-* and legacy eigeninference-*), Privy JWTs, the operator admin key,
+      and active provider device tokens. Interactive-only routes require a Privy JWT.
+      The coordinator is trusted; consumers are not.
     how_it_works: >
-      Authentication is resolved in server.go:requireAuth. Tokens beginning with "eyJ"
-      are treated as Privy JWTs and verified via ECDSA ES256 against a static PEM
+      Authentication is owned by coordinator/api/requestauth/middleware.go:RequireAuth,
+      with current settings bound in coordinator/api/authentication.go. When Privy is
+      configured, tokens beginning with "eyJ" are treated as Privy JWTs and verified
+      via ECDSA ES256 against a static PEM
       verification key (PRIVY_VERIFICATION_KEY; no JWKS fetch) with pinned issuer
       "privy.io", audience = the Privy app ID, and a required exp claim
-      (auth/privy.go NewPrivyAuth / VerifyToken); all others are looked up in the
-      store via ValidateKey(). On first
-      Privy login the coordinator auto-provisions a user account by calling the Privy
-      REST API. API keys are hashed before storage; raw tokens are never persisted.
+      (auth/privy.go NewPrivyAuth / VerifyToken). Other credentials are checked against
+      the admin key in constant time, then authenticated with AuthenticateKey or
+      the active-provider-token lookup. The local positive/negative API-key cache
+      lives in coordinator/api/requestauth/key_cache.go; key mutations invalidate
+      it and provider tokens remain uncached. On first Privy login the coordinator
+      auto-provisions a user account by calling the Privy REST API. API keys are
+      hashed before storage.
 
       The middleware chain for inference endpoints is: requireAuth →
       rateLimitConsumer → sealedTransport → handler. rateLimitConsumer applies a

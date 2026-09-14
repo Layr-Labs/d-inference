@@ -1,6 +1,6 @@
 # Identity binding
 
-> Last updated: 2026-09-07 · commit `efcde6334`
+> Last updated: 2026-09-14 · commit `ded9dbe71`
 
 A provider connection carries five identities — a Secure Enclave P-256 key, an
 X25519 process key `K`, an APNs device token, an Apple device identity
@@ -63,7 +63,7 @@ flowchart LR
 | B4 | SE key ↔ Apple device | `DeviceAttestationNonce` = SHA-256 of the SE public key string; Apple echoes it as `FreshnessCode` in the leaf. A chain is attached only if the connection is `hardware` and (`FreshnessCode` matches this SE key **or** the leaf serial equals the blob `serialNumber`); a cached chain is reused only when the nonce binds this SE key | `coordinator/mdm/mdm.go` (`RequestDeviceAttestation`); `coordinator/attestation/mda.go` (`VerifyMDADeviceAttestation`); `coordinator/registry/provider_evidence.go` (`SetMDAProofIfHardwareBound`); `coordinator/api/provider.go` (`attachCachedMDAProof`) |
 | B5 | blob serial ↔ MDM device ↔ posture | The blob's `serialNumber` selects the MicroMDM device (`LookupDevice` → UDID); the device's own `SecurityInfo` must report SIP on and `SecureBootLevel == "full"`, and both must equal the blob's `sipEnabled` / `secureBootEnabled` | `coordinator/mdm/mdm.go` (`VerifyProviderWithUDIDObserver`); `coordinator/api/provider.go` (`verifyProviderViaMDM`) |
 | B6 | provider ↔ account | `register.auth_token` is looked up by SHA-256 hash (`GetProviderToken`); on success `provider.AccountID = token.AccountID` and the stable fault key is rebound. An invalid token logs a warning and leaves the provider unlinked | `coordinator/api/provider.go` (`handleProviderWS`); `coordinator/store/postgres.go` (`hashKey`); `coordinator/registry/provider_evidence.go` (`RebindStableFaultKey`) |
-| B7 | consumer ↔ account | `Authorization: Bearer <Privy access token>` verified as below; the JWT subject (Privy DID) maps to an account via `GetOrCreateUser` | `coordinator/api/server.go` (`requirePrivyAuth`, `extractBearerToken`); `coordinator/auth/privy.go` (`VerifyToken`, `GetOrCreateUser`) |
+| B7 | consumer ↔ account | `Authorization: Bearer <Privy access token>` verified as below; the JWT subject (Privy DID) maps to an account via `GetOrCreateUser` | `coordinator/api/requestauth/privy_session.go` (`RequirePrivyAuth`); `coordinator/api/requestauth/bearer.go` (`BearerToken`); `coordinator/auth/privy.go` (`VerifyToken`, `GetOrCreateUser`) |
 | B8 | durable evidence ↔ device | Trust-reuse rows are keyed by SE public key and carry `serial`, `mda_udid`, posture bits and generations; reuse refuses `serial_mismatch`, `missing_identity`, `no_device_evidence` | `coordinator/store/interface.go` (`ProviderTrustReuse`); `coordinator/api/trust_reuse.go` (`tryTrustReuseFastSkip`) |
 
 ### Stable identity for coordinator state
@@ -99,7 +99,7 @@ RFC 8628-style flow implemented in `coordinator/api/device_auth.go` and
 | Key | A single **static** PEM `SubjectPublicKeyInfo` parsed with `x509.ParsePKIXPublicKey`; must be ECDSA. There is no JWKS fetch and no key rotation without a restart | `coordinator/auth/privy.go` (`NewPrivyAuth`) |
 | Token checks | Algorithm exactly `ES256`; issuer `privy.io`; audience = app ID; standard `exp`/`nbf` via `jwt.RegisteredClaims`; non-empty `sub` | `coordinator/auth/privy.go` (`VerifyToken`) |
 | Result | `sub` is the Privy DID (`did:privy:…`); `GetOrCreateUser` looks it up or creates `User{AccountID: uuid, PrivyUserID, Email}` after fetching details from `https://auth.privy.io/api/v1/users/<did>` with Basic auth `app_id:app_secret` and `Privy-App-Id` | `coordinator/auth/privy.go` (`GetOrCreateUser`, `fetchUserDetails`) |
-| Failure | Missing header → `401 authentication_error "missing credentials"`; bad token → `401 authentication_error "invalid Privy token"` | `coordinator/api/server.go` (`requirePrivyAuth`) |
+| Failure | Missing header → `401 authentication_error "missing credentials"`; bad token → `401 authentication_error "invalid Privy token"` | `coordinator/api/requestauth/privy_session.go` (`RequirePrivyAuth`) |
 
 ## Invariants
 
@@ -138,7 +138,7 @@ RFC 8628-style flow implemented in `coordinator/api/device_auth.go` and
 | MDM posture binding | `coordinator/mdm/mdm.go` (`LookupDevice`, `VerifyProviderWithUDIDObserver`); `coordinator/api/provider.go` (`verifyProviderViaMDM`) |
 | Stable identity | `coordinator/registry/health_ejection.go` (`stableProviderIdentityLocked`); `coordinator/registry/provider_evidence.go` (`RebindStableFaultKey`); `coordinator/registry/persistence.go` (`RestoreProviderState`) |
 | Account linking | `coordinator/api/device_auth.go` (`handleDeviceCode`, `handleDeviceToken`, `handleDeviceApprove`, `DeviceCodeExpiry`, `DeviceCodePollInterval`); `provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift` (`AuthTokenStore`) |
-| Consumer identity | `coordinator/auth/privy.go` (`NewPrivyAuth`, `VerifyToken`, `GetOrCreateUser`); `coordinator/auth/config.go`; `coordinator/api/server.go` (`requirePrivyAuth`) |
+| Consumer identity | `coordinator/auth/privy.go` (`NewPrivyAuth`, `VerifyToken`, `GetOrCreateUser`); `coordinator/auth/config.go`; `coordinator/api/requestauth/privy_session.go` (`RequirePrivyAuth`) |
 
 ## Related
 

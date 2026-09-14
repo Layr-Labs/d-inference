@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-11 · commit `e3993c611`
+> Last updated: 2026-09-14 · commit `ded9dbe71`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -16,13 +16,13 @@ responses and error codes are unchanged.
 
 ## Conventions used in the route tables
 
-**Auth column** — how the handler chain establishes identity. The only credential header is `Authorization: Bearer <token>` (`extractBearerToken`); the coordinator never reads `x-api-key`.
+**Auth column** — how the handler chain establishes identity. The only credential header is `Authorization: Bearer <token>` (`BearerToken`, `coordinator/api/requestauth/bearer.go`); the coordinator never reads `x-api-key`.
 
 | Label | Mechanism | Symbol |
 |---|---|---|
 | `—` | No authentication | — |
-| `key` | Bearer is an API key ([shape](#api-key-shapes); legacy `eigeninference-…` keys are also accepted), a Privy JWT, or the admin key. Missing or invalid → 401 `authentication_error` | `requireAuth` |
-| `privy` | Bearer must be a Privy JWT. API keys → 403 `forbidden` | `requirePrivyAuth` |
+| `key` | Bearer is an API key ([shape](#api-key-shapes); legacy `eigeninference-…` keys are also accepted), a Privy JWT, an active provider device token, or the admin key. Missing or invalid → 401 `authentication_error` | `RequireAuth` (`coordinator/api/requestauth/middleware.go`) |
+| `privy` | Bearer must be a Privy JWT. API keys → 403 `forbidden` | `RequirePrivyAuth` (`coordinator/api/requestauth/privy_session.go`) |
 | `user` | `key` or `privy` plus an in-handler check that a resolved account user is in the context (Privy JWT, or an API key linked to a Privy account). Admin key and unlinked legacy keys → 401 `auth_error` | `requirePrivyUser` (`coordinator/api/billing_handlers.go`) |
 | `admin` | In-handler check: Bearer equals the admin key (`EIGENINFERENCE_ADMIN_KEY`), or the context holds a Privy user whose email is in the admin list. Otherwise 403 `forbidden`. When the route is registered *without* `requireAuth` no user is ever placed in the context, so only the admin key can pass; those rows say `admin-key` | `isAdminAuthorized` (`coordinator/api/release_handlers.go`), `requireAdminKey` (`coordinator/api/invite_handlers.go`), `isAdmin` (`coordinator/api/billing_handlers.go`) |
 | `publishing` | `X-Darkbloom-Publishing-Key` header or Bearer equal to the bootstrap `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a publishing key stored in the DB | `requirePublishingAPIKey` (`coordinator/api/model_registry_handlers.go`) |
@@ -309,7 +309,7 @@ contract behavior are defined in [prompt-contract sidecar](../architecture/promp
 
 | Header | Where | Meaning |
 |---|---|---|
-| `Authorization: Bearer <token>` | `extractBearerToken` | The only credential header; scheme match is case-insensitive |
+| `Authorization: Bearer <token>` | `BearerToken` (`coordinator/api/requestauth/bearer.go`) | The only credential header; scheme match is case-insensitive |
 | `X-Request-ID` | `loggingMiddleware` | Honoured if present, otherwise generated (`newRequestID`); echoed back and logged, never persisted |
 | `Content-Type: application/eigeninference-sealed+json` | `sealedTransport` (`coordinator/api/sender_encryption.go`) | Switches the inference endpoint into sealed mode (`SealedContentType`) |
 | `X-Darkbloom-Metadata-Details` | `applyMetadataDetailsRequest` (`coordinator/api/response_metadata.go`) | Requests the extended `metadata` object (`timing`, `location`) on chat completions; `?metadata=details` does the same |
@@ -488,7 +488,7 @@ Built by `handleStreamingResponseWithFirstChunkAndError` (`coordinator/api/consu
 | `preambleContentTimeout` | 90 s | `coordinator/api/consumer.go` | Cap from a provider's first preamble chunk (role delta / Responses lifecycle event, nothing written to the client yet) to its first content chunk; a provider that stalls after preamble fails over instead of holding the request for `inferenceTimeout`. Never exceeds the remaining first-content budget |
 | `maxDispatchAttempts` | 64 | `coordinator/api/consumer.go` | Upper bound on provider attempts per request |
 | `chunkBufferSize` | 256 | `coordinator/api/consumer.go` | Pre-commit chunk buffer per attempt |
-| `apiKeyCacheTTL` | 60 s | `coordinator/api/server.go` | API-key lookups are cached; a revocation takes effect within one TTL |
+| `keyCacheTTL` / `keyCacheMaxSize` | 60 s / 1,000 entries | `coordinator/api/requestauth/key_cache.go` | Positive and negative API-key lookups are cached. Management mutations invalidate the local cache; other coordinator instances expire their own cached entries. Provider device tokens are not cached. |
 | `coordinatorDrainRetryAfter` / `DefaultDrainGrace` | 3 s / 600 s | `coordinator/api/drain.go` | `Retry-After` on the drain 429; default drain window |
 | `DeviceCodeExpiry` / `DeviceCodePollInterval` | see [Device-code flow](#device-code-flow-3) | `coordinator/api/device_auth.go` | Device-code lifetime and poll interval |
 | `maxLogReportBodySize` | 10 MB | `coordinator/api/log_report_handlers.go` | Provider log upload cap |

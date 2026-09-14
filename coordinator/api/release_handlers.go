@@ -306,17 +306,6 @@ func sameReleaseArtifactURL(actual, expected string) bool {
 		actualURL.Fragment == ""
 }
 
-func normalizeSHA256Hex(value, field string) (string, error) {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if len(value) != sha256.Size*2 {
-		return "", fmt.Errorf("%s must be a 64-character SHA-256 hex digest", field)
-	}
-	if _, err := hex.DecodeString(value); err != nil {
-		return "", fmt.Errorf("%s must be a valid SHA-256 hex digest", field)
-	}
-	return value, nil
-}
-
 func normalizeTemplateHashes(raw string) (string, error) {
 	entries := strings.Split(raw, ",")
 	normalized := make([]string, 0, len(entries))
@@ -537,14 +526,14 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 	// In-use protection guards BOTH code-identity gates: the legacy
 	// self-reported binaryHash allowlist (binaryHashEnforce, default false) and
 	// the application-evidence routing gate, which requires active releases
-	// whenever a release inventory has ever been published (snapshot.Required).
+	// whenever a release inventory has ever been published (snapshot.RequiresCodeIdentity()).
 	// Gating the precheck on the legacy flag alone would let an ordinary
 	// force=false delete deactivate a release that still backs connected
 	// providers' evidence — the follow-up sync would clear their evidence and
 	// deroute them. force=true remains the explicit override for intentional
 	// pulls of a compromised release.
 	inUseProtectionActive := s.binaryHashEnforce
-	if snapshot := s.releaseTrustPolicy.Load(); snapshot != nil && snapshot.Required {
+	if snapshot := s.releasePolicyOwner().Snapshot(); snapshot != nil && snapshot.RequiresCodeIdentity() {
 		inUseProtectionActive = true
 	}
 	if inUseProtectionActive && !req.Force {

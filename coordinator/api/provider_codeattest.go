@@ -14,7 +14,7 @@ func (s *Server) codeIdentityDependencies() codeidentity.Dependencies {
 		Registry: s.registry, Logger: s.logger, NormalizeHash: normalizeSHA256Hex,
 		ApplicationBinaryHash: providerApplicationBinaryHash,
 		ReleasePolicy: func() codeidentity.ReleasePolicy {
-			snapshot := s.releaseTrustPolicy.Load()
+			snapshot := s.releasePolicyOwner().Snapshot()
 			if snapshot == nil {
 				return nil
 			}
@@ -25,12 +25,6 @@ func (s *Server) codeIdentityDependencies() codeidentity.Dependencies {
 		},
 		Incr: s.ddIncr, Metric: s.codeAttestMetric,
 	}
-}
-
-func (p *releaseTrustPolicySnapshot) RequiresCodeIdentity() bool { return p.Required }
-func (p *releaseTrustPolicySnapshot) PolicyGeneration() uint64   { return p.Generation }
-func (p *releaseTrustPolicySnapshot) AllowsPredecessor(fromHash, platform, backend, version string) bool {
-	return approvedTransitionPredecessor(p, fromHash, platform, backend, version)
 }
 
 // SeedCodeAttestCache binds the startup proof store and restores proofs/budgets.
@@ -79,29 +73,4 @@ func (s *Server) stopCodeAttestCoverageForProvider(id string) {
 func (s *Server) codeAttestMetric(outcome string) {
 	s.ddIncr("code_attest", []string{"outcome:" + outcome})
 	s.metrics.IncCounter("code_attest_total", MetricLabel{Name: "outcome", Value: outcome})
-}
-
-// approvedTransitionPredecessor reports whether fromHash names an ACTIVE
-// release row that the current release identity (platform/backend/version) may
-// transition from. This is the single approved-transition derivation — the
-// same per-candidate rule deriveApprovedReleaseTransition applies when
-// building ApprovedFromBinaryHashes: same platform, backend-compatible (a
-// legacy empty row backend matches any), and non-downgrade (the current
-// version is not below the predecessor's). A hash absent from the ACTIVE
-// inventory — e.g. a deactivated release — is never an approved predecessor.
-func approvedTransitionPredecessor(
-	snapshot *releaseTrustPolicySnapshot,
-	fromHash, platform, backend, version string,
-) bool {
-	if snapshot == nil || fromHash == "" || platform == "" {
-		return false
-	}
-	for _, candidate := range snapshot.ByBinaryHash[fromHash] {
-		if candidate.Platform == platform &&
-			(candidate.Backend == backend || candidate.Backend == "") &&
-			!semverLess(version, candidate.Version) {
-			return true
-		}
-	}
-	return false
 }

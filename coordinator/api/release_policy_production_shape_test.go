@@ -90,7 +90,7 @@ func TestFamilyTemplateReleaseRowsNeverGateEvidence(t *testing.T) {
 		t.Fatalf("re-sync: %v", err)
 	}
 	carried, ok := provider.ApplicationEvidenceSnapshot()
-	if !ok || carried.PolicyGeneration != srv.releaseTrustPolicy.Load().Generation {
+	if !ok || carried.PolicyGeneration != releasePolicySnapshotForTest(srv).Generation {
 		t.Fatalf("production-shape evidence must survive the policy sweep, got %+v ok=%v", carried, ok)
 	}
 	if routed := findRoutableProvider(reg, model); routed == nil || routed.ID != provider.ID {

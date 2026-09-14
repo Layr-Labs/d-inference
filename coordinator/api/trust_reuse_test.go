@@ -2,15 +2,16 @@ package api
 
 import (
 	"context"
+	"strings"
+	"testing"
+	"time"
+
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/providercontrol/codeidentity"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"strings"
-	"testing"
-	"time"
 )
 
 // dummyMDMClient returns a non-nil *mdm.Client (no network at construction) so
@@ -187,7 +188,7 @@ func TestApprovedReleaseTransitionMatchesEmptyBackendRelease(t *testing.T) {
 	}
 	// The carried-forward predicate agrees: the evidence remains approved
 	// across a policy rebuild of the same inventory.
-	if !releaseEvidenceStillApproved(srv.releaseTrustPolicy.Load(), evidence) {
+	if !srv.releasePolicyOwner().Snapshot().ApprovesEvidence(evidence) {
 		t.Fatal("evidence from an empty-backend release must survive a policy rebuild")
 	}
 
@@ -223,7 +224,7 @@ func TestApprovedTransitionGrantsWithoutMDMOrAPNs(t *testing.T) {
 		PolicyGeneration:   1,
 	}
 	provider.Mu().Unlock()
-	srv.releaseTrustPolicy.Store(&releaseTrustPolicySnapshot{
+	seedReleasePolicyForTest(t, srv, releasePolicyObservation{
 		Generation: 1, Required: true,
 		// Release A (trHashA, 0.8.14) stays ACTIVE: the cached APNs proof
 		// earned under it may authorize the B transition resume below.
@@ -294,22 +295,13 @@ func TestSelfReportedActiveHashAloneCannotGrantCodeIdentity(t *testing.T) {
 	if !provider.GrantApplicationEvidenceIfNotUntrusted(evidence) {
 		t.Fatal("precondition: fresh application fact was rejected")
 	}
-	srv.releaseTrustPolicy.Store(&releaseTrustPolicySnapshot{
+	seedReleasePolicyForTest(t, srv, releasePolicyObservation{
 		Generation: 1, Required: true,
 		ByBinaryHash: map[string][]approvedReleasePolicy{},
 	})
 	if srv.tryCrossVersionReuse(context.Background(), "prov-fs", provider) ||
 		provider.GetCodeAttested() || provider.GetFreshCodeAttested() {
 		t.Fatal("self-reported active hash bypassed genuine APNs proof")
-	}
-}
-
-func TestSemverPrereleaseTransitionPrecedence(t *testing.T) {
-	if !semverLess("0.8.16-dev.1", "0.8.16") {
-		t.Fatal("prerelease-to-stable must be an approved precedence increase")
-	}
-	if semverLess("0.8.16", "0.8.16-dev.1") {
-		t.Fatal("stable-to-prerelease must never be treated as a non-downgrade")
 	}
 }
 

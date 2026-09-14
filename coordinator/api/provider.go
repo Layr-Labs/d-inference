@@ -28,10 +28,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"github.com/eigeninference/d-inference/coordinator/providercontrol/codeidentity"
-	"maps"
 	"math"
-
 	"net/http"
 	"strconv"
 	"strings"
@@ -43,6 +40,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/providercontrol/codeidentity"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -463,7 +461,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// Verify runtime integrity against the known-good manifest. Swift
 			// providers omit Python/vllm hashes, but they still report external
 			// runtime assets such as mlx.metallib under template_hashes.
-			if s.knownRuntimeManifest != nil {
+			if s.releasePolicyOwner().RuntimeManifest() != nil {
 				runtimeOK, mismatches := s.verifyRuntimeHashesForBackend(
 					regMsg.Backend, regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
 				provider.Mu().Lock()
@@ -471,7 +469,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				provider.RuntimeManifestChecked = runtimeOK
 				provider.MetallibVerified = runtimeOK &&
 					runtimeManifestApprovesMetallib(
-						s.knownRuntimeManifest, regMsg.TemplateHashes)
+						s.releasePolicyOwner().RuntimeManifest(), regMsg.TemplateHashes)
 				if !runtimeOK || !provider.MetallibVerified {
 					provider.RuntimeCapabilities = nil
 					provider.FreshCodeAttested = false
@@ -1692,73 +1690,6 @@ func (s *Server) verificationSubmitPriority(seKey, serial string) store.Verifica
 		return store.VerificationPriorityRefresh
 	}
 	return store.VerificationPriorityFirstOrExpired
-}
-
-// applyChallengeRuntimePolicy first records the exact signed runtime identity,
-// then applies the current manifest policy when one exists. Policy withdrawal
-// keeps runtime gates closed without invalidating an unchanged process proof;
-// any changed or omitted identity clears FreshCodeAttested independently.
-func (s *Server) applyChallengeRuntimePolicy(
-	provider *registry.Provider,
-	resp *protocol.AttestationResponseMessage,
-) (bool, bool, []protocol.RuntimeMismatch) {
-	manifest := s.knownRuntimeManifest
-	policyActive := manifest != nil
-	runtimeOK := false
-	var mismatches []protocol.RuntimeMismatch
-	if policyActive {
-		runtimeOK, mismatches = s.verifyRuntimeHashesForBackend(
-			provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
-	}
-
-	provider.Mu().Lock()
-	runtimeIdentityChanged :=
-		resp.PythonHash != provider.PythonHash ||
-			resp.RuntimeHash != provider.RuntimeHash ||
-			!maps.EqualFunc(
-				resp.TemplateHashes,
-				provider.TemplateHashes,
-				strings.EqualFold,
-			)
-
-	provider.RuntimeVerified = policyActive && runtimeOK
-	provider.RuntimeManifestChecked = policyActive && runtimeOK
-	provider.MetallibVerified = policyActive && runtimeOK &&
-		runtimeManifestApprovesMetallib(manifest, resp.TemplateHashes)
-	if !provider.RuntimeVerified ||
-		!provider.MetallibVerified ||
-		runtimeIdentityChanged {
-		provider.RuntimeCapabilities = nil
-	}
-	if runtimeIdentityChanged {
-		provider.FreshCodeAttested = false
-	}
-	provider.PythonHash = resp.PythonHash
-	provider.RuntimeHash = resp.RuntimeHash
-	provider.TemplateHashes = registry.CloneStringMap(resp.TemplateHashes)
-	provider.Mu().Unlock()
-	return policyActive, runtimeOK, mismatches
-}
-
-// applyChallengeMinVersionPolicy clears only policy-derived runtime state when
-// the coordinator temporarily raises its version floor. The unchanged process
-// proof remains valid and can promote capabilities again if policy rolls back.
-func (s *Server) applyChallengeMinVersionPolicy(
-	provider *registry.Provider,
-) (string, bool) {
-	provider.Mu().Lock()
-	defer provider.Mu().Unlock()
-	version := provider.Version
-	if s.minProviderVersion == "" ||
-		version == "" ||
-		!semverLess(version, s.minProviderVersion) {
-		return version, true
-	}
-	provider.RuntimeVerified = false
-	provider.RuntimeManifestChecked = false
-	provider.MetallibVerified = false
-	provider.RuntimeCapabilities = nil
-	return version, false
 }
 
 // handleTransientChallengeFailure records a transient challenge failure

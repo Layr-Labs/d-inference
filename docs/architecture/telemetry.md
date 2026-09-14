@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-13 · commit `3cf03209a`
+> Last updated: 2026-09-13 · commit `6403e509a`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -314,7 +314,7 @@ and the `inference.timing.*` histograms are built from the same
 
 Cache receipt diagnostics use `exact_cache.receipt` (Datadog) and
 `exact_cache_receipt_total` (admin metrics), with bounded `type`, `outcome`,
-and `reason` labels from `coordinator/registry/cache_receipt_result.go`. They
+and `reason` labels from `coordinator/registry/cachedirectory/result.go`. They
 distinguish rejected evidence from provider-reported hits. APNs recovery emits
 `code_attest.resume_proof_sent{basis:recent_apns|process_continuity}`,
 `code_attest.proof_verified{kind:apns|resume}` and

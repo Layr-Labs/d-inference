@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-11 · commit `ef7b5a9aa`
+> Last updated: 2026-09-13 · commit `6403e509a`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -208,7 +208,7 @@ Cache-aware routing (semantics in [`../architecture/cache-aware-routing.md`](../
 | `EIGENINFERENCE_CACHE_ROUTING_ALLOWED_ARTIFACTS` | JSON array of exact identity triples; at most 64 KiB / 128 entries | unset (unrestricted eligibility) | `coordinator/registry/cache_artifact_allowlist.go` (`readCacheRoutingArtifacts`, `newCacheArtifactAllowlist`) | Restricts network cache participation before cohort/QPS/sidecar work; `[]` denies all. Invalid configuration refuses startup, including while mode is `off`. |
 | `EIGENINFERENCE_CACHE_ROUTING_PERCENT` | float (0, 100] | `100` | `coordinator/registry/config.go` (`envStrictFloat`) | Share of eligible requests that use cache routing; malformed values refuse startup. |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS` | float 0–1,000,000 | `0` (unlimited) | `coordinator/registry/config.go` (`envStrictFloat`) | Rate limit on cache-plan computation. |
-| `EIGENINFERENCE_CACHE_ROUTING_TTL` | Go duration ≥ 0 | `10m` | `coordinator/registry/config.go` | SSD holder lifetime; resident holders use the smaller of this value and `cacheRoutingMemoryTTL = 30 * time.Second` (`coordinator/registry/cache_tiers.go`, `receiptTTL`). |
+| `EIGENINFERENCE_CACHE_ROUTING_TTL` | Go duration ≥ 0 | `10m` | `coordinator/registry/config.go` | SSD holder lifetime; resident holders use the smaller of this value and `MemoryTTL = 30 * time.Second` (`coordinator/registry/cachedirectory/tiers.go`, `receiptTTL`; `coordinator/registry/cachedirectory/limits.go`). |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS` | integer 1–32 | `4` | `coordinator/registry/config.go` | Maximum machines per exact content prefix and tier, across provider epochs. |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS` | optional float 0–10000 | unset/blank | `coordinator/registry/cache_score_config.go` (`optionalCacheScoreLimit`) | Optional millisecond cap on avoidable-prefill score credit; explicit `0` grants no credit. |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION` | optional float 0–1 | unset/blank | `coordinator/registry/cache_score_config.go` (`optionalCacheScoreLimit`) | Optional cap as a fraction of baseline total cost, alongside the prefill-work bound; explicit `0` grants no credit. |

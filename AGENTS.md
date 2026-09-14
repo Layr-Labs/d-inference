@@ -33,6 +33,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── registry/         provider registry, queueing, routing, reputation, token-budget admission,
 │                     warm-pool controller, two-lane provider WS writer (provider_writer.go),
 │                     admission/ (immutable capacity math), providerversion/ (shared interpreter),
+│                     cacheattempt/ (request lifetime), cachedirectory/ (receipt/holder transactions),
 │                     routingsim/ (trace-driven routing simulation harness)
 ├── saferun/          panic-safe goroutine runners
 ├── stateexport/      consistent encrypted archive of MicroMDM (+ legacy step-ca) state (migration)

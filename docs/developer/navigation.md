@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-14 · commit `f006da0b2`
+> Last updated: 2026-09-13 · commit `6403e509a`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -20,6 +20,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | API request handling, auth, attestation, dispatch | `coordinator/api/`; server construction in `server.go` (`NewServer`) |
 | Provider selection and live reservations | `coordinator/registry/`; request eligibility in `request_traits.go` (`providerEligibleForTraitsLocked`) |
 | Token/KV and memory admission calculations | `coordinator/registry/admission/` (`Policy`); immutable field adapter in `coordinator/registry/admission_policy.go` |
+| Cache receipt proofs, holder indexes and lifecycle | `coordinator/registry/cachedirectory/` (`Directory`); live capability/connection prerequisites in `coordinator/registry/cache_receipts_v2.go` |
 | Cache preparation, queued-frame revocation and terminal lifetime | `coordinator/registry/cacheattempt/` (`State`, `Snapshot`); live connection/capability publication adapter in `coordinator/registry/cache_attempt_ownership.go` |
 | Provider-version comparison and slot layout | `coordinator/registry/providerversion/` (`Policy`); shared interpreter binding in `coordinator/registry/provider_version.go` |
 | Queue storage, throughput and warm-pool targets | `coordinator/registry/requestqueue/`, `coordinator/registry/throughput/`, `coordinator/registry/warmpool/`; live provider state and reservation orchestration stay in `coordinator/registry/` |

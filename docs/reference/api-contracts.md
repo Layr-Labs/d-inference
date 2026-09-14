@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-14 · commit `cdaf37d64`
+> Last updated: 2026-09-13 · commit `8483a172d`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -273,7 +273,7 @@ receipts described in [cache-aware routing](../architecture/cache-aware-routing.
 The exact-cache lifecycle `holder_removed` map includes `proof_mismatch`, separate
 from `capability_change`. Updating one model preserves unchanged models' holders,
 pending receipts and proof fences. See `coordinator/registry/cache_model_changes.go`
-and `coordinator/registry/cache_receipt_result.go`.
+and `coordinator/registry/cachedirectory/result.go`.
 
 Per-model cache usage, accepted lookup and selection metrics are available only
 through the existing authenticated `GET /v1/admin/metrics` endpoint and Datadog.

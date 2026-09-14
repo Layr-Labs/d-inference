@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `60b20b73d`
+> Last updated: 2026-09-14 · commit `316c35e4b`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -76,7 +76,10 @@ Cache-attempt ownership tests in `coordinator/registry/cacheattempt/` verify
 receipt cleanup outside the preparation mutex and ticket-bound legacy metadata.
 The registry retains concurrent reconfiguration/cancellation, connection
 replacement, authenticated late receipts and accepted-write cutoff fixtures.
-The full registry command above includes both groups. To check the affected
+Directory proof and eviction tests live in `coordinator/registry/cachedirectory/`;
+registry fixtures establish holders through validated receipt transactions and
+observe copied status instead of sharing private maps or locks. The full registry
+command above includes all these groups. To check the affected
 HTTP/writer and terminal telemetry paths as well, run from the repository root:
 
 ```bash

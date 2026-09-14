@@ -28,7 +28,7 @@ func (pr *PendingRequest) publishCacheAttempt(ticket uint64, owner *cacheattempt
 }
 
 // Publication is a second generation/connection check after nonce creation and
-// tracker insertion. Retirement may have happened during either operation.
+// directory insertion. Retirement may have happened during either operation.
 func (r *Registry) publishCacheAttempt(
 	pr *PendingRequest, provider *Provider, revision, ticket uint64,
 	tracker *cacheRoutingTracker, owner *cacheattempt.Attempt,
@@ -52,19 +52,4 @@ func (r *Registry) publishCacheAttempt(
 
 func (pr *PendingRequest) markCacheAttemptTerminal(now time.Time) {
 	pr.cacheAttempt.Terminal(now)
-}
-
-// Configure revokes under r.mu, then drains these maps under their own lock.
-// Old receipt/prepare calls cannot repopulate a retired tracker.
-func (t *cacheRoutingTracker) clearRetired() {
-	if t == nil {
-		return
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.holders, t.attempts = nil, nil
-	t.holderOrder, t.attemptOrder = nil, nil
-	t.holderOrderByRef, t.attemptOrderByNonce = nil, nil
-	t.v2Sequences, t.rejectedV2 = nil, nil
-	t.holderCount = 0
 }

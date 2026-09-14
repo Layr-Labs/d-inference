@@ -1,4 +1,4 @@
-package registry
+package cachedirectory
 
 import (
 	"time"
@@ -6,21 +6,9 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-func (t *cacheRoutingTracker) applyReadyV2Result(
+func (t *Directory[C]) ApplyReady(
 	providerID string,
-	provider *Provider,
-	capability protocol.PrefixCacheV2Capability,
-	msg *protocol.PrefixCacheReadyV2Message,
-	routeKey []byte,
-	now time.Time,
-) (bool, bool) {
-	result := t.applyReadyV2Decision(providerID, provider, capability, msg, routeKey, now)
-	return result.Accepted, result.mismatch
-}
-
-func (t *cacheRoutingTracker) applyReadyV2Decision(
-	providerID string,
-	provider *Provider,
+	provider C,
 	capability protocol.PrefixCacheV2Capability,
 	msg *protocol.PrefixCacheReadyV2Message,
 	routeKey []byte,
@@ -28,13 +16,13 @@ func (t *cacheRoutingTracker) applyReadyV2Decision(
 ) CacheReceiptResult {
 	if t == nil || msg == nil ||
 		msg.Outcome != "ready" ||
-		!validCacheReceiptTier(msg.Tier) ||
+		!ValidTier(msg.Tier) ||
 		!validV2Stage(msg.StageMs) ||
 		len(msg.ReadyAnchors) < 1 || len(msg.ReadyAnchors) > cacheReadyAnchorLimit(msg.Tier, capability) {
 		return rejectCacheReceipt(CacheReceiptInvalid)
 	}
 	for index, anchor := range msg.ReadyAnchors {
-		if !validV2Anchor(anchor, capability.BlockSize) ||
+		if !ValidAnchor(anchor, capability.BlockSize) ||
 			(index > 0 && anchor.TokenCount <= msg.ReadyAnchors[index-1].TokenCount) {
 			return rejectCacheReceipt(CacheReceiptInvalid)
 		}
@@ -65,7 +53,7 @@ func (t *cacheRoutingTracker) applyReadyV2Decision(
 	if final.TokenCount <= attempt.lastReadyAnchor(msg.Tier).TokenCount {
 		return rejectCacheReceipt(CacheReceiptNonAdvancingReady)
 	}
-	if provider != nil && attempt.Provider != provider {
+	if provider != zeroConnection[C]() && attempt.Provider != provider {
 		return rejectCacheReceipt(CacheReceiptConnectionChanged)
 	}
 	if !v2IdentityMatches(
@@ -98,11 +86,11 @@ func (t *cacheRoutingTracker) applyReadyV2Decision(
 	t.attempts[msg.CacheReceiptNonce] = attempt
 	for _, anchor := range msg.ReadyAnchors {
 		recompute := min(msg.RequiredRecomputeTokens, anchor.TokenCount)
-		key := cacheTierBoundaryKey(routeKey, attempt.Plan, anchor, msg.Tier)
+		key := TierBoundaryKey(routeKey, attempt.Plan, anchor, msg.Tier)
 		if key == "" {
 			return rejectCacheReceipt(CacheReceiptRouteKey)
 		}
-		holder := cacheHolder{
+		holder := Holder[C]{
 			ProviderID:              providerID,
 			Provider:                provider,
 			ModelID:                 msg.ModelID,

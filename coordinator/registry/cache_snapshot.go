@@ -140,14 +140,14 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	tracker := r.cacheRouting
 	if capabilitiesChanged && tracker != nil {
 		if protocolChanged {
-			tracker.invalidateProviderEvidence(providerID, cacheHolderRemovalCapabilityChange, true)
+			tracker.directory.InvalidateProviderEvidence(providerID, cacheHolderRemovalCapabilityChange, true)
 		} else {
-			tracker.invalidateProviderModels(providerID, changedModels)
+			tracker.directory.InvalidateProviderModels(providerID, changedModels)
 		}
 	}
 	provider.mu.Unlock()
 	if tracker != nil {
-		tracker.recordDonationOutcomes(deltas)
+		tracker.directory.RecordDonationOutcomes(deltas)
 	}
 	return capabilitiesChanged, nil
 }

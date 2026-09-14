@@ -1,4 +1,4 @@
-package registry
+package cachedirectory
 
 // CacheReceiptReason is a closed, privacy-safe diagnostic vocabulary. Never
 // put a nonce, scope, prompt hash, provider ID or model-supplied string in it.
@@ -48,6 +48,9 @@ type CacheReceiptResult struct {
 func rejectCacheReceipt(reason CacheReceiptReason) CacheReceiptResult {
 	return CacheReceiptResult{Reason: reason}
 }
+
 func mismatchCacheReceipt(reason CacheReceiptReason) CacheReceiptResult {
 	return CacheReceiptResult{Reason: reason, mismatch: true}
 }
+
+func (r CacheReceiptResult) ProofMismatch() bool { return r.mismatch }

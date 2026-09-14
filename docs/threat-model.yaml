@@ -1652,7 +1652,7 @@ threats:
     open_findings: [SEC-004]
     severity: high
     detection_hint: >
-      Changes to MDM webhook handling (coordinator/mdm/webhook.go, coordinator/api/server.go HandleMDMWebhook and routes) must
+      Changes to MDM webhook handling (coordinator/mdm/webhook.go, coordinator/api/server.go HandleMDMWebhook, and coordinator/api/routes.go routes) must
       verify the shared-secret check, body cap, and CommandUUID correlation remain in
       front of any trust state change, and that deployments set the secret.
 

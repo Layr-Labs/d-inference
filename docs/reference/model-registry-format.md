@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-14 · commit `93daffe4b`
+> Last updated: 2026-09-14 · commit `5f2c53f32`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,

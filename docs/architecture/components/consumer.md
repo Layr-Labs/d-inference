@@ -1,6 +1,6 @@
 # Consumer surface
 
-> Last updated: 2026-09-14 · commit `d1a831900`
+> Last updated: 2026-09-14 · commit `5f2c53f32`
 
 The consumer surface is the coordinator's OpenAI- and Anthropic-compatible request pipeline. `coordinator/inference/ingress/controller.go` (`Controller`) owns request preparation and admission: `ChatCompletions` serves Chat Completions and Responses, while `Completions` and `Messages` share `handleGenericInference`. These entry points use the same live routing, billing and quota services before handing off to dispatch. The API binding in `coordinator/api/inference_ingress.go` (`inferenceIngress`) constructs one controller and supplies the current store, registry, resolver, limiters, profiler and shared dispatch/settlement services. Readiness, authentication, RPM limits and sender-sealed transport remain in the route middleware; provider completion still reconciles against the same token limiter handles. This page explains the compatibility contract, stages and failure modes. The exact routes, headers and JSON shapes are in [`../../reference/api-contracts.md`](../../reference/api-contracts.md).
 

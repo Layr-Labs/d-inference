@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — landing page
+
+- Rebuild the Darkbloom marketing site as a statically exported Next.js app, preserving the indigo/light-blue palette and local brand fonts. Add responsive navigation, a network illustration, copyable API examples, and an interactive provider earnings estimator.
+- Show validated public catalog prices with labeled reference rates on failure. Remove the synthetic competitor-price comparison and describe the documented hop-by-hop privacy model.
+- Preserve legal-page URLs and calculator math; add landing lint, typecheck, tests, and export checks to CI.
+
 ## Unreleased — prefix-cache reuse and routing
 
 Provider changes require a new signed bundle; coordinator changes require a

@@ -1,0 +1,268 @@
+@media (max-width: 640px) {
+  html {
+    scroll-padding-top: 92px;
+  }
+  .container,
+  .header-inner {
+    width: calc(100% - 36px);
+  }
+  .header-inner {
+    height: 68px;
+    gap: 10px;
+  }
+  .brand {
+    gap: 8px;
+  }
+  .brand span {
+    font-size: 27px;
+  }
+  .brand svg {
+    width: 20px;
+    height: 24px;
+  }
+  .header-cta {
+    font-size: 11px;
+    padding-inline: 13px;
+    min-height: 36px;
+  }
+  .header-cta svg {
+    display: none;
+  }
+  .mobile-nav:not([hidden]) {
+    padding-inline: 18px;
+  }
+  .hero {
+    padding-top: 48px;
+  }
+  .alpha-badge {
+    font-size: 12px;
+    margin-bottom: 24px;
+  }
+  h1 {
+    font-size: clamp(31px, 10vw, 60px);
+  }
+  .hero-description {
+    font-size: 14px;
+    line-height: 1.7;
+    max-width: 370px;
+    margin-top: 22px;
+  }
+  .desktop-break {
+    display: none;
+  }
+  .hero-actions {
+    gap: 10px;
+    margin-top: 24px;
+  }
+  .hero-actions .button {
+    padding-inline: 17px;
+    gap: 10px;
+    font-size: 12px;
+    min-height: 44px;
+  }
+  .network-showcase {
+    min-height: 435px;
+    padding: 28px 26px 65px;
+    margin-top: 38px;
+    border-radius: 16px;
+  }
+  .showcase-copy {
+    max-width: 100%;
+  }
+  .showcase-copy .eyebrow {
+    font-size: 9px;
+    margin-bottom: 16px;
+  }
+  .showcase-copy h2 {
+    font-size: clamp(24px, 6.6vw, 34px);
+  }
+  .showcase-copy .text-link {
+    font-size: 12px;
+    margin-top: 18px;
+  }
+  .network-art {
+    width: 100%;
+    height: 250px;
+    right: -6%;
+    top: auto;
+    bottom: 38px;
+  }
+  .showcase-footer {
+    left: 26px;
+    right: 26px;
+    padding-block: 18px;
+    font-size: 10px;
+    gap: 12px;
+  }
+  .section,
+  .privacy-section,
+  .earn-section {
+    padding-block: 64px;
+  }
+  h2,
+  .faq-section h2 {
+    font-size: 36px;
+  }
+  .eyebrow {
+    font-size: 10px;
+    margin-bottom: 17px;
+  }
+  .section-heading {
+    flex-direction: column;
+    gap: 20px;
+    margin-bottom: 30px;
+  }
+  .section-heading > p {
+    max-width: 440px;
+    font-size: 14px;
+  }
+  .feature-grid,
+  .privacy-grid,
+  .developer-section,
+  .earn-grid,
+  .faq-section {
+    grid-template-columns: 1fr;
+    gap: 32px;
+  }
+  .feature-card h3 {
+    font-size: 22px;
+    min-height: 0;
+    white-space: normal;
+  }
+  .feature-top {
+    margin-bottom: 17px;
+  }
+  .feature-card > p {
+    max-width: 440px;
+  }
+  .privacy-features .text-link {
+    margin-left: 0;
+  }
+  .section-description {
+    font-size: 15px;
+  }
+  .code-toolbar,
+  .code-footer {
+    padding-inline: 18px;
+  }
+  .code-window pre {
+    padding: 22px 18px;
+    font-size: 11px;
+  }
+  .code-footer {
+    font-size: 9px;
+  }
+  .pricing-toolbar {
+    padding: 18px;
+  }
+  .pricing-toolbar .small-label,
+  .price-status {
+    font-size: 10px;
+  }
+  .pricing-note {
+    padding: 16px 18px;
+    font-size: 11px;
+  }
+  .pricing-bottom {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 14px;
+  }
+  .earn-copy {
+    padding-top: 0;
+  }
+  .calculator {
+    padding: 22px;
+    border-radius: 16px;
+  }
+  .calculator-fields {
+    gap: 18px 12px;
+  }
+  .calculator select {
+    font-size: 12px;
+    padding-inline: 7px;
+  }
+  .range-labels {
+    gap: 8px;
+    font-size: 9px;
+  }
+  .install-command {
+    gap: 10px;
+  }
+  .install-command code {
+    font-size: 10px;
+  }
+  .earnings-result {
+    padding: 20px;
+  }
+  .earnings-number {
+    font-size: 58px;
+  }
+  .faq-list summary {
+    font-size: 15px;
+  }
+  .final-cta {
+    padding: 52px 20px;
+    border-radius: 16px;
+  }
+  .final-cta h2 {
+    font-size: clamp(28px, 7.7vw, 44px);
+  }
+  .final-cta > div {
+    flex-wrap: wrap;
+  }
+  .final-cta .button {
+    font-size: 12px;
+    gap: 10px;
+    padding-inline: 16px;
+  }
+  .footer {
+    padding-top: 52px;
+  }
+  .footer-main {
+    grid-template-columns: 1fr 1fr;
+    gap: 36px;
+    padding-bottom: 36px;
+  }
+  .footer-main > div {
+    grid-column: 1 / -1;
+  }
+  .footer-bottom {
+    flex-direction: column;
+    align-items: flex-start;
+    font-size: 11px;
+    gap: 16px;
+  }
+  .footer-bottom > div {
+    gap: 18px;
+  }
+}
+@media (max-width: 360px) {
+  .showcase-copy h2 {
+    font-size: 22px;
+  }
+  .header-cta {
+    display: none;
+  }
+  .menu-toggle {
+    margin-left: auto;
+  }
+  .hero-actions .button {
+    padding-inline: 13px;
+    font-size: 11px;
+  }
+  .calculator-fields {
+    grid-template-columns: 1fr;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

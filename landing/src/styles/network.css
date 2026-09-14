@@ -1,0 +1,136 @@
+.section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 48px;
+  margin-bottom: 48px;
+}
+.section-heading > p {
+  max-width: 340px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.75;
+}
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 32px;
+}
+.feature-card {
+  border-top: 1px solid var(--line);
+  padding-top: 27px;
+}
+.feature-top {
+  margin-bottom: 26px;
+}
+.feature-top svg {
+  width: 24px;
+}
+.feature-card h3 {
+  white-space: pre-line;
+  margin-bottom: 15px;
+  min-height: 54px;
+}
+.feature-card > p {
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--muted);
+}
+.privacy-section {
+  padding-block: 90px;
+  background: var(--white);
+  border-block: 1px solid var(--line);
+}
+.privacy-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 64px;
+  align-items: center;
+}
+.privacy-diagram {
+  background: #f7f8fb;
+  border: 1px solid #e3e5eb;
+  border-radius: 16px;
+  padding: 28px;
+}
+.diagram-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  color: var(--muted);
+}
+.flow-node {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 17px;
+}
+.flow-node > svg {
+  width: 22px;
+}
+.flow-node strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+}
+.flow-node div > span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+.flow-step {
+  margin-left: auto;
+  font: 10px var(--mono);
+  color: var(--muted);
+}
+.flow-connector {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 34px;
+  padding-left: 27px;
+  color: var(--muted);
+  font: 10px var(--mono);
+}
+.flow-connector > span {
+  height: 100%;
+  width: 1px;
+  background: #b2afc4;
+}
+.privacy-diagram > p {
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--muted);
+  margin-top: 23px;
+}
+.privacy-features article {
+  display: flex;
+  gap: 20px;
+  padding-block: 22px;
+  border-bottom: 1px solid var(--line);
+}
+.privacy-features article:first-child {
+  padding-top: 0;
+}
+.privacy-features article > span {
+  font: 11px var(--mono);
+  color: var(--muted);
+  padding-top: 5px;
+}
+.privacy-features h3 {
+  font-size: 21px;
+}
+.privacy-features p {
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--muted);
+  margin-top: 11px;
+}
+.privacy-features .text-link {
+  margin: 26px 0 0 35px;
+}

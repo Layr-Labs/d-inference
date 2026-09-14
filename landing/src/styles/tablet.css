@@ -1,0 +1,110 @@
+@media (max-width: 1000px) {
+  .container,
+  .header-inner {
+    width: calc(100% - 64px);
+  }
+  .desktop-nav {
+    display: none;
+  }
+  .header-cta {
+    margin-left: auto;
+  }
+  .menu-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .mobile-nav:not([hidden]) {
+    display: grid;
+    padding: 8px 32px 20px;
+    border-top: 1px solid var(--line);
+    background: var(--off-white);
+  }
+  .mobile-nav a {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 15px;
+  }
+  .section {
+    padding-block: 80px;
+  }
+  .network-showcase {
+    padding-inline: 32px;
+    min-height: 340px;
+  }
+  .showcase-copy h2 {
+    font-size: 31px;
+  }
+  .showcase-footer {
+    left: 32px;
+    right: 32px;
+  }
+  .section-heading {
+    align-items: flex-start;
+    gap: 32px;
+  }
+  .section-heading > p {
+    max-width: 280px;
+    font-size: 14px;
+  }
+  .feature-grid {
+    gap: 24px;
+  }
+  .feature-card h3 {
+    font-size: 19px;
+    min-height: 48px;
+  }
+  .privacy-grid,
+  .developer-section,
+  .earn-grid,
+  .faq-section {
+    gap: 32px;
+  }
+  .privacy-diagram {
+    padding: 20px;
+  }
+  .flow-node {
+    padding: 14px 12px;
+    gap: 10px;
+  }
+  .flow-step {
+    display: none;
+  }
+  .calculator {
+    padding: 24px;
+  }
+  .calculator-heading {
+    flex-wrap: wrap;
+  }
+  .pricing-table td,
+  .pricing-table thead th,
+  .pricing-table tbody th {
+    padding-inline: 20px;
+  }
+}
+@media (min-width: 641px) and (max-width: 800px) {
+  .developer-section,
+  .earn-grid {
+    grid-template-columns: 1fr;
+  }
+  .developer-copy,
+  .earn-copy {
+    max-width: 560px;
+  }
+  .developer-section h2 br,
+  .earn-copy h2 br {
+    display: none;
+  }
+  .developer-section h2 em::before,
+  .earn-copy h2 em::before {
+    content: " ";
+  }
+  .calculator {
+    max-width: 580px;
+    width: 100%;
+    margin-inline: auto;
+  }
+}

@@ -4,6 +4,7 @@
         prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
         provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
         ui-install ui-build ui-lint ui-test ui \
+        landing-install landing-check landing-build \
         e2e-integration e2e-benchmark e2e \
         docs-check docs-stamp \
         test build all clean
@@ -97,6 +98,15 @@ ui-test: ## vitest for console-ui
 	cd console-ui && npm test
 
 ui: ui-install ui-lint ui-test ui-build ## Install, lint, test, build console-ui
+
+landing-install: ## Install landing page dependencies
+	cd landing && npm install
+
+landing-check: ## Lint, typecheck, and test the landing page
+	cd landing && npm run lint && npm run typecheck && npm test
+
+landing-build: ## Export the Next.js landing page to landing/out
+	cd landing && npm run build
 
 # ---- E2E integration tests -------------------------------------------------
 # Requires Postgres + Swift provider binary + MLX model downloaded.

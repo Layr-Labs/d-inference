@@ -1,0 +1,86 @@
+.hero {
+  padding-top: 72px;
+}
+.hero-copy {
+  text-align: center;
+}
+.alpha-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  margin-bottom: 29px;
+}
+.alpha-badge svg {
+  width: 14px;
+}
+h1 {
+  font-size: clamp(58px, 7vw, 100px);
+  line-height: 1.02;
+  letter-spacing: -0.065em;
+}
+h1 em {
+  color: #777095;
+}
+.hero-description {
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1.7;
+  margin: 26px auto 0;
+}
+.hero-actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 28px;
+}
+.network-showcase {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: var(--ink);
+  border-radius: 20px;
+  color: white;
+  min-height: 380px;
+  margin-top: 65px;
+  padding: 58px 52px 75px;
+}
+.showcase-copy {
+  position: relative;
+  z-index: 1;
+  max-width: 56%;
+}
+.showcase-copy .eyebrow {
+  font-size: 10px;
+  color: var(--blue);
+}
+.showcase-copy h2 {
+  font-size: 39px;
+  line-height: 1.13;
+  letter-spacing: -0.045em;
+}
+.showcase-copy .text-link {
+  margin-top: 29px;
+  color: white;
+}
+.network-art {
+  position: absolute;
+  width: 56%;
+  height: 100%;
+  right: -2%;
+  top: -4%;
+  pointer-events: none;
+}
+.showcase-footer {
+  position: absolute;
+  bottom: 0;
+  left: 52px;
+  right: 52px;
+  border-top: 1px solid #ffffff25;
+  display: flex;
+  justify-content: space-between;
+  padding-block: 19px;
+  color: #c8c3dd;
+  font-size: 12px;
+}

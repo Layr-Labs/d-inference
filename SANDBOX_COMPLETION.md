@@ -8,7 +8,12 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 - Worktree: `.worktrees/sandbox-completion-20260913`.
 - Branch: `codex/sandbox-completion-20260913`.
 - Starting sandbox tip0950ac41e; master93337ef05 integrated in453b37667.
-- Latest pushed commit:0e10a23854f355f9a45bc7e27ecdf48e0d4cd7c9.
+- Latest pushed commit:c8fb1889b2c69ecabf41c522458415d3dd5ad32f.
+- Local HEAD b5680748bd9d4670f3ee4c02ea2ffc38810c981d. Managed restore lifetime
+  and native patch9 are implemented; signed runtime9 still needs physical tests.
+- Local updates:c5d452148 requires explicit schema2 accountless installation/
+  native qualification/cleanup evidence;4245ae67a persists one-shot raw candidates.
+  Candidate14tests pass; receipt34pass/1existing opt-in skip.
 - Local updates:738b594e1 receipt fix;5ec0cb78d merges mastere4df336bc;
   cbd5687cb adds explicit base-only Apple restore provenance.
 - Earlier integration commits:1ad135ab7,cadaa7fdb,2ee8a4c87,41522b85b.
@@ -23,8 +28,11 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 The private alpha is an opt-in offline macOS CPU sandbox service. The real
 coordinator owns account admission, durable leases/fences, idempotent lifecycle
-and command records. A separate nonroot host daemon holds machine-wide exclusive
+and command records. The current nonroot host service holds machine-wide exclusive
 runtime ownership and authenticates a signed root guest supervisor over vsock.
+Its system-daemon deployment is not physically qualified: UID430 VZ startup
+failed host security/key generation. A controlled Aqua LaunchAgent test is now
+running; supported host deployment remains an implementation gate.
 Tenant commands irreversibly drop to never-registered UID/GID2001. File transfers
 are bounded, resumable between acknowledged chunks, and version-bound on reads.
 The Go consumer CLI covers create/list/inspect/execute/jobs/logs/cancel/files,
@@ -113,7 +121,9 @@ Do not delete that key while the volume is retained.
 The reviewed root setup completed successfully after preflight. The new volume
 root is root:wheel0755. Hidden nonlogin _darkbloom_sandbox UID/GID430 exists
 with disabled authentication, shell /usr/bin/false, home /var/empty, no admin
-or wheel membership. Runtime group431 contains only the broker explicitly.
+or wheel membership. Runtime group431 originally contained only the broker.
+Root temporarily added gaj501 for the controlled actual-GUI discriminator;
+restore only with the independent quiescence proof described below.
 Encrypted volume/host/{vms,capacity,credentials} are broker430:430 mode0700.
 Independent root readback passed: authority directory root:431 mode0750,
 empty single-link lock root:431 mode0660, device16777229 inode29088927, noACL.
@@ -136,13 +146,15 @@ permission is inferred. Obsolete owned VM images/restore download can be removed
 only after their required probes/replacement qualification complete. Two-VM
 capacity still needs sufficient actual free space for full reservations.
 
-The actual CI runner is system/com.layr-labs.m3-max-org-runner, enabled/running,
-with no Worker at last inspection. Its plist hash:
+The actual CI runner is system/com.layr-labs.m3-max-org-runner, now disabled and
+unloaded after a fresh idle check and independently confirmed process exit.
+Its original unchanged plist hash:
 aff318a6a960fb840510eb52938ca9dba8b9d880497ee8df5f4592431da8fbdf.
-It has a caffeinate/sudo/bash/Runner.Listener chain and ExitTimeOut1200. It has
-NOT been paused. Before dedicating the host, recheck no Worker, disable/bootout
-that exact service and prove process exit. Restore its unchanged original plist
-and enabled state only after VM cleanup and runtime ownership release.
+Its effective launchd exit timeout was60seconds. Initial15second quiescence wait
+expired, then two independent snapshots proved no Listener/Worker and service
+absence. Preserve the original failed record and later confirmation amendment.
+Restore its unchanged original plist and enabled state only after VM cleanup
+and runtime ownership release, using ci-service-pause-v2.py --resume.
 Existing GUI provider/watchdog/dev-provider and obsolete GUI runner overrides
 are disabled. Preserve these states and the enabled fan service. The older
 io.eigeninference.provider label also needs its exact restart state checked.
@@ -299,10 +311,19 @@ Offline helper accountless-offline-v3.py SHA
 06cad8c354c2b57692c5176d2d211d50595f7c3cba8ccfa47f212a92b6462fc3.
 Payload17local tests; offlinehelper38remoteUID501tests; bootdriver11tests pass.
 
-All operator VMs are stopped. Probe3 temporary installer staging/job have NOT
-been removed yet. Prepared removal-only helper must preserve permanent guest
-installation and record original receipt/log evidence outside the guest before
-unlinking only this run's exact app directory and LaunchDaemon. A separate
+All operator VMs are stopped. Probe3 temporary installer staging/job were removed
+successfully by cleanup-v2 session77678. Original proofs, raw receipt and both
+bounded logs were fsynced under root-private operator3/cleanup-v3-evidence before
+unlink. Gate cleanup-result.json SHA
+e0e2c0383f2aaf242fcad14f5d9f820b87aabddc16771081b3abf904ae5c5e83.
+Cleanup fully detached, reproved stopped/no-openers and preserved AppleToolchain.
+The first cleanup attempt48693 refused before any writes because APP_PARENT
+inherited root:admin0700, while the helper expectedroot:wheel. Read-only27784
+proved exact directory ownership/inodes/noACL; corrected helper pins parent
+0:80/0700/inode18502, run0:0/0700/inode18503, result0:0/0700/inode21704.
+No guest permissions or account state were changed. Corrected helper SHA
+2f69b1ac12cbe303291fb5f8b9b85935e31a661fbe37758719b8016f67e655a3.
+Permanent installed guest/bootstrap/daemon/synthetic manifest remain. A separate
 owned clone with real DBCONTROL/DBWORK must qualify the normal HMAC/vsock channel,
 workspace cold mount, tenant commands/files and teardown. The reusable original
 must never receive instance credentials or tenant work. Current probe disks are
@@ -310,19 +331,27 @@ small empty public images with no instance.json or secrets.
 
 The broker authority inode remains16777229:29088927. Root operator holds its
 exclusive lease across each Lume child; child501:20 receives transient431 and
-inheritedFD4. No persistent gaj group membership was added. CI is not paused;
-last fresh inspection found no Runner.Worker. No host daemon is registered.
+inheritedFD4. Root subsequently added temporary gaj runtime-group membership for
+the actual GUI discriminator; it remains active. CI was disabled/booted out by session72684 after fresh idle proof. The initial
+15second wait expired; service later finished exiting. Read-only confirmation
+session24418 proved two spaced snapshots: absent+disabled, no Listener/Worker,
+unchanged original plist. Original failed pause record remains; confirmation is
+root-private /private/tmp/darkbloom-ci-pause-20260913/pause-confirmation.json.
+Use ci-service-pause-v2.py --resume only after all machine work/VM cleanup; it
+accepts that hash-bound amendment and restores the original enabled service.
+No host daemon is registered.
 
 ## Remaining gates
 
-1. Remove exact temporary probe3 installer payload/job after durable evidence,
-   then qualify a separate clone using real authenticated vsock/control/workspace,
+1. Qualify a separate clone from the cleaned installed candidate using real authenticated vsock/control/workspace,
    tenant commands/files and restart. Prove clone/material cleanup independently.
-2. Integrate accountless preparation and schema2 installed/qualified receipts in
-   the product. Preserve legacy provenance and normal template-ready gates; no
+2. Integrate accountless preparation using the implemented schema2 receipts.
+   Candidate persistence is implemented; root staging/boot orchestration remains. Raw-create must retain machine
+   authority in the actual installer process before a new creating CLI is exposed. Preserve legacy provenance and normal template-ready gates; no
    arbitrary raw VM adoption, fake retirement boolean or public readiness bypass.
-3. Build/sign fresh artifacts, prepare a product-owned qualified base, safely
-   reserve the idle test machine and install/enroll the actual broker host daemon.
+3. Finish the supported host launch/account policy after the GUI discriminator.
+   Build/sign fresh artifacts, prepare a product-owned qualified base and
+   install/enroll the actual host service on the already reserved test machine.
    Production profile/notarization remain explicit release gates.
 4. Run the real two-account/two-VM API/files/isolation/quota/cancel/timeout/start,
    natural30minute expiry, idempotency and cleanup campaigns. Add actual broker
@@ -336,3 +365,73 @@ last fresh inspection found no Runner.Worker. No host daemon is registered.
 Only the user-selected8bit Gemma cache was deleted. Go cache and other models
 remain. Recover space from exact owned obsolete images/downloads after evidence;
 never weaken full disk-capacity reservations or delete unrelated user material.
+
+## Broker qualification staging
+
+Root-protected exact release6 is now installed only as test artifacts at
+/Library/Application Support/Darkbloom/qualification-release6 (no service).
+Frozen test executables live under qualification-tools root:wheel0555:
+qualify-guest-vsock SHA1d61d383d654d73af4fdc1eeafa7962d8c28b2e053e30d89c75b3e914ec069d3,
+tenant-fixture SHA08ec9f90df0667ed75021c5261fb6a923002f0ad6b8192ec72821c988f327fa4.
+Initial root-copy wrapper's umask made files0500 and broker exec deniedEACCES;
+only those verified test binaries were corrected to intended0555. Finalize53520
+then ran the product release/tool validator as actualUID/GID430 with transient
+runtime431 and passed0; no materialization or guest execution occurred.
+Evidence /private/tmp/darkbloom-vsock-operator-20260913/{release-copy,artifact-stage}.json.
+New encrypted socket parent /Volumes/DarkbloomSandboxTest-20260913/host/qs
+is430:430/0700. The original runtime authority inode remains unchanged.
+
+Root85597 created qualification-import1 and qualification1 from cleaned probe3,
+sparse-copying only paired config/disk/nvram then using native same-volume clone
+to regenerate MAC/machineID. Actual UID430 materialization passed with encrypted
+128MiB control and25GiB workspace. Setup gate SHA
+de5fc70164c48cb6478bb788f8b2ae49e5f68449245814f06d769907c65a7dde.
+Boot29554 owner exited70 in0.984s before guest commands. Root independently proved
+stopped/no-openers/available guards and authority release. Boot gate SHA
+3939c39d17f44097994a6be937ff9476ac96f046e3cdd49ead4ab8121a469591.
+Scoped Apple logs show VZ helper SecKeyCreateRandomKey error-25308 and broker430
+ctkd security error. No keychain/password/SIP/TCC workaround was attempted.
+
+Apple DTS says Virtualization is not daemon-safe and recommends GUI-agent
+deployment: https://developer.apple.com/forums/thread/841688 and
+https://developer.apple.com/forums/thread/786363. Source host inspection now
+checks actual security session and audit UID rather than console-user presence;
+ten focused tests passed. Account policy/deployment integration remains pending.
+
+Root76841 deleted only obsolete task-owned probe1 after retaining evidence and
+stopped proof, reclaiming23263719424bytes. All other models/Go cache remain.
+Do not weaken full product capacity reservations; the controlled COW GUI replica
+uses a separate20GiB diagnostic headroom check, not product admission.
+
+## Active GUI discriminator
+
+Temporary membership root35430 added only gaj501 to runtime431. Baseline SHA
+944441759c3a91204141bb66637709c4f3684bcaa3eb46aed8e61e80d5a179bb.
+Root proof /private/tmp/darkbloom-gui-membership-operator-20260913.
+The original authority inode remains unchanged. Restore helper
+temporary-runtime-membership.py requires full root quiescence.json schema and
+only removes that exact membership after owned job/VM/authority quiescence.
+
+Root94606 staged test agent SandboxGUIQualificationAgent under protected
+qualification-tools, root:wheel0555, inode29913650, SHA
+35b11d9ed60b3a57de4fb53f9e40cb517ef0565a5448d066d9e51c982a452127.
+Root90972 prepared a new encrypted GUI501 replica, preserving original430
+config/machineID/MAC/disk/NVRAM/control/workspace/credentials byte-for-byte.
+Only copied host paths change; original430 source is stopped/unchanged.
+Replica gate3f3ff39ffd8b446aa6d63a5b3b49d0c61328f8b6323d556404738142c8a9492f.
+Agent config78def11864991bec84212b6df00588723902aa414247a4abf32c92bb0190449e.
+Actual GUI watchdog session74012 finished after121.36s: owner exit0 and clean
+stop, but client exit1 authenticated_readiness_timeout. Actual context501:20,
+audit501, parent1, security session100092/attributes8240, runtime431 present.
+Root independently verified quiescence and unloaded the exact GUI job.
+Root gate /private/tmp/darkbloom-vsock-operator-20260913/gui-watchdog1/watchdog-result.json
+SHA f0d4cd5fc4720ee542e130a8b873058f144e2e321f84ad1a900ee78533e057b5.
+Restoration attestation SHA64b9a6a9dc9b8fb2e2493017a9a4e610fc307e362f5986f06b213a0698069536.
+This proves the selected VZ launch context resolves the immediate security
+failure; it does not establish authenticated guest readiness. Read-only offline
+guest bootstrap inspection is the next diagnostic. All VMs are stopped.
+Temporary membership is retained for subsequent GUI tests. The separate
+launch_gui_v2.py fixes complete restoration attestation and failed-test exit
+status, with9Python tests passing locally and3newtests on remote Python3.9.
+Its SHA223fcc9ee0a7555939d2dfd6e877b1246374c445fa9176b088ea8da47c269af8.
+Do not restore group membership until independent root stopped proof exists.

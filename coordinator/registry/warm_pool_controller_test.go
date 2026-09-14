@@ -66,7 +66,7 @@ func TestWarmPoolSaturatedWarmProviderRaisesTargetAndSendsBoundedLoad(t *testing
 	sent := captureWarmPoolLoads(reg)
 	reg.RecordWarmPoolCapacityReject(model)
 
-	snaps := reg.warmPool.tick(time.Now())
+	snaps := reg.warmPool.Tick(time.Now())
 	if len(*sent) != 1 {
 		t.Fatalf("sent loads = %d, want 1", len(*sent))
 	}
@@ -87,7 +87,7 @@ func TestWarmPoolCapacityRejectRaisesTargetWithoutQueue(t *testing.T) {
 	sent := captureWarmPoolLoads(reg)
 
 	reg.RecordWarmPoolCapacityReject(model)
-	reg.warmPool.tick(time.Now())
+	reg.warmPool.Tick(time.Now())
 
 	if len(*sent) != 1 {
 		t.Fatalf("sent loads = %d, want 1", len(*sent))
@@ -103,7 +103,7 @@ func TestWarmPoolQueueAgePressureRaisesTarget(t *testing.T) {
 	sent := captureWarmPoolLoads(reg)
 
 	reg.RecordWarmPoolQueueEnqueued(model, 1, 3*time.Second)
-	reg.warmPool.tick(time.Now())
+	reg.warmPool.Tick(time.Now())
 
 	if len(*sent) != 1 {
 		t.Fatalf("sent loads = %d, want 1", len(*sent))
@@ -143,7 +143,7 @@ func TestRequestWarmPoolTriggerCoalescesBursts(t *testing.T) {
 			t.Fatalf("trigger %d was accepted despite an already pending tick", i+2)
 		}
 	}
-	if got := len(reg.warmPool.triggerC); got != 1 {
+	if got := reg.warmPool.PendingTriggers(); got != 1 {
 		t.Fatalf("pending triggers = %d, want 1", got)
 	}
 }
@@ -193,7 +193,7 @@ func TestWarmPoolEnvDefaultIsActiveAndSendsLoads(t *testing.T) {
 	sent := captureWarmPoolLoads(reg)
 
 	reg.RecordWarmPoolCapacityReject(model)
-	snaps := reg.warmPool.tick(time.Now())
+	snaps := reg.warmPool.Tick(time.Now())
 
 	if len(*sent) != 1 {
 		t.Fatalf("sent loads = %d, want 1 with the env-default (active) config", len(*sent))
@@ -219,7 +219,7 @@ func TestWarmPoolEnvObserveOnlyOverridePreserved(t *testing.T) {
 	reg.RecordWarmPoolCapacityReject(model)
 	// The periodic ticker still runs planning passes in observe-only mode; they
 	// must not issue loads. Hot-path triggers must be rejected outright.
-	snaps := reg.warmPool.tick(time.Now())
+	snaps := reg.warmPool.Tick(time.Now())
 
 	if len(*sent) != 0 {
 		t.Fatalf("sent loads = %d, want 0 in observe-only mode", len(*sent))
@@ -285,7 +285,7 @@ func TestWarmPoolDedicatedQueueSpillStillDrivesWarming(t *testing.T) {
 			sent := captureWarmPoolLoads(reg)
 
 			feed(reg, gemmaBuild)
-			snaps := reg.warmPool.tick(time.Now())
+			snaps := reg.warmPool.Tick(time.Now())
 
 			var snap WarmPoolSnapshot
 			found := false
@@ -336,7 +336,7 @@ func TestWarmPoolNoPressureForLongActiveDecodeAlone(t *testing.T) {
 	reg.ConfigureWarmPool(testWarmPoolConfig())
 	sent := captureWarmPoolLoads(reg)
 
-	snaps := reg.warmPool.tick(time.Now())
+	snaps := reg.warmPool.Tick(time.Now())
 
 	if len(*sent) != 0 {
 		t.Fatalf("sent loads = %d, want 0", len(*sent))
@@ -357,7 +357,7 @@ func TestWarmPoolMinWarmFloorLoadsWithoutPressure(t *testing.T) {
 	reg.ConfigureWarmPool(cfg)
 	sent := captureWarmPoolLoads(reg)
 
-	snaps := reg.warmPool.tick(time.Now())
+	snaps := reg.warmPool.Tick(time.Now())
 
 	if len(snaps) != 1 {
 		t.Fatalf("snapshots = %d, want 1", len(snaps))
@@ -379,7 +379,7 @@ func TestWarmPoolMinWarmFloorCapsAtReachable(t *testing.T) {
 	cfg.MinWarmByModel = map[string]int{model: 5}
 	reg.ConfigureWarmPool(cfg)
 
-	snaps := reg.warmPool.tick(time.Now())
+	snaps := reg.warmPool.Tick(time.Now())
 
 	if len(snaps) != 1 {
 		t.Fatalf("snapshots = %d, want 1", len(snaps))
@@ -405,7 +405,7 @@ func TestWarmPoolPressureLoadsBeforeMinWarmFloor(t *testing.T) {
 	sent := captureWarmPoolLoads(reg)
 	reg.RecordWarmPoolCapacityReject(pressureModel)
 
-	reg.warmPool.tick(time.Now())
+	reg.warmPool.Tick(time.Now())
 
 	if len(*sent) != 1 {
 		t.Fatalf("sent loads = %d, want 1", len(*sent))
@@ -435,14 +435,14 @@ func TestWarmPoolFleetSnapshotSplitsSoloAndServiceRates(t *testing.T) {
 
 	snap := reg.warmPoolFleetSnapshot(time.Now())[model]
 
-	if snap.soloDecodeTPS != 23 {
-		t.Fatalf("soloDecodeTPS = %v, want static solo rate 23 (observed EWMA must not feed quality concurrency)", snap.soloDecodeTPS)
+	if snap.SoloDecodeTPS != 23 {
+		t.Fatalf("soloDecodeTPS = %v, want static solo rate 23 (observed EWMA must not feed quality concurrency)", snap.SoloDecodeTPS)
 	}
-	if snap.serviceDecodeTPS != 73 {
-		t.Fatalf("serviceDecodeTPS = %v, want observed slot TPS 73", snap.serviceDecodeTPS)
+	if snap.ServiceDecodeTPS != 73 {
+		t.Fatalf("serviceDecodeTPS = %v, want observed slot TPS 73", snap.ServiceDecodeTPS)
 	}
-	if snap.prefillTPS != 1000 {
-		t.Fatalf("prefillTPS = %v, want observed slot prefill TPS 1000", snap.prefillTPS)
+	if snap.PrefillTPS != 1000 {
+		t.Fatalf("prefillTPS = %v, want observed slot prefill TPS 1000", snap.PrefillTPS)
 	}
 }
 
@@ -453,11 +453,11 @@ func TestWarmPoolFleetSnapshotFallsBackToStaticTPS(t *testing.T) {
 
 	snap := reg.warmPoolFleetSnapshot(time.Now())[model]
 
-	if snap.soloDecodeTPS != 23 {
-		t.Fatalf("soloDecodeTPS = %v, want static TPS 23", snap.soloDecodeTPS)
+	if snap.SoloDecodeTPS != 23 {
+		t.Fatalf("soloDecodeTPS = %v, want static TPS 23", snap.SoloDecodeTPS)
 	}
-	if snap.prefillTPS != 23*PrefillToDecodeRatio() {
-		t.Fatalf("prefillTPS = %v, want static fallback %v", snap.prefillTPS, 23*PrefillToDecodeRatio())
+	if snap.PrefillTPS != 23*PrefillToDecodeRatio() {
+		t.Fatalf("prefillTPS = %v, want static fallback %v", snap.PrefillTPS, 23*PrefillToDecodeRatio())
 	}
 }
 
@@ -483,7 +483,7 @@ func TestWarmPoolDiagnosticsSplitObservedAndSoloRates(t *testing.T) {
 	reg.ConfigureWarmPool(cfg)
 	reg.RecordWarmPoolCapacityReject(model)
 
-	snaps := reg.warmPool.tick(time.Now())
+	snaps := reg.warmPool.Tick(time.Now())
 	if len(snaps) != 1 {
 		t.Fatalf("snapshots = %d, want 1", len(snaps))
 	}
@@ -528,7 +528,7 @@ func TestWarmPoolSkipsIneligibleProviders(t *testing.T) {
 	reg.ConfigureWarmPool(testWarmPoolConfig())
 	sent := captureWarmPoolLoads(reg)
 	reg.RecordWarmPoolCapacityReject(model)
-	reg.warmPool.tick(time.Now())
+	reg.warmPool.Tick(time.Now())
 
 	if len(*sent) != 1 {
 		t.Fatalf("sent loads = %d, want 1", len(*sent))
@@ -552,7 +552,7 @@ func TestWarmPoolPicksBetterIdleProvider(t *testing.T) {
 	reg.ConfigureWarmPool(testWarmPoolConfig())
 	sent := captureWarmPoolLoads(reg)
 	reg.RecordWarmPoolCapacityReject(model)
-	reg.warmPool.tick(time.Now())
+	reg.warmPool.Tick(time.Now())
 
 	if len(*sent) != 1 {
 		t.Fatalf("sent loads = %d, want 1", len(*sent))
@@ -620,7 +620,7 @@ func TestWarmPoolLittlesLawDemandScaledRamp(t *testing.T) {
 	sent := captureWarmPoolLoads(reg)
 	reg.RecordWarmPoolCapacityReject(model)
 
-	snaps := reg.warmPool.tick(time.Now())
+	snaps := reg.warmPool.Tick(time.Now())
 	if len(snaps) == 0 {
 		t.Fatal("no warm-pool snapshot produced")
 	}
@@ -664,7 +664,7 @@ func TestWarmPoolRampBoundedByCeiling(t *testing.T) {
 	sent := captureWarmPoolLoads(reg)
 	reg.RecordWarmPoolCapacityReject(model)
 
-	snaps := reg.warmPool.tick(time.Now())
+	snaps := reg.warmPool.Tick(time.Now())
 	if len(snaps) == 0 || snaps[0].TargetWarm < 13 {
 		t.Fatalf("snapshot = %+v, want target >= 13", snaps)
 	}

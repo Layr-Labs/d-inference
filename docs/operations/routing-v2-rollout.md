@@ -1,6 +1,6 @@
 # Routing flags: kill switches and flag flips
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-13 · commit `e98d46fbd`
 
 The routing-v2 rollout is complete: every behaviour it introduced ships in the
 coordinator binary and is **on by default**. This runbook is what remains
@@ -72,8 +72,12 @@ is not explained by one of the behaviours below; roll the binary back per
 | `EIGENINFERENCE_WARM_POOL_MAX_LOADS_PER_TICK` / `_MAX_LOADS_PER_TICK_CEILING` / `_MAX_GLOBAL_PENDING_LOADS` | `4` / `16` / `16` | `coordinator/registry/config.go` | lower | Slows the ramp; `0` for either loads-per-tick or global-pending is equivalent to observe-only. |
 | `EIGENINFERENCE_WARM_POOL_MIN_WARM` | empty | `coordinator/registry/config.go` | `model=n,...` | Pins a per-model warm floor while a demand signal is being debugged. |
 
-The full `WarmPoolConfig` table, including thresholds and Little's-Law
-parameters, is in [`scheduling.md`](../architecture/scheduling.md#warm-pool-controller).
+The environment reads remain in `coordinator/registry/config.go` (`ReadConfig`);
+`WarmPoolConfig` aliases `warmpool.Config` in
+`coordinator/registry/warmpool/config.go`. The runner and planning policy are
+`Controller.Run` and `Controller.Plan` in `coordinator/registry/warmpool/controller.go`
+and `coordinator/registry/warmpool/planning_pass.go`. The full configuration table, including
+thresholds and Little's-Law parameters, is in [`scheduling.md`](../architecture/scheduling.md#warm-pool-controller).
 
 ### Capacity fault handling
 

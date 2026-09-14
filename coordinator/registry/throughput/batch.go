@@ -43,7 +43,7 @@ const (
 	// Four systems consume this and a too-small k over-states the quality
 	// batch in all of them at once: the admission cap (registry/concurrency_cap.go),
 	// effectiveDecodeTPS and projectedPerRequestDecodeTPSAtBatch in registry/scheduler.go, and
-	// the warm-pool target (registry/warm_pool_controller.go) — which then
+	// the warm-pool target (registry/warmpool/target_policy.go) — which then
 	// under-warms the pool while admission packs batches that miss the
 	// decode floor.
 	// Set to 0 to disable load scaling.

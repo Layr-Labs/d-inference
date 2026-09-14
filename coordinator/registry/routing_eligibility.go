@@ -10,7 +10,7 @@ import "time"
 //   - providerCanRouteBuildLocked        (model_aliases.go)  — alias routability
 //   - providerHasWarmModelLocked         (model_load_plan.go)  — warm detection
 //   - publiclyRoutableLocked             (model_capacity.go)  — public capacity feeds
-//   - warmPoolCandidateReasonLocked      (warm_pool_controller.go) — warming
+//   - warmPoolCandidateReasonLocked      (warm_pool_eligibility.go) — warming
 //
 // (plus modelLoadCandidatePendingLocked, the load planner). They share two
 // exactly-identical sub-pipelines — the liveness/trust/privacy core and the

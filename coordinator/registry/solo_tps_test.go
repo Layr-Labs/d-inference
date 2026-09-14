@@ -799,11 +799,11 @@ func TestWarmPoolSnapshotDecodeSampleUsesSoloResolver(t *testing.T) {
 	}
 
 	snap := reg.warmPoolFleetSnapshot(time.Now())[gemmaBuild]
-	if snap.soloDecodeTPS != 14 {
-		t.Fatalf("warm-pool soloDecodeTPS = %v, want 14 (solo median; EWMA 2.6 and benchmark 93 must not feed the warm target)", snap.soloDecodeTPS)
+	if snap.SoloDecodeTPS != 14 {
+		t.Fatalf("warm-pool soloDecodeTPS = %v, want 14 (solo median; EWMA 2.6 and benchmark 93 must not feed the warm target)", snap.SoloDecodeTPS)
 	}
-	if snap.serviceDecodeTPS != 2.6 {
-		t.Fatalf("warm-pool serviceDecodeTPS = %v, want observed 2.6 (E[S] keeps load-inclusive semantics)", snap.serviceDecodeTPS)
+	if snap.ServiceDecodeTPS != 2.6 {
+		t.Fatalf("warm-pool serviceDecodeTPS = %v, want observed 2.6 (E[S] keeps load-inclusive semantics)", snap.ServiceDecodeTPS)
 	}
 }
 

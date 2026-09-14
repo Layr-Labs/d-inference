@@ -825,38 +825,38 @@ func TestWarmTargetDedicatedWholePool(t *testing.T) {
 		SpeculativeWinThreshold:   1,
 		WarmSaturationThreshold:   0.8,
 	})
-	params := c.targetParams()
+	params := c.TargetParams()
 	now := time.Now()
 
 	dedicated := warmPoolModelSnapshot{
-		model:         gemmaBuild,
-		warm:          2,
-		soloDecodeTPS: 23,
-		prefillTPS:    276,
-		eligibleCold: []warmPoolCandidate{
-			{providerID: "c1"}, {providerID: "c2"}, {providerID: "c3"},
+		Model:         gemmaBuild,
+		Warm:          2,
+		SoloDecodeTPS: 23,
+		PrefillTPS:    276,
+		EligibleCold: []warmPoolCandidate{
+			{ProviderID: "c1"}, {ProviderID: "c2"}, {ProviderID: "c3"},
 		},
 	}
-	svc := warmpool.ServiceTime(dedicated.prefillTPS, dedicated.soloDecodeTPS, params)
+	svc := warmpool.ServiceTime(dedicated.PrefillTPS, dedicated.SoloDecodeTPS, params)
 	// Under demand (a capacity reject) → warm the whole eligible pool (2 + 3 = 5).
 	underDemand := warmpool.Pressure{CapacityRejects: 1}
-	if got := c.targetWarm(dedicated, underDemand, warmPoolQueuePressure{}, params, svc, now); got != 5 {
+	if got := c.TargetWarm(dedicated, underDemand, warmPoolQueuePressure{}, params, svc, now); got != 5 {
 		t.Fatalf("dedicated (under demand) warm target = %d, want 5 (warm 2 + eligibleCold 3 = whole pool)", got)
 	}
 	// No demand for this build → NOT force-warmed across the pool (left demand-derived).
-	if got := c.targetWarm(dedicated, warmpool.Pressure{}, warmPoolQueuePressure{}, params, svc, now); got == 5 {
+	if got := c.TargetWarm(dedicated, warmpool.Pressure{}, warmPoolQueuePressure{}, params, svc, now); got == 5 {
 		t.Fatalf("dedicated (no demand) warm target = %d, want < 5 (idle/stale build must not force-warm the whole pool)", got)
 	}
 
 	nonDedicated := warmPoolModelSnapshot{
-		model:         qwenBuild,
-		warm:          2,
-		soloDecodeTPS: 57,
-		prefillTPS:    684,
-		eligibleCold:  []warmPoolCandidate{{providerID: "c1"}, {providerID: "c2"}, {providerID: "c3"}},
+		Model:         qwenBuild,
+		Warm:          2,
+		SoloDecodeTPS: 57,
+		PrefillTPS:    684,
+		EligibleCold:  []warmPoolCandidate{{ProviderID: "c1"}, {ProviderID: "c2"}, {ProviderID: "c3"}},
 	}
-	svc2 := warmpool.ServiceTime(nonDedicated.prefillTPS, nonDedicated.soloDecodeTPS, params)
-	if got := c.targetWarm(nonDedicated, warmpool.Pressure{}, warmPoolQueuePressure{}, params, svc2, now); got != 2 {
+	svc2 := warmpool.ServiceTime(nonDedicated.PrefillTPS, nonDedicated.SoloDecodeTPS, params)
+	if got := c.TargetWarm(nonDedicated, warmpool.Pressure{}, warmPoolQueuePressure{}, params, svc2, now); got != 2 {
 		t.Fatalf("non-dedicated warm target = %d, want 2 (no demand pressure → left as-is)", got)
 	}
 }

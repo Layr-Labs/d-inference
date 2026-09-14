@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-14 · commit `83c465555`
+> Last updated: 2026-09-14 · commit `e114b3163`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -94,6 +94,16 @@ root:
 
 ```bash
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... ./coordinator/api -run 'Test.*(ModelLoad|ModelSwap|SwapPlan|Trailing|PendingLoad|WarmPool|LoadModel|StableFault|DisconnectKeepsStable|CommandsReserve)' -count=1
+```
+
+Warm-pool controller concurrency tests live beside `Controller` in
+`coordinator/registry/warmpool/`. The registry retains real fleet eligibility,
+reservation, private action JSON and publication-before-send checks in
+`coordinator/registry/warm_pool_publication_test.go`. The existing root warm-pool,
+headroom and fleet benchmark fixtures retain their outcome assertions.
+
+```bash
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/registry/... -run 'Test.*(WarmPool|WarmTarget|ControllerWarms|ControllerConfigure|DedicatedWarm|MemoryBackoff)' -count=1
 ```
 
 Run prediction telemetry checks from the repository root:

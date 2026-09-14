@@ -13,7 +13,7 @@ const (
 	MaxServiceTime = 2 * time.Minute
 )
 
-// Params are the controller tunables (sourced from WarmPoolConfig).
+// Params are the controller tunables (sourced from Config).
 type Params struct {
 	// DecodeFloorTPS is the per-request sustained-decode quality floor. When a
 	// provider's batch grows past the point where each request would decode

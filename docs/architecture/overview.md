@@ -102,7 +102,8 @@ sequenceDiagram
    dispatch starts at [`SpeculativeTimerRatio`](routing.md#hedged-speculative-dispatch)
    of the first-content deadline; the coordinator tries at most
    [`maxDispatchAttempts`](../reference/api-contracts.md#timeouts-and-constants)
-   providers (`coordinator/inference/ingress/chat.go`). [`data-flow.md`](data-flow.md).
+   providers (`coordinator/inference/dispatch/limits.go`, `maxDispatchAttempts`;
+   `coordinator/inference/dispatch/run.go`, `run`). [`data-flow.md`](data-flow.md).
 6. **Inference.** The provider decrypts in-process, runs the continuous-batching
    engine over the pinned MLX forks, and encrypts every response chunk to the
    coordinator's ephemeral key. [`inference.md`](inference.md),
@@ -158,11 +159,12 @@ consumer routing to a provider it owns (self-route) pays nothing.
    (`coordinator/registry/routing_eligibility.go`).
 3. Every coordinator → provider request body is a fresh NaCl Box to the key the
    provider attested at registration (`coordinator/internal/e2e/e2e.go`).
-4. Nothing is written to the consumer's HTTP response before the first content
-   chunk, so a failed dispatch can always fail over or return a JSON error
-   (`Controller.ChatCompletions`, `coordinator/inference/ingress/chat.go`).
+4. Successful responses wait for the first content chunk, so a failed dispatch
+   can fail over or return a JSON error before commit
+   (`Controller.ChatCompletions`, `coordinator/inference/ingress/chat.go`;
+   `writeCommittedResponse`, `coordinator/inference/dispatch/commit.go`).
 5. Balance is reserved before dispatch (`reserveInferenceBalance`,
-   `coordinator/inference/ingress/admission.go`) and settled from
+   `coordinator/inference/ingress/balance.go`) and settled from
    `inference_complete` (`Service.CompleteAt`, `coordinator/inference/providerframe/complete.go`): the
    difference is refunded, an overage is charged. A request that fails before
    any provider usage is reported is refunded in full (`Service.Refund`,

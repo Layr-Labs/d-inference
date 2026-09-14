@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/requestqueue"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -32,9 +33,9 @@ type Registry struct {
 	// after a saturated pass (queue_drain_suppress.go). Zero value ready.
 	drainSuppress queueDrainSuppressor
 	// drainPasses runs one queue-drain pass per model at a time and reruns it
-	// for triggers that landed mid-pass (queue_drain_coalesce.go). Zero value
+	// for triggers that landed mid-pass (requestqueue/drain.go). Zero value
 	// ready.
-	drainPasses queueDrainCoalescer
+	drainPasses requestqueue.DrainCoalescer
 
 	MinTrustLevel TrustLevel
 

@@ -1,15 +1,15 @@
-package registry
+package requestqueue
 
 // Per-model drain-pass coalescing.
 //
-// A drain pass (drainModelQueuePass) pops the model's queued requests and holds
+// A registry drain pass (drainModelQueuePass) pops the model's queued requests and holds
 // the ones it rejects or skips until it requeues them at the end. Passes for
 // the same model were not otherwise serialized — heartbeats, SetProviderIdle,
 // challenge recoveries, disconnects, and load completions each ran their own —
 // so a trigger landing while a pass held waiters popped an empty queue and did
 // nothing, while the running pass never re-examined what it held: a request it
 // had already rejected, and every later request skipped on that verdict
-// (queue_drain_dominance.go), was requeued against fleet state the trigger had
+// (registry/queue_drain_dominance.go), was requeued against fleet state the trigger had
 // since changed, and nothing rescanned them until the next trigger for the
 // model — up to a heartbeat interval away — although capacity for them existed
 // now. (The saturation mark is installed after the requeue, so a heartbeat
@@ -24,9 +24,9 @@ package registry
 
 import "sync"
 
-// queueDrainCoalescer tracks, per model, whether a drain pass is in flight and
+// DrainCoalescer tracks, per model, whether a drain pass is in flight and
 // which trigger arrived while it ran. The zero value is ready to use.
-type queueDrainCoalescer struct {
+type DrainCoalescer struct {
 	mu      sync.Mutex
 	running map[string]bool
 	// rerun holds the trigger reason of the latest drain that arrived while a
@@ -34,9 +34,9 @@ type queueDrainCoalescer struct {
 	rerun map[string]string
 }
 
-// begin claims the drain pass for model. It returns false when a pass is
+// Begin claims the drain pass for model. It returns false when a pass is
 // already in flight; that pass reruns for reason once it has requeued.
-func (c *queueDrainCoalescer) begin(model, reason string) bool {
+func (c *DrainCoalescer) Begin(model, reason string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.running[model] {
@@ -53,10 +53,10 @@ func (c *queueDrainCoalescer) begin(model, reason string) bool {
 	return true
 }
 
-// end is called by the claim holder after a completed pass. When a trigger
+// End is called by the claim holder after a completed pass. When a trigger
 // arrived mid-pass it keeps the claim and returns that trigger's reason with
 // true so the holder runs another pass; otherwise it releases the claim.
-func (c *queueDrainCoalescer) end(model string) (reason string, again bool) {
+func (c *DrainCoalescer) End(model string) (reason string, again bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if reason, ok := c.rerun[model]; ok {
@@ -67,10 +67,10 @@ func (c *queueDrainCoalescer) end(model string) (reason string, again bool) {
 	return "", false
 }
 
-// abandon releases the claim for a pass that did not complete (a panic
+// Abandon releases the claim for a pass that did not complete (a panic
 // unwinding through the drain), dropping any rerun request with it, so the
 // model is not pinned unroutable-from-queue by a claim nobody holds.
-func (c *queueDrainCoalescer) abandon(model string) {
+func (c *DrainCoalescer) Abandon(model string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.running, model)

@@ -1,248 +1,19 @@
-// Request queue management for the Darkbloom coordinator.
-//
-// When all providers serving a model are busy, instead of immediately
-// returning 503, the coordinator enqueues the request and waits for a
-// provider to become available. When a provider finishes a job and calls
-// SetProviderIdle, the queue is checked and the first matching queued
-// request is assigned to that provider.
-//
-// Queue limits:
-//   - maxSize: maximum number of queued requests per model (default 32,
-//     EIGENINFERENCE_QUEUE_MAX_DEPTH)
-//   - maxWait: maximum time a request can wait in the queue (default 120s,
-//     EIGENINFERENCE_QUEUE_MAX_WAIT)
-//
-// Stale requests (those past maxWait) are cleaned up lazily: Enqueue and
-// QueuedModels sweep a model's queue via cleanStaleLocked, PopNextFresh
-// rejects stale entries as it pops, and each waiter enforces its own maxWait
-// timer in WaitForProviderContext.
 package registry
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
-	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/registry/requestqueue"
 )
 
 // ErrQueueFull is returned when the queue for a model has reached maxSize.
-var ErrQueueFull = errors.New("request queue is full")
+var ErrQueueFull = requestqueue.ErrFull
 
-// ErrQueueTimeout is returned when a queued request times out waiting for a provider.
-var ErrQueueTimeout = errors.New("request queue timeout")
-
-// ErrQueueTTFTTooSlow is returned when the queue drain determines the waiter is
-// deterministically unservable: every provider that could otherwise serve the
-// model fails ONLY the per-request TTFT ceiling (pr.MaxTTFTMs, hard-reject
-// mode). Waiting out maxWait cannot change that verdict within the pass, so the
-// waiter is failed immediately and the API layer writes the standard
-// ttft_too_slow 429 instead of a queue timeout.
-var ErrQueueTTFTTooSlow = errors.New("all providers for queued request exceed the TTFT target")
-
-// ErrQueueFirstContentDeadline is returned when the request-absolute
-// first-content clock expires while waiting in the coordinator queue.
-var ErrQueueFirstContentDeadline = errors.New("queued request first-content deadline expired")
-
-// ErrQueueToolConstraintUnavailable is returned when a constrained waiter can
-// no longer be served by any explicit-capability provider. Old providers may
-// still serve auto/ordinary requests, but required/named/none never downgrade.
-var ErrQueueToolConstraintUnavailable = errors.New(
-	"no provider supports inference-time tool constraints for queued request")
-
-// Bounded drain triggers: the event that ran the queue drain which reserved a
-// queued request. Recorded on QueuedRequest.DrainTrigger and
-// RoutingDecision.DrainTrigger for the system-profiler routing record. Closed
-// vocabulary — foldDrainTrigger maps anything else to DrainTriggerUnknown.
-const (
-	DrainTriggerHeartbeat  = "heartbeat"  // Registry.Heartbeat (a heartbeat may make a slot routable)
-	DrainTriggerIdle       = "idle"       // SetProviderIdle (a provider finished a job)
-	DrainTriggerChallenge  = "challenge"  // RecordChallengeSuccess / DrainQueuedRequestsForProvider
-	DrainTriggerLoad       = "load"       // load_model success (DrainQueuedRequestsForModel)
-	DrainTriggerDisconnect = "disconnect" // Disconnect (re-run so unservable waiters fail fast)
-	DrainTriggerKick       = "kick"       // cold-dispatch kick from the api layer
-	DrainTriggerUnknown    = "unknown"    // legacy caller that has not been migrated
-)
-
-// foldDrainTrigger returns reason if it is one of the bounded DrainTrigger*
-// values, else DrainTriggerUnknown. Constant strings only — no allocation.
-func foldDrainTrigger(reason string) string {
-	switch reason {
-	case DrainTriggerHeartbeat, DrainTriggerIdle, DrainTriggerChallenge, DrainTriggerLoad,
-		DrainTriggerDisconnect, DrainTriggerKick:
-		return reason
-	default:
-		return DrainTriggerUnknown
-	}
-}
-
-// QueuedRequest represents a request waiting for a provider.
-type QueuedRequest struct {
-	RequestID  string
-	Model      string
-	Body       json.RawMessage
-	Pending    *PendingRequest
-	ResponseCh chan *Provider // receives the assigned provider
-	EnqueuedAt time.Time
-	// EnqueuePosition is the request's index in the model queue at enqueue
-	// (0 = head; equals the queue length before the append) and
-	// DepthAtEnqueue the same length — i.e. how many waiters were ahead of it.
-	// Set by Enqueue; observability only.
-	EnqueuePosition int
-	DepthAtEnqueue  int
-	// DrainTrigger is the bounded DrainTrigger* value naming the event whose
-	// drain recorded this request's routing decision (reserved it, or failed it
-	// terminally). Empty until a drain handles the request.
-	DrainTrigger string
-	DoneCh       chan struct{} // closed when the waiter is no longer interested
-	doneOnce     sync.Once
-
-	assignmentMu sync.Mutex
-	assignment   *queuedProviderAssignment
-
-	// beforeAssignmentSend is a deterministic test seam for cancellation at
-	// the exact reserve-to-waiter ownership boundary. Production requests leave
-	// it nil.
-	beforeAssignmentSend func()
-
-	// Decision captures the cost breakdown of the routing decision that
-	// dispatched (or terminally failed) this queued request. Populated by
-	// drainQueuedRequestsForModels just before ResponseCh is signaled, so
-	// consumers can emit the same metrics they would for an immediate
-	// (non-queued) selection — and, on a TTFT failure, compute Retry-After
-	// from BestTTFTMs.
-	Decision RoutingDecision
-
-	// FailureReason, when non-nil, is the terminal cause recorded before
-	// ResponseCh was signaled with nil. WaitForProviderContext returns it in
-	// place of ErrQueueTimeout so the API waiter can write the precise
-	// rejection (e.g. the ttft_too_slow 429). Written before the ResponseCh
-	// send and read only after receiving nil, so the channel orders the
-	// accesses.
-	FailureReason error
-}
-
-type queuedProviderAssignment struct {
-	provider *Provider
-	cleanup  func()
-}
-
-func (r *QueuedRequest) init() {
-	if r.ResponseCh == nil {
-		r.ResponseCh = make(chan *Provider, 1)
-	}
-	if r.DoneCh == nil {
-		r.DoneCh = make(chan struct{})
-	}
-}
-
-func (r *QueuedRequest) markDone() {
-	r.doneOnce.Do(func() {
-		r.init()
-		close(r.DoneCh)
-	})
-	r.rejectAssignment()
-}
-
-func (r *QueuedRequest) Done() <-chan struct{} {
-	r.init()
-	return r.DoneCh
-}
-
-// offerAssignment publishes a scheduler-owned reservation. The scheduler keeps
-// cleanup ownership until WaitForProviderContext explicitly accepts the offer.
-// A waiter that already canceled rejects the offer before it can be published.
-func (r *QueuedRequest) offerAssignment(provider *Provider, cleanup func()) bool {
-	r.init()
-	r.assignmentMu.Lock()
-	defer r.assignmentMu.Unlock()
-	select {
-	case <-r.DoneCh:
-		return false
-	default:
-	}
-	if r.assignment != nil {
-		return false
-	}
-	r.assignment = &queuedProviderAssignment{
-		provider: provider,
-		cleanup:  cleanup,
-	}
-	return true
-}
-
-// acceptAssignment is the waiter acknowledgement that transfers reservation
-// cleanup ownership from the scheduler to the dispatch caller.
-func (r *QueuedRequest) acceptAssignment(provider *Provider) bool {
-	r.assignmentMu.Lock()
-	defer r.assignmentMu.Unlock()
-	if r.assignment == nil || r.assignment.provider != provider {
-		return false
-	}
-	r.assignment = nil
-	return true
-}
-
-// rejectAssignment releases a scheduler-owned reservation exactly once. It is
-// called by every cancellation/timeout path and may race offerAssignment.
-func (r *QueuedRequest) rejectAssignment() {
-	var cleanup func()
-	r.assignmentMu.Lock()
-	if r.assignment != nil {
-		cleanup = r.assignment.cleanup
-		r.assignment = nil
-	}
-	r.assignmentMu.Unlock()
-	if cleanup != nil {
-		cleanup()
-	}
-}
-
-// failWithReason terminally rejects the waiter with a specific cause. If the
-// waiter already gave up (timeout/cancel), the buffered nil send is a no-op and
-// the reason is never read.
-func (r *QueuedRequest) failWithReason(reason error) {
-	r.init()
-	r.FailureReason = reason
-	r.markDone()
-	select {
-	case r.ResponseCh <- nil:
-	default:
-	}
-}
-
-// drainRejectionTTFTTerminal reports whether a drain-time reservation failure
-// is a PURE TTFT rejection — deterministic for this pass, so the waiter should
-// be failed with ErrQueueTTFTTooSlow instead of hanging until maxWait:
-//   - at least one provider was rejected only by the per-request TTFT ceiling
-//     (TTFTRejections > 0 requires pr.MaxTTFTMs > 0, i.e. hard-reject mode);
-//   - no provider was capacity-rejected: a busy fast provider freeing up could
-//     still serve the request, so mixed rejections keep waiting;
-//   - no candidate passed the scan: CandidateCount > 0 with a nil provider is
-//     the transient admit re-check race, not unservability.
-//
-// Owner-scoped waiters are never TTFT-failed on the public-fleet verdict
-// (mirrors FailQueuedRequestsForModel's preservation semantics). Their queue
-// ceiling is already 0 (queueMaxTTFTMs), so they cannot produce TTFT
-// rejections; the explicit guard keeps the invariant even if that wiring
-// changes.
-func drainRejectionTTFTTerminal(pr *PendingRequest, decision RoutingDecision) bool {
-	if pr == nil || pr.SelfRouteOnly || pr.PreferOwner {
-		return false
-	}
-	return decision.TTFTRejections > 0 &&
-		decision.CapacityRejections == 0 &&
-		decision.CandidateCount == 0
-}
-
-// RequestQueue manages per-model queues for requests awaiting providers.
+// RequestQueue keeps the registry's typed queue API. The requestqueue owner
+// holds its FIFO and lock; registry adds provider constraints and wait handling.
 type RequestQueue struct {
-	mu      sync.Mutex
-	queues  map[string][]*QueuedRequest // model -> queue
-	maxSize int                         // max queue size per model
-	maxWait time.Duration               // max time a request waits
+	queue requestqueue.Queue[*QueuedRequest]
 }
 
 // Default queue limits (see NewRequestQueueFromEnv for the sizing rationale).
@@ -251,13 +22,9 @@ const (
 	defaultQueueMaxWait  = 120 * time.Second
 )
 
-// NewRequestQueue creates a new RequestQueue with the given limits.
+// NewRequestQueue creates a queue with the given per-model depth and wait limit.
 func NewRequestQueue(maxSize int, maxWait time.Duration) *RequestQueue {
-	return &RequestQueue{
-		queues:  make(map[string][]*QueuedRequest),
-		maxSize: maxSize,
-		maxWait: maxWait,
-	}
+	return &RequestQueue{queue: requestqueue.New[*QueuedRequest](maxSize, maxWait)}
 }
 
 // NewRequestQueueFromEnv creates a RequestQueue sized from the environment:
@@ -284,380 +51,55 @@ func NewRequestQueueFromEnv() *RequestQueue {
 	return NewRequestQueue(depth, wait)
 }
 
-// Enqueue adds a request to the queue for the given model.
-// Returns ErrQueueFull if the queue for this model is at capacity.
+func queuedRequestAccess() requestqueue.Access[*QueuedRequest] {
+	return requestqueue.Access[*QueuedRequest]{
+		Info: func(req *QueuedRequest) requestqueue.Info {
+			return requestqueue.Info{ID: req.RequestID, Model: req.Model, EnqueuedAt: req.EnqueuedAt}
+		},
+		Prepare: (*QueuedRequest).init,
+		Enqueued: func(req *QueuedRequest, at time.Time, depth int) {
+			req.EnqueuedAt = at
+			req.EnqueuePosition = depth
+			req.DepthAtEnqueue = depth
+		},
+		Expire: (*QueuedRequest).expireFromQueue,
+	}
+}
+
 func (q *RequestQueue) Enqueue(req *QueuedRequest) error {
-	req.init()
-
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	// Clean stale entries first
-	q.cleanStaleLocked(req.Model)
-
-	queue := q.queues[req.Model]
-	if len(queue) >= q.maxSize {
+	err := q.queue.Enqueue(req, queuedRequestAccess())
+	if err == requestqueue.ErrFull {
 		return ErrQueueFull
 	}
-
-	req.EnqueuedAt = time.Now()
-	req.EnqueuePosition = len(queue)
-	req.DepthAtEnqueue = len(queue)
-	q.queues[req.Model] = append(queue, req)
-	return nil
+	return err
 }
 
-// WaitForProviderContext blocks until a provider is assigned, the timeout
-// expires, or the context is cancelled.
-func (q *RequestQueue) WaitForProviderContext(ctx context.Context, req *QueuedRequest) (*Provider, error) {
-	req.init()
-	timer := time.NewTimer(q.maxWait)
-	defer timer.Stop()
-
-	select {
-	case p := <-req.ResponseCh:
-		if p == nil {
-			req.markDone()
-			if req.FailureReason != nil {
-				return nil, req.FailureReason
-			}
-			return nil, ErrQueueTimeout
-		}
-		if err := ctx.Err(); err != nil {
-			req.markDone()
-			return nil, err
-		}
-		if !req.EnqueuedAt.IsZero() && time.Since(req.EnqueuedAt) >= q.maxWait {
-			req.markDone()
-			return nil, ErrQueueTimeout
-		}
-		if !req.acceptAssignment(p) {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			return nil, ErrQueueTimeout
-		}
-		req.markDone()
-		return p, nil
-	case <-timer.C:
-		// Remove the request from the queue
-		req.markDone()
-		q.Remove(req.RequestID, req.Model)
-		return nil, ErrQueueTimeout
-	case <-ctx.Done():
-		req.markDone()
-		q.Remove(req.RequestID, req.Model)
-		return nil, ctx.Err()
-	}
-}
-
-// Remove removes a specific request from the queue by request ID.
 func (q *RequestQueue) Remove(requestID, model string) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	queue := q.queues[model]
-	for i, req := range queue {
-		if req.RequestID == requestID {
-			q.queues[model] = append(queue[:i], queue[i+1:]...)
-			return
-		}
-	}
+	q.queue.Remove(requestID, model, queuedRequestAccess())
 }
 
-// PopNextFresh removes and returns the first non-stale request for a model.
 func (q *RequestQueue) PopNextFresh(model string) *QueuedRequest {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	queue := q.queues[model]
-	if len(queue) == 0 {
-		return nil
-	}
-
-	now := time.Now()
-	for len(queue) > 0 {
-		req := queue[0]
-		queue = queue[1:]
-		q.queues[model] = queue
-		if len(queue) == 0 {
-			delete(q.queues, model)
-		}
-		if now.Sub(req.EnqueuedAt) > q.maxWait {
-			req.markDone()
-			select {
-			case req.ResponseCh <- nil:
-			default:
-			}
-			continue
-		}
-		return req
-	}
-
-	return nil
+	return q.queue.PopNextFresh(model, queuedRequestAccess())
 }
 
-// RequeueFront pushes a request back to the front of its model queue.
 func (q *RequestQueue) RequeueFront(req *QueuedRequest) {
-	req.init()
-
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	queue := q.queues[req.Model]
-	queue = append([]*QueuedRequest{req}, queue...)
-	q.queues[req.Model] = queue
+	q.queue.RequeueFront(req, queuedRequestAccess())
 }
 
-// MaxSize returns the per-model maximum queue depth.
-func (q *RequestQueue) MaxSize() int {
-	return q.maxSize
-}
+func (q *RequestQueue) MaxSize() int { return q.queue.MaxSize() }
 
-// QueueSize returns the number of queued requests for a model.
-func (q *RequestQueue) QueueSize(model string) int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return len(q.queues[model])
-}
-
-// CompetingQueueDepth counts the queued waiters for a model whose routing
-// constraints could overlap the capacity available to pr — the hedge
-// governor's "queued consumers outrank insurance" input. A raw QueueSize
-// over-suppresses: a waiter that structurally CANNOT drain onto the pool a
-// hedge for pr would consume is not a competing consumer, and counting it
-// starves every public request of hedges for the waiter's whole queue stay
-// (codex P2). Excluded:
-//
-//   - exclusive self-route waiters (Pending.SelfRouteOnly): they drain only
-//     onto their owner's machines and never fall back to the public fleet,
-//     so public capacity spent on a hedge takes nothing from them;
-//   - serial-pinned waiters (Pending.AllowedProviderSerials) whose allowlist
-//     does not intersect pr's own: they can only consume their pinned
-//     providers. When pr is itself pinned to an overlapping set the two
-//     demonstrably compete for the same pool and the waiter counts.
-//
-// A waiter with a nil Pending has an unconstrained shape and counts
-// conservatively. pr == nil means "no constraint context": only the
-// structural self-route/serial-pinned exclusions apply.
-func (q *RequestQueue) CompetingQueueDepth(model string, pr *PendingRequest) int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	depth := 0
-	for _, req := range q.queues[model] {
-		w := req.Pending
-		if w == nil {
-			depth++
-			continue
-		}
-		if w.SelfRouteOnly {
-			continue
-		}
-		if len(w.AllowedProviderSerials) > 0 &&
-			(pr == nil || !serialSetsIntersect(w.AllowedProviderSerials, pr.AllowedProviderSerials)) {
-			continue
-		}
-		depth++
-	}
-	return depth
-}
-
-// serialSetsIntersect reports whether two attested-serial allowlists share a
-// serial. Sized for the tiny per-request lists routing carries; no map.
-func serialSetsIntersect(a, b []string) bool {
-	for _, s := range a {
-		for _, t := range b {
-			if s == t && s != "" {
-				return true
-			}
-		}
-	}
-	return false
-}
+func (q *RequestQueue) QueueSize(model string) int { return q.queue.QueueSize(model) }
 
 func (q *RequestQueue) QueueStats(model string) (depth int, oldestAge time.Duration) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	queue := q.queues[model]
-	depth = len(queue)
-	if depth == 0 {
-		return 0, 0
-	}
-	now := time.Now()
-	oldest := queue[0].EnqueuedAt
-	for _, req := range queue[1:] {
-		if req.EnqueuedAt.Before(oldest) {
-			oldest = req.EnqueuedAt
-		}
-	}
-	if !oldest.IsZero() {
-		oldestAge = now.Sub(oldest)
-	}
-	return depth, oldestAge
+	return q.queue.QueueStats(model, queuedRequestAccess())
 }
 
-// QueueDepths returns the total number of queued requests and the per-model
-// counts (nil when nothing is queued). READ-ONLY: unlike QueuedModels it does
-// NOT sweep stale entries or signal any waiter, so an observability caller
-// (the fleet sampler) can never change a client outcome. Stale-but-unswept
-// waiters are counted — they still occupy the queue until a mutating path
-// (Enqueue / QueuedModels / PopNextFresh / the waiter's own timer) removes them.
 func (q *RequestQueue) QueueDepths() (total int, byModel map[string]int) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	for model, queue := range q.queues {
-		if len(queue) == 0 {
-			continue
-		}
-		if byModel == nil {
-			byModel = make(map[string]int, len(q.queues))
-		}
-		byModel[model] = len(queue)
-		total += len(queue)
-	}
-	return total, byModel
+	return q.queue.QueueDepths()
 }
 
-// TotalSize returns the total number of queued requests across all models.
-func (q *RequestQueue) TotalSize() int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	total := 0
-	for _, queue := range q.queues {
-		total += len(queue)
-	}
-	return total
-}
+func (q *RequestQueue) TotalSize() int { return q.queue.TotalSize() }
 
-// PreferWaiterOwners returns the distinct owner account IDs of PreferOwner
-// waiters currently queued for a model. Used by RejectUnservableQueuedRequests
-// to compute owner eligibility OUTSIDE the queue lock (OwnedProviderSummary
-// takes the registry lock), avoiding any q.mu→r.mu nesting.
-func (q *RequestQueue) PreferWaiterOwners(model string) []string {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	seen := make(map[string]struct{})
-	var owners []string
-	for _, req := range q.queues[model] {
-		if req.Pending != nil && req.Pending.PreferOwner && req.Pending.OwnerAccountID != "" {
-			if _, ok := seen[req.Pending.OwnerAccountID]; !ok {
-				seen[req.Pending.OwnerAccountID] = struct{}{}
-				owners = append(owners, req.Pending.OwnerAccountID)
-			}
-		}
-	}
-	return owners
-}
+func (q *RequestQueue) HasQueued() bool { return q.queue.HasQueued() }
 
-// FailQueuedRequestsForModel rejects queued requests for a model by sending nil
-// on their ResponseCh. Waiters receive ErrQueueTimeout. Called when the
-// coordinator determines no provider can serve the model (e.g. all load_model
-// attempts failed with no alternative provider).
-//
-// Owner-scoped waiters are preserved because this verdict comes from a PUBLIC
-// capacity check, which ignores the caller's own machine:
-//   - Exclusive self-route (Pending.SelfRouteOnly) is ALWAYS preserved — it only
-//     queues after the preflight confirmed the owner has an online machine, so
-//     its own (busy) machine may free up; it never falls back to public.
-//   - Prefer (Pending.PreferOwner) is preserved ONLY when preferOwnerEligible
-//     says the owner currently has an owned provider serving the model (it may
-//     free up). A prefer waiter with NO owned provider is effectively a public
-//     request, so it is failed fast like any other public waiter rather than
-//     left to hit the 120s stale timeout.
-//
-// Preserved waiters drain on availability or hit their own maxWait timer in
-// WaitForProviderContext (surfacing machine_busy); entries they leave behind
-// are swept lazily by cleanStaleLocked on the next Enqueue or QueuedModels
-// scan. Returns the number of requests failed.
-func (q *RequestQueue) FailQueuedRequestsForModel(model string, preferOwnerEligible map[string]bool) int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	queue := q.queues[model]
-	failed := 0
-	var survivors []*QueuedRequest
-	for _, req := range queue {
-		if p := req.Pending; p != nil {
-			if p.SelfRouteOnly {
-				survivors = append(survivors, req)
-				continue
-			}
-			if p.PreferOwner && preferOwnerEligible[p.OwnerAccountID] {
-				survivors = append(survivors, req)
-				continue
-			}
-		}
-		req.markDone()
-		select {
-		case req.ResponseCh <- nil:
-			failed++
-		default:
-		}
-	}
-	if len(survivors) == 0 {
-		delete(q.queues, model)
-	} else {
-		q.queues[model] = survivors
-	}
-	return failed
-}
-
-// HasQueued reports whether any request is queued for any model. Cheaper than
-// QueuedModels (no allocation, no stale sweep) for the per-heartbeat probe.
-func (q *RequestQueue) HasQueued() bool {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	for _, queue := range q.queues {
-		if len(queue) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// QueuedModels returns the set of model IDs that currently have at least
-// one request waiting in the queue.
-func (q *RequestQueue) QueuedModels() []string {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	var models []string
-	for model := range q.queues {
-		q.cleanStaleLocked(model)
-		if len(q.queues[model]) > 0 {
-			models = append(models, model)
-		}
-	}
-	return models
-}
-
-// cleanStaleLocked removes stale requests for a specific model.
-// Caller must hold q.mu.
-func (q *RequestQueue) cleanStaleLocked(model string) {
-	queue := q.queues[model]
-	if len(queue) == 0 {
-		return
-	}
-
-	now := time.Now()
-	var fresh []*QueuedRequest
-	for _, req := range queue {
-		if now.Sub(req.EnqueuedAt) > q.maxWait {
-			// Close the response channel to signal timeout
-			req.markDone()
-			select {
-			case req.ResponseCh <- nil:
-			default:
-			}
-		} else {
-			fresh = append(fresh, req)
-		}
-	}
-	// Drop the key entirely when nothing survives so the per-model map tracks
-	// live queues only (model ids are catalog-bounded, but no reason to retain
-	// empty entries).
-	if len(fresh) == 0 {
-		delete(q.queues, model)
-		return
-	}
-	q.queues[model] = fresh
-}
+func (q *RequestQueue) QueuedModels() []string { return q.queue.QueuedModels(queuedRequestAccess()) }

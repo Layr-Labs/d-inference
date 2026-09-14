@@ -2912,23 +2912,23 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 }
 
 // drainModelQueue runs the drain pass for one model under the per-model claim
-// (queue_drain_coalesce.go): a trigger that finds a pass in flight hands its
+// (requestqueue/drain.go): a trigger that finds a pass in flight hands its
 // reason to that pass and returns, and the pass reruns once for it after
 // requeueing. A pass that does not complete releases the claim on the way out
 // so a recovered panic cannot leave the model undrainable.
 func (r *Registry) drainModelQueue(queue *RequestQueue, model, reason string) {
-	if !r.drainPasses.begin(model, reason) {
+	if !r.drainPasses.Begin(model, reason) {
 		return
 	}
 	released := false
 	defer func() {
 		if !released {
-			r.drainPasses.abandon(model)
+			r.drainPasses.Abandon(model)
 		}
 	}()
 	for {
 		r.drainModelQueuePass(queue, model, reason)
-		next, again := r.drainPasses.end(model)
+		next, again := r.drainPasses.End(model)
 		if !again {
 			released = true
 			return

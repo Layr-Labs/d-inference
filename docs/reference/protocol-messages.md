@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-14 · commit `cdef55575`
+> Last updated: 2026-09-14 · commit `33fc15a6b`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -28,6 +28,26 @@ This does not add a message type or change the public error code.
 | Scanner fallback | escaped string, non-string value, malformed input or missing key → decode a `struct{ Type string }` envelope first (the historic double parse), so error behaviour is unchanged | — |
 | Unknown type | `protocol: unknown message type %q` | `DecodingError` — the decoder **throws**, so the coordinator version-gates `desired_models`, `prefetch_model`, `load_model` and `capacity_probe` sends |
 | Tests | `coordinator/protocol/type_scan_test.go` (`TestProviderMessageUnmarshalScanEquivalence`), `messages_envelope_test.go`, `messages_bench_test.go` | `provider-swift/Tests/ProviderCoreTests/Protocol/ProtocolTests.swift` |
+
+## Coordinator connection ownership
+
+`coordinator/api/provider.go` (`handleProviderWS`) upgrades the socket;
+`coordinator/api/provider_session.go` (`providerReadLoop`) delegates it to one
+`coordinator/providercontrol/session/read.go` (`Session.Run`). Wire shapes and
+frame ordering are unchanged.
+
+| Frames | Coordinator operation |
+|---|---|
+| `register` | `coordinator/providercontrol/session/registration.go` (`register`); `Session.Run` rejects a second registration before publication |
+| `heartbeat` | `coordinator/providercontrol/session/heartbeat.go` (`heartbeat`, `ApplyHeartbeat`); a pre-registration heartbeat closes the connection |
+| `capacity_quote` | `Session.Run` delivers to `Registry.HandleCapacityQuote`; a pre-registration quote is ignored after a warning |
+| `prefix_cache_lookup`, `prefix_cache_ready`, and their `_v2` forms | `coordinator/providercontrol/session/cache_receipts.go` (`cacheLookup`, `cacheReady`, `cacheLookupV2`, `cacheReadyV2`) |
+| `load_model_status`, `models_update` | `coordinator/providercontrol/session/model_status.go` (`loadModelStatus`, `modelsUpdate`); `prefetch_model_status` remains ignored advisory progress in `Session.Run` |
+| `attestation_response`, `code_attestation_response` | `Session.Run` delivers to the existing challenge session and code-identity manager |
+| Inference accepted, chunk, complete and error | `coordinator/providercontrol/session/dependencies.go` (`InferenceFrames`) binds the existing API handlers; completion captures ingress time before its asynchronous callback, while the other three callbacks remain synchronous |
+
+See the [connection lifecycle](../architecture/components/coordinator.md#provider-connection-lifecycle)
+for teardown order and current resource bindings.
 
 ## Message inventory
 

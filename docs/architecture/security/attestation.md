@@ -1,6 +1,6 @@
 # Provider attestation
 
-> Last updated: 2026-09-14 · commit `bf2678202`
+> Last updated: 2026-09-14 · commit `33fc15a6b`
 
 How the coordinator decides how far to trust a provider connection: three
 trust levels (`none`, `self_signed`, `hardware`), two flags carried alongside
@@ -95,7 +95,7 @@ over SHA-256 of the exact `attestation` bytes as sent (`AttestationRaw`), with
 | Signature verifies; `secureEnclaveAvailable`, `sipEnabled`, `secureBootEnabled` all true (`rdmaDisabled`, `authenticatedRootEnabled` recorded only) | `Valid = false`; `MarkUntrusted` only under a binary-hash policy | `coordinator/attestation/attestation.go` (`Verify`, `VerifyJSON`, `ParseP256PublicKey`) |
 | Freshness, providers ≥ `minProviderVersionForReconnectAttestation` ([version gating](../../reference/api-contracts.md#version-gating)): `timestamp` within ±`RegistrationAttestationMaxAge` = 2m of coordinator time | `MarkUntrusted` ("attestation replay rejected"). Older providers keep their blob but `ChipFamily`, `RuntimeCapabilities`, `MetallibHash` are stripped | `coordinator/providercontrol/verification/registration.go` (`Verifier.VerifyRegistration`); `coordinator/attestation/attestation.go` (`CheckTimestamp`) |
 | Key binding: `register.public_key` == blob `encryptionPublicKey` | Invalid; `MarkUntrusted` only under a policy | `coordinator/providercontrol/verification/registration.go` (`Verifier.VerifyRegistration`) |
-| Binary hash, only when `binaryHashEnforce && policyConfigured`: `binaryHash` present and in the known-good set | `MarkUntrusted`. Otherwise the hash is drift telemetry (v0.6.0: code identity replaced it as the control) | `coordinator/providercontrol/verification/registration.go` (`Verifier.VerifyRegistration`); `coordinator/api/provider.go` (`binaryHashPolicySnapshot`) |
+| Binary hash, only when `binaryHashEnforce && policyConfigured`: `binaryHash` present and in the known-good set | `MarkUntrusted`. Otherwise the hash is drift telemetry (v0.6.0: code identity replaced it as the control) | `coordinator/providercontrol/verification/registration.go` (`Verifier.VerifyRegistration`); `coordinator/api/release_policy.go` (`binaryHashPolicySnapshot`) |
 | Success | `SetAttested(true, TrustSelfSigned)`; `trust_status{self_signed, online, "SE attestation verified, awaiting MDM verification"}`; `LastChallengeVerified = now` | `coordinator/providercontrol/verification/registration.go` (`Verifier.VerifyRegistration`); `coordinator/api/provider.go` (`sendTrustStatus`) |
 
 The provider's `secureBootEnabled` self-report is a historical proxy:
@@ -123,7 +123,8 @@ mismatching digest before the registry's attachment check.
 `coordinator/api/provider_verification.go` (`newProviderVerifier`) supplies
 current registry, store, MDM, scheduler, logger and policy dependencies. The
 verifier starts no workers and owns no provider inventory. Registration and
-capability publication remain in `providerReadLoop`; scheduler claims,
+capability publication belong to `coordinator/providercontrol/session/registration.go`
+(`register`); scheduler claims,
 generations and late-command authorization belong to
 `coordinator/providercontrol/mdmscheduler/` (`Scheduler`).
 `verification.NewScheduledAttempt` places the same `*Attempt` in the context
@@ -137,8 +138,10 @@ scheduler reads `UDID` and `MDAOutcome` after the verification call returns.
 pending-nonce tracker for one provider connection; `Run` issues initial, periodic
 and requested challenges, and `Deliver` removes a matching nonce before handing
 the reply to its waiter. Timeout and cancellation also remove the pending entry.
-The API's `providerReadLoop` creates the session, starts it after registration and
-cancels its context during teardown (`coordinator/api/provider.go`).
+`coordinator/providercontrol/session/read.go` (`Session.Run`) creates the challenge
+session; `coordinator/providercontrol/session/registration.go` (`register`) starts
+its loop after registration. Connection teardown cancels its context before
+clearing scheduler and coverage state; see the [connection lifecycle](../components/coordinator.md#provider-connection-lifecycle).
 
 `Verifier.VerifyResponse` applies signature, posture, binary and model checks in
 order, followed by the current runtime/version policy and existing trust
@@ -190,9 +193,9 @@ keeps its level but is excluded from routing until a later check passes.
 | Source | `SyncRuntimeManifest` rebuilds the manifest from the release inventory at boot, after every `POST /v1/releases` and after every `DELETE /v1/admin/releases`. It is the **union** of every **active** release row's `python_hash`, `runtime_hash`, `template_hashes` (`name=hash,…`) and `metallib_hash` (filed under the template name `mlx_metallib`): one accepted set per template name, values trimmed and lower-cased. Registering a release can only add accepted values; deactivating one removes exactly that release's values | `coordinator/providercontrol/releasepolicy/runtime_sync.go` (`SyncRuntimeManifest`); `coordinator/providercontrol/releasepolicy/runtime_manifest.go` (`RuntimeManifest`, `AddTemplateHash`); `coordinator/api/releases/registration.go` (`Controller.Register`), `coordinator/api/releases/deactivation.go` (`Controller.Delete`) |
 | Never single-valued | Releases overlap for the whole provider self-update window ([auto-update cadence](../../provider/cli-reference.md#runtime-constants)), so every template name must accept every active release's value. Until `ac60c5ada` (#816) the manifest kept one value per name: on 2026-09-03 registering v0.8.16 replaced the v0.8.15 `mlx_metallib` hash and ~1,180 providers still on v0.8.15 were excluded from routing at their next challenge until they self-updated (~30–40 min). Pinned by `coordinator/api/runtime_manifest_union_test.go` | `coordinator/providercontrol/releasepolicy/runtime_manifest.go` (`RuntimeManifest`) |
 | Degenerate inventories | Releases exist but none carry hashes → manifest cleared (`nil`, policy withdrawn); zero releases → the existing manifest is kept; inventory read error → the existing manifest is kept and, after a registration or deactivation, the committed mutation is folded in until the next successful sync | `coordinator/providercontrol/releasepolicy/runtime_sync.go` (`SyncRuntimeManifest`); `coordinator/providercontrol/releasepolicy/runtime_convergence.go` (`ConvergeCommittedRuntimeRelease`, `ConvergeCommittedRuntimeDeactivation`) |
-| Check | At registration and on every challenge reply, scoped to `mlx_metallib`: the backend must be `mlx-swift` and the reported `template_hashes["mlx_metallib"]` must be one of the accepted values; `python_hash`, `runtime_hash` and other template names are not compared | `coordinator/providercontrol/releasepolicy/runtime_verify.go` (`VerifyRuntimeHashesForBackend`, `VerifyRuntimeHashesAgainstManifest`, `templateHashAccepted`); `coordinator/api/provider.go` (`providerReadLoop`); `coordinator/providercontrol/releasepolicy/runtime_provider.go` (`ApplyChallengeRuntimePolicy`) |
+| Check | At registration and on every challenge reply, scoped to `mlx_metallib`: the backend must be `mlx-swift` and the reported `template_hashes["mlx_metallib"]` must be one of the accepted values; `python_hash`, `runtime_hash` and other template names are not compared | `coordinator/providercontrol/releasepolicy/runtime_verify.go` (`VerifyRuntimeHashesForBackend`, `VerifyRuntimeHashesAgainstManifest`, `templateHashAccepted`); `coordinator/providercontrol/session/registration.go` (`register`); `coordinator/providercontrol/releasepolicy/runtime_provider.go` (`ApplyChallengeRuntimePolicy`) |
 | Flags | `RuntimeVerified = RuntimeManifestChecked = (manifest present ∧ check passed)`; `MetallibVerified` additionally requires the reported `mlx_metallib` in the accepted set (`RuntimeManifestApprovesMetallib`). A failed check clears `RuntimeCapabilities`; a runtime identity that changed since the last reply clears `FreshCodeAttested` | `coordinator/providercontrol/releasepolicy/runtime_provider.go` (`ApplyChallengeRuntimePolicy`) |
-| No manifest | Registration sets `RuntimeVerified = true` but `RuntimeManifestChecked = MetallibVerified = false`; every challenge reply and every revalidation set all three false. Either way the provider is unroutable — an absent or withdrawn manifest fails closed | `coordinator/api/provider.go` (`providerReadLoop`); `coordinator/providercontrol/releasepolicy/runtime_provider.go` (`ApplyChallengeRuntimePolicy`, `RevalidateConnectedProviders`) |
+| No manifest | Registration sets `RuntimeVerified = true` but `RuntimeManifestChecked = MetallibVerified = false`; every challenge reply and every revalidation set all three false. Either way the provider is unroutable — an absent or withdrawn manifest fails closed | `coordinator/providercontrol/session/registration.go` (`register`); `coordinator/providercontrol/releasepolicy/runtime_provider.go` (`ApplyChallengeRuntimePolicy`, `RevalidateConnectedProviders`) |
 | Routing effect | `RuntimeVerified` is gate 5 of the [routing gate](#routing-gate) (`GateRuntimeUnverified`); `RuntimeManifestChecked` is required by `providerSupportsPrivateTextLocked` (gate 6); all three flags are required for release-policy evidence (`runtime_gate` in [release-policy-rollout](../../operations/release-policy-rollout.md)) | `coordinator/registry/routing_eligibility.go`; `coordinator/registry/attestation_policy.go` |
 | On mismatch | The challenge is **not** failed and the provider is **not** untrusted: it stays connected, receives `runtime_status{verified:false, mismatches[]}` ([protocol](../../reference/protocol-messages.md#runtime_status)) and is excluded from routing until a later registration or challenge passes. Log line: `provider runtime integrity mismatch in challenge response — excluding from routing` | `coordinator/providercontrol/challenge/verify.go` (`VerifyResponse`) |
 | Revalidation | Every successful sync re-checks every connected provider from its last reported hashes, so a deactivation deroutes the providers on that release at once, not only at their next challenge | `coordinator/providercontrol/releasepolicy/runtime_provider.go` (`RevalidateConnectedProviders`) |

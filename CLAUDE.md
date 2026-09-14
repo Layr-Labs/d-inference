@@ -17,6 +17,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── inference/        toolpolicy/ (request policy), response/ (endpoint formatting and relays)
 ├── mdm/              MicroMDM integration for device attestation
 ├── payments/         Internal ledger, pricing tables, base rewards
+├── providercontrol/session/ per-connection frame dispatch, registration, heartbeat and ordered teardown (Session)
 ├── providercontrol/challenge/ connection-local nonces, challenge transport and ordered verification (Session, Verifier)
 ├── providercontrol/mdmscheduler/ durable MDM/MDA queue, claims, worker budget and exact command ownership (Scheduler)
 ├── providercontrol/verification/ signed registration, reconnect recovery and MDM/MDA evidence checks (Verifier)

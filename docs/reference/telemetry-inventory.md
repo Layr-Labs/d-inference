@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-14 · commit `cdef55575`
+> Last updated: 2026-09-14 · commit `33fc15a6b`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -23,7 +23,8 @@ design and failure modes are in [`../architecture/telemetry.md`](../architecture
 ## Provider → coordinator
 
 Producer: the Swift provider over the `GET /ws/provider` WebSocket. Consumer:
-`providerReadLoop` (`coordinator/api/provider.go`).
+`Session.Run` (`coordinator/providercontrol/session/read.go`), with the current
+telemetry callbacks in `coordinator/api/provider_session.go` (`providerSessionDependencies`).
 
 | Datum | Message | Cadence | Coordinator sink | Retention |
 |---|---|---|---|---|
@@ -89,7 +90,7 @@ lists every name).
 | `provider.oom_suspected` | count | — | abrupt disconnect classified as OOM |
 | `provider.enqueue_failed` | count | `msg:runtime_status`, `msg:trust_status` | outbound frame could not be queued |
 | `providers.registrations` | count | `trust_level` | each `register` |
-| `ws.disconnects` | count | `reason:peer_close` + `code:<n>`, or `reason:read_error|read_error_control_frame` | each session end (`coordinator/api/provider.go`, `readErrorDisconnectReason`); mirrored by `ws_disconnects_total` |
+| `ws.disconnects` | count | `reason:peer_close` + `code:<n>`, or `reason:read_error|read_error_control_frame` | each session end (`coordinator/providercontrol/session/disconnect.go`, `readErrorDisconnectReason`); mirrored by `ws_disconnects_total` |
 | `routing.cache_telemetry_rejected`, `routing.cache_capability_rejected` | count | `source:heartbeat` | heartbeat prefix-cache payload failed validation |
 | `inference.unknown_request_frames` | count | `kind:chunk`, `complete`, `duplicate_complete`, `error`, `duplicate_error` | frame for an unknown or already-closed request |
 | `routing.throughput_anomaly` | count | `model`, `chip_family` | observed vs advertised throughput divergence (`coordinator/api/throughput_anomaly.go`); mirrored to the in-process registry |
@@ -126,7 +127,7 @@ lists every name).
 | `inference.cancelled_terminal` | count | `outcome`, `cause`, `delivered` | terminal correlation; `delivered` means enqueue accepted (`attempt.Service.ResolveCancelledTerminal`) |
 | `inference.cancel_to_terminal_ms` | histogram | `terminal`, `model`, `cause` | first successful enqueue to terminal or last later stray chunk; no sample for an unsent cancel (`attempt.Service.emitExpiredCancelEntries`) |
 | `routing.client_gone` | count | `model`, `prompt_bucket`, `chip_family`, `phase` (`before_first_token`, `after_commit`), `deadline_bucket` | consumer disconnect (`coordinator/api/prompt_buckets.go`, `emitClientGoneBucketed`) |
-| `routing.provider_breaker_open` / `_closed`, `routing.provider_ejected` / `routing.provider_ejection_recovered`, `routing.cooldown_entered`, `routing.capacity_cooldown_tripped`, `routing.load_failure_cooldowns` | count | `model` (+ `provider_id` for capacity cooldown) | fault-tracker transitions (`coordinator/inference/attempt/feedback.go`, `coordinator/api/provider.go`) |
+| `routing.provider_breaker_open` / `_closed`, `routing.provider_ejected` / `routing.provider_ejection_recovered`, `routing.cooldown_entered`, `routing.capacity_cooldown_tripped`, `routing.load_failure_cooldowns` | count | `model` (+ `provider_id` for capacity cooldown) | fault-tracker transitions (`coordinator/inference/attempt/feedback.go`, `coordinator/providercontrol/session/model_status.go` (`loadModelStatus`)) |
 | `routing.ttft_calibration_ratio` | gauge | `model` | each TTFT observation (`coordinator/inference/dispatch/calibration.go`) |
 | `routing.unservable_reclassified`, `routing.first_chunk_timeout_reclassified`, `routing.client_error_passthrough`, `routing.oversized_request_rejected`, `routing.deadline_unreachable_rejected`, `routing.invalid_ttft`, `routing.dispatch_client_error_stop`, `routing.first_chunk_timeout_ladder_capped`, `routing.hedge_governor_suppressed`, `routing.pending_load_backoff`, `routing.scan_admission_timeout`, `routing.ttft_admission`, `routing.ttft_spread`, `routing.provider_selected`, `routing.load_model_rejects` | count | mostly `model` | routing edge cases |
 | `http.requests` (count), `http.latency_ms` (histogram) | — | `method`, `path`, `status_code` | every HTTP request (`loggingMiddleware`, `coordinator/api/server.go`) |
@@ -198,7 +199,7 @@ Prometheus text (`?format=prom`). Reset on restart.
 | `inference_queue_outcome_total` | `model`, `class` | `inference.queue_outcome`; queue exits that dispatched no attempt (`coordinator/api/attempt_outcome_metrics.go`, `emitQueueOutcomeMetric`) |
 | `inference_request_outcome_or_view_total` | `model`, `class` | `inference.request_outcome_or_view`; the same request-terminal classes and counting boundaries (`coordinator/api/attempt_outcome_metrics.go`, `recordRequestOutcomeORView`; dispatch calls through `Observer.RequestOutcomeORView` in `coordinator/inference/dispatch/request_metrics.go`) |
 | `inference_unknown_frames_total` | `kind`, `provider_version` | `inference.unknown_frames`; unrecognized chunk/complete/error frames (`coordinator/api/unknown_frame_metrics.go`, `emitUnknownFrame`) |
-| `ws_disconnects_total` | `reason`, plus `code` for `peer_close` | `ws.disconnects`; `reason` is `peer_close`, `read_error`, or `read_error_control_frame` (`coordinator/api/provider.go`, `providerReadLoop`) |
+| `ws_disconnects_total` | `reason` | `ws.disconnects`; `reason` is `peer_close`, `read_error`, or `read_error_control_frame` (`coordinator/providercontrol/session/disconnect.go`, `readFailed`) |
 
 
 ## Coordinator-emitted events
@@ -211,10 +212,10 @@ Datadog's; nothing is stored locally.
 
 | Message | Severity · kind | Fields | Site |
 |---|---|---|---|
-| `provider registered` | info · `log` | `provider_id`, `trust_level`, `hardware_chip`, `memory_gb` | `coordinator/api/provider.go` |
-| `provider websocket read error` | warn · `connectivity` | `provider_id`, `ws_state:read_error`, `reason:read_error|read_error_control_frame`, `last_error` | `provider.go` |
-| `provider disconnected under memory pressure (suspected OOM)` | error · `oom` | `provider_id`, `memory_pressure`, `in_flight` | `provider.go` |
-| `attestation challenge failed` | warn or error · `attestation_failure` | `provider_id`, `reason`, `reconnect_count` | `provider.go` |
+| `provider registered` | info · `log` | `provider_id`, `trust_level`, `hardware_chip`, `memory_gb` | `coordinator/providercontrol/session/registration.go` (`register`) |
+| `provider websocket read error` | warn · `connectivity` | `provider_id`, `ws_state:read_error`, `reason:read_error|read_error_control_frame`, `last_error` | `coordinator/providercontrol/session/disconnect.go` (`readFailed`) |
+| `provider disconnected under memory pressure (suspected OOM)` | error · `oom` | `provider_id`, `memory_pressure`, `in_flight` | `coordinator/providercontrol/session/disconnect.go` (`readFailed`) |
+| `attestation challenge failed` | warn or error · `attestation_failure` | `provider_id`, `reason`, `reconnect_count` | `coordinator/providercontrol/challenge/failure.go` (`RecordFailure`) |
 | `provider failed, retrying` / `provider failed after accepting request, retrying` | warn · `inference_error` | `provider_id`, `attempt`, `reason:provider_error`, `status_code` (+ `request_id`) | `coordinator/inference/dispatch/wait.go` |
 | `provider first-chunk timeout` / `provider accepted timeout` | warn · `inference_error` | `provider_id`, `attempt`, `reason:first_chunk_timeout` / `accepted_timeout` | `coordinator/inference/dispatch/wait.go` |
 | `inference failed after N attempt(s)` | error · `inference_error` | `reason:dispatch_exhausted`, `attempt`, `status_code`, `last_error` (the sanitized closed message) | `coordinator/inference/dispatch/run.go` |

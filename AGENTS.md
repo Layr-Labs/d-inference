@@ -9,7 +9,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 ├── cmd/coordinator/  startup composition and shutdown (main.go); subsystem setup beside it
 ├── api/              HTTP + WebSocket handlers
 │   ├── consumer.go         OpenAI-compatible chat/completions/responses + Anthropic messages
-│   ├── provider.go         provider registration, heartbeats, attestation, relay
+│   ├── provider.go         provider WS upgrade, inference frames and attestation roster
 │   ├── requestauth/      credential middleware, shared API-key cache and linked-user identity
 │   ├── authentication.go current credential/store bindings for the router
 │   ├── billing/          billing/referral/pricing/payout HTTP controllers and tests
@@ -44,6 +44,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 │                     dispatch/ (provider preparation, queue/hedge/failover and commit)
 ├── mdm/              MicroMDM client + webhook handling
 ├── payments/         ledger + pricing (+ baserewards/)
+├── providercontrol/session/ per-connection frame dispatch, registration, heartbeat and ordered teardown (Session)
 ├── providercontrol/trustreuse/ durable device evidence, revocation journal/replay and continuity (Manager)
 ├── providercontrol/challenge/ connection-local nonces, challenge transport and ordered verification (Session, Verifier)
 ├── providercontrol/mdmscheduler/ durable MDM/MDA queue, claims, worker budget and exact command ownership (Scheduler)

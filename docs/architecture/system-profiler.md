@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-14 · commit `cdef55575`
+> Last updated: 2026-09-14 · commit `33fc15a6b`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -71,7 +71,7 @@ attempt stamps.
 | `first_flush_us`, `last_flush_us`, `done_flushed_us`, `chunks_out`, `bytes_out`, `max_chunk_gap_us`, `client_write_err` | `relayStamps` (`coordinator/inference/response/egress_profile.go`) from the chat, Responses and generic SSE relays; `Writer.Body` stamps the same fields once for non-stream bodies | relay to the client; a failed or short write sets `client_write_err` and leaves `done_flushed_us` absent |
 | `client_gone_us`, `client_gone_phase` ∈ {`before_first_token`, `after_commit`} | dispatch / consumer / `finalizeProfile` | client disconnect |
 | `cancel_sent_us` | dispatch, after the relay returns | cancel frame to the provider |
-| `complete_ingress_us` | terminal frame ingress (`provider.go`; parked, complete and error sites) | provider terminal received |
+| `complete_ingress_us` | terminal frame ingress (`coordinator/providercontrol/session/read.go`, `Session.Run`; parked and error sites remain in `coordinator/api/provider.go`) | provider terminal received |
 | `finalized_us` | `AttemptProfile.runFinalize` (`coordinator/registry/attempt_profile_finalize.go`) | both halves done → finalization callback; `Builder.Build` copies this stamp |
 
 Outcome columns are written first-wins by `AttemptProfile.SetOutcome`: provider

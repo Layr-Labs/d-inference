@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-14 · commit `cdef55575`
+> Last updated: 2026-09-14 · commit `33fc15a6b`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -29,7 +29,8 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Operator telemetry reads and exports | `coordinator/api/operations/` (`Controller`); `routes.go`, `rejections.go`, `profiles.go`, `snapshots.go`, `request_outcomes.go`, `metrics.go`, `utilization.go`; current owner bindings in `coordinator/api/operations.go` (`newOperations`) |
 | Profile construction, provider diagnostics and sampling | `coordinator/telemetry/profiler/` (`Builder`, `Profiler`); request/terminal lifecycle wiring remains in `coordinator/api/profiler.go` |
 | Durable device evidence, revocation and reconnect continuity | `coordinator/providercontrol/trustreuse/` (`Manager`); HTTP lifecycle integration remains in `coordinator/api/` |
-| Provider challenge nonces, replies and verification | `coordinator/providercontrol/challenge/` (`Session`, `Verifier`); `coordinator/api/provider_challenge.go` binds current dependencies and `providerReadLoop` owns the connection lifecycle |
+| Provider connection, registration publication, heartbeat and teardown | `coordinator/providercontrol/session/` (`Session.Run`); `coordinator/api/provider_session.go` (`providerSessionDependencies`) binds current resources and the four inference-frame callbacks |
+| Provider challenge nonces, replies and verification | `coordinator/providercontrol/challenge/` (`Session`, `Verifier`); `coordinator/api/provider_challenge.go` binds current dependencies and `coordinator/providercontrol/session/read.go` (`Session.Run`) owns the connection lifecycle |
 | Registration, reconnect state and device verification | `coordinator/providercontrol/verification/` (`Verifier`, `Attempt`); `coordinator/api/provider_verification.go` binds current resources; durable scheduling and command ownership live in `coordinator/providercontrol/mdmscheduler/` (`Scheduler`) |
 | Code-identity proof, APNs budgets and encrypted resume | `coordinator/providercontrol/codeidentity/` (`Manager`); the API adapter binds the release snapshot, startup proof store and live coverage store |
 | Readiness, admin draining and graceful shutdown | `coordinator/api/readiness/` (`Controller.Gate`, `Ready`, `Drain`, `WaitForInflightZero`); `coordinator/api/drain.go` binds one owner for routes and public shutdown methods |

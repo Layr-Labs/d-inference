@@ -107,18 +107,9 @@ func (s *Scheduler) finishAttempt(work workItem, result AttemptResult) {
 		}
 		s.mu.Unlock()
 		if result.Granted && work.job.Kind == store.VerificationTaskSecurityInfo {
-			if s.deps.ReuseMDA(work.binding.Target()) {
-				s.metricCounter("mda_verification_total", "outcome", "reused")
-				s.mu.Lock()
-				delete(s.bindings, work.job.SEPubKey)
-				s.mu.Unlock()
-			} else {
-				s.enqueueMDA(work.binding, result.UDID)
-			}
+			s.finishSecurityInfo(work.binding, result.UDID)
 		} else {
-			s.mu.Lock()
-			delete(s.bindings, work.job.SEPubKey)
-			s.mu.Unlock()
+			s.forgetBinding(work.binding)
 		}
 		s.signal()
 		return

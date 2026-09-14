@@ -184,9 +184,7 @@ func (s *Scheduler) refreshReleasedJob(work workItem) {
 func (s *Scheduler) enqueueMDA(binding Binding, udid string) {
 	if udid == "" {
 		s.metricCounter("mda_verification_total", "outcome", "invalid")
-		s.mu.Lock()
-		delete(s.bindings, binding.attestation.PublicKey)
-		s.mu.Unlock()
+		s.forgetBinding(binding)
 		return
 	}
 	now := s.deps.Now().UTC()

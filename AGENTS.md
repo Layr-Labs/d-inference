@@ -16,7 +16,7 @@ coordinator/          Go control plane (packages live at top level, not internal
 │   ├── invite_handlers.go  invite code admin/user flows
 │   ├── release_handlers.go binary release registration (GitHub Actions integration)
 │   ├── chunk_key_cache.go  per-request X25519 shared-key memoization for chunk decrypt
-│   ├── stats.go            public network stats
+│   ├── network/            public stats, geography, totals, series and leaderboard refresh state
 │   ├── types/              canonical JSON shapes for consumer-facing endpoints
 │   └── server.go           route wiring, auth middleware, version gate
 ├── apns/             APNs-push code-identity attestation

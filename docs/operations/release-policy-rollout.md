@@ -1,6 +1,6 @@
 # Roll out the release-policy routing gate (shadow → enforce)
 
-> Last updated: 2026-09-04 · commit `7ae06021f`
+> Last updated: 2026-09-14 · commit `831869026`
 
 Runbook for the two production changes that involve the coordinator's
 release-policy routing gate: (1) deploying a coordinator that contains the gate
@@ -73,7 +73,7 @@ Where the gate lives: `coordinator/registry/attestation_policy.go`
 `SetReleasePolicyGeneration`, sweep that re-proves or clears evidence;
 `CountProvidersWithCurrentApplicationEvidence` and
 `ApplicationEvidenceModelCoverage`, the coverage counters served by
-`coordinator/api/stats.go` (`handleStats`)).
+`coordinator/api/network/stats_snapshot.go` (`computeStats`)).
 
 ## Steps
 

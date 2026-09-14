@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-13 · commit `78348f9bf`
+> Last updated: 2026-09-14 · commit `831869026`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -150,10 +150,10 @@ Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../ar
 
 | Method | Path | Handler | Auth | Notes |
 |---|---|---|---|---|
-| GET | `/v1/stats` | `handleStats` (`coordinator/api/stats.go`) | `—` | Refresh every 30 s; preserve the UTC source observation time in `snapshot_at` (`time.RFC3339Nano`). Geography refreshes independently and reports availability per section. Retain a successful core body up to 5 min on core refresh failure; 503 `service_unavailable` without an unexpired success |
-| GET | `/v1/leaderboard` | `handleLeaderboard` (`coordinator/api/leaderboard.go`) | `—` | Cached 5 min (full) / 1 min (recent window) |
-| GET | `/v1/network/totals` | `handleNetworkTotals` (`coordinator/api/network_totals.go`) | `—` | Totals refreshed every minute with the same 5 min safety TTL; 503 `service_unavailable` without an unexpired success; canonical windows `24h`, `7d`, `30d`, `all` (`1d` → `24h`, empty/`lifetime` → `all`) |
-| GET | `/v1/network/series` | `handleNetworkSeries` (`coordinator/api/network_series.go`) | `—` | Time series, cached 1 min; 503 `service_unavailable` on a store error after a miss, with no failed result cached |
+| GET | `/v1/stats` | `Controller.Stats` (`coordinator/api/network/stats.go`) | `—` | Refresh every 30 s; preserve the UTC source observation time in `snapshot_at` (`time.RFC3339Nano`). Geography refreshes independently and reports availability per section. Retain a successful core body up to 5 min on core refresh failure; 503 `service_unavailable` without an unexpired success |
+| GET | `/v1/leaderboard` | `Controller.Leaderboard` (`coordinator/api/network/leaderboard.go`) | `—` | Cached 5 min for every leaderboard window |
+| GET | `/v1/network/totals` | `Controller.Totals` (`coordinator/api/network/totals.go`) | `—` | Totals refreshed every minute with the same 5 min safety TTL; 503 `service_unavailable` without an unexpired success; canonical windows `24h`, `7d`, `30d`, `all` (`1d` → `24h`, empty/`lifetime` → `all`) |
+| GET | `/v1/network/series` | `Controller.Series` (`coordinator/api/network/series.go`) | `—` | Time series, cached 1 min; 503 `service_unavailable` on a store error after a miss, with no failed result cached |
 | GET | `/health` | `handleHealth` (`coordinator/api/consumer.go`) | `—` | `HealthResponse` `{status: "ok", draining, providers, version, build_commit, build_date}` |
 
 A successful empty analytics window returns 200 with empty arrays or zero totals.
@@ -164,17 +164,17 @@ include the latest completed geography attempt, so availability changes appear
 on a subsequent core refresh. Missing or expired geography is unavailable.
 Coalesced cache fills are owned by `coordinator/api/readcache/refresher.go`
 (`Refresher.Get`, `Refresher.Refresh`). Endpoint schedules and error telemetry
-remain in `coordinator/api/cache_refresher.go` (`StartCacheRefreshers`), and
+live in `coordinator/api/network/refresh.go` (`Controller.StartRefreshers`), and
 geography composition is in
-`coordinator/api/stats_geography.go` (`cachedStatsGeography`, `computeStatsGeography`).
+`coordinator/api/network/geography.go` (`cachedStatsGeography`, `computeStatsGeography`).
 
 | Stats geography field | Contract | Code |
 |---|---|---|
-| `request_locations_status`, `request_flows_status` | `available` or `unavailable`, independently; unavailable includes startup before the first geography refresh finishes. Core stats still return 200 | `coordinator/api/stats_geography.go` (`statsGeographyStatus`, `computeStatsGeography`) |
-| `geography_snapshot_at` | RFC 3339 UTC observation start for the geography attempt, separate from core `snapshot_at`; empty before an attempt or after expiry | `coordinator/api/stats_geography.go` (`statsGeography`) |
-| `request_locations`, `request_regions`, `unknown_request_location_requests`, `suppressed_request_city_requests` | `null` when locations are unavailable; successful empty windows retain arrays and numeric counts. A failed attempt replaces previous geography rather than presenting stale figures as current | `coordinator/api/stats_geography.go` (`computeStatsGeography`, `addTo`) |
-| `request_flows` | `null` when flows are unavailable, an array (possibly empty) on success; independent of location status | `coordinator/api/stats_geography.go` (`computeStatsGeography`) |
-| `provider_locations`, `provider_regions` | Still computed from the live fleet with core stats; request-geography failures do not hide provider geography | `coordinator/api/stats.go` (`computeStats`, `aggregateProviderLocations`) |
+| `request_locations_status`, `request_flows_status` | `available` or `unavailable`, independently; unavailable includes startup before the first geography refresh finishes. Core stats still return 200 | `coordinator/api/network/geography.go` (`statsGeographyStatus`, `computeStatsGeography`) |
+| `geography_snapshot_at` | RFC 3339 UTC observation start for the geography attempt, separate from core `snapshot_at`; empty before an attempt or after expiry | `coordinator/api/network/geography.go` (`statsGeography`) |
+| `request_locations`, `request_regions`, `unknown_request_location_requests`, `suppressed_request_city_requests` | `null` when locations are unavailable; successful empty windows retain arrays and numeric counts. A failed attempt replaces previous geography rather than presenting stale figures as current | `coordinator/api/network/geography.go` (`computeStatsGeography`, `addTo`) |
+| `request_flows` | `null` when flows are unavailable, an array (possibly empty) on success; independent of location status | `coordinator/api/network/geography.go` (`computeStatsGeography`) |
+| `provider_locations`, `provider_regions` | Still computed from the live fleet with core stats; request-geography failures do not hide provider geography | `coordinator/api/network/stats_snapshot.go` (`computeStats`), `coordinator/api/network/provider_geography.go` (`aggregateProviderLocations`) |
 
 The stats, totals, and series handlers emit the 503 `service_unavailable` error
 envelope when their required data is unavailable.
@@ -557,7 +557,7 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Models and catalog | `coordinator/api/models_endpoints.go`, `coordinator/api/concrete_model_entries.go`, `coordinator/api/openrouter_endpoint.go`, `coordinator/api/model_registry_handlers.go`, `coordinator/api/model_alias_handlers.go`, `coordinator/api/openrouter_alias_handlers.go`, `coordinator/api/capacity.go`, `coordinator/api/exact_cache_status.go` |
 | Keys, device code, accounts | `coordinator/api/apikey_handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/device_auth.go`, `coordinator/api/me_handlers.go` |
 | Billing, Stripe, referral, invites | `coordinator/api/billing_handlers.go`, `coordinator/api/stripe_payouts.go`, `coordinator/api/stripe_withdraw.go`, `coordinator/api/stripe_payouts_webhooks.go`, `coordinator/api/invite_handlers.go`, `coordinator/api/base_rewards_handlers.go` |
-| Stats | `coordinator/api/stats.go`, `coordinator/api/cache_refresher.go`, `coordinator/api/readcache/`, `coordinator/api/network_totals.go`, `coordinator/api/leaderboard.go`, `coordinator/api/network_series.go` |
+| Stats | `coordinator/api/network/stats.go`, `coordinator/api/network/refresh.go`, `coordinator/api/readcache/`, `coordinator/api/network/totals.go`, `coordinator/api/network/leaderboard.go`, `coordinator/api/network/series.go` |
 | Release, enrollment, provider WS, log reports | `coordinator/api/release_handlers.go`, `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
 | Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |
 | Rate-limit bucket consumption | `coordinator/ratelimit/ratelimit.go` (`allowBucket`, `debitBucket`): fixed and per-key rate paths share token consumption and retry calculation while keeping their own admission and clamp rules |

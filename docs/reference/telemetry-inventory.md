@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-13 · commit `de4e28825`
+> Last updated: 2026-09-14 · commit `831869026`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -247,7 +247,7 @@ two profiler tables: [`../architecture/system-profiler.md`](../architecture/syst
 | `GET /v1/admin/profiles`, `/export`; `GET /v1/admin/snapshots`, `/export` | `request_profiles`, `fleet_snapshots` (export is NDJSON only) | same (`coordinator/api/profiler_admin.go`) |
 | `GET /v1/admin/metrics` | in-process registry snapshot | `?format=prom` |
 | `GET /v1/admin/log-reports/{id}` | one log bundle | admin key |
-| `GET /v1/stats` | usage aggregates (`coordinator/api/stats.go`, `handleStats`) | Unauthenticated; source timestamp and cache interval: [public stats contract](api-contracts.md#public-stats-and-health-5) |
+| `GET /v1/stats` | usage aggregates (`coordinator/api/network/stats_snapshot.go`, `computeStats`) | Unauthenticated; source timestamp and cache interval: [public stats contract](api-contracts.md#public-stats-and-health-5) |
 
 ## Provider-local surfaces (never leave the machine)
 

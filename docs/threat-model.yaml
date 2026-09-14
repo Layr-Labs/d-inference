@@ -958,6 +958,7 @@ threats:
       - coordinator/api/releases/registration.go
       - coordinator/api/releases/deactivation.go
       - coordinator/api/releases.go
+      - coordinator/api/releases/controller.go
     mitigations:
       - description: Admin endpoints gated by separate admin key middleware.
         status: implemented
@@ -968,6 +969,8 @@ threats:
     detection_hint: >
       Changes to middleware ordering, key validation logic, or new route registration
       in server.go should verify admin vs consumer key scopes are not merged.
+      Changes to coordinator/api/releases/controller.go (Dependencies, Controller, New) must
+      preserve the ReleaseKey, AuthorizeAdmin and BearerToken dependency bindings.
 
   - id: T-005
     trust_boundary: TB-001
@@ -1519,6 +1522,7 @@ threats:
     affected_assets: [A-005, A-011]
     affected_files:
       - coordinator/api/releases.go
+      - coordinator/api/releases/controller.go
       - coordinator/api/admin_auth.go
       - coordinator/api/releases/registration.go
       - coordinator/api/releases/deactivation.go
@@ -1538,6 +1542,8 @@ threats:
     detection_hint: >
       Any change to release key validation, admin middleware, or the /v1/releases
       handler must use constant-time key comparison and emit an audit log entry.
+      Check coordinator/api/releases/controller.go (Dependencies, Controller, New) when changing
+      the ReleaseKey, AuthorizeAdmin or BearerToken callbacks used by those handlers.
 
   - id: T-025
     trust_boundary: TB-006
@@ -1552,6 +1558,8 @@ threats:
     affected_assets: [A-011]
     affected_files:
       - coordinator/api/releases.go
+      - coordinator/api/consumer.go
+      - coordinator/api/release_cache.go
       - coordinator/api/releases/cache.go
       - coordinator/api/releases/latest.go
       - coordinator/api/releases/runtime_manifest.go
@@ -1568,6 +1576,9 @@ threats:
       coordinator/api/releases/runtime_manifest.go must verify that the
       platform-specific discovery key and shared runtime-manifest key are
       invalidated on both register and delete operations.
+      The handleVersion reader in coordinator/api/consumer.go and apiVersionCacheKey
+      alias in coordinator/api/release_cache.go must share the api_version:v1 key
+      invalidated for macos-arm64 registration and deletion.
 
   - id: T-026
     trust_boundary: TB-006

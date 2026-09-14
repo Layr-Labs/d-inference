@@ -1063,6 +1063,11 @@ threats:
       - coordinator/inference/dispatch/route_observation.go
       - coordinator/inference/attempt/pending_outcome.go
       - coordinator/api/inference_dispatch.go
+      - coordinator/inference/response/stream.go
+      - coordinator/inference/response/endpoint_stream.go
+      - coordinator/inference/response/provider_stream.go
+      - coordinator/inference/response/endpoint_stream_test.go
+      - coordinator/api/endpoint_stream_reconciliation_test.go
     mitigations:
       - description: Usage rows written per request to the ledger.
         status: implemented

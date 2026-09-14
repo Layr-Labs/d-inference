@@ -354,11 +354,15 @@ long pending prompt and a long arrival completing behind a short pending prompt.
 They use a real isolated coordinator and encrypted WebSocket providers with
 scripted compute. It does not require model downloads or production access.
 
-Response formatting tests live beside their owner in `coordinator/inference/response/`: chat/tool reconstruction, endpoint framing, metadata sanitization and normalization. The API retains real request/outcome, short-write, failed-write, sealed-transport and settlement fixtures. Run both owners from the repository root (no model or provider process is required):
+Response formatting tests live beside their owner in `coordinator/inference/response/`: chat/tool reconstruction, endpoint framing, metadata sanitization and normalization. The API retains real request/outcome, short-write, failed-write, sealed-transport and settlement fixtures.
+
+`coordinator/inference/response/endpoint_stream_test.go` (`TestEndpointCompletionClientCancellationPolicy`) pins the different cancellation rules. `coordinator/api/endpoint_stream_reconciliation_test.go` (`TestEndpointStreamMissingCompletion`, `TestEndpointStreamInitialErrorPreservesDispatchChunks`) checks actual refunds, terminal markers and dispatch-time content across Responses, Completions and Messages.
+
+Run both owners from the repository root (no model or provider process is required):
 
 ```bash
 GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/inference/response
-GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'Test(RequestOutcome|ProfilerKillSwitch|Streaming|StreamRelay|NonStream|NonStreamingCompleteObject|ConfigurePendingCopiesMetadataDetails|MarshalForwardBody)'
+GOTOOLCHAIN=go1.25.0 go test -race ./coordinator/api -run 'Test(Endpoint|RequestOutcome|ProfilerKillSwitch|Streaming|StreamRelay|NonStream|NonStreamingCompleteObject|ConfigurePendingCopiesMetadataDetails|MarshalForwardBody)'
 ```
 
 `TestMarshalForwardBodyDoesNotHTMLEscape` keeps the API adapter bound to

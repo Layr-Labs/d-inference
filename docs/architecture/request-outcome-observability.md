@@ -37,7 +37,7 @@ and publication order.
 ```mermaid
 flowchart LR
   A[dispatch wait, race and exhaustion] --> F[attempt route-outcome constructors]
-  B[response relays] --> F
+  B[response relays: stream.go / endpoint_stream.go] --> F
   C[providerframe.Service terminals] --> F
   D[API settlement grace] --> F
   F --> G[attempt.PublishPendingOutcome]
@@ -69,7 +69,7 @@ The five persisted values are constants in `coordinator/inference/attempt/route_
 | `final_status` | `error_class` | Decided in | When |
 |---|---|---|---|
 | `cancelled` | `client_gone` | `waitFirstChunk` (`coordinator/inference/dispatch/wait.go`) and queue-wait arms (`coordinator/inference/dispatch/primary.go`) | client disconnected before the first content chunk |
-| `cancelled` | `client_gone_before_response` | `coordinator/inference/response/nonstream.go` and `coordinator/inference/response/generic_relay.go` call `responseServices.ClientGone` (`coordinator/api/response_writer.go`), which uses `ClientGoneBeforeResponseOutcome` | client disconnected while the coordinator was still waiting for the full response |
+| `cancelled` | `client_gone_before_response` | `Writer.NonStream` and `Writer.awaitNonStreamUsage` (`coordinator/inference/response/nonstream.go`) call `responseServices.ClientGone` (`coordinator/api/response_writer.go`), which uses `ClientGoneBeforeResponseOutcome` | client disconnected while the coordinator was still waiting for the full response |
 | `cancelled` | `speculative_loser` | `markSpeculativeLoser` (`coordinator/inference/dispatch/route_observation.go`) uses `SpeculativeLoserOutcome` | the other attempt of a speculative/backup race won |
 | `error` | `provider_error` | `PreCommitProviderErrorOutcome`; `dispatchErrorClass` for a failed send | provider terminal before commit that is not otherwise classified |
 | `error` | `provider_disconnect_pre_commit` | `PreCommitProviderErrorOutcome` when the synthetic terminal carries `CoordinatorCause = provider_disconnected` (a Go-only field, `json:"-"`, never on the wire) | provider session dropped before commit (`registry.Disconnect` injects the terminal) |
@@ -84,7 +84,7 @@ The five persisted values are constants in `coordinator/inference/attempt/route_
 | `timeout` | `accepted_timeout` | `coordinator/inference/dispatch/wait.go` accepted-wait arm | provider sent `inference_accepted` (or a cold load) but no content in time |
 | `timeout` | `preamble_liveness_timeout` | `coordinator/inference/dispatch/wait.go` preamble-liveness arm | provider emitted only role/lifecycle preamble, then stalled |
 | `timeout` | `usage_timeout_before_response`, `response_timeout_before_response` | `Writer.NonStream` (`coordinator/inference/response/nonstream.go`) calls `responseServices.Timeout` (`coordinator/api/response_writer.go`), which uses `PreResponseTimeoutOutcome` | non-streaming response or its usage frame did not arrive in time |
-| `partial_success` | `provider_error_after_commit` / `provider_disconnect_after_commit` | `PostCommitProviderErrorOutcome` (streaming relays, `coordinator/inference/response/generic_relay.go`) | provider error or disconnect after the client had content |
+| `partial_success` | `provider_error_after_commit` / `provider_disconnect_after_commit` | `Writer.handleEndpointStreamingResponse` (`coordinator/inference/response/endpoint_stream.go`) calls `responseServices.ProviderError` (`coordinator/api/response_writer.go`), which uses `PostCommitProviderErrorOutcome` | provider error or disconnect after the client had content |
 | `partial_success` | `provider_incomplete_after_commit` | `PostCommitProviderIncompleteOutcome`, `502` | provider channel closed mid-stream with no terminal |
 | `partial_success` | `stream_timeout_after_commit` | `PostCommitStreamTimeoutOutcome`, `504` | idle-stream timer expired mid-stream |
 | `partial_success` | `client_gone_after_commit_provider_completed` | `coordinator/inference/providerframe/complete.go` (`Service.CompleteAt`) when `consumerGone` (`CompleteRouteOutcome`) | client left after commit; provider completed; consumer charged and provider paid |
@@ -244,7 +244,7 @@ All admin reads require the admin key (`requireAdminKey`).
 | Outcome constructors, final status, error reason and shared terminal publication | `coordinator/inference/attempt/route_outcome.go`, `coordinator/inference/attempt/pending_outcome.go`; `coordinator/api/route_outcome.go` retains the cache/metrics/durable observers |
 | Cancel correlation, delivery and expiry | `coordinator/inference/attempt/cancel_tracker.go`, `cancel_recency.go`, `cancel_delivery.go`, `cancel_metrics.go`; `coordinator/api/inference_attempt.go` binds the shared tracker |
 | Pre-commit arms, dispatch error classes, exhausted-status reclassification, `request_outcome` emit | `coordinator/inference/dispatch/run.go`, `coordinator/inference/dispatch/first_content_clock.go`, `coordinator/api/openrouter_uptime.go` |
-| Post-commit and pre-response relay arms | `coordinator/inference/response/stream.go`, `coordinator/inference/response/nonstream.go`, `coordinator/inference/response/generic_relay.go`; `coordinator/api/response_writer.go` (`responseServices`) maps these outcomes; dispatch terminals remain in `coordinator/inference/dispatch/terminal_write.go` |
+| Post-commit and pre-response relay arms | `coordinator/inference/response/stream.go`, `coordinator/inference/response/nonstream.go`, `coordinator/inference/response/endpoint_stream.go` (`Writer.handleEndpointStreamingResponse`, `Writer.finishEndpointStream`); `coordinator/api/response_writer.go` (`responseServices`) maps these outcomes; dispatch terminals remain in `coordinator/inference/dispatch/terminal_write.go` |
 | Provider terminals, consumer-gone handling | `coordinator/inference/providerframe/complete.go` (`Service.CompleteAt`), `coordinator/inference/providerframe/error.go` (`Service.Error`); `coordinator/inference/attempt/error_sanitize.go` |
 | Settlement grace and no-terminal refund | `coordinator/api/settlement.go` (`holdForSettlement`) keeps the outcome/metric policy; `coordinator/inference/settlement/holder.go` (`Holder`) owns parked records and `coordinator/inference/settlement/refund.go` (`Refund`) owns the financial operation |
 | Client-gone and partial-success counters | `coordinator/api/prompt_buckets.go`, `coordinator/api/partial_success_metrics.go` |

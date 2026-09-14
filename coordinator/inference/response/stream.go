@@ -2,11 +2,12 @@ package response
 
 import (
 	"encoding/json"
+	"net/http"
+	"time"
+
 	"github.com/eigeninference/d-inference/coordinator/api/httpresponse"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"net/http"
-	"time"
 )
 
 func (s *Writer) Stream(
@@ -16,14 +17,8 @@ func (s *Writer) Stream(
 	firstChunks []string,
 	initialError *protocol.InferenceErrorMessage,
 ) {
-	if pr.ConsumerEndpoint == CompletionsEndpoint || pr.ConsumerEndpoint == MessagesEndpoint {
-		s.handleGenericEndpointStreamingResponseWithError(
-			w, r, pr, firstChunks, initialError)
-		return
-	}
-	if pr.IsResponsesAPI {
-		s.handleResponsesStreamingResponseWithFirstChunk(
-			w, r, pr, firstChunks, initialError)
+	if pr.ConsumerEndpoint == CompletionsEndpoint || pr.ConsumerEndpoint == MessagesEndpoint || pr.IsResponsesAPI {
+		s.handleEndpointStreamingResponse(w, r, pr, firstChunks, initialError)
 		return
 	}
 
@@ -158,50 +153,21 @@ func (s *Writer) Stream(
 		relay.Chunk(chunk.Data)
 	}
 
-	for {
-		select {
-		case providerChunk, ok := <-pr.ChunkCh:
-			if !ok {
-				finishStream()
-				return
-			}
-			relayChunk(providerChunk)
-			// Fold in whatever the provider already queued behind this chunk
-			// (never waiting for more), then flush the batch once. A close
-			// observed mid-drain is handled exactly like the blocking-receive
-			// close — after the drained chunks are on the wire.
-			closed := drainQueuedChunks(pr.ChunkCh, MaxBatchChunks-1, relayChunk)
-			relay.Flush()
-			if closed {
-				finishStream()
-				return
-			}
-
-		case errMsg, ok := <-pr.ErrorCh:
-			if !ok {
-				continue
-			}
-			// The provider error is delivered before ChunkCh is closed, so
-			// chunks that arrived ahead of it may still be queued: forward them
-			// (never waiting) before the terminal error so a late failure never
-			// truncates content the provider already produced.
-			drainQueuedChunks(pr.ChunkCh, cap(pr.ChunkCh), relayChunk)
-			relay.Flush()
-			s.writeChatStreamProviderError(w, flusher, pr, errMsg)
-			return
-
-		case <-timer.C:
-			s.deps.Reservation.Refund(pr, "provider_timeout:"+pr.RequestID)
-			s.deps.Metrics.Incr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
-			s.deps.Outcomes.Timeout(pr, true, "")
-			s.ChatError(w, flusher, pr, "timeout", "request timed out")
-			return
-
-		case <-r.Context().Done():
-			profileClientGone(pr, "after_commit")
-			return
-		}
+	end, providerError := relayProviderStream(r.Context(), pr, timer, relayChunk, relay.Flush)
+	switch end {
+	case providerStreamClosed:
+		finishStream()
+	case providerStreamFailed:
+		s.writeChatStreamProviderError(w, flusher, pr, providerError)
+	case providerStreamTimedOut:
+		s.deps.Reservation.Refund(pr, "provider_timeout:"+pr.RequestID)
+		s.deps.Metrics.Incr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
+		s.deps.Outcomes.Timeout(pr, true, "")
+		s.ChatError(w, flusher, pr, "timeout", "request timed out")
+	case providerStreamClientGone:
+		profileClientGone(pr, "after_commit")
 	}
+
 }
 
 func (s *Writer) writeChatStreamProviderError(

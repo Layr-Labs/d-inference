@@ -40,12 +40,35 @@ Stages in the order `handleChatCompletions` runs them. Each stage either advance
 | 11 | Capacity admission: can any eligible provider take this prompt now? | `runInferenceAdmission` | 429, 503, 413 `payload_too_large` |
 | 12 | Plan: cache-aware route plan for the prompt | `planCacheRoute` (`coordinator/api/prompt_artifacts.go`); see [`../cache-aware-routing.md`](../cache-aware-routing.md) | — |
 | 13 | Dispatch: select a provider from the scheduler plan, encrypt, send, wait for first content, race a speculative backup, fail over, commit | `Controller.Run` (`coordinator/inference/dispatch/request.go`) enters `execution.run` (`coordinator/inference/dispatch/run.go`); [dispatch ownership and code map](../routing.md#dispatch-controller) describe the queue, hedge and failover operations. Payload encryption uses `e2e.GenerateSessionKeys` / `e2e.Encrypt` (`coordinator/internal/e2e/e2e.go`); see the [encryption model](../security/encryption.md) | 429 on capacity or first-content deadline, 502/503/504 `provider_error`, 503 `model_unavailable` (`preContentTerminal`, `coordinator/inference/dispatch/terminal_write.go`; exhausted branch of `execution.run`) |
-| 14 | Relay: stream or assemble the provider's chunks | `Writer.Stream` (`coordinator/inference/response/stream.go`, `coordinator/inference/response/responses_relay.go`); `Writer.NonStream` (`coordinator/inference/response/nonstream.go`) | Terminal SSE `error` event (status already 200) |
+| 14 | Relay: stream or assemble the provider's chunks | `Writer.Stream` (`coordinator/inference/response/stream.go`) and `Writer.handleEndpointStreamingResponse` (`coordinator/inference/response/endpoint_stream.go`); `Writer.NonStream` (`coordinator/inference/response/nonstream.go`) | Terminal SSE `error` event (status already 200) |
 | 15 | Settle: charge the account from provider-reported usage, record usage, credit the provider | `Service.CompleteAt` (`coordinator/inference/providerframe/complete.go`) claims the terminal and calls `Service.Complete` (`coordinator/inference/settlement/completion.go`) before signaling consumer channels; rules in [`../billing.md`](../billing.md) | — |
 
 Non-streaming raw responses and reconstructed deltas both wait for terminal usage through `awaitNonStreamUsage` in `coordinator/inference/response/nonstream.go`. A closed completion channel refunds and returns 502; expiry refunds and returns 504; client cancellation refunds without writing a replacement response. Buffered provider errors keep their existing precedence before that wait.
 
 Provider-side execution between stages 13 and 14 — the WebSocket `inference_request` → `inference_response_chunk` → `inference_complete` exchange (`coordinator/protocol/inference.go`) and the engine behind it — is described in [`../inference.md`](../inference.md) and [`provider.md`](provider.md). The whole journey as a sequence diagram is in [`../data-flow.md`](../data-flow.md).
+
+### Streaming ownership
+
+`relayProviderStream` (`coordinator/inference/response/provider_stream.go`)
+arbitrates chunks, provider errors, idle expiry and client cancellation for
+all four SSE endpoints. It drains only already-queued chunks and flushes each
+batch before reporting a close or provider error. The endpoint caller retains
+idle-timer resets, settlement, route outcomes and terminal encoding. Chat keeps
+its held usage/finish frames and metadata in `Writer.Stream`
+(`coordinator/inference/response/stream.go`). Responses, Messages and legacy
+Completions share `Writer.handleEndpointStreamingResponse`
+(`coordinator/inference/response/endpoint_stream.go`); their sinks retain the
+existing wire formatting and accepted-write observers.
+
+`streamCompletionPolicy` and `Writer.finishEndpointStream` in
+`coordinator/inference/response/endpoint_stream.go` preserve different completion
+contracts. Messages and Completions require an explicit `CompleteCh` value;
+client cancellation interrupts their two-second usage wait. Responses can finish
+without completion usage when no outstanding reservation is refunded, and its
+usage wait does not observe client cancellation. A trailing provider error takes
+precedence over either policy. The shared lifecycle invokes the same reservation,
+feedback and outcome services bound by `responseWriter`
+(`coordinator/api/response_writer.go`).
 
 ## Invariants
 
@@ -80,7 +103,8 @@ Provider-side execution between stages 13 and 14 — the WebSocket `inference_re
 |---|---|
 | Pipeline entry, health/version/balance handlers | `coordinator/api/consumer.go` |
 | Shared lifecycle services and write-evidence binding | `coordinator/api/response_writer.go` (`responseWriter`); owner contract in `coordinator/inference/response/writer.go` (`Dependencies`) |
-| Streaming and buffered response orchestration | `coordinator/inference/response/stream.go`, `coordinator/inference/response/nonstream.go` |
+| Streaming and buffered response orchestration | `coordinator/inference/response/stream.go` (`Writer.Stream`), `coordinator/inference/response/endpoint_stream.go` (`Writer.handleEndpointStreamingResponse`, `Writer.finishEndpointStream`), `coordinator/inference/response/nonstream.go` (`Writer.NonStream`) |
+| Provider channel arbitration and bounded coalescing | `coordinator/inference/response/provider_stream.go` (`relayProviderStream`), `coordinator/inference/response/stream_coalesce.go` (`drainQueuedChunks`, `MaxBatchChunks`, `MaxBatchBytes`) |
 | Chat/Responses shaping and SSE event handling | `coordinator/inference/response/chat_response.go`, `coordinator/inference/response/responses_response.go`, `coordinator/inference/response/chat_stream_terminal.go`, `coordinator/inference/response/stream_message.go`, `coordinator/inference/response/sse_events.go`, `coordinator/inference/response/sse_normalize.go` |
 | Prelude parsing, body cap, vision fail-fast | `coordinator/api/inference_preprocess.go` |
 | Request traits and routing-field stripping | `coordinator/api/request_introspection.go` |

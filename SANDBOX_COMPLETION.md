@@ -5,10 +5,13 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-The guarded accountless offline staging operation is implemented and locally
-validated: native stopped inspection, root system-command worker, attach/mount
+The public prepare-accountless-base reserve|payload|stage commands are now
+implemented, with strict selected-GUI versus root execution and explicit phase
+results. The guarded accountless offline staging operation is implemented and
+locally validated: native stopped inspection, root system-command worker, attach/mount
 journals, exact-image recovery, Data mount policy, signed payload staging and
-verified detach. Latest sandbox suite:602tests/7skips/0failures. Host-runtime:
+verified detach. Final sandbox suite:610tests/7skips/0failures,128.390s, including the
+worker-install preflight before maintenance publication. Host-runtime:
 21tests/0failures. Provider target builds; docs-check286files passes.
 
 A fresh1GiB nonbootable APFS fixture passed actual attach/crash/recovery/stage/
@@ -19,12 +22,13 @@ detached and unfenced; no test worker remains. Signed runtime12 is installed
 immutably for native status and staging tests; its latest lifecycle patches
 still need VM testing. Exercise14/coldboot15 remains the last actual guest proof.
 
-CI34827518025 and integration34827517978 passed653074530. The guarded staging
-change needs a fresh push and CI. Benchmark environment approval remains separate.
+Guarded staging is pushed as ce33b36ea0db927881be82acc9475c9cc8fb6a4c.
+CI34837780288 and integration34837780295 are running that source; its macOS
+sandbox job has passed. The operator commands need their own commit and CI. Benchmark environment approval remains separate.
 Legacy SSH-wrapper timing failures under concurrent release compilation remain
 an open stress concern, despite the idle full-suite passes.
 
-Next: operator command, selected-GUI installer boot with a distinct journal,
+Next: selected-GUI installer boot with a distinct journal,
 post-boot collection/removal, installed checkpoint, qualification/coldboot/
 teardown and ready-template publication. Then actual login/logout recovery,
 full two-VM coordinator acceptance, build tools, performance and final signed
@@ -1718,3 +1722,89 @@ staging journal (it closes on boot intent). Final ready publication after clone
 teardown must verify durable RELEASED-lease cleanup, not the ACTIVE capability.
 Then full real-host enrollment/two-VM consumer campaign, build tools/performance,
 actual GUI logout/login service lifecycle, final signed bundle and release gates.
+
+
+## Accountless operator phases and completed staging replay (2026-09-14)
+
+Pushed ce33b36ea0db927881be82acc9475c9cc8fb6a4c completes the guarded Data
+attach/stage/detach implementation described above. All pre-push checks passed;
+PR996 is updated with the actual mounted-image result and still remains draft.
+
+The new public prepare-accountless-base command now has reserve, payload and
+stage phases. All require --storage, --name, --host-id and --host-identity-file.
+- reserve additionally takes --lume, --ipsw, --guest-release and optional CPU/
+  memory. It enforces the selected real/effective user, actual GUI/audit session,
+  eligible host, encrypted APFS and machine EX; it monitors session loss through
+  managed raw Apple restoration. No unattended login account preset is used.
+  Output is awaitingRootInstallation, with installed/qualified both false.
+- payload runs as root, validates the selected identity and existing immutable
+  source reservation, and materializes the verified release into --output NEW_DIR.
+  It does no disk attachment. Partial materialization remains for inspection;
+  a new output directory is required for another materialization attempt.
+- stage runs as root with --lume, --payload and --journal-dir. It validates the
+  trusted installed worker before publishing maintenance, encrypted storage,
+  exact protected plan and journal. A matching unfinished maintenance intent is
+  recovered automatically; foreign intent, changed source or unsafe files fail.
+  The signed current overlay and detached source are required before payloadStaged.
+  No command exposes a development signature bypass or claims installed/qualified.
+
+A completed journal is now handled after BOTH fences have disappeared.
+LumeRootBaseImageGuard.verifyCompletedMaintenance acquires fresh ordinary system
+EX, takes the same native/source locks under the original reservation identity,
+requires no image fence, and validates LumeCompletedImageMaintenance against the
+original directory/intent hash and exact final disk snapshot before/after caller
+observations. AccountlessStagingMaintenance.verifyCompleted additionally checks
+native stopped state, no target attachment and only its exact retained image fd.
+It grants no IO and publishes no fence. If global removal was interrupted, the
+command recovers the original completion then independently verifies this path.
+This closes the prior unsafe gap where an idempotent caller might try to begin
+staging again after successful cleanup.
+
+New validation:
+- accountless-operator-tests.log:102 existing affected tests passed.
+- accountless-operator-new-tests.log:8 new tests passed, covering raw-only source,
+  fixed boot-disk policy, phase/privilege option boundaries, unsafe paths, root
+  refusal before path reads, false readiness fields, exact completion intent,
+  rejection while fenced and rejection of post-completion disk changes.
+- accountless-operator-full-tests.log:610tests,7skips,0failures,124.624s.
+- accountless-operator-final-tests.log:610tests,7skips,0failures,128.390s after
+  worker-install preflight before maintenance. All processes exited successfully.
+- accountless-operator-cli-smoke.json:3 real executable checks pass: help route,
+  nonroot rejection before input paths, and denied development bypass flag.
+- accountless-operator-docs.log:docs-check286files passed.
+
+Real-root completed proof also PASSED on the test Mac against the existing final
+nonbootable1GiB fixture, without mounting or changing it. It runs the actual new
+reservation reader, protected plan reader and verifyCompleted twice, then checks
+ordinary EX and SH admission. A separate Python owner compares image metadata,
+all journal file metadata and digests, authority identity and hdiutil attachments
+before/after; all match. Both fences are absent, no image opener or authority
+holder remains, and inode29088927 is unchanged. No VM boot or template readiness
+is claimed; this does not exercise the full CLI's encrypted-volume/GUI creation.
+
+Primary evidence directory:
+ /private/tmp/darkbloom-sandbox-completion-evidence/accountless-completed-proof
+- CompletedRootProbe.swift SHA3b08f59d01bc10183d8c07d1efa12ba0b52570283ce5df913bc88731c9a081f3
+- CompletedRootProbe SHA477f4bcca2c748eb34a17935acbc3335206795f2cc917a634ae89a0a5edef991
+- run.py SHA5f146b57b08217baf6986bb7fc7bf49255ca47dc3d8b2184175a4589c1446f40
+- verified.json SHAbe364647c13d90c32513b8c1c652cc5134508f3b37df200ccde1950ac87e5e91
+- build.py links current debug objects; the later CLI-only worker preflight is
+  not part of that probe binary and does not change the exercised proof methods.
+Remote incoming directory:
+ /private/tmp/darkbloom-completed-proof-incoming-20260914
+Remote root-private installed probe/logs/verified.json:
+ /private/tmp/darkbloom-completed-proof-root-20260914
+All probe processes exited. The original final staging fixture and proof remain
+unchanged. Latest remote disk free observation is50GiB; no cache/model/service/
+group/production mutation was made. Go-cache approval is still unanswered.
+
+Next implementation must build the distinct one-use boot journal and selected
+GUI installer lifecycle, then root post-boot receipt collection/removal and
+installed checkpoint publication. Generic runtime.start currently waits for
+legacy SSH readiness when no isolated guest material exists; do NOT use it for
+first-boot installation, and do NOT enable legacy shared folders/network as a
+shortcut. Use a bounded native offline run that retains machine EX in the actual
+VM owner, records boot intent before spawn, waits for guest shutdown and proves
+stop on cancellation/session loss. A replay must observe/collect that one attempt,
+never silently boot the installer again. Then qualification clone, released-lease
+cleanup proof and readiness publication; full real two-VM acceptance and release.

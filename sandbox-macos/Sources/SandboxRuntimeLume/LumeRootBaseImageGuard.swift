@@ -30,6 +30,38 @@ package final class LumeRootBaseImageGuard {
         try source.validateUnchanged()
     }
 
+    /// Read-only discovery for the operator. The returned bytes are not image
+    /// authority; begin/recovery compare them again under all source locks.
+    package static func readReservation(storage: URL, name: String, ownerUID: uid_t, ownerGID: gid_t) throws -> Data {
+        try requireRoot()
+        guard SandboxVirtualMachineNamePolicy.isValid(name) else { throw SandboxRuntimeError.invalidName }
+        let root = try LumePrivilegedSourceDirectory(path: storage, ownerUID: ownerUID, ownerGID: ownerGID)
+        let directory = try root.child(name)
+        let bytes = try directory.readRecord(LumeInstalledCandidateCheckpoint.reservationFileName)
+        try directory.validate(); try root.validate()
+        return bytes
+    }
+
+    /// A crash after both fence removals must not restart staging. Hold a fresh
+    /// ordinary EX lease and source locks while checking the protected completed
+    /// snapshot and observing image absence/openers. No maintenance is published.
+    package static func verifyCompletedMaintenance(storage: URL, name: String, ownerUID: uid_t, ownerGID: gid_t,
+            reservationData: Data, expectedDisk: LumeCandidateDiskIdentity, intent: HostRuntimeMaintenanceIntent,
+            encodedCandidate: Data, cleanup: LumeImageMaintenanceCleanup,
+            observe: (URL, Int32) async throws -> Void) async throws {
+        try requireRoot()
+        let machine = try HostRuntimeAuthority.system.acquireSandbox()
+        let scope = try LumeRootBaseImageGuard(machine: machine, storage: storage, name: name,
+            ownerUID: ownerUID, ownerGID: ownerGID, reservationData: reservationData, expectedDisk: expectedDisk)
+        defer { withExtendedLifetime(scope) {} }
+        try scope.source.requireReservation(encodedCandidate)
+        let proof = try LumeCompletedImageMaintenance(source: scope.source, intent: intent, cleanup: cleanup)
+        try proof.validate()
+        try await observe(scope.source.imageURL, scope.source.retainedImageDescriptor)
+        try machine.validateSystemExclusive()
+        try proof.validate()
+    }
+
     package func beginMaintenance(intent: HostRuntimeMaintenanceIntent,
                                   encodedCandidate: Data) throws -> LumeRootImageMaintenance {
         try Self.requireRoot()

@@ -165,12 +165,49 @@ materials are retained and rejected. Cancellation after restore likewise leaves
 the unclaimed image for explicit operator inspection.
 
 This preparer does not mount the image, install the guest agent, start the
-restored guest, qualify a clone or publish readiness. A later orchestrator must
-persist a one-shot phase transition before offline writes, acquire the native
-image guards, and perform the installation/qualification protocol. No accountless
-CLI is exposed; the legacy `prepare-base` entrypoint is unchanged. Managed raw
-restore now retains exclusive ownership in the native installer process; its
-signed-runtime requirements are in `RELEASE_VALIDATION.md`.
+restored guest, qualify a clone or publish readiness. Managed raw restore retains
+exclusive ownership in the native installer process; its signed-runtime
+requirements are in `RELEASE_VALIDATION.md`.
+
+## Accountless operator commands
+
+`darkbloom-sandboxd prepare-accountless-base` exposes three explicit phases. Every
+phase requires `--storage DIR --name NAME --host-id UUID --host-identity-file FILE`.
+The identity file is the protected selected-user binding from host preparation.
+`--json` returns the observed phase and candidate/attempt IDs. All three phases
+report `installed: false` and `qualified: false`; staging is not guest execution.
+
+| Phase | Execution context | Additional options | Completed result |
+|---|---|---|---|
+| `reserve` | Selected user's actual GUI/audit session | `--lume PATH --ipsw FILE --guest-release DIR`, optional `--cpu N --memory-gib N` | Raw Apple restore and immutable `awaitingRootInstallation` candidate; 100 GiB boot disk |
+| `payload` | Root | `--guest-release DIR --output NEW_DIR` | Verified signed overlay and `plan.json`; no disk attachment |
+| `stage` | Root | `--lume PATH --payload DIR --journal-dir DIR` | Guarded mount/stage/detach and `payloadStaged` observation |
+
+`reserve` verifies the selected identity, actual GUI session, eligible host,
+encrypted APFS storage and exclusive machine ownership. It uses raw Apple restore
+without an unattended account preset and monitors session loss through creation.
+Run it through the selected GUI LaunchAgent; changing UID in an SSH process does
+not establish this context. Production runtime and guest signatures are required;
+these commands expose no development bypass.
+
+`payload` requires a new directory under an existing root-private parent. Partial
+materialization is retained on failure; use a new output directory after reviewing
+that failure. It cannot overwrite an earlier payload. `stage` requires encrypted
+APFS source storage and a root-private journal directory. It rechecks the exact
+source reservation and payload plan. Incomplete staging automatically recovers
+only the matching durable maintenance intent. Other operations remain fenced.
+
+A repeated `stage` after completion acquires fresh ordinary exclusive ownership,
+checks that both fences are absent, binds the exact saved completion to the
+original source/directory and final disk snapshot, verifies native stopped state
+and observes no attachment or foreign image opener. It never reopens staging IO.
+If fence removal itself was interrupted, it completes the original transaction
+before performing this independent verification. A later boot closes the staging
+journal permanently and requires a separate result-collection journal.
+
+Installer boot, receipt collection/removal and automatic qualification are still
+under construction. The legacy `prepare-base` entrypoint retains its unattended
+path; these phases do not silently fall back to it.
 
 ## Installed-candidate validation
 

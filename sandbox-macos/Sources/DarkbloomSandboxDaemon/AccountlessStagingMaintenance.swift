@@ -84,6 +84,30 @@ final class AccountlessStagingMaintenance {
         try Task.checkCancellation()
     }
 
+    static func verifyCompleted(journal: AccountlessInstallationStagingJournal, storage: URL,
+                                ownerUID: uid_t, ownerGID: gid_t, reservationData: Data,
+                                nativeInspector: LumeRootNativeInspector) async throws {
+        guard let cleanup = try journal.detachedCleanup() else { throw AccountlessInstallationError.invalidBinding }
+        try nativeInspector.requireSourceNamespace(storage: storage, ownerUID: ownerUID, ownerGID: ownerGID)
+        try await nativeInspector.requireStopped(name: journal.candidate.source.name,
+            resources: journal.candidate.resources, diskBytes: journal.candidate.disk.size)
+        let binding = try binding(journal)
+        try await LumeRootBaseImageGuard.verifyCompletedMaintenance(storage: storage, name: journal.candidate.source.name,
+            ownerUID: ownerUID, ownerGID: ownerGID, reservationData: reservationData, expectedDisk: binding.disk,
+            intent: journal.maintenanceIntent(), encodedCandidate: binding.candidate, cleanup: cleanup) { image, descriptor in
+            let runner = SandboxProcessRunner()
+            let result = try await runner.run(executable: URL(fileURLWithPath: "/usr/bin/hdiutil"),
+                arguments: ["info", "-plist"], timeoutSeconds: 30, maximumOutputBytes: 4 * 1_048_576)
+            guard result.exitCode == 0, !result.standardOutputTruncated, !result.standardErrorTruncated,
+                  try AccountlessAttachmentInventory(result.standardOutput).ownedTarget(image, ownerUID: 0) == nil else {
+                throw AccountlessDiskError.cleanupUnproven
+            }
+            let openers = try await runner.run(executable: URL(fileURLWithPath: "/usr/sbin/lsof"),
+                arguments: ["-nP", "-Fpf", "--", image.path], timeoutSeconds: 30, maximumOutputBytes: 64 * 1024)
+            try AccountlessImageOpeners.requireOnlyRetainedDescriptor(openers, pid: getpid(), descriptor: descriptor)
+        }
+    }
+
     private static func binding(_ journal: AccountlessInstallationStagingJournal) throws
         -> (candidate: Data, disk: LumeCandidateDiskIdentity) {
         // Both schema mirrors intentionally use the same named wire fields.

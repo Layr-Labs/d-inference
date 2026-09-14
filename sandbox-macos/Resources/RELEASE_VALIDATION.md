@@ -358,10 +358,17 @@ normalization and readable-versus-GUID hdiutil content hints. This fixture emula
 the filesystem contract below the normal 100 GiB VM policy and supplies no guest
 boot, actual Apple restore or template qualification evidence.
 
-The public accountless preparation command, selected GUI installer boot, receipt
-collection/removal and automatic qualification-to-readiness workflow remain
-unfinished. The existing prepare-base command still follows its documented
-unattended path. A staging journal cannot be reused for post-boot collection.
+The `prepare-accountless-base reserve|payload|stage` operator commands now expose
+raw creation in the selected GUI session, root payload materialization and guarded
+staging. They require production signatures and report only their completed phase.
+Repeated staging verifies the protected final snapshot under fresh ordinary EX
+after both fences are removed; it never authorizes another write. CLI options and
+context requirements are in `ACCOUNTLESS_RECEIPTS.md`.
+
+Selected GUI installer boot, receipt collection/removal and automatic qualification
+to readiness remain unfinished. The existing prepare-base command still follows
+its documented unattended path. A staging journal cannot be reused for post-boot
+collection.
 
 Keep coordinator admission disabled and capacity draining during qualification.
 A job's launchctl exit is insufficient stop proof: independently verify the VM

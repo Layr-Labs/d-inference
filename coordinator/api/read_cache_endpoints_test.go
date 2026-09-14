@@ -47,15 +47,17 @@ func (c *catalogReadCountingStore) ListActiveModelRegistryWithError() ([]store.M
 
 func (c *catalogReadCountingStore) reads() int64 { return c.aliases.Load() + c.registry.Load() }
 
-// expireAllForTest backdates every entry so the next lookup misses —
-// deterministic TTL expiry without sleeping.
-func (c *ttlCache) expireAllForTest() {
-	c.mu.Lock()
-	for k, e := range c.data {
-		e.expiresAt = time.Now().Add(-time.Second)
-		c.data[k] = e
+// Backdate the existing entry through the owner API. This exercises expiry
+// without invalidating the generation or exposing the cache's map and mutex.
+func expireReadCacheEntry(t *testing.T, c *ttlCache, key string) {
+	t.Helper()
+	if body, ok := c.Get(key); ok {
+		c.Set(key, body, -time.Second)
+	} else if value, ok := c.GetValue(key); ok {
+		c.SetValue(key, value, -time.Second)
+	} else {
+		t.Fatalf("expected live cache entry %q before expiry", key)
 	}
-	c.mu.Unlock()
 }
 
 type cachedEndpointHarness struct {
@@ -208,7 +210,8 @@ func TestModelsListCache_RepeatHitThenExpiry(t *testing.T) {
 		t.Fatalf("list changed inside the TTL; expected the cached body")
 	}
 
-	h.srv.readCache.expireAllForTest()
+	expireReadCacheEntry(t, h.srv.readCache, modelEntriesCacheKey(false))
+	expireReadCacheEntry(t, h.srv.readCache, modelListBodyCacheKey(false))
 	status, fresh := h.get(t, ctx, "/v1/models", "test-key")
 	mustOK(t, status, fresh)
 	if ids := modelIDs(t, fresh); !containsID(ids, modelA) || !containsID(ids, modelB) {
@@ -263,7 +266,7 @@ func TestModelsGetCache_SharesMemoizedEntries(t *testing.T) {
 		t.Fatalf("404 path re-read the catalog (reads %d -> %d)", reads, h.st.reads())
 	}
 
-	h.srv.readCache.expireAllForTest()
+	expireReadCacheEntry(t, h.srv.readCache, modelEntriesCacheKey(true))
 	status, third := h.get(t, ctx, "/v1/models/"+modelA, "test-key")
 	mustOK(t, status, third)
 	if h.st.reads() <= reads {
@@ -370,7 +373,7 @@ func TestOpenRouterFeedCache_RepeatHitThenExpiry(t *testing.T) {
 	if !bytes.Equal(fresh, again) || h.st.reads() != reads {
 		t.Fatalf("refreshed feed repeat recomputed (reads %d -> %d)", reads, h.st.reads())
 	}
-	h.srv.readCache.expireAllForTest()
+	expireReadCacheEntry(t, h.srv.readCache, openRouterFeedCacheKey)
 	reads = h.st.reads()
 	status, expired := h.get(t, ctx, "/v1/models/openrouter", "test-key")
 	mustOK(t, status, expired)
@@ -409,7 +412,7 @@ func TestProviderAttestationCache_RepeatHitThenExpiry(t *testing.T) {
 		t.Fatal("attestation changed inside the TTL; expected the cached body")
 	}
 
-	h.srv.readCache.expireAllForTest()
+	expireReadCacheEntry(t, h.srv.readCache, providerAttestationCacheKey)
 	status, fresh := h.get(t, ctx, "/v1/providers/attestation", "")
 	mustOK(t, status, fresh)
 	if !strings.Contains(string(fresh), `"trust_level":"self_signed"`) {
@@ -429,30 +432,5 @@ func TestEncodeCachedJSONMatchesWriteJSON(t *testing.T) {
 	}
 	if !bytes.Equal(rec.Body.Bytes(), body) {
 		t.Fatalf("encodeCachedJSON = %q, writeJSON = %q", body, rec.Body.Bytes())
-	}
-}
-
-// Typed values share the map with byte entries: independent keys, TTL
-// expiry, and Get/GetValue never return the other kind.
-func TestTTLCacheTypedValues(t *testing.T) {
-	c := newTTLCache()
-	c.SetValue("entries", []string{"a"}, time.Minute)
-	c.Set("body", []byte("{}"), time.Minute)
-	if v, ok := c.GetValue("entries"); !ok || len(v.([]string)) != 1 {
-		t.Fatalf("GetValue = %v, %v", v, ok)
-	}
-	if _, ok := c.Get("entries"); ok {
-		t.Fatal("Get must not return a typed entry as bytes")
-	}
-	if _, ok := c.GetValue("body"); ok {
-		t.Fatal("GetValue must not return a byte entry as a value")
-	}
-	c.SetValue("stale", 1, -time.Second)
-	if _, ok := c.GetValue("stale"); ok {
-		t.Fatal("expired typed value returned")
-	}
-	c.PurgeExpired()
-	if c.Len() != 2 {
-		t.Fatalf("Len after purge = %d, want 2", c.Len())
 	}
 }

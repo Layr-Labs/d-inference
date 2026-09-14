@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-14 · commit `cdef55575`
+> Last updated: 2026-09-14 · commit `f0c5b456c`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -563,7 +563,7 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Keys, device code, accounts | `coordinator/api/accounts/keys.go`, `coordinator/store/contracts/keys.go`, `coordinator/api/accounts/device_codes.go`, `coordinator/api/accounts/device_approval.go`, `coordinator/api/accounts/device_tokens.go`, `coordinator/api/accountfleet/` |
 | Billing, Stripe, referral, invites | `coordinator/api/billing/` (`Controller`); `coordinator/api/billing_controller.go` (`billingController`); `coordinator/api/requestauth/identity.go` (`RequirePrivyUser`); `coordinator/api/accounts/invites.go` |
 | Stats | `coordinator/api/network/stats.go`, `coordinator/api/network/refresh.go`, `coordinator/api/readcache/`, `coordinator/api/network/totals.go`, `coordinator/api/network/leaderboard.go`, `coordinator/api/network/series.go` |
-| Release registration, discovery and inventory | `coordinator/api/releases/registration.go` (`Controller.Register`), `coordinator/api/releases/latest.go` (`Controller.Latest`), `coordinator/api/releases/inventory.go` (`Controller.List`), `coordinator/api/releases/deactivation.go` (`Controller.Delete`) |
+| Release registration, discovery, inventory and runtime manifest | `coordinator/api/releases/registration.go` (`Controller.Register`), `coordinator/api/releases/latest.go` (`Controller.Latest`), `coordinator/api/releases/inventory.go` (`Controller.List`), `coordinator/api/releases/deactivation.go` (`Controller.Delete`), `coordinator/api/releases/runtime_manifest.go` (`Controller.RuntimeManifest`) |
 | Enrollment, provider WS, log reports | `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
 | Operator telemetry reads and exports | `coordinator/api/operations.go` (`newOperations`), `coordinator/api/operations/` (`Controller`); read capabilities in `store.go`, query bounds in `query.go`, CSV/NDJSON encoding in `route_csv.go`, `rejection_csv.go`, `csv.go`, `export.go` |
 | Drain, state export, telemetry stub | `coordinator/api/readiness/`, `coordinator/api/statearchive/handler.go`, `coordinator/api/telemetry_handlers.go` |

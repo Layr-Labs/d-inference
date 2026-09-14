@@ -3,15 +3,15 @@ package api
 import (
 	"context"
 	"errors"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 func TestLegacyCacheIsolationOverflowIsPayloadTooLarge(t *testing.T) {
@@ -42,8 +42,8 @@ func TestLegacyCacheIsolationOverflowIsPayloadTooLarge(t *testing.T) {
 		t.Fatalf("admission traits = %+v, err=%v; want protocol floor 1", traits, traitsErr)
 	}
 	outcome := routeOutcome("error", dispatchErrorClass(err.Error()), http.StatusRequestEntityTooLarge)
-	if outcome.ErrorReason != errorReasonClientError {
-		t.Fatalf("route error reason = %q, want %s", outcome.ErrorReason, errorReasonClientError)
+	if outcome.ErrorReason != attempt.ErrorReasonClientError {
+		t.Fatalf("route error reason = %q, want %s", outcome.ErrorReason, attempt.ErrorReasonClientError)
 	}
 
 	state := &dispatchState{
@@ -253,7 +253,7 @@ func TestVisionPreflightKeepsLegacyProviderWhenPenaltyStrippingFits(t *testing.T
 	}
 	outcome := state.errorRoutingOutcomeFor(
 		&registry.PendingRequest{}, "error", errorClassClientError, http.StatusRequestEntityTooLarge)
-	if outcome.ErrorReason != errorReasonClientError {
+	if outcome.ErrorReason != attempt.ErrorReasonClientError {
 		t.Fatalf("overflow route inherited stale reason %q", outcome.ErrorReason)
 	}
 	excluded := state.excludedProviderIDs()

@@ -4,6 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,11 +16,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 type deadlineAttemptBudget struct {
@@ -194,7 +194,7 @@ func TestDeadlineUnreachableFailoverCarriesDecreasingBudgets(t *testing.T) {
 				ctx,
 				req,
 				protocol.FailureCodeCapacity,
-				errorReasonDeadlineUnreachable,
+				attempt.ErrorReasonDeadlineUnreachable,
 				http.StatusServiceUnavailable,
 			)
 			return
@@ -249,7 +249,7 @@ func TestDeadlineUnreachableFailoverCarriesDecreasingBudgets(t *testing.T) {
 
 	routes, _ := waitForDeadlineTelemetryWhere(t, st, 2, 0, func(routes []store.InferenceRouteRecord) bool {
 		for _, route := range routes {
-			if route.ErrorReason == errorReasonDeadlineUnreachable {
+			if route.ErrorReason == attempt.ErrorReasonDeadlineUnreachable {
 				return true
 			}
 		}
@@ -257,7 +257,7 @@ func TestDeadlineUnreachableFailoverCarriesDecreasingBudgets(t *testing.T) {
 	})
 	deadlineRoutes := 0
 	for _, route := range routes {
-		if route.ErrorReason != errorReasonDeadlineUnreachable {
+		if route.ErrorReason != attempt.ErrorReasonDeadlineUnreachable {
 			continue
 		}
 		deadlineRoutes++
@@ -434,7 +434,7 @@ func TestDeadlineUnreachableAllProvidersReturnSingle429(t *testing.T) {
 			ctx,
 			req,
 			protocol.FailureCodeCapacity,
-			errorReasonDeadlineUnreachable,
+			attempt.ErrorReasonDeadlineUnreachable,
 			http.StatusServiceUnavailable,
 		)
 	}
@@ -494,7 +494,7 @@ func TestDeadlineUnreachableAllProvidersReturnSingle429(t *testing.T) {
 
 	deadlineRoutes := 0
 	for _, route := range routes {
-		if route.ErrorReason == errorReasonDeadlineUnreachable {
+		if route.ErrorReason == attempt.ErrorReasonDeadlineUnreachable {
 			deadlineRoutes++
 		}
 	}
@@ -609,7 +609,7 @@ func TestDeadlineRefusalDoesNotMaskLaterProvider500(t *testing.T) {
 		if attempts.capture(t, reg, fp, req) == 1 {
 			fp.sendTypedInferenceError(
 				ctx, req, protocol.FailureCodeCapacity,
-				errorReasonDeadlineUnreachable, http.StatusServiceUnavailable)
+				attempt.ErrorReasonDeadlineUnreachable, http.StatusServiceUnavailable)
 			return
 		}
 		fp.sendInferenceError(
@@ -735,7 +735,7 @@ func TestGenericEndpointsShareDeadlineFailover(t *testing.T) {
 					time.Sleep(40 * time.Millisecond)
 					fp.sendTypedInferenceError(
 						ctx, req, protocol.FailureCodeCapacity,
-						errorReasonDeadlineUnreachable,
+						attempt.ErrorReasonDeadlineUnreachable,
 						http.StatusServiceUnavailable)
 					return
 				}
@@ -781,7 +781,7 @@ func TestGenericDeadlineExhaustionReturnsSingle429(t *testing.T) {
 	) {
 		fp.sendTypedInferenceError(
 			ctx, req, protocol.FailureCodeCapacity,
-			errorReasonDeadlineUnreachable, http.StatusServiceUnavailable)
+			attempt.ErrorReasonDeadlineUnreachable, http.StatusServiceUnavailable)
 	}
 	for i := 0; i < 2; i++ {
 		startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{

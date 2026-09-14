@@ -2,15 +2,15 @@ package api
 
 import (
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // planWiringProvider registers a fully-routable provider through the exported
@@ -347,13 +347,13 @@ func TestCapacityRejectionReasonThreadsIntoClassification(t *testing.T) {
 		name       string
 		rejection  protocol.CapacityRejectionReason
 		wantReason string
-		wantKind   rejectionKind
+		wantKind   attempt.RejectionKind
 	}{
-		{"token_budget is node-transient", protocol.RejectionReasonTokenBudget, errorReasonRequestExceedsNodeBudget, rejectionTransientCapacity},
-		{"kv_headroom is node-transient", protocol.RejectionReasonKVHeadroom, errorReasonRequestExceedsNode, rejectionTransientCapacity},
-		{"memory_cap is node-transient", protocol.RejectionReasonMemoryCap, errorReasonRequestExceedsNode, rejectionTransientCapacity},
-		{"slot_state is busy-now", protocol.RejectionReasonSlotState, errorReasonCapacityBusy, rejectionTransientCapacity},
-		{"deadline is the neutral refusal", protocol.RejectionReasonDeadline, errorReasonDeadlineUnreachable, rejectionDeadlineUnreachable},
+		{"token_budget is node-transient", protocol.RejectionReasonTokenBudget, attempt.ErrorReasonRequestExceedsNodeBudget, attempt.RejectionTransientCapacity},
+		{"kv_headroom is node-transient", protocol.RejectionReasonKVHeadroom, attempt.ErrorReasonRequestExceedsNode, attempt.RejectionTransientCapacity},
+		{"memory_cap is node-transient", protocol.RejectionReasonMemoryCap, attempt.ErrorReasonRequestExceedsNode, attempt.RejectionTransientCapacity},
+		{"slot_state is busy-now", protocol.RejectionReasonSlotState, attempt.ErrorReasonCapacityBusy, attempt.RejectionTransientCapacity},
+		{"deadline is the neutral refusal", protocol.RejectionReasonDeadline, attempt.ErrorReasonDeadlineUnreachable, attempt.RejectionDeadlineUnreachable},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -370,7 +370,7 @@ func TestCapacityRejectionReasonThreadsIntoClassification(t *testing.T) {
 			if safe.ErrorReason != tt.wantReason {
 				t.Fatalf("ErrorReason=%q, want mapped %q", safe.ErrorReason, tt.wantReason)
 			}
-			if got := classifyRejection(safe.ErrorReason, safe.Error, 0, 0, safe.RejectionReason); got != tt.wantKind {
+			if got := attempt.ClassifyRejection(safe.ErrorReason, safe.Error, 0, 0, safe.RejectionReason); got != tt.wantKind {
 				t.Fatalf("classifyRejection=%v, want %v", got, tt.wantKind)
 			}
 		})
@@ -381,11 +381,11 @@ func TestCapacityRejectionReasonThreadsIntoClassification(t *testing.T) {
 		Type:            protocol.TypeInferenceError,
 		StatusCode:      http.StatusServiceUnavailable,
 		FailureCode:     protocol.FailureCodeCapacity,
-		ErrorReason:     errorReasonRequestExceedsContext,
+		ErrorReason:     attempt.ErrorReasonRequestExceedsContext,
 		RejectionReason: protocol.RejectionReasonTokenBudget,
 	})
-	if safe.ErrorReason != errorReasonRequestExceedsContext {
-		t.Fatalf("ErrorReason=%q, want the provider's own %q untouched", safe.ErrorReason, errorReasonRequestExceedsContext)
+	if safe.ErrorReason != attempt.ErrorReasonRequestExceedsContext {
+		t.Fatalf("ErrorReason=%q, want the provider's own %q untouched", safe.ErrorReason, attempt.ErrorReasonRequestExceedsContext)
 	}
 }
 
@@ -400,7 +400,7 @@ func TestSetLastInferenceErrorPrefersLiveBudgetAndKeepsFeasibleAfter(t *testing.
 		Type:                 protocol.TypeInferenceError,
 		StatusCode:           http.StatusServiceUnavailable,
 		FailureCode:          protocol.FailureCodeCapacity,
-		ErrorReason:          errorReasonRequestExceedsBatchBudget,
+		ErrorReason:          attempt.ErrorReasonRequestExceedsBatchBudget,
 		AvailableTokenBudget: i64ptr(4096),
 		FeasibleAfterMS:      1500,
 	})
@@ -412,7 +412,7 @@ func TestSetLastInferenceErrorPrefersLiveBudgetAndKeepsFeasibleAfter(t *testing.
 	}
 	// Live budget (4096) below the model context (8192): a batch-budget
 	// reject from THIS pressured node is transient, not fleet-deterministic.
-	if got := classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext, d.lastErrRejectionReason); got != rejectionTransientCapacity {
+	if got := attempt.ClassifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext, d.lastErrRejectionReason); got != attempt.RejectionTransientCapacity {
 		t.Fatalf("classifyRejection=%v, want rejectionTransientCapacity via the live budget", got)
 	}
 	d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
@@ -436,7 +436,7 @@ func TestSetLastInferenceErrorExplicitZeroBudgetStaysTransient(t *testing.T) {
 		Type:                 protocol.TypeInferenceError,
 		StatusCode:           http.StatusServiceUnavailable,
 		FailureCode:          protocol.FailureCodeCapacity,
-		ErrorReason:          errorReasonRequestExceedsBatchBudget,
+		ErrorReason:          attempt.ErrorReasonRequestExceedsBatchBudget,
 		RejectionReason:      protocol.RejectionReasonTokenBudget,
 		AvailableTokenBudget: i64ptr(0),
 	})
@@ -446,7 +446,7 @@ func TestSetLastInferenceErrorExplicitZeroBudgetStaysTransient(t *testing.T) {
 	if d.lastErrRejectionReason != protocol.RejectionReasonTokenBudget {
 		t.Fatalf("lastErrRejectionReason=%q, want token_budget preserved through the sanitizer", d.lastErrRejectionReason)
 	}
-	if got := classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext, d.lastErrRejectionReason); got != rejectionTransientCapacity {
+	if got := attempt.ClassifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext, d.lastErrRejectionReason); got != attempt.RejectionTransientCapacity {
 		t.Fatalf("classifyRejection=%v, want transient — typed token_budget is authoritative over the stale heartbeat fallback", got)
 	}
 	// Failover continues: the transient verdict consumes a capacity retry
@@ -464,9 +464,9 @@ func TestSetLastInferenceErrorExplicitZeroBudgetStaysTransient(t *testing.T) {
 		Type:        protocol.TypeInferenceError,
 		StatusCode:  http.StatusServiceUnavailable,
 		FailureCode: protocol.FailureCodeCapacity,
-		ErrorReason: errorReasonRequestExceedsBatchBudget,
+		ErrorReason: attempt.ErrorReasonRequestExceedsBatchBudget,
 	})
-	if got := classifyRejection(d2.lastErrReason, d2.lastErr, d2.lastErrProviderBudget, d2.modelMaxContext, d2.lastErrRejectionReason); got != rejectionDeterministicUnservable {
+	if got := attempt.ClassifyRejection(d2.lastErrReason, d2.lastErr, d2.lastErrProviderBudget, d2.modelMaxContext, d2.lastErrRejectionReason); got != attempt.RejectionDeterministicUnservable {
 		t.Fatalf("legacy classifyRejection=%v, want unchanged deterministic", got)
 	}
 }

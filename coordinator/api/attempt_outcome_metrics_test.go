@@ -4,17 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"net/http"
 	"net/http/httptest"
+	"nhooyr.io/websocket"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
-	"nhooyr.io/websocket"
 )
 
 // metricSampleValue parses the numeric value out of a DogStatsD packet
@@ -73,23 +73,23 @@ func TestAttemptOutcomeClass_Mapping(t *testing.T) {
 		{"partial_success is a committed attempt", store.InferenceRouteOutcome{FinalStatus: finalStatusPartialSuccess, ErrorClass: "provider_error_after_commit"}, attemptClassSuccess},
 		{"client_gone", store.InferenceRouteOutcome{FinalStatus: finalStatusCancelled, ErrorClass: "client_gone"}, attemptClassClientGone},
 		{"speculative loser", store.InferenceRouteOutcome{FinalStatus: finalStatusCancelled, ErrorClass: "speculative_loser"}, attemptClassSpeculativeLoser},
-		{"first_chunk_timeout (timeout status)", store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: "first_chunk_timeout", ErrorReason: errorReasonProviderError}, attemptClassFirstChunkTimeout},
+		{"first_chunk_timeout (timeout status)", store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: "first_chunk_timeout", ErrorReason: attempt.ErrorReasonProviderError}, attemptClassFirstChunkTimeout},
 		{"accepted_timeout", store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: "accepted_timeout"}, attemptClassFirstChunkTimeout},
 		{"preamble_liveness_timeout", store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: "preamble_liveness_timeout"}, attemptClassFirstChunkTimeout},
 		{"queue_timeout is capacity", store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: "queue_timeout"}, attemptClassCapacity},
 		{"queue_deadline is capacity, not a kill", store.InferenceRouteOutcome{FinalStatus: finalStatusTimeout, ErrorClass: "queue_deadline"}, attemptClassCapacity},
 		{"first_chunk_timeout via dispatch error class", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "first_chunk_timeout"}, attemptClassFirstChunkTimeout},
-		{"deadline_unreachable", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorClassDeadlineUnreachable, ErrorReason: errorReasonDeadlineUnreachable}, attemptClassDeadlineUnreachable},
-		{"client_error (jinja)", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorClassClientError, ErrorReason: errorReasonJinjaTemplate}, attemptClassClientError},
-		{"provider disconnect pre-commit", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "provider_disconnect_pre_commit", ErrorReason: errorReasonProviderError, AdmittedButFailed: true}, attemptClassDisconnect},
+		{"deadline_unreachable", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorClassDeadlineUnreachable, ErrorReason: attempt.ErrorReasonDeadlineUnreachable}, attemptClassDeadlineUnreachable},
+		{"client_error (jinja)", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorClassClientError, ErrorReason: attempt.ErrorReasonJinjaTemplate}, attemptClassClientError},
+		{"provider disconnect pre-commit", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "provider_disconnect_pre_commit", ErrorReason: attempt.ErrorReasonProviderError, AdmittedButFailed: true}, attemptClassDisconnect},
 		{"ttft_too_slow is capacity", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "ttft_too_slow"}, attemptClassCapacity},
-		{"provider capacity 503 (token budget)", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorReasonProviderError, ErrorReason: errorReasonTokenBudgetExhaust, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
-		{"provider capacity 503 (busy)", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorReasonProviderError, ErrorReason: errorReasonCapacityBusy, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
-		{"model load failure is capacity", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorReasonProviderError, ErrorReason: errorReasonModelLoad, AdmittedButFailed: true}, attemptClassCapacity},
-		{"typed draining refusal (chat pre-commit) is capacity, not a fault", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorReasonProviderError, ErrorReason: errorReasonDraining, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
-		{"typed draining refusal (generic endpoint) is capacity, not a fault", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "provider_error_before_response", ErrorReason: errorReasonDraining, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
-		{"genuine provider fault", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorReasonProviderError, ErrorReason: errorReasonProviderError, AdmittedButFailed: true, ErrorCode: 500}, attemptClassFault},
-		{"failed to send (never admitted)", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: errorReasonProviderError, ErrorReason: errorReasonProviderError}, attemptClassSendFailed},
+		{"provider capacity 503 (token budget)", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: attempt.ErrorReasonProviderError, ErrorReason: attempt.ErrorReasonTokenBudgetExhaust, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
+		{"provider capacity 503 (busy)", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: attempt.ErrorReasonProviderError, ErrorReason: attempt.ErrorReasonCapacityBusy, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
+		{"model load failure is capacity", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: attempt.ErrorReasonProviderError, ErrorReason: attempt.ErrorReasonModelLoad, AdmittedButFailed: true}, attemptClassCapacity},
+		{"typed draining refusal (chat pre-commit) is capacity, not a fault", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: attempt.ErrorReasonProviderError, ErrorReason: attempt.ErrorReasonDraining, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
+		{"typed draining refusal (generic endpoint) is capacity, not a fault", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "provider_error_before_response", ErrorReason: attempt.ErrorReasonDraining, AdmittedButFailed: true, ErrorCode: 503}, attemptClassCapacity},
+		{"genuine provider fault", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: attempt.ErrorReasonProviderError, ErrorReason: attempt.ErrorReasonProviderError, AdmittedButFailed: true, ErrorCode: 500}, attemptClassFault},
+		{"failed to send (never admitted)", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: attempt.ErrorReasonProviderError, ErrorReason: attempt.ErrorReasonProviderError}, attemptClassSendFailed},
 		{"generic endpoint provider error before response", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "provider_error_before_response", AdmittedButFailed: true}, attemptClassFault},
 		{"encryption_missing is other", store.InferenceRouteOutcome{FinalStatus: finalStatusError, ErrorClass: "encryption_missing"}, attemptClassOther},
 		{"unknown status is other", store.InferenceRouteOutcome{FinalStatus: "weird"}, attemptClassOther},

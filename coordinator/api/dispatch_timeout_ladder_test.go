@@ -1,5 +1,17 @@
 package api
 
+import (
+	"context"
+	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
 // Timeout-class ladder cap regression tests (2026-09-01 congestion collapse).
 //
 // A first-chunk TIMEOUT (slow provider, reason "first_chunk_timeout") used to
@@ -13,18 +25,6 @@ package api
 // timeout-class ladder the same way maxCapacityClassRetries caps capacity
 // failovers, exhausting into the existing synthetic-timeout → 429
 // reclassification (classifyExhaustedStatus).
-
-import (
-	"context"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"testing"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/registry"
-)
 
 // TestDispatch_FirstChunkTimeoutLadder_CapsAtThreeAttempts drives the REAL
 // dispatch loop (dispatchState.run, per the TestDispatch_TTFTRejectAttempt0
@@ -142,7 +142,7 @@ func TestShouldStopFailover_TimeoutCapCountsOnlySyntheticTimeouts(t *testing.T) 
 
 	// A typed provider 504 must not touch the timeout counter.
 	d.setLastError("safety_deadline: safety ceiling expired", http.StatusGatewayTimeout)
-	d.lastErrTerminalCause = terminalCauseSafetyDeadline
+	d.lastErrTerminalCause = attempt.TerminalCauseSafetyDeadline
 	if d.shouldStopFailover() {
 		t.Fatal("typed provider 504 must keep the existing fault failover, not stop")
 	}

@@ -1,4 +1,4 @@
-package api
+package attempt
 
 import (
 	"fmt"
@@ -6,10 +6,10 @@ import (
 	"time"
 )
 
-// deliverStrayChunk mirrors noteStrayChunk's success path: a stray chunk that
+// deliverStrayChunk mirrors StrayChunk's success path: a stray chunk that
 // decides to (re-)send is followed by markSent once the enqueue succeeded. The
 // tracker itself only arms the short retry hold on the decision.
-func deliverStrayChunk(z *zombieStreamCanceller, requestID string, at time.Time) strayChunkResult {
+func deliverStrayChunk(z *Tracker, requestID string, at time.Time) strayChunkResult {
 	res := z.strayChunk(requestID, at)
 	if res.send {
 		if idx := z.markSent(requestID, at); idx != res.resendIndex {
@@ -23,9 +23,9 @@ func deliverStrayChunk(z *zombieStreamCanceller, requestID string, at time.Time)
 // request an abandon path recorded: stray chunks re-send the cancel at +1 s,
 // +3 s, +10 s after the FIRST cancel, then every 30 s.
 func TestZombieStreamCancellerEscalatingSchedule(t *testing.T) {
-	z := newZombieStreamCanceller()
+	z := NewTracker()
 	t0 := time.Now()
-	created, _ := z.record("req-1", "model-a", cancelCauseClientGonePost, t0)
+	created, _ := z.record("req-1", "model-a", CancelCauseClientGonePost, t0)
 	if !created {
 		t.Fatal("first record should create the entry")
 	}
@@ -56,7 +56,7 @@ func TestZombieStreamCancellerEscalatingSchedule(t *testing.T) {
 		if res.send && res.resendIndex != st.idx {
 			t.Fatalf("at +%v: resend_index=%d, want %d", st.at, res.resendIndex, st.idx)
 		}
-		if res.cause != cancelCauseClientGonePost {
+		if res.cause != CancelCauseClientGonePost {
 			t.Fatalf("at +%v: cause=%q, want recorded cause", st.at, res.cause)
 		}
 	}
@@ -66,9 +66,9 @@ func TestZombieStreamCancellerEscalatingSchedule(t *testing.T) {
 // chunks only start arriving after several schedule points (provider was
 // blocked behind a cold load) gets ONE re-send, then the next future point.
 func TestZombieStreamCancellerLateFirstStrayChunkDoesNotBurst(t *testing.T) {
-	z := newZombieStreamCanceller()
+	z := NewTracker()
 	t0 := time.Now()
-	z.record("req-late", "m", cancelCauseHedgeLoser, t0)
+	z.record("req-late", "m", CancelCauseHedgeLoser, t0)
 	z.markSent("req-late", t0)
 
 	if res := deliverStrayChunk(z, "req-late", t0.Add(5*time.Second)); !res.send || res.resendIndex != 1 {
@@ -86,10 +86,10 @@ func TestZombieStreamCancellerLateFirstStrayChunkDoesNotBurst(t *testing.T) {
 // nobody abandoned is cancelled at once (resend_index 0, cause stray_chunk)
 // and then follows the same schedule.
 func TestZombieStreamCancellerUnrecordedIdCancelsImmediately(t *testing.T) {
-	z := newZombieStreamCanceller()
+	z := NewTracker()
 	t0 := time.Now()
 	res := deliverStrayChunk(z, "bogus", t0)
-	if !res.send || res.resendIndex != 0 || res.cause != cancelCauseStrayChunk {
+	if !res.send || res.resendIndex != 0 || res.cause != CancelCauseStrayChunk {
 		t.Fatalf("first stray chunk for unknown id: %+v", res)
 	}
 	if res := deliverStrayChunk(z, "bogus", t0.Add(500*time.Millisecond)); res.send {
@@ -103,9 +103,9 @@ func TestZombieStreamCancellerUnrecordedIdCancelsImmediately(t *testing.T) {
 // TestZombieStreamCancellerSendFailureRetriesQuickly: a failed send is retried
 // on the next stray chunk after zombieResendRetry, not at the next schedule point.
 func TestZombieStreamCancellerSendFailureRetriesQuickly(t *testing.T) {
-	z := newZombieStreamCanceller()
+	z := NewTracker()
 	t0 := time.Now()
-	z.record("req-f", "m", cancelCauseFirstChunkTimeout, t0)
+	z.record("req-f", "m", CancelCauseFirstChunkTimeout, t0)
 	z.markSent("req-f", t0)
 	z.noteSendFailed("req-f", t0)
 	if res := z.strayChunk("req-f", t0.Add(zombieResendRetry/2)); res.send {
@@ -123,16 +123,16 @@ func TestZombieStreamCancellerSendFailureRetriesQuickly(t *testing.T) {
 // delivery — whenever it happens — is index 0 and only then does the
 // escalating schedule start.
 func TestZombieStreamCancellerUndeliveredCancelKeepsIndexZero(t *testing.T) {
-	z := newZombieStreamCanceller()
+	z := NewTracker()
 	t0 := time.Now()
-	z.record("req-u", "m", cancelCauseClientGonePost, t0)
+	z.record("req-u", "m", CancelCauseClientGonePost, t0)
 	z.noteSendFailed("req-u", t0) // abandon path's own send was refused
 
 	if res := z.strayChunk("req-u", t0.Add(zombieResendRetry/2)); res.send {
 		t.Fatal("retry must wait zombieResendRetry")
 	}
 	res := z.strayChunk("req-u", t0.Add(zombieResendRetry))
-	if !res.send || res.resendIndex != 0 || res.cause != cancelCauseClientGonePost {
+	if !res.send || res.resendIndex != 0 || res.cause != CancelCauseClientGonePost {
 		t.Fatalf("first retry decision: %+v, want send idx 0 under the abandon cause", res)
 	}
 	// The decision alone holds the entry (one attempt per burst) ...
@@ -170,9 +170,9 @@ func TestZombieStreamCancellerUndeliveredCancelKeepsIndexZero(t *testing.T) {
 // TestZombieStreamCancellerTerminalResolvesEntry: the provider terminal
 // returns the entry (first cancel time, cause, model) exactly once.
 func TestZombieStreamCancellerTerminalResolvesEntry(t *testing.T) {
-	z := newZombieStreamCanceller()
+	z := NewTracker()
 	t0 := time.Now()
-	z.record("req-t", "model-x", cancelCauseClientGonePre, t0)
+	z.record("req-t", "model-x", CancelCauseClientGonePre, t0)
 	z.markSent("req-t", t0)
 	deliverStrayChunk(z, "req-t", t0.Add(200*time.Millisecond))
 
@@ -180,7 +180,7 @@ func TestZombieStreamCancellerTerminalResolvesEntry(t *testing.T) {
 	if !ok {
 		t.Fatal("terminal should resolve a recorded entry")
 	}
-	if !e.firstCancelAt.Equal(t0) || e.cause != cancelCauseClientGonePre || e.model != "model-x" || e.strayChunks != 1 {
+	if !e.firstCancelAt.Equal(t0) || e.cause != CancelCauseClientGonePre || e.model != "model-x" || e.strayChunks != 1 {
 		t.Fatalf("entry = %+v", e)
 	}
 	if _, ok := z.terminal("req-t"); ok {
@@ -198,20 +198,20 @@ func TestZombieStreamCancellerTerminalResolvesEntry(t *testing.T) {
 // second record for the same id neither resets the schedule nor creates, and
 // forget after a non-creating record leaves the original entry alone.
 func TestZombieStreamCancellerRecordIsIdempotent(t *testing.T) {
-	z := newZombieStreamCanceller()
+	z := NewTracker()
 	t0 := time.Now()
-	z.record("req-i", "m", cancelCauseOverflow, t0)
+	z.record("req-i", "m", CancelCauseOverflow, t0)
 	z.markSent("req-i", t0)
-	created, _ := z.record("req-i", "m", cancelCauseHedgeLoser, t0.Add(time.Second))
+	created, _ := z.record("req-i", "m", CancelCauseHedgeLoser, t0.Add(time.Second))
 	if created {
 		t.Fatal("second record must not create")
 	}
 	e, ok := z.terminal("req-i")
-	if !ok || e.cause != cancelCauseOverflow || !e.firstCancelAt.Equal(t0) {
+	if !ok || e.cause != CancelCauseOverflow || !e.firstCancelAt.Equal(t0) {
 		t.Fatalf("entry = %+v, want original cause and first cancel time", e)
 	}
 	// forget drops the entry.
-	z.record("req-g", "m", cancelCauseOverflow, t0)
+	z.record("req-g", "m", CancelCauseOverflow, t0)
 	z.forget("req-g")
 	if z.size() != 0 {
 		t.Fatal("forget must drop the entry")
@@ -222,22 +222,22 @@ func TestZombieStreamCancellerRecordIsIdempotent(t *testing.T) {
 // zombieEntryTTL is returned as expired on the next touch, preserving its last
 // stray-chunk time so the caller can report it as the terminal.
 func TestZombieStreamCancellerSweepExpiresIdleEntries(t *testing.T) {
-	z := newZombieStreamCanceller()
+	z := NewTracker()
 	t0 := time.Now()
-	z.record("req-a", "m", cancelCauseClientGonePost, t0)
+	z.record("req-a", "m", CancelCauseClientGonePost, t0)
 	z.markSent("req-a", t0)
 	deliverStrayChunk(z, "req-a", t0.Add(2*time.Second))
-	z.record("req-b", "m", cancelCauseHedgeLoser, t0) // never any chunk
+	z.record("req-b", "m", CancelCauseHedgeLoser, t0) // never any chunk
 
 	// Still live just under the TTL (activity = last stray chunk at +2 s).
-	if _, expired := z.record("other", "m", cancelCauseHedgeLoser, t0.Add(2*time.Second+zombieEntryTTL)); len(expired) != 1 {
+	if _, expired := z.record("other", "m", CancelCauseHedgeLoser, t0.Add(2*time.Second+zombieEntryTTL)); len(expired) != 1 {
 		t.Fatalf("expected only req-b (idle since t0) expired, got %d", len(expired))
 	}
-	_, expired := z.record("other2", "m", cancelCauseHedgeLoser, t0.Add(3*time.Second+zombieEntryTTL))
+	_, expired := z.record("other2", "m", CancelCauseHedgeLoser, t0.Add(3*time.Second+zombieEntryTTL))
 	if len(expired) != 1 {
 		t.Fatalf("expected req-a expired, got %d", len(expired))
 	}
-	if e := expired[0]; e.cause != cancelCauseClientGonePost || !e.lastStrayAt.Equal(t0.Add(2*time.Second)) {
+	if e := expired[0]; e.cause != CancelCauseClientGonePost || !e.lastStrayAt.Equal(t0.Add(2*time.Second)) {
 		t.Fatalf("expired entry = %+v", e)
 	}
 	if _, ok := z.terminal("req-a"); ok {
@@ -248,11 +248,11 @@ func TestZombieStreamCancellerSweepExpiresIdleEntries(t *testing.T) {
 // TestZombieStreamCancellerBounded: the map never exceeds its cap; the
 // least recently active entry is evicted and reported.
 func TestZombieStreamCancellerBounded(t *testing.T) {
-	z := newZombieStreamCanceller()
+	z := NewTracker()
 	t0 := time.Now()
 	evicted := 0
 	for i := 0; i < zombieCancelMaxEntries+100; i++ {
-		_, expired := z.record(fmt.Sprintf("req-%d", i), "m", cancelCauseHedgeLoser, t0.Add(time.Duration(i)*time.Millisecond))
+		_, expired := z.record(fmt.Sprintf("req-%d", i), "m", CancelCauseHedgeLoser, t0.Add(time.Duration(i)*time.Millisecond))
 		evicted += len(expired)
 		if z.size() > zombieCancelMaxEntries {
 			t.Fatalf("size %d exceeds cap", z.size())
@@ -273,7 +273,7 @@ func TestZombieStreamCancellerBounded(t *testing.T) {
 // TestStrayChunkWarnRateLimit: one Warn per provider per window, with the
 // suppressed count carried onto the next allowed line; providers independent.
 func TestStrayChunkWarnRateLimit(t *testing.T) {
-	z := newZombieStreamCanceller()
+	z := NewTracker()
 	t0 := time.Now()
 	if allow, n := z.allowStrayWarn("p1", t0); !allow || n != 0 {
 		t.Fatalf("first warn: allow=%v n=%d", allow, n)
@@ -295,8 +295,8 @@ func TestStrayChunkWarnRateLimit(t *testing.T) {
 }
 
 func TestCancelEnqueueIsAtomicWithTerminalResolution(t *testing.T) {
-	z := newZombieStreamCanceller()
-	z.record("immediate-terminal", "m", cancelCauseClientGonePost, time.Now())
+	z := NewTracker()
+	z.record("immediate-terminal", "m", CancelCauseClientGonePost, time.Now())
 	enqueuing := make(chan struct{})
 	finishEnqueue := make(chan struct{})
 	sendDone := make(chan bool, 1)
@@ -310,7 +310,7 @@ func TestCancelEnqueueIsAtomicWithTerminalResolution(t *testing.T) {
 	}()
 	<-enqueuing
 	terminalStarted := make(chan struct{})
-	terminalDone := make(chan zombieEntry, 1)
+	terminalDone := make(chan Cancellation, 1)
 	go func() {
 		close(terminalStarted)
 		e, _ := z.terminal("immediate-terminal")
@@ -337,8 +337,8 @@ func TestCancelEnqueueIsAtomicWithTerminalResolution(t *testing.T) {
 }
 
 func TestCancelEvictedEntryStillReceivesBestEffortSend(t *testing.T) {
-	z := newZombieStreamCanceller()
-	z.record("evicted", "m", cancelCauseClientGonePost, time.Now())
+	z := NewTracker()
+	z.record("evicted", "m", CancelCauseClientGonePost, time.Now())
 	z.forget("evicted") // a bounded-map eviction before the abandon path resumes
 	called := false
 	index, sent := z.send("evicted", func() bool {

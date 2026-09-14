@@ -1,5 +1,23 @@
 package api
 
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
 // Follow-up coverage for the capacity-reject cooldown (PR #507 P2s):
 //   1. the generic (/v1/completions, /v1/messages) path records the ACCEPT at
 //      first content, so a long generic stream on a busy box keeps vouching
@@ -12,25 +30,6 @@ package api
 //      "no providers" 503.
 // The half-open single-probe semantics are covered in
 // registry/capacity_cooldown_test.go (claim lifecycle + concurrency).
-
-import (
-	"bufio"
-	"bytes"
-	"context"
-	"fmt"
-	"io"
-	"log/slog"
-	"net/http"
-	"os"
-	"strings"
-	"sync/atomic"
-	"testing"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
-)
 
 // A box that cold-404s ("model not loaded") FOREVER with zero accepts is a
 // black hole and must trip; a box that 404s while lazily loading and then
@@ -49,9 +48,9 @@ func TestCapacityCooldown404NotLoadedStrikes(t *testing.T) {
 	lazy := makeRoutableProvider(t, reg, "p-lazy-load", model)
 	for round := 0; round < 4; round++ {
 		for i := 0; i < 3; i++ {
-			srv.noteInferenceError(lazy.ID, capacityTestPending(model, lazy.ID, round*10+i), http.StatusNotFound, notLoaded, "", "")
+			srv.inferenceAttempts().Error(lazy.ID, capacityTestPending(model, lazy.ID, round*10+i), http.StatusNotFound, notLoaded, "", "")
 		}
-		srv.noteInferenceSuccess(capacityTestPending(model, lazy.ID, round))
+		srv.inferenceAttempts().Success(capacityTestPending(model, lazy.ID, round))
 	}
 	if reg.CapacityCooldownActive(lazy.ID, model) {
 		t.Fatal("404-then-load-then-serve lifecycle tripped the capacity cooldown")
@@ -60,7 +59,7 @@ func TestCapacityCooldown404NotLoadedStrikes(t *testing.T) {
 	// Black hole flavor: 404s forever, zero accepts — trips at the threshold.
 	stuck := makeRoutableProvider(t, reg, "p-never-loads", model)
 	for i := 0; i < 5; i++ {
-		srv.noteInferenceError(stuck.ID, capacityTestPending(model, stuck.ID, i), http.StatusNotFound, notLoaded, "", "")
+		srv.inferenceAttempts().Error(stuck.ID, capacityTestPending(model, stuck.ID, i), http.StatusNotFound, notLoaded, "", "")
 	}
 	if !reg.CapacityCooldownActive(stuck.ID, model) {
 		t.Fatal("a box that 404s 'not loaded' forever with zero accepts did not trip")
@@ -70,7 +69,7 @@ func TestCapacityCooldown404NotLoadedStrikes(t *testing.T) {
 	// request-shape error) never strikes, no matter how many arrive.
 	notFound := makeRoutableProvider(t, reg, "p-model-not-found", model)
 	for i := 0; i < 10; i++ {
-		srv.noteInferenceError(notFound.ID, capacityTestPending(model, notFound.ID, i), http.StatusNotFound, "model not found", "", "")
+		srv.inferenceAttempts().Error(notFound.ID, capacityTestPending(model, notFound.ID, i), http.StatusNotFound, "model not found", "", "")
 	}
 	if reg.CapacityCooldownActive(notFound.ID, model) {
 		t.Fatal("request-shape 404 'model not found' tripped the capacity cooldown")
@@ -98,8 +97,8 @@ func TestCapacityRateExcludesColdModelMiss(t *testing.T) {
 	// must stay empty.
 	cold := makeRoutableProvider(t, reg, "p-cold-miss", model)
 	for i := 0; i < sampleFloor; i++ {
-		srv.noteInferenceError(cold.ID, capacityTestPending(model, cold.ID, i), http.StatusNotFound, notLoaded, "", "")
-		srv.noteInferenceSuccess(capacityTestPending(model, cold.ID, i))
+		srv.inferenceAttempts().Error(cold.ID, capacityTestPending(model, cold.ID, i), http.StatusNotFound, notLoaded, "", "")
+		srv.inferenceAttempts().Success(capacityTestPending(model, cold.ID, i))
 	}
 	if rate, samples := reg.CapacityRejectRate(cold.ID, model); samples != 0 || rate != 0 {
 		t.Fatalf("cold 'not loaded' misses derated the capacity-reject rate: rate=%.2f samples=%d, want 0/0", rate, samples)
@@ -109,8 +108,8 @@ func TestCapacityRateExcludesColdModelMiss(t *testing.T) {
 	// the rate — the mechanism the penalty exists for.
 	gray := makeRoutableProvider(t, reg, "p-graybox", model)
 	for i := 0; i < sampleFloor; i++ {
-		srv.noteInferenceError(gray.ID, capacityTestPending(model, gray.ID, i), http.StatusServiceUnavailable, genuine, "", "")
-		srv.noteInferenceSuccess(capacityTestPending(model, gray.ID, i))
+		srv.inferenceAttempts().Error(gray.ID, capacityTestPending(model, gray.ID, i), http.StatusServiceUnavailable, genuine, "", "")
+		srv.inferenceAttempts().Success(capacityTestPending(model, gray.ID, i))
 	}
 	if rate, samples := reg.CapacityRejectRate(gray.ID, model); samples == 0 || rate <= 0 {
 		t.Fatalf("genuine token-budget 503s must derate the rate: rate=%.2f samples=%d", rate, samples)
@@ -142,7 +141,7 @@ func TestCapacityRejectDeterministicBatchBudgetArmsNoGrayBoxState(t *testing.T) 
 	// binding term was the context, identical fleet-wide.
 	det := makeRoutableProvider(t, reg, "p-oversized-prompt", model)
 	setProviderModelBudget(t, reg, det.ID, model, 5_000_000)
-	srv.noteInferenceError(det.ID, capacityTestPending(model, det.ID, 0), http.StatusServiceUnavailable, batchBudget, "", "")
+	srv.inferenceAttempts().Error(det.ID, capacityTestPending(model, det.ID, 0), http.StatusServiceUnavailable, batchBudget, "", "")
 	if reg.BudgetClampActive(det.ID, model) {
 		t.Fatal("a request-deterministic batch-budget reject must not arm the budget clamp")
 	}
@@ -152,7 +151,7 @@ func TestCapacityRejectDeterministicBatchBudgetArmsNoGrayBoxState(t *testing.T) 
 	// ...but repeated ones with zero interleaved accepts still trip the
 	// black-hole cooldown (the budget-misreporting signature).
 	for i := 1; i < 5; i++ {
-		srv.noteInferenceError(det.ID, capacityTestPending(model, det.ID, i), http.StatusServiceUnavailable, batchBudget, "", "")
+		srv.inferenceAttempts().Error(det.ID, capacityTestPending(model, det.ID, i), http.StatusServiceUnavailable, batchBudget, "", "")
 	}
 	if !reg.CapacityCooldownActive(det.ID, model) {
 		t.Fatal("repeated deterministic batch-budget rejects with zero accepts must still trip the cooldown")
@@ -163,7 +162,7 @@ func TestCapacityRejectDeterministicBatchBudgetArmsNoGrayBoxState(t *testing.T) 
 	// provider-specific capacity signal: full gray-box state.
 	pressured := makeRoutableProvider(t, reg, "p-pressured", model)
 	setProviderModelBudget(t, reg, pressured.ID, model, 90_000)
-	srv.noteInferenceError(pressured.ID, capacityTestPending(model, pressured.ID, 0), http.StatusServiceUnavailable, batchBudget, "", "")
+	srv.inferenceAttempts().Error(pressured.ID, capacityTestPending(model, pressured.ID, 0), http.StatusServiceUnavailable, batchBudget, "", "")
 	if !reg.BudgetClampActive(pressured.ID, model) {
 		t.Fatal("a node-pressured batch-budget reject (budget < context) must arm the budget clamp")
 	}
@@ -195,7 +194,7 @@ func TestGrayBoxClassificationTrustsStructuredReason(t *testing.T) {
 	// wins — full gray-box state (clamp + rate), not the request-shape path.
 	nodeBudget := makeRoutableProvider(t, reg, "p-reasoned-node", model)
 	setProviderModelBudget(t, reg, nodeBudget.ID, model, 5_000_000)
-	srv.noteInferenceError(nodeBudget.ID, capacityTestPending(model, nodeBudget.ID, 0),
+	srv.inferenceAttempts().Error(nodeBudget.ID, capacityTestPending(model, nodeBudget.ID, 0),
 		http.StatusServiceUnavailable, batchBudget, "request_exceeds_node_budget", "")
 	if !reg.BudgetClampActive(nodeBudget.ID, model) {
 		t.Fatal("a structured request_exceeds_node_budget reason must feed the clamp despite the stale >=context budget snapshot")
@@ -208,7 +207,7 @@ func TestGrayBoxClassificationTrustsStructuredReason(t *testing.T) {
 	// budget >= context reads request-deterministic, strike-only.
 	legacy := makeRoutableProvider(t, reg, "p-reasonless", model)
 	setProviderModelBudget(t, reg, legacy.ID, model, 5_000_000)
-	srv.noteInferenceError(legacy.ID, capacityTestPending(model, legacy.ID, 0),
+	srv.inferenceAttempts().Error(legacy.ID, capacityTestPending(model, legacy.ID, 0),
 		http.StatusServiceUnavailable, batchBudget, "", "")
 	if reg.BudgetClampActive(legacy.ID, model) {
 		t.Fatal("reasonless deterministic batch-budget reject must stay strike-only (heuristic unchanged)")
@@ -219,7 +218,7 @@ func TestGrayBoxClassificationTrustsStructuredReason(t *testing.T) {
 	// state, even though the budget heuristic alone would have said transient.
 	ctxReason := makeRoutableProvider(t, reg, "p-reasoned-ctx", model)
 	setProviderModelBudget(t, reg, ctxReason.ID, model, 90_000)
-	srv.noteInferenceError(ctxReason.ID, capacityTestPending(model, ctxReason.ID, 0),
+	srv.inferenceAttempts().Error(ctxReason.ID, capacityTestPending(model, ctxReason.ID, 0),
 		http.StatusServiceUnavailable,
 		"token_budget_exhausted: request requires 200000 tokens but only 90000 available",
 		"request_exceeds_context", "")

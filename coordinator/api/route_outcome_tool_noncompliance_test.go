@@ -1,13 +1,13 @@
 package api
 
 import (
-	"log/slog"
-	"os"
-	"testing"
-
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"log/slog"
+	"os"
+	"testing"
 )
 
 // E5: providers map a forced-tool_choice violation ("model did not emit the
@@ -17,12 +17,12 @@ import (
 // normal bounded-failover path — a re-sample can comply.
 
 func TestToolNoncomplianceReasonIsWhitelisted(t *testing.T) {
-	if got := normalizeInferenceErrorReason("tool_noncompliance"); got != errorReasonToolNoncompliance {
-		t.Fatalf("normalizeInferenceErrorReason(tool_noncompliance) = %q, want %q (must not collapse to unknown)", got, errorReasonToolNoncompliance)
+	if got := attempt.NormalizeInferenceErrorReason("tool_noncompliance"); got != attempt.ErrorReasonToolNoncompliance {
+		t.Fatalf("normalizeInferenceErrorReason(tool_noncompliance) = %q, want %q (must not collapse to unknown)", got, attempt.ErrorReasonToolNoncompliance)
 	}
 	// Wire-casing variants normalize into the same reason.
-	if got := normalizeInferenceErrorReason(" Tool-Noncompliance "); got != errorReasonToolNoncompliance {
-		t.Fatalf("cased/dashed variant = %q, want %q", got, errorReasonToolNoncompliance)
+	if got := attempt.NormalizeInferenceErrorReason(" Tool-Noncompliance "); got != attempt.ErrorReasonToolNoncompliance {
+		t.Fatalf("cased/dashed variant = %q, want %q", got, attempt.ErrorReasonToolNoncompliance)
 	}
 }
 
@@ -33,8 +33,8 @@ func TestToolNoncomplianceOutcomePreservesReason(t *testing.T) {
 		Error:       "model did not emit the required tool call",
 		ErrorReason: "tool_noncompliance",
 	})
-	if out.ErrorReason != errorReasonToolNoncompliance {
-		t.Fatalf("reason = %q, want %q on the route row", out.ErrorReason, errorReasonToolNoncompliance)
+	if out.ErrorReason != attempt.ErrorReasonToolNoncompliance {
+		t.Fatalf("reason = %q, want %q on the route row", out.ErrorReason, attempt.ErrorReasonToolNoncompliance)
 	}
 }
 
@@ -56,7 +56,7 @@ func TestIsNonProviderFaultErrorReason(t *testing.T) {
 		"token_budget_exhausted": false, // capacity exemption is status/string-driven
 		"unknown":                false,
 	} {
-		if got := isNonProviderFaultErrorReason(reason); got != want {
+		if got := attempt.IsNonProviderFaultErrorReason(reason); got != want {
 			t.Errorf("isNonProviderFaultErrorReason(%q) = %v, want %v", reason, got, want)
 		}
 	}

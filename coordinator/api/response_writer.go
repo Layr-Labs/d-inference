@@ -1,11 +1,10 @@
 package api
 
 import (
-	"net/http"
-
 	"github.com/eigeninference/d-inference/coordinator/inference/response"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"net/http"
 )
 
 // responseWriter binds formatting to the same settlement, routing feedback and
@@ -13,7 +12,7 @@ import (
 func (s *Server) responseWriter() *response.Writer {
 	binding := responseServices{s}
 	return response.New(response.Dependencies{
-		Reservation: binding, Feedback: binding, Outcomes: binding,
+		Reservation: binding, Feedback: s.inferenceAttempts(), Outcomes: binding,
 		Metrics: binding, Errors: binding, Observer: responseWriteObserver{},
 	})
 }
@@ -31,11 +30,7 @@ type responseServices struct{ server *Server }
 func (b responseServices) Refund(pr *registry.PendingRequest, reference string) bool {
 	return b.server.inferenceSettlement().Refund(pr, reference)
 }
-func (b responseServices) Error(providerID string, pr *registry.PendingRequest, status int, message, reason, terminal string, causes ...protocol.CoordinatorInferenceErrorCause) {
-	b.server.noteInferenceError(providerID, pr, status, message, reason, terminal, causes...)
-}
-func (b responseServices) Success(pr *registry.PendingRequest) { b.server.noteInferenceSuccess(pr) }
-func (b responseServices) Incr(name string, tags []string)     { b.server.ddIncr(name, tags) }
+func (b responseServices) Incr(name string, tags []string) { b.server.ddIncr(name, tags) }
 func (b responseServices) WriteProviderError(w http.ResponseWriter, err protocol.InferenceErrorMessage) {
 	b.server.writeGenericProviderError(w, err)
 }

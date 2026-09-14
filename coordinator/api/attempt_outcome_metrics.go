@@ -1,11 +1,11 @@
 package api
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"math"
 	"strings"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // Attempt-level outcome + OpenRouter-view request outcome instrumentation.
@@ -108,12 +108,12 @@ const (
 // refusing new work — routing counts that as transient capacity too) rather
 // than a fault.
 func isCapacityClassErrorReason(reason string) bool {
-	switch normalizeInferenceErrorReason(reason) {
-	case errorReasonCapacityBusy, errorReasonCapacityTimeout, errorReasonQueueFull,
-		errorReasonTokenBudgetExhaust, errorReasonRequestExceedsContext,
-		errorReasonRequestExceedsNode, errorReasonRequestExceedsNodeBudget,
-		errorReasonRequestExceedsBatchBudget, errorReasonModelLoad,
-		errorReasonDraining:
+	switch attempt.NormalizeInferenceErrorReason(reason) {
+	case attempt.ErrorReasonCapacityBusy, attempt.ErrorReasonCapacityTimeout, attempt.ErrorReasonQueueFull,
+		attempt.ErrorReasonTokenBudgetExhaust, attempt.ErrorReasonRequestExceedsContext,
+		attempt.ErrorReasonRequestExceedsNode, attempt.ErrorReasonRequestExceedsNodeBudget,
+		attempt.ErrorReasonRequestExceedsBatchBudget, attempt.ErrorReasonModelLoad,
+		attempt.ErrorReasonDraining:
 		return true
 	default:
 		return false
@@ -166,14 +166,14 @@ func attemptErrorOutcomeClass(class string, outcome *store.InferenceRouteOutcome
 		return attemptClassClientError
 	case "provider_disconnect_pre_commit", "provider_disconnect_before_response":
 		return attemptClassDisconnect
-	case "ttft_too_slow", "queue_timeout", errorReasonQueueFull:
+	case "ttft_too_slow", "queue_timeout", attempt.ErrorReasonQueueFull:
 		return attemptClassCapacity
 	}
 	if isCapacityClassErrorReason(outcome.ErrorReason) {
 		return attemptClassCapacity
 	}
 	switch class {
-	case errorReasonProviderError:
+	case attempt.ErrorReasonProviderError:
 		// providerFailedRoutingOutcomeFor stamps AdmittedButFailed on every
 		// provider-executed failure; a bare provider_error row without it is a
 		// coordinator-side dispatch failure ("failed to send request to

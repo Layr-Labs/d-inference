@@ -1,5 +1,31 @@
 package api
 
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/api/types"
+	"github.com/eigeninference/d-inference/coordinator/auth"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
+	"github.com/eigeninference/d-inference/coordinator/inference/settlement"
+	"github.com/eigeninference/d-inference/coordinator/inference/toolpolicy"
+	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
+	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/promptcontract"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/google/uuid"
+	"math"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+)
+
 // Consumer-facing API handlers for the Darkbloom coordinator.
 //
 // This file implements the OpenAI-compatible HTTP endpoints that consumers
@@ -13,32 +39,6 @@ package api
 //   but never logs prompt content, then re-encrypts each request to the
 //   selected provider's X25519 public key before forwarding over the
 //   WebSocket. Providers are attested via Secure Enclave challenge-response.
-
-import (
-	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/inference/response"
-	"github.com/eigeninference/d-inference/coordinator/inference/settlement"
-	"math"
-	"net/http"
-	"strconv"
-	"strings"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/api/types"
-	"github.com/eigeninference/d-inference/coordinator/auth"
-	"github.com/eigeninference/d-inference/coordinator/inference/toolpolicy"
-	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
-	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
-	"github.com/eigeninference/d-inference/coordinator/payments"
-	"github.com/eigeninference/d-inference/coordinator/promptcontract"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/google/uuid"
-)
 
 const (
 	// inferenceTimeout is the maximum time to wait between chunks (streaming)
@@ -121,11 +121,6 @@ const (
 	// Excess boilerplate is dropped while the first-content clock continues;
 	// it must never be mistaken for content and commit a bad provider.
 	maxHeldBoilerplate = 8
-
-	// cancelWriteTimeout bounds how long a cancel write to the provider can
-	// block. Using context.Background() unbounded here risks hanging the HTTP
-	// handler goroutine when a WebSocket is half-dead.
-	cancelWriteTimeout = 2 * time.Second
 )
 
 // FirstContentDeadline returns this server's request-absolute first-content
@@ -183,38 +178,6 @@ func (s *Server) shedIfModelRejected(w http.ResponseWriter, r *http.Request, par
 	return true
 }
 
-// sendProviderCancel sends a Cancel message for the given request to the
-// provider with a bounded timeout so a half-dead WebSocket doesn't hang the
-// caller. It reports whether the frame was handed to the writer. Failures are
-// logged at debug level because a disconnect race is the expected case — the
-// provider may already be gone — but every one is metered
-// (inference.cancel_send_failed{reason}) since a dropped cancel is the only
-// silent-loss path on the coordinator side of cancel delivery.
-//
-// This is the raw primitive. Abandon paths that may leave the provider
-// generating go through sendAbandonCancel / cancelDispatch so the cancel is
-// recorded for terminal correlation and zombie re-sends.
-func (s *Server) sendProviderCancel(provider *registry.Provider, requestID string) bool {
-	if provider == nil || provider.Conn == nil {
-		return false
-	}
-	cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
-	cancelData, err := json.Marshal(cancelMsg)
-	if err != nil {
-		s.logger.Error("failed to marshal cancel message", "request_id", requestID, "error", err)
-		return false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), cancelWriteTimeout)
-	defer cancel()
-	if err := provider.EnqueueText(ctx, cancelData); err != nil {
-		s.ddIncr(metricCancelSendFailed, []string{"reason:" + cancelSendFailureReason(err)})
-		s.logger.Debug("failed to send cancel (provider may have disconnected)",
-			"request_id", requestID, "error", err)
-		return false
-	}
-	return true
-}
-
 func writeProviderInferenceRequestDeferred(
 	ctx context.Context,
 	provider *registry.Provider,
@@ -225,94 +188,6 @@ func writeProviderInferenceRequestDeferred(
 		return registry.TextFrameWriteMetadata{}, errors.New("provider websocket is not connected")
 	}
 	return provider.WriteTextDeferred(ctx, builder, onHandoff)
-}
-
-// cancelDispatch abandons a dispatch attempt that may still be generating
-// (hedge loser, client gone before content): removes the pending request,
-// marks the provider idle, sends a cancel over WebSocket so the provider stops,
-// and refunds this attempt's provider-specific reservation top-up. cause is
-// the bounded cancel cause recorded for terminal correlation.
-//
-// The cancel is sent only when THIS call removed a live pending record and no
-// clean terminal has been ingressed for it. A missing record means a provider
-// terminal already claimed the attempt (handleInferenceError removes pending
-// before publishing on ErrorCh); a completion parked on the speculative
-// empty-completion decision leaves the record but marks completion ingress.
-// In both cases nothing is running provider-side, and cancelling would only
-// cost the provider a no-op frame per request. Attempts whose terminal was
-// observed by the caller use cancelDispatchAfterTerminal instead.
-//
-// The top-up refund only runs if THIS call actually removed the pending request
-// (RemovePending returned non-nil). If settlement (handleComplete) already
-// claimed it via its own RemovePending, we must not also refund — that would
-// double-credit the consumer.
-func (s *Server) cancelDispatch(provider *registry.Provider, pr *registry.PendingRequest, cause string) {
-	if provider == nil || pr == nil {
-		return
-	}
-	pr.ResolveSpeculativeEmptyCompletion(false)
-	now := time.Now()
-	// Record before RemovePending: a terminal racing this cleanup looks the
-	// id up only after its own RemovePending returns nil, and must find the
-	// entry rather than log the terminal as unknown.
-	created, expired := s.zombieCanceller.record(pr.RequestID, pr.Model, cause, now)
-	s.emitExpiredCancelEntries(expired)
-	removed := provider.RemovePending(pr.RequestID)
-	s.registry.SetProviderIdle(provider.ID)
-	if removed != nil && !pr.HasCompletionIngress() {
-		pr.Profile.Mark(registry.StampCancelSent)
-		s.sendRecordedCancel(provider, pr.RequestID, pr.Model, cause)
-	} else if created {
-		s.zombieCanceller.forget(pr.RequestID)
-	}
-	if removed != nil {
-		s.inferenceSettlement().RefundProviderExtra(pr)
-	}
-}
-
-// cancelDispatchAfterTerminal is cancelDispatch for an attempt whose provider
-// terminal the caller has already observed (ErrorCh value / ChunkCh closed).
-// The terminal handler removed the pending record before publishing it, so
-// nothing is running provider-side and no cancel frame is sent — only the
-// speculative arbitration, idle transition and top-up refund remain.
-func (s *Server) cancelDispatchAfterTerminal(provider *registry.Provider, pr *registry.PendingRequest) {
-	if provider == nil || pr == nil {
-		return
-	}
-	pr.ResolveSpeculativeEmptyCompletion(false)
-	removed := provider.RemovePending(pr.RequestID)
-	s.registry.SetProviderIdle(provider.ID)
-	if removed != nil {
-		s.inferenceSettlement().RefundProviderExtra(pr)
-	}
-}
-
-// cancelDispatchForFirstContentTimeout atomically arbitrates timeout cleanup
-// against provider ingress. false means an on-time event or another terminal
-// already owns the request, so the wait loop must keep draining its channels.
-func (s *Server) cancelDispatchForFirstContentTimeout(
-	provider *registry.Provider,
-	pr *registry.PendingRequest,
-) bool {
-	if provider == nil || pr == nil {
-		return false
-	}
-	now := time.Now()
-	created, expired := s.zombieCanceller.record(pr.RequestID, pr.Model, cancelCauseFirstChunkTimeout, now)
-	s.emitExpiredCancelEntries(expired)
-	removed, deferred := provider.RemovePendingForFirstContentTimeout(pr.RequestID)
-	if deferred || removed == nil {
-		if created {
-			s.zombieCanceller.forget(pr.RequestID)
-		}
-		return false
-	}
-	pr.ResolveSpeculativeEmptyCompletion(false)
-	s.registry.SetProviderIdle(provider.ID)
-	pr.Profile.Mark(registry.StampCancelSent)
-	s.sendRecordedCancel(provider, pr.RequestID, pr.Model, cancelCauseFirstChunkTimeout)
-	s.inferenceSettlement().RefundProviderExtra(pr)
-	return true
 }
 
 // writeGenericProviderError writes the terminal HTTP body for a provider error
@@ -329,12 +204,12 @@ func (s *Server) cancelDispatchForFirstContentTimeout(
 // provider prose is never passed through.
 func (s *Server) writeGenericProviderError(w http.ResponseWriter, errMsg protocol.InferenceErrorMessage) {
 	errMsg = normalizeInferenceErrorForInternalUse(errMsg)
-	if jinjaTerminalRejectEnabled() && isJinjaTemplateErrorReason(errMsg.ErrorReason) {
+	if jinjaTerminalRejectEnabled() && attempt.IsJinjaTemplateErrorReason(errMsg.ErrorReason) {
 		writeJSON(w, http.StatusUnprocessableEntity,
 			errorResponse("invalid_request_error", jinjaTerminalRejectMessage, withCode("model_capability")))
 		return
 	}
-	if normalizeInferenceErrorReason(errMsg.ErrorReason) == errorReasonToolNoncompliance {
+	if attempt.NormalizeInferenceErrorReason(errMsg.ErrorReason) == attempt.ErrorReasonToolNoncompliance {
 		writeJSON(w, http.StatusUnprocessableEntity,
 			errorResponse("invalid_request_error", response.ClientSafeInferenceErrorMessage(errMsg), withCode("model_capability")))
 		return
@@ -344,281 +219,6 @@ func (s *Server) writeGenericProviderError(w http.ResponseWriter, errMsg protoco
 		statusCode = http.StatusBadGateway
 	}
 	writeJSON(w, statusCode, errorResponse("provider_error", response.ClientSafeInferenceErrorMessage(errMsg)))
-}
-
-// noteInferenceError feeds the circuit breakers for a provider-side error
-// received on a pending request's ErrorCh (any phase, pre- or post-commit):
-//   - the shape-keyed inference-error breaker (counts only sickness-shaped
-//     500/502/504 for the (provider, model, shape) triple),
-//   - the per-provider node-health breaker, which also counts fault-shaped
-//     503s (errStr classifies capacity-503 vs fault-503),
-//   - the stable-identity ejection breaker (survives reconnect churn), and
-//   - the capacity-reject cooldown (the ONLY consumer of capacity-class
-//     rejections, which every breaker above deliberately ignores).
-//
-// It emits the cool-down metric on the inference-error transition and the
-// provider_breaker_open metric on the node-health transition into quarantine.
-// errStr is the provider's error message and errReason its structured
-// InferenceErrorMessage.ErrorReason ("" for synthetic timeouts and legacy
-// providers) — the reason feeds the gray-box request-shape classification the
-// same way the dispatch failover trusts it (classifyRejection P1).
-// terminalCause is the provider's typed InferenceErrorMessage.TerminalCause
-// ("" for synthetic terminals and legacy providers): a typed NEUTRAL cause
-// (safety_deadline / backpressure_timeout / cancelled — platform policy or
-// consumer behavior) feeds NOTHING here, strike or clear; a typed CAPACITY
-// cause (admission_timeout — healthy but busy) feeds only the black-hole
-// capacity cooldown. Absent/engine_error/unknown causes keep the legacy
-// status/string funnels bit-for-bit (see api/terminal_cause.go).
-func (s *Server) noteInferenceError(providerID string, pr *registry.PendingRequest, statusCode int, errStr, errReason, terminalCause string, causes ...protocol.CoordinatorInferenceErrorCause) {
-	if providerID == "" || pr == nil {
-		return
-	}
-	// Structured health-neutral outcomes (isProviderHealthNeutralErrorReason:
-	// jinja_* template-render failures, tool_noncompliance, and the
-	// request-clock-specific deadline_unreachable refusal) never feed provider
-	// health or capacity trackers. Gating HERE (the single breaker chokepoint)
-	// mirrors the dispatch-funnel gate
-	// (dispatchState.noteProviderError) and the reputation exemption
-	// (handleInferenceError), and closes the generic-inference path
-	// (/v1/messages, /v1/completions), which calls noteInferenceError directly on
-	// pre-commit provider errors. Capacity-class rejections never carry these
-	// reasons except deadline_unreachable, whose exclusion is intentional.
-	if isProviderHealthNeutralErrorReason(errReason) {
-		return
-	}
-	// Typed drain refusal (R2, registry/drain_state.go): the provider is
-	// restarting, not sick and not dishonest about capacity. It feeds NO
-	// breaker and NO gray-box capacity state (no cooldown strike, no rate
-	// derate, no budget clamp). Ingress marks draining before releasing the
-	// pending slot, so its queue drain already skips this provider. Do not
-	// repeat that mutation here: an idle/serving heartbeat may have cleared
-	// the mark while this consumer was waiting to process its error channel.
-	if isDrainingErrorReason(errReason) {
-		return
-	}
-	// Typed terminal-cause gate (the deadline-incident fix): the provider told
-	// us WHY the attempt died, so the status/string heuristics below must not
-	// misread a platform-policy terminal as sickness. Neutral causes touch no
-	// tracker at all — strictly neutral, never a success/clear either.
-	// admission_timeout records exactly one capacity-signal strike (the
-	// black-hole cooldown, whose zero-interleaved-accepts discriminator keeps
-	// serving boxes safe) and skips every fault breaker. All other causes —
-	// absent (legacy/synthetic), engine_error, the fault causes
-	// (prefill_stall / decode_stall / watchdog), and unknown drift values —
-	// fall through to the unchanged legacy funnels.
-	switch class, _ := classifyTerminalCause(terminalCause); class {
-	case causeClassNeutral:
-		return
-	case causeClassCapacity:
-		if s.registry.RecordCapacityRejectBusy(providerID, pr.Model) {
-			s.ddIncr(metricCapacityCooldownTripped, []string{"provider_id:" + providerID, "model:" + pr.Model})
-			s.logger.Warn("capacity-reject cooldown tripped: provider+model admission-timing-out with zero interleaved accepts — routing will skip the pair until the cooldown expires",
-				"provider_id", providerID,
-				"model", pr.Model,
-				"status_code", statusCode,
-				"terminal_cause", terminalCause,
-			)
-		}
-		return
-	}
-	// Late disconnect-flush strike (registry/version_reset.go): the session this
-	// 502 was flushed from was dropped at or before its identity's version-
-	// changed reset, so the reset already accounted for it. The flush is
-	// recorded HERE, by the request goroutine, not by Disconnect — and
-	// registration evicts a same-serial predecessor and stores the new version
-	// on one goroutine, ahead of these consumers — so without the check the
-	// new binary would be quarantined for the old one's death.
-	if s.registry.IsSupersededDisconnectFlush(providerID, statusCode, causes...) {
-		return
-	}
-	if s.registry.RecordInferenceError(providerID, pr.Model, statusCode, pr.Traits.CooldownShape(), causes...) {
-		s.ddIncr("routing.cooldown_entered", []string{"model:" + pr.Model})
-	}
-	// Feed EVERY provider terminal into the per-provider node-health breaker (not
-	// just the shape-keyed 5xx the inference-error breaker counts) so a node
-	// fault-503ing ~all of its requests gets quarantined fleet-wide. errStr lets
-	// the breaker tell a capacity-503 (ignored) from a fault-503 (counted). Both
-	// breakers coexist.
-	if opened, _ := s.registry.RecordProviderOutcome(providerID, false, statusCode, errStr, causes...); opened {
-		s.ddIncr("routing.provider_breaker_open", []string{"model:" + pr.Model})
-	}
-	// Feed the STABLE-IDENTITY ejection breaker too (survives reconnect churn, so a
-	// zombie that fault-loops while constantly disconnecting still accumulates).
-	if ejected, _ := s.registry.RecordProviderSessionServeOutcome(providerID, false, statusCode, errStr, causes...); ejected {
-		s.ddIncr("routing.provider_ejected", []string{"model:" + pr.Model})
-	}
-	// Feed the capacity-reject cooldown. Capacity-class rejections are
-	// DELIBERATELY invisible to reputation and to ALL the breakers above (a
-	// busy box must never be punished for shedding) — which turns a box that
-	// capacity-rejects EVERYTHING into a routing black hole: its idle-looking
-	// heartbeats keep winning the cost scheduler while every dispatch bounces
-	// (2026-07 incident: 7 boxes, ~9k "token_budget_exhausted" rejections in
-	// 30 min, zero successes). Strikes accumulate per (provider, model); any
-	// accept (first content chunk or clean completion) resets the streak, so
-	// transient fullness on a serving box can never trip. Gated to 429/404/5xx
-	// so a client-shape 4xx that happens to carry a capacity-looking string
-	// never strikes; explicit context-overflow rejections are excluded by
-	// isCapacityRejectStrike (they indict the request, not the provider).
-	//
-	// 404 is included WITH CARE for the cold "model not loaded" miss: a lazy
-	// load on first touch makes a 404-then-load-then-serve sequence NORMAL
-	// lifecycle, so the zero-interleaved-accepts discriminator remains the
-	// safety — the first accept after the load clears the streak, and only a
-	// box that 404s FOREVER (never loads, zero accepts) trips. A 404 whose
-	// message is not capacity-class (e.g. "model not found" for an unknown
-	// model id — a request-shape error) never strikes, because
-	// isCapacityRejectStrike only matches the capacity vocabulary
-	// ("not loaded" / "no model loaded").
-	if (statusCode == http.StatusTooManyRequests || statusCode == http.StatusNotFound ||
-		statusCode >= http.StatusInternalServerError) &&
-		isCapacityRejectStrike(errStr) {
-		// A cold "model not loaded" miss is benign warm-up lifecycle, not
-		// capacity dishonesty. It still feeds the black-hole cooldown (a box
-		// that 404s forever with zero accepts is a black hole), but it must NOT
-		// derate the pair's gray-box capacity-503 RATE (capacity_rate.go) — that
-		// window has no accept-reset, so counting a healthy box's normal reloads
-		// would penalize it. A "batch token budget" reject that classifyRejection
-		// proves REQUEST-deterministic (provider budget not below the model
-		// context ⇒ the binding term was the fleet-wide context) indicts the
-		// request, not the provider: it counts a cooldown strike only — arming
-		// the one-shot clamp or the no-reset rate window off a single oversized
-		// prompt would gate/derate a healthy pair. Genuine capacity/token-budget
-		// 503s feed everything.
-		var tripped bool
-		switch {
-		case isColdModelMissRejection(errStr):
-			tripped = s.registry.RecordCapacityRejectLifecycle(providerID, pr.Model)
-		case s.isRequestShapeBatchBudgetReject(providerID, pr.Model, errStr, errReason):
-			tripped = s.registry.RecordCapacityRejectRequestShape(providerID, pr.Model)
-		default:
-			tripped = s.registry.RecordCapacityReject(providerID, pr.Model)
-		}
-		if tripped {
-			s.ddIncr(metricCapacityCooldownTripped, []string{"provider_id:" + providerID, "model:" + pr.Model})
-			s.logger.Warn("capacity-reject cooldown tripped: provider+model capacity-rejecting with zero interleaved accepts — routing will skip the pair until the cooldown expires",
-				"provider_id", providerID,
-				"model", pr.Model,
-				"status_code", statusCode,
-			)
-		}
-	}
-}
-
-// metricCapacityCooldownTripped counts transitions of a (provider, model) pair
-// into the capacity-reject routing cooldown (registry/capacity_cooldown.go),
-// tagged provider_id + model. Distinct from routing.cooldown_entered (the 5xx
-// inference-error breaker) and routing.provider_breaker_open (node health) so
-// black-hole trips are independently alertable.
-const metricCapacityCooldownTripped = "routing.capacity_cooldown_tripped"
-
-// isRequestShapeBatchBudgetReject reports whether a capacity-class rejection
-// is PROVEN request-deterministic by classifyRejection: a "batch token budget"
-// reject from a provider whose reported token budget is not below the model's
-// context window (the admission cap min(context, budget) was the CONTEXT — the
-// prompt is too big fleet-wide), or an explicit request_exceeds_context
-// structured reason. Such a reject must arm neither the one-shot budget clamp
-// nor the no-reset capacity-503 rate window
-// (RecordCapacityRejectRequestShape). When the reported budget IS below the
-// context, the binding term may have been this node's memory-pressured KV
-// budget — a genuine provider-specific capacity signal — and the reject feeds
-// the full gray-box state (same discrimination the dispatch failover uses:
-// classifyRejection in inference_failure_class.go, DAR-347).
-//
-// Inputs mirror the dispatch path exactly: the structured errReason
-// (InferenceErrorMessage.ErrorReason — a provider that says
-// request_exceeds_node_budget / capacity_busy is TRUSTED over the stale
-// heartbeat-budget heuristic, so a stale snapshot that still reads >= context
-// cannot misroute a genuine node-capacity failure away from the gray-box
-// trackers), providerBudget from the provider's last heartbeat
-// (ReportedTokenBudgetMaxForModel), and modelContext from the model registry
-// record. Called only inside the isCapacityRejectStrike branch, so explicit
-// context-overflow STRINGS never reach it (they never strike at all). The
-// cheap gate keeps the two lookups off every other rejection.
-func (s *Server) isRequestShapeBatchBudgetReject(providerID, model, errStr, errReason string) bool {
-	e := strings.ToLower(strings.TrimSpace(errStr))
-	e = strings.ReplaceAll(e, "’", "'")
-	reason := strings.ToLower(strings.TrimSpace(errReason))
-	if !strings.Contains(e, "batch token budget") && reason != "request_exceeds_context" {
-		return false
-	}
-	var providerBudget int64
-	if p := s.registry.GetProvider(providerID); p != nil {
-		providerBudget = p.ReportedTokenBudgetMaxForModel(model)
-	}
-	modelContext := 0
-	if rec, err := s.store.GetModelRegistryRecord(model); err == nil && rec != nil {
-		modelContext = rec.MaxContextLength
-	}
-	// No typed CapacityRejectionReason threads into the strike funnel
-	// (noteInferenceError carries only the string vocabulary), so this stays
-	// the legacy string+heartbeat heuristic — enriched typed reasons already
-	// reach it mapped onto error_reason by the sanitizer.
-	return classifyRejection(errReason, errStr, providerBudget, modelContext, "") == rejectionDeterministicUnservable
-}
-
-// noteInferenceSuccess clears the inference-error strike state for the serving
-// provider-model pair on a clean completion (streaming relay ended without a
-// provider error; non-streaming response assembled OK).
-func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
-	if pr == nil || pr.ProviderID == "" {
-		return
-	}
-	s.registry.RecordInferenceSuccess(pr.ProviderID, pr.Model, pr.Traits.CooldownShape())
-	// A clean completion is an ACCEPT for the capacity-reject cooldown: clear
-	// the pair's reject streak, any active capacity cooldown, and the re-trip
-	// backoff. Belt-and-braces with the commit-time accept (commitFirstContent)
-	// and the only accept signal on paths that never stream content. For the
-	// capacity-503 RATE window (capacity_rate.go) one served request must
-	// count exactly ONE outcome, so this completion-time accept re-offers the
-	// outcome only when the commit-time accept did not actually RECORD one
-	// (RateOutcomeCountedSafe — stamped from RecordCapacityAccept's return at
-	// every commit site). With rate tracking enabled, commit-time accepts are
-	// retained even before the first reject; paths that never commit content
-	// record their sole outcome here instead.
-	s.registry.RecordCapacityAcceptOutcome(pr.ProviderID, pr.Model, !pr.RateOutcomeCountedSafe())
-	// A clean completion proves the node is healthy — close its node-health
-	// breaker (and reset the exponential backoff) if it had tripped.
-	if _, closed := s.registry.RecordProviderOutcome(pr.ProviderID, true, 200, ""); closed {
-		s.ddIncr("routing.provider_breaker_closed", []string{"model:" + pr.Model})
-	}
-	// A clean completion is a success for the stable-identity ejection breaker too
-	// — closes it (half-open recovery) if this identity had been ejected.
-	if sid := s.registry.GetProviderStableIdentity(pr.ProviderID); sid != "" {
-		if _, recovered := s.registry.RecordProviderServeOutcome(sid, true, 200, ""); recovered {
-			s.ddIncr("routing.provider_ejection_recovered", []string{"model:" + pr.Model})
-		}
-	}
-}
-
-// noteDispatchProviderError records a provider error received while the
-// dispatch loop had NOT yet committed to that provider: it feeds the
-// inference-error breaker, refunds the failed attempt's provider-specific
-// reservation top-up, and, when boilerplate chunks from that provider were
-// being held (deferred commit), discards them and emits the pre-content
-// failover counter — the invisible-retry signal that replaces what used to be
-// an in-band SSE error after a premature commit. Returns true when held
-// chunks were discarded so callers skip their generic retry counter.
-//
-// The refund lives here because both ErrorCh senders (handleInferenceError and
-// registry.Disconnect's pending flush) remove the pending request BEFORE
-// pushing the error, so the arm's cancelDispatch sees RemovePending()==nil and
-// skips its own refund — without this the custom-price surcharge reserved by
-// Service.ReserveForProvider would be stranded for the failed attempt.
-// Service.RefundProviderExtra is idempotent (it resets ReservedMicroUSD to the base),
-// so arms where cancelDispatch did refund are safe, and a failed pre-commit
-// attempt never reaches settlement (its channels are closed and it is neither
-// pending nor parked), so this can never double-credit against a settle.
-func (s *Server) noteDispatchProviderError(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, errStr, errReason, terminalCause string, held *[]string, causes ...protocol.CoordinatorInferenceErrorCause) (discardedHeld bool) {
-	if provider != nil {
-		s.noteInferenceError(provider.ID, pr, statusCode, errStr, errReason, terminalCause, causes...)
-	}
-	s.inferenceSettlement().RefundProviderExtra(pr)
-	if held == nil || len(*held) == 0 {
-		return false
-	}
-	*held = nil
-	s.ddIncr("inference.dispatches", []string{"status:retry_precontent"})
-	return true
 }
 
 // failedProviderVersion reads a provider's reported binary version under its
@@ -1306,7 +906,7 @@ func (s *Server) dispatchWithReserver(
 			// its connection during an in-flight write. Cancel defensively in
 			// case the provider decoded the final bytes before disconnect.
 			ap.Mark(registry.StampCancelSent)
-			s.sendProviderCancel(provider, requestID)
+			s.inferenceAttempts().SendCancel(provider, requestID)
 			return nil, nil, decision, plan, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
 		}
 		return nil, nil, decision, plan, "failed to send request to provider", http.StatusBadGateway

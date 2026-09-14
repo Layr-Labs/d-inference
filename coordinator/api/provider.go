@@ -1,5 +1,32 @@
 package api
 
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
+	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/saferun"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/google/uuid"
+	"maps"
+	"math"
+	"net/http"
+	"nhooyr.io/websocket"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
 // Provider WebSocket management for the Darkbloom coordinator.
 //
 // This file handles the provider side of the coordinator: WebSocket connections,
@@ -19,34 +46,6 @@ package api
 //   - none: No attestation provided (Open Mode, still accepted)
 //   - self_signed: Attestation signed by provider's own Secure Enclave key
 //   - hardware: MDA certificate chain verified against Apple Root CA (future)
-
-import (
-	"bytes"
-	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
-	"github.com/eigeninference/d-inference/coordinator/inference/response"
-	"maps"
-	"math"
-
-	"net/http"
-	"strconv"
-	"strings"
-	"sync"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
-	"github.com/eigeninference/d-inference/coordinator/mdm"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/saferun"
-	"github.com/eigeninference/d-inference/coordinator/store"
-	"github.com/google/uuid"
-	"nhooyr.io/websocket"
-)
 
 const (
 	// DefaultChallengeInterval is how often the coordinator challenges providers.
@@ -1847,7 +1846,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// owned. noteStrayChunk re-sends the cancel on the escalating zombie
 		// schedule and rate-limits the log line per provider; request_id stays
 		// out of the log until it matches coordinator state.
-		s.noteStrayChunk(provider, providerID, msg.RequestID, receivedAt)
+		s.inferenceAttempts().StrayChunk(provider, providerID, msg.RequestID, receivedAt)
 		return
 	}
 	ingressClassified := false
@@ -1870,7 +1869,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// will not send a cancel for it (a settled terminal means "nothing
 		// left to stop"). Stop the real work here, like the deadline and
 		// overflow branches do.
-		s.sendProviderCancel(provider, msg.RequestID)
+		s.inferenceAttempts().SendCancel(provider, msg.RequestID)
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   msg.RequestID,
@@ -1904,13 +1903,13 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// either late first content or an on-time chunk that finished
 		// classification as boilerplate only after the deadline.
 		s.ddIncr("inference.first_content_after_deadline", []string{})
-		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseLateContent)
+		s.inferenceAttempts().SendAbandonCancel(provider, pr.RequestID, pr.Model, attempt.CancelCauseLateContent)
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   pr.RequestID,
 			Error:       "first content was unavailable at the request deadline",
 			StatusCode:  http.StatusServiceUnavailable,
-			ErrorReason: errorReasonDeadlineUnreachable,
+			ErrorReason: attempt.ErrorReasonDeadlineUnreachable,
 			FailureCode: protocol.FailureCodeCapacity,
 		})
 		return
@@ -1935,7 +1934,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 			"request_id", msg.RequestID,
 		)
 		s.ddIncr("inference.chunk_overflow_abort", []string{})
-		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseOverflow)
+		s.inferenceAttempts().SendAbandonCancel(provider, pr.RequestID, pr.Model, attempt.CancelCauseOverflow)
 		// 499 + "request cancelled" classifies as a consumer-side terminal in
 		// handleInferenceError: no provider reputation hit for our backpressure.
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
@@ -2127,7 +2126,7 @@ func (s *Server) handleCompleteAt(
 				RequestID:   pending.RequestID,
 				Error:       "provider completed after the first-content deadline",
 				StatusCode:  http.StatusServiceUnavailable,
-				ErrorReason: errorReasonDeadlineUnreachable,
+				ErrorReason: attempt.ErrorReasonDeadlineUnreachable,
 				FailureCode: protocol.FailureCodeCapacity,
 			}, true)
 			// handleInferenceError completes the terminal only when it still
@@ -2176,20 +2175,20 @@ func (s *Server) handleCompleteAt(
 	// pre-commit attempt was refunded when it was abandoned. Only a terminal
 	// that finds no live record is matched, so the coordinator's own
 	// synthesized errors (raised while the record is live) never resolve one.
-	var cancelled zombieEntry
+	var cancelled attempt.Cancellation
 	wasCancelled := false
 	if pr == nil {
-		cancelled, wasCancelled = s.resolveCancelledTerminal(
-			msg.RequestID, cancelTerminalComplete, cancelledOutcomeCompletePartial, receivedAt)
+		cancelled, wasCancelled = s.inferenceAttempts().ResolveCancelledTerminal(
+			msg.RequestID, attempt.CancelTerminalComplete, attempt.CancelledOutcomeCompletePartial, receivedAt)
 		pr = parked
 	}
 	if pr == nil {
-		if wasCancelled && cancelled.cause != cancelCauseStrayChunk {
+		if wasCancelled && cancelled.Cause() != attempt.CancelCauseStrayChunk {
 			// The id matched a cancel the coordinator recorded, so it is
 			// coordinator-minted and safe to log: the provider honored the
 			// cancel with a partial completion.
 			s.logger.Debug("complete for cancelled request",
-				"request_id", msg.RequestID, "provider_id", providerID, "cause", cancelled.cause)
+				"request_id", msg.RequestID, "provider_id", providerID, "cause", cancelled.Cause())
 		} else {
 			// Until it matches pending state, request_id is provider-controlled and
 			// therefore an arbitrary log-exfiltration channel.
@@ -2476,8 +2475,8 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	if invalidTerminalCause {
 		// Never tag the counter with the untrusted value: the value itself may be
 		// an exfiltration payload and would also create unbounded cardinality.
-		s.ddIncr(metricUnknownTerminalCause, nil)
-		s.ddIncr(metricTypedTerminal, []string{"cause:unknown"})
+		s.ddIncr(attempt.MetricUnknownTerminalCause, nil)
+		s.ddIncr(attempt.MetricTypedTerminal, []string{"cause:unknown"})
 	}
 	// Ownership is decided BEFORE the pending request is removed. Completions
 	// settle on a worker goroutine while error frames run inline on the read
@@ -2510,7 +2509,7 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 		s.retainProviderProfile(pending.Profile, msg.Profile)
 		msg.Profile = nil
 	}
-	if pending != nil && isDrainingErrorReason(msg.ErrorReason) {
+	if pending != nil && attempt.IsDrainingErrorReason(msg.ErrorReason) {
 		s.noteProviderDraining(providerID, pending.Model)
 	}
 	pr := provider.RemovePending(msg.RequestID)
@@ -2519,20 +2518,20 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	parked := s.claimSettlement(msg.RequestID)
 	// See handleCompleteAt: a terminal with no live pending record is matched
 	// against the cancel the coordinator sent for it (metric-only).
-	var cancelled zombieEntry
+	var cancelled attempt.Cancellation
 	wasCancelled := false
 	if pr == nil {
-		cancelled, wasCancelled = s.resolveCancelledTerminal(
-			msg.RequestID, cancelTerminalError, cancelledErrorOutcome(msg), time.Now())
+		cancelled, wasCancelled = s.inferenceAttempts().ResolveCancelledTerminal(
+			msg.RequestID, attempt.CancelTerminalError, attempt.CancelledErrorOutcome(msg), time.Now())
 		pr = parked
 	}
 	if pr == nil {
-		if wasCancelled && cancelled.cause != cancelCauseStrayChunk {
+		if wasCancelled && cancelled.Cause() != attempt.CancelCauseStrayChunk {
 			// Coordinator-minted id (it matched a recorded cancel): the
 			// provider honored the cancel before producing output.
 			s.logger.Debug("error for cancelled request",
 				"request_id", msg.RequestID, "provider_id", providerID,
-				"cause", cancelled.cause, "status_code", msg.StatusCode)
+				"cause", cancelled.Cause(), "status_code", msg.StatusCode)
 		} else {
 			// request_id is provider-controlled until it matches coordinator-owned
 			// pending state. Do not log it: an attacker could use unknown IDs as an
@@ -2553,7 +2552,7 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	}
 	// From this point onward use only the coordinator-owned identifier.
 	msg.RequestID = pr.RequestID
-	if pending == nil && isDrainingErrorReason(msg.ErrorReason) {
+	if pending == nil && attempt.IsDrainingErrorReason(msg.ErrorReason) {
 		// A consumer-gone request may already be parked outside the pending
 		// map. Fence its provider before SetProviderIdle drains queued work.
 		s.noteProviderDraining(providerID, pr.Model)
@@ -2620,15 +2619,15 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	// (admission_timeout — healthy but busy) causes are exempt from the fault
 	// recorder below regardless of status/string shape. Absent, engine_error,
 	// or unknown causes keep the legacy heuristics bit-for-bit.
-	causeClass := s.noteTypedTerminalCause(msg.TerminalCause)
-	causeNeutralForHealth := causeClass == causeClassNeutral || causeClass == causeClassCapacity
+	causeClass := s.inferenceAttempts().TypedTerminal(msg.TerminalCause)
+	causeNeutralForHealth := causeClass == attempt.CauseClassNeutral || causeClass == attempt.CauseClassCapacity
 
 	capacityRejection := msg.FailureCode == protocol.FailureCodeCapacity ||
 		msg.FailureCode == protocol.FailureCodeModelUnavailable ||
-		causeClass == causeClassCapacity
+		causeClass == attempt.CauseClassCapacity
 	cancelTerminal := msg.FailureCode == protocol.FailureCodeCancelled ||
-		msg.TerminalCause == terminalCauseCancelled
-	providerHealthNeutral := isProviderHealthNeutralErrorReason(msg.ErrorReason)
+		msg.TerminalCause == attempt.TerminalCauseCancelled
+	providerHealthNeutral := attempt.IsProviderHealthNeutralErrorReason(msg.ErrorReason)
 	if !capacityRejection && !cancelTerminal && !providerHealthNeutral && !causeNeutralForHealth {
 		s.registry.RecordJobFailure(providerID)
 	}
@@ -2649,8 +2648,8 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	// text never carries the load-failure vocabulary anyway; the explicit
 	// allowlist (legacy or fault only) makes both guarantees unconditional
 	// rather than dependent on provider error-string phrasing.
-	if (causeClass == causeClassLegacy || causeClass == causeClassFault) &&
-		msg.ErrorReason == errorReasonModelLoad {
+	if (causeClass == attempt.CauseClassLegacy || causeClass == attempt.CauseClassFault) &&
+		msg.ErrorReason == attempt.ErrorReasonModelLoad {
 		if s.registry.RecordDispatchLoadFailure(providerID, pr.Model) {
 			s.logger.Warn("load-failure cool-down started",
 				"provider_id", providerID,

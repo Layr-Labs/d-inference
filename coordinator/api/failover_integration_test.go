@@ -1,5 +1,27 @@
 package api
 
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"nhooyr.io/websocket"
+	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
 // Routing-failover integration tests (WS-E).
 //
 // These tests exercise the reliability contracts being implemented by the
@@ -37,28 +59,6 @@ package api
 // lands. TestPostContentErrorStillSurfaced and TestBoilerplateThenCleanClose
 // pass against the current coordinator and act as regression guards on the
 // correctness boundary WS-C must not move.
-
-import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"log/slog"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"testing"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
-	"nhooyr.io/websocket"
-)
 
 // ---------------------------------------------------------------------------
 // Server setup
@@ -376,17 +376,17 @@ func testFailureClassification(errMsg string, statusCode int) (protocol.Inferenc
 	lower := strings.ToLower(errMsg)
 	switch {
 	case statusCode == 499:
-		return protocol.FailureCodeCancelled, errorReasonCancelled
+		return protocol.FailureCodeCancelled, attempt.ErrorReasonCancelled
 	case strings.Contains(lower, "batch token budget"):
-		return protocol.FailureCodeCapacity, errorReasonRequestExceedsBatchBudget
+		return protocol.FailureCodeCapacity, attempt.ErrorReasonRequestExceedsBatchBudget
 	case strings.Contains(lower, "active token budget"):
-		return protocol.FailureCodeCapacity, errorReasonRequestExceedsNodeBudget
+		return protocol.FailureCodeCapacity, attempt.ErrorReasonRequestExceedsNodeBudget
 	case strings.Contains(lower, "context") && (strings.Contains(lower, "exceeds") || strings.Contains(lower, "exceeded")):
-		return protocol.FailureCodeCapacity, errorReasonRequestExceedsContext
+		return protocol.FailureCodeCapacity, attempt.ErrorReasonRequestExceedsContext
 	case strings.Contains(lower, "queue full"):
-		return protocol.FailureCodeCapacity, errorReasonQueueFull
+		return protocol.FailureCodeCapacity, attempt.ErrorReasonQueueFull
 	case statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable:
-		return protocol.FailureCodeCapacity, errorReasonCapacityBusy
+		return protocol.FailureCodeCapacity, attempt.ErrorReasonCapacityBusy
 	default:
 		// Keep generic historical fixtures legacy-shaped. Their raw text is still
 		// discarded by the production sanitizer; bounded status supplies only the
@@ -612,7 +612,7 @@ func TestPreContentFailover_TypedOutputValidation422(t *testing.T) {
 				ctx,
 				req,
 				protocol.FailureCodeGenerationFailure,
-				errorReasonToolNoncompliance,
+				attempt.ErrorReasonToolNoncompliance,
 				http.StatusUnprocessableEntity,
 			)
 			return

@@ -3,13 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 // A short pending prompt must not be priced as another copy of a long arrival.
@@ -84,7 +84,7 @@ func TestTTFTPendingPromptHTTPSelectsFeasibleAlternative(t *testing.T) {
 		Models: []failoverModelSpec{{ID: model}},
 		Script: func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, _ []byte) {
 			budgets.capture(t, reg, fp, req)
-			fp.sendTypedInferenceError(ctx, req, protocol.FailureCodeCapacity, errorReasonDeadlineUnreachable, http.StatusServiceUnavailable)
+			fp.sendTypedInferenceError(ctx, req, protocol.FailureCodeCapacity, attempt.ErrorReasonDeadlineUnreachable, http.StatusServiceUnavailable)
 		},
 	})
 	idle := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{

@@ -1,16 +1,3 @@
-// Package api provides the HTTP and WebSocket server for the Darkbloom coordinator.
-//
-// This package is the network-facing layer of the coordinator. It handles:
-//   - Consumer HTTP endpoints (OpenAI-compatible chat completions, model listing)
-//   - Provider WebSocket connections (registration, heartbeats, inference relay)
-//   - Payment endpoints (deposit, balance, usage)
-//   - Authentication via API keys (Bearer token)
-//   - CORS middleware for development
-//   - Request logging
-//
-// The coordinator runs in a GCP Confidential VM (AMD SEV). Consumer traffic
-// arrives over HTTPS/TLS. The coordinator reads requests for routing but never
-// logs prompt content.
 package api
 
 import (
@@ -22,28 +9,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/inference/response"
-	"github.com/eigeninference/d-inference/coordinator/inference/settlement"
-	"io"
-	"log/slog"
-	"net"
-	"net/http"
-	"os"
-	"runtime"
-	"runtime/debug"
-	"sort"
-	"strconv"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
-
 	"github.com/eigeninference/d-inference/coordinator/api/catalog"
 	"github.com/eigeninference/d-inference/coordinator/api/requestcontext"
 	"github.com/eigeninference/d-inference/coordinator/apns"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/datadog"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
+	"github.com/eigeninference/d-inference/coordinator/inference/settlement"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
@@ -60,8 +34,34 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
 	"golang.org/x/sync/singleflight"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"runtime"
+	"runtime/debug"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
+// Package api provides the HTTP and WebSocket server for the Darkbloom coordinator.
+//
+// This package is the network-facing layer of the coordinator. It handles:
+//   - Consumer HTTP endpoints (OpenAI-compatible chat completions, model listing)
+//   - Provider WebSocket connections (registration, heartbeats, inference relay)
+//   - Payment endpoints (deposit, balance, usage)
+//   - Authentication via API keys (Bearer token)
+//   - CORS middleware for development
+//   - Request logging
+//
+// The coordinator runs in a GCP Confidential VM (AMD SEV). Consumer traffic
+// arrives over HTTPS/TLS. The coordinator reads requests for routing but never
+// logs prompt content.
 // apiKeyCacheEntry stores the authenticated key record for a single raw API
 // key. Cached to skip DB round trips on repeat requests with the same key. A
 // nil key means the token is known-invalid (negative cache).
@@ -288,7 +288,7 @@ type Server struct {
 	// settleGrace overrides defaultTerminalSettleGrace (tests set it small).
 	settleGrace time.Duration
 	// zombieCanceller throttles cancels for chunks on abandoned streams. See zombie_stream.go.
-	zombieCanceller *zombieStreamCanceller
+	attemptTracker *attempt.Tracker
 
 	// hedgeGov is the fleet-wide hedge admission governor (Routing v2 Phase 4):
 	// the mutable half of the speculative-launch verdict — the global
@@ -763,7 +763,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		trustReuseCache:          newTrustReuseCache(),
 		mdmSchedulerConfig:       cfg.MDMScheduler,
 		settlements:              settlement.NewHolder(),
-		zombieCanceller:          newZombieStreamCanceller(),
+		attemptTracker:           attempt.NewTracker(),
 		hedgeGov:                 newHedgeGovernor(),
 		serviceReservations:      settlement.NewServiceHolds(st, cfg.ServiceReservations),
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),

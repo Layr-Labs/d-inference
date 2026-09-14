@@ -2,20 +2,20 @@ package api
 
 import (
 	"context"
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 // A typed drain rejection must fence the provider before releasing its slot.
 // No consumer reads ErrorCh here: the ingress-triggered queue drain must make
 // the right decision without waiting for consumer-side error classification.
 func TestDrainingIngressFencesQueuedDemandBeforeRelease(t *testing.T) {
-	for _, reason := range []string{errorReasonDraining, errorReasonCapacityBusy} {
+	for _, reason := range []string{attempt.ErrorReasonDraining, attempt.ErrorReasonCapacityBusy} {
 		t.Run(reason, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -49,7 +49,7 @@ func TestDrainingIngressFencesQueuedDemandBeforeRelease(t *testing.T) {
 				RequestID: pr.RequestID, FailureCode: protocol.FailureCodeCapacity,
 				StatusCode: http.StatusServiceUnavailable, ErrorReason: reason,
 			})
-			if reason == errorReasonDraining {
+			if reason == attempt.ErrorReasonDraining {
 				if !srv.registry.ProviderDraining(p.ID) {
 					t.Error("drain state was deferred to the consumer")
 				}
@@ -62,7 +62,7 @@ func TestDrainingIngressFencesQueuedDemandBeforeRelease(t *testing.T) {
 				// A delayed classification must not mark the provider draining again.
 				srv.registry.Heartbeat(p.ID, &protocol.HeartbeatMessage{Status: "idle"})
 				em := <-pr.ErrorCh
-				srv.noteInferenceError(p.ID, pr, em.StatusCode, em.Error, em.ErrorReason, em.TerminalCause, em.CoordinatorCause)
+				srv.inferenceAttempts().Error(p.ID, pr, em.StatusCode, em.Error, em.ErrorReason, em.TerminalCause, em.CoordinatorCause)
 				if srv.registry.ProviderDraining(p.ID) {
 					t.Fatal("delayed consumer classification overwrote the recovery heartbeat")
 				}

@@ -1,29 +1,10 @@
-package api
+package attempt
 
 import (
 	"container/list"
 	"sync"
 	"time"
 )
-
-// Zombie-stream cancel tracking.
-//
-// Every abandon path that may leave a provider generating records its request
-// here before it sends the cancel (sendAbandonCancel / cancelDispatch) and
-// marks the entry sent only once the frame was handed to the provider writer.
-// The entry lets the coordinator:
-//
-//   - correlate the provider's eventual terminal with the cancel and emit
-//     inference.cancel_to_terminal_ms instead of dropping it as "unknown";
-//   - re-send the cancel on an escalating schedule while stray chunks prove the
-//     provider has not stopped, so a cancel lost to a full control lane or
-//     delayed behind a cold model load is retried within ~1 s, not 10 s;
-//   - attribute every cancel to a bounded cause.
-//
-// The map is bounded (zombieCancelMaxEntries) and swept opportunistically by
-// the calls that touch it — there is no background goroutine, so a
-// terminal-less entry is reported when the map is next used, not exactly at
-// expiry.
 
 const (
 	zombieCancelMaxEntries = 4096
@@ -59,8 +40,8 @@ const (
 // zombie whose first stray chunk arrives late gets one re-send, not a burst.
 var zombieResendSchedule = []time.Duration{time.Second, 3 * time.Second, 10 * time.Second}
 
-// zombieEntry is one abandoned request awaiting its provider terminal.
-type zombieEntry struct {
+// Cancellation is one abandoned request awaiting its provider terminal.
+type Cancellation struct {
 	model string
 	cause string
 	// firstCancelAt anchors tracking expiry and the re-send schedule.
@@ -81,7 +62,7 @@ type zombieEntry struct {
 	strayChunks int
 }
 
-func (e *zombieEntry) lastActivity() time.Time {
+func (e *Cancellation) lastActivity() time.Time {
 	t := e.firstCancelAt
 	if e.lastSentAt.After(t) {
 		t = e.lastSentAt
@@ -94,7 +75,7 @@ func (e *zombieEntry) lastActivity() time.Time {
 
 // markSent records a cancel send at now, returning its resend index (0 for
 // the very first send), and arms the next re-send instant.
-func (e *zombieEntry) markSent(now time.Time) (resendIndex int) {
+func (e *Cancellation) markSent(now time.Time) (resendIndex int) {
 	resendIndex = min(e.sent, zombieResendIndexMax)
 	if e.sent == 0 {
 		e.firstSentAt = now
@@ -113,7 +94,7 @@ func (e *zombieEntry) markSent(now time.Time) (resendIndex int) {
 	return resendIndex
 }
 
-func (e *zombieEntry) resendDue(now time.Time) bool {
+func (e *Cancellation) resendDue(now time.Time) bool {
 	return !now.Before(e.nextResendAt)
 }
 
@@ -123,21 +104,21 @@ type strayChunkWarnState struct {
 	suppressed int
 }
 
-// zombieStreamCanceller is the per-request map behind the tracking above.
+// Tracker is the per-request map behind the tracking above.
 // All methods are nil-receiver safe: a Server built without one (zero-value
 // literals in tests) cancels stray chunks but tracks nothing.
-type zombieStreamCanceller struct {
+type Tracker struct {
 	mu        sync.Mutex
-	entries   map[string]*zombieEntry
+	entries   map[string]*Cancellation
 	warn      map[string]*strayChunkWarnState
 	lastSweep time.Time
 	recency   list.List
 	positions map[string]*list.Element
 }
 
-func newZombieStreamCanceller() *zombieStreamCanceller {
-	return &zombieStreamCanceller{
-		entries: make(map[string]*zombieEntry),
+func NewTracker() *Tracker {
+	return &Tracker{
+		entries: make(map[string]*Cancellation),
 		warn:    make(map[string]*strayChunkWarnState),
 	}
 }
@@ -148,17 +129,17 @@ type strayChunkResult struct {
 	// the index that send would carry (0 = no cancel delivered yet).
 	send        bool
 	resendIndex int
-	// cause is the entry's cancel cause; cancelCauseStrayChunk means no abandon
+	// cause is the entry's cancel cause; CancelCauseStrayChunk means no abandon
 	// path ever recorded this id — it is genuinely unknown.
 	cause   string
 	model   string
-	expired []zombieEntry
+	expired []Cancellation
 }
 
 // ensureMapsLocked makes a canceller literal (nil maps) usable. Caller holds mu.
-func (z *zombieStreamCanceller) ensureMapsLocked() {
+func (z *Tracker) ensureMapsLocked() {
 	if z.entries == nil {
-		z.entries = make(map[string]*zombieEntry)
+		z.entries = make(map[string]*Cancellation)
 	}
 	if z.warn == nil {
 		z.warn = make(map[string]*strayChunkWarnState)
@@ -169,7 +150,7 @@ func (z *zombieStreamCanceller) ensureMapsLocked() {
 // Idempotent: an existing entry is left untouched. created reports whether
 // this call inserted the entry (so a caller that then decides not to cancel
 // can forget only what it created).
-func (z *zombieStreamCanceller) record(requestID, model, cause string, now time.Time) (created bool, expired []zombieEntry) {
+func (z *Tracker) record(requestID, model, cause string, now time.Time) (created bool, expired []Cancellation) {
 	if z == nil {
 		return false, nil
 	}
@@ -181,7 +162,7 @@ func (z *zombieStreamCanceller) record(requestID, model, cause string, now time.
 		return false, expired
 	}
 	expired = append(expired, z.makeRoomLocked()...)
-	z.entries[requestID] = &zombieEntry{model: model, cause: cause, firstCancelAt: now}
+	z.entries[requestID] = &Cancellation{model: model, cause: cause, firstCancelAt: now}
 	z.touchLocked(requestID)
 	return true, expired
 }
@@ -190,7 +171,7 @@ func (z *zombieStreamCanceller) record(requestID, model, cause string, now time.
 // recorded requestID and returns its resend index (0 for the first cancel
 // delivered for the id, whichever path delivered it; -1 for an untracked id).
 // Callers invoke it only after the enqueue succeeded.
-func (z *zombieStreamCanceller) markSent(requestID string, now time.Time) (resendIndex int) {
+func (z *Tracker) markSent(requestID string, now time.Time) (resendIndex int) {
 	if z == nil {
 		return -1
 	}
@@ -209,7 +190,7 @@ func (z *zombieStreamCanceller) markSent(requestID string, now time.Time) (resen
 // queue; it must not wait for the frame to reach the network. Provider terminals
 // may arrive as soon as enqueue succeeds, so releasing mu between enqueue and
 // markSent would misclassify a delivered cancel as unsent.
-func (z *zombieStreamCanceller) send(requestID string, enqueue func() bool) (resendIndex int, sent bool) {
+func (z *Tracker) send(requestID string, enqueue func() bool) (resendIndex int, sent bool) {
 	if z == nil {
 		return -1, enqueue()
 	}
@@ -232,7 +213,7 @@ func (z *zombieStreamCanceller) send(requestID string, enqueue func() bool) (res
 
 // forget drops requestID: a terminal had already claimed the attempt, so no
 // cancel was sent and there is nothing to correlate.
-func (z *zombieStreamCanceller) forget(requestID string) {
+func (z *Tracker) forget(requestID string) {
 	if z == nil {
 		return
 	}
@@ -243,7 +224,7 @@ func (z *zombieStreamCanceller) forget(requestID string) {
 
 // noteSendFailed lets the next stray chunk re-attempt the cancel almost
 // immediately instead of waiting for the schedule.
-func (z *zombieStreamCanceller) noteSendFailed(requestID string, now time.Time) {
+func (z *Tracker) noteSendFailed(requestID string, now time.Time) {
 	if z == nil {
 		return
 	}
@@ -256,14 +237,14 @@ func (z *zombieStreamCanceller) noteSendFailed(requestID string, now time.Time) 
 
 // strayChunk notes a chunk for a request the coordinator no longer tracks and
 // decides whether to (re-)send the cancel. An id nobody abandoned gets an
-// entry of its own (cause cancelCauseStrayChunk) and an immediate cancel. A
+// entry of its own (cause CancelCauseStrayChunk) and an immediate cancel. A
 // send decision holds the entry for zombieResendRetry so a burst of chunks
 // yields one attempt; the caller marks the send (markSent) only after the
 // enqueue succeeded, or leaves the hold as the retry point when it failed.
-func (z *zombieStreamCanceller) strayChunk(requestID string, now time.Time) strayChunkResult {
+func (z *Tracker) strayChunk(requestID string, now time.Time) strayChunkResult {
 	if z == nil {
 		// Untracked (zero-value Server): still cancel, never throttle.
-		return strayChunkResult{send: true, cause: cancelCauseStrayChunk}
+		return strayChunkResult{send: true, cause: CancelCauseStrayChunk}
 	}
 	z.mu.Lock()
 	z.ensureMapsLocked()
@@ -272,7 +253,7 @@ func (z *zombieStreamCanceller) strayChunk(requestID string, now time.Time) stra
 	e := z.entries[requestID]
 	if e == nil {
 		res.expired = append(res.expired, z.makeRoomLocked()...)
-		e = &zombieEntry{cause: cancelCauseStrayChunk, firstCancelAt: now}
+		e = &Cancellation{cause: CancelCauseStrayChunk, firstCancelAt: now}
 		z.entries[requestID] = e
 	}
 	e.strayChunks++
@@ -290,15 +271,15 @@ func (z *zombieStreamCanceller) strayChunk(requestID string, now time.Time) stra
 
 // terminal resolves requestID against a provider terminal: it returns and
 // removes the entry, or reports false when the id was never abandoned.
-func (z *zombieStreamCanceller) terminal(requestID string) (zombieEntry, bool) {
+func (z *Tracker) terminal(requestID string) (Cancellation, bool) {
 	if z == nil {
-		return zombieEntry{}, false
+		return Cancellation{}, false
 	}
 	z.mu.Lock()
 	defer z.mu.Unlock()
 	e, ok := z.entries[requestID]
 	if !ok {
-		return zombieEntry{}, false
+		return Cancellation{}, false
 	}
 	z.removeLocked(requestID)
 	return *e, true
@@ -306,7 +287,7 @@ func (z *zombieStreamCanceller) terminal(requestID string) (zombieEntry, bool) {
 
 // allowStrayWarn reports whether the unknown-chunk Warn may be logged for
 // providerID now, with the number of chunks suppressed since the last line.
-func (z *zombieStreamCanceller) allowStrayWarn(providerID string, now time.Time) (allow bool, suppressed int) {
+func (z *Tracker) allowStrayWarn(providerID string, now time.Time) (allow bool, suppressed int) {
 	if z == nil {
 		return true, 0
 	}
@@ -329,7 +310,7 @@ func (z *zombieStreamCanceller) allowStrayWarn(providerID string, now time.Time)
 }
 
 // size reports the number of tracked requests (tests).
-func (z *zombieStreamCanceller) size() int {
+func (z *Tracker) size() int {
 	if z == nil {
 		return 0
 	}
@@ -341,12 +322,12 @@ func (z *zombieStreamCanceller) size() int {
 // sweepLocked expires entries idle past zombieEntryTTL (and stale warn state),
 // at most once per zombieSweepEvery. Expired entries are
 // returned so the caller can report them outside the lock.
-func (z *zombieStreamCanceller) sweepLocked(now time.Time) []zombieEntry {
+func (z *Tracker) sweepLocked(now time.Time) []Cancellation {
 	if now.Sub(z.lastSweep) < zombieSweepEvery {
 		return nil
 	}
 	z.lastSweep = now
-	var expired []zombieEntry
+	var expired []Cancellation
 	for id, e := range z.entries {
 		if now.Sub(e.lastActivity()) > zombieEntryTTL {
 			expired = append(expired, *e)

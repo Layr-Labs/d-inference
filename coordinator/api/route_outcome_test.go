@@ -1,15 +1,15 @@
 package api
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 	"log/slog"
 	"net/http"
 	"os"
 	"testing"
 	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 func TestCommittedRouteOutcomeIsNonTerminal(t *testing.T) {
@@ -85,7 +85,7 @@ func TestInferenceErrorReasonPrecedenceAndDerivation(t *testing.T) {
 		Error:       "token_budget_exhausted: request queue full",
 		StatusCode:  http.StatusServiceUnavailable,
 		FailureCode: protocol.FailureCodeCapacity,
-		ErrorReason: errorReasonTokenBudgetExhaust,
+		ErrorReason: attempt.ErrorReasonTokenBudgetExhaust,
 	})
 	if derivedTokenBudget.ErrorReason != "token_budget_exhausted" {
 		t.Fatalf("token-budget reason = %q, want token_budget_exhausted", derivedTokenBudget.ErrorReason)
@@ -111,7 +111,7 @@ func TestInferenceErrorReasonPrecedenceAndDerivation(t *testing.T) {
 		StatusCode:  http.StatusInternalServerError,
 		ErrorReason: "raw provider stack trace should not persist",
 	})
-	if invalidProviderReason.ErrorReason != errorReasonProviderError {
+	if invalidProviderReason.ErrorReason != attempt.ErrorReasonProviderError {
 		t.Fatalf("invalid provider reason = %q, want bounded provider_error", invalidProviderReason.ErrorReason)
 	}
 }

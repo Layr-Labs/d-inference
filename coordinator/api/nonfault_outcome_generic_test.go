@@ -1,13 +1,12 @@
 package api
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 // PR #548 review round 3 (Codex P2): tool_noncompliance route rows must not be
@@ -81,9 +80,9 @@ func TestGenericPathNonFaultReasonsSkipBreakers(t *testing.T) {
 	// Far past every trip threshold (pair cooldown trips at 2, node health at
 	// 5, stable identity at 8).
 	for range 10 {
-		srv.noteInferenceError(provider.ID, pr, http.StatusInternalServerError,
+		srv.inferenceAttempts().Error(provider.ID, pr, http.StatusInternalServerError,
 			"Runtime error: upper filter requires string", "jinja_template", "")
-		srv.noteInferenceError(provider.ID, pr, 422,
+		srv.inferenceAttempts().Error(provider.ID, pr, 422,
 			"model did not emit the required tool call", "tool_noncompliance", "")
 	}
 	assertBreakerStates(t, reg, provider, pr, false)
@@ -91,7 +90,7 @@ func TestGenericPathNonFaultReasonsSkipBreakers(t *testing.T) {
 	// Control: the same volume of plain 500s through the same chokepoint still
 	// trips the breakers — the gate keys on the structured reason only.
 	for range 10 {
-		srv.noteInferenceError(provider.ID, pr, http.StatusInternalServerError, "boom", "", "")
+		srv.inferenceAttempts().Error(provider.ID, pr, http.StatusInternalServerError, "boom", "", "")
 	}
 	assertBreakerStates(t, reg, provider, pr, true)
 }

@@ -1,5 +1,19 @@
 package api
 
+import (
+	"context"
+	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"net/http"
+	"net/http/httptest"
+	"nhooyr.io/websocket"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
 // R1 integration tests: a provider that closes its socket GRACEFULLY
 // (WebSocket 1000/1001 — stop / restart / update) with requests in flight must
 // not be booked as sick. The requests still fail over invisibly (pre-content)
@@ -13,22 +27,6 @@ package api
 // Same live harness as failover_integration_test.go: real coordinator
 // (httptest + in-memory store + real registry), fake providers speaking the
 // full encrypted WS protocol.
-
-import (
-	"context"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"sync"
-	"testing"
-	"time"
-
-	"nhooyr.io/websocket"
-
-	"github.com/eigeninference/d-inference/coordinator/attestation"
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/registry"
-)
 
 // closeGoingAway sends a graceful 1001 going-away close — what
 // CoordinatorClient.shutdown() emits on the provider's run() shutdown path.
@@ -346,7 +344,7 @@ func TestVersionChangedReconnect_LateFlushStrikesAreSuperseded(t *testing.T) {
 	feedFlush := func(srv *Server, id string) {
 		pr := &registry.PendingRequest{RequestID: id + "-req", Model: model, ProviderID: id}
 		for i := 0; i < 8; i++ {
-			srv.noteInferenceError(id, pr, 502, "provider disconnected", "", "", protocol.CoordinatorCauseProviderDisconnected)
+			srv.inferenceAttempts().Error(id, pr, 502, "provider disconnected", "", "", protocol.CoordinatorCauseProviderDisconnected)
 		}
 	}
 	quarantined := func(t *testing.T, reg *registry.Registry, liveID string, want bool) {

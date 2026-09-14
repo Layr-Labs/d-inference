@@ -1,9 +1,9 @@
 package api
 
 import (
-	"testing"
-
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"testing"
 )
 
 // TestClassifyRejection pins the deterministic-vs-transient split that drives the
@@ -22,17 +22,17 @@ func TestClassifyRejection(t *testing.T) {
 		providerBudget int64
 		modelContext   int
 		typedRejection protocol.CapacityRejectionReason
-		want           rejectionKind
+		want           attempt.RejectionKind
 	}{
 		{
 			name:   "batch_token_budget_is_deterministic",
 			errStr: "token_budget_exhausted: request exceeds batch token budget",
-			want:   rejectionDeterministicUnservable,
+			want:   attempt.RejectionDeterministicUnservable,
 		},
 		{
 			name:   "exceeds_context_window_is_deterministic",
 			errStr: "prompt exceeds the model's context window",
-			want:   rejectionDeterministicUnservable,
+			want:   attempt.RejectionDeterministicUnservable,
 		},
 		// Past-tense / marker-only context-overflow phrasings are deterministic too
 		// (the deterministic check matches both "exceeds"/"exceeded" and the bare
@@ -40,48 +40,48 @@ func TestClassifyRejection(t *testing.T) {
 		{
 			name:   "context_length_exceeded_past_tense_is_deterministic",
 			errStr: "context length exceeded",
-			want:   rejectionDeterministicUnservable,
+			want:   attempt.RejectionDeterministicUnservable,
 		},
 		{
 			name:   "context_window_exceeded_past_tense_is_deterministic",
 			errStr: "context window exceeded",
-			want:   rejectionDeterministicUnservable,
+			want:   attempt.RejectionDeterministicUnservable,
 		},
 		{
 			name:   "too_long_for_context_window_is_deterministic",
 			errStr: "prompt too long for context window",
-			want:   rejectionDeterministicUnservable,
+			want:   attempt.RejectionDeterministicUnservable,
 		},
 		{
 			name:   "active_token_budget_is_transient",
 			errStr: "token_budget_exhausted: request exceeds active token budget",
-			want:   rejectionTransientCapacity,
+			want:   attempt.RejectionTransientCapacity,
 		},
 		{
 			name:   "requires_N_but_M_available_is_transient",
 			errStr: "token_budget_exhausted: request requires 115635 tokens but only 90000 available",
-			want:   rejectionTransientCapacity,
+			want:   attempt.RejectionTransientCapacity,
 		},
 		{
 			name:   "insufficient_kv_headroom_is_transient",
 			errStr: "token_budget_exhausted: insufficient global KV cache headroom",
-			want:   rejectionTransientCapacity,
+			want:   attempt.RejectionTransientCapacity,
 		},
-		{name: "queue_full_is_transient", errStr: "request rejected: queue full", want: rejectionTransientCapacity},
-		{name: "server_busy_is_transient", errStr: "server busy", want: rejectionTransientCapacity},
-		{name: "draining_is_transient", errStr: "provider draining for update", want: rejectionTransientCapacity},
-		{name: "not_loaded_is_transient", errStr: "model not loaded on this provider", want: rejectionTransientCapacity},
+		{name: "queue_full_is_transient", errStr: "request rejected: queue full", want: attempt.RejectionTransientCapacity},
+		{name: "server_busy_is_transient", errStr: "server busy", want: attempt.RejectionTransientCapacity},
+		{name: "draining_is_transient", errStr: "provider draining for update", want: attempt.RejectionTransientCapacity},
+		{name: "not_loaded_is_transient", errStr: "model not loaded on this provider", want: attempt.RejectionTransientCapacity},
 		{
 			name:   "structured_reason_only_no_detail_is_transient",
 			reason: "token_budget_exhausted",
 			errStr: "",
-			want:   rejectionTransientCapacity,
+			want:   attempt.RejectionTransientCapacity,
 		},
 		{
 			name:   "reason_carries_batch_detail_is_deterministic",
 			reason: "token_budget_exhausted",
 			errStr: "request exceeds batch token budget",
-			want:   rejectionDeterministicUnservable,
+			want:   attempt.RejectionDeterministicUnservable,
 		},
 		// DAR-347 #1: a "batch token budget" rejection is rejected at
 		// min(context, activeTokenBudget). When the rejecting provider's reported
@@ -93,7 +93,7 @@ func TestClassifyRejection(t *testing.T) {
 			errStr:         "token_budget_exhausted: request exceeds batch token budget",
 			providerBudget: 50_000,
 			modelContext:   131072,
-			want:           rejectionTransientCapacity,
+			want:           attempt.RejectionTransientCapacity,
 		},
 		// Budget >= context: the binding term was the context, identical fleet-wide.
 		{
@@ -101,7 +101,7 @@ func TestClassifyRejection(t *testing.T) {
 			errStr:         "token_budget_exhausted: request exceeds batch token budget",
 			providerBudget: 200_000,
 			modelContext:   131072,
-			want:           rejectionDeterministicUnservable,
+			want:           attempt.RejectionDeterministicUnservable,
 		},
 		// Budget known but context unknown: can't prove pressure ⇒ deterministic
 		// (preserves the storm-stop default when context is unavailable).
@@ -110,7 +110,7 @@ func TestClassifyRejection(t *testing.T) {
 			errStr:         "token_budget_exhausted: request exceeds batch token budget",
 			providerBudget: 50_000,
 			modelContext:   0,
-			want:           rejectionDeterministicUnservable,
+			want:           attempt.RejectionDeterministicUnservable,
 		},
 		// Context known but provider budget unknown (no heartbeat budget): can't
 		// prove pressure ⇒ deterministic.
@@ -119,7 +119,7 @@ func TestClassifyRejection(t *testing.T) {
 			errStr:         "token_budget_exhausted: request exceeds batch token budget",
 			providerBudget: 0,
 			modelContext:   131072,
-			want:           rejectionDeterministicUnservable,
+			want:           attempt.RejectionDeterministicUnservable,
 		},
 		// An explicit "exceeds … context" phrasing names the context directly, so it
 		// is deterministic regardless of the provider's (here pressured) budget.
@@ -128,7 +128,7 @@ func TestClassifyRejection(t *testing.T) {
 			errStr:         "prompt exceeds the model's context window",
 			providerBudget: 50_000,
 			modelContext:   131072,
-			want:           rejectionDeterministicUnservable,
+			want:           attempt.RejectionDeterministicUnservable,
 		},
 		// P1-4: a typed token_budget rejection is AUTHORITATIVE transient for
 		// the batch-budget family — the live gate itself named this node's
@@ -141,7 +141,7 @@ func TestClassifyRejection(t *testing.T) {
 			typedRejection: protocol.RejectionReasonTokenBudget,
 			providerBudget: 0,
 			modelContext:   131072,
-			want:           rejectionTransientCapacity,
+			want:           attempt.RejectionTransientCapacity,
 		},
 		{
 			name:           "typed_token_budget_overrides_stale_heartbeat_string_path",
@@ -149,7 +149,7 @@ func TestClassifyRejection(t *testing.T) {
 			typedRejection: protocol.RejectionReasonTokenBudget,
 			providerBudget: 200_000,
 			modelContext:   131072,
-			want:           rejectionTransientCapacity,
+			want:           attempt.RejectionTransientCapacity,
 		},
 		// A typed reason NEVER touches the explicit context-overflow verdict:
 		// that path derives from the string naming the context, not from any
@@ -158,22 +158,22 @@ func TestClassifyRejection(t *testing.T) {
 			name:           "typed_token_budget_never_overrides_explicit_context",
 			errStr:         "prompt exceeds the model's context window",
 			typedRejection: protocol.RejectionReasonTokenBudget,
-			want:           rejectionDeterministicUnservable,
+			want:           attempt.RejectionDeterministicUnservable,
 		},
 		// Genuine faults / unknown ⇒ not capacity (keep fault failover + breaker).
-		{name: "crash_is_not_capacity", errStr: "backend crash during generation", want: rejectionNotCapacity},
-		{name: "panic_is_not_capacity", errStr: "panic: nil map", want: rejectionNotCapacity},
-		{name: "first_chunk_timeout_is_not_capacity", errStr: "timeout waiting for first response", want: rejectionNotCapacity},
-		{name: "empty_is_not_capacity", errStr: "", want: rejectionNotCapacity},
-		{name: "model_load_failed_bad_weights_is_not_capacity", errStr: "model load failed: bad metallib", want: rejectionNotCapacity},
+		{name: "crash_is_not_capacity", errStr: "backend crash during generation", want: attempt.RejectionNotCapacity},
+		{name: "panic_is_not_capacity", errStr: "panic: nil map", want: attempt.RejectionNotCapacity},
+		{name: "first_chunk_timeout_is_not_capacity", errStr: "timeout waiting for first response", want: attempt.RejectionNotCapacity},
+		{name: "empty_is_not_capacity", errStr: "", want: attempt.RejectionNotCapacity},
+		{name: "model_load_failed_bad_weights_is_not_capacity", errStr: "model load failed: bad metallib", want: attempt.RejectionNotCapacity},
 		// A cold-load CAPACITY failure ("model load failed: insufficient memory") is
 		// capacity-class but not deterministic-context ⇒ transient (failover may hit
 		// a warmer/bigger node).
-		{name: "model_load_failed_oom_is_transient", errStr: "model load failed: insufficient memory", want: rejectionTransientCapacity},
+		{name: "model_load_failed_oom_is_transient", errStr: "model load failed: insufficient memory", want: attempt.RejectionTransientCapacity},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyRejection(tc.reason, tc.errStr, tc.providerBudget, tc.modelContext, tc.typedRejection); got != tc.want {
+			if got := attempt.ClassifyRejection(tc.reason, tc.errStr, tc.providerBudget, tc.modelContext, tc.typedRejection); got != tc.want {
 				t.Errorf("classifyRejection(%q, %q, budget=%d, ctx=%d, typed=%q) = %d, want %d",
 					tc.reason, tc.errStr, tc.providerBudget, tc.modelContext, tc.typedRejection, got, tc.want)
 			}

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/modelloads"
 	"github.com/eigeninference/d-inference/coordinator/registry/requestqueue"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -136,15 +137,15 @@ type Registry struct {
 
 	// swapPlanGate coalesces heartbeat-triggered model-swap planning to at
 	// most one plan per modelSwapPlanInterval fleet-wide (model_swap_coalesce.go).
-	swapPlanGate modelSwapPlanGate
+	swapPlanGate modelloads.PlanGate
 
 	onlineCount      atomic.Int64
 	modelProviders   map[string]*atomic.Int64
 	modelProvidersMu sync.Mutex
 
-	// pendingModelLoads tracks provider-model pairs that have been sent a
+	// modelLoads owns provider-model pairs that have been sent a
 	// load_model command and are awaiting completion, or are cooling down
-	// after a failed one. The value is the entry's expiry time. While an
+	// after a failed one. It keeps expiry and original start time private. While an
 	// entry lives, the provider is skipped for new load_model sends
 	// (bestModelLoadProviderLocked / reservePendingModelLoads).
 	//
@@ -156,8 +157,7 @@ type Registry struct {
 	// is derived entirely from BackendCapacity.Slots (with WarmModels as the
 	// legacy fallback). Do not add routing reads of this field — see the
 	// "Coordinator State Model" section in AGENTS.md.
-	pendingModelLoads       map[modelLoadKey]time.Time // value: expiry (see pair_keys.go)
-	pendingModelLoadStarted map[modelLoadKey]time.Time
+	modelLoads modelloads.Commands
 
 	// Per-identity routing-gate state (gate_state.go). Every fault tracker —
 	// the dispatch-load cooldown, the shape-keyed inference-error breaker
@@ -242,25 +242,24 @@ type Registry struct {
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
-		providers:               make(map[string]*Provider),
-		queue:                   NewRequestQueueFromEnv(),
-		MinTrustLevel:           TrustHardware,
-		tpsRegistry:             NewTPSRegistry(),
-		modelProviders:          make(map[string]*atomic.Int64),
-		pendingModelLoads:       make(map[modelLoadKey]time.Time),
-		pendingModelLoadStarted: make(map[modelLoadKey]time.Time),
-		gates:                   make(map[string]*gateState),
-		sessions:                make(map[string]*Provider),
-		disconnectedStableIDs:   make(map[string]disconnectedStableID),
-		reserveCommitMode:       loadReserveCommitMode(logger),
-		capacityCooldownCfg:     loadCapacityCooldownConfig(),
-		budgetClampCfg:          loadBudgetClampConfig(),
-		capacityRateCfg:         loadCapacityRateConfig(),
-		evictStrikes:            make(map[string]int),
-		cacheRouting:            newCacheRoutingTracker(defaultCacheRoutingTTL, defaultCacheRoutingMaxHolders),
-		cacheActivation:         newCacheActivationGate(defaultCacheRoutingActivationPct, defaultCacheRoutingMaxPlanQPS),
-		cacheRoutingMode:        CacheRoutingOff,
-		logger:                  logger,
+		providers:             make(map[string]*Provider),
+		queue:                 NewRequestQueueFromEnv(),
+		MinTrustLevel:         TrustHardware,
+		tpsRegistry:           NewTPSRegistry(),
+		modelProviders:        make(map[string]*atomic.Int64),
+		modelLoads:            modelloads.NewCommands(),
+		gates:                 make(map[string]*gateState),
+		sessions:              make(map[string]*Provider),
+		disconnectedStableIDs: make(map[string]disconnectedStableID),
+		reserveCommitMode:     loadReserveCommitMode(logger),
+		capacityCooldownCfg:   loadCapacityCooldownConfig(),
+		budgetClampCfg:        loadBudgetClampConfig(),
+		capacityRateCfg:       loadCapacityRateConfig(),
+		evictStrikes:          make(map[string]int),
+		cacheRouting:          newCacheRoutingTracker(defaultCacheRoutingTTL, defaultCacheRoutingMaxHolders),
+		cacheActivation:       newCacheActivationGate(defaultCacheRoutingActivationPct, defaultCacheRoutingMaxPlanQPS),
+		cacheRoutingMode:      CacheRoutingOff,
+		logger:                logger,
 	}
 }
 

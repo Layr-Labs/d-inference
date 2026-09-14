@@ -301,12 +301,7 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 		}
 		delete(r.providers, id)
 		// Clear any pending model load entries for this provider.
-		for key := range r.pendingModelLoads {
-			if key.ProviderID == id {
-				delete(r.pendingModelLoads, key)
-				delete(r.pendingModelLoadStarted, key)
-			}
-		}
+		r.modelLoads.Disconnect(id)
 		p.detachModelIndexLocked(r)
 		// FAULT STATE IS NOT CLEARED ON DISCONNECT. Every fault tracker
 		// (node-health breaker, inference-error cooldowns, dispatch-load

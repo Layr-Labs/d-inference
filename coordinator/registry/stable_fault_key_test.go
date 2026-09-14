@@ -318,10 +318,7 @@ func TestDisconnectKeepsStableFaultStateCleansSessionState(t *testing.T) {
 	}
 	reg.RecordInferenceError("sess-1", model, 500, "base")
 	reg.RecordDispatchLoadFailure("sess-1", model)
-	reg.mu.Lock()
-	reg.pendingModelLoads[modelLoadKey{ProviderID: "sess-1", ModelID: model}] = time.Now().Add(time.Minute)
-	reg.pendingModelLoadStarted[modelLoadKey{ProviderID: "sess-1", ModelID: model}] = time.Now()
-	reg.mu.Unlock()
+	reg.backoffPendingModelLoad("sess-1", model, time.Minute)
 
 	reg.Disconnect("sess-1")
 
@@ -337,7 +334,7 @@ func TestDisconnectKeepsStableFaultStateCleansSessionState(t *testing.T) {
 		_, hasDLC = g.dispatchLoadCooldowns[model]
 	})
 	reg.mu.RLock()
-	_, hasPending := reg.pendingModelLoads[modelLoadKey{ProviderID: "sess-1", ModelID: model}]
+	hasPending := reg.modelLoads.Observe("sess-1", model).Pending
 	reg.mu.RUnlock()
 	hasBinding := sessionIndexed(reg, "sess-1")
 	if !hasWin || !hasOpen || !hasStrikes || !hasDLC {

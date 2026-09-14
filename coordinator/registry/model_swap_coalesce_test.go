@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/modelloads"
 )
 
 func swapTestHeartbeat(model, state string) *protocol.HeartbeatMessage {
@@ -48,16 +49,25 @@ func swapTestQueued(id, model string) *QueuedRequest {
 // plan by hand instead of waiting out real time (and so no real timer can fire
 // into a fake-clock test).
 type trailingTimerStub struct {
+	now   func() time.Time
 	waits []time.Duration
 	fire  []func()
 }
 
 func installTrailingTimerStub(reg *Registry) *trailingTimerStub {
 	s := &trailingTimerStub{}
-	reg.swapPlanGate.afterFunc = func(d time.Duration, f func()) {
-		s.waits = append(s.waits, d)
-		s.fire = append(s.fire, f)
-	}
+	reg.swapPlanGate = modelloads.NewPlanGate(modelloads.PlanClock{
+		AfterFunc: func(d time.Duration, f func()) {
+			s.waits = append(s.waits, d)
+			s.fire = append(s.fire, f)
+		},
+		Now: func() time.Time {
+			if s.now != nil {
+				return s.now()
+			}
+			return time.Now()
+		},
+	})
 	return s
 }
 
@@ -80,8 +90,8 @@ func TestSwapPlanGateCoalescesBurstAndReopensAfterWindow(t *testing.T) {
 			t.Fatal("empty queue must not run the planner")
 		}
 	}
-	if reg.swapPlanGate.planRuns() != 0 {
-		t.Fatalf("plans with empty queue = %d, want 0", reg.swapPlanGate.planRuns())
+	if reg.swapPlanGate.Runs() != 0 {
+		t.Fatalf("plans with empty queue = %d, want 0", reg.swapPlanGate.Runs())
 	}
 	if len(stub.fire) != 0 {
 		t.Fatal("empty queue must not arm a trailing plan")
@@ -96,8 +106,8 @@ func TestSwapPlanGateCoalescesBurstAndReopensAfterWindow(t *testing.T) {
 			planned++
 		}
 	}
-	if planned != 1 || reg.swapPlanGate.planRuns() != 1 {
-		t.Fatalf("burst of 50 inside the window planned %d times (gate runs %d), want 1", planned, reg.swapPlanGate.planRuns())
+	if planned != 1 || reg.swapPlanGate.Runs() != 1 {
+		t.Fatalf("burst of 50 inside the window planned %d times (gate runs %d), want 1", planned, reg.swapPlanGate.Runs())
 	}
 	if len(stub.waits) != 1 || stub.waits[0] != modelSwapPlanInterval-time.Millisecond {
 		t.Fatalf("burst armed trailing plans %v, want exactly one timed for the window's end (%v)",
@@ -106,8 +116,8 @@ func TestSwapPlanGateCoalescesBurstAndReopensAfterWindow(t *testing.T) {
 	if !reg.triggerModelSwapsFromHeartbeat(t0.Add(modelSwapPlanInterval + time.Millisecond)) {
 		t.Fatal("first heartbeat after the window must plan again")
 	}
-	if reg.swapPlanGate.planRuns() != 2 {
-		t.Fatalf("gate runs = %d, want 2", reg.swapPlanGate.planRuns())
+	if reg.swapPlanGate.Runs() != 2 {
+		t.Fatalf("gate runs = %d, want 2", reg.swapPlanGate.Runs())
 	}
 	// Exactly at the boundary the window has not elapsed yet.
 	if reg.triggerModelSwapsFromHeartbeat(t0.Add(modelSwapPlanInterval + time.Millisecond + modelSwapPlanInterval - time.Nanosecond)) {
@@ -134,7 +144,7 @@ func TestSwapPlanGateRefusedHeartbeatArmsOneTrailingPlan(t *testing.T) {
 
 	t0 := time.Now()
 	now := t0
-	reg.swapPlanGate.now = func() time.Time { return now }
+	stub.now = func() time.Time { return now }
 	if !reg.triggerModelSwapsFromHeartbeat(t0) {
 		t.Fatal("the trigger opening the window must plan")
 	}
@@ -154,25 +164,25 @@ func TestSwapPlanGateRefusedHeartbeatArmsOneTrailingPlan(t *testing.T) {
 	if want := modelSwapPlanInterval - 100*time.Millisecond; stub.waits[0] != want {
 		t.Fatalf("trailing plan wait = %v, want %v (the rest of the window)", stub.waits[0], want)
 	}
-	if !reg.swapPlanGate.trailingArmed() {
+	if !reg.swapPlanGate.TrailingArmed() {
 		t.Fatal("gate must report the trailing plan armed")
 	}
-	if reg.swapPlanGate.planRuns() != 1 {
-		t.Fatalf("plans before the trailing fire = %d, want 1", reg.swapPlanGate.planRuns())
+	if reg.swapPlanGate.Runs() != 1 {
+		t.Fatalf("plans before the trailing fire = %d, want 1", reg.swapPlanGate.Runs())
 	}
 
 	now = t0.Add(modelSwapPlanInterval)
 	stub.fire[0]()
-	if reg.swapPlanGate.planRuns() != 2 {
-		t.Fatalf("plans after the trailing fire = %d, want 2", reg.swapPlanGate.planRuns())
+	if reg.swapPlanGate.Runs() != 2 {
+		t.Fatalf("plans after the trailing fire = %d, want 2", reg.swapPlanGate.Runs())
 	}
-	if reg.swapPlanGate.trailingArmed() {
+	if reg.swapPlanGate.TrailingArmed() {
 		t.Fatal("the trailing plan must disarm when it fires")
 	}
 
 	// The trailing plan opened a new window; a trigger it refuses arms the next
 	// trailing plan.
-	last := reg.swapPlanGate.last
+	last := reg.swapPlanGate.Last()
 	if reg.triggerModelSwapsFromHeartbeat(last.Add(10 * time.Millisecond)) {
 		t.Fatal("a trigger inside the trailing plan's window must be coalesced")
 	}
@@ -183,10 +193,10 @@ func TestSwapPlanGateRefusedHeartbeatArmsOneTrailingPlan(t *testing.T) {
 	// Demand gone before it fires: nothing to plan.
 	reg.Queue().Remove("swap-trailing-gate-req", cold)
 	stub.fire[1]()
-	if reg.swapPlanGate.planRuns() != 2 {
-		t.Fatalf("trailing plan ran on an empty queue (%d plans)", reg.swapPlanGate.planRuns())
+	if reg.swapPlanGate.Runs() != 2 {
+		t.Fatalf("trailing plan ran on an empty queue (%d plans)", reg.swapPlanGate.Runs())
 	}
-	if reg.swapPlanGate.trailingArmed() {
+	if reg.swapPlanGate.TrailingArmed() {
 		t.Fatal("a fired trailing plan must disarm even when it finds nothing to do")
 	}
 }
@@ -213,15 +223,15 @@ func TestHeartbeatBurstPlansSwapsOnce(t *testing.T) {
 	// trailing plan it may arm) is anchored at start so a trailing fire is
 	// only ever observed with elapsed >= modelSwapPlanInterval.
 	start := time.Now()
-	if ok, _ := reg.swapPlanGate.claim(start); !ok {
+	if ok, _ := reg.swapPlanGate.Claim(start); !ok {
 		t.Fatal("precondition: gate claim")
 	}
-	before := reg.swapPlanGate.planRuns()
+	before := reg.swapPlanGate.Runs()
 	for i := 0; i < 50; i++ {
 		reg.Heartbeat(ids[i%len(ids)], swapTestHeartbeat(cold, "crashed"))
 	}
 	elapsed := time.Since(start)
-	extra := reg.swapPlanGate.planRuns() - before
+	extra := reg.swapPlanGate.Runs() - before
 	if elapsed < modelSwapPlanInterval && extra != 0 {
 		t.Fatalf("50 heartbeats in %v planned %d extra times, want 0 inside the window", elapsed, extra)
 	}
@@ -270,8 +280,8 @@ func TestHeartbeatRefusedByWindowStillPlansWithinInterval(t *testing.T) {
 	// Inside the window the provider reports room to reload. The drain still
 	// cannot place the request (slot_crashed) and the gate refuses the plan.
 	reg.Heartbeat(p.ID, swapTestCrashedHeartbeat(model, 32))
-	if time.Since(start) < modelSwapPlanInterval && reg.swapPlanGate.planRuns() != 1 {
-		t.Fatalf("heartbeat inside the window planned synchronously (%d plans)", reg.swapPlanGate.planRuns())
+	if time.Since(start) < modelSwapPlanInterval && reg.swapPlanGate.Runs() != 1 {
+		t.Fatalf("heartbeat inside the window planned synchronously (%d plans)", reg.swapPlanGate.Runs())
 	}
 	select {
 	case got := <-loads:
@@ -281,8 +291,8 @@ func TestHeartbeatRefusedByWindowStillPlansWithinInterval(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("heartbeat refused by the window produced no load_model: the trailing plan did not run")
 	}
-	if reg.swapPlanGate.planRuns() != 2 {
-		t.Fatalf("plans = %d, want 2 (the one opening the window and the trailing one)", reg.swapPlanGate.planRuns())
+	if reg.swapPlanGate.Runs() != 2 {
+		t.Fatalf("plans = %d, want 2 (the one opening the window and the trailing one)", reg.swapPlanGate.Runs())
 	}
 	if reg.Queue().QueueSize(model) != 1 {
 		t.Fatalf("crashed slot must not drain the request (queue size %d)", reg.Queue().QueueSize(model))
@@ -308,10 +318,10 @@ func TestHeartbeatWarmReportStillDrainsQueuedRequest(t *testing.T) {
 	if err := reg.Queue().Enqueue(req); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := reg.swapPlanGate.claim(time.Now()); !ok {
+	if ok, _ := reg.swapPlanGate.Claim(time.Now()); !ok {
 		t.Fatal("precondition: gate claim")
 	}
-	runsBefore := reg.swapPlanGate.planRuns()
+	runsBefore := reg.swapPlanGate.Runs()
 
 	reg.Heartbeat(p.ID, swapTestHeartbeat(model, "crashed"))
 	select {
@@ -338,13 +348,13 @@ func TestHeartbeatWarmReportStillDrainsQueuedRequest(t *testing.T) {
 	if reg.Queue().QueueSize(model) != 0 {
 		t.Fatal("request must leave the queue once drained")
 	}
-	if reg.swapPlanGate.planRuns() != runsBefore {
+	if reg.swapPlanGate.Runs() != runsBefore {
 		t.Fatalf("the planner ran %d times during the drain; the drain must not depend on it",
-			reg.swapPlanGate.planRuns()-runsBefore)
+			reg.swapPlanGate.Runs()-runsBefore)
 	}
 	// The trailing plan armed while the request waited finds the queue empty.
 	stub.fire[0]()
-	if reg.swapPlanGate.planRuns() != runsBefore {
+	if reg.swapPlanGate.Runs() != runsBefore {
 		t.Fatal("trailing plan must not run once the drain has emptied the queue")
 	}
 }

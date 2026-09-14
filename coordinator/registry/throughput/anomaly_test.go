@@ -1,4 +1,4 @@
-package registry
+package throughput
 
 import (
 	"math"
@@ -63,9 +63,9 @@ func TestExpectedDecodeTPS(t *testing.T) {
 // the production decode numbers on an M-Max (gemma ~21 tok/s, gpt-oss ~69 tok/s),
 // gemma must be flagged as a throughput anomaly and gpt-oss must not.
 func TestThroughputAnomaly_GemmaFlaggedGptossNot(t *testing.T) {
-	cfg := DefaultThroughputAnomalyConfig()
+	cfg := DefaultAnomalyConfig()
 
-	gemma := EvaluateThroughputAnomaly(ThroughputAnomalyInput{
+	gemma := DefaultPolicy().EvaluateAnomaly(AnomalyInput{
 		Model:       "gemma-4-26b-qat-4bit",
 		ChipClass:   "M3 Max", // 400 GB/s via the table
 		ObservedTPS: 21,
@@ -82,7 +82,7 @@ func TestThroughputAnomaly_GemmaFlaggedGptossNot(t *testing.T) {
 		t.Fatalf("gemma ratio %.3f should be < %.2f", gemma.Ratio, cfg.RatioThreshold)
 	}
 
-	gptoss := EvaluateThroughputAnomaly(ThroughputAnomalyInput{
+	gptoss := DefaultPolicy().EvaluateAnomaly(AnomalyInput{
 		Model:       "gpt-oss-20b",
 		ChipClass:   "M3 Max",
 		ObservedTPS: 69,
@@ -108,9 +108,9 @@ func TestThroughputAnomaly_GemmaFlaggedGptossNot(t *testing.T) {
 // TestThroughputAnomaly_GemmaFlaggedAcrossMaxTier checks the verdict holds for
 // the whole Max tier (the class to which gemma's ~21 tok/s dense read maps).
 func TestThroughputAnomaly_GemmaFlaggedAcrossMaxTier(t *testing.T) {
-	cfg := DefaultThroughputAnomalyConfig()
+	cfg := DefaultAnomalyConfig()
 	for _, chip := range []string{"M1 Max", "M2 Max", "M3 Max"} {
-		res := EvaluateThroughputAnomaly(ThroughputAnomalyInput{
+		res := DefaultPolicy().EvaluateAnomaly(AnomalyInput{
 			Model: "gemma-4-26b-qat-4bit", ChipClass: chip, ObservedTPS: 21, Samples: 5,
 		}, cfg)
 		if !res.Anomalous {
@@ -120,10 +120,10 @@ func TestThroughputAnomaly_GemmaFlaggedAcrossMaxTier(t *testing.T) {
 }
 
 func TestThroughputAnomaly_BandwidthOverride(t *testing.T) {
-	cfg := DefaultThroughputAnomalyConfig()
+	cfg := DefaultAnomalyConfig()
 	// Provider-reported bandwidth wins over the chip table even for an unknown
 	// class string.
-	res := EvaluateThroughputAnomaly(ThroughputAnomalyInput{
+	res := DefaultPolicy().EvaluateAnomaly(AnomalyInput{
 		Model: "gemma-4-26b-qat-4bit", ChipClass: "Unknownchip",
 		BandwidthGBps: 400, ObservedTPS: 21, Samples: 5,
 	}, cfg)
@@ -139,8 +139,8 @@ func TestThroughputAnomaly_BandwidthOverride(t *testing.T) {
 }
 
 func TestThroughputAnomaly_InsufficientSamples(t *testing.T) {
-	cfg := DefaultThroughputAnomalyConfig() // MinSamples = 3
-	res := EvaluateThroughputAnomaly(ThroughputAnomalyInput{
+	cfg := DefaultAnomalyConfig() // MinSamples = 3
+	res := DefaultPolicy().EvaluateAnomaly(AnomalyInput{
 		Model: "gemma-4-26b-qat-4bit", ChipClass: "M3 Max", ObservedTPS: 21, Samples: 1,
 	}, cfg)
 	if res.Evaluated {
@@ -155,9 +155,9 @@ func TestThroughputAnomaly_InsufficientSamples(t *testing.T) {
 }
 
 func TestThroughputAnomaly_UnknownModelAndChipSkipped(t *testing.T) {
-	cfg := DefaultThroughputAnomalyConfig()
+	cfg := DefaultAnomalyConfig()
 
-	unknownModel := EvaluateThroughputAnomaly(ThroughputAnomalyInput{
+	unknownModel := DefaultPolicy().EvaluateAnomaly(AnomalyInput{
 		Model: "totally-unknown-model", ChipClass: "M3 Max", ObservedTPS: 5, Samples: 99,
 	}, cfg)
 	if unknownModel.Evaluated || unknownModel.Anomalous {
@@ -167,7 +167,7 @@ func TestThroughputAnomaly_UnknownModelAndChipSkipped(t *testing.T) {
 		t.Fatalf("skip reason = %q, want unknown_model", unknownModel.SkipReason)
 	}
 
-	unknownChip := EvaluateThroughputAnomaly(ThroughputAnomalyInput{
+	unknownChip := DefaultPolicy().EvaluateAnomaly(AnomalyInput{
 		Model: "gemma-4-26b-qat-4bit", ChipClass: "Z9 Hyper", ObservedTPS: 5, Samples: 99,
 	}, cfg)
 	if unknownChip.Evaluated || unknownChip.Anomalous {
@@ -181,8 +181,8 @@ func TestThroughputAnomaly_UnknownModelAndChipSkipped(t *testing.T) {
 // TestThroughputAnomaly_HealthyGemmaNotFlagged confirms that once gemma's MoE
 // decode is fixed (~140 tok/s on an M-Max), it is no longer flagged.
 func TestThroughputAnomaly_HealthyGemmaNotFlagged(t *testing.T) {
-	cfg := DefaultThroughputAnomalyConfig()
-	res := EvaluateThroughputAnomaly(ThroughputAnomalyInput{
+	cfg := DefaultAnomalyConfig()
+	res := DefaultPolicy().EvaluateAnomaly(AnomalyInput{
 		Model: "gemma-4-26b-qat-4bit", ChipClass: "M3 Max", ObservedTPS: 140, Samples: 10,
 	}, cfg)
 	if res.Anomalous {
@@ -191,7 +191,7 @@ func TestThroughputAnomaly_HealthyGemmaNotFlagged(t *testing.T) {
 }
 
 func TestLookupModelDecodeClass(t *testing.T) {
-	c, ok := LookupModelDecodeClass("gpt-oss-20b")
+	c, ok := DefaultPolicy().LookupModelDecodeClass("gpt-oss-20b")
 	if !ok {
 		t.Fatal("gpt-oss-20b should be known")
 	}
@@ -202,10 +202,10 @@ func TestLookupModelDecodeClass(t *testing.T) {
 		t.Errorf("gpt-oss bytes/param = %g, want %g", c.BytesPerParam, BytesPerParam4Bit)
 	}
 	// Case-insensitive match.
-	if _, ok := LookupModelDecodeClass("GEMMA-4-26B-QAT-4BIT"); !ok {
+	if _, ok := DefaultPolicy().LookupModelDecodeClass("GEMMA-4-26B-QAT-4BIT"); !ok {
 		t.Error("case-insensitive lookup should match gemma")
 	}
-	if _, ok := LookupModelDecodeClass("nope"); ok {
+	if _, ok := DefaultPolicy().LookupModelDecodeClass("nope"); ok {
 		t.Error("unknown model should not match")
 	}
 }
@@ -249,20 +249,20 @@ func TestResolveChipClass(t *testing.T) {
 }
 
 func TestChipBandwidthForClass(t *testing.T) {
-	if bw := ChipBandwidthForClass("M3 Max"); bw != 400 {
+	if bw := DefaultPolicy().ChipBandwidthForClass("M3 Max"); bw != 400 {
 		t.Errorf("M3 Max bandwidth = %g, want 400", bw)
 	}
-	if bw := ChipBandwidthForClass("M4 Pro"); bw != 273 {
+	if bw := DefaultPolicy().ChipBandwidthForClass("M4 Pro"); bw != 273 {
 		t.Errorf("M4 Pro bandwidth = %g, want 273", bw)
 	}
 	// Unknown tier falls back to the bare generation.
-	if bw := ChipBandwidthForClass("M3 Quantum"); bw != 100 {
+	if bw := DefaultPolicy().ChipBandwidthForClass("M3 Quantum"); bw != 100 {
 		t.Errorf("M3 Quantum bandwidth = %g, want 100 (M3 base fallback)", bw)
 	}
-	if bw := ChipBandwidthForClass("Z9"); bw != 0 {
+	if bw := DefaultPolicy().ChipBandwidthForClass("Z9"); bw != 0 {
 		t.Errorf("unknown generation bandwidth = %g, want 0", bw)
 	}
-	if bw := ChipBandwidthForClass(""); bw != 0 {
+	if bw := DefaultPolicy().ChipBandwidthForClass(""); bw != 0 {
 		t.Errorf("empty class bandwidth = %g, want 0", bw)
 	}
 }

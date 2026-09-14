@@ -1,35 +1,28 @@
-package registry
+// Package warmpool owns demand measurements and target capacity calculations.
+// Fleet snapshots and model-load commands stay with the registry controller.
+package warmpool
 
 import (
+	"github.com/eigeninference/d-inference/coordinator/registry/throughput"
 	"math"
 	"time"
 )
 
-// warm_pool_target.go holds the pure, side-effect-free math behind the
-// warm-pool controller's capacity target (Layer 3 in docs/design/routing-v2.md).
-//
-// The controller drives warm capacity from measured demand using Little's Law:
-//
-//	L = λ · E[S]                         (requests concurrently in the system)
-//	target_warm = ceil( L / quality_concurrency ) + burst_buffer
-//
-// where quality_concurrency is the largest per-provider batch that still keeps
-// every in-batch request decoding at or above a quality floor, derived from the
-// same rate(B) = solo / (1 + k·B) batch-degradation model the scheduler uses in
-// projectedPerRequestDecodeTPS (k = effectiveTPSLoadFactor).
-//
-// Everything here is pure so it can be unit-tested without a Registry, heartbeats,
-// or wall-clock timing.
+// Service-time clamps prevent pathological rates from producing runaway targets.
+const (
+	MinServiceTime = 500 * time.Millisecond
+	MaxServiceTime = 2 * time.Minute
+)
 
-// warmTargetParams are the controller tunables (sourced from WarmPoolConfig).
-type warmTargetParams struct {
+// Params are the controller tunables (sourced from WarmPoolConfig).
+type Params struct {
 	// DecodeFloorTPS is the per-request sustained-decode quality floor. When a
 	// provider's batch grows past the point where each request would decode
 	// slower than this, the warm pool treats the provider as full and prefers
 	// to warm another one. <= 0 disables the quality constraint.
 	DecodeFloorTPS float64
 	// LoadFactorK is the decode batch-degradation coefficient (the scheduler's
-	// effectiveTPSLoadFactor): rate(B) = solo / (1 + k·B).
+	// throughput.LoadFactor): rate(B) = solo / (1 + k·B).
 	LoadFactorK float64
 	// BurstBuffer is the spare warm providers added on top of the demand-derived
 	// target to absorb arrival bursts within a control interval.
@@ -37,7 +30,7 @@ type warmTargetParams struct {
 	// HeadroomProviders is a per-model OVERRIDE of the derived proactive floor
 	// (EIGENINFERENCE_WARM_POOL_HEADROOM_PROVIDERS, "model=N,..."). Normally the
 	// floor is DERIVED per model from measured demand growth — see
-	// warmTargetInputs.OccupancyRamp and headroomTarget — because the right value
+	// Inputs.OccupancyRamp and headroomTarget — because the right value
 	// is a property of a model's own traffic shape and cold-load time, not
 	// something an operator can guess: measured across the live fleet it ranges
 	// from 2 to 33 providers across the six served builds, and the same constant
@@ -69,10 +62,10 @@ type warmTargetParams struct {
 	MaxServiceTime time.Duration
 }
 
-// warmTargetInputs are the per-model measured inputs for a single planning tick.
-// They are assembled by the controller from the fleet snapshot (warm/cold
+// Inputs are the per-model measured inputs for a single planning tick.
+// They are assembled by the controller from the fleet Snapshot (warm/cold
 // counts, in-flight load, representative rates) and the pressure/queue state.
-type warmTargetInputs struct {
+type Inputs struct {
 	// Model is the concrete build id, used to resolve a per-model headroom
 	// override. Empty means no override can match, so the derived floor applies.
 	Model string
@@ -117,51 +110,10 @@ type warmTargetInputs struct {
 	DemandPressure bool
 }
 
-// qualityConcurrency returns the largest batch B a provider can run while every
-// in-batch request still decodes at >= floor tok/s, under rate(B) = solo/(1+k·B):
-//
-//	solo / (1 + k·B) >= floor   <=>   B <= (solo/floor - 1) / k
-//
-// The result is clamped to [1, limit] where limit is the provider-reported
-// concurrency cap (falling back to fallbackConc). When the floor is disabled
-// (<= 0), the solo rate is unknown, or load scaling is off, the constraint does
-// not bind and the cap is returned.
-//
-// k is MEASURED per engine generation, not chosen, and this function is the
-// most load-bearing consumer of getting it wrong in the safe-looking
-// direction: too SMALL a k over-states the quality batch, which divides
-// Little's Law demand by too much and under-warms the pool — a shortfall that
-// reads as demand undershoot rather than as a stale coefficient.
-func qualityConcurrency(soloDecodeTPS, floor, k float64, maxProviderConc, fallbackConc int) int {
-	limit := maxProviderConc
-	if limit <= 0 {
-		limit = fallbackConc
-	}
-	if limit < 1 {
-		limit = 1
-	}
-	if floor <= 0 || soloDecodeTPS <= 0 || k <= 0 {
-		return limit
-	}
-	if soloDecodeTPS <= floor {
-		// Even a solo request is at or below the floor: one request per provider
-		// is the most we can run without violating quality.
-		return 1
-	}
-	b := int(math.Floor((soloDecodeTPS/floor - 1) / k))
-	if b < 1 {
-		b = 1
-	}
-	if b > limit {
-		b = limit
-	}
-	return b
-}
-
-// estimateServiceTime estimates E[S] for a representative request: prefill of the
+// ServiceTime estimates E[S] for a representative request: prefill of the
 // assumed prompt plus decode of the assumed completion, using the representative
 // fleet rates. Clamped to [MinServiceTime, MaxServiceTime].
-func estimateServiceTime(prefillTPS, decodeTPS float64, p warmTargetParams) time.Duration {
+func ServiceTime(prefillTPS, decodeTPS float64, p Params) time.Duration {
 	secs := 0.0
 	if prefillTPS > 0 && p.AssumedPromptTokens > 0 {
 		secs += float64(p.AssumedPromptTokens) / prefillTPS
@@ -179,14 +131,14 @@ func estimateServiceTime(prefillTPS, decodeTPS float64, p warmTargetParams) time
 	return d
 }
 
-// demandConcurrency is L = λ·E[S] in Little's Law: the number of concurrent
+// DemandConcurrency is L = λ·E[S] in Little's Law: the number of concurrent
 // requests the warm pool must host to serve current demand at quality. It is the
 // observed in-system load (decoding + provider-queued + coordinator-queued) PLUS
 // the spilled arrival stream the pool failed to serve, converted to a concurrency
 // by Little's Law (λ_spill · E[S]). Folding the gauge and the spill together is
 // what fixes the prod failure where a pool pinned at capacity hid the true
 // demand behind a wall of 429s.
-func demandConcurrency(in warmTargetInputs, svc time.Duration) float64 {
+func DemandConcurrency(in Inputs, svc time.Duration) float64 {
 	served := float64(in.RunningRequests + in.WaitingRequests + in.QueueDepth)
 	spill := in.SpillArrivalRate * svc.Seconds()
 	if spill < 0 {
@@ -195,9 +147,9 @@ func demandConcurrency(in warmTargetInputs, svc time.Duration) float64 {
 	return served + spill
 }
 
-// warmTarget computes the Little's Law warm-provider target for one model:
+// Target computes the Little's Law warm-provider target for one model:
 //
-//	target = ceil( demandConcurrency / qualityConcurrency ) + burstBuffer
+//	target = ceil( DemandConcurrency / throughput.QualityConcurrency ) + burstBuffer
 //
 // and then applies a PROACTIVE HEADROOM FLOOR (see headroomTarget) so the pool
 // keeps spare *serving capacity* ahead of demand instead of only reacting to
@@ -216,7 +168,7 @@ func demandConcurrency(in warmTargetInputs, svc time.Duration) float64 {
 // made growth +1 provider per control interval (30s in prod) no matter how large
 // the shortfall, so the pool was smallest exactly when load was rising. The
 // headroom floor below replaces that with anticipatory growth; the pressure
-// signals still accelerate it through demandConcurrency's spill term.
+// signals still accelerate it through DemandConcurrency's spill term.
 //
 // HeadroomEnabledParams=false is a TRUE opt-out: it restores the pressure gate as
 // well as suppressing the floor. Both halves of proactive growth — the headroom
@@ -224,15 +176,15 @@ func demandConcurrency(in warmTargetInputs, svc time.Duration) float64 {
 // change, so leaving the second one live would grow the pool with no pressure on
 // a config that advertises the previous reactive behaviour, and an operator
 // reaching for the kill switch during an incident would not get what it says.
-func warmTarget(in warmTargetInputs, p warmTargetParams, svc time.Duration) int {
+func Target(in Inputs, p Params, svc time.Duration) int {
 	if !p.HeadroomEnabledParams && !in.DemandPressure {
 		return in.Warm
 	}
-	qc := qualityConcurrency(in.SoloDecodeTPS, p.DecodeFloorTPS, p.LoadFactorK, in.MaxProviderConc, p.FallbackQualityConcurrency)
+	qc := throughput.QualityConcurrency(in.SoloDecodeTPS, p.DecodeFloorTPS, p.LoadFactorK, in.MaxProviderConc, p.FallbackQualityConcurrency)
 	if qc < 1 {
 		qc = 1
 	}
-	L := demandConcurrency(in, svc)
+	L := DemandConcurrency(in, svc)
 	target := int(math.Ceil(L/float64(qc))) + p.BurstBuffer
 	// Proactive headroom: hold spare serving capacity above current load even
 	// when nothing has failed yet.
@@ -291,9 +243,9 @@ func warmTarget(in warmTargetInputs, p warmTargetParams, svc time.Duration) int 
 // `headroom` itself is DERIVED per model, not configured: it is the measured
 // occupancy ramp (slots of growth per control interval, EWMA) scaled by how many
 // intervals a cold load takes, converted to providers by qc. See
-// headroomProviders.
-func headroomTarget(in warmTargetInputs, p warmTargetParams, qc int) int {
-	headroom := headroomProviders(in, p, qc)
+// HeadroomProviders.
+func headroomTarget(in Inputs, p Params, qc int) int {
+	headroom := HeadroomProviders(in, p, qc)
 	if headroom <= 0 {
 		return 0
 	}
@@ -314,7 +266,7 @@ func headroomTarget(in warmTargetInputs, p warmTargetParams, qc int) int {
 	return int(math.Ceil(float64(occupied)/float64(qc))) + headroom + foreignBlocked
 }
 
-// headroomProviders resolves how many providers' worth of FREE capacity this model
+// HeadroomProviders resolves how many providers' worth of FREE capacity this model
 // should keep warm.
 //
 // Precedence:
@@ -331,7 +283,7 @@ func headroomTarget(in warmTargetInputs, p warmTargetParams, qc int) int {
 //
 // A model with no measured ramp yet gets 0 and stays purely reactive until it has
 // samples, which is the conservative direction: no proactive warming on a guess.
-func headroomProviders(in warmTargetInputs, p warmTargetParams, qc int) int {
+func HeadroomProviders(in Inputs, p Params, qc int) int {
 	if !p.HeadroomEnabledParams {
 		return 0
 	}
@@ -362,12 +314,12 @@ func headroomProviders(in warmTargetInputs, p warmTargetParams, qc int) int {
 	return providers
 }
 
-// rampLoadsThisTick returns the demand-scaled, bounded number of model loads to
+// LoadsThisTick returns the demand-scaled, bounded number of model loads to
 // issue this tick to close `gap` (= target - warm). The per-tick burst scales
 // with the gap (gapFraction of it) but is floored at `base` and hard-capped at
 // `ceiling`, so a large demand spike ramps quickly without unbounded thundering.
 // gapFraction <= 0 falls back to the flat `base` burst.
-func rampLoadsThisTick(gap, base, ceiling int, gapFraction float64) int {
+func LoadsThisTick(gap, base, ceiling int, gapFraction float64) int {
 	if gap <= 0 {
 		return 0
 	}
@@ -392,10 +344,10 @@ func rampLoadsThisTick(gap, base, ceiling int, gapFraction float64) int {
 	return loads
 }
 
-// medianFloat returns the median of the samples, or 0 for an empty slice. Used to
+// Median returns the median of the samples, or 0 for an empty slice. Used to
 // pick a representative fleet rate without letting one outlier dominate. It sorts
 // a copy so callers keep their slice order.
-func medianFloat(samples []float64) float64 {
+func Median(samples []float64) float64 {
 	n := len(samples)
 	if n == 0 {
 		return 0
@@ -411,7 +363,7 @@ func medianFloat(samples []float64) float64 {
 }
 
 // sortFloat64s is a tiny insertion sort kept local to avoid pulling sort.Float64s
-// (and its interface allocs) into the hot snapshot path for the small per-model
+// (and its interface allocs) into the hot Snapshot path for the small per-model
 // rate-sample slices.
 func sortFloat64s(a []float64) {
 	for i := 1; i < len(a); i++ {

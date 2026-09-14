@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-14 · commit `831869026`
+> Last updated: 2026-09-14 · commit `180eebc20`
 
 The complete public HTTP surface of the coordinator, derived from the 108 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -105,10 +105,10 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/billing/methods` | `handleBillingMethods` (`coordinator/api/billing_handlers.go`) | `—` | — | Which top-up methods are enabled |
 | GET | `/v1/provider/earnings` | `handleProviderEarnings` (`coordinator/api/consumer.go`) | `—` | — | Legacy lookup by `?wallet=` query or `X-Provider-Wallet` header; `ProviderEarningsResponse` |
 | GET | `/v1/provider/account-earnings` | `handleAccountEarnings` (`coordinator/api/billing_handlers.go`) | `key` | — | Earnings across the account's providers |
-| GET | `/v1/me/summary` | `handleMySummary` (`coordinator/api/me_handlers.go`) | `user` | — | Console account summary; includes `latest_provider_version` |
-| GET | `/v1/me/providers` | `handleMyProviders` (`coordinator/api/me_handlers.go`) | `user` | — | Machines linked to the account |
-| GET | `/v1/me/self-route-models` | `handleMySelfRouteModels` (`coordinator/api/me_handlers.go`) | `user` | — | Models the account's own machines can serve |
-| DELETE | `/v1/me/providers/{id}` | `handleDeleteMyProvider` (`coordinator/api/me_handlers.go`) | `user` | `fin` | Unlink a machine |
+| GET | `/v1/me/summary` | `Controller.Summary` (`coordinator/api/accountfleet/summary.go`) | `user` | — | Console account summary; includes `latest_provider_version` |
+| GET | `/v1/me/providers` | `Controller.Providers` (`coordinator/api/accountfleet/providers.go`) | `user` | — | Machines linked to the account |
+| GET | `/v1/me/self-route-models` | `handleMySelfRouteModels` (`coordinator/api/account_models.go`) | `user` | — | Models the account's own machines can serve |
+| DELETE | `/v1/me/providers/{id}` | `Controller.DeleteProvider` (`coordinator/api/accountfleet/removal.go`) | `user` | `fin` | Unlink a machine |
 | GET | `/v1/pricing` | `handleGetPricing` (`coordinator/api/billing_handlers.go`) | `—` | — | Public price table; see [`pricing-model.md`](pricing-model.md) |
 | PUT | `/v1/pricing` | `handleSetPricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Provider sets its own prices |
 | DELETE | `/v1/pricing` | `handleDeletePricing` (`coordinator/api/billing_handlers.go`) | `user` | — | Revert to defaults |
@@ -286,7 +286,7 @@ for `cache_model_*` labels and populations (`coordinator/api/cache_model_telemet
 ## Provider capacity observations
 
 `GET /v1/me/providers` exposes the accepted backend slot snapshot through
-`backend_capacity.slots` (`handleMyProviders`, `coordinator/api/me_handlers.go`). The
+`backend_capacity.slots` (`buildProvider`, `coordinator/api/accountfleet/provider_view.go`). The
 optional `paged_storage` object carries bounded allocator observations; omitted
 fields mean uninstrumented. Its exact fields and sample-age rules live in the
 [wire reference](protocol-messages.md#slotspaged_storage). The coordinator
@@ -555,7 +555,7 @@ An unknown payout outcome held for manual reconciliation remains `status=pending
 | Tools, media, constraints | `coordinator/api/toolschema.go`, `coordinator/api/tool_constraints.go`, `coordinator/api/media_resolve.go` |
 | Sealed transport | `coordinator/api/sender_encryption.go` |
 | Models and catalog | `coordinator/api/models_endpoints.go`, `coordinator/api/concrete_model_entries.go`, `coordinator/api/openrouter_endpoint.go`, `coordinator/api/model_registry_handlers.go`, `coordinator/api/model_alias_handlers.go`, `coordinator/api/openrouter_alias_handlers.go`, `coordinator/api/capacity.go`, `coordinator/api/exact_cache_status.go` |
-| Keys, device code, accounts | `coordinator/api/apikey_handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/device_auth.go`, `coordinator/api/me_handlers.go` |
+| Keys, device code, accounts | `coordinator/api/apikey_handlers.go`, `coordinator/store/apikey.go`, `coordinator/api/device_auth.go`, `coordinator/api/accountfleet/` |
 | Billing, Stripe, referral, invites | `coordinator/api/billing_handlers.go`, `coordinator/api/stripe_payouts.go`, `coordinator/api/stripe_withdraw.go`, `coordinator/api/stripe_payouts_webhooks.go`, `coordinator/api/invite_handlers.go`, `coordinator/api/base_rewards_handlers.go` |
 | Stats | `coordinator/api/network/stats.go`, `coordinator/api/network/refresh.go`, `coordinator/api/readcache/`, `coordinator/api/network/totals.go`, `coordinator/api/network/leaderboard.go`, `coordinator/api/network/series.go` |
 | Release, enrollment, provider WS, log reports | `coordinator/api/release_handlers.go`, `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |

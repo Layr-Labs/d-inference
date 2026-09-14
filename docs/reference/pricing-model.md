@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-11 · commit `e3993c611`
+> Last updated: 2026-09-14 · commit `180eebc20`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -209,7 +209,7 @@ the financial rate limiter ([Constants](#constants)).
 | `GET /v1/payments/usage` | requireAuth | `coordinator/api/consumer.go` (`handleUsage`) → `UsageResponse` |
 | `GET /v1/provider/earnings` | none; identifies by `?wallet=` / `X-Provider-Wallet` (legacy) | `coordinator/api/consumer.go` (`handleProviderEarnings`) |
 | `GET /v1/provider/account-earnings` | requireAuth | `coordinator/api/billing_handlers.go` (`handleAccountEarnings`) |
-| `GET /v1/me/summary` | requirePrivyAuth | `coordinator/api/me_handlers.go` (`handleMySummary`) |
+| `GET /v1/me/summary` | requirePrivyAuth | `coordinator/api/accountfleet/summary.go` (`Controller.Summary`) |
 | `POST /v1/keys`, `PATCH /v1/keys/{id}` | requirePrivyAuth + financial | `coordinator/api/apikey_handlers.go` (`handleCreateAPIKey`, `handleUpdateAPIKey`) |
 | `POST /v1/billing/stripe/create-session` | requireAuth + financial | `coordinator/api/billing_handlers.go` (`handleStripeCreateSession`) |
 | `POST /v1/billing/stripe/webhook` | none; `Stripe-Signature` | `handleStripeWebhook` |

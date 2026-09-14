@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-14 · commit `831869026`
+> Last updated: 2026-09-14 · commit `180eebc20`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -20,6 +20,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | API request handling, auth, attestation, dispatch | `coordinator/api/`; server construction in `server.go` (`NewServer`) |
 | HTTP response caching and refresh coalescing | `coordinator/api/readcache/`; catalog fill fences in `generation.go` (`SetIfCurrent`, `SetValueIfCurrent`) |
 | Public stats, geography, earnings totals and leaderboards | `coordinator/api/network/`; `controller.go` (`Controller`) owns refresh state, `stats_snapshot.go` owns fleet aggregation, and `totals_refresh.go` bounds concurrent earnings queries |
+| Account provider dashboard and offline-machine removal | `coordinator/api/accountfleet/`; `merge.go` reconciles persisted and live machines, `summary_cache.go` coalesces account earnings, and `removal.go` preserves ownership checks |
 | Provider selection, admission, queueing | `coordinator/registry/`; request eligibility in `request_traits.go` (`providerEligibleForTraitsLocked`) |
 | Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |

@@ -70,6 +70,8 @@ Every directory under `coordinator/` and what it owns.
 | `coordinator/registry/cacheattempt` | Per-request preparation, terminal closure, immutable queued-frame identity and atomic generation revocation (`State`, `Snapshot`, `Generation`); live provider validation remains in the registry. |
 | `coordinator/registry/providerversion` | Exact dotted-version interpretation and bounded memo state shared by capability, slot-layout and memory-floor gates (`Policy`). |
 | `coordinator/registry/throughput` | Observed throughput samples and medians, decode expectations and batch quality policy (`Observations`, `Policy`, `QualityConcurrency`). |
+| `coordinator/registry/routingcost/policy.go` (`Policy`) | Shared startup latency tuning and private TTFT calibration joins/windows; `coordinator/registry/routingcost/snapshot.go` (`Snapshot`) carries the original provider values. `coordinator/registry/routing_policy.go` (`routingPolicy`) binds the one process-wide policy; live reservation and provider rechecks remain in the registry. |
+| `coordinator/registry/dispatchplan/plan.go` (`Plan`), `coordinator/registry/dispatchplan/quotes.go` (`Probes`) | Private bounded alternates, quote ranking, attempted IDs and one-refresh claim; quote correlation, expiry and settlement-before-outcome publication. The registry retains exact provider identity, admission, heartbeat and transport bindings. |
 | `coordinator/registry/modelloads` | Private session command deadlines/start times and fleet plan coalescing (`Commands`, `PlanGate`); live eligibility, provider publication and command I/O remain in the registry. |
 | `coordinator/registry/warmpool` | Controller runner, coalesced triggers, private queue/pressure/observation state and target arithmetic (`Controller`, `State`, `Snapshot`, `Target`, `ServiceTime`); live fleet and command bindings stay in the registry. |
 | `coordinator/registry/providerwriter` | Private two-lane WebSocket transport, dequeue acknowledgment, cancellation/completion arbitration, fragmentation and watchdog (`Writer`); registry `Provider` methods bind the current connection. |
@@ -127,45 +129,45 @@ functions below bind each subsystem without introducing another lifecycle owner.
    idempotent migration slice, seed the admin key — otherwise the memory store
    with its 15 minute pruner. The store is wrapped by the configured read-through
    cache. Provider sessions orphaned by the previous process are closed,
-   best-effort, with a 10 second budget (`storage.go`: `startMemoryStorePruner`,
+   best-effort, with a 10 second budget (`coordinator/cmd/coordinator/storage.go`: `startMemoryStorePruner`,
    `withStoreCache`, `reconcileProviderSessions`).
 4. **Registry.** `registry.New`, trust floor, dedicated models, quality
    concurrency cap, cache routing (*fatal* on an invalid mode or key), then the
-   warm-pool controller starts (`registry.go`: `configureRegistry`).
+   warm-pool controller starts (`coordinator/cmd/coordinator/registry.go`: `configureRegistry`).
 5. **Server.** `api.NewServer` with the live TTFT deadline base, media fetch
    config and durable trust reuse; the prompt-sidecar provisioner if enabled;
    rate limiters (each with its own pruner); telemetry emitter; Datadog tracer
-   and client (`serving.go`: `serverConfig`; `prompt_contract.go`: `configurePromptArtifacts`; `rate_limits.go`: `configureRateLimits`).
+   and client (`coordinator/cmd/coordinator/serving.go`: `serverConfig`; `coordinator/cmd/coordinator/prompt_contract.go`: `configurePromptArtifacts`; `coordinator/cmd/coordinator/rate_limits.go`: `configureRateLimits`).
 6. **Catalog and policy** (*fatal* for the release inventory). Model catalog
    sync, binary-hash and runtime-manifest sync from the store, then the
    routing knobs read directly from the environment (release policy mode,
    TTFT admission, reject list, decode floor, servability gate, prompt
    calibration), then the exact-model deadline overrides and optional pprof
-   listener (`release_policy.go`: `configureReleasePolicy`,
-   `configureRuntimeManifest`; `routing_admission.go`: `configureAdmission`;
-   `routing_deadlines.go`: `configureModelDeadlines`; `profiling.go`: `configureProfiling`).
+   listener (`coordinator/cmd/coordinator/release_policy.go`: `configureReleasePolicy`,
+   `configureRuntimeManifest`; `coordinator/cmd/coordinator/routing_admission.go`: `configureAdmission`;
+   `coordinator/cmd/coordinator/routing_deadlines.go`: `configureModelDeadlines`; `coordinator/cmd/coordinator/profiling.go`: `configureProfiling`).
 7. **Money and identity.** Ledger and billing service, base rewards, the
    sender-encryption key from the mnemonic, admin emails, Privy, MDM client
    and verification scheduler, profile signer, APNs attestor and the
    code-attestation cache, the trust-reuse cache (*fatal* if its revocation
-   journal is unusable). `accounts.go` (`configureAccounts`) binds billing/auth;
-   `provider_trust.go` (`configureProviderTrust`) binds MDM, profile signing and
+   journal is unusable). `coordinator/cmd/coordinator/accounts.go` (`configureAccounts`) binds billing/auth;
+   `coordinator/cmd/coordinator/provider_trust.go` (`configureProviderTrust`) binds MDM, profile signing and
    APNs, then seeds trust reuse.
 8. **Background loops.** Provider eviction sweep (`StartEvictionLoop`, cadence and timeout in [scheduling.md](../scheduling.md#heartbeat-cadence-and-eviction)); DogStatsD gauge loop;
    profiler fleet sampler and retention sweep; read-cache janitor; throughput
    anomaly detector; base-rewards settlement (when enabled); Stripe payout
-   reconciler (`background.go`: `startBackgroundLoops`). After constructing the
+   reconciler (`coordinator/cmd/coordinator/background.go`: `startBackgroundLoops`). After constructing the
    public HTTP server, the prompt sidecar supervisor and preloader start
-   (`prompt_contract.go`: `startPromptSidecar`).
+   (`coordinator/cmd/coordinator/prompt_contract.go`: `startPromptSidecar`).
 9. **Listen.** `http.Server` on `:EIGENINFERENCE_PORT` with a 5 s header
    timeout, 10 s read timeout, no write timeout (SSE), 120 s idle timeout and
-   a 64 KiB header cap (`serving.go`: `newHTTPServer`). The optional private
+   a 64 KiB header cap (`coordinator/cmd/coordinator/serving.go`: `newHTTPServer`). The optional private
    pprof listener starts earlier in step 6.
 10. **Shutdown.** On SIGINT/SIGTERM: mark draining (`/readyz` turns 503),
     cancel eviction, stop the sidecar, then wait up to
     `EIGENINFERENCE_DRAIN_GRACE` for in-flight requests,
     then `Shutdown` with a 15 s backstop; deferred closes stop Datadog and the
-    Postgres pool (`main.go`: `main`).
+    Postgres pool (`coordinator/cmd/coordinator/main.go`: `main`).
 
 ```mermaid
 flowchart TD
@@ -206,7 +208,7 @@ while `/readyz` reports drain and trust-safety readiness.
    (`coordinator/api/consumer.go`, `coordinator/api/inference_error_sanitize.go`,
    `coordinator/internal/e2e/e2e.go`).
 2. **A misconfigured coordinator does not serve.** `AppConfig.Check` and the
-   fatal startup steps above exit 1 before the listener opens
+   fatal startup steps above exit 1 before the public HTTP listener opens
    (`coordinator/config/app_config.go`, `coordinator/cmd/coordinator/main.go`).
 3. **Every background loop is panic-safe.** Loops start through
    `saferun.Go`, which logs and recovers instead of taking the process down

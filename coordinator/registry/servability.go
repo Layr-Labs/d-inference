@@ -1,6 +1,8 @@
 package registry
 
-import "time"
+import (
+	"time"
+)
 
 // Servability prediction.
 //
@@ -147,7 +149,7 @@ func (r *Registry) PredictServable(model string, estimatedPromptTokens, contextP
 		// A model that cannot fit this node at all is a model_too_large miss, not
 		// a prompt-size problem — exclude it from the budget tier (the existing
 		// preflight handles model_too_large). Resident models have demonstrably fit.
-		if !snap.modelLoaded && !modelFitsHardware(snap.minRAMGb, snap.modelSizeGB, snap.totalMemoryGB) {
+		if !snap.ModelLoaded && !modelFitsHardware(snap.MinRAMGB, snap.ModelSizeGB, snap.TotalMemoryGB) {
 			continue
 		}
 		providerCount++

@@ -1,6 +1,6 @@
 # Self-route: use your own machine through the coordinator
 
-> Last updated: 2026-09-14 · commit `b853c2417`
+> Last updated: 2026-09-14 · commit `bf2678202`
 
 Send your normal Darkbloom API requests to the provider your account owns —
 free, end-to-end, through the same `api.darkbloom.dev` endpoint and SDK
@@ -79,7 +79,7 @@ fleet traffic whose scheduler is told which machine may serve it.
 ## What the coordinator relaxes — and what it does not
 
 Self-route to an owned machine relaxes exactly two gates in the scheduler
-(`coordinator/registry/scheduler.go`, `providerPassesRoutingGatesLocked`;
+(`coordinator/registry/routing_gates.go`, `providerPassesRoutingGatesLocked`;
 `relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)`):
 
 - the hardware-trust floor (`Registry.MinTrustLevel`, set by

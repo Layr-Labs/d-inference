@@ -79,7 +79,7 @@ func (s *Server) coldSpillAvailable(model string, traits registry.RequestTraits,
 //
 // It deliberately does NOT emit RecordWarmPoolColdDispatch: the queued request is
 // already counted via the warm-pool queue-depth signal, and the cold-dispatch
-// counter is recorded once at the actual cold reserve (registry/scheduler.go), so
+// counter is recorded once at the actual cold reserve (registry/reservation_commit.go), so
 // emitting here too would double-count the autoscaler's demand signal.
 //
 // The swap is dispatched on a recovered goroutine so the request hot path never

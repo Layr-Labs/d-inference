@@ -1,5 +1,9 @@
 package registry
 
+import (
+	"github.com/eigeninference/d-inference/coordinator/registry/routingcost"
+)
+
 // ProviderSnapshot is a flat, read-only view of the per-provider fields the
 // base-rewards engine needs to build settlement candidates. It is a copy taken
 // under the registry lock, so the engine can iterate the fleet without holding
@@ -63,7 +67,7 @@ func (r *Registry) ListProviders() []ProviderSnapshot {
 func (r *Registry) warmServingModelLocked(p *Provider) string {
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
-			if slotStateModelLoaded(slot.State) &&
+			if routingcost.SlotStateModelLoaded(slot.State) &&
 				r.providerServesRoutableModelLocked(p, slot.Model, false) {
 				return slot.Model
 			}

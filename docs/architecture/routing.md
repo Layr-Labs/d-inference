@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-13 · commit `8670b2a08`
+> Last updated: 2026-09-14 · commit `68822e9a7`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -28,7 +28,7 @@ Two properties shape the design:
 - **Cost is expressed in milliseconds.** Every penalty in the model is an
   estimate of added latency for *this* request, so terms can be summed and
   compared directly, and the routing breakdown that is logged per decision
-  (`costBreakdown`, `coordinator/registry/scheduler.go`) always sums to the
+  (`costBreakdown`, `coordinator/registry/routing_candidates.go`) always sums to the
   total.
 - **Every rejection has a name.** Gate outcomes (`GateReason`) and selection
   outcomes (`SelectionPath`) are closed vocabularies
@@ -44,19 +44,20 @@ content beyond that. See [`data-flow.md`](data-flow.md) and
 
 ### Entry points
 
-`ReserveProviderWithPlan` (`coordinator/registry/scheduler.go`) is the
+`ReserveProviderWithPlan` (`coordinator/registry/plan_reservation.go`) is the
 dispatch-time entry point. It scans the fleet
 (`scanCandidatesLocked`), gates each provider
 (`snapshotProviderIntoLockedEx`), prices it (`buildCandidateInto`), selects a
 winner (`selectRoutingCandidate`) and
 returns a bounded **dispatch plan** (`coordinator/registry/dispatch_plan.go`)
-holding the winner plus up to `dispatchPlanMaxAlternates = 8` retained
-alternates. The API layer (`coordinator/api/dispatch.go`) consumes the plan:
+recording the winner as attempted and retaining up to
+`dispatchplan.MaxAlternates = 8` alternate entries
+(`coordinator/registry/dispatchplan/build.go`). The API layer (`coordinator/api/dispatch.go`) consumes the plan:
 it dispatches to the winner, may probe alternates for capacity quotes
 (`capacityProbeWindow = 250 * time.Millisecond`,
 `dispatchPlanProbeFanout = 8`, `coordinator/api/dispatch_plan_wiring.go`) and
 falls through the plan on retry or hedge. `ReserveNextFromPlan`
-(`coordinator/registry/dispatch_plan.go`) refreshes remaining time after both
+(`coordinator/registry/plan_reservation.go`) refreshes remaining time after both
 registry and provider locks are acquired, before evaluating and debiting an
 alternate. An expired request does not reserve a candidate; an enabled
 prediction ceiling shrinks with remaining time, while a disabled ceiling stays
@@ -120,8 +121,8 @@ Gates run in the order below. The first failing gate names the rejection;
 | 17 | `GateChallengeStale` | `challenge_stale` | `providerLivenessGateReasonLocked` | Last passed challenge is missing or older than `challengeFreshnessMaxAge` ([below](#challenge-freshness)). |
 | 18 | `GateTraitFloor` | `trait_floor` | `providerRoutingGateReasonLockedEx` | Provider cannot satisfy a request trait (for example inference-time tool constraints). |
 | 19 | `GateVision` | `vision` | `providerServesVisionModelLocked` | Request `RequiresVision` and the provider's build of the model does not serve vision. |
-| 20 | `GateSlotCrashed` | `slot_crashed` | `buildCandidateInto` / `slotStatePenalty` | Slot state `crashed`. |
-| 21 | `GateSlotReloading` | `slot_reloading` | `buildCandidateInto` / `slotStatePenalty` | Slot state `reloading`. |
+| 20 | `GateSlotCrashed` | `slot_crashed` | `buildCandidateInto` / `SlotStatePenalty` | Slot state `crashed`. |
+| 21 | `GateSlotReloading` | `slot_reloading` | `buildCandidateInto` / `SlotStatePenalty` | Slot state `reloading`. |
 | 22 | `GateNoHeadroom` | `no_headroom` | `hasConcurrencyHeadroomForModelCapResolvedLocked` | Provider or slot is at its concurrency cap ([`scheduling.md`](scheduling.md#concurrency-caps)). |
 | 23 | `GateThermalCritical` | `thermal_critical` | `buildCandidateInto` | `SystemMetrics.ThermalState == "critical"`. |
 | 24 | `GateModelTooLarge` | `model_too_large` | `modelFitsHardware` | Model is not resident and cannot fit the node's total memory. Permanent, not capacity. |
@@ -164,7 +165,7 @@ freshness, slot state, memory — still applies to owned machines.
 ### Challenge freshness
 
 `challengeFreshnessMaxAge = 16 * time.Minute`
-(`coordinator/registry/scheduler.go`). A provider whose `LastChallengeVerified`
+(`coordinator/registry/routing_constants.go`). A provider whose `LastChallengeVerified`
 is zero or older than this fails `challenge_stale`. The constant was raised
 from 6 minutes when attestation churn was reworked
 ([`../design/routing-v2-attestation-churn.md`](../design/routing-v2-attestation-churn.md)).
@@ -179,6 +180,24 @@ seconds earlier. Both paths also record the failure into reputation.
 
 ### Cost model
 
+`routingcost.Policy` owns one process-wide calibration instance and the existing
+startup latency knobs. `coordinator/registry/routing_policy.go` (`routingPolicy`) shares it across every registry and
+API observation hook; constructing another registry does not reset calibration.
+Configure the startup setters before serving. Calibration alone mutates during
+serving, under its private leaf lock; it never calls back into registry, provider
+or request transactions. The calibration and decode-floor environment switches
+retain their live reads (`coordinator/registry/routingcost/policy.go`,
+`coordinator/registry/routingcost/calibration.go`,
+`coordinator/registry/routingcost/throughput.go`).
+
+The caller fills `routingcost.Snapshot[*Provider]` directly in the candidate
+arena under the original locks. Its 48 fields retain their order and types;
+`Provider` is opaque identity to the cost owner. There is no additional projection
+or copy. Eligibility, current capacity-rate reads, the applied calibration-ratio
+read, reservation commit and queue handoff keep their existing order at registry
+(`coordinator/registry/routingcost/snapshot.go`,
+`coordinator/registry/candidate_cost.go`, `coordinator/registry/reservation_commit.go`).
+
 `buildCandidateInto` prices an eligible provider as
 
 ```text
@@ -186,55 +205,56 @@ cost = statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs + c
 ```
 
 and stores every term in `costBreakdown` with `Total = cost`
-(`coordinator/registry/scheduler.go`). All constants below live in
-`coordinator/registry/scheduler.go` unless another file is named.
+(`coordinator/registry/routing_candidates.go`). `buildCandidateInto` in
+`coordinator/registry/candidate_cost.go` retains gate order and cost composition;
+its pure calculations use `routingcost` over the same snapshot.
 
-| Symbol | Value | Applied as |
-|---|---|---|
-| `slotStatePenaltyRunning` | `0.0` | Slot state `running`, `idle`, or empty (`slotStatePenalty`). |
-| `slotStatePenaltyUnknown` | `30_000.0` | Slot state `unknown` or any unrecognised state — the model must be loaded first. |
-| `slotStatePenaltyIdleShutdown` | `20_000.0` | Slot state `idle_shutdown` (weights evicted, engine warm). |
-| `queueDepthPenaltyMs` | `3_000.0` | × `snapshotOccupancy` = max(pending on this model at this provider, backend `NumRunning + NumWaiting`). |
-| `totalPendingPenaltyMs` | `750.0` | × total in-flight requests on the provider across all models. |
-| `memoryPressurePenaltyMs` | `4_000.0` | × `SystemMetrics.MemoryPressure` (`healthPenaltyMs`). |
-| `cpuUsagePenaltyMs` | `1_500.0` | × `SystemMetrics.CPUUsage`. |
-| `gpuUtilizationPenaltyMs` | `5_000.0` | × `GPUMemoryActiveGB / TotalMemoryGB`, clamped to [0, 1]. |
-| `thermalPenaltyFairMs` | `2_000.0` | Added when `ThermalState == "fair"`. |
-| `thermalPenaltySeriousMs` | `8_000.0` | Added when `ThermalState == "serious"` (`critical` is a gate, not a penalty). |
-| `defaultCapacityRatePenaltyMs` | `15_000.0` | × windowed capacity-503 rate (`capacity_rate.go`, [below](#gray-box-capacity-signals)). |
-| `nearTieCostWindowMs` | `3_000.0` | Width of the near-tie band in `selectRoutingCandidate`. |
-| `defaultRequestedMaxTokens` | `256` | Used for `max_tokens` when the request does not set one. |
-| `effectiveTPSLoadFactor` | `0.39` | Per-concurrent-decode TPS derating (`effectiveDecodeTPS`). |
-| `kvCacheBytesPerToken` | `400_000` | Fallback KV bytes per token when the slot does not report `KVBytesPerToken`. |
-| `modelMemoryHeadroomFactor` | `2.0` | `modelFitsHardware`: model GB × 2 must fit total memory when the manifest gives no `minRAMGb`. |
-| `maxPrefillTPS` | `5000.0` | Cap on any prefill rate used for pricing (`maxPrefillTPS`, `coordinator/registry/heartbeat.go`; `resolvePrefillTPS`, `coordinator/registry/scheduler.go`). |
-| `defaultPrefillToDecodeRatio` | `12.0` | Static prefill TPS = decode TPS × ratio when the provider reports no prefill rate. |
-| `defaultLongPromptThresholdTokens` | `0` | Long-prompt bias is off until a threshold is set. |
-| `defaultLongPromptPrefillWeight` | `2.0` | Multiplier on first-token-blocking time for long prompts. |
+| Symbol | Value | Applied as | Source |
+|---|---|---|---|
+| `SlotStatePenaltyRunning` | `0.0` | Slot state `running`, `idle`, or empty (`SlotStatePenalty`). | `coordinator/registry/routingcost/penalties.go` |
+| `SlotStatePenaltyUnknown` | `30_000.0` | Slot state `unknown` or any unrecognised state — the model must be loaded first. | `coordinator/registry/routingcost/penalties.go` |
+| `SlotStatePenaltyIdleShutdown` | `20_000.0` | Slot state `idle_shutdown` (weights evicted, engine warm). | `coordinator/registry/routingcost/penalties.go` |
+| `queueDepthPenaltyMs` | `3_000.0` | × `Occupancy` = max(pending on this model at this provider, backend `NumRunning + NumWaiting`). | `coordinator/registry/routing_constants.go` |
+| `totalPendingPenaltyMs` | `750.0` | × total in-flight requests on the provider across all models. | `coordinator/registry/routing_constants.go` |
+| `memoryPressurePenaltyMs` | `4_000.0` | × `SystemMetrics.MemoryPressure` (`HealthPenaltyMs`). | `coordinator/registry/routingcost/penalties.go` |
+| `cpuUsagePenaltyMs` | `1_500.0` | × `SystemMetrics.CPUUsage`. | `coordinator/registry/routingcost/penalties.go` |
+| `gpuUtilizationPenaltyMs` | `5_000.0` | × `GPUMemoryActiveGB / TotalMemoryGB`, clamped to [0, 1]. | `coordinator/registry/routingcost/penalties.go` |
+| `thermalPenaltyFairMs` | `2_000.0` | Added when `ThermalState == "fair"`. | `coordinator/registry/routingcost/penalties.go` |
+| `thermalPenaltySeriousMs` | `8_000.0` | Added when `ThermalState == "serious"` (`critical` is a gate, not a penalty). | `coordinator/registry/routingcost/penalties.go` |
+| `defaultCapacityRatePenaltyMs` | `15_000.0` | × windowed capacity-503 rate (`capacity_rate.go`, [below](#gray-box-capacity-signals)). | `coordinator/registry/faultstate/capacity_rate.go` |
+| `nearTieCostWindowMs` | `3_000.0` | Width of the near-tie band in `selectRoutingCandidate`. | `coordinator/registry/routing_constants.go` |
+| `defaultRequestedMaxTokens` | `256` | Used for `max_tokens` when the request does not set one. | `coordinator/registry/routing_constants.go` |
+| `effectiveTPSLoadFactor` | `0.39` | Per-concurrent-decode TPS derating (`EffectiveDecodeTPS`). | `coordinator/registry/routing_constants.go` |
+| `kvCacheBytesPerToken` | `400_000` | Fallback KV bytes per token when the slot does not report `KVBytesPerToken`. | `coordinator/registry/routing_constants.go` |
+| `modelMemoryHeadroomFactor` | `2.0` | `ModelFitsHardware`: model GB × 2 must fit total memory when the manifest gives no `minRAMGb`. | `coordinator/registry/admission/memory.go` |
+| `maxPrefillTPS` | `5000.0` | Cap on any prefill rate used for pricing (`maxPrefillTPS`, `coordinator/registry/heartbeat.go`; `ResolvePrefillTPS`, `coordinator/registry/routingcost/throughput.go`). | `coordinator/registry/heartbeat.go` |
+| `DefaultPrefillToDecodeRatio` | `12.0` | Static prefill TPS = decode TPS × ratio when the provider reports no prefill rate. | `coordinator/registry/routingcost/config.go` |
+| `DefaultLongPromptThresholdTokens` | `0` | Long-prompt bias is off until a threshold is set. | `coordinator/registry/routingcost/config.go` |
+| `DefaultLongPromptPrefillWeight` | `2.0` | Multiplier on first-token-blocking time for long prompts. | `coordinator/registry/routingcost/config.go` |
 
 The remaining terms are request-shaped:
 
 - **`backlogMs`** — tokens ahead of this request divided by effective TPS.
   For a slot that reports a token budget it is
   `(ActiveTokenBudgetUsed + QueuedTokenBudget) / effectiveTPS`; otherwise
-  `backlogTokenMs` sums `MaxTokensPotential`, the backend's waiting requests ×
+  `BacklogTokenMs` sums `MaxTokensPotential`, the backend's waiting requests ×
   `max_tokens`, and coordinator-side pending tokens the backend has not yet
   seen.
 - **`thisReqMs`** — `promptTokens / prefillTPS + maxTokens / effectiveTPS`,
-  plus `longPromptPenalty`.
+  plus `Policy.LongPromptPenalty`.
 
-**Effective TPS.** `resolveEffectiveTPS` prefers the slot's
+**Effective TPS.** `ResolveEffectiveTPS` prefers the slot's
 `ObservedDecodeTPS` EWMA, then the fleet median for the model, then the
 static registration rate derated by load:
-`effectiveDecodeTPS = staticTPS / (1 + effectiveTPSLoadFactor × backendRunning)`,
-floored at 1 tok/s. `resolvePrefillTPS` prefers `ObservedPrefillTPS`, else
+`EffectiveDecodeTPS = staticTPS / (1 + effectiveTPSLoadFactor × backendRunning)`,
+floored at 1 tok/s. `ResolvePrefillTPS` prefers `ObservedPrefillTPS`, else
 the static prefill rate (`resolvedPrefillTPS`: the registered `PrefillTPS`,
 or decode × `prefillToDecodeRatio`), capped at `maxPrefillTPS`.
 `SetPrefillToDecodeRatio` changes the ratio process-wide; the coordinator
 binary wires it to `EIGENINFERENCE_PREFILL_DECODE_RATIO`
 (`coordinator/cmd/coordinator/routing_admission.go` (`configureAdmission`)).
 
-**Prefill weighting for long prompts.** `longPromptPenalty(promptTokens,
+**Prefill weighting for long prompts.** `Policy.LongPromptPenalty(promptTokens,
 ttftBlockMs)` returns `(longPromptPrefillWeight − 1) × ttftBlockMs` when a
 threshold is set and the prompt reaches it, else `0`. `ttftBlockMs` is the
 request's prefill time plus, for a provider that is not resident, its slot
@@ -246,12 +266,12 @@ fast prefill is dwarfed by the load. The setters are
 `thisReqMs` so the breakdown invariant holds.
 
 **TTFT estimate.** Separately from cost, each candidate carries an estimated
-time-to-first-token (`ttftMsFromSnapshot`): slot state penalty + prefill of
+time-to-first-token (`RawTTFTMs`): slot state penalty + prefill of
 tokens queued ahead + this request's prefill + one decode step
 (`1000 / effectiveTPS`). The per-(model, chip family) calibration scales only
 the flow terms, leaving the cold-load state penalty unchanged. It learns
 dispatch-to-first-content samples at content commit, not full completion
-(`ttftCalibration.appliedRatio`, `coordinator/registry/ttft_calibration.go`).
+(`Policy.AppliedRatio`, `coordinator/registry/routingcost/policy.go`).
 `ttftOccupancyAlpha` applies only to the diagnostic shadow estimate, including
 when `EIGENINFERENCE_TTFT_ADMISSION_MODE=enforce`; it does not change the live TTFT ceiling.
 The live estimate drives the `ttft_ceiling` gate, hedge
@@ -259,7 +279,7 @@ timing and the `Retry-After` header; it is not a cost term.
 
 When the matching heartbeat reports zero running and waiting requests,
 `fillSnapshotPendingAndPool` supplies each local pending request's own prompt
-estimate to `queuedPrefillTokensAhead`. Attempts that already committed
+estimate to `QueuedPrefillTokensAhead`. Attempts that already committed
 content contribute no further prefill. Non-positive prompt estimates and
 cache-routing participants retain the arriving-prompt proxy because their
 prefill work is unknown. With nonzero heartbeat occupancy, the existing
@@ -286,7 +306,7 @@ leaves at least one candidate (`scanCandidatesLocked`):
 2. `Traits.AvoidVersion` — keep only providers not running the version that
    just failed this request (version-diverse retry).
 3. `MinDecodeTPS` — keep only providers whose
-   `projectedPerRequestDecodeTPS` meets the request's floor. The coordinator
+   `ProjectedPerRequestDecodeTPS` meets the request's floor. The coordinator
    binary sets the floor from
    [`EIGENINFERENCE_MIN_DECODE_TPS`](../reference/configuration.md#routing-admission-and-ttft);
    `0` disables it.
@@ -316,6 +336,36 @@ leaves at least one candidate (`scanCandidatesLocked`):
 still contain the retired `cache_tiebreak` string. The
 runner-up (the lowest-cost candidate other than the winner) is recorded for telemetry
 and as the first alternate in the dispatch plan.
+
+### Retained alternates and capacity quotes
+
+`DispatchPlan` wraps a private `dispatchplan.Plan[*Provider]`
+(`coordinator/registry/dispatch_plan.go`). Its owner keeps the bounded entries,
+cursor, attempted IDs and single-refresh flag under one mutex. Construction
+uses the original scan pool: `newDispatchPlan`
+(`coordinator/registry/dispatch_plan_build.go`) offers costs to `Builder.Offer`,
+which projects values only for candidates retained by the bounded insertion.
+`ReserveNextFromPlan` checks the retained provider pointer against the current
+registry and performs the live deadline, gate and debit transaction. A reconnect
+cannot reuse an old plan identity.
+
+`Probes` (`coordinator/registry/dispatchplan/quotes.go`) owns the outstanding
+quote map. Its leaf mutex claims each reply, write failure, disconnect or expiry
+once. `Probes.Probe` snapshots unquoted entries, skips connections that have not
+proven quote capability, and uses the existing data writer through the binding in
+`coordinator/registry/capacity_quotes.go`. A collector confirms or demotes its
+plan entry before publishing the buffered `QuoteOutcome`; confirmed entries rank
+first, then unprobed entries, then demoted entries, with scan cost ordering within
+each tier. Consumed entries stay consumed. Wrong-provider and expired replies
+leave the pending entry for its bound reply or collector expiry. Disconnect
+settlement stays after registry/provider unlock and queue/cache cleanup in
+`coordinator/registry/provider_lifecycle.go` (`disconnectProvider`).
+
+`RefreshDispatchPlan` (`coordinator/registry/plan_refresh.go`) claims the one
+refresh and copies attempted IDs through `Plan.ClaimRefresh`, releases that
+leaf lock, then invokes the original live scan. The fresh plan is marked used
+before it is returned. No owner callback acquires registry or provider locks
+while either owner mutex is held.
 
 ### Hedged (speculative) dispatch
 
@@ -536,9 +586,10 @@ the request path takes it for writing.
 
 Lock order: `r.mu → p.mu → gatesMu → gate.mu`. `r.mu` or `p.mu` is never
 acquired while `gatesMu` or a `gate.mu` is held, and there is no walk-wide
-gates lock on the scan (`gate_state.go` header).
+gates lock on the scan (`coordinator/registry/faultstate/reference.go`, `lockGate`).
 
-**Two-phase reservation** (`coordinator/registry/scheduler.go`).
+**Two-phase reservation** (`coordinator/registry/reservation.go`,
+`coordinator/registry/reservation_commit.go`).
 `scanProviderReservation` walks the fleet under `r.mu.RLock`; concurrent
 requests scan together and no capacity is consumed. `commitProviderReservation`
 holds `r.mu` for reading — the provider identity, catalog and cache-routing
@@ -550,7 +601,7 @@ onto the formerly cheapest provider), the admit re-check
 (`providerCanAdmitLockedEx`), the half-open capacity-probe claim
 (`tryClaimCapacityProbe`, check-and-claim under `gate.mu`) and the pending
 debit (`addPendingLocked`). `ReserveNextFromPlan`
-(`coordinator/registry/dispatch_plan.go`) commits each plan entry the same
+(`coordinator/registry/plan_reservation.go`) commits each plan entry the same
 way. `commitLock` (`coordinator/registry/gate_commit_mode.go`) selects the
 mode: `reserveCommitShared` as described, or `reserveCommitGlobal`, which
 takes `r.mu.Lock()` for the commit — the previous fleet-wide serialization,
@@ -712,7 +763,7 @@ must not run in parallel with other scheduler tests in the same process.
 5. **Every scanned provider is accounted for exactly once**: as a candidate
    or under one `GateReason` — `scanCandidatesLocked.tallyGate`.
 6. **The cost breakdown sums to the total** — `buildCandidateInto`
-   folds `longPromptPenalty` into `ThisReqMs` and sets `Total = cost`.
+   folds `Policy.LongPromptPenalty` into `ThisReqMs` and sets `Total = cost`.
 7. **Pool narrowing never empties the pool** — each `PreferOwner`,
    `AvoidVersion` and `MinDecodeTPS` filter in `scanCandidatesLocked` is
    applied only when its result is non-empty.
@@ -759,18 +810,21 @@ must not run in parallel with other scheduler tests in the same process.
 
 | Concern | File / symbol |
 |---|---|
-| Dispatch-time selection, cost model, TTFT estimate | `coordinator/registry/scheduler.go` — `ReserveProviderWithPlan`, `scanCandidatesLocked`, `snapshotProviderIntoLockedEx`, `buildCandidateInto`, `slotStatePenalty`, `healthPenaltyMs`, `resolveEffectiveTPS`, `ttftMsFromSnapshot`, `longPromptPenalty` |
+| Dispatch-time selection | `coordinator/registry/plan_reservation.go` — `ReserveProviderWithPlan`; `coordinator/registry/routing_scan.go` — `scanCandidatesLocked`; `coordinator/registry/routing_snapshot_gates.go` — `snapshotProviderIntoLockedEx` |
+| Cost construction and latency math | `coordinator/registry/candidate_cost.go` — `buildCandidateInto`; `coordinator/registry/routingcost/penalties.go` — `SlotStatePenalty`, `HealthPenaltyMs`; `coordinator/registry/routingcost/throughput.go` — `ResolveEffectiveTPS`; `coordinator/registry/routingcost/latency.go` — `RawTTFTMs`; `coordinator/registry/routingcost/config.go` — `Policy.LongPromptPenalty` |
 | Provider-state projection for selection and capacity preflight | `coordinator/registry/routing_snapshot.go` — `fillRoutingSnapshotPLocked`; callers retain their own eligibility gates and hold both registry and provider locks |
 | Candidate preferences and ranking | `coordinator/registry/candidate_selection.go` — `preferRoutingCandidates`, `selectRoutingCandidate` |
 | Shared gate primitives | `coordinator/registry/routing_eligibility.go` — `providerLivenessGateReasonLocked`, `providerServesRoutableModelLocked` |
 | Closed vocabularies | `coordinator/registry/gate_reason.go` — `GateReason`, `SelectionPath`, `SlotState` |
 | Trust floor and challenge failures | `coordinator/registry/registry.go` — `MinTrustLevel`; `coordinator/registry/provider.go` — `MaxFailedChallenges`; `coordinator/registry/attestation_policy.go` — `RecordChallengeFailure` |
 | Dispatch-load cooldown and disconnect | `coordinator/registry/faultstate/dispatch_load_cooldown.go` — `dispatchLoadCooldownTTL`; `coordinator/registry/provider_lifecycle.go` — `Disconnect` |
-| Two-phase reservation (scan, commit, plan consumption) | `coordinator/registry/scheduler.go` — `scanProviderReservation`, `commitProviderReservation`, `providerCanAdmitLockedEx`; `coordinator/registry/dispatch_plan.go` — `ReserveNextFromPlan` |
+| Two-phase reservation (scan, commit, plan consumption) | `coordinator/registry/reservation.go` — `scanProviderReservation`; `coordinator/registry/reservation_commit.go` — `commitProviderReservation`, `providerCanAdmitLockedEx`; `coordinator/registry/plan_reservation.go` — `ReserveNextFromPlan` |
 | Fault-state transaction owner | `coordinator/registry/faultstate/manager.go` — `Manager`, `Session`; `coordinator/registry/faultstate/state.go` — private `gateState`, `publishLocked`; `coordinator/registry/faultstate/migration.go` — `Bind`, `migrateGateLocked`, `mergeLocked`; `coordinator/registry/faultstate/reference.go` — `lockGate`, `gateRef`; `coordinator/registry/faultstate/sweep.go` — `Sweep`, `gateIdleGrace` |
 | Fault-state registry bindings and reads | `coordinator/registry/fault_binding.go` — `bindStableFaultKey`, `SetVersion`, `SetGateWaitObserver`; `coordinator/registry/fault_reads.go` — `gateOf`, `gateView`; `coordinator/registry/faultstate/view_binding.go` — `View.Moved`; `coordinator/registry/gate_commit_mode.go` — `reserveCommitMode`, `commitLock` |
 | Capacity outcome transactions | `coordinator/registry/fault_capacity.go` — `RecordCapacityAcceptObserved`; `coordinator/registry/faultstate/capacity_accept.go` — `PrepareCapacityAccept`, `CapacityAccept.Apply`; `coordinator/registry/faultstate/capacity_reject.go` — `RecordCapacityReject`; `coordinator/registry/faultstate/capacity_probe.go` — `CapacityProbe.Claim` |
-| Bounded dispatch plan | `coordinator/registry/dispatch_plan.go` — `dispatchPlanMaxAlternates`, `PlanEntry` |
+| Bounded plan and quote ranking | `coordinator/registry/dispatchplan/plan.go` — `Plan`; `coordinator/registry/dispatchplan/build.go` — `Builder.Offer`, `MaxAlternates`; `coordinator/registry/dispatchplan/ranking.go` — `ConfirmEntry`, `DemoteEntry`, `BestConfirmedBackup`; private wrapper in `coordinator/registry/dispatch_plan.go` — `DispatchPlan`, `PlanEntry` |
+| Plan refresh and capacity probes | `coordinator/registry/plan_refresh.go` — `RefreshDispatchPlan`; `coordinator/registry/dispatchplan/refresh.go` — `ClaimRefresh`; `coordinator/registry/dispatchplan/probe.go` — `Probes.Probe`; `coordinator/registry/dispatchplan/quote_reply.go` — `Probes.Handle`; current transport bindings in `coordinator/registry/capacity_quotes.go` |
+| Registry hedge capacity observations | `coordinator/registry/hedge_capacity_snapshot.go` — `HedgeGovernorSnapshot` |
 | Fleet servability predictor | `coordinator/registry/servability.go` — `PredictServable`; fleet iteration and verdict remain in the registry |
 | Capacity and cold-load arithmetic | `coordinator/registry/admission/request_budget.go` — `Policy.ColdTokenBudgetEstimate`, `Policy.StructuralBudget`; `coordinator/registry/admission/model_memory.go` — `Policy.ActivationFloor`, `Policy.ColdWeightsGiB` |
 | Provider-version interpretation | `coordinator/registry/providerversion/` — `Policy.Compare`, `Policy.SlotBudgetLayout`; shared instance in `coordinator/registry/provider_version.go` |
@@ -780,7 +834,7 @@ must not run in parallel with other scheduler tests in the same process.
 | Cancellation and terminal correlation | `coordinator/inference/attempt/cancel.go` — `Service.Cancel`; `cancel_tracker.go` — `Tracker`; `cancel_delivery.go` — `SendRecordedCancel`, `StrayChunk`; `cancel_metrics.go` — `ResolveCancelledTerminal` |
 | Breakers and ejection | `coordinator/registry/faultstate/error_cooldown.go`, `coordinator/registry/faultstate/breaker.go`, `coordinator/registry/faultstate/ejection.go` |
 | Reputation | `coordinator/registry/reputation.go` — `Score`, `RecordLatency` |
-| TTFT calibration | `coordinator/registry/ttft_calibration.go`; fed by `observeTTFTCalibration` in `coordinator/api/ttft_calibration.go` |
+| Shared latency policy and calibration | `coordinator/registry/routingcost/policy.go` — `Policy`, `New`; `coordinator/registry/routingcost/calibration.go` — `Policy.RecordTTFTObservation`; `coordinator/registry/routingcost/calibration_pending.go` — pending joins and expiry; `coordinator/registry/routing_policy.go` — process-wide bindings; fed by `observeTTFTCalibration` in `coordinator/api/ttft_calibration.go` |
 | Hedge timing, governor, race | `coordinator/api/hedge_schedule.go`, `coordinator/api/hedge_governor.go`, `coordinator/api/dispatch.go` (`runSpeculative`, `runRace`), `coordinator/api/first_token_clock.go` |
 | Probes and plan wiring | `coordinator/api/dispatch_plan_wiring.go` |
 | `Retry-After`, speculative ratio, route EWMA | `coordinator/api/consumer.go` — `estimateRetryAfter`, `estimateTTFTRetryAfter`, `speculativeTimerRatio` |

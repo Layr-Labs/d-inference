@@ -27,7 +27,7 @@ func TestCacheHintRejectsRetiredPlansAndCapturedGeneration(t *testing.T) {
 			}
 			// Commit uses the same provider-locked fence; it must not preserve a cost
 			// adjustment captured before retirement even if the capability is unchanged.
-			candidate := &routingCandidate{provider: p, snapshot: routingSnapshot{prefillTPS: 1000}, pricedPromptTokens: 4096, prefillCostMs: 4096, costMs: 5000, breakdown: costBreakdown{ThisReqMs: 5000, Total: 5000}}
+			candidate := &routingCandidate{provider: p, snapshot: routingSnapshot{PrefillTPS: 1000}, pricedPromptTokens: 4096, prefillCostMs: 4096, costMs: 5000, breakdown: costBreakdown{ThisReqMs: 5000, Total: 5000}}
 			applyServiceHint(r, candidate, oldHint)
 			if candidate.costMs != 5000 || candidate.breakdown.CacheDiscountMs != 0 {
 				t.Fatal("retired hint affected reservation pricing")

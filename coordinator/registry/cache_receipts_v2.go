@@ -93,7 +93,7 @@ func (r *Registry) PreparePrefixCacheV2Attempt(
 	tracker.directory.RegisterAttempt(nonce, attempt)
 
 	if r.publishCacheAttempt(pr, provider, revision, ticket, tracker, owner) {
-		ttftCalibration.discardPrediction(pr.RequestID, pr.Attempt)
+		routingPolicy.DiscardPrediction(pr.RequestID, pr.Attempt)
 	}
 	return nil
 }

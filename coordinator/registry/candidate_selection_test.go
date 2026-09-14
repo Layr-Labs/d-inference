@@ -83,12 +83,12 @@ func TestSelectRoutingCandidateMatchesRankingPolicy(t *testing.T) {
 			if a.effectiveQueue != b.effectiveQueue {
 				return a.effectiveQueue - b.effectiveQueue
 			}
-			return a.snapshot.totalPending - b.snapshot.totalPending
+			return a.snapshot.TotalPending - b.snapshot.TotalPending
 		})
 		equivalent := slices.Clone(near)
-		queue, pending := near[0].effectiveQueue, near[0].snapshot.totalPending
+		queue, pending := near[0].effectiveQueue, near[0].snapshot.TotalPending
 		equivalent = slices.DeleteFunc(equivalent, func(c *routingCandidate) bool {
-			return c.effectiveQueue != queue || c.snapshot.totalPending != pending
+			return c.effectiveQueue != queue || c.snapshot.TotalPending != pending
 		})
 		choices := equivalent
 		wantPath := SelectionUniqueMin

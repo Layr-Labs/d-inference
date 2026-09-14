@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry/dispatchplan"
 	"github.com/eigeninference/d-inference/coordinator/registry/faultstate"
 	"github.com/eigeninference/d-inference/coordinator/registry/modelloads"
 	"github.com/eigeninference/d-inference/coordinator/registry/requestqueue"
@@ -52,7 +53,7 @@ type Registry struct {
 	// SetDedicatedModels and dedicated_models.go. Guarded by r.mu.
 	dedicatedModels []string
 
-	// Quality-concurrency admission cap (see concurrency_cap.go). When enabled,
+	// Quality-concurrency admission cap (see quality_cap_admission.go). When enabled,
 	// the per-provider concurrency cap for a model is tightened from the flat
 	// fallback to quality_concurrency × overcommit, computed from the provider's
 	// STATIC single-stream decode rate so slow/saturated models stop
@@ -180,7 +181,7 @@ type Registry struct {
 	// by quote_id (routing v2 W2). Value field with an internal LEAF mutex and
 	// a lazily-created map, so bare &Registry{} test constructions work
 	// without New(). See capacity_quotes.go.
-	capacityQuotes quoteTracker
+	capacityQuotes dispatchplan.Probes[*Provider]
 
 	cacheRouting                 *cacheRoutingTracker
 	cacheActivation              *cacheActivationGate

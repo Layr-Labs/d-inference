@@ -1,24 +1,6 @@
 import Darwin
 import Foundation
 
-public enum HostRuntimeOwnershipError: Error, Equatable, CustomStringConvertible {
-    case authorityMissing
-    case insecureAuthority
-    case occupied
-    case authorityChanged
-    case systemError(Int32)
-
-    public var description: String {
-        switch self {
-        case .authorityMissing: "machine runtime ownership has not been provisioned"
-        case .insecureAuthority: "machine runtime ownership has unsafe permissions or identity"
-        case .occupied: "another runtime owns this machine"
-        case .authorityChanged: "machine runtime ownership authority was replaced"
-        case .systemError(let code): "machine runtime ownership failed with errno \(code)"
-        }
-    }
-}
-
 /// A root-provisioned inode is the single authority shared by both runtimes.
 /// This type never creates, repairs, truncates, or replaces system authority.
 public struct HostRuntimeAuthority: Sendable {
@@ -28,9 +10,9 @@ public struct HostRuntimeAuthority: Sendable {
     public static let groupName = "darkbloom_runtime"
     public static let lockName = "ownership.lock"
     public let directory: URL
-    private let ownerUID: uid_t
-    private let testGroupID: gid_t?
-    private let testing: Bool
+    let ownerUID: uid_t
+    let testGroupID: gid_t?
+    let testing: Bool
 
     public init(directory: URL) {
         self.directory = directory
@@ -58,11 +40,14 @@ public struct HostRuntimeAuthority: Sendable {
         return lease
     }
 
-    private func acquire(exclusive: Bool, allowMissing: Bool) throws -> HostRuntimeLease? {
+    func acquire(exclusive: Bool, allowMissing: Bool,
+                 recovering intent: HostRuntimeMaintenanceIntent? = nil) throws -> HostRuntimeLease? {
+        if intent != nil { try requireMaintenanceOperator() }
         let parent: Int32
         do { parent = try openDirectory() }
         catch HostRuntimeOwnershipError.authorityMissing where allowMissing { return nil }
         defer { close(parent) }
+        try checkMaintenance(parent: parent, recovering: intent)
         let groupID: gid_t
         if let testGroupID { groupID = testGroupID }
         else {
@@ -88,6 +73,7 @@ public struct HostRuntimeAuthority: Sendable {
             let directoryIdentity = try Self.metadata(parent)
             try validate(descriptor, directoryIdentity: directoryIdentity,
                          lockIdentity: metadata, groupID: groupID)
+            try checkMaintenance(parent: parent, recovering: intent)
             return HostRuntimeLease(descriptor: descriptor, authority: self,
                                     directoryIdentity: directoryIdentity,
                                     lockIdentity: metadata, groupID: groupID,
@@ -99,7 +85,7 @@ public struct HostRuntimeAuthority: Sendable {
         }
     }
 
-    fileprivate func validate(_ descriptor: Int32, directoryIdentity: stat,
+    func validate(_ descriptor: Int32, directoryIdentity: stat,
                               lockIdentity: stat, groupID: gid_t) throws {
         let current: Int32
         do { current = try openDirectory() }
@@ -114,7 +100,7 @@ public struct HostRuntimeAuthority: Sendable {
         else { throw HostRuntimeOwnershipError.authorityChanged }
     }
 
-    private func openDirectory() throws -> Int32 {
+    func openDirectory() throws -> Int32 {
         let original = directory.path
         let normalized = directory.standardizedFileURL.path
         let systemAlias = ["/var", "/tmp"].contains {
@@ -193,51 +179,5 @@ public struct HostRuntimeAuthority: Sendable {
 
     private static func pathError() -> HostRuntimeOwnershipError {
         [ELOOP, ENOTDIR].contains(errno) ? .insecureAuthority : .systemError(errno)
-    }
-}
-
-/// Retain through engine/VM cleanup. Closing its descriptor releases the kernel lock.
-public final class HostRuntimeLease: @unchecked Sendable {
-    private let descriptor: Int32
-    private let authority: HostRuntimeAuthority
-    private let directoryIdentity: stat
-    private let lockIdentity: stat
-    private let groupID: gid_t
-    private let exclusive: Bool
-
-    fileprivate init(descriptor: Int32, authority: HostRuntimeAuthority,
-                     directoryIdentity: stat, lockIdentity: stat, groupID: gid_t,
-                     exclusive: Bool) {
-        self.descriptor = descriptor
-        self.authority = authority
-        self.directoryIdentity = directoryIdentity
-        self.lockIdentity = lockIdentity
-        self.groupID = groupID
-        self.exclusive = exclusive
-    }
-
-    deinit { close(descriptor) }
-
-    public func validate() throws {
-        try authority.validate(descriptor, directoryIdentity: directoryIdentity,
-                               lockIdentity: lockIdentity, groupID: groupID)
-    }
-
-    /// Require machine-exclusive ownership before beginning VM installation.
-    public func validateExclusive() throws {
-        guard exclusive else { throw HostRuntimeOwnershipError.insecureAuthority }
-        try validate()
-    }
-
-    /// The descriptor is valid only inside `spawn`. Add a child-only dup2 spawn
-    /// action; never clear CLOEXEC in the parent. The duplicate shares this
-    /// lease's open file description, so closing the parent does not release
-    /// exclusive ownership while the actual VM process still holds its copy.
-    public func withInheritedDescriptor<T>(_ spawn: (Int32) throws -> T) throws -> T {
-        try validateExclusive()
-        let duplicate = fcntl(descriptor, F_DUPFD_CLOEXEC, 64)
-        guard duplicate >= 0 else { throw HostRuntimeOwnershipError.systemError(errno) }
-        defer { close(duplicate) }
-        return try spawn(duplicate)
     }
 }

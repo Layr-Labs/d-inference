@@ -13,12 +13,25 @@ if arguments.count == 2, arguments[0] == "inherited", let descriptor = Int32(arg
     close(descriptor)
     exit(0)
 }
-guard arguments.count == 4, let owner = UInt32(arguments[2]), let group = UInt32(arguments[3]) else {
+guard [4, 6].contains(arguments.count), let owner = UInt32(arguments[2]), let group = UInt32(arguments[3]) else {
     exit(64)
 }
 do {
     let authority = HostRuntimeAuthority(testDirectory: URL(fileURLWithPath: arguments[0]),
                                          ownerUID: owner, groupID: group)
+    if arguments.count == 6, arguments[1] == "maintenance", let id = UUID(uuidString: arguments[4]) {
+        let lease = try authority.acquireSandbox()
+        let scope = try lease.beginRootMaintenance(.init(operationID: id, journalSHA256: arguments[5]))
+        try scope.validate()
+        FileHandle.standardOutput.write(Data("acquired\n".utf8))
+        withExtendedLifetime(scope) {
+            _ = readLine()
+            // Deliberately bypass destructors: the crash test must prove that
+            // the fence survives OS closure of every process-held descriptor.
+            _exit(86)
+        }
+    }
+    guard arguments.count == 4 else { exit(64) }
     let lease: HostRuntimeLease?
     if arguments[1] == "inference" { lease = try authority.acquireInferenceIfInstalled() }
     else if arguments[1] == "sandbox" { lease = try authority.acquireSandbox() }

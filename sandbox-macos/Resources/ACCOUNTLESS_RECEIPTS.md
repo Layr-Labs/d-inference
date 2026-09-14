@@ -71,9 +71,14 @@ attachments, and prove detach. Its retained image descriptor is an expected
 opener; only that exact owned descriptor may be excluded from the opener check.
 Before attaching, the complete workflow also needs a durable offline-operation
 fence enforced by the broker and pinned native runtime after a process crash,
-plus pending-maintenance admission in the machine ownership library so inference
-cannot resume while offline cleanup is unproven. Those fences are not implemented
-by this process-lifetime guard.
+alongside the machine ownership library's new pending-maintenance admission.
+That shared library now provides root-only durable intent publication, exact
+recovery and explicit completion APIs. It blocks both ordinary inference SH and
+sandbox EX acquisition while any maintenance record exists. Abrupt process-exit
+tests prove that the fence persists after the kernel lock is released.
+The root base operator has not yet been wired to those APIs, and the per-image
+broker/native fence is still missing. This process-lifetime image guard alone
+does not provide that complete recovery protocol.
 Lume's legacy provisioning marker is unsuitable because details lookup can
 automatically remove it when the VM's required files exist. No offline-mount
 crash-recovery or successful root entrypoint execution is claimed by the local

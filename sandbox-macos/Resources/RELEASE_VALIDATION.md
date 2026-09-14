@@ -147,35 +147,49 @@ before credentials are written. The raw disks have no separate per-image
 encryption. The artifact codec and per-VM cryptoerase are not integrated into
 this preparation path; the manifest records those boundaries separately.
 
-## Prepare a dedicated host
+## Prepare a selected GUI-user host
 
-The system-daemon plan below remains unqualified. A physical nonlogin service
-launch failed Virtualization security-key creation, while an otherwise matching
-Aqua LaunchAgent started and stopped the VM successfully. Guest readiness is a
-separate gate and has not passed for that candidate. Apple DTS states that
-Virtualization is not daemon-safe and recommends a GUI-user agent for independent
-operation ([daemon context](https://developer.apple.com/forums/thread/841688),
-[launch context](https://developer.apple.com/forums/thread/786363)). Supported
-GUI deployment/account policy must replace the daemon plan before activation.
+The host broker must run in an existing user's actual Aqua LaunchAgent context.
+A physical nonlogin service launch failed Virtualization security-key creation;
+an otherwise matching GUI-user LaunchAgent started and stopped the VM. Guest
+readiness is a separate gate. Apple DTS states that Virtualization is not
+daemon-safe and recommends a GUI-user agent for independent operation
+([daemon context](https://developer.apple.com/forums/thread/841688),
+[launch context](https://developer.apple.com/forums/thread/786363)). The old
+hidden nonlogin LaunchDaemon plan is unsupported; the preparation tool refuses
+to generate its activation script.
 
-Host inspection checks the calling process's Security session and audit user:
-an authenticated graphical session, matching nonroot real/effective/audit UID,
-and neither root nor remote session attributes. Console-user presence is only
-informational. Switching BSD credentials or finding an active console user does
-not establish the caller's GUI context. This check does not prove VZ boot,
-guest readiness, persistent key storage, or post-logout/reboot recovery.
+The selected user is the trusted host operator, who can already inspect the
+host's VM plaintext. An explicitly selected normal administrator is permitted.
+A separate nonadmin GUI login account reduces access to unrelated host files,
+but this tool neither requires account creation nor changes any account,
+password, keychain, group, login or automatic-login setting. Tenant commands
+remain inside the VM under never-registered numeric UID/GID 2001. Host account
+privileges and the guest VM boundary are separate properties.
 
-`prepare-sandbox-host.py` consumes a signed, provisioned package, explicit
-installation destination and non-secret configuration. It writes launchd
-configuration and an installation plan; it creates no account or service.
+`prepare-sandbox-host.py --gui-user-plan` consumes a signed, provisioned package
+and an explicit identity assertion for the target Mac. The local DirectoryService
+record must match Unix forward/reverse lookup and the configured short name,
+UID, primary GID, GeneratedUID and home. A reused numeric UID alone is insufficient.
+No protected authentication attributes or credentials are queried. Administrator
+and runtime-group memberships are reported; installed validation requires the
+runtime group, while actual kernel access remains a check inside the agent.
+Use the real, read-only inspected identity values in this example:
 
 ```json
 {
+  "hostUser": {
+    "recordName": "selected-user",
+    "uid": 501,
+    "primaryGID": 20,
+    "generatedUID": "9819F283-43E0-49E9-8BB3-FD44CD75B963",
+    "homeDirectory": "/Users/selected-user"
+  },
   "coordinatorURL": "wss://your-coordinator/ws/sandbox-host",
   "hostID": "assigned host UUID",
-  "tokenFile": "/var/db/darkbloom-sandbox/host.token",
-  "storageDirectory": "/var/db/darkbloom-sandbox/vms",
-  "capacityDirectory": "/var/db/darkbloom-sandbox/capacity",
+  "tokenFile": "/private/var/db/darkbloom-sandbox/host.token",
+  "storageDirectory": "/private/var/db/darkbloom-sandbox/vms",
+  "capacityDirectory": "/private/var/db/darkbloom-sandbox/capacity",
   "baseImageIDs": ["approved-base-image-id"],
   "maximumCPUCount": 8,
   "maximumMemoryGiB": 32,
@@ -185,76 +199,67 @@ configuration and an installation plan; it creates no account or service.
 ```
 
 ```sh
-python3 sandbox-macos/Scripts/prepare-sandbox-host.py \
+python3 sandbox-macos/Scripts/prepare-sandbox-host.py --gui-user-plan \
   --package /absolute/signed-package --configuration /absolute/host.json \
   --install-root '/Library/Application Support/DarkbloomSandbox/0.1.0' \
   --output /absolute/new/install-plan
 ```
 
-Run `--verify-installed` as root in place of `--output` after operator installation:
+This creates a qualification plan, a plist and typed `plan.json`, with
+`production_ready=false`. It creates no service or activation script. The
+root-owned plist destination is outside global `/Library/LaunchAgents`, under
+`/Library/Application Support/Darkbloom/host-plans/<host UUID>/`; the reviewed
+command loads only `gui/<selected UID>`. It specifies Aqua, no UserName/GroupName,
+no shell or credential switching, no HOME override, and KeepAlive=false. It does
+not install recurring login startup. Logout makes this host unavailable; login
+alone does not restore it. Runtime enforcement of the selected identity and
+actual logout/relogin recovery remain explicit qualification gates.
+
+The release tree stays immutable to the selected user: root-owned code, public
+0755 directories/executables and 0644 data, preserving pinned Lume's exact
+0555/0444 modes, signatures and xattrs. The job definition is root-owned 0644
+under root-owned 0755 parents. No shared writes, symlinks, hard-linked files or
+extended ACLs are accepted. The selected user owns storage/capacity directories
+at 0700 and the token at 0600 in a private 0700 parent. All three must reside on
+verified encrypted APFS; token contents never enter the plan or argv. Ancestors
+must be trusted root/selected-user directories without shared writes or ACLs.
+
+Run `--verify-installed` as root after a separately authorized installation. It
+rechecks the explicit identity, signed release, exact plist, protected code,
+private token/state, encrypted backing and runtime authority metadata. It
+continues to report `production_ready=false`; installed validation is not proof
+of actual agent session eligibility, VZ boot, guest readiness or cleanup.
 
 ```sh
 sudo /usr/bin/python3 sandbox-macos/Scripts/prepare-sandbox-host.py \
+  --gui-user-plan --verify-installed \
   --package /absolute/signed-package --configuration /absolute/host.json \
-  --install-root '/Library/Application Support/DarkbloomSandbox/0.1.0' \
-  --verify-installed
+  --install-root '/Library/Application Support/DarkbloomSandbox/0.1.0'
 ```
 
-The broker must have its own non-root account, immutable root-owned executable
-tree, private APFS state/storage and a private token file. A host running the
-inference provider must not be converted implicitly. Confirm Aqua-session and
-provisioned-keychain behavior under the actual launchd identity before admission.
-The private staging root is 0700; installation must explicitly normalize public
-code directories to 0755, data to 0644 and executables to 0755 so the broker can
-read and traverse them. Preserve the pinned Lume subtree's 0555/0444 modes and
-signing xattrs. The installed verifier rejects inaccessible roots, symlinks,
-hard-linked code files and extended ACLs. Token/state paths remain 0600/0700.
+Host inspection checks the calling process's Security session and audit user:
+authenticated graphical access, matching nonroot real/effective/audit UID, and
+neither root nor remote attributes. Console presence is only informational.
+Changing BSD credentials or finding someone else's active console login does
+not establish the caller's GUI context. An existing GUI session also may not
+have newly added runtime groups; the real agent must successfully acquire the
+machine authority. Do not infer group removal from `InitGroups=false`: macOS
+ambient and nested memberships can still permit access to other host files.
 
-The broker is a trusted nonadmin host service. A separate account protects
-private owner-only state. The broker retains access to other host files allowed
-by Unix permissions.
-macOS can grant ambient local-account, public-share and print-operator access
-through nested groups; `InitGroups=false` does not establish their removal.
-Inspect both explicit and resolved memberships, exclude explicit privileged
-memberships, and verify the actual service's file access when qualifying a host.
-The verifier requires a root reader for the protected authentication attribute.
-It checks hidden/nonlogin settings, the `/var/empty` home (including its known
-`/private/var/empty` spelling), dedicated Unix user/group consistency, native
-admin/wheel nonmembership and runtime-group membership. Supported disabled
-authentication shapes are the standalone `DisabledUser` marker and fully
-disabled ShadowHash wrappers; active or unknown authority entries, missing
-protected attributes and unrecognized membership responses fail verification.
-It reports account-policy validation, without claiming to strip ambient groups.
-`sandbox_dedicated` controls workload admission and ownership of the machine;
-it does not remove these Unix permissions. Tenant commands remain inside the VM
-under their separate numeric identity.
+Machine ownership remains under `/Library/Application Support/Darkbloom/runtime`:
+root-owned directory 0750 in `darkbloom_runtime`, containing an empty root-owned
+single-link `ownership.lock` at 0660 in that group. Only intended runtime users
+join it through an explicit operator action. Never replace or truncate the inode.
+Inference holds SH through engine cleanup; broker and actual VM owners retain
+EX through VM cleanup. Providers running before this coordination was installed
+need a separately authorized upgrade/restart before sandbox qualification.
 
-Machine ownership is separately provisioned under
-`/Library/Application Support/Darkbloom/runtime`: root-owned directory mode 0750,
-group `darkbloom_runtime`, and an empty root-owned single-link `ownership.lock`
-mode 0660 in that group. Only broker/provider service identities join the group.
-Preserve the inode across upgrades. Inference holds shared ownership through
-engine cleanup; sandbox service and actual VM owner processes retain exclusive
-ownership. Existing providers that started before installation need a separately
-authorized restart into the coordinated implementation before activation.
-
-Activation is an offline local operation. A draining broker still holds the
-machine's exclusive runtime lease, and its launchd `KeepAlive` policy restarts
-a killed process. The generated `activate-sandbox-offline.sh --activate` runs
-this ordered sequence only when explicitly invoked by a root operator:
-
-```sh
-/bin/launchctl bootout system/io.darkbloom.sandbox
-/usr/bin/sudo -u _darkbloom_sandbox -- /absolute/installed/DarkbloomSandbox.app/Contents/MacOS/darkbloom-sandboxd host-mode --storage /absolute/private/vms --capacity-dir /absolute/private/capacity --mode sandbox_dedicated
-/bin/launchctl bootstrap system /Library/LaunchDaemons/io.darkbloom.sandbox.plist
-```
-
-The plan substitutes the configured paths. Initialize a new capacity store
-in draining mode first, then unload the service before changing its mode.
-The mode command must obtain exclusive ownership and refuses while an inference
-provider or surviving sandbox VM still holds authority. A failure leaves the
-service offline; it does not bootstrap automatically or stop other workloads.
-If already unloaded, first verify that state and run only the final two commands.
+Keep coordinator admission disabled and capacity draining during qualification.
+A job's launchctl exit is insufficient stop proof: independently verify the VM
+owner, lifecycle cleanup and image/authority holders. Logout, agent death and
+fresh login must be qualified before production activation; retain leases when
+cleanup is uncertain. The current plan deliberately supplies no host-mode
+activation command and never stops an inference provider.
 
 ## Retain validation evidence
 

@@ -18,6 +18,9 @@ from sandbox_release_support import (
 from sandbox_install_validation import validate_artifact_layout
 from sandbox_guest_release import GUEST_FILES, copy_guest_release, validate_guest_release
 from test_sandbox_broker_identity import BrokerIdentityTests
+from test_sandbox_gui_user_identity import GUIUserIdentityTests, selected_user
+from test_sandbox_gui_host_plan import GUIHostPlanTests, GUIInstalledLayoutTests
+from sandbox_gui_user_identity import configured_user
 
 spec = importlib.util.spec_from_file_location("prepare_host", PACKAGE / "Scripts/prepare-sandbox-host.py")
 prepare_host = importlib.util.module_from_spec(spec)
@@ -186,16 +189,63 @@ class HostConfigurationTests(unittest.TestCase):
         self.assertNotIn("--allow-insecure-loopback", args)
         self.assertNotIn("--development-ad-hoc-lume", args)
 
-    def test_installed_verifier_requires_account_policy_before_layout_success(self):
+    def test_old_daemon_plan_refuses_before_any_package_or_output_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.object(prepare_host, "validate_package") as package, \
+                    patch("sys.argv", ["prepare-sandbox-host.py", "--package", "/fixture/release",
+                         "--configuration", str(root / "missing.json"), "--install-root", "/Library/Sandbox",
+                         "--output", str(root / "plan")]):
+                with self.assertRaisesRegex(ValueError, "LaunchDaemon deployment is unsupported"):
+                    prepare_host.main()
+                package.assert_not_called()
+                self.assertFalse((root / "plan").exists())
+
+    def test_gui_installed_verifier_requires_selected_identity_before_layout_success(self):
         with tempfile.TemporaryDirectory() as temporary:
             settings = Path(temporary) / "host.json"
-            settings.write_text(json.dumps(self.settings()))
-            with patch.object(prepare_host, "validate_package", return_value={"version": "fixture"}), \
-                    patch.object(prepare_host, "validate_broker_account", side_effect=ValueError("root policy unavailable")), \
-                    patch.object(prepare_host, "validate_artifact_layout") as layout, \
+            settings.write_text(json.dumps(dict(self.settings(), hostUser=selected_user())))
+            with patch.object(prepare_host, "validate_gui_user", side_effect=ValueError("selected identity changed")), \
+                    patch.object(prepare_host, "validate_gui_installation") as layout, \
                     patch("sys.argv", ["prepare-sandbox-host.py", "--package", "/fixture/release",
-                         "--configuration", str(settings), "--install-root", "/Library/Sandbox", "--verify-installed"]):
-                with self.assertRaisesRegex(ValueError, "root policy unavailable"):
+                         "--configuration", str(settings), "--install-root", "/Library/Sandbox",
+                         "--gui-user-plan", "--verify-installed"]):
+                with self.assertRaisesRegex(ValueError, "selected identity changed"):
+                    prepare_host.main()
+                layout.assert_not_called()
+
+    def test_gui_main_generates_only_bound_qualification_artifacts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / "host.json"
+            settings = dict(self.settings(), hostUser=selected_user())
+            config.write_text(json.dumps(settings))
+            user = configured_user(selected_user())
+            observations = {"admin_member": True, "runtime_group_member": True, "runtime_gid": 431}
+            with patch.object(prepare_host, "validate_package", return_value={"version": "fixture"}), \
+                    patch.object(prepare_host, "validate_gui_user", return_value=(user, observations)) as identity, \
+                    patch("sys.argv", ["prepare-sandbox-host.py", "--gui-user-plan", "--package", "/fixture/release",
+                         "--configuration", str(config), "--install-root", "/Library/Sandbox",
+                         "--output", str(root / "plan")]):
+                prepare_host.main()
+            identity.assert_called_once_with(selected_user(), require_runtime_membership=False)
+            value = json.loads((root / "plan/plan.json").read_text())
+            self.assertFalse(value["production_ready"])
+            self.assertFalse(value["activation_script_generated"])
+            self.assertEqual(value["host_user"], selected_user())
+            self.assertEqual(sorted(path.name for path in (root / "plan").iterdir()),
+                             ["INSTALLATION_PLAN.md", "io.darkbloom.sandbox.plist", "plan.json"])
+
+    def test_gui_installed_release_must_match_the_selected_signed_package(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "host.json"
+            config.write_text(json.dumps(dict(self.settings(), hostUser=selected_user())))
+            with patch.object(prepare_host, "validate_package", side_effect=[{"version": "one"}, {"version": "two"}]), \
+                    patch.object(prepare_host, "validate_gui_user", return_value=(configured_user(selected_user()), {})), \
+                    patch.object(prepare_host, "validate_gui_installation") as layout, \
+                    patch("sys.argv", ["prepare-sandbox-host.py", "--gui-user-plan", "--package", "/fixture/release",
+                         "--configuration", str(config), "--install-root", "/Library/Sandbox", "--verify-installed"]):
+                with self.assertRaisesRegex(ValueError, "selected signed package"):
                     prepare_host.main()
                 layout.assert_not_called()
 
@@ -234,36 +284,6 @@ class HostConfigurationTests(unittest.TestCase):
             value = self.settings(); value["coordinatorURL"] = url
             args = prepare_host.host_arguments(value, Path("/Library/Sandbox"))
             self.assertEqual(args[args.index("--coordinator") + 1], url)
-
-    def test_activation_removes_keepalive_before_exclusive_mode_change(self):
-        commands = prepare_host.activation_commands(self.settings(), Path("/Library/Sandbox"))
-        self.assertEqual(commands[0], ["/bin/launchctl", "bootout", "system/io.darkbloom.sandbox"])
-        self.assertEqual(commands[1][:4], ["/usr/bin/sudo", "-u", "_darkbloom_sandbox", "--"])
-        self.assertEqual(commands[1][-2:], ["--mode", "sandbox_dedicated"])
-        self.assertIn("host-mode", commands[1])
-        self.assertEqual(commands[2], ["/bin/launchctl", "bootstrap", "system", "/Library/LaunchDaemons/io.darkbloom.sandbox.plist"])
-        self.assertFalse(any("kill" in argument for command in commands for argument in command))
-
-    def test_generated_activation_is_explicit_and_refuses_unprivileged_execution(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            settings = root / "host.json"
-            settings.write_text(json.dumps(self.settings()))
-            output = root / "plan"
-            with patch.object(prepare_host, "validate_package", return_value={"version": "fixture"}), \
-                    patch("sys.argv", ["prepare-sandbox-host.py", "--package", str(root / "release"),
-                         "--configuration", str(settings), "--install-root", "/Library/Sandbox", "--output", str(output)]):
-                prepare_host.main()
-            script = output / "activate-sandbox-offline.sh"
-            self.assertEqual(script.stat().st_mode & 0o777, 0o700)
-            subprocess.run(["/bin/zsh", "-n", str(script)], check=True)
-            plan = json.loads((output / "plan.json").read_text())
-            self.assertEqual(plan["offline_activation_commands"], prepare_host.activation_commands(self.settings(), Path("/Library/Sandbox")))
-            if os.geteuid() != 0:
-                result = subprocess.run(["/bin/zsh", str(script), "--activate"], capture_output=True, text=True)
-                self.assertEqual(result.returncode, 77)
-                self.assertIn("authorized root operator", result.stderr)
-
 
     def test_embedded_credentials_and_insecure_transport_rejected(self):
         for url in ["ws://example.test", "wss://user:secret@example.test"]:

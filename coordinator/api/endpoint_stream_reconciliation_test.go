@@ -53,7 +53,7 @@ func TestEndpointStreamMissingCompletion(t *testing.T) {
 				if balance := s.store.GetBalance(pr.ConsumerKey); balance != wantRefund {
 					t.Fatalf("refund=%d, want %d", balance, wantRefund)
 				}
-				if s.refundReservedBalance(pr, "duplicate-terminal") {
+				if s.inferenceSettlement().Refund(pr, "duplicate-terminal") {
 					t.Fatal("stream terminal left an outstanding reservation")
 				}
 			})

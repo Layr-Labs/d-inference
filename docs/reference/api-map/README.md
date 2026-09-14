@@ -1,6 +1,6 @@
 # Darkbloom system map
 
-> Last updated: 2026-09-14 · commit `11b5bc037`
+> Last updated: 2026-09-14 · commit `6f03472f8`
 
 A generated map of Darkbloom's entry points: what authorizes each one, what state
 its reachable code touches, and whether that access reads or writes. The
@@ -227,11 +227,13 @@ pointed, because SVG opacity applies to a path's markers too and a wire's restin
 a 9px glyph into a rumour.
 
 The unfiltered coordinator map is on the wrong side of that budget on purpose, and it is
-worth stating how far: at the fitted zoom, 949 of the 975 heads would have another head
-within their own 9.4px width, 50 of them on average, and one 9-pixel square would hold
-156. Moving them to the wires' midpoints thins the pile-ups without emptying them — 22
-neighbours on average instead of 50, and 967 heads touching instead of 949, because a
-midpoint has more room around it and every wire has one.
+worth stating how far. Measured on the page itself, at the zoom that fits the map in the
+default 1200×620 viewport (k ≈ 0.40) and scored in screen pixels with the head's own
+11.25 × 9px box: 971 of the 975 heads overlap another head, 122 of them on average, and
+the worst one overlaps 316. Moving them to the wires' midpoints thins the pile-ups without
+emptying them — 24 neighbours on average instead of 122, five times less crowded, worst
+case 74 — and still leaves 969 heads touching, because a midpoint has more room around it
+but every wire has one.
 No arrangement points every wire in this system legibly, so the picture has to be narrowed
 first: hover a dot, click one, filter, or zoom past roughly twice the fitted scale, where
 you have stopped looking at the system and started reading a corner of it. The `↦` button's
@@ -300,7 +302,7 @@ same walk, so they are derived rather than described:
   handler and is shifted the same way, so the state a gate reads is numbered before
   the state it gates. A `defer` postpones the call and not its operands, so an
   argument that reads state is numbered where the statement is. The coordinator's
-  widest handler reaches **56** constructions this way; the whole map derives **975**
+  widest handler reaches **55** constructions this way; the whole map derives **975**
   steps over 107 routes.
 - **Indirection.** Each step carries how it is reached, from a four-word vocabulary
   the artifact publishes with its own explanations (`stepKindLegend`): `direct`
@@ -365,7 +367,7 @@ thousand. Both halves are screen-pixel quantities:
 | The arc | Because |
 |---|---|
 | Its **stroke and dashes** never scale (`vector-effect: non-scaling-stroke`) | A stroke inside the zoomed scene is scaled with it. At the zoom that fits the whole map a 1.1-unit stroke was 0.44px wide with dashes to match — the arcs were present, with correct geometry, and invisible. The 975 access wires scale on purpose: their collective mass carries them, and at close zoom screen-width lines would fill the picture |
-| Its **head** is dropped when the arc draws less than 1.6 heads of ink (`fkHeads`) | A head does not shrink either, so on a short arc it stops annotating the line and replaces it. The layout packs some pairs of tables adjacently — at the fit, four of the seven keys are bare, each drawing between 2 and 5px of ink; the fifth clears the bar by a third of a pixel, drawing 15.3px where a 9.4px head asks for 15. Bare, a key still says *there is a key here*; the direction it stops claiming was never legible at that size, and the table below states it at every zoom |
+| Its **head** is dropped when the arc draws less than 1.6 heads of ink (`fkHeads`) | A head does not shrink either, so on a short arc it stops annotating the line and replaces it. The layout packs some pairs of tables adjacently — at the fit, four of the seven keys are bare, each drawing between 1.8 and 4.6px of ink; the fifth clears the bar by a third of a pixel, drawing 15.3px where a 9.4px head asks for 15. Bare, a key still says *there is a key here*; the direction it stops claiming was never legible at that size, and the table below states it at every zoom |
 
 The measure is the ink `drawArc` actually drew, not the gap between two table centres —
 the end is pulled back out of the target's disc, which is up to a node radius. Zooming

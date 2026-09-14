@@ -1097,6 +1097,18 @@ func (p *Postgres) UsageRecordset(ctx context.Context) error {
 	return err
 }
 
+// UsageDeleteUsing puts the same call in `USING` position, which is where the rule
+// was missing when it was first written: `USING` introduces a from-list item exactly
+// as `FROM` does, so a bulk delete against a parameter array read `unnest` as a table
+// nothing declares.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) UsageDeleteUsing(ctx context.Context) error {
+	_, err := p.db.ExecContext(ctx,
+		`DELETE FROM usage u USING unnest($1::text[]) AS ids WHERE u.id = ids`)
+	return err
+}
+
 // ModelLabel makes no database call, so a declaration naming it explains nothing
 // and has no call site to cite. It exists to pin the one finding that is about the
 // absence of a query rather than about a query.

@@ -936,11 +936,12 @@ function sizeMarkers() {
 // How many live wires the picture can carry a head on each and still be a picture, and
 // the zoom past which the count stops mattering because most of them are off-screen.
 //
-// The whole coordinator map fits at k ≈ 0.40 and has 976 wires, so the unfiltered view is
-// deliberately on the wrong side of both numbers, and it is worth saying how far: at that
-// scale 971 of the 976 heads would have another head within their own width, 120 on
-// average, and one 9-pixel square would hold 156 of them. Moving them to the wires'
-// midpoints — five times less crowded, 24 on average — still leaves the same 971 touching.
+// The whole coordinator map fits at k ≈ 0.40 in the default 1200×620 viewport and has 975
+// wires, so the unfiltered view is deliberately on the wrong side of both numbers, and it
+// is worth saying how far. Measured on the page itself, in screen pixels, with the head's
+// own ARROW_PX box: 971 of the 975 heads overlap another head, 122 on average, and the
+// worst of them overlaps 316. Moving them to the wires' midpoints — five times less
+// crowded, 24 on average, worst 74 — still leaves 969 of them touching.
 // There is no arrangement in which a picture of this system points every wire legibly, so
 // the reader has to narrow it first, and the toolbar says so rather than leaving them to
 // wonder.

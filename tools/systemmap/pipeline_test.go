@@ -810,6 +810,10 @@ func TestFixtureReadableSQLIsNotDrift(t *testing.T) {
 		// not a node, and the gate stays quiet — which it only does because the rule
 		// reads the punctuation rather than a list of names.
 		{"UsageRecordset", []string{"pg.usage W"}},
+		// The same function in `USING` position, which the rule missed at first: a
+		// bulk delete against a parameter array reads the array's rows and writes one
+		// table.
+		{"UsageDeleteUsing", []string{"pg.usage W"}},
 	} {
 		t.Run(tc.method, func(t *testing.T) {
 			accesses, rep := walkFixtureMethod(t, tc.method)

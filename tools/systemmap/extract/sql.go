@@ -15,6 +15,13 @@ type TableAccess struct {
 	Mode  string // "R" or "W"
 }
 
+// sqlMatcher is one keyword pattern and whether a name it captures may be a call
+// rather than a table — see isCallAt.
+type sqlMatcher struct {
+	re   *regexp.Regexp
+	call bool
+}
+
 var (
 	reIdent      = `((?:"[a-z_][a-z0-9_$]*"|[a-z_][a-z0-9_$]*)(?:\.(?:"[a-z_][a-z0-9_$]*"|[a-z_][a-z0-9_$]*))?)`
 	reInsert     = regexp.MustCompile(`insert\s+into\s+` + reIdent)
@@ -30,10 +37,16 @@ var (
 	reCTE        = regexp.MustCompile(`(?:with|,)\s+(?:recursive\s+)?([a-z_][a-z0-9_$]*)\s+as\s*\(`)
 	reWhitespace = regexp.MustCompile(`\s+`)
 
-	writeMatchers = []*regexp.Regexp{reInsert, reUpdate, reDelete, reCreate, reAlter, reDrop, reTruncate, reUsing}
-	readMatchers  = []*regexp.Regexp{reFrom, reJoin}
+	// A matcher and whether the position it matches may hold a call. `FROM`, `JOIN`
+	// and `USING` all introduce a from-list item, which PostgreSQL lets be a
+	// set-returning function; the rest introduce a table and nothing else. The
+	// distinction has to travel with the matcher rather than with the mode, because
+	// `USING` is scored as a write here and still reads a function's rows.
+	writeMatchers = []sqlMatcher{{re: reInsert}, {re: reUpdate}, {re: reDelete}, {re: reCreate},
+		{re: reAlter}, {re: reDrop}, {re: reTruncate}, {re: reUsing, call: true}}
+	readMatchers = []sqlMatcher{{re: reFrom, call: true}, {re: reJoin, call: true}}
 
-	// SQL keywords that can legally follow FROM/JOIN without naming a table.
+	// SQL keywords that can legally follow FROM/JOIN/USING without naming a table.
 	//
 	// Function names are not in this list, and deliberately: `unnest` and
 	// `generate_series` used to be, which made the list a census of the
@@ -133,8 +146,11 @@ func Tables(sql string) []TableAccess {
 	}
 	base := string(maskLockingClauses(maskKeywordCalls([]byte(norm)), reLockingAnyCase))
 	masked := []byte(base)
-	for _, re := range writeMatchers {
-		for _, loc := range re.FindAllStringSubmatchIndex(base, -1) {
+	for _, m := range writeMatchers {
+		for _, loc := range m.re.FindAllStringSubmatchIndex(base, -1) {
+			if m.call && isCallAt(base, loc[3]) {
+				continue
+			}
 			add(base[loc[2]:loc[3]], "W")
 			for i := loc[0]; i < loc[1]; i++ {
 				masked[i] = ' '
@@ -142,11 +158,11 @@ func Tables(sql string) []TableAccess {
 		}
 	}
 	read := string(masked)
-	for _, re := range readMatchers {
-		for _, loc := range re.FindAllStringSubmatchIndex(read, -1) {
-			// A name in FROM/JOIN position that carries an argument list is a
+	for _, m := range readMatchers {
+		for _, loc := range m.re.FindAllStringSubmatchIndex(read, -1) {
+			// A name in a from-list position that carries an argument list is a
 			// set-returning function rather than a table — see isCallAt.
-			if isCallAt(read, loc[3]) {
+			if m.call && isCallAt(read, loc[3]) {
 				continue
 			}
 			add(read[loc[2]:loc[3]], "R")
@@ -161,7 +177,7 @@ func Tables(sql string) []TableAccess {
 }
 
 // isCallAt reports whether the name ending at `end` is immediately applied to an
-// argument list — which, in FROM or JOIN position, means it is a set-returning
+// argument list — which, in a from-list position, means it is a set-returning
 // function and not a table. `FROM jsonb_to_recordset($1::jsonb) AS x(...)` reads
 // no table at all; the rows it scans are the parameter's.
 //
@@ -171,9 +187,13 @@ func Tables(sql string) []TableAccess {
 // test to be wrong about. That is worth more than the accuracy of any list of
 // function names, which is only ever as current as the last person to extend it.
 //
-// It is applied to FROM and JOIN only. `INSERT INTO usage (id, tokens)` and `CREATE
-// TABLE models (...)` both put a real table in front of a parenthesis, so the same
-// rule there would drop every write the store issues.
+// It is applied to the three keywords that introduce a from-list item — FROM, JOIN
+// and `DELETE ... USING`, all of which take a function where they take a table — and
+// to no others. `INSERT INTO usage (id, tokens)` and `CREATE TABLE models (...)` both
+// put a real table in front of a parenthesis, so the same rule there would drop every
+// write the store issues. Leaving USING out was a bug of exactly the kind this rule
+// replaced: with the function names gone from `sqlNoise`, `DELETE FROM usage u USING
+// unnest($1::text[]) ids` read `unnest` as a table nothing declares.
 //
 // Whitespace is skipped, since `FROM unnest ($1)` calls a function as much as
 // `FROM unnest($1)` does. Anything else — a comma, a keyword, the end of the text —

@@ -509,13 +509,17 @@ func sortedKeys(m map[string]string) []string {
 // whose own FROM is matched on its own. Accepting them made legal SQL a finding.
 //
 // ONLY and LATERAL are stepped over rather than treated as the token, because
-// they prefix a table name instead of replacing it — `Tables` reads through ONLY
-// the same way, and a scan that stopped at the keyword would let `FROM ONLY %s`
-// splice a table in unseen. The words that genuinely end the search are `sqlNoise`
-// (SELECT opening a subquery), which still lists ONLY and LATERAL for `Tables`'
-// benefit — this pattern steps over them before they are ever looked up there. A
-// function opening its arguments (`FROM UNNEST($1)`) ends the search too, but
-// syntactically rather than by name: see `isCallAt`.
+// something else follows them: ONLY prefixes a table name, and LATERAL prefixes a
+// function call or a subquery — PostgreSQL allows it in front of nothing else, so a
+// bare table never follows it. A scan that stopped at either word would let `FROM
+// ONLY %s` and `FROM LATERAL %s(...)` splice a name in unseen. `Tables` reads
+// through ONLY the same way and treats LATERAL as noise, which reaches the same
+// answer from the other side: what follows LATERAL there is either a parenthesis it
+// does not match or a call it must not read. The words that genuinely end the search
+// are `sqlNoise` (SELECT opening a subquery), which still lists ONLY and LATERAL for
+// `Tables`' benefit — this pattern steps over them before they are ever looked up
+// there. A function opening its arguments (`FROM UNNEST($1)`) ends the search too,
+// but syntactically rather than by name: see `isCallAt`.
 //
 // UPDATE reaches this pattern only where it heads an update statement, because
 // `maskLockingClauses` has already blanked the clauses where it does not — see
@@ -586,8 +590,9 @@ func (f *fnWalk) auditText(s string, pos token.Pos, statement bool) {
 			reBareIdent.MatchString(name) && isCallAt(masked, loc[5])
 		switch {
 		case sqlNoise[table] || call:
-			// A keyword that ends the search rather than naming a table: `FROM
-			// (SELECT ...)`, `FROM UNNEST($1)`.
+			// Something that names no table: a keyword the search ends at (`FROM
+			// (SELECT ...)`), or a function applied to its arguments (`FROM
+			// UNNEST($1)`), which is punctuation rather than a word.
 		case !reBareIdent.MatchString(name):
 			if spliced == "" { // one finding per literal is enough to act on
 				spliced = fmt.Sprintf("the table after `%s` is spliced in at run time (`%s`)",

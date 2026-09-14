@@ -48,7 +48,7 @@ test:
 # controls, and checks the geometry the layout computes. `webdeps` installs jsdom;
 # `go test` picks the suite up on its own once it is there (TestPageExecutes), so
 # `make test` covers the page too and `make webtest` is the way to run it alone —
-# over the real coordinator map, whose 108 routes, 20 groups and 976 wires
+# over the real coordinator map, whose 108 routes, 20 groups and 975 wires
 # crowd the label pass on their own, rather than over the five-route fixture, which
 # only reaches that claim through a deliberately small viewport.
 webdeps: render/webtest/node_modules/jsdom
@@ -72,8 +72,10 @@ webtest: webdeps
 # target exists to make impossible — and the render is seconds on top of a walk that
 # costs one full type-check per commit.
 #
-# HISTORY_ARGS is where sampling goes. `-every 25` is the quick look; the published
-# timeline keeps every commit, because watching the shape move is the point.
+# HISTORY_ARGS is where sampling goes. `-every 25` is the quick look; a walk worth
+# reading keeps every commit, because watching the shape move is the point. Nothing
+# publishes it yet — the Pages job builds the plain map, since the walk costs minutes —
+# so today this target is a human asking for the slider on their own machine.
 history: timeline
 	go run . -history $(ARGS)
 

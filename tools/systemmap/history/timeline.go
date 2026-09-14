@@ -29,8 +29,9 @@ type Options struct {
 	// user's working tree: the walk checks out several hundred commits into it.
 	Worktree string
 	// Every keeps one commit in N (1 keeps all). Sampling is for a quick local look
-	// or a pull-request build; the published timeline keeps every commit, because
-	// the point of it is to see the shape move.
+	// or a pull-request build; a walk worth reading keeps every commit, because the
+	// point of it is to see the shape move. No pipeline publishes one yet — the Pages
+	// job builds the plain map, since the walk costs one type-check per commit.
 	Every int
 	// Max caps the number of snapshots taken, most recent kept. Zero means no cap.
 	Max int
@@ -232,6 +233,17 @@ func encode(tl *Timeline, sh, prev *Shape, routeIdx, nodeIdx, linkIdx map[string
 // Deletions carry an index rather than a name because the page replays the
 // timeline in both directions — a slider is dragged backwards as often as
 // forwards — and undoing a point means re-adding exactly what it removed.
+//
+// The key is the identity and the metadata beside it is whatever the *first* point
+// that carried the key had: `add` runs once per key, so a route that later changed
+// namespace or auth class, or a node that moved category, produces no point of its
+// own and keeps its oldest description forever. That is a real limit rather than a
+// subtlety, and it is bounded: the page reads this table only for what the head
+// revision does not have (`page.js` draws everything else from the map itself), so
+// what it can get wrong is the namespace a since-deleted route is drawn inside —
+// the one it started in rather than the one it was deleted from. Widening the key
+// to include the metadata would turn every reclassification into an add plus a
+// delete of the same thing, which is a worse lie.
 func delta[T any](now, prev []T, idx map[string]int, key func(T) string, add func(T)) (adds, dels []int) {
 	before := make(map[string]bool, len(prev))
 	for _, v := range prev {
@@ -288,11 +300,21 @@ func prepareWorktree(repo, dir, rev string) error {
 
 // RemoveWorktree cleans up the scratch checkout. Failure is not fatal to a run
 // that already produced its artifact, so the caller decides how loudly to say so.
+//
+// The path is resolved the way `prepareWorktree` resolves it — against the working
+// directory rather than against the repository — because the two have to name the
+// same directory. Running `git worktree remove` from inside the repository would
+// otherwise read a relative `-worktree` as relative to *that*, and refuse to remove
+// the checkout the walk had just created somewhere else.
 func RemoveWorktree(repo, dir string) error {
-	cmd := exec.Command("git", "worktree", "remove", "--force", dir)
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("git", "worktree", "remove", "--force", abs)
 	cmd.Dir = repo
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git worktree remove %s: %w: %s", dir, err, trim(string(out)))
+		return fmt.Errorf("git worktree remove %s: %w: %s", abs, err, trim(string(out)))
 	}
 	return nil
 }

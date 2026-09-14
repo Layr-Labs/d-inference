@@ -153,6 +153,25 @@ UPDATE usage u SET tokens = o.tokens FROM observed o WHERE u.id = o.id`,
 		name: "nor is a table's own column-alias list a call",
 		sql:  `SELECT a FROM usage AS u(a, b) JOIN models m ON m.id = u.a`,
 		want: []TableAccess{{"models", "R"}, {"usage", "R"}},
+	}, {
+		// USING introduces a from-list item exactly as FROM does, so the rule has to
+		// reach it too. It did not at first, and that left the regression above
+		// standing one keyword over: with the names out of `sqlNoise`, this statement
+		// read `unnest` as a table with no `CREATE TABLE`.
+		name: "a set-returning function in USING names no table either",
+		sql:  `DELETE FROM usage u USING unnest($1::text[]) AS ids WHERE u.id = ids`,
+		want: []TableAccess{{"usage", "W"}},
+	}, {
+		name: "a table in USING is still read",
+		sql:  `DELETE FROM usage u USING models m WHERE u.id = m.id`,
+		want: []TableAccess{{"models", "W"}, {"usage", "W"}},
+	}, {
+		// An index method sits in USING position and is not a relation at all. It was
+		// read as one before this rule, and no list of function names would have
+		// covered it.
+		name: "an index method is not a table",
+		sql:  `CREATE INDEX models_tags_idx ON models USING gin (tags)`,
+		want: []TableAccess{},
 	}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

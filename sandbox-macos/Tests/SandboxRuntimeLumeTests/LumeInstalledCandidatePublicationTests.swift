@@ -39,6 +39,36 @@ final class LumeInstalledCandidatePublicationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: f.path(LumeInstalledCandidateCheckpoint.installationFileName)), input.installation)
     }
 
+    func testRootHandoffRequiresPinnedRuntimeAndExactConsumedBootClaimBeforePublication() async throws {
+        let f = try await LumeQualificationFixture(); defer { f.remove() }
+        let input = try collectAndClear(f)
+        let runtimeSHA256 = LumeInstalledCandidateStore.digest(try Data(contentsOf: f.vm.executable))
+        let disk = try LumeInstalledCandidateStore(name: f.source.name, storage: f.vm.storage).diskIdentity()
+        let request = LumeInstallerBootRequest(reservationData: input.reservation, stagedDisk: disk,
+            runtimeSHA256: runtimeSHA256, maximumBootSeconds: 300, permitSHA256: String(repeating: "b", count: 64))
+        let runtime = LumeVirtualMachineRuntime(configuration: f.configuration)
+        await rejects { _ = try await runtime.publishInstalledCandidate(name: f.source.name, candidateID: f.candidateID,
+            installationData: input.installation, cleanupData: input.cleanup,
+            expectedRuntimeSHA256: runtimeSHA256, expectedBootRequest: request) }
+        for name in installedNames { XCTAssertFalse(FileManager.default.fileExists(atPath: f.path(name).path)) }
+        try LumeInstallerBootClaim.publish(request, name: f.source.name, storage: f.vm.storage)
+        await rejects { _ = try await runtime.publishInstalledCandidate(name: f.source.name, candidateID: f.candidateID,
+            installationData: input.installation, cleanupData: input.cleanup,
+            expectedRuntimeSHA256: String(repeating: "0", count: 64), expectedBootRequest: request) }
+        let wrong = LumeInstallerBootRequest(reservationData: input.reservation, stagedDisk: disk,
+            runtimeSHA256: runtimeSHA256, maximumBootSeconds: 300, permitSHA256: String(repeating: "c", count: 64))
+        await rejects { _ = try await runtime.publishInstalledCandidate(name: f.source.name, candidateID: f.candidateID,
+            installationData: input.installation, cleanupData: input.cleanup,
+            expectedRuntimeSHA256: runtimeSHA256, expectedBootRequest: wrong) }
+        for name in installedNames { XCTAssertFalse(FileManager.default.fileExists(atPath: f.path(name).path)) }
+        let checkpoint = try await runtime.publishInstalledCandidate(name: f.source.name, candidateID: f.candidateID,
+            installationData: input.installation, cleanupData: input.cleanup,
+            expectedRuntimeSHA256: runtimeSHA256, expectedBootRequest: request)
+        XCTAssertEqual(checkpoint.phase, .installedAwaitingQualification)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.path(SandboxGuestTemplateReceipt.fileName).path))
+        XCTAssertTrue(try LumeInstallerBootClaim.existsMatching(request, name: f.source.name, storage: f.vm.storage))
+    }
+
     func testIncompleteOrMixedEvidenceCannotWriteAnyInstalledFile() async throws {
         for mutation in ["installation", "cleanup", "attempt", "candidate", "disk", "resources", "duplicate"] {
             let f = try await LumeQualificationFixture(); defer { f.remove() }

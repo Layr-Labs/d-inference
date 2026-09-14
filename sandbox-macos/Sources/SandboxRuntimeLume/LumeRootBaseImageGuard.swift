@@ -30,6 +30,23 @@ package final class LumeRootBaseImageGuard {
         try source.validateUnchanged()
     }
 
+    /// A distinct post-boot scope accepts only the exact consumed installer
+    /// claim and captures the stopped image under the retained native locks.
+    package static func claimedInstaller(storage: URL, ownerUID: uid_t, ownerGID: gid_t,
+                                          request: LumeInstallerBootRequest) throws -> LumeRootBaseImageGuard {
+        try requireRoot()
+        let candidate = try request.validate()
+        let machine = try HostRuntimeAuthority.system.acquireSandbox()
+        return try .init(machine: machine, storage: storage, name: candidate.source.name, ownerUID: ownerUID,
+            ownerGID: ownerGID, reservationData: request.reservationData, expectedDisk: request.stagedDisk,
+            snapshotPolicy: .captureClaimedInstaller, bootClaim: request)
+    }
+
+    package func capturedDisk() throws -> LumeCandidateDiskIdentity {
+        try validateUnchanged()
+        return source.initialDisk
+    }
+
     /// Read-only discovery for the operator. The returned bytes are not image
     /// authority; begin/recovery compare them again under all source locks.
     package static func readReservation(storage: URL, name: String, ownerUID: uid_t, ownerGID: gid_t) throws -> Data {
@@ -47,12 +64,12 @@ package final class LumeRootBaseImageGuard {
     /// snapshot and observing image absence/openers. No maintenance is published.
     package static func verifyCompletedMaintenance(storage: URL, name: String, ownerUID: uid_t, ownerGID: gid_t,
             reservationData: Data, expectedDisk: LumeCandidateDiskIdentity, intent: HostRuntimeMaintenanceIntent,
-            encodedCandidate: Data, cleanup: LumeImageMaintenanceCleanup,
+            encodedCandidate: Data, cleanup: LumeImageMaintenanceCleanup, bootClaim: LumeInstallerBootRequest? = nil,
             observe: (URL, Int32) async throws -> Void) async throws {
         try requireRoot()
         let machine = try HostRuntimeAuthority.system.acquireSandbox()
         let scope = try LumeRootBaseImageGuard(machine: machine, storage: storage, name: name,
-            ownerUID: ownerUID, ownerGID: ownerGID, reservationData: reservationData, expectedDisk: expectedDisk)
+            ownerUID: ownerUID, ownerGID: ownerGID, reservationData: reservationData, expectedDisk: expectedDisk, bootClaim: bootClaim)
         defer { withExtendedLifetime(scope) {} }
         try scope.source.requireReservation(encodedCandidate)
         let proof = try LumeCompletedImageMaintenance(source: scope.source, intent: intent, cleanup: cleanup)
@@ -76,25 +93,27 @@ package final class LumeRootBaseImageGuard {
 
     package static func recoverMaintenance(storage: URL, name: String, ownerUID: uid_t, ownerGID: gid_t,
             reservationData: Data, expectedDisk: LumeCandidateDiskIdentity, intent: HostRuntimeMaintenanceIntent,
-            encodedCandidate: Data, cleanup: LumeImageMaintenanceCleanup?) throws -> LumeRootImageMaintenance {
+            encodedCandidate: Data, cleanup: LumeImageMaintenanceCleanup?, bootClaim: LumeInstallerBootRequest? = nil) throws -> LumeRootImageMaintenance {
         try requireRoot()
         let maintenance = try HostRuntimeAuthority.system.recoverRootMaintenance(intent)
         // Reuse the recovered EX lease. Acquiring an ordinary lease here would
         // reject the maintenance marker or contend with our own kernel lock.
         let source = try LumeRootBaseImageGuard(machine: maintenance.runtimeLease, storage: storage,
-            name: name, ownerUID: ownerUID, ownerGID: ownerGID, reservationData: reservationData, expectedDisk: expectedDisk)
+            name: name, ownerUID: ownerUID, ownerGID: ownerGID, reservationData: reservationData, expectedDisk: expectedDisk, bootClaim: bootClaim)
         try source.source.requireReservation(encodedCandidate)
         let image = try LumeImageMaintenanceState(source: source.source, intent: intent, recovering: true, cleanup: cleanup)
         return try LumeRootImageMaintenance(guard: source, maintenance: maintenance, image: image)
     }
 
     private init(machine: HostRuntimeLease, storage: URL, name: String, ownerUID: uid_t, ownerGID: gid_t,
-                 reservationData: Data, expectedDisk: LumeCandidateDiskIdentity) throws {
+                 reservationData: Data, expectedDisk: LumeCandidateDiskIdentity,
+                 snapshotPolicy: LumeBaseImageSourceLocks.SnapshotPolicy = .rootMaintenanceRecovery,
+                 bootClaim: LumeInstallerBootRequest? = nil) throws {
         try Self.requireRoot(); try machine.validateSystemExclusive()
         self.machine = machine
         source = try LumeBaseImageSourceLocks(storage: storage, name: name, ownerUID: ownerUID,
             ownerGID: ownerGID, reservationData: reservationData, expectedDisk: expectedDisk,
-            snapshotPolicy: .rootMaintenanceRecovery)
+            snapshotPolicy: snapshotPolicy, bootClaim: bootClaim)
     }
 
     func withImage<T>(_ body: (URL, Int32) throws -> T) throws -> T {

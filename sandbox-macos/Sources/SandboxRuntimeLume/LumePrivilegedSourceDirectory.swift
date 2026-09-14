@@ -99,10 +99,11 @@ final class LumePrivilegedSourceDirectory {
         return info
     }
 
-    func readRecord(_ name: String) throws -> Data {
-        let file = try openFile(name, maximumBytes: 16 * 1024, allowEmpty: false)
+    func readRecord(_ name: String, maximumBytes: Int64 = 16 * 1024) throws -> Data {
+        guard maximumBytes > 0, maximumBytes <= 32 * 1024 else { throw failure() }
+        let file = try openFile(name, maximumBytes: maximumBytes, allowEmpty: false)
         defer { close(file) }
-        let before = try metadata(file, name: name, maximumBytes: 16 * 1024, allowEmpty: false)
+        let before = try metadata(file, name: name, maximumBytes: maximumBytes, allowEmpty: false)
         var data = Data(count: Int(before.st_size)), offset = 0
         try data.withUnsafeMutableBytes { bytes in
             while offset < bytes.count {
@@ -113,7 +114,7 @@ final class LumePrivilegedSourceDirectory {
             }
         }
         guard try SandboxAuthorityFileSystem.stableIdentity(before,
-            metadata(file, name: name, maximumBytes: 16 * 1024, allowEmpty: false)) else { throw failure() }
+            metadata(file, name: name, maximumBytes: maximumBytes, allowEmpty: false)) else { throw failure() }
         return data
     }
 

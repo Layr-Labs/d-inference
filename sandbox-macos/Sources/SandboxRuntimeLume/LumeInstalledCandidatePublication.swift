@@ -6,16 +6,27 @@ extension LumeVirtualMachineRuntime {
     /// Advances an existing raw reservation only after the caller has collected
     /// complete installation and root cleanup records. This never starts a VM.
     package func publishInstalledCandidate(name: String, candidateID: UUID,
-        installationData: Data, cleanupData: Data) async throws -> LumeInstalledCandidateCheckpoint {
+        installationData: Data, cleanupData: Data, expectedRuntimeSHA256: String? = nil,
+        expectedBootRequest: LumeInstallerBootRequest? = nil) async throws -> LumeInstalledCandidateCheckpoint {
         guard capacityArbiter == nil, let authority = configuration.hostRuntimeLease,
               let release = configuration.isolatedGuest else {
             throw SandboxRuntimeError.unsupported("installed candidate publication requires the exclusive base runtime")
         }
         try authority.validateExclusive()
         _ = try await validateRuntime()
+        if let expectedRuntimeSHA256, validatedRuntime?.files["lume"]?.sha256 != expectedRuntimeSHA256 {
+            throw SandboxRuntimeError.unsupported("installed publication runtime differs from the root permit")
+        }
         let sourceGuard = try LumeBaseCandidateOperationGuard(name: name, storage: configuration.storageDirectory)
         defer { withExtendedLifetime(sourceGuard) {} }
         let source = sourceGuard.source
+        if let expectedBootRequest {
+            let claimed = try expectedBootRequest.validate()
+            guard claimed.source == source, claimed.candidateID == candidateID,
+                  try LumeInstallerBootClaim.existsMatching(expectedBootRequest, name: name, storage: configuration.storageDirectory) else {
+                throw SandboxRuntimeError.unsupported("installed publication requires its exact consumed boot claim")
+            }
+        }
         let files = try release.validatedReleaseFiles()
         let observed = try await requireInstalledCandidateStopped(source: source)
         try Task.checkCancellation()
@@ -30,6 +41,11 @@ extension LumeVirtualMachineRuntime {
         guard try release.validatedReleaseFiles() == files,
               try store.read(source: source, guestFiles: files) == result else {
             throw LumeInstalledCandidateStore.failure()
+        }
+        if let expectedBootRequest {
+            guard try LumeInstallerBootClaim.existsMatching(expectedBootRequest, name: name, storage: configuration.storageDirectory) else {
+                throw SandboxRuntimeError.unsupported("installed publication boot claim changed")
+            }
         }
         return result.checkpoint
     }

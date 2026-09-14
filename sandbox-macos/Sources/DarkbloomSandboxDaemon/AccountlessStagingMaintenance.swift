@@ -107,16 +107,7 @@ final class AccountlessStagingMaintenance {
         try await LumeRootBaseImageGuard.verifyCompletedMaintenance(storage: storage, name: snapshot.candidate.source.name,
             ownerUID: ownerUID, ownerGID: ownerGID, reservationData: reservationData, expectedDisk: disk,
             intent: snapshot.maintenance, encodedCandidate: encodedCandidate, cleanup: snapshot.cleanup) { image, descriptor in
-            let runner = SandboxProcessRunner()
-            let result = try await runner.run(executable: URL(fileURLWithPath: "/usr/bin/hdiutil"),
-                arguments: ["info", "-plist"], timeoutSeconds: 30, maximumOutputBytes: 4 * 1_048_576)
-            guard result.exitCode == 0, !result.standardOutputTruncated, !result.standardErrorTruncated,
-                  try AccountlessAttachmentInventory(result.standardOutput).ownedTarget(image, ownerUID: 0) == nil else {
-                throw AccountlessDiskError.cleanupUnproven
-            }
-            let openers = try await runner.run(executable: URL(fileURLWithPath: "/usr/sbin/lsof"),
-                arguments: ["-nP", "-Fpf", "--", image.path], timeoutSeconds: 30, maximumOutputBytes: 64 * 1024)
-            try AccountlessImageOpeners.requireOnlyRetainedDescriptor(openers, pid: getpid(), descriptor: descriptor)
+            try await AccountlessDetachedImageObservation.verify(image: image, descriptor: descriptor)
         }
     }
 

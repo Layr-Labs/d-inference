@@ -12,6 +12,9 @@ enum AccountlessBaseCommand {
         case .payload, .stage: report = try await AccountlessBaseRootCommand.run(options)
         case .authorizeBoot: report = try await AccountlessAuthorizeBootCommand.run(options)
         case .boot: report = try await AccountlessBootCommand.run(options)
+        case .collect: report = try await AccountlessCollectCommand.run(options, aborting: false)
+        case .abortCollection: report = try await AccountlessCollectCommand.run(options, aborting: true)
+        case .publishInstalled: report = try await AccountlessPublishInstalledCommand.run(options)
         }
         if options.json {
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -22,7 +25,8 @@ enum AccountlessBaseCommand {
             if let path = report.payloadPath { print("Payload: \(path)") }
             if let path = report.journalPath { print("Journal: \(path)") }
             if let path = report.permitPath { print("Boot permit: \(path)") }
-            print("Installed: false; qualified: false")
+            if let path = report.collectionPath { print("Collection: \(path)") }
+            print("Installed: \(report.installed); qualified: false")
         }
     }
 }
@@ -30,6 +34,7 @@ enum AccountlessBaseCommand {
 struct AccountlessBasePhaseReport: Encodable, Sendable {
     enum Phase: String, Encodable, Sendable {
         case awaitingRootInstallation, payloadPrepared, payloadStaged, installerBootAuthorized, installerBootStopped, installerAttemptRecovered
+        case installationCollected, collectionAborted, installedAwaitingQualification
     }
     let phase: Phase
     let name: String
@@ -42,16 +47,19 @@ struct AccountlessBasePhaseReport: Encodable, Sendable {
     let nativeExitCode: Int32?
     let observedRunning: Bool?
     let sourceStopped: Bool?
-    let installed = false
+    let collectionPath: String?
+    let installed: Bool
     let qualified = false
 
     init(phase: Phase, candidate: AccountlessBaseCandidateRecord, payloadPath: String? = nil,
          journalPath: String? = nil, replayed: Bool = false, permitPath: String? = nil,
-         nativeExitCode: Int32? = nil, observedRunning: Bool? = nil, sourceStopped: Bool? = nil) {
+         nativeExitCode: Int32? = nil, observedRunning: Bool? = nil, sourceStopped: Bool? = nil,
+         collectionPath: String? = nil, installed: Bool = false) {
         self.phase = phase; name = candidate.source.name; candidateID = candidate.candidateID
         bootstrapAttemptID = candidate.bootstrapAttemptID; self.payloadPath = payloadPath
         self.journalPath = journalPath; self.replayed = replayed
         self.permitPath = permitPath; self.nativeExitCode = nativeExitCode
         self.observedRunning = observedRunning; self.sourceStopped = sourceStopped
+        self.collectionPath = collectionPath; self.installed = installed
     }
 }

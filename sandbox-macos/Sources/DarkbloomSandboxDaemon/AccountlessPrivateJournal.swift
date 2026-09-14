@@ -48,21 +48,23 @@ final class AccountlessPrivateJournal {
         }
     }
 
-    func read(_ name: String) throws -> Data? {
+    func read(_ name: String, maximumBytes: Int = AccountlessPrivateJournal.maximumBytes, allowEmpty: Bool = false) throws -> Data? {
+        guard maximumBytes > 0, maximumBytes <= 128 * 1024 else { throw AccountlessInstallationError.invalidBinding }
         try Self.requireName(name); try validate()
         let file = openat(descriptor, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         if file < 0, errno == ENOENT { return nil }
         guard file >= 0 else { throw AccountlessInstallationError.unsafeDestination }
         defer { close(file) }
-        let data = try SandboxAuthorityFileSystem.readStablePrivateFile(file, maximumBytes: Self.maximumBytes)
+        let data = try SandboxAuthorityFileSystem.readStablePrivateFile(file, maximumBytes: maximumBytes, allowEmpty: allowEmpty)
         try Self.requireNamed(file, parent: descriptor, name: name)
         try validate()
         return data
     }
 
-    func publishMatching(_ data: Data, name: String) throws {
-        guard data.count <= Self.maximumBytes else { throw AccountlessInstallationError.invalidBinding }
-        if let existing = try read(name) {
+    func publishMatching(_ data: Data, name: String, maximumBytes: Int = AccountlessPrivateJournal.maximumBytes, allowEmpty: Bool = false) throws {
+        guard maximumBytes > 0, maximumBytes <= 128 * 1024, data.count <= maximumBytes,
+              allowEmpty || !data.isEmpty else { throw AccountlessInstallationError.invalidBinding }
+        if let existing = try read(name, maximumBytes: maximumBytes, allowEmpty: allowEmpty) {
             guard existing == data else { throw AccountlessInstallationError.invalidBinding }
             return
         }
@@ -73,7 +75,7 @@ final class AccountlessPrivateJournal {
         try validate()
         guard fclonefileat(temporary, descriptor, name, 0) == 0 else { throw AccountlessInstallationError.unsafeDestination }
         try SandboxAuthorityFileSystem.synchronize(descriptor)
-        guard try read(name) == data else { throw AccountlessInstallationError.invalidBinding }
+        guard try read(name, maximumBytes: maximumBytes, allowEmpty: allowEmpty) == data else { throw AccountlessInstallationError.invalidBinding }
     }
 
     private static func requireName(_ name: String) throws {

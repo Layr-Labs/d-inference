@@ -64,31 +64,29 @@ are closed before machine EX is released. A strict unchanged-snapshot check is
 separate from collecting a new snapshot after authorized offline IO; neither is
 a disk-content hash or native stopped-state proof.
 
-This scope is not yet connected to an attach/mount entrypoint. The enclosing
-operator must still prove native stopped state, exclude foreign image openers,
-bind the hdiutil attachment and sole Data-volume UUID, preserve preexisting
-attachments, and prove detach. Its retained image descriptor is an expected
-opener; only that exact owned descriptor may be excluded from the opener check.
-Before attaching, the complete workflow also needs a durable offline-operation
-fence enforced by the broker and pinned native runtime after a process crash,
-alongside the machine ownership library's new pending-maintenance admission.
-That shared library now provides root-only durable intent publication, exact
-recovery and explicit completion APIs. It blocks both ordinary inference SH and
-sandbox EX acquisition while any maintenance record exists. Abrupt process-exit
-tests prove that the fence persists after the kernel lock is released.
-The broker and pinned native runtime now reject any per-image
-`.darkbloom-offline.json` entry. Ordinary broker create/start/delete, clone-source
-validation and deletion replay cannot remove or bypass it. Native run, settings,
-clone, forced pull and delete reject it under the image guard; actual storage
-paths, auxiliary/USB/mount images and aliases are checked before VM startup.
-Read-only native inspection leaves the fence intact. The root base operator must
-still be wired to publish both global and per-image fences before attaching,
-bind recovery to the exact journal/source, and remove them only after cleanup.
-This process-lifetime image guard alone does not provide that complete workflow.
-Lume's legacy provisioning marker is unsuitable because details lookup can
-automatically remove it when the VM's required files exist. No offline-mount
-crash-recovery or successful root entrypoint execution is claimed by the local
-nonroot filesystem and subprocess-lock tests.
+`AccountlessStagingMaintenance` and `AccountlessCollectionMaintenance` connect
+this scope to the guarded image transaction. They prove native stopped state,
+exclude foreign image openers, bind hdiutil attachment and the sole APFS Data
+volume, preserve preexisting attachments and verify detach. Only the exact
+retained image descriptor is excluded from the opener check.
+
+The root scope publishes a durable global intent followed by a per-image fence
+before offline IO. The shared machine library blocks ordinary inference SH and
+sandbox EX admission while maintenance remains pending, including after abrupt
+process exit. The broker and pinned native runtime reject any per-image
+`.darkbloom-offline.json` entry under their image guards. Ordinary create/start/
+delete, clone-source validation, native settings, forced pull and alternate
+storage attachment paths cannot bypass or remove it. Read-only native inspection
+leaves the fence intact.
+
+Recovery requires the same immutable journal and source identity. The system
+worker retains exclusive authority while a mutating system tool is still live.
+Completion requires attachment absence, no foreign image opener and a final disk
+snapshot; it removes the image fence before the global fence. Collection has its
+own post-boot scope bound to the exact consumed boot claim. It cannot reopen the
+pre-boot staging transaction. Component fixtures exercise these filesystem and
+process boundaries; fresh Apple restore through final qualification still requires
+its own physical acceptance evidence.
 
 Existing schema1 installation and template records retain their legacy
 `bootstrapRetired` field and encoding. They are never converted into native
@@ -171,12 +169,12 @@ requirements are in `RELEASE_VALIDATION.md`.
 
 ## Accountless operator commands
 
-`darkbloom-sandboxd prepare-accountless-base` exposes five explicit phases. Every
+`darkbloom-sandboxd prepare-accountless-base` exposes eight explicit phases. Every
 phase requires `--storage DIR --name NAME --host-id UUID --host-identity-file FILE`.
 The identity file is the protected selected-user binding from host preparation.
-`--json` returns the observed phase and candidate/attempt IDs. These phases do not
-publish installation or qualification evidence: their `installed` and `qualified`
-flags remain false until a separate receipt-collection/qualification path exists.
+`--json` returns the observed phase and candidate/attempt IDs. Only
+`publish-installed` returns `installed: true`; all phases return `qualified: false`.
+An installed image still requires native qualification before ordinary cloning.
 
 | Phase | Execution context | Additional options | Completed result |
 |---|---|---|---|
@@ -185,6 +183,9 @@ flags remain false until a separate receipt-collection/qualification path exists
 | `stage` | Root | `--lume PATH --payload DIR --journal-dir DIR` | Guarded mount/stage/detach and `payloadStaged` observation |
 | `authorize-boot` | Root | `--lume PATH --payload DIR --journal-dir DIR --boot-journal-dir DIR --permit-file FILE` | Private boot intent, permanently closed staging, then immutable root boot permit |
 | `boot` | Selected user's actual GUI/audit session | `--permit-file FILE` | One installer attempt stopped, or an existing consumed attempt recovered; no installation-success claim |
+| `collect` | Root | `--permit-file FILE --boot-journal-dir DIR --collection-dir DIR --collection-file FILE` | Complete guest receipt, verified installed payload, temporary material removed, detached/stopped proof, immutable root collection record |
+| `abort-collection` | Root | `--permit-file FILE --boot-journal-dir DIR --collection-dir DIR` | Settle owned attachments and close collection without an installation claim |
+| `publish-installed` | Selected user's actual GUI/audit session | `--permit-file FILE --collection-file FILE --guest-release DIR` | Validated private installed checkpoint; `installedAwaitingQualification` |
 
 `reserve` verifies the selected identity, actual GUI session, eligible host,
 encrypted APFS storage and exclusive machine ownership. It uses raw Apple restore
@@ -235,16 +236,52 @@ base start, new raw-candidate reservation and pre-boot root staging.
 `installerBootStopped` means the native owner exited successfully and the source
 is stopped. `installerAttemptRecovered` means a prior claim was found and stopped
 state was verified; its original native exit code is unavailable. Neither proves
-the guest installer succeeded. Root receipt collection/removal and automatic
-qualification remain under construction, and real-machine qualification of the
-new boot path is still required. The legacy `prepare-base` entrypoint retains its
+the guest installer succeeded. The collection and installed-publication commands
+are implemented; physical validation of this complete path and automatic native
+qualification remain required. The legacy `prepare-base` entrypoint retains its
 unattended path; these phases do not silently fall back to it.
+
+`collect` requires a root-private journal separate from the boot journal. It
+validates the exact consumed boot claim and pinned runtime, observes stopped
+state, and captures the post-boot disk under machine and native source locks.
+Its separate durable maintenance intent closes ordinary runtime admission until
+matching cleanup completes. It uses the same guarded attach, sole-Data-volume
+selection, private mount and detach transaction as staging.
+
+Before deleting anything, collection verifies the installed guest binary and
+Developer ID signature, bootstrap script, persistent job and synthetic workspace
+entry against the signed release. A complete bound guest result and bounded logs
+are copied to the private host journal. An immutable removal plan then records
+the exact temporary files, directories and APFS volume UUID. File hashes, inodes,
+sizes, timestamps and modes remain binding across retries. Device numbers may
+change on reattachment; descriptor-relative IO still requires every entry to be
+on the currently verified volume. Another volume UUID, replacement, symlink,
+extra file or changed remaining payload stops removal without deleting that data.
+
+The temporary boot job is removed first, then the recorded payload. A retry uses
+the saved host result even if the guest receipt was already removed. Successful
+removal and verified detach are separate checkpoints. Only after both and a
+fresh stopped/detached observation does root publish the bounded, root-owned
+mode0444 collection record. That public record contains installation and cleanup
+bindings, not diagnostic logs. An incomplete receipt cannot authorize deletion.
+
+`abort-collection` settles only the journal's owned attachments and verifies
+cleanup without mounting the Data volume for payload IO. It records an aborted
+transaction and cannot publish installation evidence. An already completed
+transaction cannot reopen collection IO, even when replayed through another phase.
+Failed or uncertain cleanup retains the maintenance fences.
+
+`publish-installed` validates the root permit and collection record in the exact
+selected GUI session. It rechecks encrypted storage, exclusive ownership, the
+pinned production runtime, consumed boot claim, signed guest release and final
+disk snapshot before publishing private installed evidence. It never boots the
+base or publishes template readiness.
 
 ## Installed-candidate validation
 
 `LumeInstalledCandidateCheckpoint` defines immutable host evidence for the next
-phase, `installedAwaitingQualification`. A future root-installation orchestrator
-must produce these private files in the already-owned source VM directory:
+phase, `installedAwaitingQualification`. The installed-publication command
+produces these private files in the already-owned source VM directory:
 
 | File | Binding |
 |---|---|
@@ -262,9 +299,9 @@ Matching partial files can be completed after interruption; conflicting, linked,
 shared or special files are rejected without overwrite. The installed checkpoint
 is published last, then all records and the stopped source are checked again.
 
-The privileged staging and one-use boot phases are implemented. Receipt collection
-and cleanup still need to be wired into this entrypoint. Decoding input records does not
-observe those actions. The raw reservation remains immutable; its original disk
+The root collection command supplies the verified receipt and cleanup handoff to
+this entrypoint. Decoding input records does not observe those actions. The raw
+reservation remains immutable; its original disk
 device/inode/size must match the final disk, while the installed checkpoint binds
 the later modification/change times. Neither publication nor replay starts a VM
 or publishes template readiness.

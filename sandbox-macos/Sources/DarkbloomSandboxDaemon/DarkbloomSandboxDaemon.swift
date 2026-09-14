@@ -121,15 +121,18 @@ enum DarkbloomSandboxDaemon {
               darkbloom-sandboxd prepare-base --lume PATH --storage DIR
                 --ipsw FILE --name NAME [--cpu N] [--memory-gib N]
                 [--disk-gib N] [--guest-release PATH] [--json]
-              darkbloom-sandboxd prepare-accountless-base reserve|payload|stage|authorize-boot|boot
+              darkbloom-sandboxd prepare-accountless-base PHASE
                 --host-identity-file FILE --host-id UUID --storage DIR --name NAME [--json]
                 reserve: --lume PATH --ipsw FILE --guest-release DIR [--cpu N] [--memory-gib N]
                 payload: --guest-release DIR --output NEW_DIR
                 stage: --lume PATH --payload DIR --journal-dir DIR
                 authorize-boot: --lume PATH --payload DIR --journal-dir DIR --boot-journal-dir DIR --permit-file FILE
                 boot: --permit-file FILE
-                Reserve and boot run in the selected GUI session; other phases require root.
-                These phases do not publish an installed or qualified template.
+                collect: --permit-file FILE --boot-journal-dir DIR --collection-dir DIR --collection-file FILE
+                abort-collection: --permit-file FILE --boot-journal-dir DIR --collection-dir DIR
+                publish-installed: --permit-file FILE --collection-file FILE --guest-release DIR
+                Reserve, boot and publish-installed run in the selected GUI session; other phases require root.
+                Only publish-installed publishes an installed checkpoint. Qualification remains separate.
               darkbloom-sandboxd reconcile-expired --lume PATH --storage DIR
                 --capacity-dir DIR --max-cpu N --max-memory-gib N
                 [--max-growth-gib N] [--storage-headroom-gib N] [--json]

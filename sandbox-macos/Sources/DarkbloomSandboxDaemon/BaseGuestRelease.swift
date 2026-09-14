@@ -142,7 +142,7 @@ struct BaseGuestRelease: Sendable {
         guard count == data.count else { throw BaseGuestPreparationError.invalidRelease }
         return data
     }
-    private static func verifySignature(_ url: URL, identifier: String) throws {
+    static func verifySignature(_ url: URL, identifier: String) throws {
         var code: SecStaticCode?, requirement: SecRequirement?
         let rule = "anchor apple generic and identifier \"\(identifier)\" and certificate leaf[subject.OU] = \"SLDQ2GJ6TL\""
         guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess, let code,

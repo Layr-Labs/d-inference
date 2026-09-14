@@ -3,7 +3,10 @@ import SandboxCore
 import SandboxRuntime
 
 struct AccountlessBaseOptions: Sendable {
-    enum Phase: String, Sendable { case reserve, payload, stage, authorizeBoot = "authorize-boot", boot }
+    enum Phase: String, Sendable {
+        case reserve, payload, stage, authorizeBoot = "authorize-boot", boot, collect
+        case abortCollection = "abort-collection", publishInstalled = "publish-installed"
+    }
     let phase: Phase
     let storage: URL
     let name: String
@@ -67,6 +70,9 @@ struct AccountlessBaseOptions: Sendable {
         .stage: ["--lume", "--payload", "--journal-dir"],
         .authorizeBoot: ["--lume", "--payload", "--journal-dir", "--boot-journal-dir", "--permit-file"],
         .boot: ["--permit-file"],
+        .collect: ["--permit-file", "--boot-journal-dir", "--collection-dir", "--collection-file"],
+        .abortCollection: ["--permit-file", "--boot-journal-dir", "--collection-dir"],
+        .publishInstalled: ["--permit-file", "--collection-file", "--guest-release"],
     ]
     private static let required: [Phase: Set<String>] = [
         .reserve: ["--lume", "--ipsw", "--guest-release"],
@@ -74,9 +80,13 @@ struct AccountlessBaseOptions: Sendable {
         .stage: ["--lume", "--payload", "--journal-dir"],
         .authorizeBoot: ["--lume", "--payload", "--journal-dir", "--boot-journal-dir", "--permit-file"],
         .boot: ["--permit-file"],
+        .collect: ["--permit-file", "--boot-journal-dir", "--collection-dir", "--collection-file"],
+        .abortCollection: ["--permit-file", "--boot-journal-dir", "--collection-dir"],
+        .publishInstalled: ["--permit-file", "--collection-file", "--guest-release"],
     ]
     private static let pathOptions: Set<String> = [
         "--storage", "--host-identity-file", "--lume", "--ipsw", "--guest-release", "--output", "--payload", "--journal-dir",
         "--boot-journal-dir", "--permit-file",
+        "--collection-dir", "--collection-file",
     ]
 }

@@ -75,12 +75,22 @@ final class AccountlessOfflineDirectory {
         }
     }
 
-    func openFile(_ name: String, mode: UInt16, maximumBytes: Int = 128 * 1_048_576) throws -> Int32 {
+    func openFile(_ name: String, mode: UInt16, maximumBytes: Int = 128 * 1_048_576,
+                  allowEmpty: Bool = false, allowPublic: Bool = false) throws -> Int32 {
         try Self.requireComponent(name)
         let file = openat(descriptor, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         guard file >= 0 else { throw AccountlessInstallationError.unsafeDestination }
         do {
-            let info = try SandboxAuthorityFileSystem.requirePrivateRegularFile(file, maximumBytes: maximumBytes, allowEmpty: false)
+            let info: stat
+            if allowPublic {
+                info = try SandboxAuthorityFileSystem.fileMetadata(file)
+                guard info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(), info.st_gid == getegid(),
+                      info.st_nlink == 1, info.st_size >= 0, info.st_size <= maximumBytes,
+                      allowEmpty || info.st_size > 0, info.st_mode & 0o022 == 0 else { throw AccountlessInstallationError.unsafeDestination }
+                try SandboxAuthorityFileSystem.requireNoExtendedACL(file)
+            } else {
+                info = try SandboxAuthorityFileSystem.requirePrivateRegularFile(file, maximumBytes: maximumBytes, allowEmpty: allowEmpty)
+            }
             guard info.st_dev == device, info.st_mode & 0o7777 == mode else { throw AccountlessInstallationError.unsafeDestination }
             try requireNamed(file, name: name)
             return file

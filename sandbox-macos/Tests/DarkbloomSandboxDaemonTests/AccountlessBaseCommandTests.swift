@@ -12,6 +12,10 @@ final class AccountlessBaseCommandTests: XCTestCase {
     private let reserve = ["--lume", "/runtime/lume", "--ipsw", "/images/apple.ipsw", "--guest-release", "/release"]
     private let payload = ["--guest-release", "/release", "--output", "/operator/payload"]
     private let stage = ["--lume", "/runtime/lume", "--payload", "/operator/payload", "--journal-dir", "/operator/staging"]
+    private let collection = ["--permit-file", "/root-plan/permit.json", "--boot-journal-dir", "/operator/boot",
+                              "--collection-dir", "/operator/collection"]
+    private let publication = ["--permit-file", "/root-plan/permit.json", "--collection-file", "/root-plan/collection.json",
+                               "--guest-release", "/release"]
 
     func testReserveSelectsRawRestoreWithNoAccountPresetAndFixedDiskPolicy() throws {
         let options = try AccountlessBaseOptions(["reserve"] + common + reserve + ["--json"])
@@ -34,12 +38,20 @@ final class AccountlessBaseCommandTests: XCTestCase {
         XCTAssertEqual(try AccountlessBaseOptions(["boot"] + common + ["--permit-file", "/root-plan/permit.json"]).phase, .boot)
         XCTAssertEqual(try AccountlessBaseOptions(["authorize-boot"] + common + stage
             + ["--boot-journal-dir", "/operator/boot", "--permit-file", "/root-plan/permit.json"]).phase, .authorizeBoot)
+        XCTAssertEqual(try AccountlessBaseOptions(["collect"] + common + collection
+            + ["--collection-file", "/root-plan/collection.json"]).phase, .collect)
+        XCTAssertEqual(try AccountlessBaseOptions(["abort-collection"] + common + collection).phase, .abortCollection)
+        XCTAssertEqual(try AccountlessBaseOptions(["publish-installed"] + common + publication).phase, .publishInstalled)
         for args in [["reserve"] + common + reserve + ["--journal-dir", "/operator/journal"],
                      ["stage"] + common + stage + ["--ipsw", "/image"],
                      ["payload"] + common + payload + ["--lume", "/runtime/lume"],
                      ["stage"] + common + stage + ["--json", "--json"],
                      ["stage"] + common + stage + ["--name", "other"],
                      ["boot"] + common + ["--permit-file", "/root-plan/permit.json", "--lume", "/other-runtime"],
+                     ["collect"] + common + collection,
+                     ["abort-collection"] + common + collection + ["--collection-file", "/root-plan/collection.json"],
+                     ["publish-installed"] + common + publication + ["--lume", "/other-runtime"],
+                     ["publish-installed"] + common + publication + ["--collection-dir", "/operator/collection"],
                      ["boot"] + common, ["stage"] + common] {
             XCTAssertThrowsError(try AccountlessBaseOptions(args), args.joined(separator: " "))
         }
@@ -54,17 +66,20 @@ final class AccountlessBaseCommandTests: XCTestCase {
 
     func testRootPhasesRefuseOrdinaryProcessBeforeOpeningInputPaths() throws {
         guard getuid() != 0 else { throw XCTSkip("requires an ordinary test process") }
-        for args in [["payload"] + common + payload, ["stage"] + common + stage] {
+        for args in [["payload"] + common + payload, ["stage"] + common + stage,
+                     ["collect"] + common + collection + ["--collection-file", "/root-plan/collection.json"],
+                     ["abort-collection"] + common + collection] {
             XCTAssertThrowsError(try AccountlessBaseRootInput(AccountlessBaseOptions(args))) { error in
                 XCTAssertTrue(String(describing: error).contains("require the root operator"))
             }
         }
     }
 
-    func testPhaseReportsNeverClaimInstallationOrQualification() throws {
+    func testPreparationReportsNeverClaimInstallationOrQualification() throws {
         let fixture = try AccountlessInstallationTestFixture(); defer { fixture.remove() }
         for phase in [AccountlessBasePhaseReport.Phase.awaitingRootInstallation, .payloadPrepared, .payloadStaged,
-                      .installerBootAuthorized, .installerBootStopped, .installerAttemptRecovered] {
+                      .installerBootAuthorized, .installerBootStopped, .installerAttemptRecovered,
+                      .installationCollected, .collectionAborted] {
             let report = AccountlessBasePhaseReport(phase: phase, candidate: fixture.candidate, replayed: true)
             let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any])
             XCTAssertEqual(json["installed"] as? Bool, false)
@@ -72,6 +87,12 @@ final class AccountlessBaseCommandTests: XCTestCase {
             XCTAssertEqual(json["phase"] as? String, phase.rawValue)
             XCTAssertEqual(json["replayed"] as? Bool, true)
         }
+        let installed = AccountlessBasePhaseReport(phase: .installedAwaitingQualification, candidate: fixture.candidate,
+            sourceStopped: true, collectionPath: "/root-plan/collection.json", installed: true)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(installed)) as? [String: Any])
+        XCTAssertEqual(json["installed"] as? Bool, true)
+        XCTAssertEqual(json["qualified"] as? Bool, false)
+        XCTAssertEqual(json["collectionPath"] as? String, "/root-plan/collection.json")
     }
 
     func testAClaimedInstallerCannotBeReservedAsANewRawCandidate() throws {

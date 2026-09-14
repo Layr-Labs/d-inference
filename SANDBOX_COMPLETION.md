@@ -5,55 +5,50 @@ No production deployment. Keep PR #996 draft until the physical gates pass.
 
 ## Current verified state
 
-Pushed058cb555776ef9bad2565b9ae536eca1c8bf67f4 implements authorize-boot and boot,
-a protected one-use handoff,
-GUI-owned installer-v1 execution, consumed-claim recovery and cleanup-error
-preservation on session loss. Root staging cannot reopen after handoff, and a
-claimed image cannot be reserved/staged/started through legacy base paths.
-Final full validation passes626tests/7skips/0failures,128.707s, including the
-GUI-session error preservation and both root-publication fixes.
-A real-root permit publication test passes on the test Mac, but uses explicitly
-synthetic metadata and boots no VM. Actual fresh-image boot/receipt collection
-and final qualification remain open. See the newest detailed section below.
+This checkpoint accompanies the collection implementation following a6dc93cf6; inspect git for its commit/push state.
+It adds root collect/abort-collection and selected-GUI publish-installed commands,
+a separate exact-boot-claim maintenance scope, complete receipt/installed-signature
+verification, saved bounded logs, immutable temporary removal plans and final
+root collection handoff. An installed checkpoint remains unqualified.
+Recovery binds APFS volume UUID plus persistent file identity; attachment device
+renumbering is allowed while descriptor IO remains restricted to the verified
+current volume. Wrong volumes, changed files and replaced/linked directories are
+rejected before further removal. A repeated collection cannot restart a completed
+transaction; explicit abort settles attachments without installing or publishing.
+Focused collection/recovery/publication tests:27passed. Full suite:639tests,
+7skips,0failures,131.717s. Four actual CLI checks and docs-check286files pass.
 
-The native installer-v1 profile is pushed in e518872e7954030e3e17d36de55dde4c11aefc6a
-as pinned patch13. It accepts
-one private boot disk, requires macOS/BLC/EX and disabled display/VNC, rejects
-extra devices/storage overrides and removes all host/guest bridge devices.
-Fresh signed build:205native tests plus19required selectors pass. Sandbox610tests/
-7skips/0failures pass with the new pin;2real signed-binary contracts pass. Runtime13
-is installed root-owned on the test Mac with executable/provenance signatures
-reverified. It has NOT booted a VM; one-use GUI boot/journal/collection remains next.
+Pushed058cb555776ef9bad2565b9ae536eca1c8bf67f4 implements one-use root authorization
+and GUI-owned installer-v1 boot. Its full suite passes626tests/7skips/0failures.
+CI34844573163 and integration34844573303 now PASS. A real-root publication probe
+passes with synthetic metadata only; it boots no VM and confers no readiness.
 
-The public prepare-accountless-base reserve|payload|stage commands are now
-implemented, with strict selected-GUI versus root execution and explicit phase
-results. The guarded accountless offline staging operation is implemented and
-locally validated: native stopped inspection, root system-command worker, attach/mount
-journals, exact-image recovery, Data mount policy, signed payload staging and
-verified detach. Final sandbox suite with patch13:610tests/7skips/0failures,128.057s.
-The worker-install preflight remains before maintenance publication. Host-runtime:
-21tests/0failures. Provider target builds; docs-check286files passes.
+Pinned runtime13 (e518872e7954030e3e17d36de55dde4c11aefc6a) implements installer-v1:
+one private boot disk, macOS/BLC/machineEX, no extra media or host/guest devices.
+Its fresh Developer ID build passes205native tests plus19required selectors and
+2real signed-binary contracts. It is installed root-owned on the test Mac, with
+signatures/provenance reverified. It has not booted a VM.
 
-A fresh1GiB nonbootable APFS fixture passed actual attach/crash/recovery/stage/
-detach and independent final checks on the test Mac. It proves the filesystem
-component, not an Apple restore, VM boot or template qualification. Exact source,
-artifact paths and digests are in the final dated section. Both fixtures are
-detached and unfenced; no test worker remains. Signed runtime12 is installed
-immutably for native status and staging tests; its latest lifecycle patches
-still need VM testing. Exercise14/coldboot15 remains the last actual guest proof.
+Guarded APFS staging and completed replay passed a real1GiB nonbootable fixture
+with deliberate process exit, exact attachment recovery, detach and restored
+SH/EX admission. This is filesystem-component evidence, not a guest install.
+Exercise14/coldboot15 remains the last actual guest proof (runtime8): authenticated
+commands/files/isolation/cleanup plus workspace persistence across cold boot.
+The diagnostic VM is unqualified and must not be promoted to a template.
 
-Guarded staging is pushed as ce33b36ea0db927881be82acc9475c9cc8fb6a4c.
-Operator commands are pushed as bb58af5ecb106c5f1cfa845788001fc2d87c4398.
-CI34838853984 and integration34838853908 are running that source. CI34837780288
-and integration34837780295 PASSED preceding staging sourcece33b36ea. Benchmark environment approval remains separate.
-Legacy SSH-wrapper timing failures under concurrent release compilation remain
-an open stress concern, despite the idle full-suite passes.
+Test Mac live df remains50GiB free. Own obsolete VM fixtures report about91GiB
+allocated, possibly double-counting APFS clones; none has been deleted in this
+continuation. The own restore IPSW is still present (19772231540bytes). Preserve
+it for a fresh restore. Go-cache deletion remains unapproved. Do not change cache,
+model, permanent authority, services or temporary group membership while testing
+without the existing exact task authorization and cleanup procedure.
 
-Next: selected-GUI installer boot with a distinct journal,
-post-boot collection/removal, installed checkpoint, qualification/coldboot/
-teardown and ready-template publication. Then actual login/logout recovery,
-full two-VM coordinator acceptance, build tools, performance and final signed
-release qualification. No production deployment. Keep PR996 draft.
+Next: physical fresh restore/stage/authorize/GUIboot/collect/publish-installed,
+qualification clone/coldboot/teardown and readiness using released-lease cleanup.
+Then full two-VM coordinator acceptance, build tools, actual login/logout recovery,
+performance and final signed/notarized release validation. The legacy SSH-wrapper
+timeout failures under concurrent native compilation remain an open stress concern.
+Keep PR996 draft. No production deployment.
 
 ## Source and ownership
 
@@ -2094,3 +2089,63 @@ this source; benchmark34844573610 awaits separate environment approval. No local
 build/test/SSH process remains live. This checkpoint-only commit follows the
 pushed implementation. Next is the separate post-boot root receipt-collection
 and temporary guest-payload removal transaction, not another staging/boot replay.
+
+
+## 2026-09-14 — Root installation collection and installed handoff
+
+Implemented collect, abort-collection and publish-installed after one-use boot.
+The root scope validates the exact consumed claim, captures the post-boot disk
+under the existing locks and publishes a separate durable maintenance intent.
+The shared AccountlessOfflineImageTransaction now serves staging and collection;
+RootRecordFile serves both bounded root public handoffs. Entry points stay thin.
+
+Collection verifies installed signed guest bytes/bootstrap/job/synthetic workspace
+entry before accepting a complete bound result. It saves the result and logs to
+the private journal before recording the exact removal plan. Receipts are16KiB
+maximum; logs64KiB and may be empty. It removes the temporary boot job first and
+never touches unlisted paths. Missing entries are accepted only after a removal
+plan is durable; changed entries and unexpected files stop recovery. Host receipt
+copies allow replay even after the guest receipt itself has been removed.
+
+Review found an attachment-recovery issue: mounted st_dev is not a persistent
+volume identity. The plan now binds the verified APFS Data UUID, while current
+same-device descriptor IO stays enforced; persisted inode/size/timestamps/hash/
+mode and directory ownership remain strict across device renumbering. Synthetic
+regression models the prior attachment number and proves completion, with wrong
+UUID and changed/replaced/linked-entry rejection controls.
+
+Removal, attachment completion and detached image cleanup are separate records.
+Abort settles owned attachments without mounting for Data IO and cannot create
+installation evidence. Root final verification reacquires ordinary EX and binds
+final snapshot/stopped/no-openers before public collection publication. GUI
+publication rechecks production runtime SHA and exact permanent boot claim,
+identity/session, storage, installed source evidence and guest release. Result
+installedAwaitingQualification is installed:true,qualified:false. Qualification
+must still verify a released lease before ready-template publication.
+
+Validation (primary /private/tmp/darkbloom-sandbox-completion-evidence):
+- collection-affected-tests.log:25pass before the final claim guard and remount fix.
+- collection-publication-tests.log:13pass including runtime/claim denial before
+  publication and a matching positive publication control.
+- collection-recovery-tests.log:27pass including remount/wrong-volume controls.
+- collection-full-tests.log:639tests,7skips,0failures,131.717s; actual process exited0.
+- collection-cli-smoke.json:4pass actual binary help, both root-only commands
+  denied before IO for nonroot, and runtime override refusal for publication.
+- collection-docs-check.log:286filespass; git diff --check clean.
+
+No new native patch/build, VM boot, root collection proof, model/cache deletion,
+service/group/authority mutation or production change occurred in this segment.
+Prior root public-file IO was physically tested before its behavior-preserving
+extraction; physical collection with this new scope/receipt/removal path remains
+unverified. Full pipeline and two-VM acceptance remain required.
+
+Live SSH df confirmed50GiB available on the test Mac and encrypted test volume.
+The reservation command uses SandboxHostInspector's default300GiB proof floor;
+inspect actual volumeAvailableCapacityForImportantUsage before assuming cleanup
+of old fixtures is sufficient. Do not lower safety/admission policy simply to fit
+a test. Task-owned old VMs report91GiB allocated (possible clone double-count),
+with metadata and stopped-state inventory from the preceding segment; no opener/
+root authority/deletion proof exists yet. Keep the GUI diagnostic VM, encrypted
+volume, permanent authority inode and restore IPSW. Go-cache deletion is still
+unapproved. The already pushed handoff058cb5557 passes CI34844573163 and
+integration34844573303. Keep PR996 draft and acquire fresh CI after this push.

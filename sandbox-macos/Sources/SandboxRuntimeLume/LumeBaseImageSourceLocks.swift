@@ -8,7 +8,7 @@ import SandboxRuntime
 /// process-owner locks. This does not mount an image or prove no open image IO.
 /// Root's caller additionally holds machine EX; tests use an owned namespace.
 final class LumeBaseImageSourceLocks {
-    enum SnapshotPolicy { case unchanged, rootMaintenanceRecovery }
+    enum SnapshotPolicy { case unchanged, rootMaintenanceRecovery, captureClaimedInstaller }
     private struct Held {
         let directory: LumePrivilegedSourceDirectory
         let name: String
@@ -21,7 +21,8 @@ final class LumeBaseImageSourceLocks {
     private var imageDescriptor: Int32 = -1
     private let reservationData: Data
     private let reservation: LumeReservedCandidateRecord
-    let initialDisk: LumeCandidateDiskIdentity
+    private let bootClaim: LumeInstallerBootRequest?
+    private(set) var initialDisk: LumeCandidateDiskIdentity
     var imageURL: URL { directory.path.appendingPathComponent("disk.img") }
     var retainedImageDescriptor: Int32 { imageDescriptor }
     var directoryDescriptor: Int32 { directory.descriptor }
@@ -30,7 +31,7 @@ final class LumeBaseImageSourceLocks {
 
     init(storage: URL, name: String, ownerUID: uid_t, ownerGID: gid_t,
          reservationData: Data, expectedDisk: LumeCandidateDiskIdentity,
-         snapshotPolicy: SnapshotPolicy = .unchanged) throws {
+         snapshotPolicy: SnapshotPolicy = .unchanged, bootClaim: LumeInstallerBootRequest? = nil) throws {
         guard SandboxVirtualMachineNamePolicy.isValid(name), reservationData.count <= 16 * 1024,
               expectedDisk.isValid else { throw failure() }
         try SandboxJSONIntegrity.requireNoDuplicateKeys(reservationData)
@@ -43,6 +44,10 @@ final class LumeBaseImageSourceLocks {
               reservation.bootstrapAttemptID != reservation.source.installationID,
               reservation.disk.isValid, reservation.disk.device == expectedDisk.device,
               reservation.disk.inode == expectedDisk.inode, reservation.disk.size == expectedDisk.size else { throw failure() }
+        if let bootClaim {
+            guard bootClaim.reservationData == reservationData, try bootClaim.validate() == reservation else { throw failure() }
+        }
+        self.bootClaim = bootClaim
         self.reservation = reservation; self.reservationData = reservationData; initialDisk = expectedDisk
         self.storage = try LumePrivilegedSourceDirectory(path: storage, ownerUID: ownerUID, ownerGID: ownerGID)
         directory = try self.storage.child(name)
@@ -57,6 +62,13 @@ final class LumeBaseImageSourceLocks {
             switch snapshotPolicy {
             case .unchanged: try validateUnchanged()
             case .rootMaintenanceRecovery: try validateIdentity()
+            case .captureClaimedInstaller:
+                guard bootClaim != nil else { throw failure() }
+                try validateIdentity()
+                // Capture only while all native/source locks and the enclosing
+                // root EX lease are held. Recovery reuses this journaled value.
+                initialDisk = try diskIdentity()
+                try validateUnchanged()
             }
         } catch {
             closeOwnedFiles()
@@ -79,10 +91,13 @@ final class LumeBaseImageSourceLocks {
             guard info.st_mode & 0o600 == 0o600 else { throw failure() }
         }
         for name in [".provisioning", "resize.lock.json", "disk.img.pre-resize", "config.json.pre-resize",
-                     SandboxGuestTemplateReceipt.fileName, ".darkbloom-guest", LumeInstalledCandidateCheckpoint.fileName,
-                     LumeInstallerBootClaim.fileName] {
+                     SandboxGuestTemplateReceipt.fileName, ".darkbloom-guest", LumeInstalledCandidateCheckpoint.fileName] {
             try directory.requireAbsent(name)
         }
+        if let bootClaim {
+            guard try directory.readRecord(LumeInstallerBootClaim.fileName, maximumBytes: 32 * 1024)
+                == LumeInstallerBootClaim.encoded(bootClaim) else { throw failure() }
+        } else { try directory.requireAbsent(LumeInstallerBootClaim.fileName) }
         guard try directory.readRecord(LumeInstalledCandidateCheckpoint.reservationFileName) == reservationData else { throw failure() }
         let (source, resources) = try LumeVirtualMachineOwnership.inspectRawBaseMarker(
             directory.readRecord(LumeVirtualMachineOwnership.fileName), name: reservation.source.name)

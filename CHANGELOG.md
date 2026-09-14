@@ -23,6 +23,7 @@ coordinator deployment.
 
 ## Unreleased — sandbox private-alpha control
 
+- Add accountless base preparation through controlled staging, one-use installer boot, root receipt collection and resumable temporary-file cleanup. Publish an installed checkpoint only after exact source/runtime/boot bindings and detached cleanup pass; native qualification and physical acceptance remain separate release gates.
 - Require exclusive host ownership for managed raw Apple restores, retain it in the installer process through cancellation or broker death, and preserve files when native VM stop is unproven. This requires a matching rebuilt and signed Lume runtime.
 - Resume stopped workspaces with durable start operations and CLI support; rotate fencing authority without changing capacity, lease expiry or prior command idempotency. Cancel blocked host writes on disconnect and require consistent proof before clearing pending command cleanup.
 

@@ -31,7 +31,7 @@ enum LumeInstallerBootClaim {
         }
     }
 
-    private static func encoded(_ request: LumeInstallerBootRequest) throws -> Data {
+    static func encoded(_ request: LumeInstallerBootRequest) throws -> Data {
         let candidate = try request.validate()
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return try encoder.encode(Record(schemaVersion: 1, bootstrapAttemptID: candidate.bootstrapAttemptID,

@@ -51,11 +51,11 @@ func TestControllerWarmsWhenWarmPoolIsForeignBlocked(t *testing.T) {
 
 	// Seed the occupancy baseline, then a SMALL rise so a modest ramp is measured.
 	t0 := time.Now()
-	reg.warmPool.tick(t0)
+	reg.warmPool.Tick(t0)
 	warmProviders[0].mu.Lock()
 	warmProviders[0].BackendCapacity.Slots[0].NumRunning = 1
 	warmProviders[0].mu.Unlock()
-	reg.warmPool.tick(t0.Add(cfg.Interval))
+	reg.warmPool.Tick(t0.Add(cfg.Interval))
 
 	// Now every warm box's capacity is consumed by a DIFFERENT resident model.
 	// This model's slots report zero load, so that traffic is invisible in
@@ -70,7 +70,7 @@ func TestControllerWarmsWhenWarmPoolIsForeignBlocked(t *testing.T) {
 		p.mu.Unlock()
 	}
 	*sent = nil
-	snaps := reg.warmPool.tick(t0.Add(2 * cfg.Interval))
+	snaps := reg.warmPool.Tick(t0.Add(2 * cfg.Interval))
 
 	var snap *WarmPoolSnapshot
 	for i := range snaps {
@@ -124,13 +124,13 @@ func TestControllerWarmsProactivelyWithoutPressure(t *testing.T) {
 	// gates on half the interval so coalesced hot-path triggers cannot fragment
 	// one interval's growth into understated samples.
 	t0 := time.Now()
-	reg.warmPool.tick(t0)
+	reg.warmPool.Tick(t0)
 	warm.mu.Lock()
 	warm.BackendCapacity.Slots[0].Model = model
 	warm.BackendCapacity.Slots[0].State = "running"
 	warm.BackendCapacity.Slots[0].NumRunning = 20
 	warm.mu.Unlock()
-	snaps := reg.warmPool.tick(t0.Add(cfg.Interval))
+	snaps := reg.warmPool.Tick(t0.Add(cfg.Interval))
 
 	var snap *WarmPoolSnapshot
 	for i := range snaps {

@@ -21,7 +21,7 @@ import (
 //
 // This computes the ceiling per provider+model from the model's batch-
 // degradation curve instead — the same rate(B) = solo/(1+k·B) model the
-// warm-pool target math uses (qualityConcurrency in warm_pool_target.go) — so
+// warm-pool target math uses (throughput.QualityConcurrency in throughput/batch.go) — so
 // admission and capacity planning cannot drift. Slow models get a tight cap;
 // fast / over-provisioned models keep the flat fallback (their quality batch is
 // already at or above it). The cap is computed from the provider's STATIC

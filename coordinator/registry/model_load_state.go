@@ -76,3 +76,9 @@ func (r *Registry) backoffPendingModelLoad(providerID, modelID string, backoff t
 	defer r.mu.Unlock()
 	r.modelLoads.Backoff(providerID, modelID, backoff)
 }
+
+func (r *Registry) pendingModelLoadCount(now time.Time) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.modelLoads.Count(now)
+}

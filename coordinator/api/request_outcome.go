@@ -67,7 +67,7 @@ func (s *Server) observeRequestOutcome(next http.HandlerFunc) http.HandlerFunc {
 		o := &requestOutcome{sink: s.requestOutcomes, finalized: make(map[string]struct{}), record: store.RequestOutcomeRecord{CoordRequestID: meta.coordID, SchemaVersion: store.RequestOutcomeSchemaVersion, ReceivedAt: meta.start, Endpoint: r.URL.Path, RawStage: "drain", Termination: "in_progress", ResponseProgress: "unknown", ProviderOutcome: "no_terminal", ResponseTerminal: "unknown", Attempts: []store.RequestAttemptOutcome{}}}
 		r = r.WithContext(context.WithValue(r.Context(), requestOutcomeKey{}, o))
 		ow := &outcomeWriter{ResponseWriter: w, outcome: o}
-		s.requestOutcomes.received.Add(1)
+		s.requestOutcomes.MarkReceived()
 		s.ddIncr("request_outcomes.received", []string{"endpoint:" + r.URL.Path})
 		o.mu.Lock()
 		o.publishLocked()
@@ -98,7 +98,7 @@ func (o *requestOutcome) publishLocked() {
 	o.record.UpdatedAt = time.Now()
 	r := o.record
 	r.Attempts = append([]store.RequestAttemptOutcome{}, r.Attempts...)
-	o.sink.submit(r)
+	o.sink.Submit(r)
 }
 
 func (o *requestOutcome) attemptFinalized(rp *registry.RequestProfile, ap *registry.AttemptProfile) {

@@ -88,7 +88,7 @@ func TestRequestOutcomeFailedAndShortWrites(t *testing.T) {
 			st := store.NewMemory(store.Config{})
 			srv := &Server{store: st}
 			srv.requestOutcomes = newRequestOutcomeSink(srv, 16)
-			defer srv.requestOutcomes.close()
+			defer srv.requestOutcomes.Close()
 			handler := srv.observeRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
 				rp := srv.newRequestProfile(r, "m", "m", false)
 				ap := rp.NewAttempt("a", 0, "")
@@ -111,7 +111,7 @@ func TestRequestOutcomeLateProviderCompletionPreservesDeparture(t *testing.T) {
 	st := store.NewMemory(store.Config{})
 	srv := &Server{store: st}
 	srv.requestOutcomes = newRequestOutcomeSink(srv, 16)
-	defer srv.requestOutcomes.close()
+	defer srv.requestOutcomes.Close()
 	var ap *registry.AttemptProfile
 	ctx, cancel := context.WithCancel(context.Background())
 	handler := srv.observeRequestOutcome(func(w http.ResponseWriter, r *http.Request) {
@@ -140,7 +140,7 @@ func TestRequestOutcomeSealedWriteFailure(t *testing.T) {
 				st := store.NewMemory(store.Config{})
 				srv := &Server{store: st}
 				srv.requestOutcomes = newRequestOutcomeSink(srv, 16)
-				defer srv.requestOutcomes.close()
+				defer srv.requestOutcomes.Close()
 				coord, err := e2e.DeriveCoordinatorKey(senderTestMnemonic)
 				if err != nil {
 					t.Fatal(err)
@@ -195,7 +195,7 @@ func TestRequestOutcomeContentSuccessSurvivesLaterWriteFailure(t *testing.T) {
 			st := store.NewMemory(store.Config{})
 			srv := &Server{store: st}
 			srv.requestOutcomes = newRequestOutcomeSink(srv, 16)
-			defer srv.requestOutcomes.close()
+			defer srv.requestOutcomes.Close()
 			write := func(w http.ResponseWriter, r *http.Request) {
 				rp := srv.newRequestProfile(r, "m", "m", true)
 				ap := rp.NewAttempt("two-write-attempt", 0, "")

@@ -41,7 +41,8 @@ func (s *Server) handleAdminRequestOutcomes(w http.ResponseWriter, r *http.Reque
 	}
 	health := map[string]any{"available": false}
 	if q := s.requestOutcomes; q != nil {
-		health = map[string]any{"available": true, "received": q.received.Load(), "snapshots_written": q.written.Load(), "snapshots_dropped": q.dropped.Load(), "snapshots_write_failed": q.failed.Load(), "snapshots_queued": len(q.ch)}
+		stats := q.Stats()
+		health = map[string]any{"available": true, "received": stats.Received, "snapshots_written": stats.Written, "snapshots_dropped": stats.Dropped, "snapshots_write_failed": stats.Failed, "snapshots_queued": stats.Queued}
 	}
 	writeJSON(w, 200, map[string]any{"schema_version": store.RequestOutcomeSchemaVersion, "data": rows, "count": len(rows), "since": since, "until": until, "possibly_truncated": len(rows) == limit, "coverage": "observed_received_cohort", "persistence": "unsampled_best_effort", "process_counters": health})
 }

@@ -1,6 +1,6 @@
 # Build
 
-> Last updated: 2026-09-14 · commit `1edce05ca`
+> Last updated: 2026-09-14 · commit `39bb12da8`
 
 How to build every component of Darkbloom from a fresh clone: the Go
 coordinator, the Rust prompt-contract sidecar, the Swift provider CLI (with its
@@ -87,6 +87,10 @@ Continue with the per-component steps when you need one piece or want to
 understand what `make` runs.
 
 ### 3. Coordinator (Go)
+
+The normal Go build includes the telemetry queue packages under
+`coordinator/telemetry/`. Their API adapters link them into the same coordinator
+binary; no separate worker executable or build flag is required.
 
 The owned two-host Go fixture embeds `e2e/testbed/provider_host.py`; rebuild
 its test binary after helper or lifecycle changes. The CPU-only

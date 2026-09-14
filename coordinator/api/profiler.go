@@ -120,7 +120,7 @@ func (p *profiler) close() {
 	if p == nil || p.sink == nil {
 		return
 	}
-	p.sink.close()
+	p.sink.Close()
 }
 
 // profilerEnabled reports whether profile records should be created.

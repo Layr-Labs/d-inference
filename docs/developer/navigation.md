@@ -1,6 +1,6 @@
 # Find and organize code
 
-> Last updated: 2026-09-13 · commit `2b6a10301`
+> Last updated: 2026-09-13 · commit `a3493b5ac`
 
 Use this guide to find the code behind a behavior and place new files beside
 their owners. Start from the subsystem, then search for the request, command,
@@ -18,7 +18,7 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Behavior | Start here |
 |---|---|
 | API request handling, auth, attestation, dispatch | `coordinator/api/`; server construction in `server.go` (`NewServer`) |
-| In-process metrics and routing telemetry writes | `coordinator/telemetry/metrics/`, `coordinator/telemetry/routequeue/`; API endpoint instrumentation stays at the request boundary |
+| Metrics and asynchronous observation writes | `coordinator/telemetry/metrics/`, `coordinator/telemetry/routequeue/`, `coordinator/telemetry/profilequeue/`, `coordinator/telemetry/outcomequeue/`; API adapters supply request context and persistence dependencies |
 | Provider selection, admission, queueing | `coordinator/registry/`; request eligibility in `request_traits.go` (`providerEligibleForTraitsLocked`) |
 | Billing and durable state | `coordinator/billing/`, `coordinator/payments/`, `coordinator/store/` |
 | Provider inference, downloads, security, local serving | `provider-swift/Sources/ProviderCore/`; entrypoints in `provider-swift/Sources/darkbloom/` |

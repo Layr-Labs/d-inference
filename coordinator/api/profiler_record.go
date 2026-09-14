@@ -343,5 +343,5 @@ func (s *Server) finalizeAttemptProfile(rp *registry.RequestProfile, ap *registr
 	// Flattening and sampling happen on the sink worker (profileSink.build), so
 	// the finalizing goroutine — possibly the provider WS read loop — only
 	// performs one non-blocking channel send here.
-	s.profiler.sink.submit(rp, ap)
+	s.profiler.sink.Submit(rp, ap)
 }

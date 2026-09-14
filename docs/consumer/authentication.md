@@ -6,7 +6,7 @@ How to obtain and manage each credential the coordinator accepts, and which rout
 
 ## Prerequisites
 
-- An email address. Email is the only Privy login method the console enables (`loginMethods: ["email"]`, `console-ui/src/components/providers/PrivyRealProvider.tsx`).
+- An email address. Email is the only Privy login method the console enables (`loginMethods: ["email"]`, `console-ui/src/components/app-providers/PrivyRealProvider.tsx`).
 - For step 5, a Mac with the provider CLI installed ([`../provider/installation.md`](../provider/installation.md)).
 
 ## Steps

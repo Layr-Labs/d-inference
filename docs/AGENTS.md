@@ -1,6 +1,6 @@
 # Darkbloom docs — how this documentation is organised and maintained
 
-> Last updated: 2026-09-14 · commit `809a1901b`
+> Last updated: 2026-09-14 · commit `93daffe4b`
 
 Rules for anyone — human or agent — who reads, writes, or checks a file under
 `docs/`. The code is the source of truth; a doc that disagrees with the code is
@@ -104,8 +104,8 @@ sentence lede (principle 3). Then, by type:
 
 ## 4. Citing code
 
-- Cite `path/to/file.ext` plus the symbol: `coordinator/registry/scheduler.go`
-  (`selectCandidate`). Both are grep-able and the path is verified by
+- Cite `path/to/file.ext` plus the symbol: `coordinator/registry/candidate_selection.go`
+  (`selectRoutingCandidate`). Both are grep-able and the path is verified by
   `docs-check`.
 - **No line numbers** outside `reports/` and `releases/`. Lines rot within
   days; symbols survive refactors and are searchable.

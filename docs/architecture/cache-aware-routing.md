@@ -1,6 +1,6 @@
 # Exact Prefix Cache Routing
 
-> Last updated: 2026-09-14 · commit `809a1901b`
+> Last updated: 2026-09-14 · commit `303ed6d30`
 
 Exact prefix cache routing lets the scheduler prefer a provider that has
 *proven* it holds a reusable exact token prefix in an advertised resident
@@ -123,7 +123,7 @@ concrete model build, aggregate hash, prompt contract, and block-hash contract
 remote scope from `prompt_cache_key`, `user`, or any other caller-controlled
 body field. The only `prompt_cache_key` the coordinator ever writes is a
 coordinator-authored cache-bust key inserted into the sealed body for
-protocol-0 providers (`bodyForCacheAttempt`, `coordinator/api/consumer.go`;
+protocol-0 providers (`bodyForCacheAttempt`, `coordinator/inference/dispatch/provider_body.go`;
 `LegacyCacheBustKeyLength`, `coordinator/registry/cache_receipts.go`).
 
 Coordinator route keys are separate domain-separated HMACs over the opaque scope,
@@ -168,7 +168,7 @@ first accepted dequeue restores ordinary calibration eligibility; an already
 accepted cache write remains excluded. Terminal requests retain the existing
 bounded grace period for authenticated durable-ready receipts while revoking
 queued dispatch (`State.Terminal`, `coordinator/registry/cacheattempt/state.go`;
-`coordinator/api/provider_wire.go`). `Generation.Revoke`
+`coordinator/inference/dispatch/provider_wire.go`). `Generation.Revoke`
 (`coordinator/registry/cacheattempt/generation.go`) permanently invalidates a
 configuration generation without retaining its receipt maps.
 
@@ -205,7 +205,7 @@ field and omit the echo: registration continues, local reuse can work, and this
 format teaches no coordinator holder. Neither field changes the signed
 attestation or status canonical payload (`coordinator/protocol/attestation.go`,
 `AttestationResponseMessage`;
-`coordinator/api/provider_wire.go`; `coordinator/attestation/attestation.go`,
+`coordinator/inference/dispatch/provider_wire.go`; `coordinator/attestation/attestation.go`,
 `StatusCanonicalInput`).
 
 Resident-ready evidence also carries at most 16 actually published input
@@ -341,10 +341,10 @@ provider's evidence from the common bucket.
 All ordinary trust, model, trait, memory, token-budget, queue, cooldown, health,
 and time-to-first-token gates remain mandatory
 ([`routing.md`](routing.md#eligibility-gates-and-the-gatereason-vocabulary)).
-`applyCacheRoutingCost` (`coordinator/registry/scheduler.go`) passes the longest verified
+`applyCacheRoutingCost` (`coordinator/registry/candidate_cost.go`) passes the longest verified
 executable endpoint to `applyCacheHintLocked`
 (`coordinator/registry/cache_service_cost.go`). The hint is priced with the
-candidate's own `resolvePrefillTPS` rate, exactly as its baseline prefill cost is.
+candidate's own `ResolvePrefillTPS` rate (`coordinator/registry/routingcost/throughput.go`), exactly as its baseline prefill cost is.
 The provider currently chooses its longest locally usable endpoint; no request
 field steers a shorter checkpoint, even if its recorded stage cost is lower.
 Complete-checkpoint SSD takes precedence over resident memory. A complete SSD
@@ -416,7 +416,7 @@ No-hint requests have an empty tier and zero estimated saving. The existing
 `exact_cache_estimated_ttft_saved_ms` histogram remains **positive benefit
 only**: `PendingRequest.CacheSelectionSelected` and its savings fields are set
 only when the chosen candidate has a positive `CacheDiscountMs`
-(`coordinator/registry/scheduler.go`; `emitExactCacheEstimatedTTFTSaved`,
+(`coordinator/registry/reservation_commit.go`, `commitProviderReservation`; `emitExactCacheEstimatedTTFTSaved`,
 `coordinator/api/exact_cache_telemetry.go`). It is not a histogram of signed net
 performance. Neither observation is measured request latency.
 
@@ -444,8 +444,8 @@ better choice, while an only-available expensive holder remains eligible
 
 Cache-participating attempts (`PendingRequest.CacheRoutingParticipates`) are
 excluded from TTFT calibration (`observeTTFTCalibration`,
-`coordinator/api/ttft_calibration.go`) and from the first-content reputation sample
-(`coordinator/api/dispatch.go`). Terminal cache metrics use bounded categorical
+`coordinator/inference/dispatch/calibration.go`) and from the first-content reputation sample
+(`coordinator/inference/dispatch/commit.go`). Terminal cache metrics use bounded categorical
 tags only.
 
 `GET /v1/cache/status` (`handleExactCacheStatus`,
@@ -673,7 +673,7 @@ back are operator procedures, kept in the runbook
    `cacheSelectionTerminalTags`, `coordinator/api/provider.go`).
 8. **Cache-participating attempts never train TTFT calibration or
    first-content reputation** (`observeTTFTCalibration`,
-   `coordinator/api/ttft_calibration.go`; `coordinator/api/dispatch.go`).
+   `coordinator/inference/dispatch/calibration.go`; `coordinator/inference/dispatch/commit.go`).
 9. **Mode `on` without a valid master key does not start**
    (`CacheRoutingConfig.Check`, `coordinator/registry/config.go`).
 
@@ -723,10 +723,10 @@ and `coordinator/api/cache_model_telemetry.go`.
 | V2 receipt transaction and proof fences | `coordinator/registry/cachedirectory/lookup.go`, `coordinator/registry/cachedirectory/ready.go`, `coordinator/registry/cachedirectory/proof.go` — `Directory.ApplyLookup`, `Directory.ApplyReady`, `Directory.RejectCapability` |
 | Live receipt prerequisites, quarantine and legacy cache-bust key | `coordinator/registry/cache_receipts.go`, `coordinator/registry/cache_receipts_v2.go` — `ApplyPrefixCacheLookupV2`, `ApplyPrefixCacheReadyV2`, `disablePrefixCacheV2Model` |
 | Status vocabularies and sanitization | `coordinator/registry/cache_eligibility.go`, `coordinator/registry/cache_status.go`, `coordinator/registry/cache_snapshot.go` |
-| Discount in the cost model | `coordinator/registry/scheduler.go` — `applyCacheRoutingCost`, `SelectionCacheTiebreak` |
-| Plan construction and sealed body | `coordinator/api/prompt_artifacts.go` — `planCacheRoute`; `coordinator/api/consumer.go` — `bodyForCacheAttempt` |
+| Discount in the cost model | `coordinator/registry/candidate_cost.go` — `applyCacheRoutingCost`; `coordinator/registry/candidate_selection.go` — `selectRoutingCandidateWithAffinity`; `coordinator/registry/gate_reason.go` — `SelectionCacheTiebreak` (historical vocabulary) |
+| Plan construction and sealed body | `coordinator/api/prompt_artifacts.go` — `planCacheRoute`; `coordinator/inference/dispatch/provider_body.go` — `bodyForCacheAttempt` |
 | Status endpoint and gauges | `coordinator/api/exact_cache_status.go`, `coordinator/api/exact_cache_metrics.go` |
-| Terminal tags, calibration/reputation exclusion | `coordinator/api/provider.go` — `cacheSelectionTerminalTags`; `coordinator/api/ttft_calibration.go` — `observeTTFTCalibration`; `coordinator/api/dispatch.go` |
+| Terminal tags, calibration/reputation exclusion | `coordinator/api/provider.go` — `cacheSelectionTerminalTags`; `coordinator/inference/dispatch/calibration.go` — `observeTTFTCalibration`; `coordinator/inference/dispatch/commit.go` |
 | Sidecar | `coordinator/promptcontract/` — `provisioner.go` (`Counts`) |
 | Provider-side cache | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/Inference/PrefixCache/PrefixCachePolicy.swift` |
 

@@ -3,6 +3,7 @@ package api
 import (
 	"math"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -83,7 +84,7 @@ func counterDelta(prev, cur uint64) int64 {
 // strings must never mint cardinality).
 func mlxTelemetryTags(provider *registry.Provider) []string {
 	return []string{
-		"chip_family:" + sanitizeChipFamilyTag(providerChipFamily(provider)),
+		"chip_family:" + sanitizeChipFamilyTag(dispatch.ProviderChipFamily(provider)),
 		"provider_version:" + providerVersionTag(provider),
 	}
 }

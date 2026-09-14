@@ -18,7 +18,8 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Behavior | Start here |
 |---|---|
 | Process startup, configuration binding and shutdown | `coordinator/cmd/coordinator/main.go` (`main`); follow each named setup function to its subsystem file in the same command package. [Startup source map](../architecture/components/coordinator.md#startup-sequence) |
-| API request handling, auth, attestation, dispatch | `coordinator/api/`; server construction in `server.go` (`NewServer`) |
+| API request handling, auth and attestation | `coordinator/api/`; server construction in `server.go` (`NewServer`) |
+| Inference dispatch, queue handoff, hedging and failover | `coordinator/inference/dispatch/` (`Controller.Run`); current-service and observation bindings in `coordinator/api/inference_dispatch.go` |
 | HTTP response caching and refresh coalescing | `coordinator/api/readcache/`; catalog fill fences in `generation.go` (`SetIfCurrent`, `SetValueIfCurrent`) |
 | Chat/Responses/Completions/Messages formatting and relays | `coordinator/inference/response/` (`Writer`, `ChatSink`, `EndpointSink`); lifecycle and accepted-write binding in `coordinator/api/response_writer.go` |
 | Attempt cancellation, terminal correlation and provider feedback | `coordinator/inference/attempt/` (`Service`, private `Tracker` state); `coordinator/api/inference_attempt.go` binds current services and the shared tracker |
@@ -50,6 +51,8 @@ Build and test prerequisites are in [build.md](build.md) and [test.md](test.md).
 | Identity fault histories and session migration | `coordinator/registry/faultstate/`; registry bindings in `coordinator/registry/fault_binding.go` and `coordinator/registry/fault_capacity.go` |
 | MicroMDM device evidence | `coordinator/mdm/doc.go` maps the exchange; `coordinator/mdm/command_policy.go` (`assertReadOnlyCommand`) restricts outbound requests; `coordinator/mdm/webhook.go` (`HandleWebhook`) correlates and delivers replies. |
 | Provider wire records and decoding | `coordinator/protocol/doc.go` maps message families; `coordinator/protocol/messages.go` (`DecodeProviderMessage`) owns dispatch by `type`; [protocol reference](../reference/protocol-messages.md#source-files) maps records to files. |
+| Routing latency and reservation | `coordinator/registry/routingcost/` owns shared calibration and startup tuning; `coordinator/registry/reservation.go`, `coordinator/registry/reservation_commit.go`, `coordinator/registry/routing_scan.go` retain live registry transactions; `coordinator/registry/candidate_cost.go` composes cost over the same snapshot. |
+| Retained dispatch plans and capacity probes | `coordinator/registry/dispatchplan/plan.go` (`Plan`), `coordinator/registry/dispatchplan/quotes.go` (`Probes`); private wrapper in `coordinator/registry/dispatch_plan.go`; live identity/admission in `coordinator/registry/plan_reservation.go`, refresh in `coordinator/registry/plan_refresh.go` and transport in `coordinator/registry/capacity_quotes.go` |
 | Queue storage and throughput | `coordinator/registry/requestqueue/`, `coordinator/registry/throughput/`; live provider state and reservation orchestration stay in `coordinator/registry/` |
 | Billing, pricing, referrals and payout endpoints | `coordinator/api/billing/` (`Controller`); route and shared-dependency binding in `coordinator/api/billing_controller.go` |
 | Model publishing, discovery and aliases | `coordinator/api/catalog/` (`Controller`); shared bindings in `coordinator/api/catalog_controller.go`; runtime publication stays in `server.go` (`SyncModelCatalog`) |
@@ -77,7 +80,7 @@ rg --files console-ui/src -g '*Auth*' -g '*auth*'
 Then find the implementation and its callers or tests:
 
 ```bash
-rg -n 'recordRequestOutcome|classifyOutcomeByCode' coordinator/api
+rg -n 'recordRequestOutcome|ClassifyOutcomeByCode' coordinator/api coordinator/inference/dispatch
 rg -n 'StatusCanonical' provider-swift/Sources provider-swift/Tests coordinator/attestation
 ```
 

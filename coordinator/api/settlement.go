@@ -3,6 +3,8 @@ package api
 import (
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/attempt"
+	"github.com/eigeninference/d-inference/coordinator/inference/dispatch"
 	"github.com/eigeninference/d-inference/coordinator/inference/settlement"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
@@ -45,9 +47,9 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 		// Defensive: a Server built without settlement.NewHolder still refunds
 		// rather than leaking the reservation.
 		if s.inferenceSettlement().Refund(pr, "no_terminal_after_cancel:"+pr.RequestID) {
-			s.updateInferenceRouteOutcomeForPending(pr, noTerminalAfterCancelOutcome(pr))
+			s.updateInferenceRouteOutcomeForPending(pr, attempt.NoTerminalAfterCancelOutcome(pr))
 			s.recordNoTerminalAfterCancel(pr.Model)
-			s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, "", phaseAfterCommit)
+			s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, "", dispatch.PhaseAfterCommit)
 		}
 		return
 	}
@@ -55,7 +57,7 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 		// Log only if this actually refunded — a request already settled by
 		// handleComplete leaves a dup here whose refund no-ops (FinalizeReservation).
 		if s.inferenceSettlement().Refund(expired, "no_terminal_after_cancel:"+expired.RequestID) {
-			s.updateInferenceRouteOutcomeForPending(expired, noTerminalAfterCancelOutcome(expired))
+			s.updateInferenceRouteOutcomeForPending(expired, attempt.NoTerminalAfterCancelOutcome(expired))
 			// Payout-gap edge: no provider terminal arrived within the grace, so the
 			// reservation is refunded and the provider is never paid. Make it visible.
 			s.recordNoTerminalAfterCancel(expired.Model)
@@ -64,7 +66,7 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 			// (provider-completed → handleComplete, provider-error →
 			// handleInferenceError, no-terminal → here). The serving provider is
 			// not in scope at grace expiry, so chip family is unknown.
-			s.emitClientGone(expired.Model, expired.EstimatedPromptTokens, "", phaseAfterCommit)
+			s.emitClientGone(expired.Model, expired.EstimatedPromptTokens, "", dispatch.PhaseAfterCommit)
 			s.logger.Warn("no terminal from provider after cancel — refunded reservation",
 				"request_id", expired.RequestID,
 			)

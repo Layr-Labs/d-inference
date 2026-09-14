@@ -5,13 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/eigeninference/d-inference/coordinator/inference/response"
-	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/inference/response"
+	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -244,9 +244,7 @@ func TestRequestOutcomeQueueAndMissingTerminal(t *testing.T) {
 					ap.CompleteHandler()
 					return
 				}
-				d := queueDispatchState(srv, "queued-model", rp, r, 50*time.Millisecond)
-				d.w = w
-				d.run()
+				srv.inferenceDispatch().Run(w, r, queuedDispatchRequest("queued-model", rp, 50*time.Millisecond))
 			})(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/completions", nil))
 			r := awaitRequestOutcomes(t, srv.store, 1)[0]
 			for _, a := range r.Attempts {

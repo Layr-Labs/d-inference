@@ -1,6 +1,6 @@
 # System overview — how a Darkbloom request works
 
-> Last updated: 2026-09-13 · commit `c3ff0df7e`
+> Last updated: 2026-09-14 · commit `303ed6d30`
 
 Darkbloom sells inference on other people's Apple Silicon Macs. A Go
 **coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an
@@ -93,13 +93,13 @@ sequenceDiagram
    the floor, runtime-verified, private-text capable, challenge verified within
    [`challengeFreshnessMaxAge`](routing.md#challenge-freshness) — then scores survivors with an
    estimated-completion-time cost model and reserves the cheapest
-   (`coordinator/registry/scheduler.go`). Every rejection has a name from a
+   (`coordinator/registry/reservation.go`, `ReserveProviderEx`). Every rejection has a name from a
    closed vocabulary (`coordinator/registry/gate_reason.go`).
    [`routing.md`](routing.md), [`scheduling.md`](scheduling.md).
 5. **Dispatch.** The request body is sealed with a per-request NaCl Box to the
    provider's attested X25519 key (`coordinator/internal/e2e/e2e.go`) and sent
    as `inference_request`. If the first content is late, a speculative second
-   dispatch starts at [`speculativeTimerRatio`](routing.md#hedged-speculative-dispatch)
+   dispatch starts at [`SpeculativeTimerRatio`](routing.md#hedged-speculative-dispatch)
    of the first-content deadline; the coordinator tries at most
    [`maxDispatchAttempts`](../reference/api-contracts.md#timeouts-and-constants)
    providers (`coordinator/api/consumer.go`). [`data-flow.md`](data-flow.md).
@@ -201,7 +201,7 @@ consumer routing to a provider it owns (self-route) pays nothing.
 | Provider WebSocket, registration, challenges | `coordinator/api/provider.go` |
 | Attestation verification | `coordinator/attestation/attestation.go` |
 | Eligibility gate | `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`) |
-| Cost model and reservation | `coordinator/registry/scheduler.go` |
+| Cost model and reservation | `coordinator/registry/candidate_cost.go` (`buildCandidateInto`), `coordinator/registry/routingcost/` (`Policy`), `coordinator/registry/reservation.go` (`ReserveProviderEx`) |
 | Per-request encryption | `coordinator/internal/e2e/e2e.go`; optional sender sealing `coordinator/api/sender_encryption.go` |
 | Pricing and ledger | `coordinator/payments/pricing.go`, `coordinator/billing/` |
 | Provider main loop | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` |

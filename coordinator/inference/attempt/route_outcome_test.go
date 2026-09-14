@@ -1,0 +1,188 @@
+package attempt
+
+import (
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
+func TestCommittedRouteOutcomeIsNonTerminal(t *testing.T) {
+	now := time.Now()
+	pr := &registry.PendingRequest{
+		RequestID: "req-commit",
+		Timing: &registry.RequestTiming{
+			ReceivedAt:   now.Add(-100 * time.Millisecond),
+			DispatchedAt: now.Add(-50 * time.Millisecond),
+		},
+	}
+	// A committed response delivers content: the held preamble stamps FirstChunkAt
+	// (dispatch_to_first_chunk_ms diagnostic) and the first content chunk stamps
+	// FirstContentAt (actual_ttft_ms). Both must flow onto the non-terminal commit
+	// outcome.
+	pr.MarkFirstChunkArrived()
+	pr.MarkFirstContentArrived()
+	out := CommittedRouteOutcome(pr)
+	if out.FinalStatus != "" {
+		t.Fatalf("FinalStatus = %q, want empty until provider terminal", out.FinalStatus)
+	}
+	if out.ActualTTFTMs == 0 || out.DispatchToFirstChunkMs == 0 {
+		t.Fatalf("commit outcome should carry content (actual_ttft_ms) + preamble (dispatch_to_first_chunk_ms): %+v", out)
+	}
+}
+
+func TestPostCommitProviderDisconnectOutcome(t *testing.T) {
+	pr := &registry.PendingRequest{RequestID: "req-disconnect"}
+	out := PostCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
+		Error:            "provider disconnected",
+		StatusCode:       502,
+		CoordinatorCause: protocol.CoordinatorCauseProviderDisconnected,
+	})
+	if out.FinalStatus != "partial_success" {
+		t.Fatalf("FinalStatus = %q, want partial_success", out.FinalStatus)
+	}
+	if out.ErrorClass != "provider_disconnect_after_commit" {
+		t.Fatalf("ErrorClass = %q, want provider_disconnect_after_commit", out.ErrorClass)
+	}
+	if !out.AdmittedButFailed {
+		t.Fatal("provider disconnect after commit should still mark admitted_but_failed")
+	}
+}
+
+func TestPreCommitProviderDisconnectOutcome(t *testing.T) {
+	pr := &registry.PendingRequest{RequestID: "req-disconnect-pre"}
+	out := PreCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
+		Error:            "provider disconnected",
+		StatusCode:       502,
+		CoordinatorCause: protocol.CoordinatorCauseProviderDisconnected,
+	})
+	if out.FinalStatus != "error" {
+		t.Fatalf("FinalStatus = %q, want error", out.FinalStatus)
+	}
+	if out.ErrorClass != "provider_disconnect_pre_commit" {
+		t.Fatalf("ErrorClass = %q, want provider_disconnect_pre_commit", out.ErrorClass)
+	}
+}
+
+func TestInferenceErrorReasonPrecedenceAndDerivation(t *testing.T) {
+	pr := &registry.PendingRequest{RequestID: "req-reason"}
+
+	providerReason := PreCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
+		Error:       "token_budget_exhausted: request queue full",
+		StatusCode:  http.StatusInternalServerError,
+		ErrorReason: "jinja_channel_tags",
+	})
+	if providerReason.ErrorReason != "jinja_channel_tags" {
+		t.Fatalf("provider-supplied reason should win, got %+v", providerReason)
+	}
+
+	derivedTokenBudget := PreCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
+		Error:       "token_budget_exhausted: request queue full",
+		StatusCode:  http.StatusServiceUnavailable,
+		FailureCode: protocol.FailureCodeCapacity,
+		ErrorReason: ErrorReasonTokenBudgetExhaust,
+	})
+	if derivedTokenBudget.ErrorReason != "token_budget_exhausted" {
+		t.Fatalf("token-budget reason = %q, want token_budget_exhausted", derivedTokenBudget.ErrorReason)
+	}
+
+	queueTimeout := PendingRouteOutcome(pr, "timeout", "queue_timeout", http.StatusTooManyRequests)
+	if queueTimeout.ErrorReason != "capacity_timeout" {
+		t.Fatalf("queue timeout reason = %q, want capacity_timeout", queueTimeout.ErrorReason)
+	}
+
+	clientGone := PendingRouteOutcome(pr, "cancelled", "client_gone", 0)
+	if clientGone.ErrorReason != "cancelled" {
+		t.Fatalf("client gone reason = %q, want cancelled", clientGone.ErrorReason)
+	}
+
+	unknown := RouteOutcome("error", "unclassified", http.StatusTeapot)
+	if unknown.ErrorReason != "unknown" {
+		t.Fatalf("unknown fallback reason = %q, want unknown", unknown.ErrorReason)
+	}
+
+	invalidProviderReason := PreCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
+		Error:       "raw provider stack trace should not persist",
+		StatusCode:  http.StatusInternalServerError,
+		ErrorReason: "raw provider stack trace should not persist",
+	})
+	if invalidProviderReason.ErrorReason != ErrorReasonProviderError {
+		t.Fatalf("invalid provider reason = %q, want bounded provider_error", invalidProviderReason.ErrorReason)
+	}
+}
+
+func TestPostCommitTimeoutAndNoTerminalArePartialSuccess(t *testing.T) {
+	pr := &registry.PendingRequest{RequestID: "req-partial"}
+	if out := PostCommitStreamTimeoutOutcome(pr); out.FinalStatus != "partial_success" || out.ErrorClass != "stream_timeout_after_commit" {
+		t.Fatalf("stream timeout outcome = %+v", out)
+	}
+	if out := NoTerminalAfterCancelOutcome(pr); out.FinalStatus != "partial_success" || out.ErrorClass != "no_terminal_after_cancel" {
+		t.Fatalf("no-terminal outcome = %+v", out)
+	}
+}
+
+func TestSpeculativeLoserOutcome(t *testing.T) {
+	pr := &registry.PendingRequest{RequestID: "req-loser"}
+	pr.UsedBackup.Store(true)
+	out := SpeculativeLoserOutcome(pr)
+	if out.FinalStatus != "cancelled" {
+		t.Fatalf("FinalStatus = %q, want cancelled", out.FinalStatus)
+	}
+	if out.ErrorClass != "speculative_loser" {
+		t.Fatalf("ErrorClass = %q, want speculative_loser", out.ErrorClass)
+	}
+	if !out.UsedBackup {
+		t.Fatal("speculative loser outcome should preserve used_backup")
+	}
+	if out.BackupWon {
+		t.Fatal("speculative loser outcome must not set backup_won")
+	}
+}
+
+func TestSpeculativeOutcomeFlagsSurviveCompletionBeforeWinnerSelection(t *testing.T) {
+	for _, completionFirst := range []bool{true, false} {
+		name := "commit_before_delayed_completion"
+		if completionFirst {
+			name = "completion_before_commit"
+		}
+		t.Run(name, func(t *testing.T) {
+			st := store.NewMemory(store.Config{})
+			pr := &registry.PendingRequest{RequestID: "early-backup-completion", Attempt: 1}
+			if err := st.RecordInferenceRoute(&store.InferenceRouteRecord{
+				RequestID: pr.RequestID, Attempt: pr.Attempt, ProviderID: "backup",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			completion := CompleteRouteOutcome(pr, protocol.UsageInfo{
+				PromptTokens: 17, CompletionTokens: 3,
+			}, 0, false)
+			if completion.UsedBackup || completion.BackupWon {
+				t.Fatal("early completion must precede backup classification")
+			}
+			pr.UsedBackup.Store(true)
+			pr.BackupWon.Store(true)
+			commit := CommittedRouteOutcome(pr)
+			updates := []*store.InferenceRouteOutcome{commit, completion}
+			if completionFirst {
+				updates = []*store.InferenceRouteOutcome{completion, commit}
+			}
+			for _, update := range updates {
+				if err := st.UpdateInferenceRouteOutcome(pr.RequestID, pr.Attempt, update); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rows := st.InferenceRouteRecordsSince(time.Time{})
+			if len(rows) != 1 {
+				t.Fatalf("route count = %d, want 1", len(rows))
+			}
+			got := rows[0]
+			if got.FinalStatus != FinalStatusSuccess || got.PromptTokens != 17 || got.CompletionTokens != 3 ||
+				!got.UsedBackup || !got.BackupWon {
+				t.Fatalf("completion and winner classification did not merge: %+v", got)
+			}
+		})
+	}
+}

@@ -41,6 +41,9 @@ created: "2026-05-14"
 # Existing constant-time release auth and platform-specific cache invalidation
 # supersede the historical SEC-009/SEC-021 descriptions; this refactor does not
 # introduce those fixes or re-verify unrelated threats.
+# Release selector coverage in T-024/T-025 re-verified 2026-09-14 against
+# commit 378e689c4: artifact validators and the latest-release cache reader
+# remain part of the focused review. No mitigation or trust policy changed.
 # Persistence source paths updated 2026-09-13 against commit d8647602b.
 # This package reorganization preserves the existing contracts and does not
 # re-verify or change the threat assessments below.
@@ -926,6 +929,10 @@ threats:
       - coordinator/api/consumer.go
       - coordinator/api/inference_preprocess.go
       - coordinator/api/server.go
+      - coordinator/inference/dispatch/body_contract.go
+      - coordinator/inference/dispatch/provider_body.go
+      - coordinator/inference/dispatch/prepare.go
+      - coordinator/api/httpresponse/marshal.go
     mitigations:
       - description: >
           http.MaxBytesReader caps on every body: 64 MiB global (bodyLimitMiddleware),
@@ -1019,6 +1026,11 @@ threats:
     affected_files:
       - coordinator/api/consumer.go
       - coordinator/store/postgres/usage.go
+      - coordinator/inference/dispatch/prepare.go
+      - coordinator/inference/dispatch/request_metrics.go
+      - coordinator/inference/dispatch/route_observation.go
+      - coordinator/inference/attempt/pending_outcome.go
+      - coordinator/api/inference_dispatch.go
     mitigations:
       - description: Usage rows written per request to the ledger.
         status: implemented
@@ -1580,6 +1592,9 @@ threats:
       - coordinator/api/admin_auth.go
       - coordinator/api/releases/registration.go
       - coordinator/api/releases/deactivation.go
+      - coordinator/api/releases/artifact_origin.go
+      - coordinator/api/releases/metadata.go
+      - coordinator/api/releases/bundle.go
       - coordinator/api/server.go
     mitigations:
       - description: Registration checks the scoped release key independently of consumer/admin authorization.
@@ -1608,6 +1623,7 @@ threats:
     affected_files:
       - coordinator/api/releases.go
       - coordinator/api/releases/cache.go
+      - coordinator/api/releases/latest.go
       - coordinator/api/releases/registration.go
       - coordinator/api/releases/deactivation.go
     mitigations:
@@ -1617,7 +1633,7 @@ threats:
     severity: medium
     detection_hint: >
       Any change to release registration, deletion, or cache logic in
-      coordinator/api/releases/cache.go must verify that platform-specific cache keys are
+      coordinator/api/releases/cache.go or coordinator/api/releases/latest.go must verify that platform-specific cache keys are
       invalidated on both register and delete operations.
 
   - id: T-026
